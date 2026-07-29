@@ -1,7 +1,7 @@
 //! Runtime level lifecycle state-machine helpers.
 //! See: context/lib/boot_sequence.md §1
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 
 use glam::Vec3;
@@ -48,6 +48,45 @@ fn level_source_for_load_entry(entry: &LevelLoadEntry) -> LevelSource {
     }
 }
 
+/// Stable logical identity for the level parity gate. Catalog loads use their
+/// author-declared handle; raw paths are lexically normalized relative to the
+/// content root (or retain an absolute identity when outside it). A `path:` tag
+/// keeps the two addressing modes distinct even when they name the same file.
+pub(crate) fn level_identity(source: &LevelSource, content_root: &Path) -> String {
+    match source {
+        LevelSource::Catalog(id) => id.clone(),
+        LevelSource::Path(path) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let absolute = lexical_normalize(if path.is_absolute() {
+                path.clone()
+            } else {
+                cwd.join(path)
+            });
+            let root = lexical_normalize(if content_root.is_absolute() {
+                content_root.to_path_buf()
+            } else {
+                cwd.join(content_root)
+            });
+            let normalized = absolute.strip_prefix(&root).unwrap_or(&absolute);
+            format!("path:{}", normalized.to_string_lossy().replace('\\', "/"))
+        }
+    }
+}
+
+fn lexical_normalize(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 enum LoadingPoll {
     Pending,
     Disconnected,
@@ -55,6 +94,76 @@ enum LoadingPoll {
 }
 
 impl App {
+    /// Install the immutable admission identity and current mod-parity digest on
+    /// an already-constructed endpoint. This is deliberately a no-op for
+    /// single-player, keeping hash work out of the ordinary boot path.
+    pub(crate) fn install_network_mod_content(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if session.net_endpoint.is_none() {
+            return;
+        }
+        let identity = session
+            .scripting
+            .script_runtime
+            .committed_mod_identity()
+            .map(|(id, version)| (id.to_owned(), version.to_owned()));
+        let digest = {
+            let registry = session.scripting.script_ctx.data_registry.borrow();
+            crate::mod_digest::mod_compatibility_digest_from_registry(&registry)
+        };
+        if let Some(endpoint) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        {
+            if let Some((id, version)) = identity {
+                endpoint.set_mod_identity(id, version);
+            }
+            endpoint.set_mod_digest(digest);
+        }
+        self.refresh_host_tuning();
+    }
+
+    /// Re-resolve participating pawns after a committed manifest changes. The
+    /// retained payload map makes this cheap on reloads that did not alter movement
+    /// or default-weapon fire values.
+    fn refresh_host_tuning(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let descriptors = session
+            .scripting
+            .script_ctx
+            .data_registry
+            .borrow()
+            .entities
+            .clone();
+        let registry = session.scripting.script_ctx.registry.borrow();
+        let Some(crate::netcode::NetEndpoint::Host {
+            server,
+            slot_pawns,
+            last_sent_tuning,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        for client_id in server.participating_clients() {
+            let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+                continue;
+            };
+            let payload = crate::netcode::tuning_payload_for_pawn(&registry, pawn, &descriptors);
+            crate::netcode::host_send_tuning_if_changed(
+                server,
+                last_sent_tuning,
+                client_id,
+                payload,
+            );
+        }
+    }
+
     pub(crate) fn initial_boot_state() -> BootState {
         BootState::Booting
     }
@@ -121,6 +230,7 @@ impl App {
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
+        self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
         // the session borrow.
         if let Some(session) = self.session.as_mut() {
@@ -185,7 +295,26 @@ impl App {
         self.boot_state = BootState::Frontend;
     }
 
-    pub(crate) fn drive_boot_state_for_redraw(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    /// Forget the installed level on a still-live endpoint. Both unload and
+    /// platform suspend reach this helper so neither leaves peers participating
+    /// against a torn-down world.
+    pub(crate) fn clear_net_level_parity(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(endpoint) = session.net_endpoint.as_mut() else {
+            return;
+        };
+        endpoint.set_level_parity(None);
+        endpoint.set_relevel_catalog_id(None);
+        endpoint.reset_level_scoped_host_state();
+    }
+
+    pub(crate) fn drive_boot_state_for_redraw(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame_dt: f32,
+    ) -> bool {
         if matches!(
             self.boot_state,
             BootState::Loading | BootState::Frontend | BootState::Running
@@ -201,8 +330,8 @@ impl App {
                 // rebuild and request a fresh redraw.
                 false
             }
-            BootState::Splash => self.run_splash_frame(event_loop),
-            BootState::Loading => self.run_loading_frame(event_loop),
+            BootState::Splash => self.run_splash_frame(event_loop, frame_dt),
+            BootState::Loading => self.run_loading_frame(event_loop, frame_dt),
             BootState::Frontend => {
                 // No level is installed. Let the normal redraw handler render a
                 // frontend-safe frame that skips gameplay/world work.
@@ -239,6 +368,45 @@ impl App {
             }
         }
         self.level_requests.push_back(request);
+    }
+
+    /// Follow a server-selected catalog level through the ordinary runtime
+    /// request path. A catalog mismatch is recoverable content divergence, not
+    /// a transport failure: leave the connection alive for a later relevel.
+    pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String) {
+        let catalog_has_id = self.session.as_ref().is_some_and(|session| {
+            session
+                .scripting
+                .script_ctx
+                .data_registry
+                .borrow()
+                .maps
+                .iter()
+                .any(|entry| entry.id == catalog_id)
+        });
+        if !catalog_has_id {
+            log::warn!("[Net] relevel names unknown catalog id `{catalog_id}`");
+            return;
+        }
+
+        if self.relevel_is_already_selected(&catalog_id) {
+            return;
+        }
+
+        self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(catalog_id)));
+    }
+
+    fn relevel_is_already_selected(&self, catalog_id: &str) -> bool {
+        let source_is_catalog =
+            |source: &LevelSource| matches!(source, LevelSource::Catalog(id) if id == catalog_id);
+        self.active_level_source.as_ref().is_some_and(source_is_catalog)
+            || self
+                .level_load
+                .as_ref()
+                .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
+            || self.level_requests.iter().any(|request| {
+                matches!(request, LevelRequest::Load(source) if source_is_catalog(source))
+            })
     }
 
     #[cfg(feature = "dev-tools")]
@@ -433,7 +601,14 @@ impl App {
         self.boot_state = BootState::Loading;
     }
 
-    pub(super) fn run_loading_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn run_loading_frame(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame_dt: f32,
+    ) -> bool {
+        // A worker may take longer than the netcode timeout. Poll the live
+        // endpoint before checking its channel, without touching level state.
+        let _ = self.poll_world_less_transport(frame_dt);
         match self.poll_loading_level_worker() {
             LoadingPoll::Ready(outcome) => match *outcome {
                 Ok(payload) => self.finish_level_payload(payload, event_loop),
@@ -559,8 +734,6 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
-        let kinematic_static_fingerprint =
-            crate::runtime_movers::kinematic_static_fingerprint(&world.kinematic_geometry);
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -568,7 +741,20 @@ impl App {
             .net_endpoint
             .as_mut()
         {
-            endpoint.set_kinematic_static_fingerprint(kinematic_static_fingerprint);
+            let level_content_digest =
+                crate::runtime_movers::level_content_digest(&world.kinematic_geometry, &world);
+            let source = self
+                .active_level_source
+                .as_ref()
+                .expect("active level source retained before parity installation");
+            endpoint.set_level_parity(Some((
+                level_identity(source, &self.content_root),
+                level_content_digest,
+            )));
+            endpoint.set_relevel_catalog_id(match source {
+                LevelSource::Catalog(id) => Some(id.clone()),
+                LevelSource::Path(_) => None,
+            });
         }
         // The whole script tranche lives on `Session` (built post-first-pixel).
         // Level install only runs in Loading/Running, where the session is
@@ -3139,6 +3325,8 @@ mod tests {
             mod_root: PathBuf::from("content/dev"),
             status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
                 name: "Replacement".to_string(),
+                id: "replacement".to_string(),
+                version: "1".to_string(),
                 render: Default::default(),
                 entities: Vec::new(),
                 maps: Vec::new(),
@@ -3340,6 +3528,31 @@ mod tests {
     }
 
     #[test]
+    fn level_identity_distinguishes_catalog_and_normalizes_raw_paths() {
+        let root = PathBuf::from("/mods/demo");
+        assert_eq!(
+            level_identity(&LevelSource::Catalog("e1m1".to_string()), &root),
+            "e1m1"
+        );
+        assert_eq!(
+            level_identity(
+                &LevelSource::Path(PathBuf::from("/mods/demo/maps/./episode/../e1m1.prl")),
+                &root,
+            ),
+            "path:maps/e1m1.prl"
+        );
+    }
+
+    #[test]
+    fn level_identity_keeps_outside_content_root_absolute() {
+        let root = PathBuf::from("/mods/demo");
+        assert_eq!(
+            level_identity(&LevelSource::Path(PathBuf::from("/tmp/test.prl")), &root),
+            "path:/tmp/test.prl"
+        );
+    }
+
+    #[test]
     fn raw_path_level_install_retains_empty_active_tags() {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
@@ -3380,6 +3593,101 @@ mod tests {
                 "final".to_string()
             ))),
             "rapid frontend activations should not install intermediate maps",
+        );
+    }
+
+    #[test]
+    fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
+        let mut app = test_app();
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![catalog_map("e1m1", "maps/e1m1.prl", "Entryway", &[])]);
+
+        app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+        app.follow_relevel_catalog("e1m1".to_string());
+        assert!(
+            app.level_requests.is_empty(),
+            "a relevel naming the active catalog map must not restart it"
+        );
+
+        app.active_level_source = None;
+        app.level_load = Some(InFlightLevelLoad {
+            map_path: PathBuf::from("content/dev/maps/e1m1.prl"),
+            content_root: PathBuf::from("content/dev"),
+            entry: LevelLoadEntry {
+                catalog_id: Some("e1m1".to_string()),
+                path: "maps/e1m1.prl".to_string(),
+                name: "Entryway".to_string(),
+                tags: Vec::new(),
+            },
+        });
+        app.follow_relevel_catalog("e1m1".to_string());
+        assert!(
+            app.level_requests.is_empty(),
+            "a relevel naming the in-flight catalog map must not restart it"
+        );
+
+        app.level_load = None;
+        app.follow_relevel_catalog("e1m1".to_string());
+        app.follow_relevel_catalog("e1m1".to_string());
+        assert_eq!(
+            app.level_requests,
+            VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+            "duplicate relevels queued before the lifecycle drain coalesce too"
+        );
+    }
+
+    #[test]
+    fn unknown_relevel_catalog_warns_and_does_not_queue_a_load() {
+        let mut app = test_app();
+        let logs = crate::scripting::reactions::log_capture::capture(|| {
+            app.follow_relevel_catalog("missing-map".to_string());
+        });
+
+        assert!(
+            logs.iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("[Net] relevel names unknown catalog id")
+                    && message.contains("missing-map")
+            }),
+            "unknown catalog id must produce the pinned recoverable relevel warning: {logs:?}"
+        );
+        assert!(
+            app.level_requests.is_empty(),
+            "an unknown relevel catalog must not queue a load or otherwise alter the client"
+        );
+    }
+
+    #[test]
+    fn closing_control_surfaces_a_client_side_incompatible_host_diagnostic() {
+        let mut app = test_app();
+        let expected = postretro_net::wire::ProtocolVersion {
+            app_protocol_id: 7,
+            wire_version: 3,
+        };
+        let received = postretro_net::wire::ProtocolVersion {
+            app_protocol_id: 8,
+            wire_version: 3,
+        };
+        let logs = crate::scripting::reactions::log_capture::capture(|| {
+            crate::netcode::client_drain_control(
+                &mut app,
+                vec![postretro_net::wire::ServerControlMessage::Divergence(
+                    postretro_net::wire::DivergenceReason::Closing(
+                        postretro_net::wire::ClosingCause::Protocol { expected, received },
+                    ),
+                )],
+            );
+        });
+
+        assert!(
+            logs.iter().any(|(level, message)| {
+                *level == log::Level::Error
+                    && message.contains("[Net] incompatible host")
+                    && message.contains("protocol mismatch")
+            }),
+            "a typed admission refusal must reach the client-side incompatible-host diagnostic: {logs:?}"
         );
     }
 

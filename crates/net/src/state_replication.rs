@@ -55,6 +55,10 @@ pub struct ServerStateReplication {
     /// acked baseline" sentinel in the per-client ack map, so a real baseline must
     /// never be 0 or it would read as "unacked".
     next_baseline_id: u32,
+    /// Lowest baseline id issued under the current schema generation. A schema reset
+    /// retires every earlier id so a delayed pre-reset ack cannot advance a rebuilt
+    /// slot that happens to reuse the same `StateSlotId`.
+    minimum_valid_baseline_id: u32,
     /// Current shared-global slot values, one per `StateSlotId`, sent to every
     /// registered client.
     shared: HashMap<StateSlotId, SlotState>,
@@ -72,6 +76,7 @@ impl Default for ServerStateReplication {
         Self {
             next_sequence: 0,
             next_baseline_id: 1,
+            minimum_valid_baseline_id: 1,
             shared: HashMap::new(),
             owner_private: HashMap::new(),
             clients: HashMap::new(),
@@ -108,6 +113,16 @@ impl ServerStateReplication {
         // A private value's lifetime is bounded by its owner's connection.
         self.owner_private
             .retain(|&(_, owner), _| owner != client_id);
+    }
+
+    /// Retire all schema-derived values and per-client progress while preserving the
+    /// server-lifetime baseline namespace. Callers re-register current participants
+    /// after rebuilding their engine-owned schema.
+    pub fn reset_schema_state(&mut self) {
+        self.shared.clear();
+        self.owner_private.clear();
+        self.clients.clear();
+        self.minimum_valid_baseline_id = self.next_baseline_id;
     }
 
     /// Ingest the current value of a shared-global slot for this server frame.
@@ -187,6 +202,7 @@ impl ServerStateReplication {
         slot_baselines: &[(u16, u32)],
     ) {
         let highest_baseline = self.next_baseline_id.wrapping_sub(1);
+        let minimum_baseline = self.minimum_valid_baseline_id;
         let Some(state) = self.clients.get_mut(&client_id) else {
             return;
         };
@@ -196,11 +212,10 @@ impl ServerStateReplication {
             state.last_acked_sequence = latest_snapshot_sequence;
         }
         for &(slot_id_raw, baseline_id) in slot_baselines {
-            // A client cannot legitimately ack a baseline id the server never issued;
-            // accepting an out-of-range id would wedge this client's per-slot gate
-            // (every later real change would force a refresh round-trip until the real
-            // counter climbs past the forged id). Ignore it entirely.
-            if baseline_id > highest_baseline {
+            // A client cannot legitimately ack an id outside the current schema's
+            // issued range. The lower bound fences delayed pre-rebuild acks; the upper
+            // bound prevents forged future ids from wedging this client's slot gate.
+            if baseline_id < minimum_baseline || baseline_id > highest_baseline {
                 continue;
             }
             let slot_id = StateSlotId(slot_id_raw);

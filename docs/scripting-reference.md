@@ -24,6 +24,8 @@ import { playerDescriptor } from "./actors/player";
 
 export default defineMod({
   name: "MyMod",
+  id: "example.my-mod",
+  version: "1.0.0",
   entities: [defineEntity(playerDescriptor)],
 });
 ```
@@ -34,15 +36,20 @@ local player = require("./actors/player")
 
 return defineMod({
   name = "MyMod",
+  id = "example.my-mod",
+  version = "1.0.0",
   entities = { defineEntity(player.descriptor) },
 })
 ```
 
-`ModManifest` requires a `name` field (string). Entity types belong in the
-optional `entities` array. The engine errors at init if the TypeScript default
-manifest export is missing or not an object, the Luau chunk returns no manifest
-or a non-table value, manifest initialization throws, or the manifest lacks
-`name`.
+`ModManifest` requires string `name`, `id`, and `version` fields. The `id`
+gates multiplayer admission: peers must declare the same id to connect.
+`version` is display-only and is never compared. The first successfully
+committed `id` and `version` remain active across staged reloads. Entity types
+belong in the optional `entities` array. The engine errors at init if the
+TypeScript default manifest export is missing or not an object, the Luau chunk
+returns no manifest or a non-table value, manifest initialization throws, or
+the manifest lacks any required field.
 
 **Imports and `require`.**
 
@@ -61,6 +68,8 @@ once, for the whole mod:
 ```typescript
 export default defineMod({
   name: "MyMod",
+  id: "example.my-mod",
+  version: "1.0.0",
   render: {
     bloom: {
       resolution: "quarter",
@@ -73,6 +82,8 @@ export default defineMod({
 ```lua
 return defineMod({
   name = "MyMod",
+  id = "example.my-mod",
+  version = "1.0.0",
   render = {
     bloom = {
       resolution = "quarter",
@@ -1723,7 +1734,12 @@ const options = defineStore("options", {
   master: { type: "number", default: 1, range: [0, 1] },
 });
 
-export default defineMod({ name: "MyMod", stores: [options.declaration] });
+export default defineMod({
+  name: "MyMod",
+  id: "example.my-mod",
+  version: "1.0.0",
+  stores: [options.declaration],
+});
 
 defineReaction("resetVolume", updateState(options.state.master, 1));
 ```
@@ -1867,6 +1883,8 @@ export const pauseMenu = defineUiTree({
 
 export default defineMod({
   name: "MyMod",
+  id: "example.my-mod",
+  version: "1.0.0",
   uiTrees: [pauseMenu],
 });
 ```
@@ -2031,6 +2049,8 @@ alongside their other fields:
 ```typescript
 export default defineMod({
   name: "MyMod",
+  id: "example.my-mod",
+  version: "1.0.0",
   uiTrees: [
     defineUiTree({ name: "hud", alwaysOn: true, tree: hud }), // alwaysOn = base layer
   ],

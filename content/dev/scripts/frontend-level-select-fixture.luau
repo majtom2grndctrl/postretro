@@ -114,6 +114,8 @@ table.insert(catalogStartReactions, backToFrontend)
 
 return Postretro.defineMod({
   name = "frontend-level-select-fixture",
+  id = "postretro.frontend-level-select-fixture",
+  version = "dev",
   maps = mapCatalog,
   frontend = {
     menuTree = levelSelect.name,

@@ -53,6 +53,11 @@ This discriminant equality is a load-bearing contract across the crate boundary:
 
 Clients acknowledge replication progress over the reliable Input channel. Acks are monotonic and additive: omitted entities or state slots leave prior server-side ack state intact. A client that receives a delta for an unknown baseline does not guess; it requests a full baseline refresh and waits for repair.
 
+State-slot baseline ids use one non-recycled namespace for the server endpoint's
+lifetime. A schema rebuild retires earlier ids and clears per-client state without
+restarting the allocator. A delayed pre-rebuild ack therefore cannot suppress a
+fresh baseline for a rebuilt slot, even when participation itself did not change.
+
 The codec surface is two functions (encode, decode) over these types. Decode of a short, corrupted, or over-long buffer is always a typed `Err`, never a panic — the transport must survive a hostile or truncated packet.
 
 **One payload is opaque to the net crate and variable-length.** The replicated tuning values (see *What gates, and what replicates instead*) cross as bytes the crate never decodes, compares, or validates; every other opaque value on the wire is a fixed-size digest. A typed mirror would make the crate learn the engine's descriptor vocabulary, breaking the registry-blindness the whole boundary rests on — so the payload is engine-serialized at both ends and the crate is a courier. The cost is real and accepted: a malformed payload is the engine's to detect, because the crate cannot validate what it forwards.
@@ -71,7 +76,7 @@ The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at
 
 The app gate splits by **mutability**, not by subject. A value belongs to the earlier stage only if a mismatch on it can *never* later become a match.
 
-**Admission** carries what cannot change for a live connection: the two build constants and the mod's declared id. Nothing can make a mismatch here true later, so a mismatch is terminal — the peer is told the typed cause and disconnected, the teardown deferred one poll so the reliable message flushes first. Without that deferral a player on the wrong mod cannot distinguish a refusal from an unreachable host.
+**Admission** carries what cannot change for a live connection: the two build constants and the mod's declared id. Nothing can make a mismatch here true later, so a mismatch is terminal — the slot closes immediately, the typed cause is sent reliably, and transport teardown waits for its acknowledgement. Without that delivery gate a player on the wrong mod cannot distinguish a refusal from an unreachable host.
 
 **Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved.
 
@@ -97,6 +102,15 @@ Two rules derive every per-slot effect from the state pair rather than from whic
 The connection survives; its state does not. A client id is stable across a level change, which is what later specs key player identity to.
 
 **A held slot is gated in both directions.** It is sent no entity state, and its inbound traffic is drained and discarded. The drain is not an optimization: an undrained reliable channel overflows its memory budget and the transport disconnects the peer — which would break the never-close guarantee through a path that never decided anything.
+
+**Participation traffic is generation-scoped.** Every entry to participating
+allocates a new monotonic epoch for that slot. Snapshot and client Input payloads
+carry it in a transport-owned frame. A holding Control frame retires the old epoch
+client-side, including when no snapshot from that epoch arrived. Both peers drop
+traffic outside the current epoch. This prevents a delayed snapshot from restoring
+retired client state, and prevents old Input from reaching a newly spawned pawn
+after re-promotion. A transport-only reliable marker arms the new epoch; it is not
+an engine promotion message.
 
 **The host names the next map; clients follow.** A level change demotes every participating slot rather than closing it, and the host sends the next map's catalog id over Control. A late joiner is told the current map on admission, so it does not wait for the next transition. Map authority is server-owned; a client never asks for a level change. A host running an uncatalogued level sends nothing — a catalog is the only namespace in which one string resolves on both peers — and its clients stay admitted until they install a matching level themselves.
 
@@ -364,8 +378,9 @@ any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
 the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11;
 mover replay provenance advances it to 12. The static-kinematic handshake field
-uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, so version-12
-peers are refused by both handshake gates.
+uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, E15's tagged
+Control layout advances it to 14, and participation-framed traffic advances it to
+15. Earlier peers are refused by both handshake gates.
 
 ## Phase boundaries
 

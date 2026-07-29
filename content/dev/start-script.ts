@@ -18,6 +18,8 @@ import {
 
 export default defineMod({
   name: "dev",
+  id: "postretro.dev",
+  version: "dev",
   maps: mapCatalog,
   // Dogfoods the mod-authored bloom surface on every dev launch. `resolution`
   // is left at the engine default (`half`); `pixelated: true` is the non-default

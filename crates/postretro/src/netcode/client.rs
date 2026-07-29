@@ -231,6 +231,10 @@ pub(crate) struct ClientReplication {
     /// `sample_into_registry`'s presentation writes (which would otherwise clobber the
     /// reconciled pose with a stale interpolated remote pose). `None` until armed.
     local_pawn: Option<NetworkId>,
+    /// Descriptor class carried by the latest local-player record. Control tuning
+    /// can arrive after that record, so the independent Control drain retains this
+    /// half of the materialization key for an immediate movement rebuild.
+    local_pawn_entity_class: Option<String>,
     /// Network ids bound to PRL-loaded local kinematic movers, with their stable
     /// compile-time mover id. These entities are predicted/reconciled in place and
     /// must never be remote-interpolated or materialized from a baseline.
@@ -502,6 +506,7 @@ impl ClientReplication {
         self.remote_player_locomotion.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
+        self.local_pawn_entity_class = None;
         self.mover_network_ids.clear();
         self.mover_history.clear();
 
@@ -516,6 +521,34 @@ impl ClientReplication {
             );
         }
         requests
+    }
+
+    /// Despawn every entity still owned by the replication map. Used by content
+    /// demotion before the ordinary clear-only reset; unlike a level unload the
+    /// registry remains populated, so clearing maps alone would leave a tableau.
+    pub(crate) fn despawn_all_mapped(&mut self, registry: &mut EntityRegistry) {
+        let network_ids: Vec<NetworkId> = self.map.keys().copied().collect();
+        for network_id in network_ids {
+            self.apply_despawn(registry, network_id);
+        }
+    }
+
+    /// Clear demoted-client replication bookkeeping without queueing baseline repair
+    /// requests. The host intentionally sends no snapshots until parity returns.
+    pub(crate) fn reset_for_demotion(&mut self) {
+        self.map.clear();
+        self.reverse_map.clear();
+        self.baselines.clear();
+        self.active_weapon_archetypes.clear();
+        self.pending_repairs.clear();
+        self.interp = RemoteInterpolationBuffer::default();
+        self.remote_enemy_walk_playback.clear();
+        self.remote_player_locomotion.clear();
+        self.presented_player_inputs = ClientPresentationInputs::default();
+        self.local_pawn = None;
+        self.local_pawn_entity_class = None;
+        self.mover_network_ids.clear();
+        self.mover_history.clear();
     }
 
     /// Read-only view of the current `NetworkId -> EntityId` map. Test-only; the
@@ -536,6 +569,22 @@ impl ClientReplication {
     /// baseline has armed prediction.
     pub(crate) fn local_pawn_network_id(&self) -> Option<NetworkId> {
         self.local_pawn
+    }
+
+    pub(crate) fn local_pawn_entity(&self) -> Option<EntityId> {
+        self.local_pawn
+            .and_then(|network_id| self.map.get(&network_id).copied())
+    }
+
+    /// The two independently-arriving inputs needed to rebuild local movement
+    /// when host tuning arrives after the local-player baseline.
+    pub(crate) fn armed_local_pawn(&self) -> Option<ArmedLocalPawn> {
+        let network_id = self.local_pawn?;
+        Some(ArmedLocalPawn {
+            network_id,
+            entity_id: self.map.get(&network_id).copied()?,
+            entity_class: self.local_pawn_entity_class.clone(),
+        })
     }
 
     /// Shared-visible active weapon for the recipient-local pawn. Connected clients
@@ -1123,6 +1172,9 @@ impl ClientReplication {
         // prediction-driven, not remote-interpolated. Drop any interp samples already
         // buffered for it (a record applied before the arming snapshot seeded one).
         self.local_pawn = Some(network_id);
+        if entity_class.is_some() || self.local_pawn_entity_class.is_none() {
+            self.local_pawn_entity_class = entity_class.clone();
+        }
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
@@ -1214,6 +1266,7 @@ impl ClientReplication {
         self.mover_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
+            self.local_pawn_entity_class = None;
         }
         entity_id
     }

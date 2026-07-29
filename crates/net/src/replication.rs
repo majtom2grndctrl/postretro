@@ -197,6 +197,15 @@ impl ServerReplication {
         Self::default()
     }
 
+    /// Clear level-owned replication state while preserving connection-scoped
+    /// sequence and id allocators. Re-promoted clients must see a sequence newer
+    /// than every snapshot accepted before the level transition.
+    pub fn reset_for_level_unload(&mut self) {
+        self.entities.clear();
+        self.tombstones.clear();
+        self.clients.clear();
+    }
+
     /// Register a client so it is replicated to. Idempotent — re-registering an
     /// existing client leaves its ack state intact. A newly registered client holds
     /// no acked baselines, so its first snapshot is all `FullBaseline` records for
@@ -1345,6 +1354,46 @@ mod tests {
         assert!(
             matches!(record_for(&snap2, 1), Some(EntityRecord::Despawn { .. })),
             "forged future-id tombstone ack did not suppress the real despawn"
+        );
+    }
+
+    // Regression: rebuilding the tracker on level unload reset snapshot sequence
+    // to zero, so a connected client rejected every post-transition snapshot.
+    #[test]
+    fn level_unload_reset_preserves_connection_scoped_allocators() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+        let before = server
+            .encode_for_client(CLIENT_A, 60)
+            .expect("first snapshot");
+
+        server.reset_for_level_unload();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(2, vec![transform(1.0)])]);
+        let after = server
+            .encode_for_client(CLIENT_A, 61)
+            .expect("post-transition snapshot");
+
+        assert!(
+            after.sequence > before.sequence,
+            "snapshot sequence remains monotonic across level lifetime"
+        );
+        let EntityRecord::FullBaseline { baseline_id, .. } =
+            record_for(&after, 2).expect("new level baseline")
+        else {
+            panic!("expected full baseline");
+        };
+        let EntityRecord::FullBaseline {
+            baseline_id: old_baseline,
+            ..
+        } = record_for(&before, 1).expect("old level baseline")
+        else {
+            panic!("expected full baseline");
+        };
+        assert!(
+            baseline_id > old_baseline,
+            "baseline ids remain monotonic across level lifetime"
         );
     }
 

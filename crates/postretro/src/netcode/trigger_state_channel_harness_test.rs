@@ -9,8 +9,11 @@
 // conditioned `PacketConditioner` link with real wire encode/decode, and the production
 // stage order from `netcode::frame_order` — this harness cannot detect crossings before
 // applying the frame's snapshots, because `run_crossing_stage` consumes the witness that
-// `run_snapshot_apply_stage` mints. A break in decode, the ack gate, fingerprint
-// validation, baseline/refresh plumbing, or the apply-before-detect order fails a test here.
+// `run_snapshot_apply_stage` mints. The client stage also drains reliable Control before
+// Snapshot, matching `App::net_poll_and_apply`; that drain arms the transport-owned
+// participation epoch without exposing a promotion message to the engine. A break in
+// decode, the ack gate, fingerprint validation, baseline/refresh plumbing, or the
+// apply-before-detect order fails a test here.
 //
 // NOT COVERED — role gating. This harness never constructs a `NetEndpoint`. The
 // `NetEndpoint::Client` match arm in `App::net_poll_and_apply` and `App::is_connected_client`
@@ -282,7 +285,7 @@ fn relay_pair() -> (NetServer, NetClient) {
     let client_socket =
         UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture client binds loopback socket");
     let static_fingerprint = [0x5a; 32];
-    let server = NetServer::new(
+    let mut server = NetServer::new(
         server_socket,
         server_addr,
         1,
@@ -290,7 +293,7 @@ fn relay_pair() -> (NetServer, NetClient) {
         Some(static_fingerprint),
     )
     .expect("fixture server transport constructs");
-    let client = NetClient::new(
+    let mut client = NetClient::new(
         client_socket,
         server_addr,
         CLIENT_ID,
@@ -298,6 +301,15 @@ fn relay_pair() -> (NetServer, NetClient) {
         Some(static_fingerprint),
     )
     .expect("fixture client transport constructs");
+
+    // E15 requires matching admission and parity declarations before participation.
+    server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+    server.set_mod_digest(Some(static_fingerprint));
+    server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+    client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+    client.set_mod_digest(Some(static_fingerprint));
+    client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+
     (server, client)
 }
 
@@ -423,7 +435,7 @@ impl PersistentAtmosphereHarness {
         self.client.set_connected();
         for _ in 0..128 {
             self.relay_client_to_server();
-            if self.server.is_accepted(CLIENT_ID) {
+            if self.server.is_participating(CLIENT_ID) {
                 self.host_state.register_client(CLIENT_ID);
                 self.connected = true;
                 return;
@@ -519,7 +531,7 @@ impl PersistentAtmosphereHarness {
     /// the state producer it wraps.
     fn enqueue_host_snapshot(&mut self) {
         assert!(
-            self.connected && self.server.is_accepted(CLIENT_ID),
+            self.connected && self.server.is_participating(CLIENT_ID),
             "only an accepted client receives state"
         );
         let sequence = self.sequence;
@@ -698,7 +710,7 @@ impl PersistentAtmosphereHarness {
         }
     }
 
-    fn state_send_is_accepted(&mut self) -> bool {
+    fn state_send_is_participating(&mut self) -> bool {
         self.server.send_snapshot(CLIENT_ID, Vec::new())
     }
 
@@ -718,10 +730,16 @@ impl PersistentAtmosphereHarness {
 /// production is never entered (see the file header).
 impl ReplicatedStateFrame for PersistentAtmosphereHarness {
     /// Deliver the conditioned link's due packets — the harness's stand-in for the socket
-    /// read production does inside `NetClient::update` — then run the production
-    /// `client_receive_and_apply`, the same function `App::net_poll_and_apply` calls.
+    /// read production does inside `NetClient::update` — then drain reliable Control
+    /// before running `client_receive_and_apply`, matching `App::net_poll_and_apply`.
     fn apply_received_snapshots(&mut self, frame_dt: f32) {
         self.relay_server_to_client();
+        // Regression: the conditioned harness skipped Control and therefore rejected
+        // every correctly epoch-framed Snapshot as inactive participation traffic.
+        assert!(
+            self.client.drain_control().is_empty(),
+            "the fixture expects only the transport-owned participation marker"
+        );
         let previous_sequence = self.client_replication.latest_sequence();
         let collision = CollisionWorld::new();
         {
@@ -742,6 +760,8 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 1.0 / 60.0,
                 Duration::from_secs_f32(frame_dt),
                 None,
+                None,
+                false,
             );
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;
@@ -909,14 +929,14 @@ fn repeated_same_value_snapshot_stays_quiet_after_crossing() {
 fn pending_and_disconnected_clients_receive_no_state_records() {
     let mut harness = PersistentAtmosphereHarness::new();
     assert!(
-        !harness.state_send_is_accepted(),
+        !harness.state_send_is_participating(),
         "a disconnected client has no transport slot and receives no state"
     );
 
     harness.connect_client();
     harness.close_client();
     assert!(
-        !harness.state_send_is_accepted(),
+        !harness.state_send_is_participating(),
         "a closed client slot refuses all later state records"
     );
 }

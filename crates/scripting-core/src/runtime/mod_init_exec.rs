@@ -20,7 +20,7 @@ use crate::primitives_registry::ScriptPrimitive;
 use crate::quickjs::{QuickJsSubsystem, run_script};
 use crate::store_bridge::{drain_store_declarations_js, drain_store_declarations_lua};
 
-use super::types::ModManifestResult;
+use super::types::{ModManifestResult, validate_mod_manifest_id, validate_mod_manifest_version};
 
 pub(super) fn run_mod_init_quickjs(
     subsys: &QuickJsSubsystem,
@@ -127,6 +127,44 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let id: String = match obj.get("id") {
+            Ok(value) => value,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export missing `id`: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+        if let Err(error) = validate_mod_manifest_id(&id) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` default mod manifest export `id` invalid: {error}"
+                ),
+            });
+            return;
+        }
+        let version: String = match obj.get("version") {
+            Ok(value) => value,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export missing `version`: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+        if let Err(error) = validate_mod_manifest_version(&version) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` default mod manifest export `version` invalid: {error}"
+                ),
+            });
+            return;
+        }
 
         // Optional `entities` array. Missing key → empty Vec. Present-but-not-
         // array → InvalidArgument. Each element parses via the shared
@@ -300,6 +338,8 @@ pub(super) fn run_mod_init_quickjs(
 
         out = Ok(ModManifestResult {
             name,
+            id,
+            version,
             render,
             entities,
             ui_trees,
@@ -367,6 +407,28 @@ pub(super) fn run_mod_init_luau(
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest missing `name`: {e}"),
         })?;
+    let id: String = table
+        .get("id")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest missing `id`: {error}"
+            ),
+        })?;
+    validate_mod_manifest_id(&id).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` returned mod manifest `id` invalid: {error}"),
+    })?;
+    let version: String = table
+        .get("version")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest missing `version`: {error}"
+            ),
+        })?;
+    validate_mod_manifest_version(&version).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` returned mod manifest `version` invalid: {error}"
+        ),
+    })?;
 
     // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
     // → InvalidArgument. Each element parses via the shared descriptor reader
@@ -500,6 +562,8 @@ pub(super) fn run_mod_init_luau(
 
     Ok(ModManifestResult {
         name,
+        id,
+        version,
         render,
         entities,
         ui_trees,
@@ -531,9 +595,11 @@ mod tests {
         let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
             .expect("QuickJS subsystem should initialize");
         let js_source = format!(
-            "globalThis.__postretroModManifest = {{ name: 'RenderMod', render: {js_render} }};"
+            "globalThis.__postretroModManifest = {{ name: 'RenderMod', id: 'render-mod', version: 'any display value', render: {js_render} }};"
         );
-        let luau_source = format!("return {{ name = 'RenderMod', render = {luau_render} }}");
+        let luau_source = format!(
+            "return {{ name = 'RenderMod', id = 'render-mod', version = 'any display value', render = {luau_render} }}"
+        );
 
         let js = run_mod_init_quickjs(&quickjs, &js_source, "render-mod.js")
             .expect("optional QuickJS render profile must not reject the manifest");
@@ -593,6 +659,115 @@ mod tests {
     }
 
     #[test]
+    fn mod_init_manifest_identity_accepts_bare_id_and_arbitrary_nonempty_version_in_both_runtimes()
+    {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Dev', id: 'dev', version: 'build 4 / not semver' };",
+            "identity.js",
+        )
+        .expect("bare id and arbitrary non-empty version must parse in QuickJS");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Dev', id = 'dev', version = 'build 4 / not semver' }",
+            "identity.luau",
+            Path::new("."),
+        )
+        .expect("bare id and arbitrary non-empty version must parse in Luau");
+
+        assert_eq!(
+            (js.id.as_str(), js.version.as_str()),
+            ("dev", "build 4 / not semver")
+        );
+        assert_eq!(
+            (luau.id.as_str(), luau.version.as_str()),
+            ("dev", "build 4 / not semver")
+        );
+    }
+
+    #[test]
+    fn mod_init_manifest_identity_rejects_missing_or_invalid_fields_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+
+        for (label, js_source, luau_source, expected_field) in [
+            (
+                "missing id",
+                "globalThis.__postretroModManifest = { name: 'Dev', version: '1' };".to_string(),
+                "return { name = 'Dev', version = '1' }".to_string(),
+                "missing `id`",
+            ),
+            (
+                "missing version",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'dev' };".to_string(),
+                "return { name = 'Dev', id = 'dev' }".to_string(),
+                "missing `version`",
+            ),
+            (
+                "empty id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "65-byte id",
+                format!(
+                    "globalThis.__postretroModManifest = {{ name: 'Dev', id: '{}', version: '1' }};",
+                    "a".repeat(65)
+                ),
+                format!(
+                    "return {{ name = 'Dev', id = '{}', version = '1' }}",
+                    "a".repeat(65)
+                ),
+                "`id` invalid",
+            ),
+            (
+                "non-ascii id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'déf', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = 'déf', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "disallowed id character",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'bad/id', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = 'bad/id', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "empty version",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'dev', version: '' };"
+                    .to_string(),
+                "return { name = 'Dev', id = 'dev', version = '' }".to_string(),
+                "`version` invalid",
+            ),
+        ] {
+            let js_error = run_mod_init_quickjs(&quickjs, &js_source, "identity.js")
+                .expect_err("invalid QuickJS identity must reject");
+            assert!(
+                matches!(&js_error, ScriptError::InvalidArgument { .. })
+                    && js_error.to_string().contains("identity.js")
+                    && js_error.to_string().contains(expected_field),
+                "{label} QuickJS error must name source and field: {js_error}"
+            );
+            let luau_error = run_mod_init_luau(&[], &luau_source, "identity.luau", Path::new("."))
+                .expect_err("invalid Luau identity must reject");
+            assert!(
+                matches!(&luau_error, ScriptError::InvalidArgument { .. })
+                    && luau_error.to_string().contains("identity.luau")
+                    && luau_error.to_string().contains(expected_field),
+                "{label} Luau error must name source and field: {luau_error}"
+            );
+        }
+    }
+
+    #[test]
     fn mod_init_trigger_pools_skip_malformed_entries_in_both_runtimes() {
         let registry = PrimitiveRegistry::new();
         let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
@@ -602,6 +777,8 @@ mod tests {
             r#"
                 globalThis.__postretroModManifest = {
                     name: "PoolMod",
+                    id: "pool-mod",
+                    version: "1",
                     triggerPools: [
                         { tag: "valid_pool", arm: 2, levels: ["campaign"] },
                         { tag: "invalid_pool", arm: -1 },
@@ -616,6 +793,8 @@ mod tests {
             r#"
                 return {
                     name = "PoolMod",
+                    id = "pool-mod",
+                    version = "1",
                     triggerPools = {
                         { tag = "valid_pool", arm = 2, levels = { "campaign" } },
                         { tag = "invalid_pool", arm = -1 },
@@ -647,6 +826,8 @@ mod tests {
             r#"
                 globalThis.__postretroModManifest = {
                     name: "Impact Mod",
+                    id: "impact-mod",
+                    version: "1",
                     events: [{
                         kind: "impact",
                         id: "salvage:crate-break",
@@ -669,6 +850,8 @@ mod tests {
             r#"
                 return {
                     name = "Impact Mod",
+                    id = "impact-mod",
+                    version = "1",
                     events = {{
                         kind = "impact",
                         id = "salvage:crate-break",

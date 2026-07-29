@@ -25,6 +25,7 @@ mod replication;
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
 // trackers stay registry-blind.
 mod state_slots;
+mod tuning_payload;
 mod wire_convert;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
@@ -82,6 +83,7 @@ pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
+pub(crate) use tuning_payload::{DefaultWeaponFirePayload, TuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -105,11 +107,11 @@ use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
 };
-use postretro_net::transport::{NetClient, NetServer};
+use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
-    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
-    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
-    WirePlayerMovementState, WireTransform,
+    self, ComponentPayload, DivergenceReason, EntityRecord, NetworkId, RawSnapshotMessage,
+    ServerControlMessage, SnapshotMessage, ValidationError, WireError, WireKinematicMoverState,
+    WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};
@@ -117,6 +119,7 @@ use crate::movement::MovementCollisionSource;
 use crate::scripting_systems;
 use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
+use tuning_payload::decode_tuning_payload;
 
 /// Synchronize the host's active-weapon table into third-person presentation
 /// attachments immediately before snapshot production. The table remains the
@@ -312,7 +315,9 @@ pub(crate) enum NetEndpoint {
     /// indirection is paid once.
     Host {
         server: Box<NetServer>,
-        allocator: NetworkIdAllocator,
+        /// Boxed to keep the endpoint variants compact. It remains owned by the
+        /// host endpoint with the slot lifecycle it serves.
+        allocator: Box<NetworkIdAllocator>,
         /// Monotonic fixed-simulation tick stamp written into each snapshot.
         /// Advanced once per completed host fixed tick, not once per network send.
         tick: u32,
@@ -397,13 +402,18 @@ pub(crate) enum NetEndpoint {
         /// projected values and produces per-client state records spliced into the
         /// entity snapshot envelope. Boxed to keep the variant compact.
         state_slots: Box<state_slots::HostStateReplication>,
+        /// Last authoritative tuning sent for each participating slot. This is a
+        /// change detector only: demotion removes the entry and promotion sends a
+        /// fresh payload.
+        last_sent_tuning: HashMap<u64, TuningPayload>,
+        missing_identity_warned: bool,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
-    /// `NetClient` is boxed for the same reason the `Host` server is.
+    /// `NetClient` and replication tracker are boxed to keep this variant compact.
     Client {
         client: Box<NetClient>,
-        replication: ClientReplication,
+        replication: Box<ClientReplication>,
         /// Task 5 time-sync substrate: the 5 Hz probe sender, the clock/jitter
         /// estimator (consumed by Task 6 interpolation), and the production
         /// monotonic clock the estimator reads through.
@@ -422,6 +432,12 @@ pub(crate) enum NetEndpoint {
         /// the schema and applies it all-or-nothing through the store-write path before
         /// the UI read snapshot is built.
         state_slots: Box<state_slots::ClientStateApply>,
+        /// Host-resolved values the client predicts with. The generation lets the
+        /// movement materializer rebuild after a staged host retune without relying
+        /// on Control/Snapshot ordering.
+        tuning: Option<TuningPayload>,
+        tuning_generation: u64,
+        applied_movement_tuning_generation: u64,
     },
 }
 
@@ -507,6 +523,70 @@ impl ClientTimeSync {
     }
 }
 
+/// The world-independent result of advancing a live network endpoint.
+///
+/// World-less frames intentionally retain host lifecycle events for the engine:
+/// a level transition can demote a slot while no world exists. Snapshot apply,
+/// prediction, state-crossing detection, and command draining are deliberately
+/// absent here; those operations have no meaningful target without a world.
+#[must_use = "world-less host lifecycle events must be handled by the engine"]
+pub(crate) enum WorldLessPoll {
+    /// Host-side gate verdicts and lifecycle transitions produced by this poll.
+    Host(ServerPoll),
+    /// A client transport advance plus every typed server Control message that
+    /// arrived during it. The App routes these after the endpoint borrow ends.
+    Client(Vec<ServerControlMessage>),
+    /// The transport failed after logging its diagnostic. Keep the frame alive,
+    /// matching the Running-path error handling.
+    Failed,
+}
+
+/// Route every server Control variant through the one client-side drain. Control
+/// is reliable and ordered, so splitting relevel, diagnostic, and tuning drains
+/// would let one consumer steal another consumer's message.
+pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerControlMessage>) {
+    for control in controls {
+        match control {
+            ServerControlMessage::Relevel(catalog_id) => {
+                app.follow_relevel_catalog(catalog_id);
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
+                // Admission failure is terminal, so this is the client-visible
+                // diagnostic for a player who cannot join the host.
+                log::error!(
+                    "[Net] incompatible host: {}",
+                    DivergenceReason::Closing(cause)
+                );
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
+                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.demote_client_state(&mut registry);
+                }
+            }
+            ServerControlMessage::Tuning(bytes) => {
+                let script_ctx = app
+                    .session
+                    .as_ref()
+                    .map(|session| session.scripting.script_ctx.clone());
+                let descriptors = script_ctx
+                    .as_ref()
+                    .map(|script_ctx| script_ctx.data_registry.borrow().entities.clone())
+                    .unwrap_or_default();
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
+                }
+            }
+        }
+    }
+}
+
 impl NetEndpoint {
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
@@ -527,7 +607,7 @@ impl NetEndpoint {
                     .map_err(|e| format!("host transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Host {
                     server: Box::new(server),
-                    allocator: NetworkIdAllocator::new(),
+                    allocator: Box::new(NetworkIdAllocator::new()),
                     tick: 0,
                     replication: Box::new(ServerReplication::new()),
                     replicable: ReplicableSet::new(),
@@ -543,6 +623,8 @@ impl NetEndpoint {
                     loaded_movers: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
+                    last_sent_tuning: HashMap::new(),
+                    missing_identity_warned: false,
                 }))
             }
             NetRole::Connect { addr } => {
@@ -557,42 +639,114 @@ impl NetEndpoint {
                     .map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
-                    replication: ClientReplication::new(),
+                    replication: Box::new(ClientReplication::new()),
                     time_sync: Box::new(ClientTimeSync::new()),
                     interpolation_delay: InterpolationDelayState::new(),
                     prediction: ClientPrediction::new(),
                     state_slots: Box::new(state_slots::ClientStateApply::new()),
+                    tuning: None,
+                    tuning_generation: 0,
+                    applied_movement_tuning_generation: 0,
                 }))
             }
         }
     }
 
-    /// Bind multiplayer acceptance to the loaded map's canonical static mover
-    /// inputs. Transport handshakes wait for this value. Changing it closes the
-    /// existing connection and delivers a close on the next poll, so ordinary host
-    /// lifecycle cleanup despawns remote pawns and clears slot-owned state before
-    /// prediction can reuse different PRL authoring.
-    pub(crate) fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+    pub(crate) fn set_mod_identity(&mut self, id: String, version: String) {
         match self {
-            NetEndpoint::Host { server, .. } => {
-                server.set_kinematic_static_fingerprint(fingerprint);
-            }
+            Self::Host { server, .. } => server.set_mod_identity(id, version),
+            Self::Client { client, .. } => client.set_mod_identity(id, version),
+        }
+    }
+
+    /// A debug no-start-script session otherwise looks exactly like a stalled
+    /// pending handshake. Emit the operator-facing warning once when a peer has
+    /// actually arrived, rather than noisily at boot before anyone connects.
+    pub(crate) fn warn_once_if_mod_identity_missing(&mut self) {
+        let Self::Host {
+            server,
+            missing_identity_warned,
+            ..
+        } = self
+        else {
+            return;
+        };
+        if !*missing_identity_warned && server.has_connected_clients() && !server.has_mod_identity()
+        {
+            log::warn!("[Net] no mod identity installed");
+            *missing_identity_warned = true;
+        }
+    }
+
+    pub(crate) fn set_mod_digest(&mut self, digest: [u8; 32]) {
+        match self {
+            Self::Host { server, .. } => server.set_mod_digest(Some(digest)),
+            Self::Client { client, .. } => client.set_mod_digest(Some(digest)),
+        }
+    }
+
+    pub(crate) fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
+        match self {
+            Self::Host { server, .. } => server.set_level_parity(level),
+            Self::Client { client, .. } => client.set_level_parity(level),
+        }
+    }
+
+    pub(crate) fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
+        if let Self::Host { server, .. } = self {
+            server.set_relevel_catalog_id(catalog_id);
+        }
+    }
+
+    /// Advance transport work that remains valid when no level world is
+    /// installed: socket I/O, keepalive, and handshake/gate processing.
+    ///
+    /// The registry argument intentionally reserves the game-logic-owned
+    /// control-drain seam. The currently available transport advance never
+    /// mutates it: world-less polling must not apply snapshots, simulate,
+    /// predict, detect state crossings, or drain commands. Task 4's typed
+    /// Control router and Task 7's demotion handling use this same borrow.
+    pub(crate) fn poll_world_less(
+        &mut self,
+        dt: Duration,
+        registry: &mut EntityRegistry,
+    ) -> WorldLessPoll {
+        let _ = registry;
+        match self {
+            NetEndpoint::Host { server, .. } => match server.update(dt) {
+                Ok(poll) => WorldLessPoll::Host(poll),
+                Err(err) => {
+                    log::error!("[Net] host update failed: {err}");
+                    WorldLessPoll::Failed
+                }
+            },
             NetEndpoint::Client { client, .. } => {
-                client.set_kinematic_static_fingerprint(fingerprint);
+                if let Err(err) = client.update(dt) {
+                    log::error!("[Net] client update failed: {err}");
+                    WorldLessPoll::Failed
+                } else {
+                    // A world-less frame can never apply snapshots. Drain current-
+                    // epoch bytes too: otherwise a snapshot queued between unload
+                    // and replacement install can mutate the new world later.
+                    discard_world_less_snapshots(client);
+                    WorldLessPoll::Client(client.drain_control())
+                }
             }
         }
     }
 
-    /// Reset connected-client state that points at level-owned registry entities,
-    /// preserving the transport connection. Previously-known `NetworkId`s immediately
-    /// request fresh full baselines so unchanged acked remotes are not lost after the
-    /// local registry is cleared.
+    /// Reset connected-client state derived from the old level, preserving the
+    /// transport connection. Previously-known `NetworkId`s immediately request fresh
+    /// full baselines so unchanged acked remotes are not lost after the local registry
+    /// is cleared. Replicated state-slot schema and baselines rebuild from the next
+    /// installed level.
     pub(crate) fn reset_level_scoped_client_state(&mut self) {
         let NetEndpoint::Client {
             client,
             replication,
             interpolation_delay,
             prediction,
+            state_slots,
             ..
         } = self
         else {
@@ -605,7 +759,170 @@ impl NetEndpoint {
         }
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
+        state_slots.reset_schema();
     }
+
+    /// Clear state whose entity ids belong to the old host level. This is separate
+    /// from per-slot demotion cleanup: a level unload invalidates even host-owned
+    /// and unowned replicated objects.
+    pub(crate) fn reset_level_scoped_host_state(&mut self) {
+        let Self::Host {
+            allocator,
+            replication,
+            replicable,
+            slot_pawns,
+            command_queues,
+            owners,
+            weapon_owners,
+            open_shots,
+            pending_hit_declarations,
+            weaponless_fire_logged,
+            host_pawn,
+            map_enemies,
+            loaded_movers,
+            demo_mover,
+            state_slots,
+            last_sent_tuning,
+            ..
+        } = self
+        else {
+            return;
+        };
+        allocator.reset_for_level_unload();
+        replication.reset_for_level_unload();
+        *replicable = ReplicableSet::new();
+        *slot_pawns = SlotPawns::new();
+        *command_queues = HostCommandQueues::new();
+        *owners = MovementOwners::new();
+        *weapon_owners = WeaponOwners::new();
+        *open_shots = OpenAuthorizedShots::new();
+        *pending_hit_declarations = PendingHitDeclarations::new();
+        weaponless_fire_logged.clear();
+        *host_pawn = None;
+        map_enemies.clear();
+        loaded_movers.clear();
+        *demo_mover = DemoMoverState::from_env();
+        state_slots.reset_schema();
+        last_sent_tuning.clear();
+    }
+
+    pub(crate) fn reset_state_slot_schema(&mut self) {
+        match self {
+            Self::Host {
+                server,
+                state_slots,
+                ..
+            } => state_slots.reset_schema_for_clients(server.participating_clients()),
+            Self::Client { state_slots, .. } => state_slots.reset_schema(),
+        }
+    }
+
+    /// Client demotion is not a normal unload reset: no repair requests are useful
+    /// while the host intentionally holds the slot. Despawn mapped entities first so
+    /// this is also correct for a following relevel unload.
+    pub(crate) fn demote_client_state(&mut self, registry: &mut EntityRegistry) {
+        let Self::Client {
+            replication,
+            interpolation_delay,
+            prediction,
+            tuning,
+            applied_movement_tuning_generation,
+            ..
+        } = self
+        else {
+            return;
+        };
+        replication.despawn_all_mapped(registry);
+        replication.reset_for_demotion();
+        prediction.reset_for_level_unload();
+        interpolation_delay.reset_for_level_unload();
+        *tuning = None;
+        *applied_movement_tuning_generation = 0;
+    }
+
+    fn install_tuning_payload(
+        &mut self,
+        bytes: &[u8],
+        registry: &mut EntityRegistry,
+        descriptors: &[EntityTypeDescriptor],
+    ) {
+        let Self::Client {
+            replication,
+            tuning,
+            tuning_generation,
+            applied_movement_tuning_generation,
+            ..
+        } = self
+        else {
+            return;
+        };
+        let result = replace_client_tuning(tuning, tuning_generation, bytes);
+        if let Some(armed) = replication.armed_local_pawn() {
+            apply_installed_movement_tuning_to_armed_pawn(
+                &armed,
+                tuning.as_ref(),
+                *tuning_generation,
+                applied_movement_tuning_generation,
+                descriptors,
+                registry,
+            );
+        } else if tuning
+            .as_ref()
+            .and_then(|payload| payload.movement.as_ref())
+            .is_none()
+        {
+            *applied_movement_tuning_generation = *tuning_generation;
+        }
+        if let Err(error) = result {
+            log::error!("[Net] tuning payload epoch/decode failure: {error}");
+        }
+    }
+
+    pub(crate) fn client_tuning(&self) -> Option<(&TuningPayload, u64)> {
+        match self {
+            Self::Client {
+                tuning: Some(tuning),
+                tuning_generation,
+                ..
+            } => Some((tuning, *tuning_generation)),
+            _ => None,
+        }
+    }
+}
+
+fn apply_installed_movement_tuning_to_armed_pawn(
+    armed: &client::ArmedLocalPawn,
+    tuning: Option<&TuningPayload>,
+    tuning_generation: u64,
+    applied_generation: &mut u64,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+) {
+    remote_materialize::materialize_armed_local_pawn(
+        armed,
+        descriptors,
+        registry,
+        tuning.and_then(|payload| payload.movement.as_ref()),
+        true,
+    );
+    *applied_generation = tuning_generation;
+}
+
+fn discard_world_less_snapshots(client: &mut NetClient) {
+    drop(client.drain_snapshots());
+}
+
+fn replace_client_tuning(
+    tuning: &mut Option<TuningPayload>,
+    tuning_generation: &mut u64,
+    bytes: &[u8],
+) -> Result<(), tuning_payload::TuningPayloadError> {
+    // Invalidate first. A bad replacement must never leave the last accepted
+    // descriptor-derived prediction state live.
+    *tuning = None;
+    *tuning_generation = tuning_generation.wrapping_add(1);
+    *tuning = Some(decode_tuning_payload(bytes)?);
+    Ok(())
 }
 
 fn now() -> Duration {
@@ -803,6 +1120,11 @@ impl NetworkIdAllocator {
             map: HashMap::new(),
             reverse: HashMap::new(),
         }
+    }
+
+    fn reset_for_level_unload(&mut self) {
+        self.map.clear();
+        self.reverse.clear();
     }
 
     /// Stamp `id` with its stable `NetworkId`, allocating a fresh one on first
@@ -1007,6 +1329,8 @@ pub(crate) fn client_receive_and_apply(
     tick_dt: f32,
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
+    host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    rebuild_movement_tuning: bool,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
     for bytes in client.drain_snapshots() {
@@ -1083,7 +1407,13 @@ pub(crate) fn client_receive_and_apply(
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
             frame_outcome.materialized_remote_entity_presentation |=
-                remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
+                remote_materialize::materialize_armed_local_pawn(
+                    armed,
+                    descriptors,
+                    registry,
+                    host_movement_tuning,
+                    rebuild_movement_tuning,
+                );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
                 entity_class: armed.entity_class.clone(),
@@ -1614,8 +1944,8 @@ pub(crate) fn host_replicate(
         return;
     }
 
-    let accepted = server.accepted_clients();
-    if accepted.is_empty() {
+    let participating = server.participating_clients();
+    if participating.is_empty() {
         return;
     }
     // The replicated-state schema fingerprint is stamped into every snapshot carrying
@@ -1629,9 +1959,9 @@ pub(crate) fn host_replicate(
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
-    for client_id in accepted {
-        // Register lazily: an accepted client gets a fresh per-client state on first
-        // sight (all-FullBaseline first snapshot). Idempotent for both trackers.
+    for client_id in participating {
+        // Registration also occurs on participation entry. Keep this idempotent
+        // send-side guard so a participating client always has baseline state.
         replication.register_client(client_id);
         state_slots.register_client(client_id);
         if let Some(mut raw) = replication.encode_in_batch(client_id, tick, sequence) {
@@ -1649,13 +1979,10 @@ pub(crate) fn host_replicate(
     }
 }
 
-/// Spawn and register the slot-owned pawn for an accepted client (Task 4). This is
-/// the production accept seam: the `NetServer` surfaces an accept only via
-/// `ServerPoll.handshakes` (`SlotEvent::Accepted` is discarded inside the transport),
-/// so the engine drives the spawn from the `HandshakeOutcome::Accepted` verdict —
-/// `host_handle_lifecycle` never sees an accept. Threads the same allocator /
-/// replicable set / slot map the close path uses, so accept and close mutate one
-/// consistent state. Idempotent per slot (see [`on_slot_accepted`]).
+/// Spawn and register the slot-owned pawn on entry to participation. The engine
+/// drives this from ordered `SlotEvent::Participating` edges, including
+/// re-promotion. It uses the same allocator, replicable set, and slot map as exit
+/// cleanup. Idempotent per slot (see [`on_slot_accepted`]).
 ///
 /// This glue path has no player descriptor, so the pawn is the `Transform`-only inert
 /// fixture (entity_model.md §7b — not a real movement pawn). Called BEFORE the frame's
@@ -1680,8 +2007,8 @@ pub(crate) fn host_handle_accept(
     );
 }
 
-/// Production accept seam for a Phase 3 movement session: spawn the descriptor-backed
-/// remote `PlayerMovement` pawn for an accepted client. Deterministically assigns the
+/// Production participation seam for a movement session: spawn the descriptor-backed
+/// remote `PlayerMovement` pawn for a participating client. Deterministically assigns the
 /// slot a `player_spawn` placement (auditable, stable across reconnect), records the
 /// owner mapping, then materializes the pawn through [`on_slot_accepted`]'s descriptor
 /// path. Falls back to nothing (logged) if there are no spawn points or the descriptor
@@ -1836,12 +2163,9 @@ pub(crate) fn host_unregister_own_pawn(
     Some(previous)
 }
 
-/// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
-/// (Task 4). `ServerPoll.lifecycle` carries `SlotEvent::Closed` only — accepts are
-/// driven from the handshake verdict via [`host_handle_accept`], never lifecycle.
-/// Each close (clean disconnect, timeout, or static-fingerprint change — one cleanup
-/// path) despawns the slot's pawn, drops it from the replicable set, and clears its
-/// replication, ownership, command, state-slot, and combat bookkeeping.
+/// Apply participation exits to the host's remote-pawn state. Close and demotion
+/// share this cleanup: despawn the slot pawn, drop it from replication, and clear
+/// ownership, command, state-slot, tuning, and combat bookkeeping.
 ///
 /// Game-logic-owned: the registry mutation flows through `EntityRegistry::despawn`.
 /// The mutable registry borrow is threaded in by the caller so this module never
@@ -1860,12 +2184,13 @@ pub(crate) fn host_handle_lifecycle(
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
     for event in lifecycle {
         match event {
-            SlotEvent::Closed { client_id, .. } => {
+            SlotEvent::Closed { client_id, .. } | SlotEvent::Demoted { client_id, .. } => {
                 let previous_pawn = slot_pawns.pawn_for(*client_id);
                 if let Some(pawn) = previous_pawn {
                     pending_hit_declarations.remove_pawn_shots(allocator, pawn);
@@ -1886,6 +2211,7 @@ pub(crate) fn host_handle_lifecycle(
                 // M15 Phase 3.5: drop the closed client's replicated-state baselines and
                 // its owner-private slot values so none leak past the connection.
                 state_slots.remove_client(*client_id);
+                last_sent_tuning.remove(client_id);
                 if let Some(pawn) = despawned {
                     cleanup_remote_pawn_owned_state(
                         registry,
@@ -1914,12 +2240,64 @@ pub(crate) fn host_handle_lifecycle(
                     );
                 }
             }
-            // Accepts never reach lifecycle (the transport uses
-            // `HandshakeOutcome::Accepted` instead); the spawn is driven from that
-            // verdict. Kept exhaustive so a new SlotEvent variant is a compile error.
-            SlotEvent::Accepted { .. } => {}
+            // Entry is handled by the App's participation seam, which registers
+            // replication and spawns the pawn. Kept exhaustive so a new slot event
+            // is a compile error here as well.
+            SlotEvent::Participating { .. } => {}
         }
     }
+}
+
+/// Resolve the host-authoritative prediction values for one spawned slot pawn.
+/// Descriptor lookup remains engine-side; the net crate carries the resulting JSON
+/// bytes without learning this vocabulary.
+pub(crate) fn tuning_payload_for_pawn(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+    descriptors: &[EntityTypeDescriptor],
+) -> TuningPayload {
+    let class = registry
+        .get_component::<DescriptorProvenance>(pawn)
+        .ok()
+        .map(|provenance| provenance.canonical_name.as_str())
+        .unwrap_or("player");
+    let descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(class));
+    let movement = descriptor.and_then(|descriptor| descriptor.movement.clone());
+    let default_weapon = descriptor
+        .and_then(|descriptor| descriptor.default_weapon.as_deref())
+        .and_then(|name| {
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name))
+        })
+        .and_then(|descriptor| descriptor.weapon.as_ref())
+        .map(|weapon| tuning_payload::DefaultWeaponFirePayload {
+            range: weapon.range,
+            cooldown_ms: weapon.cooldown_ms,
+            fire_mode: weapon.fire_mode,
+            resolution: weapon.resolution,
+        });
+    TuningPayload::new(movement, default_weapon)
+}
+
+pub(crate) fn host_send_tuning_if_changed(
+    server: &mut NetServer,
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
+    client_id: u64,
+    payload: TuningPayload,
+) {
+    if last_sent_tuning.get(&client_id) == Some(&payload) {
+        return;
+    }
+    server.send_control(
+        client_id,
+        wire::encode(&ServerControlMessage::Tuning(
+            tuning_payload::encode_tuning_payload(&payload),
+        )),
+    );
+    last_sent_tuning.insert(client_id, payload);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2511,6 +2889,130 @@ mod tests {
         }
     }
 
+    fn install_test_tuning(tuning: &mut Option<TuningPayload>, generation: &mut u64) -> Vec<u8> {
+        let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
+            host_player_descriptor().movement,
+            Some(DefaultWeaponFirePayload {
+                range: 12.0,
+                cooldown_ms: 90.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+            }),
+        ));
+        replace_client_tuning(tuning, generation, &encoded).expect("valid tuning installs");
+        encoded
+    }
+
+    // Regression: a malformed replacement retained the previously accepted
+    // payload and generation, leaving descriptor-derived prediction live.
+    #[test]
+    fn malformed_tuning_replacement_invalidates_previous_install() {
+        let mut tuning = None;
+        let mut generation = 0;
+        install_test_tuning(&mut tuning, &mut generation);
+        let accepted_generation = generation;
+
+        let result = replace_client_tuning(&mut tuning, &mut generation, b"not json");
+
+        assert!(matches!(
+            result,
+            Err(tuning_payload::TuningPayloadError::Malformed { .. })
+        ));
+        assert!(tuning.is_none());
+        assert_ne!(generation, accepted_generation);
+    }
+
+    // Regression: an unknown-epoch replacement retained the previously
+    // accepted payload and descriptor-derived prediction state.
+    #[test]
+    fn unknown_epoch_tuning_replacement_invalidates_previous_install() {
+        let mut tuning = None;
+        let mut generation = 0;
+        let encoded = install_test_tuning(&mut tuning, &mut generation);
+        let accepted_generation = generation;
+        let unknown_epoch = String::from_utf8(encoded).unwrap().replacen(
+            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH),
+            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH + 1),
+            1,
+        );
+
+        let result = replace_client_tuning(&mut tuning, &mut generation, unknown_epoch.as_bytes());
+
+        assert!(matches!(
+            result,
+            Err(tuning_payload::TuningPayloadError::EpochMismatch { .. })
+        ));
+        assert!(tuning.is_none());
+        assert_ne!(generation, accepted_generation);
+    }
+
+    // Regression: Control tuning arriving after the local-player baseline was
+    // stored but never rebuilt movement until another arming snapshot arrived.
+    #[test]
+    fn late_and_idle_retune_rebuild_armed_movement_and_keep_local_view_feel() {
+        let mut local_descriptor = host_player_descriptor();
+        local_descriptor.movement.as_mut().unwrap().view_feel = Some(ViewFeelParams {
+            bob: None,
+            tilt: None,
+            sway: None,
+        });
+        let descriptors = [local_descriptor.clone()];
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let armed = client::ArmedLocalPawn {
+            network_id: NetworkId(9),
+            entity_id: pawn,
+            entity_class: Some("player".to_string()),
+        };
+        let mut applied_generation = 0;
+
+        let mut host_movement = local_descriptor.movement.unwrap();
+        host_movement.ground.speed.run = 29.0;
+        host_movement.view_feel = None;
+        let first = TuningPayload::new(Some(host_movement.clone()), None);
+        apply_installed_movement_tuning_to_armed_pawn(
+            &armed,
+            Some(&first),
+            1,
+            &mut applied_generation,
+            &descriptors,
+            &mut registry,
+        );
+
+        let installed = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .expect("late tuning materializes movement immediately");
+        assert_eq!(installed.ground_params.speed.run, 29.0);
+        assert_eq!(
+            installed.view_feel,
+            descriptors[0].movement.as_ref().unwrap().view_feel,
+            "host tuning cannot overwrite local presentation feel"
+        );
+        assert_eq!(applied_generation, 1);
+
+        host_movement.ground.speed.run = 37.0;
+        let retuned = TuningPayload::new(Some(host_movement), None);
+        apply_installed_movement_tuning_to_armed_pawn(
+            &armed,
+            Some(&retuned),
+            2,
+            &mut applied_generation,
+            &descriptors,
+            &mut registry,
+        );
+        assert_eq!(
+            registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .ground_params
+                .speed
+                .run,
+            37.0,
+            "idle staged retune rebuilds without waiting for another snapshot"
+        );
+        assert_eq!(applied_generation, 2);
+    }
+
     fn snapshot_with_record(record: EntityRecord) -> SnapshotMessage {
         SnapshotMessage {
             sequence: 1,
@@ -2533,6 +3035,170 @@ mod tests {
             viewmodel: None,
             resource: None,
         })
+    }
+
+    #[test]
+    fn world_less_poll_advances_both_roles_without_touching_registry_state() {
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform {
+            position: Vec3::new(3.0, 2.0, 1.0),
+            ..Transform::default()
+        });
+
+        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+        assert!(matches!(
+            host.poll_world_less(Duration::from_millis(16), &mut registry),
+            WorldLessPoll::Host(_)
+        ));
+
+        let mut client = NetEndpoint::from_role(&NetRole::Connect {
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        })
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+        assert!(matches!(
+            client.poll_world_less(Duration::from_millis(16), &mut registry),
+            WorldLessPoll::Client(_)
+        ));
+
+        assert_eq!(
+            registry
+                .get_component::<Transform>(entity)
+                .expect("world-less transport must not mutate the registry")
+                .position,
+            Vec3::new(3.0, 2.0, 1.0),
+            "world-less transport does not apply snapshots or simulate"
+        );
+    }
+
+    // Regression: world-less polling retained a current-epoch snapshot and
+    // applied its old-world bytes after the replacement level installed.
+    #[test]
+    fn world_less_snapshot_drain_discards_current_epoch_bytes() {
+        const CLIENT_ID: u64 = 71;
+        let server_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("bind relay server");
+        let server_addr = server_socket.local_addr().expect("relay server address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 2, Duration::from_secs(1), None)
+                .expect("construct relay server");
+        let client_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("bind relay client");
+        let mut client = NetClient::new(
+            client_socket,
+            server_addr,
+            CLIENT_ID,
+            Duration::from_secs(1),
+            None,
+        )
+        .expect("construct relay client");
+        server.add_relay_connection(CLIENT_ID);
+        client.set_connected();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.update_connections(Duration::from_millis(16));
+        for packet in client.packets_to_send() {
+            server.process_packet_from(&packet, CLIENT_ID);
+        }
+        let poll = server.poll_handshakes();
+        assert!(matches!(
+            poll.lifecycle.as_slice(),
+            [postretro_net::slots::SlotEvent::Participating { .. }]
+        ));
+        for packet in server.packets_to_send(CLIENT_ID) {
+            client.process_packet(&packet);
+        }
+        assert!(client.drain_control().is_empty());
+
+        assert!(server.send_snapshot(CLIENT_ID, vec![1, 2, 3]));
+        for packet in server.packets_to_send(CLIENT_ID) {
+            client.process_packet(&packet);
+        }
+        discard_world_less_snapshots(&mut client);
+        assert!(
+            client.drain_snapshots().is_empty(),
+            "no old-world snapshot survives the world-less frame"
+        );
+    }
+
+    // Regression: client level unload reset entity replication but retained the
+    // old state-slot schema and held baselines into the replacement level.
+    #[test]
+    fn client_level_unload_resets_state_slot_apply_state() {
+        let mut endpoint = NetEndpoint::from_role(&NetRole::Connect {
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        })
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+        let mut slot_table = SlotTable::new();
+        let schema = state_slots::ReplicatedSlotSchema::build(&slot_table);
+        let slot_id = schema
+            .id_for("player.health")
+            .expect("built-in health slot is replicated");
+        let fingerprint = *schema.fingerprint();
+        let record = postretro_net::state_slots::RawStateSlotRecord {
+            slot_id: slot_id.0,
+            kind: postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+            has_baseline_ref: false,
+            baseline_ref: 0,
+            baseline_id: 7,
+            value: postretro_net::state_slots::WireSlotValue::Number(75.0),
+        };
+
+        let NetEndpoint::Client { state_slots, .. } = &mut endpoint else {
+            panic!("connect role must construct a client endpoint");
+        };
+        let applied = state_slots.apply_snapshot_state(&mut slot_table, 1, &fingerprint, &[record]);
+        assert_eq!(applied.slot_baselines, vec![(slot_id.0, 7)]);
+        assert!(!state_slots.is_reset());
+
+        endpoint.reset_level_scoped_client_state();
+
+        let NetEndpoint::Client { state_slots, .. } = &endpoint else {
+            panic!("endpoint role cannot change during reset");
+        };
+        assert!(
+            state_slots.is_reset(),
+            "old client schema and held baselines cannot survive level unload"
+        );
+    }
+
+    // Regression: host level reset reconstructed the allocator and reused old
+    // NetworkIds while the transport connection survived.
+    #[test]
+    fn host_level_reset_preserves_session_monotonic_network_ids() {
+        let mut registry = EntityRegistry::new();
+        let old_entity = registry.spawn(Transform::default());
+        let new_entity = registry.spawn(Transform::default());
+        let mut endpoint = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+
+        let old_network_id = match &mut endpoint {
+            NetEndpoint::Host { allocator, .. } => allocator.stamp(old_entity),
+            NetEndpoint::Client { .. } => unreachable!("constructed host"),
+        };
+        endpoint.reset_level_scoped_host_state();
+        let new_network_id = match &mut endpoint {
+            NetEndpoint::Host { allocator, .. } => {
+                assert!(!allocator.maps_entity(old_entity));
+                allocator.stamp(new_entity)
+            }
+            NetEndpoint::Client { .. } => unreachable!("constructed host"),
+        };
+
+        assert!(
+            new_network_id.0 > old_network_id.0,
+            "NetworkIds remain session-monotonic across level lifetime"
+        );
     }
 
     #[test]
@@ -3469,6 +4135,77 @@ mod tests {
         assert_eq!(allocator.entity_for_network_id(expected_net_id), None);
     }
 
+    // Regression: processing all exits before all entries let a same-poll
+    // Participating -> Demoted sequence spawn a pawn for the final Admitted state.
+    #[test]
+    fn ordered_participation_then_demotion_leaves_no_host_pawn() {
+        use postretro_net::handshake::HoldingCause;
+        use postretro_net::slots::SlotEvent;
+
+        const CLIENT_ID: u64 = 43;
+        let events = [
+            SlotEvent::Participating {
+                client_id: CLIENT_ID,
+            },
+            SlotEvent::Demoted {
+                client_id: CLIENT_ID,
+                cause: HoldingCause::HostLevelAbsent,
+            },
+        ];
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        let mut state_slots = state_slots::HostStateReplication::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut command_queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let mut last_sent_tuning = HashMap::new();
+
+        for event in &events {
+            host_handle_lifecycle(
+                &mut registry,
+                &mut allocator,
+                &mut replicable,
+                &mut replication,
+                &mut state_slots,
+                &mut slot_pawns,
+                &mut command_queues,
+                &mut owners,
+                &mut weapon_owners,
+                &mut open_shots,
+                &mut pending_hit_declarations,
+                &mut weaponless_fire_logged,
+                &mut last_sent_tuning,
+                std::slice::from_ref(event),
+            );
+            if let SlotEvent::Participating { client_id } = event {
+                replication.register_client(*client_id);
+                state_slots.register_client(*client_id);
+                host_handle_accept(
+                    &mut registry,
+                    &mut allocator,
+                    &mut replicable,
+                    &mut slot_pawns,
+                    *client_id,
+                );
+            }
+        }
+
+        assert!(
+            slot_pawns.pawn_for(CLIENT_ID).is_none(),
+            "final admitted state owns no pawn"
+        );
+        assert!(
+            replicable.iter().next().is_none(),
+            "demotion removes the just-spawned pawn from replication"
+        );
+    }
+
     // Regression: `client_drive_time_sync` once emitted a probe without recording
     // its sample id, so the estimator's provenance guard rejected every echo and
     // the clock never initialized (a silent client-side freeze). `maybe_send_probe`
@@ -3689,6 +4426,7 @@ mod tests {
     use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+        ViewFeelParams,
     };
     use postretro_net::replication::{ServerReplication, typed_records};
     use postretro_net::wire::EntityRecord;

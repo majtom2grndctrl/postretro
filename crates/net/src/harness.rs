@@ -422,7 +422,7 @@ mod tests {
             }
             server.update_connections(RELAY_DT);
             let _ = server.poll_handshakes();
-            if cond.in_flight() == 0 && client.handshake_sent() {
+            if cond.in_flight() == 0 && client.admission_sent() {
                 // One more flush pass to drain anything just queued.
                 cond.enqueue_all(client.packets_to_send());
                 cond.advance(RELAY_DT_MS);
@@ -472,7 +472,7 @@ mod tests {
         // 1. Relay the handshake (client → server) through the conditioner.
         pump_client_to_server(&mut server, &mut client, &mut cond);
         assert!(
-            server.is_accepted(CLIENT_ID),
+            server.is_participating(CLIENT_ID),
             "handshake must complete over the conditioned relay before snapshots flow"
         );
 
@@ -568,7 +568,7 @@ mod tests {
         let mut cond = PacketConditioner::new(LinkConfig::perfect());
 
         pump_client_to_server(&mut server, &mut client, &mut cond);
-        assert!(server.is_accepted(CLIENT_ID));
+        assert!(server.is_participating(CLIENT_ID));
 
         let snapshot = sample_snapshot();
         assert!(server.send_snapshot(CLIENT_ID, wire::encode(&snapshot)));

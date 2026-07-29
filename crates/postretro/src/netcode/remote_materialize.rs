@@ -130,10 +130,8 @@ pub(super) fn update_active_weapon_attachment(
 
 /// Materialize the descriptor-backed presentation for a `local_player` baseline this
 /// snapshot armed (M15 Phase 3 Task 3 + Task 7). `apply_snapshot` spawned the pawn
-/// Transform-only; the descriptor-immutable movement tuning never crosses the wire, so
-/// the client materializes the matching `PlayerMovementComponent` locally from the same
-/// descriptor table both peers share — then the wire mutable subset has a component to
-/// merge onto and prediction/reconciliation light up.
+/// Transform-only; host movement tuning arrives independently on Control, so this
+/// materializes or clears the `PlayerMovementComponent` when both halves meet.
 ///
 /// Defaults to the `"player"` class when the host stamped none (defensive). Must run
 /// BEFORE reconcile (which merges onto the existing component); the underlying helper is
@@ -169,6 +167,10 @@ pub(super) fn materialize_armed_local_pawn(
             rebuild_movement,
         );
     } else {
+        if rebuild_movement {
+            let _ = registry
+                .remove_component::<postretro_foundation::PlayerMovementComponent>(armed.entity_id);
+        }
         log::warn!("[Net] local pawn has no host movement tuning; movement prediction stays inert");
     }
     crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
@@ -705,5 +707,38 @@ mod tests {
                 .unwrap()
         );
         assert!(reg.get_component::<MeshComponent>(id).unwrap().shadow_only);
+    }
+
+    // Regression: a host retune from movement Some to None left the previously
+    // materialized component active on the client.
+    #[test]
+    fn materialize_armed_local_pawn_clears_stale_movement_when_host_tuning_is_none() {
+        let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+        let armed = ArmedLocalPawn {
+            network_id: postretro_net::wire::NetworkId(10),
+            entity_id: id,
+            entity_class: Some("co_op_avatar".to_string()),
+        };
+
+        materialize_armed_local_pawn(
+            &armed,
+            &descriptors,
+            &mut reg,
+            descriptors[0].movement.as_ref(),
+            false,
+        );
+        assert!(
+            reg.has_component_kind(id, ComponentKind::PlayerMovement)
+                .unwrap()
+        );
+
+        materialize_armed_local_pawn(&armed, &descriptors, &mut reg, None, true);
+
+        assert_eq!(
+            reg.has_component_kind(id, ComponentKind::PlayerMovement),
+            Ok(false)
+        );
     }
 }

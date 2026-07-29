@@ -88,6 +88,29 @@ impl ClientWeaponState {
         }
     }
 
+    /// Synchronize the descriptor-derived client prediction carrier with the
+    /// latest host payload. Returns whether prediction history still belongs to
+    /// the same active pawn and may be retained.
+    pub(crate) fn sync_from_host_tuning(
+        state: &mut Option<Self>,
+        pawn: Option<EntityId>,
+        tuning: Option<&crate::netcode::DefaultWeaponFirePayload>,
+    ) -> bool {
+        let (Some(pawn), Some(tuning)) = (pawn, tuning) else {
+            *state = None;
+            return false;
+        };
+        if let Some(state) = state.as_mut().filter(|state| state.pawn == pawn) {
+            state.cooldown_ms = tuning.cooldown_ms;
+            state.fire_mode = tuning.fire_mode;
+            state.resolution = tuning.resolution;
+            state.range = tuning.range;
+            return true;
+        }
+        *state = Some(Self::from_host_tuning(pawn, tuning));
+        false
+    }
+
     #[cfg(test)]
     pub(crate) fn from_local_pawn_descriptor(
         pawn: EntityId,
@@ -952,6 +975,27 @@ mod tests {
             ClientWeaponState::from_local_pawn_descriptor(pawn, "player", &descriptor_table(None))
                 .is_none()
         );
+    }
+
+    // Regression: a host retune from default_weapon Some to None left the
+    // previously seeded client weapon prediction carrier active.
+    #[test]
+    fn client_weapon_state_clears_stale_state_when_host_tuning_is_none() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let tuning = crate::netcode::DefaultWeaponFirePayload {
+            range: 10.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+        };
+        let mut state = Some(ClientWeaponState::from_host_tuning(pawn, &tuning));
+
+        let preserve_prediction_history =
+            ClientWeaponState::sync_from_host_tuning(&mut state, Some(pawn), None);
+
+        assert!(state.is_none());
+        assert!(!preserve_prediction_history);
     }
 
     #[test]

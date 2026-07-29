@@ -5078,34 +5078,32 @@ impl App {
             let netcode::NetEndpoint::Client { replication, .. } = endpoint else {
                 return None;
             };
-            let pawn = replication.local_pawn_entity()?;
-            let (payload, _) = endpoint.client_tuning()?;
-            Some((pawn, payload.default_weapon.clone()))
+            Some((
+                replication.local_pawn_entity(),
+                endpoint
+                    .client_tuning()
+                    .and_then(|(payload, _)| payload.default_weapon.clone()),
+            ))
         });
-        if let Some((pawn, Some(tuning))) = client_host_tuning {
-            self.seed_client_weapon_state(pawn, &tuning);
+        if let Some((pawn, tuning)) = client_host_tuning {
+            self.sync_client_weapon_state(pawn, tuning.as_ref());
         }
     }
 
-    fn seed_client_weapon_state(
+    fn sync_client_weapon_state(
         &mut self,
-        pawn: postretro_entities::EntityId,
-        tuning: &netcode::DefaultWeaponFirePayload,
+        pawn: Option<postretro_entities::EntityId>,
+        tuning: Option<&netcode::DefaultWeaponFirePayload>,
     ) {
-        if let Some(state) = self
-            .client_weapon_state
-            .as_mut()
-            .filter(|state| state.pawn == pawn)
-        {
-            state.cooldown_ms = tuning.cooldown_ms;
-            state.fire_mode = tuning.fire_mode;
-            state.resolution = tuning.resolution;
-            state.range = tuning.range;
-            return;
+        let preserve_prediction_history = weapon::ClientWeaponState::sync_from_host_tuning(
+            &mut self.client_weapon_state,
+            pawn,
+            tuning,
+        );
+        if !preserve_prediction_history {
+            self.client_fire_resolutions.clear();
+            self.client_predicted_shots.clear();
         }
-        self.client_weapon_state = Some(weapon::ClientWeaponState::from_host_tuning(pawn, tuning));
-        self.client_fire_resolutions.clear();
-        self.client_predicted_shots.clear();
     }
 
     fn run_client_fire_path_post_loop(

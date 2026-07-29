@@ -1,6 +1,6 @@
 // Polled, registry-blind renet transport and E15 two-stage control gate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -102,6 +102,7 @@ pub struct NetServer {
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
     pending_lifecycle: Vec<SlotEvent>,
     pending_disconnects: Vec<ClientId>,
+    holding_diagnostic_sent: HashSet<ClientId>,
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
@@ -136,6 +137,7 @@ impl NetServer {
             parity_declarations: HashMap::new(),
             pending_lifecycle: Vec::new(),
             pending_disconnects: Vec::new(),
+            holding_diagnostic_sent: HashSet::new(),
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
@@ -161,10 +163,7 @@ impl NetServer {
 
     pub fn set_mod_digest(&mut self, digest: Option<[u8; 32]>) {
         self.mod_digest = digest;
-        // Parity deliberately queues until its first required source exists.
-        if self.mod_digest.is_some() {
-            let _ = self.reevaluate_parity(None);
-        }
+        let _ = self.reevaluate_parity(None);
     }
 
     pub fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
@@ -209,11 +208,13 @@ impl NetServer {
     }
 
     pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
-        self.apply_pending_disconnects();
         self.server.update(dt);
         self.transport.update(dt, &mut self.server)?;
         self.collect_server_events();
+        self.apply_pending_disconnects();
+        self.discard_ineligible_input();
         let handshakes = self.process_control_messages();
+        self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         self.transport.send_packets(&mut self.server);
         Ok(ServerPoll {
@@ -223,8 +224,34 @@ impl NetServer {
     }
 
     fn apply_pending_disconnects(&mut self) {
+        let mut waiting = Vec::new();
         for client_id in std::mem::take(&mut self.pending_disconnects) {
-            self.server.disconnect(client_id);
+            if !self.server.is_connected(client_id) {
+                continue;
+            }
+            if self
+                .server
+                .channel_available_memory(client_id, Channel::Control)
+                == CHANNEL_MEMORY_BYTES
+            {
+                self.server.disconnect(client_id);
+            } else {
+                waiting.push(client_id);
+            }
+        }
+        self.pending_disconnects = waiting;
+    }
+
+    fn discard_ineligible_input(&mut self) {
+        for client_id in self.server.clients_id() {
+            if self.is_participating(client_id) {
+                continue;
+            }
+            while self
+                .server
+                .receive_message(client_id, Channel::Input)
+                .is_some()
+            {}
         }
     }
 
@@ -317,12 +344,7 @@ impl NetServer {
                         if let Some(catalog_id) = self.relevel_catalog_id.clone() {
                             self.send_relevel(client_id, &catalog_id);
                         }
-                        if self.mod_digest.is_some() {
-                            if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
-                                self.send_divergence(client_id, cause.clone());
-                                outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
-                            }
-                        } else {
+                        if self.mod_digest.is_none() {
                             break;
                         }
                     }
@@ -333,10 +355,17 @@ impl NetServer {
                         }
                         let was_participating = self.is_participating(client_id);
                         if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
-                            if !was_participating {
+                            let report_hold = if was_participating {
+                                true
+                            } else if self.holding_diagnostic_sent.insert(client_id) {
                                 self.send_divergence(client_id, cause.clone());
+                                true
+                            } else {
+                                false
+                            };
+                            if report_hold {
+                                outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
                             }
-                            outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
                         }
                     }
                 }
@@ -355,13 +384,16 @@ impl NetServer {
                 DivergenceReason::Closing(cause),
             )),
         );
-        let _ = self.close_slot(client_id, CloseCause::Timeout);
+        if let Some(event) = self.close_slot(client_id, CloseCause::Timeout) {
+            self.pending_lifecycle.push(event);
+        }
         if !self.pending_disconnects.contains(&client_id) {
             self.pending_disconnects.push(client_id);
         }
     }
 
     fn send_divergence(&mut self, client_id: ClientId, cause: HoldingCause) {
+        self.holding_diagnostic_sent.insert(client_id);
         self.send_control(
             client_id,
             wire::encode(&ServerControlMessage::Divergence(
@@ -408,6 +440,7 @@ impl NetServer {
             match cause {
                 None => {
                     if let Some(event) = self.slots.participate(client_id) {
+                        self.holding_diagnostic_sent.remove(&client_id);
                         self.pending_lifecycle.push(event);
                     }
                 }
@@ -429,6 +462,7 @@ impl NetServer {
 
     fn close_slot(&mut self, client_id: ClientId, cause: CloseCause) -> Option<SlotEvent> {
         self.parity_declarations.remove(&client_id);
+        self.holding_diagnostic_sent.remove(&client_id);
         self.slots.close(client_id, cause)
     }
 
@@ -502,6 +536,13 @@ impl NetServer {
         messages
     }
 
+    #[cfg(test)]
+    fn input_is_empty(&mut self, client_id: ClientId) -> bool {
+        self.server
+            .receive_message(client_id, Channel::Input)
+            .is_none()
+    }
+
     /// Control may be sent to an admitted/closed slot to deliver a hold/reject
     /// diagnostic before socket teardown. Payload semantics remain engine-owned.
     pub fn send_control(&mut self, client_id: ClientId, payload: Vec<u8>) {
@@ -543,9 +584,11 @@ impl NetServer {
     }
 
     pub fn poll_handshakes(&mut self) -> ServerPoll {
-        self.apply_pending_disconnects();
         self.collect_server_events();
+        self.apply_pending_disconnects();
+        self.discard_ineligible_input();
         let handshakes = self.process_control_messages();
+        self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         ServerPoll {
             handshakes,
@@ -740,16 +783,29 @@ impl NetClient {
     /// payloads are isolated to this message: later reliable controls remain
     /// deliverable and the engine never needs to guess an untagged payload type.
     pub fn drain_control(&mut self) -> Vec<ServerControlMessage> {
-        drain_client_channel(&mut self.client, Channel::Control)
-            .into_iter()
-            .filter_map(|bytes| match wire::decode(&bytes) {
-                Ok(message) => Some(message),
-                Err(err) => {
-                    log::warn!("[Net] dropping malformed server Control message: {err}");
-                    None
-                }
-            })
-            .collect()
+        let messages: Vec<ServerControlMessage> =
+            drain_client_channel(&mut self.client, Channel::Control)
+                .into_iter()
+                .filter_map(|bytes| match wire::decode(&bytes) {
+                    Ok(message) => Some(message),
+                    Err(err) => {
+                        log::warn!("[Net] dropping malformed server Control message: {err}");
+                        None
+                    }
+                })
+                .collect();
+        if messages.iter().any(|message| {
+            matches!(
+                message,
+                ServerControlMessage::Divergence(DivergenceReason::Holding(_))
+            )
+        }) {
+            // Snapshot and Control are separate channels. Discard snapshots that
+            // were already queued when a hold arrived so the engine cannot restore
+            // state between the hold diagnostic and its registry cleanup.
+            let _ = drain_client_channel(&mut self.client, Channel::Snapshot);
+        }
+        messages
     }
 
     pub fn packets_to_send(&mut self) -> Vec<Vec<u8>> {
@@ -820,6 +876,37 @@ mod tests {
         }
     }
 
+    fn matching_relay_pair() -> (NetServer, NetClient) {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        (server, client)
+    }
+
+    fn participate_relay_pair() -> (NetServer, NetClient) {
+        let (mut server, mut client) = matching_relay_pair();
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            poll.handshakes,
+            vec![HandshakeOutcome::Admitted {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+        assert!(server.is_participating(RELAY_CLIENT_ID));
+        (server, client)
+    }
+
     #[test]
     fn parity_precedence_reports_mod_before_level() {
         let declaration = ParityDeclaration {
@@ -830,6 +917,194 @@ mod tests {
             parity_cause(Some([1; 32]), None, Some(&declaration)),
             Some(HoldingCause::ModDigest { .. })
         ));
+    }
+
+    // Regression: evaluating admission before the next ordered parity message
+    // emitted a transient HostLevelAbsent diagnostic on a normal join.
+    #[test]
+    fn ordered_admission_then_matching_parity_has_no_transient_hold() {
+        let (mut server, mut client) = participate_relay_pair();
+
+        relay_server_to_client(&mut server, &mut client);
+        assert!(
+            client.drain_control().is_empty(),
+            "matching admission and parity must not emit a holding diagnostic"
+        );
+    }
+
+    // Regression: admitted Input was left queued until promotion, risking reliable
+    // channel overflow and replaying stale traffic into the simulation.
+    #[test]
+    fn held_input_is_discarded_on_every_server_poll() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            server.slot_state(RELAY_CLIENT_ID),
+            Some(SlotState::Admitted)
+        );
+        assert!(matches!(
+            poll.handshakes.as_slice(),
+            [
+                HandshakeOutcome::Admitted { .. },
+                HandshakeOutcome::ParityHeld {
+                    cause: HoldingCause::HostLevelAbsent,
+                    ..
+                }
+            ]
+        ));
+
+        for sample_id in 0..64 {
+            client.send_input(wire::encode(&crate::wire::ClientMessage::TimeSync(
+                crate::timesync::TimeSyncRequest {
+                    sample_id,
+                    client_send_tick: sample_id,
+                    client_send_time_us: u64::from(sample_id),
+                },
+            )));
+            relay_client_to_server(&mut client, &mut server);
+            let _ = server.poll_handshakes();
+            assert!(
+                server.input_is_empty(RELAY_CLIENT_ID),
+                "held traffic from poll {sample_id} must not reach simulation"
+            );
+        }
+    }
+
+    // Regression: clearing the host digest skipped predicate re-evaluation and
+    // left a slot participating against an incomplete installed triple.
+    #[test]
+    fn clearing_mod_digest_demotes_participating_slot() {
+        let (mut server, _client) = participate_relay_pair();
+
+        server.set_mod_digest(None);
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            server.slot_state(RELAY_CLIENT_ID),
+            Some(SlotState::Admitted)
+        );
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Demoted {
+                client_id: RELAY_CLIENT_ID,
+                cause: HoldingCause::HostLevelAbsent,
+            }]
+        );
+    }
+
+    // Regression: reject closed a participating slot but discarded the close edge,
+    // leaking every host table cleaned through SlotEvent.
+    #[test]
+    fn malformed_control_from_participant_surfaces_one_cleanup_event() {
+        let (mut server, mut client) = participate_relay_pair();
+        client.client.send_message(Channel::Control, Vec::new());
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert!(matches!(
+            poll.handshakes.as_slice(),
+            [HandshakeOutcome::Rejected { .. }]
+        ));
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Closed {
+                client_id: RELAY_CLIENT_ID,
+                cause: CloseCause::Timeout,
+            }]
+        );
+        assert!(server.poll_handshakes().lifecycle.is_empty());
+    }
+
+    // Regression: admission rejection disconnected after one send attempt, so one
+    // lost datagram erased the typed cause.
+    #[test]
+    fn admission_rejection_waits_for_control_ack_before_disconnect() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.host".to_string(), "1".to_string());
+        client.set_mod_identity("postretro.client".to_string(), "1".to_string());
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        let cause = match poll.handshakes.as_slice() {
+            [HandshakeOutcome::Rejected { cause, .. }] => cause.clone(),
+            other => panic!("expected rejection, got {other:?}"),
+        };
+        assert!(
+            !server.connected_clients().is_empty(),
+            "closed slot retains its transport until the reliable cause is acked"
+        );
+
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            client.drain_control(),
+            vec![ServerControlMessage::Divergence(DivergenceReason::Closing(
+                cause
+            ))]
+        );
+        relay_client_to_server(&mut client, &mut server);
+        let _ = server.poll_handshakes();
+        assert!(
+            server.connected_clients().is_empty(),
+            "transport closes only after the rejection message is acknowledged"
+        );
+    }
+
+    // Regression: each repeated held declaration enqueued another reliable
+    // diagnostic, allowing a parity flood to exhaust Control memory.
+    #[test]
+    fn held_parity_flood_emits_one_diagnostic_per_hold_epoch() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+
+        relay_client_to_server(&mut client, &mut server);
+        let _ = server.poll_handshakes();
+        for index in 0..64 {
+            client.set_level_parity(Some((format!("wrong-{index}"), [index as u8; 32])));
+            relay_client_to_server(&mut client, &mut server);
+            let _ = server.poll_handshakes();
+        }
+
+        relay_server_to_client(&mut server, &mut client);
+        let controls = client.drain_control();
+        assert_eq!(
+            controls
+                .iter()
+                .filter(|message| matches!(
+                    message,
+                    ServerControlMessage::Divergence(DivergenceReason::Holding(_))
+                ))
+                .count(),
+            1
+        );
+    }
+
+    // Regression: a Snapshot queued before a hold could be applied after Control
+    // announced demotion, restoring entities and prediction while held.
+    #[test]
+    fn holding_control_discards_snapshots_already_queued_on_client() {
+        let (mut server, mut client) = participate_relay_pair();
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![1, 2, 3]));
+        server.send_divergence(RELAY_CLIENT_ID, HoldingCause::HostLevelAbsent);
+        relay_server_to_client(&mut server, &mut client);
+
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert!(
+            client.drain_snapshots().is_empty(),
+            "the pre-hold snapshot must not survive for engine apply"
+        );
     }
 
     #[test]

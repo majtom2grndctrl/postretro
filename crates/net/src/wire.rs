@@ -153,10 +153,11 @@ pub enum WireGroundRef {
 ///
 /// Deliberately **not** a copy of the component struct: descriptor-immutable
 /// movement params, `view_feel`, `standing_*`, `stuck_stop_*`, and the IR-bound
-/// `dash_programs` are local data on both peers and must never be authoritative
-/// wire state. Only the fields interpolation and later prediction reconciliation
-/// need are mirrored here. Source field types are preserved: ability counters and
-/// `air_ticks` are `u32`; live timers are `f32`.
+/// `dash_programs` stay out of this typed tick-state mirror. The local descriptor
+/// is a non-authoritative immutable mirror; E15 sends host-authoritative resolved
+/// tuning separately as opaque Control payload bytes. Only the fields interpolation
+/// and later prediction reconciliation need are mirrored here. Source field types
+/// are preserved: ability counters and `air_ticks` are `u32`; live timers are `f32`.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub struct WirePlayerMovementState {
     pub velocity: [f32; 3],

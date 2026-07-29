@@ -592,7 +592,8 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                 if let Some(session) = app.session.as_mut()
                     && let Some(endpoint) = session.net_endpoint.as_mut()
                 {
-                    endpoint.install_tuning_payload(&bytes);
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.install_tuning_payload(&bytes, &mut registry);
                 }
             }
         }
@@ -793,8 +794,8 @@ impl NetEndpoint {
         else {
             return;
         };
-        **allocator = NetworkIdAllocator::new();
-        **replication = ServerReplication::new();
+        allocator.reset_for_level_unload();
+        replication.reset_for_level_unload();
         *replicable = ReplicableSet::new();
         *slot_pawns = SlotPawns::new();
         *command_queues = HostCommandQueues::new();
@@ -841,21 +842,30 @@ impl NetEndpoint {
         *applied_movement_tuning_generation = 0;
     }
 
-    fn install_tuning_payload(&mut self, bytes: &[u8]) {
+    fn install_tuning_payload(&mut self, bytes: &[u8], registry: &mut EntityRegistry) {
         let Self::Client {
+            replication,
             tuning,
             tuning_generation,
+            applied_movement_tuning_generation,
             ..
         } = self
         else {
             return;
         };
-        match decode_tuning_payload(bytes) {
-            Ok(payload) => {
-                *tuning = Some(payload);
-                *tuning_generation = tuning_generation.wrapping_add(1);
+        let result = replace_client_tuning(tuning, tuning_generation, bytes);
+        if tuning
+            .as_ref()
+            .and_then(|payload| payload.movement.as_ref())
+            .is_none()
+        {
+            if let Some(pawn) = replication.local_pawn_entity() {
+                let _ = registry.remove_component::<PlayerMovementComponent>(pawn);
             }
-            Err(error) => log::error!("[Net] tuning payload epoch/decode failure: {error}"),
+            *applied_movement_tuning_generation = *tuning_generation;
+        }
+        if let Err(error) = result {
+            log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }
     }
 
@@ -869,6 +879,19 @@ impl NetEndpoint {
             _ => None,
         }
     }
+}
+
+fn replace_client_tuning(
+    tuning: &mut Option<TuningPayload>,
+    tuning_generation: &mut u64,
+    bytes: &[u8],
+) -> Result<(), tuning_payload::TuningPayloadError> {
+    // Invalidate first. A bad replacement must never leave the last accepted
+    // descriptor-derived prediction state live.
+    *tuning = None;
+    *tuning_generation = tuning_generation.wrapping_add(1);
+    *tuning = Some(decode_tuning_payload(bytes)?);
+    Ok(())
 }
 
 fn now() -> Duration {
@@ -1066,6 +1089,11 @@ impl NetworkIdAllocator {
             map: HashMap::new(),
             reverse: HashMap::new(),
         }
+    }
+
+    fn reset_for_level_unload(&mut self) {
+        self.map.clear();
+        self.reverse.clear();
     }
 
     /// Stamp `id` with its stable `NetworkId`, allocating a fresh one on first
@@ -2836,6 +2864,63 @@ mod tests {
         }
     }
 
+    fn install_test_tuning(tuning: &mut Option<TuningPayload>, generation: &mut u64) -> Vec<u8> {
+        let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
+            host_player_descriptor().movement,
+            Some(DefaultWeaponFirePayload {
+                range: 12.0,
+                cooldown_ms: 90.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+            }),
+        ));
+        replace_client_tuning(tuning, generation, &encoded).expect("valid tuning installs");
+        encoded
+    }
+
+    // Regression: a malformed replacement retained the previously accepted
+    // payload and generation, leaving descriptor-derived prediction live.
+    #[test]
+    fn malformed_tuning_replacement_invalidates_previous_install() {
+        let mut tuning = None;
+        let mut generation = 0;
+        install_test_tuning(&mut tuning, &mut generation);
+        let accepted_generation = generation;
+
+        let result = replace_client_tuning(&mut tuning, &mut generation, b"not json");
+
+        assert!(matches!(
+            result,
+            Err(tuning_payload::TuningPayloadError::Malformed { .. })
+        ));
+        assert!(tuning.is_none());
+        assert_ne!(generation, accepted_generation);
+    }
+
+    // Regression: an unknown-epoch replacement retained the previously
+    // accepted payload and descriptor-derived prediction state.
+    #[test]
+    fn unknown_epoch_tuning_replacement_invalidates_previous_install() {
+        let mut tuning = None;
+        let mut generation = 0;
+        let encoded = install_test_tuning(&mut tuning, &mut generation);
+        let accepted_generation = generation;
+        let unknown_epoch = String::from_utf8(encoded).unwrap().replacen(
+            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH),
+            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH + 1),
+            1,
+        );
+
+        let result = replace_client_tuning(&mut tuning, &mut generation, unknown_epoch.as_bytes());
+
+        assert!(matches!(
+            result,
+            Err(tuning_payload::TuningPayloadError::EpochMismatch { .. })
+        ));
+        assert!(tuning.is_none());
+        assert_ne!(generation, accepted_generation);
+    }
+
     fn snapshot_with_record(record: EntityRecord) -> SnapshotMessage {
         SnapshotMessage {
             sequence: 1,
@@ -2895,6 +2980,36 @@ mod tests {
                 .position,
             Vec3::new(3.0, 2.0, 1.0),
             "world-less transport does not apply snapshots or simulate"
+        );
+    }
+
+    // Regression: host level reset reconstructed the allocator and reused old
+    // NetworkIds while the transport connection survived.
+    #[test]
+    fn host_level_reset_preserves_session_monotonic_network_ids() {
+        let mut registry = EntityRegistry::new();
+        let old_entity = registry.spawn(Transform::default());
+        let new_entity = registry.spawn(Transform::default());
+        let mut endpoint = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+
+        let old_network_id = match &mut endpoint {
+            NetEndpoint::Host { allocator, .. } => allocator.stamp(old_entity),
+            NetEndpoint::Client { .. } => unreachable!("constructed host"),
+        };
+        endpoint.reset_level_scoped_host_state();
+        let new_network_id = match &mut endpoint {
+            NetEndpoint::Host { allocator, .. } => {
+                assert!(!allocator.maps_entity(old_entity));
+                allocator.stamp(new_entity)
+            }
+            NetEndpoint::Client { .. } => unreachable!("constructed host"),
+        };
+
+        assert!(
+            new_network_id.0 > old_network_id.0,
+            "NetworkIds remain session-monotonic across level lifetime"
         );
     }
 

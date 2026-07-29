@@ -324,10 +324,10 @@ Rivals are listed in Direction and argued in `research.md`.
   apply, no state-crossing detection, no simulation tick; there is no world outside `Running`.
   Frontend coverage is what makes the headline case — a client admitted before any level installs
   — reachable at all.
-- **A reject sends its reason before disconnecting.** The slot closes immediately so no further
-  traffic is honored; only the socket teardown defers one poll, letting the reliable message
-  flush. Without it a player on the wrong mod cannot distinguish a version mismatch from an
-  unreachable host.
+- **A reject delivers its reason before disconnecting.** The slot closes immediately so no
+  further traffic is honored; socket teardown waits until reliable Control is acknowledged.
+  Without it a player on the wrong mod cannot distinguish a version mismatch from an unreachable
+  host.
 - **Divergence reasons become a typed enum over two closing causes and five holding ones** —
   protocol and mod id close; mod digest, host level absent, level absent, level identity, and
   level digest hold. One enum, so a single `Display` serves every diagnostic; the closing and
@@ -970,9 +970,8 @@ pipeline.
 participating only. `NetServer` has no server→client Control send path today — `send_snapshot` is
 Snapshot and `send_input` is Input — so name the new one `NetServer::send_control`. On an
 **admission** reject — protocol or mod id — enqueue the typed reason on Control and close the
-slot immediately, but defer the socket disconnect to the next poll via a small pending-disconnect
-list on `NetServer`. Delivery is best-effort, not guaranteed: `RELIABLE_RESEND` is 300 ms, so at
-a 16 ms frame the reason gets exactly one datagram and a single drop loses it. A **parity**
+slot immediately, but retain the transport until the reliable message is acknowledged via a
+small pending-disconnect list on `NetServer`. A **parity**
 mismatch is not a reject: enqueue the cause as a diagnostic and leave the slot at `Admitted`,
 unclosed — every parity value becomes true again at the next matching install or commit.
 
@@ -1769,7 +1768,7 @@ Task 5's and Task 6's lists, so Task 7 is a fourth `main.rs` toucher rather than
 | The replicated-slot schema describes declarations both peers are still running | Task 7 (reset on level unload and unconditionally on every `Committed` staged-manifest result) | `get_or_insert_with`-cached with no reset today, host and client alike, so a staged reload leaves two peers comparing a fingerprint over declarations neither still has | AC-BOOT-2, AC-BOOT-3 |
 | A connection's id survives a level change | Task 3 (demote, never close), Task 5 (world-less frames stay polled) | Later specs key player identity off a connection that must not be re-minted | AC-LEVEL-3, AC-BOOT-1 |
 | Admission and parity queue independently until their source installs | Task 3 (separate `Option`s, separate early returns, both roles) | Coupling them re-creates the ordering inversion this spec removes | AC-GATE-1, AC-GATE-2 |
-| A peer refused at admission learns the cause before teardown | Task 3 (deferred disconnect send, best-effort), Task 4 (client-side delivery through the router's `Closing` arm) | A future reject path that disconnects inline drops the message entirely. The guarantee is not real until Task 4 lands: Task 3 only enqueues the reason and defers the teardown, and nothing reads it client-side until the router exists | AC-GATE-3, AC-GATE-6, AC-GATE-7 |
+| A peer refused at admission learns the cause before teardown | Task 3 (teardown waits for reliable Control acknowledgement), Task 4 (client-side delivery through the router's `Closing` arm) | A future reject path that disconnects inline drops the message entirely. Task 3 gates teardown on acknowledgement; Task 4's router delivers the typed cause client-side | AC-GATE-3, AC-GATE-6, AC-GATE-7 |
 | No content divergence ever closes a connection | Task 3 (hold at admitted, closing and holding causes separated at the type level; inbound drained for held slots) | Any later content check that rejects instead of holding re-creates the disconnect this spec removes, and races an in-flight parity message against a just-installed level. The subtler threat is not a check at all: a held slot whose inbound channel stops being drained overflows its reliable-channel budget and is disconnected by the transport, so the invariant falls to a path that never decided anything | AC-GATE-4, AC-GATE-8, AC-GATE-10, AC-LIFECYCLE-1, AC-DIGEST-9, AC-LEVEL-7 |
 | A relevel never restarts the load it names | Task 4 (active/in-flight suppression) | Late-join and transition both send; a third sender must suppress too | AC-LEVEL-5, AC-LEVEL-6 |
 

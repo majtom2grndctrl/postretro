@@ -6,7 +6,7 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
 /// E15's tagged-control vocabulary.
 pub const PROTOCOL_ID: u32 = 0x_5052_4C35; // "PRL5"
-/// E15's admission/parity envelope and slot-state layout.
+/// E15's admission/parity envelopes and bitcode wire-type layouts.
 pub const WIRE_VERSION: u32 = 14;
 
 #[must_use]

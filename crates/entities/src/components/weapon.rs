@@ -395,7 +395,9 @@ mod tests {
         assert_eq!(component.magazine, 4);
         assert_eq!(component.state_remaining_ms, 300);
         assert_eq!(component.state_total_ms, 800);
-        assert_eq!(component.reload_status(), (0.625, true));
+        let (progress, is_reloading) = component.reload_status();
+        assert!((progress - 0.625).abs() < f32::EPSILON);
+        assert!(is_reloading);
     }
 
     #[test]
@@ -405,18 +407,26 @@ mod tests {
         component.state_remaining_ms = 600;
         component.state_total_ms = 800;
         component.state = WieldableState::Reloading;
-        assert_eq!(component.reload_status(), (0.25, true));
+        let (progress, is_reloading) = component.reload_status();
+        assert!((progress - 0.25).abs() < f32::EPSILON);
+        assert!(is_reloading);
 
         component.reload_feedback = Some(ReloadFeedback::Started);
-        assert_eq!(component.reload_status(), (0.0, true));
+        let (progress, is_reloading) = component.reload_status();
+        assert!((progress - 0.0).abs() < f32::EPSILON);
+        assert!(is_reloading);
         component.reload_feedback = Some(ReloadFeedback::Completed);
         component.state_remaining_ms = 0;
-        assert_eq!(component.reload_status(), (1.0, true));
+        let (progress, is_reloading) = component.reload_status();
+        assert!((progress - 1.0).abs() < f32::EPSILON);
+        assert!(is_reloading);
 
         component.ammo = None;
         component.reload_feedback = None;
         component.state_remaining_ms = 400;
-        assert_eq!(component.reload_status(), (0.5, true));
+        let (progress, is_reloading) = component.reload_status();
+        assert!((progress - 0.5).abs() < f32::EPSILON);
+        assert!(is_reloading);
     }
 
     #[test]

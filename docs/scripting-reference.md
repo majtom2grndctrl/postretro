@@ -250,8 +250,9 @@ reload timing without reading raw descriptor data.
 Weapon reload outcomes can fire the reaction event names `reload_started`,
 `reload_shell_loaded`, `reload_completed`, `reload_cancelled`,
 `reload_blocked_full`, and `reload_blocked_empty`. A per-shell loop emits one
-`reload_started`, one `reload_shell_loaded` for each credited shell, and either
-`reload_completed` or `reload_cancelled` when the loop ends.
+`reload_started` and one `reload_shell_loaded` for each credited shell. It ends
+with `reload_completed` or `reload_cancelled`, except when its pawn is lost as
+a step expires: the loop silently returns to idle with neither terminal event.
 
 ---
 

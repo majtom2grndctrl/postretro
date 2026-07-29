@@ -343,7 +343,7 @@ fn resolve_expired_state(
             break;
         };
         if restart_timed_step(component, duration_ms, overshoot_ms) {
-            overshoot_ms -= f64::from(duration_ms);
+            overshoot_ms = (overshoot_ms - f64::from(duration_ms)).max(0.0);
             continue;
         }
         break;
@@ -356,16 +356,15 @@ fn resolve_expired_state(
 
 /// Restart a repeated timed step. The carry stores only the fractional
 /// remainder; a whole-step overshoot leaves the timer expired so the caller can
-/// credit the next shell in this same tick. `>=` keeps an exact boundary from
-/// deferring a shell one fixed tick.
+/// credit the next shell in this same tick. The shared boundary comparison keeps
+/// an exact f32-authored duration from deferring a shell one fixed tick.
 fn restart_timed_step(
     component: &mut WeaponComponent,
     duration_ms: u32,
     overshoot_ms: f64,
 ) -> bool {
-    let duration = f64::from(duration_ms);
     component.state_total_ms = duration_ms;
-    if overshoot_ms >= duration {
+    if super::reload::reaches_millisecond_boundary(overshoot_ms, duration_ms) {
         component.state_remaining_ms = 0;
         component.state_elapsed_sub_ms = 0.0;
         return true;
@@ -1725,6 +1724,32 @@ mod tests {
     }
 
     #[test]
+    fn reload_press_with_absent_reserve_reports_empty_without_reattaching_one() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        registry
+            .remove_component::<AmmoReserve>(pawn)
+            .expect("test removes the reserve before reload entry");
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::BlockedEmpty,
+            }]
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert!(registry.get_component::<AmmoReserve>(pawn).is_err());
+    }
+
+    #[test]
     fn fresh_reload_press_mid_reload_is_silent_and_does_not_restart_timer() {
         let mut registry = EntityRegistry::new();
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 20, 1000, 2);
@@ -1981,6 +2006,57 @@ mod tests {
         );
     }
 
+    // Regression: a widened exact whole-step overshoot deferred a shell one tick.
+    #[test]
+    fn exact_20ms_start_tick_credits_two_10ms_shells_and_still_blocks_fire() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 10, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+
+        let result = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(true, true),
+            0.02,
+        );
+
+        assert_eq!(result.authorization, WeaponFireAuthorization::Rejected);
+        assert_eq!(
+            result.deliveries,
+            vec![
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Started,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+            ]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::ShellLoading);
+        assert_eq!(component.state_remaining_ms, 10);
+        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+        assert_eq!(component.magazine, 4);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            6
+        );
+    }
+
     #[test]
     fn per_shell_expiry_rechecks_style_and_missing_tuning_before_the_next_step() {
         let mut registry = EntityRegistry::new();
@@ -2027,6 +2103,38 @@ mod tests {
         assert_eq!(component.state, WieldableState::Idle);
         assert_eq!(component.state_remaining_ms, 0);
         assert_eq!(component.state_elapsed_sub_ms, 0.0);
+    }
+
+    #[test]
+    fn atomic_expiry_without_live_ammo_tuning_completes_without_transfer() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.ammo = None;
+        registry.set_component(weapon, component).unwrap();
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Completed { transferred: 0 },
+            }]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 2);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            8
+        );
     }
 
     #[test]
@@ -2210,6 +2318,60 @@ mod tests {
     }
 
     #[test]
+    fn releasing_held_reload_after_shell_cancel_leaves_loaded_rounds_idle() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(false, false),
+            0.1,
+        );
+
+        let cancelled = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(true, true),
+            0.0,
+        );
+        assert_eq!(cancelled.authorization, WeaponFireAuthorization::Accepted);
+        assert_eq!(
+            cancelled.deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Cancelled { transferred: 1 },
+            }]
+        );
+
+        let released = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.0,
+        );
+        assert!(released.deliveries.is_empty());
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 2);
+        assert!(!component.reload_press_consumed);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            7
+        );
+    }
+
+    #[test]
     fn shell_expiry_then_fire_cancels_only_the_restarted_step() {
         let mut registry = EntityRegistry::new();
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
@@ -2386,6 +2548,33 @@ mod tests {
                 .unwrap()
                 .available("bullets.light"),
             8
+        );
+    }
+
+    #[test]
+    fn shell_expiry_with_absent_reserve_completes_without_reattaching_one() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+        registry
+            .remove_component::<AmmoReserve>(pawn)
+            .expect("test removes the reserve after reload entry");
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Completed { transferred: 0 },
+            }]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 2);
+        assert!(
+            registry.get_component::<AmmoReserve>(pawn).is_err(),
+            "expiry must not materialize an absent pawn reserve"
         );
     }
 
@@ -2691,6 +2880,40 @@ mod tests {
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.state, WieldableState::Idle);
         assert_eq!(component.magazine, 1);
+    }
+
+    #[test]
+    fn remote_weapon_without_shot_id_cannot_cancel_per_shell_reload() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+            (pawn, weapon)
+        };
+        let _ = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 1, false, true)],
+        );
+        let mut command = remote_command(pawn, Some(weapon), 42, 2, true, false);
+        command.shot_id = None;
+
+        let refused = run_remote_only_tick(registry.clone(), &[command]);
+
+        assert!(refused.authorized_shots.is_empty());
+        assert!(refused.weapon.is_empty());
+        assert!(refused.reload_deliveries.is_empty());
+        let registry = registry.borrow();
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::ShellLoading);
+        assert_eq!(component.magazine, 2);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            8
+        );
     }
 
     #[test]

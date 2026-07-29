@@ -160,6 +160,38 @@ use postretro_visibility::{
 /// the remainder spent decaying back to rest. See `dispatch_system_commands`.
 const VIGNETTE_RISE_FRACTION: f32 = 0.2;
 
+#[derive(Debug, Clone, Copy)]
+enum PendingWeaponScriptEvent {
+    Weapon(&'static str),
+    Reload(sim::ReloadDelivery),
+}
+
+impl PendingWeaponScriptEvent {
+    const fn event_name(self) -> &'static str {
+        match self {
+            Self::Weapon(event_name) => event_name,
+            Self::Reload(delivery) => delivery.outcome.event_name(),
+        }
+    }
+}
+
+fn append_tick_weapon_script_events(
+    pending: &mut Vec<PendingWeaponScriptEvent>,
+    weapon_events: Vec<&'static str>,
+    reload_deliveries: Vec<sim::ReloadDelivery>,
+) {
+    pending.extend(
+        weapon_events
+            .into_iter()
+            .map(PendingWeaponScriptEvent::Weapon),
+    );
+    pending.extend(
+        reload_deliveries
+            .into_iter()
+            .map(PendingWeaponScriptEvent::Reload),
+    );
+}
+
 fn staged_ui_commit_payload(
     result: &StagedManifestBuildResult,
     outcome: &StagedManifestCommitOutcome,
@@ -2071,11 +2103,11 @@ impl ApplicationHandler for App {
                 // Accumulate app-side residual and post-tick events across all ticks;
                 // drain after the loop against fully-settled world state. Direct trigger
                 // consequential work instead executes and rechecks inside each fixed tick.
+                // Weapon and reload events share one stream so catch-up ticks stay ordered.
                 // See: context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
-                let mut pending_weapon_events: Vec<&'static str> = Vec::new();
-                let mut pending_reload_deliveries: Vec<sim::ReloadDelivery> = Vec::new();
+                let mut pending_weapon_script_events = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 // Death-event names accumulate here and drain through the
@@ -2358,8 +2390,11 @@ impl ApplicationHandler for App {
                         }
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
-                        pending_weapon_events.extend(tick_events.weapon);
-                        pending_reload_deliveries.extend(tick_events.reload_deliveries);
+                        append_tick_weapon_script_events(
+                            &mut pending_weapon_script_events,
+                            tick_events.weapon,
+                            tick_events.reload_deliveries,
+                        );
                         pending_death_events.extend(tick_events.death);
                         pending_trigger_residuals.extend(tick_events.trigger_residuals);
 
@@ -2405,7 +2440,7 @@ impl ApplicationHandler for App {
                     &sent_client_fire_commands,
                     frame_dt,
                     frame_anim_time,
-                    &mut pending_weapon_events,
+                    &mut pending_weapon_script_events,
                 );
 
                 // Drain collected post-tick events after all ticks complete so
@@ -2416,14 +2451,9 @@ impl ApplicationHandler for App {
                 for event_name in &pending_ai_events {
                     let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
-                for event_name in &pending_weapon_events {
-                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
-                }
-                for delivery in &pending_reload_deliveries {
-                    let _ = fire_named_event(
-                        delivery.outcome.event_name(),
-                        &script_ctx.data_registry.borrow(),
-                    );
+                for event in &pending_weapon_script_events {
+                    let _ =
+                        fire_named_event(event.event_name(), &script_ctx.data_registry.borrow());
                 }
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
@@ -5124,7 +5154,7 @@ impl App {
         sent_fire_commands: &[ClientFrameFireCommand],
         frame_dt: f32,
         frame_anim_time: f64,
-        pending_weapon_events: &mut Vec<&'static str>,
+        pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
     ) {
         self.client_fire_resolutions.clear();
         if !self.is_connected_client() {
@@ -5229,7 +5259,7 @@ impl App {
             // single-player weapon-activation ("activate") event. It drains with the
             // batch at the shared `fire_named_event` site; a host reject rolls this
             // shot's `muzzle_fx_visible` state back in reconcile.
-            pending_weapon_events.push("activate");
+            pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon("activate"));
             let _ = netcode::client_send_hit_declaration(
                 self.session
                     .as_mut()
@@ -7220,6 +7250,41 @@ mod tests {
         assert_eq!(
             frame_timing.previous_state.position, pushed_states[0],
             "the second push must shift the first tick's camera state into previous_state",
+        );
+    }
+
+    // Regression: separate frame accumulators reordered catch-up weapon and reload events.
+    #[test]
+    fn catch_up_weapon_script_events_preserve_tick_order_and_same_tick_fire_order() {
+        let pawn = postretro_entities::EntityId::from_raw(1);
+        let weapon = postretro_entities::EntityId::from_raw(2);
+        let mut pending = Vec::new();
+
+        append_tick_weapon_script_events(
+            &mut pending,
+            Vec::new(),
+            vec![sim::ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: sim::ReloadOutcome::Started,
+            }],
+        );
+        append_tick_weapon_script_events(
+            &mut pending,
+            vec!["activate"],
+            vec![sim::ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: sim::ReloadOutcome::Cancelled { transferred: 0 },
+            }],
+        );
+
+        assert_eq!(
+            pending
+                .iter()
+                .map(|event| event.event_name())
+                .collect::<Vec<_>>(),
+            vec!["reload_started", "activate", "reload_cancelled"],
         );
     }
 

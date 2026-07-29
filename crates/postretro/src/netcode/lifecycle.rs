@@ -705,10 +705,10 @@ mod tests {
         );
     }
 
-    // Regression sink for fingerprint-driven closes: transport delivers the same
-    // cause-agnostic Closed event, and gameplay must clear every slot-owned domain.
+    // Demotion is the same exit from participation as a close, so gameplay must
+    // clear every slot-owned domain while the transport remains alive.
     #[test]
-    fn descriptor_accept_and_lifecycle_close_clear_all_slot_owned_state() {
+    fn descriptor_accept_and_lifecycle_demotion_clear_all_slot_owned_state() {
         let mut registry = EntityRegistry::new();
         let mut slot_pawns = SlotPawns::new();
         let mut allocator = NetworkIdAllocator::new();
@@ -833,6 +833,7 @@ mod tests {
             .expect("listen-host pawn carries movement presentation state");
         assert!((host_movement.aim_pitch + 0.37).abs() <= 1.0e-6);
 
+        let mut last_sent_tuning = std::collections::HashMap::new();
         crate::netcode::host_handle_lifecycle(
             &mut registry,
             &mut allocator,
@@ -846,9 +847,10 @@ mod tests {
             &mut open_shots,
             &mut pending_hit_declarations,
             &mut weaponless_fire_logged,
-            &[postretro_net::slots::SlotEvent::Closed {
+            &mut last_sent_tuning,
+            &[postretro_net::slots::SlotEvent::Demoted {
                 client_id: CLIENT_A,
-                cause: postretro_net::slots::CloseCause::Disconnect,
+                cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
         );
 

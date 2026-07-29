@@ -12,6 +12,9 @@
 --
 -- ```lua
 -- return defineMod({
+--   name = "MyMod",
+--   id = "example.my-mod",
+--   version = "1.0.0",
 --   -- Entity types are returned from the mod manifest and survive level
 --   -- unload. Use `defineEntity` for a typed construction site at the FFI
 --   -- boundary.
@@ -869,10 +872,12 @@ function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTyp
 end
 
 --- Identity builder for the mod manifest consumed from the chunk return.
---- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
---- `stores`. Pure:
---- no engine side effects until the manifest is returned and validated.
+--- `config.name`, `config.id`, and `config.version` are required. The id gates
+--- multiplayer admission; the version is display-only and never compared. The
+--- first committed id and version remain active across staged reloads. Optional
+--- arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`,
+--- `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine
+--- side effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest
   return config
 end

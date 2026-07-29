@@ -286,6 +286,15 @@ mod tests {
         )
         .expect("client transport");
 
+        // E15 admission is immutable and parity is a separate live predicate.
+        // This relay fixture intentionally installs a complete matching triple.
+        server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+        server.set_mod_digest(Some(static_fingerprint));
+        server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+        client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+        client.set_mod_digest(Some(static_fingerprint));
+        client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+
         server.add_relay_connection(CLIENT_ID);
         client.set_connected();
         (server, client)
@@ -413,7 +422,7 @@ mod tests {
             }
             server.update_connections(RELAY_DT);
             let _ = server.poll_handshakes();
-            if cond.in_flight() == 0 && client.handshake_sent() {
+            if cond.in_flight() == 0 && client.admission_sent() {
                 // One more flush pass to drain anything just queued.
                 cond.enqueue_all(client.packets_to_send());
                 cond.advance(RELAY_DT_MS);
@@ -463,7 +472,7 @@ mod tests {
         // 1. Relay the handshake (client → server) through the conditioner.
         pump_client_to_server(&mut server, &mut client, &mut cond);
         assert!(
-            server.is_accepted(CLIENT_ID),
+            server.is_participating(CLIENT_ID),
             "handshake must complete over the conditioned relay before snapshots flow"
         );
 
@@ -476,7 +485,15 @@ mod tests {
         );
         pump_server_to_client(&mut server, &mut client, &mut cond);
 
-        // 3. The client must receive the snapshot and decode it byte-faithfully.
+        // 3. Runtime drains reliable Control before Snapshot each frame. The
+        // transport-only participation marker arms this snapshot's epoch and
+        // must not escape as an engine Control message.
+        assert!(
+            client.drain_control().is_empty(),
+            "participation marker must remain transport-only"
+        );
+
+        // 4. The client must receive the snapshot and decode it byte-faithfully.
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1, "exactly one snapshot should arrive");
         let decoded: RawSnapshotMessage =
@@ -559,12 +576,16 @@ mod tests {
         let mut cond = PacketConditioner::new(LinkConfig::perfect());
 
         pump_client_to_server(&mut server, &mut client, &mut cond);
-        assert!(server.is_accepted(CLIENT_ID));
+        assert!(server.is_participating(CLIENT_ID));
 
         let snapshot = sample_snapshot();
         assert!(server.send_snapshot(CLIENT_ID, wire::encode(&snapshot)));
         pump_server_to_client(&mut server, &mut client, &mut cond);
 
+        assert!(
+            client.drain_control().is_empty(),
+            "participation marker must remain transport-only"
+        );
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1);
         let decoded: RawSnapshotMessage = wire::decode(&received[0]).expect("decodes");

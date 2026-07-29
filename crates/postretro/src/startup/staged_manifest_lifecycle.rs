@@ -56,7 +56,13 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
-            let committed = matches!(outcome, StagedManifestCommitOutcome::Committed { .. });
+            let committed = match &outcome {
+                StagedManifestCommitOutcome::Committed { .. } => true,
+                StagedManifestCommitOutcome::DiscardedStale { .. }
+                | StagedManifestCommitOutcome::FailedBuild { .. }
+                | StagedManifestCommitOutcome::Rejected { .. }
+                | StagedManifestCommitOutcome::ReleaseNoop => false,
+            };
             if committed {
                 let events = match &result.status {
                     StagedManifestBuildStatus::Built(manifest) => manifest.events.clone(),
@@ -68,6 +74,17 @@ impl App {
                         .scripting
                         .impact_policy_runtime
                         .replace_global_events(events);
+                }
+                if let Some(endpoint) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.net_endpoint.as_mut())
+                {
+                    // Store removal is invisible to reconcile plans, so every
+                    // committed manifest rebuilds the cache rather than trying to
+                    // detect only additions. Host participants are re-registered
+                    // against the fresh tracker so their next records are baselines.
+                    endpoint.reset_state_slot_schema();
                 }
             }
             if committed && self.has_installed_level() {
@@ -89,6 +106,9 @@ impl App {
                 self.apply_mod_bloom_render_profile(render_profile);
             }
             self.commit_staged_ui_manifest(&result, &outcome);
+            if committed {
+                self.install_network_mod_content();
+            }
         }
     }
 }
@@ -117,6 +137,8 @@ mod tests {
             mod_root: PathBuf::from("content/dev"),
             status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
                 name: "RenderProfile".to_string(),
+                id: "render-profile".to_string(),
+                version: "1".to_string(),
                 render,
                 entities: Vec::new(),
                 maps: Vec::new(),

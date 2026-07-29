@@ -13,3 +13,4 @@ pub use types::{
     ModRenderProfile, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
     StagedManifestCommitOutcome,
 };
+pub(crate) use types::{validate_mod_manifest_id, validate_mod_manifest_version};

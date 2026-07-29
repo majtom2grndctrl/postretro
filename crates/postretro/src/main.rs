@@ -22,6 +22,7 @@ mod candidate_cull_mirror;
 mod candidate_cull_probes;
 mod collision;
 mod combat_positioning;
+mod content_hash;
 mod frame_timing;
 mod fx;
 mod grant;
@@ -30,6 +31,7 @@ mod impact_effects;
 mod impact_policy;
 mod input;
 mod kinematic_mover;
+mod mod_digest;
 mod movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.
@@ -1366,6 +1368,7 @@ impl ApplicationHandler for App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
+        self.clear_net_level_parity();
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
@@ -1746,11 +1749,14 @@ impl ApplicationHandler for App {
                     self.drain_script_reload_requests();
                 }
 
-                if !self.drive_boot_state_for_redraw(event_loop) {
+                if !self.drive_boot_state_for_redraw(event_loop, frame_dt) {
                     return;
                 }
 
                 if self.boot_state == BootState::Frontend {
+                    // Frontend has no world but is not a peerless state: keep an
+                    // installed endpoint alive before frontend-only game logic.
+                    let _ = self.poll_world_less_transport(frame_dt);
                     if !self.run_frontend_ui_logic(event_loop, frame_dt) {
                         return;
                     }
@@ -3605,6 +3611,74 @@ impl frame_order::ReplicatedStateFrame for App {
 }
 
 impl App {
+    /// Advance a session-owned endpoint on a frame with no installed world.
+    ///
+    /// The endpoint-presence predicate deliberately has no boot-state branch:
+    /// Frontend, Loading, and resumed Splash all use this same path. Its result
+    /// preserves the Task 4 Control-router and Task 7 host-lifecycle
+    /// handoff; this task only opens the bounded transport seam.
+    pub(crate) fn poll_world_less_transport(
+        &mut self,
+        frame_dt: f32,
+    ) -> Option<netcode::WorldLessPoll> {
+        let script_ctx = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())?;
+        let poll = {
+            let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
+            let mut registry = script_ctx.registry.borrow_mut();
+            let poll = endpoint
+                .poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry);
+            endpoint.warn_once_if_mod_identity_missing();
+            poll
+        };
+        if let netcode::WorldLessPoll::Client(controls) = &poll {
+            netcode::client_drain_control(self, controls.clone());
+        }
+        if let netcode::WorldLessPoll::Host(host_poll) = &poll {
+            let Some(session) = self.session.as_mut() else {
+                return Some(poll);
+            };
+            let Some(netcode::NetEndpoint::Host {
+                allocator,
+                replicable,
+                replication,
+                state_slots,
+                slot_pawns,
+                command_queues,
+                owners,
+                weapon_owners,
+                open_shots,
+                pending_hit_declarations,
+                weaponless_fire_logged,
+                last_sent_tuning,
+                ..
+            }) = session.net_endpoint.as_mut()
+            else {
+                return Some(poll);
+            };
+            let mut registry = script_ctx.registry.borrow_mut();
+            netcode::host_handle_lifecycle(
+                &mut registry,
+                allocator,
+                replicable,
+                replication,
+                state_slots,
+                slot_pawns,
+                command_queues,
+                owners,
+                weapon_owners,
+                open_shots,
+                pending_hit_declarations,
+                weaponless_fire_logged,
+                last_sent_tuning,
+                &host_poll.lifecycle,
+            );
+        }
+        Some(poll)
+    }
+
     /// Finish deferred session startup on the first visible logo frame. Takes
     /// (and thereby consumes) `pending_session` so the install commits at most
     /// once — a suspend/resume that re-enters the splash loop finds it `None`
@@ -4684,13 +4758,13 @@ impl App {
             return;
         };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
-        // the accept arm materializes each accepted client's descriptor-backed remote
+        // participation entry materializes each client's descriptor-backed remote
         // pawn (M15 Phase 3 Task 4), and these reads alias the session script context /
         // `self.nav_graph` / `self.host_spawn_points`, which the endpoint borrow would
         // otherwise lock out. Cheap on the non-accept path (descriptors clone is the
         // only cost, paid once per frame on the host).
-        // Both the host accept arm and the client apply arm need the shared descriptor
-        // table: the host materializes each accepted client's descriptor-backed pawn
+        // Both host participation entry and client apply need the shared descriptor
+        // table: the host materializes each client's descriptor-backed pawn
         // (Task 4), and the client materializes its LOCAL pawn's descriptor-backed
         // `PlayerMovementComponent` from the wire `entity_class` (Task 7). Both peers
         // load the same content, so the same descriptor table serves both roles — clone
@@ -4706,6 +4780,26 @@ impl App {
         } else {
             Vec::new()
         };
+        // Apply reliable lifecycle controls before draining Snapshot. A same-drain
+        // hold for epoch N followed by the marker for N+1 must clear N's engine
+        // state first; transport epoch filtering can then admit N+1 snapshots into
+        // the clean replication state during this frame.
+        let client_controls = {
+            let endpoint = self
+                .session
+                .as_mut()
+                .and_then(|session| session.net_endpoint.as_mut());
+            match endpoint {
+                Some(netcode::NetEndpoint::Client { client, .. }) => {
+                    if let Err(err) = client.update(dt) {
+                        log::error!("[Net] client update failed: {err}");
+                    }
+                    client.drain_control()
+                }
+                _ => Vec::new(),
+            }
+        };
+        netcode::client_drain_control(self, client_controls);
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
@@ -4724,7 +4818,6 @@ impl App {
         };
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
-        let mut armed_local_pawn = None;
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -4745,116 +4838,131 @@ impl App {
                 loaded_movers: _,
                 demo_mover: _,
                 state_slots,
+                last_sent_tuning,
+                missing_identity_warned: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
                 match server.update(dt) {
-                    // Drive this frame's connection transitions through the game-logic-
-                    // owned registry borrow: an accept verdict registers the client and
-                    // spawns its slot-owned inert pawn; a lifecycle close despawns it.
+                    // Drive this frame's ordered participation transitions through
+                    // the game-logic-owned registry borrow.
                     Ok(poll) => {
                         use postretro_net::transport::HandshakeOutcome;
-                        // The accept verdict is the production spawn seam. An accepted
-                        // client must get its slot-owned pawn spawned + registered HERE,
-                        // so it is in the replicable set before `net_serialize_and_send`
-                        // runs `host_replicate` post-loop and the pawn lands in the first
-                        // snapshot. `SlotEvent::Accepted` never reaches `poll.lifecycle`
-                        // (`HandshakeOutcome::Accepted` is the accept lane); lifecycle
-                        // carries `Closed` only, including map-fingerprint closes retained
-                        // between polls. Both paths mutate the registry, so take one
+                        // Gate verdicts log diagnostics. Ordered lifecycle edges own
+                        // participation state: entry registers/spawns, while either exit
+                        // cleans up. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
                         if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
                             let mut registry = script_ctx.registry.borrow_mut();
                             for outcome in &poll.handshakes {
                                 match outcome {
-                                    HandshakeOutcome::Accepted { client_id } => {
-                                        log::info!("[Net] client {client_id} accepted");
-                                        replication.register_client(*client_id);
-                                        // M15 Phase 3.5: register the accepted client with
-                                        // the state tracker too, so its first snapshot
-                                        // carries a full state baseline (a late joiner gets
-                                        // one without waiting for a value change).
-                                        state_slots.register_client(*client_id);
-                                        if host_spawn_points.is_empty() {
-                                            // No descriptor-backed player spawn on this
-                                            // map: fall back to the inert Transform-only
-                                            // fixture (dev/test path; never local).
-                                            netcode::host_handle_accept(
-                                                &mut registry,
-                                                allocator,
-                                                replicable,
-                                                slot_pawns,
-                                                *client_id,
-                                            );
-                                        } else {
-                                            // Phase 3 movement session: materialize the
-                                            // descriptor-backed remote PlayerMovement pawn
-                                            // from the slot's assigned placement.
-                                            if let Some(pawn) =
-                                                netcode::host_handle_accept_descriptor(
-                                                    &mut registry,
-                                                    allocator,
-                                                    replicable,
-                                                    slot_pawns,
-                                                    command_queues,
-                                                    owners,
-                                                    weapon_owners,
-                                                    open_shots,
-                                                    pending_hit_declarations,
-                                                    weaponless_fire_logged,
-                                                    *client_id,
-                                                    &host_spawn_points,
-                                                    &net_descriptors,
-                                                    host_agent_params,
-                                                )
-                                            {
-                                                // The accepted pawn materializes after the
-                                                // level-wide model sweep. Resolve its clips and
-                                                // sockets now even when it has no weapon model;
-                                                // later weapon changes resolve only the new prop.
-                                                resolve_accepted_host_pawn_presentation(
-                                                    &mut registry,
-                                                    mesh_clip_tables,
-                                                    hit_zone_store,
-                                                    pawn,
-                                                );
-                                            }
-                                        }
+                                    HandshakeOutcome::Admitted { client_id } => {
+                                        log::info!(
+                                            "[Net] client {client_id} admitted; awaiting content parity"
+                                        );
                                     }
-                                    HandshakeOutcome::Rejected { client_id, reason } => {
-                                        log::warn!("[Net] client {client_id} rejected: {reason}");
+                                    HandshakeOutcome::Rejected { client_id, cause } => {
+                                        log::warn!("[Net] client {client_id} rejected: {cause:?}");
+                                    }
+                                    HandshakeOutcome::ParityHeld { client_id, cause } => {
+                                        log::info!(
+                                            "[Net] client {client_id} held for content parity: {cause:?}"
+                                        );
                                     }
                                 }
                             }
-                            // Lifecycle carries only `Closed` events; the accept-spawn
-                            // above is the sole accept seam.
-                            netcode::host_handle_lifecycle(
-                                &mut registry,
-                                allocator,
-                                replicable,
-                                replication,
-                                state_slots,
-                                slot_pawns,
-                                command_queues,
-                                owners,
-                                weapon_owners,
-                                open_shots,
-                                pending_hit_declarations,
-                                weaponless_fire_logged,
-                                &poll.lifecycle,
-                            );
+                            // Preserve edge order. One poll can contain entry followed
+                            // by demotion; batch-cleaning every exit before batch-spawning
+                            // every entry would leave a pawn for a finally-admitted slot.
+                            for event in &poll.lifecycle {
+                                netcode::host_handle_lifecycle(
+                                    &mut registry,
+                                    allocator,
+                                    replicable,
+                                    replication,
+                                    state_slots,
+                                    slot_pawns,
+                                    command_queues,
+                                    owners,
+                                    weapon_owners,
+                                    open_shots,
+                                    pending_hit_declarations,
+                                    weaponless_fire_logged,
+                                    last_sent_tuning,
+                                    std::slice::from_ref(event),
+                                );
+                                let postretro_net::slots::SlotEvent::Participating { client_id } =
+                                    event
+                                else {
+                                    continue;
+                                };
+                                // A poll can contain a complete promote-then-demote
+                                // history. Do not materialize a historical entry for
+                                // a slot whose final participation predicate is false.
+                                if !server.is_current_participation_entry(event) {
+                                    continue;
+                                }
+                                replication.register_client(*client_id);
+                                state_slots.register_client(*client_id);
+                                let pawn = if host_spawn_points.is_empty() {
+                                    netcode::host_handle_accept(
+                                        &mut registry,
+                                        allocator,
+                                        replicable,
+                                        slot_pawns,
+                                        *client_id,
+                                    );
+                                    slot_pawns.pawn_for(*client_id)
+                                } else {
+                                    netcode::host_handle_accept_descriptor(
+                                        &mut registry,
+                                        allocator,
+                                        replicable,
+                                        slot_pawns,
+                                        command_queues,
+                                        owners,
+                                        weapon_owners,
+                                        open_shots,
+                                        pending_hit_declarations,
+                                        weaponless_fire_logged,
+                                        *client_id,
+                                        &host_spawn_points,
+                                        &net_descriptors,
+                                        host_agent_params,
+                                    )
+                                };
+                                if let Some(pawn) = pawn {
+                                    resolve_accepted_host_pawn_presentation(
+                                        &mut registry,
+                                        mesh_clip_tables,
+                                        hit_zone_store,
+                                        pawn,
+                                    );
+                                    let payload = netcode::tuning_payload_for_pawn(
+                                        &registry,
+                                        pawn,
+                                        &net_descriptors,
+                                    );
+                                    netcode::host_send_tuning_if_changed(
+                                        server,
+                                        last_sent_tuning,
+                                        *client_id,
+                                        payload,
+                                    );
+                                }
+                            }
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),
                 }
-                // Drain each accepted client's reliable Channel::Input: apply
+                // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
                 // and echo time-sync probes with the current server tick. The echo
                 // microseconds are telemetry only, derived from the monotonic tick.
                 let server_tick = *tick;
                 let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
-                let accepted_clients = server.accepted_clients();
-                for client_id in accepted_clients {
+                let participating_clients = server.participating_clients();
+                for client_id in participating_clients {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
@@ -4873,11 +4981,11 @@ impl App {
                 time_sync,
                 prediction,
                 state_slots,
+                tuning,
+                tuning_generation,
+                applied_movement_tuning_generation,
                 ..
             }) => {
-                if let Err(err) = client.update(dt) {
-                    log::error!("[Net] client update failed: {err}");
-                }
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
@@ -4925,8 +5033,20 @@ impl App {
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
                         mover_target_tick,
+                        tuning
+                            .as_ref()
+                            .and_then(|payload| payload.movement.as_ref()),
+                        *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                if apply_outcome.armed_local_pawn.is_some()
+                    && tuning
+                        .as_ref()
+                        .and_then(|payload| payload.movement.as_ref())
+                        .is_some()
+                {
+                    *applied_movement_tuning_generation = *tuning_generation;
+                }
                 apply_authoritative_mover_corrections(
                     &mut self.camera,
                     self.mover_yaw_carry_ground,
@@ -4942,7 +5062,6 @@ impl App {
                         );
                     }
                 }
-                armed_local_pawn = apply_outcome.armed_local_pawn;
                 if apply_outcome.materialized_remote_entity_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
                     // bound for the `net_endpoint` match above.
@@ -4959,35 +5078,43 @@ impl App {
                 // clobbered by the snapshot pass.
             }
         }
+        if let Some(endpoint) = session.net_endpoint.as_mut() {
+            endpoint.warn_once_if_mod_identity_missing();
+        }
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
-        if let Some(armed) = armed_local_pawn {
-            self.seed_client_weapon_state(
-                armed.entity_id,
-                armed.entity_class.as_deref().unwrap_or("player"),
-                &net_descriptors,
-            );
+        let client_host_tuning = self.session.as_ref().and_then(|session| {
+            let endpoint = session.net_endpoint.as_ref()?;
+            let netcode::NetEndpoint::Client { replication, .. } = endpoint else {
+                return None;
+            };
+            Some((
+                replication.local_pawn_entity(),
+                endpoint
+                    .client_tuning()
+                    .and_then(|(payload, _)| payload.default_weapon.clone()),
+            ))
+        });
+        if let Some((pawn, tuning)) = client_host_tuning {
+            self.sync_client_weapon_state(pawn, tuning.as_ref());
         }
     }
 
-    fn seed_client_weapon_state(
+    fn sync_client_weapon_state(
         &mut self,
-        pawn: postretro_entities::EntityId,
-        entity_class: &str,
-        descriptors: &[postretro_entities::EntityTypeDescriptor],
+        pawn: Option<postretro_entities::EntityId>,
+        tuning: Option<&netcode::DefaultWeaponFirePayload>,
     ) {
-        if self
-            .client_weapon_state
-            .as_ref()
-            .is_some_and(|state| state.pawn == pawn)
-        {
-            return;
+        let preserve_prediction_history = weapon::ClientWeaponState::sync_from_host_tuning(
+            &mut self.client_weapon_state,
+            pawn,
+            tuning,
+        );
+        if !preserve_prediction_history {
+            self.client_fire_resolutions.clear();
+            self.client_predicted_shots.clear();
         }
-        self.client_weapon_state =
-            weapon::ClientWeaponState::from_local_pawn_descriptor(pawn, entity_class, descriptors);
-        self.client_fire_resolutions.clear();
-        self.client_predicted_shots.clear();
     }
 
     fn run_client_fire_path_post_loop(
@@ -5171,6 +5298,8 @@ impl App {
             loaded_movers: _,
             demo_mover,
             state_slots,
+            last_sent_tuning: _,
+            missing_identity_warned: _,
         }) = session.net_endpoint.as_mut()
         else {
             return;
@@ -8138,6 +8267,8 @@ mod tests {
             status: StagedManifestBuildStatus::Built(Box::new(
                 postretro_scripting_core::staged_manifest::StagedManifest {
                     name: "UiCommit".to_string(),
+                    id: "ui-commit".to_string(),
+                    version: "1".to_string(),
                     render: Default::default(),
                     entities: Vec::new(),
                     maps: Vec::new(),
@@ -8282,6 +8413,8 @@ mod tests {
             r#"
             globalThis.__postretroModManifest = {
                 name: "DrainMod",
+                id: "drain-mod",
+                version: "1",
                 uiTrees: [
                     { name: "banner", alwaysOn: true,
                       tree: { anchor: "top", offset: [0.0, 0.0],
@@ -8345,6 +8478,8 @@ mod tests {
             r#"
             globalThis.__postretroModManifest = {
                 name: "BadThemeMod",
+                id: "bad-theme-mod",
+                version: "1",
                 theme: { colors: { critical: "not-an-rgba-array", ok: [1, 0, 0, 1] } },
             };
             "#,

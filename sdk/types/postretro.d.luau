@@ -602,6 +602,10 @@ export type RenderProfile = {
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
   name: string,
+  --- Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. Declared identity is not a security mechanism.
+  id: string,
+  --- Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.
+  version: string,
   --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.
   render: RenderProfile?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.
@@ -1299,9 +1303,12 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 --- `canonicalName`, optional `defaultWeapon`, and optional component presets.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
---- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
---- `stores`.
+--- `config.name`, `config.id`, and `config.version` are required. Peers must
+--- declare the same id to connect. Must be non-empty ASCII, at most 64
+--- bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not
+--- enforced. `version` is displayed and never compared; neither field is a
+--- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
+--- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
@@ -1861,7 +1868,7 @@ export type PostretroModule = {
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.
   defineEntity: typeof(defineEntity),
-  --- Pure identity builder for the mod manifest. `config.name` is required.
+  --- Pure identity builder for the mod manifest. `config.name`, `config.id`, and `config.version` are required.
   defineMod: typeof(defineMod),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),

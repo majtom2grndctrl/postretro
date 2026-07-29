@@ -261,8 +261,8 @@ use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 
 /// Host-side replicated-state production: owns the deterministic replicated-slot
-/// schema (built once, lazily, from the live `SlotTable` after mod stores commit)
-/// and the registry-blind [`ServerStateReplication`] tracker. Lives on the
+/// schema (rebuilt lazily from the live `SlotTable` for each committed staged-manifest
+/// generation) and the registry-blind [`ServerStateReplication`] tracker. Lives on the
 /// `NetEndpoint::Host` variant; the frame send path (`net_serialize_and_send` →
 /// `host_replicate`) ingests this frame's projected values, then produces per-client
 /// state records to splice into the entity snapshot envelope.
@@ -271,8 +271,8 @@ use postretro_entities::components::weapon::WeaponComponent;
 /// net tracker never sees a name. Both peers build the schema identically from the
 /// same content, so a fingerprint match is the cross-peer agreement gate.
 pub(crate) struct HostStateReplication {
-    /// Built lazily on the first frame (mod init has committed the stores by then),
-    /// then reused for the session. `None` until built.
+    /// Built lazily after each committed staged-manifest generation, then reused until
+    /// the next reset. `None` until built.
     schema: Option<ReplicatedSlotSchema>,
     tracker: ServerStateReplication,
     /// Set to `true` the first time `ingest_frame` runs. Used only in debug builds
@@ -291,9 +291,9 @@ impl HostStateReplication {
         }
     }
 
-    /// Build the schema from the live slot table on first use, returning a reference.
-    /// Idempotent — built once and cached. Called inside the frame send path, by which
-    /// point mod stores have committed, so the schema reflects the final slot set.
+    /// Build the schema from the live slot table after a reset, returning a reference.
+    /// Idempotent within one committed staged-manifest generation. Called inside the
+    /// frame send path, after mod stores commit, so it reflects that generation's slots.
     fn schema(&mut self, slot_table: &SlotTable) -> &ReplicatedSlotSchema {
         self.schema
             .get_or_insert_with(|| ReplicatedSlotSchema::build(slot_table))
@@ -305,15 +305,40 @@ impl HostStateReplication {
         *self.schema(slot_table).fingerprint()
     }
 
-    /// Register an accepted client so it is replicated to (accept lifecycle).
+    /// Register a participating client so it receives state records. This is idempotent
+    /// and re-registers every current participant after a schema rebuild.
     pub(crate) fn register_client(&mut self, client_id: u64) {
         self.tracker.register_client(client_id);
     }
 
-    /// Drop a closed client's per-client state and its owner-private values (close
-    /// lifecycle).
+    /// Drop a client's per-client state and owner-private values on any participation
+    /// exit, including demotion and close.
     pub(crate) fn remove_client(&mut self, client_id: u64) {
         self.tracker.remove_client(client_id);
+    }
+
+    /// The source declarations changed or the level lifetime ended. Rebuild lazily
+    /// on the next send rather than comparing partial store-reconcile plans.
+    pub(crate) fn reset_schema(&mut self) {
+        self.schema = None;
+        self.tracker.reset_schema_state();
+        #[cfg(debug_assertions)]
+        {
+            self.ingested = false;
+        }
+    }
+
+    /// Rebuild after a declaration commit without dropping live participants.
+    /// Their old baseline state is invalid under the new schema, so each client is
+    /// re-registered against a fresh tracker and receives full baselines next send.
+    pub(crate) fn reset_schema_for_clients(
+        &mut self,
+        participating_clients: impl IntoIterator<Item = u64>,
+    ) {
+        self.reset_schema();
+        for client_id in participating_clients {
+            self.register_client(client_id);
+        }
     }
 
     /// Apply a client's `AckMessage.slot_baselines` (inbound reliable path).
@@ -631,6 +656,18 @@ impl ClientStateApply {
             net_schema: None,
             held_baselines: HashMap::new(),
         }
+    }
+
+    /// Drop a schema derived from declarations no longer installed.
+    pub(crate) fn reset_schema(&mut self) {
+        self.schema = None;
+        self.net_schema = None;
+        self.held_baselines.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_reset(&self) -> bool {
+        self.schema.is_none() && self.net_schema.is_none() && self.held_baselines.is_empty()
     }
 
     /// Build the schema (and its lowered net form) once from the live slot table,
@@ -1423,6 +1460,57 @@ mod tests {
             client_table.get("net.private").unwrap().value,
             Some(SlotValue::Number(42.0)),
             "owner-private slot applied through the store-write path"
+        );
+    }
+
+    // Regression: a delayed pre-rebuild ack aliased the rebuilt tracker's recycled
+    // baseline id and suppressed that slot forever.
+    #[test]
+    fn schema_rebuild_retires_old_acks_and_sends_fresh_participant_baselines() {
+        let mut host_table = shared_and_private_table();
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(3.0));
+        host_table.get_mut("net.private").unwrap().value = Some(SlotValue::Number(42.0));
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 0.0, 0.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let _ = host.fingerprint(&host_table);
+        let objective_id = host
+            .schema(&host_table)
+            .id_for("net.objective")
+            .expect("objective is replicated");
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let before = host
+            .produce_for_client(CLIENT_A, 0)
+            .expect("participant produces before the staged rebuild");
+        let old_baseline = before
+            .iter()
+            .find(|record| record.slot_id == objective_id.0)
+            .expect("objective baseline before rebuild")
+            .baseline_id;
+
+        host.reset_schema_for_clients([CLIENT_A]);
+        let _ = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+
+        // This reliable Input ack was queued before the staged manifest committed,
+        // but reaches the unchanged participation epoch after the host rebuilt.
+        host.apply_ack(CLIENT_A, 0, &[(objective_id.0, old_baseline)]);
+        let rebuilt = host
+            .produce_for_client(CLIENT_A, 1)
+            .expect("participant remains registered after schema rebuild");
+        let objective = rebuilt
+            .iter()
+            .find(|record| record.slot_id == objective_id.0)
+            .expect("delayed old ack cannot suppress rebuilt objective baseline");
+        assert_eq!(
+            objective.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+            "retired pre-rebuild ack leaves the participant unbaselined"
+        );
+        assert_ne!(
+            objective.baseline_id, old_baseline,
+            "schema rebuild never recycles a server-lifetime baseline id"
         );
     }
 

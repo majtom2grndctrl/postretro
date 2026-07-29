@@ -17,6 +17,7 @@ use postretro_level_loader::{
 use postretro_visibility::VisibleCells;
 
 use crate::collision::moving::MoverCollider;
+use crate::content_hash::{hash_f32, hash_len, hash_str, hash_u32, hash_vec3};
 use crate::render::{KinematicMoverInstance, MoverOccluderAabb};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,10 +58,10 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
 }
 
 /// Canonical connection-time identity for every static input that can affect
-/// deterministic mover prediction or mover collision. The net crate treats the
-/// digest as opaque; keeping the byte recipe here preserves its engine boundary.
-pub(crate) fn kinematic_static_fingerprint(geometry: &KinematicGeometry) -> [u8; 32] {
-    const FINGERPRINT_EPOCH: u32 = 1;
+/// deterministic prediction or collision. The net crate treats the digest as
+/// opaque; keeping the byte recipe engine-side preserves that boundary.
+pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWorld) -> [u8; 32] {
+    const FINGERPRINT_EPOCH: u32 = 2;
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"postretro-kinematic-static");
@@ -91,7 +92,7 @@ pub(crate) fn kinematic_static_fingerprint(geometry: &KinematicGeometry) -> [u8;
         }
         hash_len(&mut hasher, mover.indices.len());
         for index in &mover.indices {
-            hasher.update(&index.to_le_bytes());
+            hash_u32(&mut hasher, *index);
         }
     }
 
@@ -102,26 +103,21 @@ pub(crate) fn kinematic_static_fingerprint(geometry: &KinematicGeometry) -> [u8;
         hash_vec3(&mut hasher, waypoint.origin);
     }
 
+    // The client predicts movement and client-authoritative hit declarations
+    // against this static trimesh. Hash only its collision inputs, not the
+    // presentation and BSP-derived LevelWorld fields.
+    hash_len(&mut hasher, world.vertices.len());
+    for vertex in &world.vertices {
+        for component in vertex.position {
+            hash_f32(&mut hasher, component);
+        }
+    }
+    hash_len(&mut hasher, world.indices.len());
+    for index in &world.indices {
+        hash_u32(&mut hasher, *index);
+    }
+
     *hasher.finalize().as_bytes()
-}
-
-fn hash_len(hasher: &mut blake3::Hasher, len: usize) {
-    hasher.update(&(len as u64).to_le_bytes());
-}
-
-fn hash_str(hasher: &mut blake3::Hasher, value: &str) {
-    hash_len(hasher, value.len());
-    hasher.update(value.as_bytes());
-}
-
-fn hash_vec3(hasher: &mut blake3::Hasher, value: Vec3) {
-    hash_f32(hasher, value.x);
-    hash_f32(hasher, value.y);
-    hash_f32(hasher, value.z);
-}
-
-fn hash_f32(hasher: &mut blake3::Hasher, value: f32) {
-    hasher.update(&value.to_bits().to_le_bytes());
 }
 
 pub(crate) struct KinematicMoverRenderCollector {
@@ -565,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn kinematic_static_fingerprint_changes_for_prediction_inputs() {
+    fn level_content_digest_changes_for_prediction_inputs() {
         let base = KinematicGeometry {
             movers: vec![mover(1)],
             waypoints: vec![
@@ -581,28 +577,79 @@ mod tests {
                 },
             ],
         };
-        let fingerprint = kinematic_static_fingerprint(&base);
-        assert_eq!(fingerprint, kinematic_static_fingerprint(&base));
+        let world = single_cell_world(base.clone());
+        let digest = level_content_digest(&base, &world);
+        assert_eq!(digest, level_content_digest(&base, &world));
 
         let mut changed = base.clone();
         changed.movers[0].spin_axis = Vec3::Y;
-        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+        assert_ne!(digest, level_content_digest(&changed, &world));
 
         let mut changed = base.clone();
         changed.movers[0].spin_accel_deg_s2 = 90.0;
-        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+        assert_ne!(digest, level_content_digest(&changed, &world));
 
         let mut changed = base.clone();
         changed.movers[0].carry_yaw = true;
-        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+        assert_ne!(digest, level_content_digest(&changed, &world));
 
         let mut changed = base.clone();
         changed.waypoints[1].origin = Vec3::Z;
-        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+        assert_ne!(digest, level_content_digest(&changed, &world));
 
         let mut changed = base;
         changed.movers[0].vertices[0].position[0] = 0.5;
-        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+        assert_ne!(digest, level_content_digest(&changed, &world));
+    }
+
+    fn world_vertex(position: [f32; 3]) -> postretro_render_data::geometry::WorldVertex {
+        postretro_render_data::geometry::WorldVertex {
+            position,
+            base_uv: [0.0, 0.0],
+            normal_oct: [0, 0],
+            tangent_packed: [0, 0],
+            lightmap_uv: [0, 0],
+            lightmap_layer: 0,
+        }
+    }
+
+    #[test]
+    fn level_content_digest_covers_static_collision_but_not_entity_placements() {
+        let geometry = KinematicGeometry::default();
+        let mut base = single_cell_world(geometry.clone());
+        base.vertices = vec![
+            world_vertex([0.0, 0.0, 0.0]),
+            world_vertex([1.0, 0.0, 0.0]),
+            world_vertex([0.0, 1.0, 0.0]),
+        ];
+        base.indices = vec![0, 1, 2];
+        let digest = level_content_digest(&geometry, &base);
+
+        let mut changed_brushwork = single_cell_world(geometry.clone());
+        changed_brushwork.vertices = base.vertices.clone();
+        changed_brushwork.indices = base.indices.clone();
+        changed_brushwork.vertices[2].position[1] = 2.0;
+        assert_ne!(
+            digest,
+            level_content_digest(&geometry, &changed_brushwork),
+            "mover-less levels with different collision brushwork must diverge"
+        );
+
+        let mut changed_entities = single_cell_world(geometry.clone());
+        changed_entities.vertices = base.vertices.clone();
+        changed_entities.indices = base.indices.clone();
+        changed_entities
+            .map_entities
+            .push(postretro_level_format::map_entity::MapEntityRecord {
+                classname: "ambient_light".to_string(),
+                origin: [4.0, 5.0, 6.0],
+                ..Default::default()
+            });
+        assert_eq!(
+            digest,
+            level_content_digest(&geometry, &changed_entities),
+            "non-prediction entity placements are outside the level digest"
+        );
     }
 
     #[test]

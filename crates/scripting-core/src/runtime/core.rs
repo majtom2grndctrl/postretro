@@ -143,6 +143,7 @@ impl ScriptRuntime {
             quickjs,
             luau,
             mod_manifest: None,
+            committed_mod_identity: None,
             #[cfg(debug_assertions)]
             watcher: None,
             #[cfg(debug_assertions)]
@@ -317,6 +318,7 @@ impl ScriptRuntime {
                 next_global_trigger_pools,
                 next_store_declarations,
                 next_dependencies,
+                next_mod_identity,
                 descriptor_label,
             ) = match &result.status {
                 StagedManifestBuildStatus::Built(manifest) => {
@@ -345,6 +347,7 @@ impl ScriptRuntime {
                         manifest.trigger_pools.clone(),
                         manifest.store_declarations.clone(),
                         dependencies,
+                        Some((manifest.id.clone(), manifest.version.clone())),
                         format!("mod `{}`", manifest.name),
                     )
                 }
@@ -373,6 +376,7 @@ impl ScriptRuntime {
                         Vec::new(),
                         StoreDeclarationSet::default(),
                         dependencies,
+                        None,
                         "debug no-start-script state".to_string(),
                     )
                 }
@@ -500,6 +504,24 @@ impl ScriptRuntime {
                 .replace_global_trigger_pools(next_global_trigger_pools);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
+
+            if let Some((id, version)) = next_mod_identity {
+                // Manifest lanes normally atomically replace on a staged commit.
+                // Identity joins `fonts` as the existing non-re-committed minority:
+                // admission is terminal, so changing it would invalidate live
+                // decisions with no recovery path. The compatibility digest is the
+                // opposite case and must re-hash on each commit because parity can
+                // demote and later re-promote a connection.
+                match self.committed_mod_identity.as_ref() {
+                    None => self.committed_mod_identity = Some((id, version)),
+                    Some((committed_id, committed_version))
+                        if committed_id != &id || committed_version != &version =>
+                    {
+                        log::warn!("[Scripting] mod identity is frozen");
+                    }
+                    Some(_) => {}
+                }
+            }
             log::info!(
                 "[Scripting] committed staged mod-init generation {} for {descriptor_label}: {} descriptor(s), {} refresh action(s), {} dropped missing target(s), {} dependency candidate(s)",
                 result.generation,
@@ -574,6 +596,14 @@ impl ScriptRuntime {
     pub fn mod_manifest_mut(&mut self) -> Option<&mut ModManifestResult> {
         self.mod_manifest.as_mut()
     }
+
+    /// Returns the id and version from the first committed manifest. Identity
+    /// is frozen across staged hot reloads because admission is terminal.
+    pub fn committed_mod_identity(&self) -> Option<(&str, &str)> {
+        self.committed_mod_identity
+            .as_ref()
+            .map(|(id, version)| (id.as_str(), version.as_str()))
+    }
 }
 
 #[cfg(test)]
@@ -582,6 +612,9 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
 
     use super::*;
     use crate::data_descriptors::{
@@ -834,6 +867,8 @@ mod tests {
             r#"
                 globalThis.__postretroModManifest = {
                     name: "ReloadedPools",
+                    id: "reloaded-pools",
+                    version: "1",
                     triggerPools: [
                         { tag: "every_level", arm: 1 },
                         { tag: "campaign_only", armPercentage: 50, levels: ["campaign"] },
@@ -913,6 +948,76 @@ mod tests {
         );
 
         drop(data_registry);
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
+    }
+
+    #[test]
+    fn run_mod_init_seeds_committed_mod_identity() {
+        let mod_root = temp_mod_root("initial_identity");
+        fs::write(
+            mod_root.join("start-script.js"),
+            "globalThis.__postretroModManifest = { name: 'Initial', id: 'initial.mod', version: 'display build' };",
+        )
+        .expect("initial manifest should be written");
+
+        let ctx = ScriptCtx::new();
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+        runtime
+            .run_mod_init(&mod_root)
+            .expect("initial manifest should commit");
+
+        assert_eq!(
+            runtime.committed_mod_identity(),
+            Some(("initial.mod", "display build"))
+        );
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
+    }
+
+    #[test]
+    fn staged_mod_identity_is_first_commit_wins_without_an_endpoint() {
+        // Regression: the freeze belongs to ScriptRuntime, not an endpoint, so
+        // staged reload obeys it in ordinary single-player too.
+        let mod_root = temp_mod_root("identity_first_wins");
+        fs::write(
+            mod_root.join("start-script.js"),
+            "globalThis.__postretroModManifest = { name: 'First', id: 'first.mod', version: '1' };",
+        )
+        .expect("first staged manifest should be written");
+        let first = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+
+        let ctx = ScriptCtx::new();
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+        assert!(matches!(
+            runtime
+                .commit_staged_manifest_result(&first, &ctx, &SequencedPrimitiveRegistry::new(),),
+            StagedManifestCommitOutcome::Committed { generation: 1, .. }
+        ));
+        assert_eq!(runtime.committed_mod_identity(), Some(("first.mod", "1")));
+
+        fs::write(
+            mod_root.join("start-script.js"),
+            "globalThis.__postretroModManifest = { name: 'Second', id: 'second.mod', version: 'not semver' };",
+        )
+        .expect("divergent staged manifest should be written");
+        let second = build_staged_manifest(&mod_root, 2, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(2));
+
+        let capture = LogCapture::start();
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &second,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Committed { generation: 2, .. }
+        ));
+        capture.assert_logged_once(Level::Warn, "[Scripting] mod identity is frozen");
+        assert_eq!(runtime.committed_mod_identity(), Some(("first.mod", "1")));
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 }

@@ -22,7 +22,7 @@ use super::error::ScriptError;
 use super::luau::LuauConfig;
 use super::luau_require::LuauRequireTracker;
 use super::quickjs::{QuickJsConfig, run_script};
-use super::runtime::ModManifestResult;
+use super::runtime::{ModManifestResult, validate_mod_manifest_id, validate_mod_manifest_version};
 use super::store_bridge::{drain_store_declarations_js, drain_store_declarations_lua};
 
 mod transfer;
@@ -321,6 +321,8 @@ fn run_staged_manifest_build(
 
     Ok(Some(StagedManifest {
         name: manifest.name,
+        id: manifest.id,
+        version: manifest.version,
         render: manifest.render,
         entities: manifest.entities,
         maps: manifest.maps,
@@ -433,6 +435,30 @@ fn manifest_from_js_value<'js>(
     let name: String = obj.get("name").map_err(|e| ScriptError::InvalidArgument {
         reason: format!(
             "mod-init: `{source_path}` default mod manifest export missing `name`: {e}"
+        ),
+    })?;
+    let id: String = obj
+        .get("id")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export missing `id`: {error}"
+            ),
+        })?;
+    validate_mod_manifest_id(&id).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` default mod manifest export `id` invalid: {error}"
+        ),
+    })?;
+    let version: String = obj
+        .get("version")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export missing `version`: {error}"
+            ),
+        })?;
+    validate_mod_manifest_version(&version).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` default mod manifest export `version` invalid: {error}"
         ),
     })?;
 
@@ -563,6 +589,8 @@ fn manifest_from_js_value<'js>(
 
     Ok(ModManifestResult {
         name,
+        id,
+        version,
         render,
         entities,
         ui_trees,
@@ -631,6 +659,28 @@ fn run_staged_mod_init_luau(
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest missing `name`: {e}"),
         })?;
+    let id: String = table
+        .get("id")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest missing `id`: {error}"
+            ),
+        })?;
+    validate_mod_manifest_id(&id).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` returned mod manifest `id` invalid: {error}"),
+    })?;
+    let version: String = table
+        .get("version")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest missing `version`: {error}"
+            ),
+        })?;
+    validate_mod_manifest_version(&version).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` returned mod manifest `version` invalid: {error}"
+        ),
+    })?;
 
     let entities = if table
         .contains_key("entities")
@@ -760,6 +810,8 @@ fn run_staged_mod_init_luau(
 
     Ok(ModManifestResult {
         name,
+        id,
+        version,
         render,
         entities,
         ui_trees,
@@ -838,6 +890,8 @@ mod tests {
             r#"
                 globalThis.__postretroModManifest = {
                     name: "RenderMod",
+                    id: "render-mod",
+                    version: "1",
                     render: { bloom: { resolution: "eighth", pixelated: true } },
                 };
             "#,
@@ -848,6 +902,8 @@ mod tests {
             r#"
                 return {
                     name = "RenderMod",
+                    id = "render-mod",
+                    version = "1",
                     render = { bloom = { resolution = "eighth", pixelated = true } },
                 }
             "#,
@@ -870,6 +926,8 @@ mod tests {
             r#"
                 globalThis.__postretroModManifest = {
                     name: "RenderMod",
+                    id: "render-mod",
+                    version: "1",
                     render: { bloom: { resolution: "third", pixelated: true } },
                 };
             "#,
@@ -880,6 +938,8 @@ mod tests {
             r#"
                 return {
                     name = "RenderMod",
+                    id = "render-mod",
+                    version = "1",
                     render = { bloom = { resolution = "third", pixelated = true } },
                 }
             "#,
@@ -906,6 +966,8 @@ mod tests {
             if (staged.state.count.slot !== "staged.count") throw new Error("bad store handle");
             globalThis.__postretroModManifest = {
                 name: "StagedMod",
+                id: "staged-mod",
+                version: "1",
                 entities: [{ canonicalName: "smoke_pillar" }],
                 maps: [{ id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] }],
                 stores: [staged.declaration],
@@ -920,6 +982,8 @@ mod tests {
             panic!("expected built result, got {:?}", result.status);
         };
         assert_eq!(manifest.name, "StagedMod");
+        assert_eq!(manifest.id, "staged-mod");
+        assert_eq!(manifest.version, "1");
         assert_eq!(manifest.entities.len(), 1);
         assert_eq!(manifest.maps.len(), 1);
         assert_eq!(manifest.maps[0].id, "e1m1");
@@ -942,6 +1006,8 @@ mod tests {
             r#"
             globalThis.__postretroModManifest = {
                 name: "WorkerBuilt",
+                id: "worker-built",
+                version: "1",
                 entities: [{ canonicalName: "worker_grunt" }],
             };
             "#,
@@ -1010,6 +1076,8 @@ mod tests {
             assert(staged.state.count.slot == "staged.count")
             return {
                 name = "LuauDeps",
+                id = "luau-deps",
+                version = "1",
                 stores = { staged.declaration },
                 entities = {
                     player.descriptor,
@@ -1032,6 +1100,8 @@ mod tests {
             dir.join("start-script.luau").canonicalize().unwrap(),
         ];
         assert_eq!(manifest.name, "LuauDeps");
+        assert_eq!(manifest.id, "luau-deps");
+        assert_eq!(manifest.version, "1");
         assert_eq!(manifest.store_declarations.len(), 1);
         assert_eq!(manifest.dependency_paths, expected);
         assert!(
@@ -1076,6 +1146,8 @@ mod tests {
             assert(root.showDialog == nil, "root module must not expose UI reactions")
             return {
                 name = "VirtualDeps",
+                id = "virtual-deps",
+                version = "1",
                 entities = { helper.descriptor },
             }
             "#,
@@ -1130,6 +1202,8 @@ mod tests {
             r#"
             globalThis.__postretroModManifest = {
                 name: "UiSnapshot",
+                id: "ui-snapshot",
+                version: "1",
                 uiTrees: [
                     { name: "hud", alwaysOn: true,
                       tree: { anchor: "topLeft", offset: [0.0, 0.0],
@@ -1186,6 +1260,115 @@ mod tests {
             "expected missing-name diagnostic, got {:?}",
             result.diagnostics
         );
+    }
+
+    #[test]
+    fn staged_manifest_identity_accepts_bare_id_and_arbitrary_nonempty_version_in_both_runtimes() {
+        for (runtime, entry, source) in [
+            (
+                "QuickJS",
+                "start-script.js",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'dev', version: 'build 4 / not semver' };",
+            ),
+            (
+                "Luau",
+                "start-script.luau",
+                "return { name = 'Dev', id = 'dev', version = 'build 4 / not semver' }",
+            ),
+        ] {
+            let dir = temp_mod_root(&format!("identity_valid_{runtime}"));
+            fs::write(dir.join(entry), source).unwrap();
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+
+            let StagedManifestBuildStatus::Built(manifest) = result.status else {
+                panic!(
+                    "expected valid {runtime} staged manifest, got {:?}",
+                    result.diagnostics
+                );
+            };
+            assert_eq!(manifest.id, "dev");
+            assert_eq!(manifest.version, "build 4 / not semver");
+        }
+    }
+
+    #[test]
+    fn staged_manifest_identity_rejects_required_field_errors_in_both_runtimes() {
+        for (label, js_manifest, luau_manifest, expected_field) in [
+            (
+                "missing id",
+                "{ name: 'Dev', version: '1' }".to_string(),
+                "{ name = 'Dev', version = '1' }".to_string(),
+                "missing `id`",
+            ),
+            (
+                "missing version",
+                "{ name: 'Dev', id: 'dev' }".to_string(),
+                "{ name = 'Dev', id = 'dev' }".to_string(),
+                "missing `version`",
+            ),
+            (
+                "empty id",
+                "{ name: 'Dev', id: '', version: '1' }".to_string(),
+                "{ name = 'Dev', id = '', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "65-byte id",
+                format!("{{ name: 'Dev', id: '{}', version: '1' }}", "a".repeat(65)),
+                format!(
+                    "{{ name = 'Dev', id = '{}', version = '1' }}",
+                    "a".repeat(65)
+                ),
+                "`id` invalid",
+            ),
+            (
+                "non-ascii id",
+                "{ name: 'Dev', id: 'déf', version: '1' }".to_string(),
+                "{ name = 'Dev', id = 'déf', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "disallowed id character",
+                "{ name: 'Dev', id: 'bad/id', version: '1' }".to_string(),
+                "{ name = 'Dev', id = 'bad/id', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "empty version",
+                "{ name: 'Dev', id: 'dev', version: '' }".to_string(),
+                "{ name = 'Dev', id = 'dev', version = '' }".to_string(),
+                "`version` invalid",
+            ),
+        ] {
+            for (runtime, entry, source) in [
+                (
+                    "QuickJS",
+                    "start-script.js",
+                    format!("globalThis.__postretroModManifest = {js_manifest};"),
+                ),
+                (
+                    "Luau",
+                    "start-script.luau",
+                    format!("return {luau_manifest}"),
+                ),
+            ] {
+                let dir = temp_mod_root(&format!("identity_{label}_{runtime}"));
+                fs::write(dir.join(entry), source).unwrap();
+                let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+
+                assert_eq!(result.status, StagedManifestBuildStatus::Failed);
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.severity
+                            == StagedManifestDiagnosticSeverity::Error
+                            && diagnostic.message.contains(expected_field)),
+                    "{label} {runtime} staged diagnostic must name the invalid field: {:?}",
+                    result.diagnostics
+                );
+            }
+        }
     }
 
     #[test]
@@ -1247,13 +1430,13 @@ mod tests {
         let first = temp_mod_root("lane_first");
         fs::write(
             first.join("start-script.js"),
-            "globalThis.__postretroModManifest = { name: 'First' };\n",
+            "globalThis.__postretroModManifest = { name: 'First', id: 'first', version: '1' };\n",
         )
         .unwrap();
         let latest = temp_mod_root("lane_latest");
         fs::write(
             latest.join("start-script.js"),
-            "globalThis.__postretroModManifest = { name: 'Latest' };\n",
+            "globalThis.__postretroModManifest = { name: 'Latest', id: 'latest', version: '1' };\n",
         )
         .unwrap();
 
@@ -1305,6 +1488,8 @@ mod tests {
                 .eval(
                     r#"({
                         name: "UiMod",
+                        id: "ui-mod",
+                        version: "1",
                         uiTrees: [
                             { name: "hud", alwaysOn: true,
                               tree: { anchor: "topLeft", offset: [0.0, 0.0],
@@ -1335,6 +1520,8 @@ mod tests {
                 .eval(
                     r#"({
                         name: "UiMod",
+                        id: "ui-mod",
+                        version: "1",
                         uiTrees: [
                             { name: "bad", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "carousel" } } },
                             { name: "good", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "spacer", flexGrow: 1.0 } } },
@@ -1357,6 +1544,8 @@ mod tests {
         let source = r#"
             return {
                 name = "UiMod",
+                id = "ui-mod",
+                version = "1",
                 uiTrees = {
                     { name = "hud", alwaysOn = true,
                       tree = { anchor = "topLeft", offset = { 0, 0 },
@@ -1388,6 +1577,8 @@ mod tests {
         let source = r#"
             return {
                 name = "UiMod",
+                id = "ui-mod",
+                version = "1",
                 uiTrees = {
                     { name = "bad", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "carousel" } } },
                     { name = "good", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },

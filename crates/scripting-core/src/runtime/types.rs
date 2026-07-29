@@ -60,6 +60,11 @@ pub struct ModRenderProfile {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModManifestResult {
     pub name: String,
+    /// Stable mod namespace used for connection admission. This is declared by
+    /// the author, not a security mechanism.
+    pub id: String,
+    /// Required display and diagnostic version. Admission never compares it.
+    pub version: String,
     /// Static mod-owned render preferences parsed from `render`. Omission or
     /// malformed optional fields normalize to the current renderer defaults.
     pub render: ModRenderProfile,
@@ -349,6 +354,9 @@ pub struct ScriptRuntime {
     /// `None` until `run_mod_init` succeeds; in debug builds may also remain
     /// `None` if no `start-script.{js,luau}` was found at the mod root.
     pub(super) mod_manifest: Option<ModManifestResult>,
+    /// The first successfully committed mod identity. Admission has no
+    /// recovery path, so hot reload must not replace this value.
+    pub(super) committed_mod_identity: Option<(String, String)>,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
@@ -364,4 +372,20 @@ pub struct ScriptRuntime {
     pub(super) deferred_mesh_descriptors: Option<Vec<EntityTypeDescriptor>>,
     pub(super) script_ctx: ScriptCtx,
     pub(super) cfg: ScriptRuntimeConfig,
+}
+
+/// Validate the stable identifier that a mod declares for connection
+/// admission. This intentionally shares the authored identifier contract used
+/// by ammo resources and weapon credit sources.
+pub(crate) fn validate_mod_manifest_id(value: &str) -> Result<(), String> {
+    postretro_foundation::validate_ascii_identifier("id", value).map_err(|error| error.to_string())
+}
+
+/// Versions are display and diagnostic data only, so every non-empty string is
+/// valid: this is deliberately not a semver parser.
+pub(crate) fn validate_mod_manifest_version(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("`version` must be non-empty".to_string());
+    }
+    Ok(())
 }

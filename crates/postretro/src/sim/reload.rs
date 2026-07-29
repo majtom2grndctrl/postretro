@@ -17,6 +17,8 @@ pub(crate) enum ReloadOutcome {
     Completed { transferred: u32 },
     BlockedFull,
     BlockedEmpty,
+    ShellLoaded,
+    Cancelled { transferred: u32 },
 }
 
 impl ReloadOutcome {
@@ -26,6 +28,8 @@ impl ReloadOutcome {
             Self::Completed { .. } => "reload_completed",
             Self::BlockedFull => "reload_blocked_full",
             Self::BlockedEmpty => "reload_blocked_empty",
+            Self::ShellLoaded => "reload_shell_loaded",
+            Self::Cancelled { .. } => "reload_cancelled",
         }
     }
 }
@@ -38,7 +42,10 @@ pub(super) fn tick_ms(tick_dt: f32) -> f64 {
     }
 }
 
-pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) {
+/// Advance the timed-state countdown and return its full millisecond overshoot
+/// when it expires. The carry remains strictly sub-millisecond; callers that
+/// restart a timed step apply the whole overshoot to that new step.
+pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) -> Option<f64> {
     let carried_ms = if component.state_elapsed_sub_ms.is_finite()
         && component.state_elapsed_sub_ms >= 0.0
         && component.state_elapsed_sub_ms < 1.0
@@ -49,14 +56,16 @@ pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) {
     };
     let elapsed_ms = carried_ms + tick_ms(tick_dt);
     if elapsed_ms >= f64::from(component.state_remaining_ms) {
+        let overshoot_ms = elapsed_ms - f64::from(component.state_remaining_ms);
         component.state_remaining_ms = 0;
         component.state_elapsed_sub_ms = 0.0;
-        return;
+        return Some(overshoot_ms);
     }
 
     let whole_ms = elapsed_ms.floor() as u32;
     component.state_remaining_ms -= whole_ms;
     component.state_elapsed_sub_ms = elapsed_ms - f64::from(whole_ms);
+    None
 }
 
 /// Clear feedback endpoints after network projection and local HUD publication
@@ -112,6 +121,14 @@ mod tests {
         assert_eq!(
             ReloadOutcome::BlockedEmpty.event_name(),
             "reload_blocked_empty"
+        );
+        assert_eq!(
+            ReloadOutcome::ShellLoaded.event_name(),
+            "reload_shell_loaded"
+        );
+        assert_eq!(
+            ReloadOutcome::Cancelled { transferred: 7 }.event_name(),
+            "reload_cancelled"
         );
     }
 }

@@ -16,6 +16,7 @@ use postretro_entities::components::weapon::{
     ReloadFeedback, UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent,
 };
 use postretro_entities::components::wieldable_state::WieldableState;
+use postretro_entities::data_descriptors::ReloadStyle;
 use postretro_entities::{AmmoReserve, ComponentKind, EntityId, EntityRegistry};
 
 use super::{
@@ -30,15 +31,28 @@ struct WeaponMachineTick {
 
 #[derive(Debug, Clone, Copy)]
 enum WieldableStateEvent {
-    BeginReload { duration_ms: u32 },
-    Expired { pawn: Option<EntityId> },
+    BeginReload {
+        duration_ms: u32,
+        reload_style: ReloadStyle,
+    },
+    Expired {
+        pawn_present: bool,
+    },
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StateTransition {
     Noop,
     ReloadStarted,
-    ReloadCompleted { transferred: u32 },
+    ReloadStep {
+        shell_loaded: bool,
+        completed: Option<u32>,
+        restart_duration_ms: Option<u32>,
+    },
+    ReloadCancelled {
+        transferred: u32,
+    },
 }
 
 /// Run the one ordered weapon machine shared by local and host-simulated pawns.
@@ -62,10 +76,15 @@ fn tick_weapon_machine(
         let fresh_press = reload && !component.reload_press_consumed;
         component.reload_press_consumed = reload;
         if fresh_press && component.state.allows_reload() {
-            if let Some((capacity, ammo_type, reload_ms)) = component
-                .effective()
-                .ammo
-                .map(|ammo| (ammo.capacity, ammo.ammo_type.to_string(), ammo.reload_ms))
+            if let Some((capacity, ammo_type, reload_ms, reload_style)) =
+                component.effective().ammo.map(|ammo| {
+                    (
+                        ammo.capacity,
+                        ammo.ammo_type.to_string(),
+                        ammo.reload_ms,
+                        ammo.reload_style,
+                    )
+                })
             {
                 if component.magazine >= capacity {
                     deliveries.push(ReloadDelivery {
@@ -84,11 +103,12 @@ fn tick_weapon_machine(
                         outcome: ReloadOutcome::BlockedEmpty,
                     });
                 } else if transition_wieldable_state(
-                    registry,
                     component,
                     WieldableStateEvent::BeginReload {
                         duration_ms: reload_ms,
+                        reload_style,
                     },
+                    None,
                 ) == StateTransition::ReloadStarted
                 {
                     reload_started_this_tick = true;
@@ -103,27 +123,31 @@ fn tick_weapon_machine(
     }
 
     // 2. Timer advance. The shared helper owns the sub-millisecond carry.
-    if component.state.is_reload_activity() {
-        super::reload::advance_timer(component, tick_dt);
-    }
-
-    // 3. State expiry. Its meaning is selected by the state/event transition,
-    // never by a second state match in the machine.
-    if component.state.is_reload_activity() && component.state_remaining_ms == 0 {
-        if let StateTransition::ReloadCompleted { transferred } =
-            transition_wieldable_state(registry, component, WieldableStateEvent::Expired { pawn })
-            && let Some(pawn) = pawn
-        {
-            deliveries.push(ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: ReloadOutcome::Completed { transferred },
-            });
-        }
+    if component.state.is_reload_activity()
+        && let Some(overshoot_ms) = super::reload::advance_timer(component, tick_dt)
+    {
+        // 3. State expiry. Its meaning is selected by the state/event transition,
+        // never by a second state match in the machine.
+        resolve_expired_state(
+            registry,
+            pawn,
+            weapon,
+            component,
+            overshoot_ms,
+            &mut deliveries,
+        );
     }
 
     // 4. Fire intent. Cooldown remains orthogonal to wieldable state.
-    let authorization = authorize_fire(component, command, tick_dt, reload_started_this_tick);
+    let authorization = authorize_fire(
+        component,
+        command,
+        tick_dt,
+        reload_started_this_tick,
+        pawn,
+        weapon,
+        &mut deliveries,
+    );
     WeaponMachineTick {
         authorization,
         deliveries,
@@ -133,13 +157,22 @@ fn tick_weapon_machine(
 /// The sole state/event dispatch. New wieldable states add rows here rather than
 /// changing component shape or teaching callers what a timer expiry means.
 fn transition_wieldable_state(
-    registry: &mut EntityRegistry,
     component: &mut WeaponComponent,
     event: WieldableStateEvent,
+    reserve: Option<&mut AmmoReserve>,
 ) -> StateTransition {
     match (component.state, event) {
-        (WieldableState::Idle, WieldableStateEvent::BeginReload { duration_ms }) => {
-            component.state = WieldableState::Reloading;
+        (
+            WieldableState::Idle,
+            WieldableStateEvent::BeginReload {
+                duration_ms,
+                reload_style,
+            },
+        ) => {
+            component.state = match reload_style {
+                ReloadStyle::Magazine => WieldableState::Reloading,
+                ReloadStyle::PerShell => WieldableState::ShellLoading,
+            };
             component.state_total_ms = duration_ms;
             component.state_remaining_ms = duration_ms;
             component.state_elapsed_sub_ms = 0.0;
@@ -147,15 +180,16 @@ fn transition_wieldable_state(
             component.reload_feedback = Some(ReloadFeedback::Started);
             StateTransition::ReloadStarted
         }
-        (WieldableState::Idle, WieldableStateEvent::Expired { .. }) => StateTransition::Noop,
+        (WieldableState::Idle, WieldableStateEvent::Expired { .. })
+        | (WieldableState::Idle, WieldableStateEvent::Cancel) => StateTransition::Noop,
         (WieldableState::Reloading, WieldableStateEvent::BeginReload { .. }) => {
             StateTransition::Noop
         }
-        (WieldableState::Reloading, WieldableStateEvent::Expired { pawn }) => {
-            let Some(pawn) = pawn else {
+        (WieldableState::Reloading, WieldableStateEvent::Expired { pawn_present }) => {
+            if !pawn_present {
                 transition_to_idle(component);
                 return StateTransition::Noop;
-            };
+            }
 
             // Completion honors refreshed ammo tuning, while preserving the live
             // timed state until this decision point.
@@ -164,39 +198,180 @@ fn transition_wieldable_state(
                 .ammo
                 .map(|ammo| (ammo.capacity, ammo.ammo_type.to_string()));
             let transferred = if let Some((capacity, ammo_type)) = effective_ammo {
-                let mut reserve = registry
-                    .get_component::<AmmoReserve>(pawn)
-                    .cloned()
-                    .unwrap_or_default();
-                let requested = capacity
-                    .saturating_sub(component.magazine)
-                    .min(reserve.available(&ammo_type));
-                let transferred = reserve.take(&ammo_type, requested);
+                let requested = capacity.saturating_sub(component.magazine).min(
+                    reserve
+                        .as_ref()
+                        .map_or(0, |reserve| reserve.available(&ammo_type)),
+                );
+                let transferred = reserve.map_or(0, |reserve| reserve.take(&ammo_type, requested));
                 component.magazine = component.magazine.saturating_add(transferred);
-                if registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true) {
-                    let _ = registry.set_component(pawn, reserve);
-                }
                 transferred
             } else {
                 0
             };
             component.reload_credited = component.reload_credited.saturating_add(transferred);
-            let total_transferred = component.reload_credited;
-            transition_to_idle(component);
-            component.reload_feedback = Some(ReloadFeedback::Completed);
-            StateTransition::ReloadCompleted {
-                transferred: total_transferred,
-            }
+            complete_reload(component, false)
         }
-        // Task 4 supplies this state's step and cancellation semantics. Holding
-        // the state is deliberate: a premature state must never panic.
         (WieldableState::ShellLoading, WieldableStateEvent::BeginReload { .. }) => {
             StateTransition::Noop
         }
-        (WieldableState::ShellLoading, WieldableStateEvent::Expired { .. }) => {
-            StateTransition::Noop
+        (WieldableState::ShellLoading, WieldableStateEvent::Expired { pawn_present }) => {
+            if !pawn_present {
+                transition_to_idle(component);
+                return StateTransition::Noop;
+            }
+
+            let Some((capacity, ammo_type, reload_ms, reload_style)) =
+                component.effective().ammo.map(|ammo| {
+                    (
+                        ammo.capacity,
+                        ammo.ammo_type.to_string(),
+                        ammo.reload_ms,
+                        ammo.reload_style,
+                    )
+                })
+            else {
+                return complete_reload(component, false);
+            };
+
+            // The continue guard reads this same one-tick working copy as the
+            // debit below. A zero result is unreachable during ordinary play but
+            // protects a reserve that was emptied between guard and credit.
+            let Some(reserve) = reserve else {
+                return complete_reload(component, false);
+            };
+            let transferred = reserve.take(&ammo_type, 1);
+            if transferred == 0 {
+                return complete_reload(component, false);
+            }
+
+            component.magazine = component.magazine.saturating_add(transferred);
+            component.reload_credited = component.reload_credited.saturating_add(transferred);
+            let continues = component.magazine < capacity
+                && reserve.available(&ammo_type) > 0
+                && reload_style == ReloadStyle::PerShell;
+            if continues {
+                StateTransition::ReloadStep {
+                    shell_loaded: true,
+                    completed: None,
+                    restart_duration_ms: Some(reload_ms),
+                }
+            } else {
+                complete_reload(component, true)
+            }
         }
+        (WieldableState::ShellLoading, WieldableStateEvent::Cancel) => {
+            let transferred = component.reload_credited;
+            transition_to_idle(component);
+            component.reload_press_consumed = false;
+            if component.reload_feedback != Some(ReloadFeedback::Completed) {
+                component.reload_feedback = None;
+            }
+            StateTransition::ReloadCancelled { transferred }
+        }
+        (WieldableState::Reloading, WieldableStateEvent::Cancel) => StateTransition::Noop,
     }
+}
+
+fn complete_reload(component: &mut WeaponComponent, shell_loaded: bool) -> StateTransition {
+    let transferred = component.reload_credited;
+    transition_to_idle(component);
+    component.reload_feedback = Some(ReloadFeedback::Completed);
+    StateTransition::ReloadStep {
+        shell_loaded,
+        completed: Some(transferred),
+        restart_duration_ms: None,
+    }
+}
+
+fn resolve_expired_state(
+    registry: &mut EntityRegistry,
+    pawn: Option<EntityId>,
+    weapon: EntityId,
+    component: &mut WeaponComponent,
+    mut overshoot_ms: f64,
+    deliveries: &mut Vec<ReloadDelivery>,
+) {
+    let reserve_was_present = pawn.is_some_and(|pawn| {
+        registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true)
+    });
+    let mut working_reserve = pawn.map(|pawn| {
+        registry
+            .get_component::<AmmoReserve>(pawn)
+            .cloned()
+            .unwrap_or_default()
+    });
+
+    while component.state.is_reload_activity() && component.state_remaining_ms == 0 {
+        let transition = transition_wieldable_state(
+            component,
+            WieldableStateEvent::Expired {
+                pawn_present: pawn.is_some(),
+            },
+            working_reserve.as_mut(),
+        );
+        let StateTransition::ReloadStep {
+            shell_loaded,
+            completed,
+            restart_duration_ms,
+        } = transition
+        else {
+            break;
+        };
+
+        if let Some(pawn) = pawn {
+            if shell_loaded {
+                deliveries.push(ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                });
+            }
+            if let Some(transferred) = completed {
+                deliveries.push(ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Completed { transferred },
+                });
+            }
+        }
+
+        let Some(duration_ms) = restart_duration_ms else {
+            break;
+        };
+        if restart_timed_step(component, duration_ms, overshoot_ms) {
+            overshoot_ms -= f64::from(duration_ms);
+            continue;
+        }
+        break;
+    }
+
+    if reserve_was_present && let (Some(pawn), Some(reserve)) = (pawn, working_reserve) {
+        let _ = registry.set_component(pawn, reserve);
+    }
+}
+
+/// Restart a repeated timed step. The carry stores only the fractional
+/// remainder; a whole-step overshoot leaves the timer expired so the caller can
+/// credit the next shell in this same tick. `>=` keeps an exact boundary from
+/// deferring a shell one fixed tick.
+fn restart_timed_step(
+    component: &mut WeaponComponent,
+    duration_ms: u32,
+    overshoot_ms: f64,
+) -> bool {
+    let duration = f64::from(duration_ms);
+    component.state_total_ms = duration_ms;
+    if overshoot_ms >= duration {
+        component.state_remaining_ms = 0;
+        component.state_elapsed_sub_ms = 0.0;
+        return true;
+    }
+
+    let whole_ms = overshoot_ms.floor() as u32;
+    component.state_remaining_ms = duration_ms - whole_ms;
+    component.state_elapsed_sub_ms = overshoot_ms - f64::from(whole_ms);
+    false
 }
 
 fn transition_to_idle(component: &mut WeaponComponent) {
@@ -212,40 +387,84 @@ fn authorize_fire(
     command: &WeaponFireCommand,
     tick_dt: f32,
     reload_started_this_tick: bool,
+    pawn: Option<EntityId>,
+    weapon_id: EntityId,
+    deliveries: &mut Vec<ReloadDelivery>,
 ) -> WeaponFireAuthorization {
     let dt_ms = (tick_dt.max(0.0)) * 1000.0;
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
-    let stats = weapon.effective();
-    let fire_mode = stats.fire_mode;
-    let cooldown_ms = stats.cooldown_ms;
-    let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
-    let wants_fire = match fire_mode {
-        postretro_entities::data_descriptors::FireMode::Semi => {
-            command.button.pressed && !weapon.shoot_press_consumed
-        }
-        postretro_entities::data_descriptors::FireMode::Auto => command.button.active,
-    };
+    let verdict = weapon_fire_authorization_verdict(weapon, command);
+    if weapon.state == WieldableState::ShellLoading
+        && verdict == WeaponFireAuthorization::Accepted
+        && !reload_started_this_tick
+        && let StateTransition::ReloadCancelled { transferred } =
+            transition_wieldable_state(weapon, WieldableStateEvent::Cancel, None)
+        && let Some(pawn) = pawn
+    {
+        deliveries.push(ReloadDelivery {
+            pawn,
+            weapon: weapon_id,
+            outcome: ReloadOutcome::Cancelled { transferred },
+        });
+    }
+
+    let fire_mode = weapon.effective().fire_mode;
     if fire_mode == postretro_entities::data_descriptors::FireMode::Semi && command.button.pressed {
         weapon.shoot_press_consumed = true;
     } else if !command.button.active {
         weapon.shoot_press_consumed = false;
     }
 
-    if !command.can_fire || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
-        return WeaponFireAuthorization::Rejected;
-    }
     if reload_started_this_tick || !weapon.state.allows_fire() {
         return WeaponFireAuthorization::Rejected;
     }
-    if let Some(cost_per_shot) = cost_per_shot {
-        if weapon.magazine < cost_per_shot {
+
+    match verdict {
+        WeaponFireAuthorization::Rejected => WeaponFireAuthorization::Rejected,
+        WeaponFireAuthorization::Empty => {
+            weapon.cooldown_remaining_ms = weapon.effective().cooldown_ms;
+            WeaponFireAuthorization::Empty
+        }
+        WeaponFireAuthorization::Accepted => {
+            let (cooldown_ms, cost_per_shot) = {
+                let stats = weapon.effective();
+                (
+                    stats.cooldown_ms,
+                    stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot),
+                )
+            };
+            if let Some(cost_per_shot) = cost_per_shot {
+                weapon.magazine -= cost_per_shot;
+            }
             weapon.cooldown_remaining_ms = cooldown_ms;
+            WeaponFireAuthorization::Accepted
+        }
+    }
+}
+
+/// Answer the fire question as if the weapon were Idle. This is deliberately
+/// state- and reload-latch-blind so a ShellLoading loop can decide whether to
+/// cancel before the real gate applies state legality.
+fn weapon_fire_authorization_verdict(
+    weapon: &WeaponComponent,
+    command: &WeaponFireCommand,
+) -> WeaponFireAuthorization {
+    let stats = weapon.effective();
+    let wants_fire = match stats.fire_mode {
+        postretro_entities::data_descriptors::FireMode::Semi => {
+            command.button.pressed && !weapon.shoot_press_consumed
+        }
+        postretro_entities::data_descriptors::FireMode::Auto => command.button.active,
+    };
+    if !command.can_fire || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
+        return WeaponFireAuthorization::Rejected;
+    }
+    if let Some(cost_per_shot) = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot) {
+        if weapon.magazine < cost_per_shot {
             return WeaponFireAuthorization::Empty;
         }
-        weapon.magazine -= cost_per_shot;
     }
-    weapon.cooldown_remaining_ms = cooldown_ms;
     WeaponFireAuthorization::Accepted
 }
 
@@ -566,6 +785,7 @@ mod tests {
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::weapon::WeaponComponent;
     use postretro_entities::components::wieldable_state::WieldableState;
+    use postretro_entities::data_descriptors::ReloadStyle;
     use postretro_entities::{AmmoReserve, EntityRegistry, Transform};
     use postretro_foundation::FireMode;
     use postretro_net::wire::NetworkId;
@@ -613,6 +833,23 @@ mod tests {
         let weapon = registry.spawn(Transform::default());
         registry.set_component(weapon, component).unwrap();
         (pawn, weapon)
+    }
+
+    fn set_reload_style(
+        registry: &mut EntityRegistry,
+        weapon: EntityId,
+        reload_style: ReloadStyle,
+    ) {
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .expect("weapon component exists")
+            .clone();
+        component
+            .ammo
+            .as_mut()
+            .expect("reload fixture has ammo tuning")
+            .reload_style = reload_style;
+        registry.set_component(weapon, component).unwrap();
     }
 
     #[test]
@@ -1384,6 +1621,463 @@ mod tests {
     }
 
     #[test]
+    fn per_shell_reload_credits_one_round_per_step_and_completes_cumulatively() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 5, 4, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            WieldableState::ShellLoading
+        );
+
+        for expected_magazine in [3, 4] {
+            assert_eq!(
+                deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1),
+                vec![ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                }]
+            );
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(weapon)
+                    .unwrap()
+                    .magazine,
+                expected_magazine
+            );
+        }
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1),
+            vec![
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Completed { transferred: 3 },
+                },
+            ]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.magazine, 5);
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.reload_credited, 0);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            1
+        );
+    }
+
+    #[test]
+    fn per_shell_overshoot_credits_multiple_steps_from_one_reserve_working_copy() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 12, 10, 50, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1515),
+            vec![
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+            ]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.magazine, 5);
+        assert_eq!(component.reload_credited, 3);
+        assert_eq!(component.state_remaining_ms, 49);
+        assert!((component.state_elapsed_sub_ms - 0.5).abs() < 0.001);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            7
+        );
+    }
+
+    #[test]
+    fn per_shell_expiry_rechecks_style_and_missing_tuning_before_the_next_step() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 5, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+        set_reload_style(&mut registry, weapon, ReloadStyle::Magazine);
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1),
+            vec![
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Completed { transferred: 1 },
+                },
+            ]
+        );
+
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 5, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.ammo = None;
+        registry.set_component(weapon, component).unwrap();
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Completed { transferred: 1 },
+            }]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.state_remaining_ms, 0);
+        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+    }
+
+    #[test]
+    fn accepted_fire_cancels_per_shell_reload_and_keeps_credited_rounds() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.cooldown_remaining_ms = 10.0;
+        registry.set_component(weapon, component).unwrap();
+
+        let result = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(true, true),
+            0.01,
+        );
+        assert_eq!(result.authorization, WeaponFireAuthorization::Accepted);
+        assert_eq!(
+            result.deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Cancelled { transferred: 0 },
+            }]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(
+            component.magazine, 1,
+            "the accepted shot spends after cancel"
+        );
+        assert_eq!(component.reload_credited, 0);
+        assert!(!component.reload_press_consumed);
+        assert_eq!(component.reload_feedback, None);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            8
+        );
+    }
+
+    #[test]
+    fn held_reload_restarts_a_per_shell_loop_on_the_tick_after_cancel() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+
+        let started = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(false, false),
+            0.0,
+        );
+        assert_eq!(
+            started.deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+
+        let cancelled = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(true, true),
+            0.0,
+        );
+        assert_eq!(cancelled.authorization, WeaponFireAuthorization::Accepted);
+        assert_eq!(
+            cancelled.deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Cancelled { transferred: 0 },
+            }]
+        );
+        assert!(
+            !registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .reload_press_consumed
+        );
+
+        let restarted = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(false, false),
+            0.0,
+        );
+        assert_eq!(
+            restarted.deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            WieldableState::ShellLoading
+        );
+    }
+
+    #[test]
+    fn shell_expiry_then_fire_cancels_only_the_restarted_step() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+
+        let result = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(true, true),
+            0.1,
+        );
+        assert_eq!(result.authorization, WeaponFireAuthorization::Accepted);
+        assert_eq!(
+            result.deliveries,
+            vec![
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Cancelled { transferred: 1 },
+                },
+            ]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(
+            component.magazine, 2,
+            "one credited shell then one fired shot"
+        );
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            7
+        );
+    }
+
+    #[test]
+    fn suppressed_shell_fire_keeps_the_loop_and_does_not_emit_dry_fire() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 0);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.ammo.as_mut().unwrap().cost_per_shot = 2;
+        registry.set_component(weapon, component).unwrap();
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+
+        let result = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(true, true),
+            0.0,
+        );
+        assert_eq!(result.authorization, WeaponFireAuthorization::Rejected);
+        assert!(result.deliveries.is_empty());
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::ShellLoading);
+        assert_eq!(component.cooldown_remaining_ms, 0.0);
+        assert_eq!(component.magazine, 0);
+    }
+
+    #[test]
+    fn per_shell_take_zero_guard_completes_without_a_shell_event() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 5, 100, 4);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.state = WieldableState::ShellLoading;
+        component.state_remaining_ms = 0;
+        component.state_total_ms = 100;
+        component.reload_credited = 2;
+        component.reload_feedback = Some(ReloadFeedback::Started);
+        registry.set_component(weapon, component).unwrap();
+        registry.set_component(pawn, AmmoReserve::new()).unwrap();
+
+        // This fabricated state covers the defensive take -> 0 path: ordinary
+        // loop continuation already rejects an empty working reserve.
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.0),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Completed { transferred: 2 },
+            }]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 4);
+        assert_eq!(component.reload_credited, 0);
+        assert_eq!(component.state_remaining_ms, 0);
+        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+    }
+
+    #[test]
+    fn per_shell_final_credit_completes_before_same_tick_fire() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 3, 1, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+
+        let result = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(true, true),
+            0.1,
+        );
+        assert_eq!(result.authorization, WeaponFireAuthorization::Accepted);
+        assert_eq!(
+            result.deliveries,
+            vec![
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::ShellLoaded,
+                },
+                ReloadDelivery {
+                    pawn,
+                    weapon,
+                    outcome: ReloadOutcome::Completed { transferred: 1 },
+                },
+            ]
+        );
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(
+            component.magazine, 2,
+            "completion refills before the shot spends"
+        );
+        assert_eq!(component.reload_feedback, Some(ReloadFeedback::Completed));
+    }
+
+    #[test]
+    fn pawnless_shell_expiry_ends_silently_without_debiting_the_reserve() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+
+        let result = tick_machine(
+            &mut registry,
+            None,
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.1,
+        );
+        assert!(result.deliveries.is_empty());
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.state_remaining_ms, 0);
+        assert_eq!(component.state_total_ms, 0);
+        assert_eq!(component.reload_credited, 0);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            8
+        );
+    }
+
+    #[test]
     fn resourceless_weapon_cannot_reload_and_release_clears_edge_state() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
@@ -1594,6 +2288,97 @@ mod tests {
                 ReloadOutcome::Completed { transferred: 8 }
             )
         }));
+    }
+
+    #[test]
+    fn local_per_shell_reload_start_blocks_fire_then_an_authorized_shot_cancels() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            (pawn, weapon)
+        };
+
+        let started = run_local_only_tick(registry.clone(), weapon, &sim_command(true, true), 0.0);
+        assert!(started.weapon.is_empty());
+        assert_eq!(
+            started.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+
+        // The start-tick latch still performs the normal semi-edge bookkeeping,
+        // so release before the next press that is allowed to cancel the loop.
+        let released =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(false, false), 0.0);
+        assert!(released.weapon.is_empty());
+        assert!(released.reload_deliveries.is_empty());
+
+        let cancelled =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.0);
+        assert_eq!(cancelled.weapon, vec!["activate"]);
+        assert_eq!(
+            cancelled.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Cancelled { transferred: 0 },
+            }]
+        );
+        let registry = registry.borrow();
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 1);
+    }
+
+    #[test]
+    fn remote_per_shell_authorization_runs_the_same_cancel_machine() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+            (pawn, weapon)
+        };
+
+        let started = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 1, false, true)],
+        );
+        assert!(started.authorized_shots.is_empty());
+        assert_eq!(
+            started.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+
+        let cancelled = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 2, true, false)],
+        );
+        assert_eq!(cancelled.authorized_shots.len(), 1);
+        assert!(cancelled.weapon.is_empty());
+        assert_eq!(
+            cancelled.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Cancelled { transferred: 0 },
+            }]
+        );
+        let registry = registry.borrow();
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.magazine, 1);
     }
 
     #[test]

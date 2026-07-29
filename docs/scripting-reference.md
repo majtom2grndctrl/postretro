@@ -247,6 +247,12 @@ under `"magazine"`, or one shell under `"perShell"`. Runtime systems read it
 through the weapon's effective-stat seam, so future stat modifiers can adjust
 reload timing without reading raw descriptor data.
 
+Weapon reload outcomes can fire the reaction event names `reload_started`,
+`reload_shell_loaded`, `reload_completed`, `reload_cancelled`,
+`reload_blocked_full`, and `reload_blocked_empty`. A per-shell loop emits one
+`reload_started`, one `reload_shell_loaded` for each credited shell, and either
+`reload_completed` or `reload_cancelled` when the loop ends.
+
 ---
 
 ## Runtime values

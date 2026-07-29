@@ -103,6 +103,8 @@ const levelSelect = defineUiTree({
 
 export default defineMod({
   name: "frontend-level-select-fixture",
+  id: "postretro.frontend-level-select-fixture",
+  version: "dev",
   maps: mapCatalog,
   frontend: {
     menuTree: levelSelect.name,

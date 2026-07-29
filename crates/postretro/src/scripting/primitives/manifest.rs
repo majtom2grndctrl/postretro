@@ -38,6 +38,16 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
         .field(
+            "id",
+            "String",
+            "Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. Declared identity is not a security mechanism.",
+        )
+        .field(
+            "version",
+            "String",
+            "Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.",
+        )
+        .field(
             "render?",
             "RenderProfile",
             "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.",
@@ -131,6 +141,8 @@ mod tests {
         // back to its script-visible name.
         let _shape_anchor = ModManifestResult {
             name: String::new(),
+            id: String::new(),
+            version: String::new(),
             render: ModRenderProfile::default(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
@@ -147,6 +159,8 @@ mod tests {
         };
         let expected_fields: &[&str] = &[
             "name",
+            "id",
+            "version",
             "render",
             "entities",
             "uiTrees",

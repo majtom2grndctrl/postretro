@@ -521,9 +521,12 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 --- `canonicalName`, optional `defaultWeapon`, and optional component presets.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
---- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
---- `stores`.
+--- `config.name`, `config.id`, and `config.version` are required. Peers must
+--- declare the same id to connect. Must be non-empty ASCII, at most 64
+--- bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not
+--- enforced. `version` is displayed and never compared; neither field is a
+--- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
+--- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus

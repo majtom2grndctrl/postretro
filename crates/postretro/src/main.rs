@@ -8143,6 +8143,8 @@ mod tests {
             status: StagedManifestBuildStatus::Built(Box::new(
                 postretro_scripting_core::staged_manifest::StagedManifest {
                     name: "UiCommit".to_string(),
+                    id: "ui-commit".to_string(),
+                    version: "1".to_string(),
                     render: Default::default(),
                     entities: Vec::new(),
                     maps: Vec::new(),
@@ -8287,6 +8289,8 @@ mod tests {
             r#"
             globalThis.__postretroModManifest = {
                 name: "DrainMod",
+                id: "drain-mod",
+                version: "1",
                 uiTrees: [
                     { name: "banner", alwaysOn: true,
                       tree: { anchor: "top", offset: [0.0, 0.0],
@@ -8350,6 +8354,8 @@ mod tests {
             r#"
             globalThis.__postretroModManifest = {
                 name: "BadThemeMod",
+                id: "bad-theme-mod",
+                version: "1",
                 theme: { colors: { critical: "not-an-rgba-array", ok: [1, 0, 0, 1] } },
             };
             "#,

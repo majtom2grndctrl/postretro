@@ -117,6 +117,8 @@ mod tests {
             mod_root: PathBuf::from("content/dev"),
             status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
                 name: "RenderProfile".to_string(),
+                id: "render-profile".to_string(),
+                version: "1".to_string(),
                 render,
                 entities: Vec::new(),
                 maps: Vec::new(),

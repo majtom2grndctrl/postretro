@@ -41,6 +41,8 @@ impl StagedManifestDiagnostic {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StagedManifest {
     pub name: String,
+    pub id: String,
+    pub version: String,
     pub render: ModRenderProfile,
     pub entities: Vec<EntityTypeDescriptor>,
     pub maps: Vec<ModMapEntry>,

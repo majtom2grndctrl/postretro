@@ -34,7 +34,8 @@ impl ScriptRuntime {
     /// - `.js` default manifest export is missing or not an object
     /// - `.luau` returned manifest is missing or not a table
     /// - top-level manifest initialization throws
-    /// - the manifest object/table is missing the required `name` field
+    /// - the manifest object/table is missing a required `name`, `id`, or
+    ///   `version` field
     ///
     /// On success, the validated manifest is stored on `self`; access it via
     /// [`ScriptRuntime::mod_manifest`]. In debug builds when no start-script
@@ -160,6 +161,13 @@ impl ScriptRuntime {
 
         log::info!("[Mod-init] mod `{}` initialized", manifest.name);
         self.mod_manifest = Some(manifest);
+        let committed_identity = self
+            .mod_manifest
+            .as_ref()
+            .map(|manifest| (manifest.id.clone(), manifest.version.clone()))
+            .expect("manifest was stored immediately before identity seed");
+        self.committed_mod_identity
+            .get_or_insert(committed_identity);
         Ok(())
     }
 

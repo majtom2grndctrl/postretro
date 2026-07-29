@@ -25,6 +25,7 @@ mod replication;
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
 // trackers stay registry-blind.
 mod state_slots;
+mod tuning_payload;
 mod wire_convert;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and

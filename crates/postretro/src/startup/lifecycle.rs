@@ -559,8 +559,8 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
-        let kinematic_static_fingerprint =
-            crate::runtime_movers::kinematic_static_fingerprint(&world.kinematic_geometry);
+        let level_content_digest =
+            crate::runtime_movers::level_content_digest(&world.kinematic_geometry, &world);
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -568,7 +568,7 @@ impl App {
             .net_endpoint
             .as_mut()
         {
-            endpoint.set_kinematic_static_fingerprint(kinematic_static_fingerprint);
+            endpoint.set_kinematic_static_fingerprint(level_content_digest);
         }
         // The whole script tranche lives on `Session` (built post-first-pixel).
         // Level install only runs in Loading/Running, where the session is

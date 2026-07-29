@@ -22,6 +22,7 @@ mod candidate_cull_mirror;
 mod candidate_cull_probes;
 mod collision;
 mod combat_positioning;
+mod content_hash;
 mod frame_timing;
 mod fx;
 mod grant;
@@ -30,6 +31,7 @@ mod impact_effects;
 mod impact_policy;
 mod input;
 mod kinematic_mover;
+mod mod_digest;
 mod movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.

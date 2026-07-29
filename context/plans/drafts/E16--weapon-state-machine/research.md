@@ -93,9 +93,12 @@ signature and then a `weapon::tick_*_component` with the same
 `reload_started_this_tick` flag; the only divergence is which of
 `tick_resolved_component` (`weapon/mod.rs:351`) / `tick_state_only_component`
 (`:418`) runs, and both delegate the entire gate decision to the same private
-`apply_weapon_fire_state` (`:439`). Placing the machine inside that shared
-callee therefore serves both vantages with one implementation. If the machine were
-placed in `tick_resolved_component` instead, V2 would silently skip it.
+`apply_weapon_fire_state` (`:439`). Placing the machine in the weapon stage *above*
+both — one call from `run_local_weapon_command`, one from `run_remote_weapon_commands` —
+therefore serves both vantages with one implementation. That shared callee cannot host it:
+`apply_weapon_fire_state` receives neither the registry nor the pawn id the `AmmoReserve`
+transfer needs, and `tick_state_only_component` receives no registry at all. Placing the
+machine inside `tick_resolved_component` instead would silently skip V2.
 
 **Warrant, V3 needs no new work.** A host-side rejection during a `ShellLoading`
 loop takes the identical path a reload rejection takes today:
@@ -204,7 +207,7 @@ each piece suffices and where the coverage stops.
 |---|---|---|
 | A new state variant | one `WieldableState` enum, one transition function keyed by (state, event) | new arms, not a new dispatch shape |
 | A new *timed* state | the generalized timed-state triple (remaining / total / sub-ms carry) | the triple is state-agnostic — no per-state timer field exists to add |
-| A new state's fire/reload legality | `WieldableState::allows_fire()` / `allows_reload()`, exhaustive per-variant predicates | legality is one place, not scattered `state != Idle` tests |
+| A new state's fire/reload legality | `WieldableState::allows_fire()` / `allows_reload()` / `is_reload_activity()`, exhaustive per-variant predicates | legality is one place, not scattered `state != Idle` tests; the meter reads the third rather than opening a fourth match site |
 | A new preempting entry point (`begin_lower`, switch interrupt) | the transition function's (state, event) keying — an entry point legal from every source state is arms from every source state | structurally absorbed, but **untested here**: this spec ships no preempting entry point, so the switching spec is the first to exercise the path, not the second |
 | Finding every site that must decide about a new state | no `_` wildcard arms over `WieldableState` in production | adding a variant is a compile error at each decision site |
 | A new endpoint event pair | `ReloadOutcome` variants → `event_name` | the drain is name-driven; new variants need no new plumbing |

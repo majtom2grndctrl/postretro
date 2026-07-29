@@ -214,7 +214,7 @@ the ordering constraints between three become unwritable. The rest: `research.md
   `"perShell"` in TypeScript and Luau; an absent value parses as `"magazine"`; any other
   value is rejected at deserialize, identically in both runtimes. Generated SDK typedefs
   and `docs/scripting-reference.md` carry the field and both values, and that file's
-  `reloadMs` row and its trailing `reloadMs` paragraph both state that `reloadMs` times one
+  `resource` row and its trailing `reloadMs` paragraph both state that `reloadMs` times one
   reload *step* — the whole reload under `magazine`, one shell under `perShell`. Both values appear in
   dev content: `content/dev/scripts/reference-pistol.ts` authors `"magazine"` explicitly
   and `content/dev/scripts/reference-shotgun.ts` authors `"perShell"` — a content grep, not
@@ -246,11 +246,11 @@ the ordering constraints between three become unwritable. The rest: `research.md
   shipped ones — `reload_started`, `reload_completed`, `reload_blocked_full`,
   `reload_blocked_empty` — none of which that file names today.
 - [ ] The loop ends on its own when the magazine reaches capacity, when the reserve
-  reaches zero with the magazine still short, when a credit `take` returns `0`, and when a
-  hot reload has removed the ammo block so an expiry has nothing to credit and no style to
-  read (AC 9). All
-  four emit one `reload_completed` whose `transferred` is the cumulative total for the
-  whole reload, and leave the weapon fire-ready. That cumulative count survives a
+  reaches zero with the magazine still short, when a credit `take` returns `0`, when a
+  mid-loop hot reload flips the effective `reloadStyle` to `magazine`, and when a hot reload
+  has removed the ammo block so an expiry has nothing to credit and no style to read (AC 9
+  owns the last two). All five emit one `reload_completed` whose `transferred` is the
+  cumulative total for the whole reload, and leave the weapon fire-ready. That cumulative count survives a
   descriptor hot reload mid-loop. The `take`→`0` ending is unreachable from ordinary play —
   the loop-continue predicate already checked the reserve — so it is exercised from a
   fabricated `ShellLoading` fixture whose reserve is zeroed between check and credit. It is
@@ -427,9 +427,11 @@ the ordering constraints between three become unwritable. The rest: `research.md
 The invariants above say what holds. This says in what order, for every case where two
 producers could resolve a tick differently. Each row is one test. Task 6's test list defers
 to this table rather than restating it; where a row and an AC disagree, the row is the
-defect report and the AC is wrong. Two rows are matrix-only by design: the `Idle` zeroing
-and the discarded overshoot are internal-state hygiene, unobservable to a mod, so no AC
-states them and their absence from the criteria is not a gap.
+defect report and the AC is wrong. Two rows are matrix-only in part: the `Idle` zeroing of
+the three timer fields and the discarded overshoot are internal-state hygiene, unobservable
+to a mod, so no AC states them and their absence from the criteria is not a gap. The
+`reload_credited` half of that zeroing is mod-observable — it is the `transferred` count on
+`reload_completed` and the count `reload_cancelled` carries — and AC 4 owns it.
 
 Stage order within one machine tick, from Task 2: **1** reload intent → **2** advance the
 state timer → **3** resolve any expiry → **4** fire intent.
@@ -441,8 +443,8 @@ state timer → **3** resolve any expiry → **4** fire intent.
 | Reload edge + authorized fire, same tick, `perShell` | Identical stages | Identical outcome. The latch refuses the shot, not `allows_fire(state)`; the two styles must not diverge on a start tick, and no `reload_cancelled` is emitted |
 | Step expiry + authorized fire, same tick, loop would continue | Stage 3 credits the expiring step and restarts; stage 4 cancels | The credited shell is kept and counted: magazine +1, reserve −1, `reload_shell_loaded`, `reload_credited` +1. Only the restarted step is forfeited. `reload_cancelled` carries the count including that shell. The shot resolves this tick |
 | Step expiry + authorized fire, same tick, expiry fills the magazine | Stage 3 credits, sees the magazine at capacity, emits `reload_completed`, lands `Idle` — before stage 4 | Completion wins. No `reload_cancelled`. The shot is authorized by the ordinary gate from `Idle`, not by a cancel |
-| Fire gate internal check order | The real gate applies the started-this-tick latch → `allows_fire(state)` first, returning `Rejected` when either fails, then returns the state-blind verdict (`can_fire` → `wants_fire` → cooldown → cost) unchanged, then magazine debit → cooldown reset | A below-cost trigger pull during a reload of either style returns `Rejected`: no `dry_fire`, no cooldown reset. The same pull from `Idle` returns `Empty`. Folding the cost term in ahead of the state term collapses the two and breaks AC 7 |
-| `shoot_press_consumed` and the state-blind verdict | The verdict reads `shoot_press_consumed`; the real gate writes it only after the verdict is computed | One `Semi` press cancels a loop and fires exactly once. Held into the next tick it neither cancels nor fires. A verdict omitting the flag re-means semi fire |
+| Fire gate internal check order | The real gate applies the started-this-tick latch → `allows_fire(state)` ahead of the state-blind verdict's own terms (`can_fire` → `wants_fire` → cooldown → cost), returning `Rejected` when either fails, otherwise returning that verdict unchanged, then magazine debit → cooldown reset | A below-cost trigger pull during a reload of either style returns `Rejected`: no `dry_fire`, no cooldown reset. The same pull from `Idle` returns `Empty`. Folding the cost term in ahead of the state term collapses the two and breaks AC 7 |
+| `shoot_press_consumed` and the state-blind verdict | The verdict is computed first and reads the pre-write flag; the gate then writes or clears it unconditionally, ahead of the latch and `allows_fire(state)` | One `Semi` press cancels a loop and fires exactly once. Held into the next tick it neither cancels nor fires. A verdict omitting the flag re-means semi fire. A tick refused for state or latch reasons still does the bookkeeping, so a release after it re-arms the press |
 | Reload level held across a pawnless window | `reload_press_consumed` is written inside the pawn guard, not ahead of it | Pawnless ticks leave the flag untouched. The first tick with a pawn sees a rising edge and starts the loop |
 | Pawnless expiry | Stage 2 advances, stage 3 resolves the expiry with no pawn | Transition to `Idle`, no transfer, no delivery, `reload_credited` zeroed. The `reload_started` gets no terminator |
 | Hot reload removes the ammo block mid-loop | Refresh preserves state and timers; the next expiry reads `effective().ammo == None` | Credits nothing, emits `reload_completed { transferred: reload_credited }`, returns to `Idle`. Same for `ShellLoading` and `Reloading` |
@@ -539,7 +541,7 @@ Add one more field the per-shell loop needs and nothing derives: `reload_credite
 entry to a reload. It
 cannot be recovered from `magazine`, which also moves on fire and can be at any level when
 a loop is entered. Define the three variants this spec ships (`Idle`, `Reloading`,
-`ShellLoading`) so Task 4 adds transitions rather than variants; only `Idle` and
+`ShellLoading`) so Task 4 fills transition bodies rather than adding variants or arms; only `Idle` and
 `Reloading` are reachable in production after this task. `from_descriptor` materializes
 `Idle`. Update the `WeaponComponent` literals across the workspace that the field changes
 break — the compiler enumerates them.
@@ -579,7 +581,7 @@ the stage is the one deliberate change, so Task 4's state-blind verdict and the 
 gate read the same decremented value and the gate does not decrement twice. Task 4 splits
 that chain without reordering its outcomes: every check above the cost term yields
 `Rejected` when it fails, so the verdict may carry `can_fire`, `wants_fire`, cooldown, and
-cost while the real gate applies the latch and `allows_fire(state)` ahead of it. The state check
+cost while the real gate applies the latch and `allows_fire(state)` ahead of that answer. The state check
 sitting *above* the cost check is why a below-cost trigger pull during a reload returns
 `Rejected` today — no `dry_fire`, no cooldown reset. Place `allows_fire()` after the resource
 checks and that case returns `Empty` instead, firing `dry_fire` and arming the cooldown, and
@@ -946,10 +948,17 @@ It returns a full `WeaponFireAuthorization` — `Accepted`, `Empty`, `Rejected` 
 boolean, because the gate's answer is three-way and a boolean cannot carry it.
 
 The two callers compose it differently. The cancel edge takes the shot when the verdict is
-`Accepted` and the latch is clear. The real gate checks the latch and `allows_fire(state)`
-**first**, returns `Rejected` when either fails, and otherwise returns the verdict unchanged
-before running the debit and the cooldown reset. State therefore loses before cost is ever
-consulted: a below-cost pull during `ShellLoading` is `Rejected`, while the same pull from
+`Accepted` and the latch is clear. The real gate runs a fixed order: compute the verdict
+first — it writes nothing, so computing it on every path costs nothing — then write or clear
+`shoot_press_consumed` **unconditionally**, set on a `Semi` press and cleared when
+`button.active` is false, then apply the latch and `allows_fire(state)`, returning
+`Rejected` when either fails, and otherwise return the verdict unchanged before running the
+debit and the cooldown reset. The bookkeeping write is unconditional because the shipped
+gate writes it ahead of every one of its returns, which AC 2 preserves. Gate it behind the
+latch or the state instead and a tick refused for either reason skips it, stranding the
+flag: fire, reload, release, re-press then needs a second release before the weapon fires
+again. State still loses before cost is ever consulted: a below-cost pull during
+`ShellLoading` is `Rejected`, while the same pull from
 `Idle` is `Empty` — the distinction AC 7 protects — out of one shared computation with no
 duplicated legality. Conjoin a single boolean with `allows_fire(state)` instead and the cost
 term folds in ahead of the state term, collapsing the two into `Empty` and breaking AC 7.
@@ -960,8 +969,9 @@ Task 2 gives `ShellLoading` `allows_fire = false`, so a verdict consulting `stat
 `shoot_press_consumed`
 *is* a term, because `wants_fire` under `FireMode::Semi` is
 `command.button.pressed && !weapon.shoot_press_consumed`; a verdict omitting it silently
-re-means semi fire. The real gate must not write `shoot_press_consumed` until after the
-verdict is computed, or the verdict answers a question the gate has already altered. The
+re-means semi fire. The verdict reads the pre-write flag, matching the shipped gate where
+`wants_fire` reads it before setting it; write it ahead of the verdict and the verdict
+answers a question the gate has already altered. The
 per-tick cooldown decrement is hoisted to the top of the fire stage per Task 2, ahead of the
 verdict, so verdict and gate read the same value and the gate does not decrement twice —
 without that, a `ShellLoading` weapon whose cooldown reaches zero within a tick fails to
@@ -1141,18 +1151,20 @@ than with a transition: a pawnless weapon firing and cooling normally while refu
 reload press silently, emitting no delivery (AC 17); the `take → 0` ending, driven from
 a fabricated `ShellLoading` fixture whose reserve is zeroed between the loop-continue check
 and the credit (AC 4); a reload starting while the weapon is cooling, with the cooldown
-neither blocked nor reset (AC 8); and a `perShell` reload press from `Idle` blocked by a
-full magazine and one blocked by an empty reserve, each emitting its outcome and starting no
-loop (AC 5) — the `magazine` half of AC 5 rides on shipped tests, the `perShell` half is
-new. The matrix owns the pawnless *expiry* and the held-edge cases; the pawnless entry here
-is the refusal itself.
+neither blocked nor reset (AC 8); a `perShell` reload press from `Idle` blocked by a full
+magazine, emitting blocked-full and starting no loop; and one blocked by an empty reserve,
+emitting blocked-empty and starting no loop (AC 5) — the `magazine` half of AC 5 rides on
+shipped tests, the `perShell` half is new. The matrix owns the pawnless *expiry* and the
+held-edge cases; the pawnless entry here is the refusal itself.
 
 Ordering layer: one test per row of the ordering matrix, which owns those cases — do not
 restate them here and do not write them from the ACs, since the matrix is what the ACs were
-reconciled against. Two more the matrix does not cover: the loop still *running* after a
-suppressed trigger pull — rows 1 and 6 assert the verdict, not the surviving loop — and step
-cadence holding over many steps at a `reloadMs` that is not a tick multiple, where row 15
-pins one tick's worth.
+reconciled against. Two more the matrix does not cover: the loop still *running* and the
+verdict still `Rejected` after a suppressed trigger pull, for both of AC 7's triggers —
+cooldown not elapsed as well as magazine below `costPerShot` — since row 6 asserts the
+below-cost verdict but not the surviving loop, and no row covers the cooldown trigger at
+all; and step cadence holding over many steps at a `reloadMs` that is not a tick multiple,
+where row 15 pins one tick's worth.
 
 Hot-reload layer: state, timers, cumulative credited
 count, magazine, and edge

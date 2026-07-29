@@ -2,7 +2,7 @@ import { defineEntity, runtime } from "postretro";
 
 export const playerEntity = defineEntity({
   canonicalName: "player",
-  defaultWeapon: "reference_pistol",
+  defaultWeapon: "reference_shotgun",
   components: {
     // The player pawn carries health but DELIBERATELY no `hitbox`: a hitbox is
     // what makes an entity hitscan-targetable, so omitting it keeps the player

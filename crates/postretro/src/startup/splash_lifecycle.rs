@@ -27,13 +27,13 @@ impl App {
     ///   `first_splash_frame`; emit log line A; run `mod_init`; optionally
     ///   swap splash on override; emit log line B; enqueue boot load or enter
     ///   Frontend when no map was supplied.
-    pub(super) fn run_splash_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn run_splash_frame(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
         match self.splash_frame {
-            0 => self.run_splash_frame_zero(event_loop),
-            1 => self.run_splash_frame_one(event_loop),
+            0 => self.run_splash_frame_zero(event_loop, frame_dt),
+            1 => self.run_splash_frame_one(event_loop, frame_dt),
             _ => {
                 self.boot_state = BootState::Loading;
-                self.run_loading_frame(event_loop)
+                self.run_loading_frame(event_loop, frame_dt)
             }
         }
     }
@@ -50,11 +50,15 @@ impl App {
     /// `window_attributes` for why a hidden-window suppression was reverted). A
     /// transient surface failure requests another redraw WITHOUT advancing the
     /// schedule, so the timing marks a real presented frame.
-    fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
         if !self.paint_splash(event_loop) {
             self.request_redraw();
             return false;
         }
+        // A resumed session can already own an endpoint while Splash replays
+        // frame zero. Poll only after a successful paint so pixels-first
+        // scheduling remains unchanged.
+        let _ = self.poll_world_less_transport(frame_dt);
         self.boot_timings.record("first_black_frame");
 
         // Now that the OS window is showing a splash-color frame, decode and upload the
@@ -88,7 +92,7 @@ impl App {
     /// Second Splash frame: paint the splash so the user sees it before mod
     /// scripts touch the engine, then run the deferred mod init and exit Splash
     /// — to Loading with a boot map, or Frontend without one.
-    fn run_splash_frame_one(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    fn run_splash_frame_one(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
         // Run deferred mod init + the boot transition only after the splash
         // (logo) frame actually presents — a transient surface failure just
         // re-requests the redraw, holding the schedule on frame 1.
@@ -96,6 +100,9 @@ impl App {
             self.request_redraw();
             return false;
         }
+        // On resume the session (and its endpoint) survives while Splash frame
+        // one replays. Normal first boot has no endpoint yet, so this is a no-op.
+        let _ = self.poll_world_less_transport(frame_dt);
         // First pixels are now on screen (black frame 0, logo frame 1). Build +
         // install the whole `Session` (options, audio, scripting core,
         // input/UI/modal group, net endpoint) ahead of the renderer full-init

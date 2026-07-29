@@ -185,7 +185,11 @@ impl App {
         self.boot_state = BootState::Frontend;
     }
 
-    pub(crate) fn drive_boot_state_for_redraw(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    pub(crate) fn drive_boot_state_for_redraw(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame_dt: f32,
+    ) -> bool {
         if matches!(
             self.boot_state,
             BootState::Loading | BootState::Frontend | BootState::Running
@@ -201,8 +205,8 @@ impl App {
                 // rebuild and request a fresh redraw.
                 false
             }
-            BootState::Splash => self.run_splash_frame(event_loop),
-            BootState::Loading => self.run_loading_frame(event_loop),
+            BootState::Splash => self.run_splash_frame(event_loop, frame_dt),
+            BootState::Loading => self.run_loading_frame(event_loop, frame_dt),
             BootState::Frontend => {
                 // No level is installed. Let the normal redraw handler render a
                 // frontend-safe frame that skips gameplay/world work.
@@ -433,7 +437,14 @@ impl App {
         self.boot_state = BootState::Loading;
     }
 
-    pub(super) fn run_loading_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn run_loading_frame(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame_dt: f32,
+    ) -> bool {
+        // A worker may take longer than the netcode timeout. Poll the live
+        // endpoint before checking its channel, without touching level state.
+        let _ = self.poll_world_less_transport(frame_dt);
         match self.poll_loading_level_worker() {
             LoadingPoll::Ready(outcome) => match *outcome {
                 Ok(payload) => self.finish_level_payload(payload, event_loop),

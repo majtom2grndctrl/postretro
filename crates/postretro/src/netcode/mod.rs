@@ -106,7 +106,7 @@ use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
 };
-use postretro_net::transport::{NetClient, NetServer};
+use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
     self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
     ValidationError, WireError, WireKinematicMoverState, WireMovementState,
@@ -508,6 +508,45 @@ impl ClientTimeSync {
     }
 }
 
+/// The world-independent result of advancing a live network endpoint.
+///
+/// World-less frames intentionally retain host lifecycle events for the engine:
+/// a level transition can demote a slot while no world exists. Snapshot apply,
+/// prediction, state-crossing detection, and command draining are deliberately
+/// absent here; those operations have no meaningful target without a world.
+#[must_use = "world-less host lifecycle events must be handled by the engine"]
+pub(crate) enum WorldLessPoll {
+    /// Host-side gate verdicts and lifecycle transitions produced by this poll.
+    #[allow(
+        dead_code,
+        reason = "Task 7 consumes host lifecycle events after its cleanup seam lands"
+    )]
+    Host(ServerPoll),
+    /// A client transport advance. Task 4 adds the typed Control drain carried
+    /// by this variant's world-less path.
+    Client,
+    /// The transport failed after logging its diagnostic. Keep the frame alive,
+    /// matching the Running-path error handling.
+    Failed,
+}
+
+impl WorldLessPoll {
+    /// Take the host's lifecycle-bearing poll for game-logic cleanup.
+    ///
+    /// Task 7 consumes this from every world-less call site; client and failed
+    /// advances have no host lifecycle work to hand off.
+    #[allow(
+        dead_code,
+        reason = "Task 7 consumes this handoff after its cleanup seam lands"
+    )]
+    pub(crate) fn into_host_poll(self) -> Option<ServerPoll> {
+        match self {
+            Self::Host(poll) => Some(poll),
+            Self::Client | Self::Failed => None,
+        }
+    }
+}
+
 impl NetEndpoint {
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
@@ -580,6 +619,39 @@ impl NetEndpoint {
             }
             NetEndpoint::Client { client, .. } => {
                 client.set_kinematic_static_fingerprint(fingerprint);
+            }
+        }
+    }
+
+    /// Advance transport work that remains valid when no level world is
+    /// installed: socket I/O, keepalive, and handshake/gate processing.
+    ///
+    /// The registry argument intentionally reserves the game-logic-owned
+    /// control-drain seam. The currently available transport advance never
+    /// mutates it: world-less polling must not apply snapshots, simulate,
+    /// predict, detect state crossings, or drain commands. Task 4's typed
+    /// Control router and Task 7's demotion handling use this same borrow.
+    pub(crate) fn poll_world_less(
+        &mut self,
+        dt: Duration,
+        registry: &mut EntityRegistry,
+    ) -> WorldLessPoll {
+        let _ = registry;
+        match self {
+            NetEndpoint::Host { server, .. } => match server.update(dt) {
+                Ok(poll) => WorldLessPoll::Host(poll),
+                Err(err) => {
+                    log::error!("[Net] host update failed: {err}");
+                    WorldLessPoll::Failed
+                }
+            },
+            NetEndpoint::Client { client, .. } => {
+                if let Err(err) = client.update(dt) {
+                    log::error!("[Net] client update failed: {err}");
+                    WorldLessPoll::Failed
+                } else {
+                    WorldLessPoll::Client
+                }
             }
         }
     }
@@ -2536,6 +2608,44 @@ mod tests {
             viewmodel: None,
             resource: None,
         })
+    }
+
+    #[test]
+    fn world_less_poll_advances_both_roles_without_touching_registry_state() {
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform {
+            position: Vec3::new(3.0, 2.0, 1.0),
+            ..Transform::default()
+        });
+
+        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+        assert!(matches!(
+            host.poll_world_less(Duration::from_millis(16), &mut registry),
+            WorldLessPoll::Host(_)
+        ));
+
+        let mut client = NetEndpoint::from_role(&NetRole::Connect {
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        })
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+        assert!(matches!(
+            client.poll_world_less(Duration::from_millis(16), &mut registry),
+            WorldLessPoll::Client
+        ));
+
+        assert_eq!(
+            registry
+                .get_component::<Transform>(entity)
+                .expect("world-less transport must not mutate the registry")
+                .position,
+            Vec3::new(3.0, 2.0, 1.0),
+            "world-less transport does not apply snapshots or simulate"
+        );
     }
 
     #[test]

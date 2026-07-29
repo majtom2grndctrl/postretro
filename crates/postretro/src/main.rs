@@ -1748,11 +1748,14 @@ impl ApplicationHandler for App {
                     self.drain_script_reload_requests();
                 }
 
-                if !self.drive_boot_state_for_redraw(event_loop) {
+                if !self.drive_boot_state_for_redraw(event_loop, frame_dt) {
                     return;
                 }
 
                 if self.boot_state == BootState::Frontend {
+                    // Frontend has no world but is not a peerless state: keep an
+                    // installed endpoint alive before frontend-only game logic.
+                    let _ = self.poll_world_less_transport(frame_dt);
                     if !self.run_frontend_ui_logic(event_loop, frame_dt) {
                         return;
                     }
@@ -3607,6 +3610,25 @@ impl frame_order::ReplicatedStateFrame for App {
 }
 
 impl App {
+    /// Advance a session-owned endpoint on a frame with no installed world.
+    ///
+    /// The endpoint-presence predicate deliberately has no boot-state branch:
+    /// Frontend, Loading, and resumed Splash all use this same path. Its result
+    /// preserves the Task 4 Control-router and Task 7 host-lifecycle
+    /// handoff; this task only opens the bounded transport seam.
+    pub(crate) fn poll_world_less_transport(
+        &mut self,
+        frame_dt: f32,
+    ) -> Option<netcode::WorldLessPoll> {
+        let script_ctx = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())?;
+        let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
+        let mut registry = script_ctx.registry.borrow_mut();
+        Some(endpoint.poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry))
+    }
+
     /// Finish deferred session startup on the first visible logo frame. Takes
     /// (and thereby consumes) `pending_session` so the install commits at most
     /// once — a suspend/resume that re-enters the splash loop finds it `None`

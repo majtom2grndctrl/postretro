@@ -12,8 +12,8 @@ implied by which timer on `WeaponComponent` is nonzero:
 
 | Implied state | Predicate | Read at |
 |---|---|---|
-| cooling | `cooldown_remaining_ms > 0.0` | `apply_weapon_fire_state` (`crates/postretro/src/weapon/mod.rs:439`) |
-| reloading | `reload_remaining_ms > 0` | `apply_weapon_fire_state`, `reload::tick` (`crates/postretro/src/sim/reload.rs:41`), `WeaponComponent::reload_status` (`crates/entities/src/components/weapon.rs:146`) |
+| cooling | `cooldown_remaining_ms > 0.0` | `apply_weapon_fire_state` (`crates/postretro/src/weapon/mod.rs`) |
+| reloading | `reload_remaining_ms > 0` | `apply_weapon_fire_state`, `reload::tick` (`crates/postretro/src/sim/reload.rs`), `WeaponComponent::reload_status` (`crates/entities/src/components/weapon.rs`) |
 | idle | neither | fallthrough |
 
 Two producers write those timers and neither can see the other's decision:
@@ -22,8 +22,9 @@ Two producers write those timers and neither can see the other's decision:
   `AmmoReserve` transfer. It runs **first** in the tick.
 - `weapon/mod.rs::apply_weapon_fire_state` owns cooldown decrement, `wants_fire`,
   and the magazine debit. It runs **second**, and receives the boolean
-  `reload_started_this_tick` computed by the caller from the reload deliveries
-  (`sim/mod.rs:1201-1203` remote, `:1287-1289` local).
+  `reload_started_this_tick` computed by the caller from the reload deliveries —
+  the `deliveries.iter().any(...)` in `run_remote_weapon_commands` and the one in
+  `run_local_weapon_command`.
 
 That one-way boolean is the whole coupling. It is sufficient for
 "reload blocks fire" and structurally insufficient for "fire cancels reload" —
@@ -47,9 +48,9 @@ Read call sites the arrows require:
 
 | Arrow | Read site |
 |---|---|
-| every `--> Idle` from a timer | the fused machine tick, called from `run_local_weapon_command` (`sim/mod.rs:1255`) and `run_remote_weapon_commands` (`:1171`) |
-| `Idle --> Reloading/ShellLoading` | reload rising edge, derived from `SimCommand.reload` + `WeaponComponent::reload_press_consumed` (`sim/reload.rs:41-43`) |
-| `ShellLoading --> Idle` (fire) | the `wants_fire` + cooldown + magazine gate now inside the machine, today `apply_weapon_fire_state` (`weapon/mod.rs:439-477`) |
+| every `--> Idle` from a timer | the fused machine tick, called from `run_local_weapon_command` and `run_remote_weapon_commands` (`sim/mod.rs`) |
+| `Idle --> Reloading/ShellLoading` | reload rising edge, derived from `SimCommand.reload` + `WeaponComponent::reload_press_consumed` (`sim/reload.rs::tick`) |
+| `ShellLoading --> Idle` (fire) | the `wants_fire` + cooldown + magazine gate now inside the machine, today `apply_weapon_fire_state` (`weapon/mod.rs`) |
 
 Cooldown is deliberately **not** a state. `reload::tick` never consults
 `cooldown_remaining_ms`, so a reload can start while cooling today; making
@@ -73,10 +74,10 @@ them are *not* simulations at all.
 
 | Vantage | Entry point | Owns a `WeaponComponent`? |
 |---|---|---|
-| **V1** single-player / listen-host local pawn | `run_local_weapon_command` (`sim/mod.rs:1255`) | yes, plus a local hitscan ray |
-| **V2** host-simulated remote pawn | `run_remote_weapon_commands` (`sim/mod.rs:1171`) → `weapon::tick_state_only_component` (`weapon/mod.rs:418`) | yes, no ray; `can_fire` is repurposed to mean "pawn has a NetworkId" (`sim/mod.rs:1210-1212`) |
-| **V3** connected client, local prediction | `ClientWeaponState` (`weapon/mod.rs:58`), `resolve_client_fire` (`:530`) | **no** — rebuilt from the pawn descriptor's `defaultWeapon` (`from_local_pawn_descriptor`, `:70`); models cooldown / fire mode / resolution / range only, no ammo, no reload |
-| **V4** owner-private replication projection | `AmmoSlotProjection::for_pawn` (`crates/postretro/src/netcode/state_slots.rs:498`) | no — reads V1/V2's component through `WeaponOwners` |
+| **V1** single-player / listen-host local pawn | `run_local_weapon_command` (`sim/mod.rs`) | yes, plus a local hitscan ray |
+| **V2** host-simulated remote pawn | `run_remote_weapon_commands` (`sim/mod.rs`) → `weapon::tick_state_only_component` | yes, no ray; `can_fire` is repurposed to mean "pawn has a NetworkId" at the `WeaponFireCommand` construction inside `run_remote_weapon_commands` |
+| **V3** connected client, local prediction | `ClientWeaponState`, `resolve_client_fire` (`weapon/mod.rs`) | **no** — installed from the host-replicated tuning payload (`ClientWeaponState::sync_from_host_tuning` / `from_host_tuning` ← `netcode::DefaultWeaponFirePayload`, `crates/postretro/src/netcode/tuning_payload.rs`), driven from `sync_client_weapon_state` in `crates/postretro/src/main.rs`; the type's doc comment states clients must not consult their local registry for these values. `from_local_pawn_descriptor` survives as a `#[cfg(test)]` fixture builder with two test callers only. Models cooldown / fire mode / resolution / range only, no ammo, no reload |
+| **V4** owner-private replication projection | `AmmoSlotProjection::for_pawn` (`crates/postretro/src/netcode/state_slots.rs`) | no — reads V1/V2's component through `WeaponOwners` |
 
 | Stage | V1 | V2 | V3 | V4 |
 |---|---|---|---|---|
@@ -86,14 +87,14 @@ them are *not* simulations at all.
 | per-shell step credit | machine credits 1 from `AmmoReserve` | same | unaware | `player.ammo` increments per shell |
 | fire cancels shell loop | machine | machine | predicts the shot; host accepts | `reloadActive` drops to false |
 | fire during reload | rejected silently | rejected silently | **predicts, then rolls back on `ShotVerdict`** | unchanged |
-| hot reload | preserves live state | preserves live state | rebuilt from descriptor on pawn respawn only | reads whatever V1/V2 hold |
+| hot reload | preserves live state | preserves live state | re-synced from the host tuning payload whenever the host re-sends it, or rebuilt on pawn change | reads whatever V1/V2 hold |
 
 **Warrant, V1 == V2 for the machine.** Both call `reload::tick` with the same
 signature and then a `weapon::tick_*_component` with the same
 `reload_started_this_tick` flag; the only divergence is which of
-`tick_resolved_component` (`weapon/mod.rs:351`) / `tick_state_only_component`
-(`:418`) runs, and both delegate the entire gate decision to the same private
-`apply_weapon_fire_state` (`:439`). Placing the machine in the weapon stage *above*
+`tick_resolved_component` / `tick_state_only_component` runs, and both delegate the
+entire gate decision to the same private
+`apply_weapon_fire_state` (`weapon/mod.rs`). Placing the machine in the weapon stage *above*
 both — one call from `run_local_weapon_command`, one from `run_remote_weapon_commands` —
 therefore serves both vantages with one implementation. That shared callee cannot host it:
 `apply_weapon_fire_state` receives neither the registry nor the pawn id the `AmmoReserve`
@@ -102,14 +103,19 @@ machine inside `tick_resolved_component` instead would silently skip V2.
 
 **Warrant, V3 needs no new work.** A host-side rejection during a `ShellLoading`
 loop takes the identical path a reload rejection takes today:
-`run_remote_weapon_commands` returns before `authorized.push` (`sim/mod.rs:1225-1232`),
+`run_remote_weapon_commands` returns before `authorized.push`,
 so no `AuthorizedShot` is minted, the client's `HitDeclaration` binds to nothing, and
-`ClientPredictedShots::apply_verdict` (`weapon/mod.rs:191`) restores
-`cooldown_remaining_ms` from `cooldown_before_ms` and clears `muzzle_fx_visible` /
-`hitmarker_visible`. The new state widens *when* that path fires, not what it does.
+`ClientPredictedShots::apply_verdict` (`weapon/mod.rs`) clears `muzzle_fx_visible` /
+`hitmarker_visible` and restores
+`cooldown_remaining_ms` from `cooldown_before_ms` — the last conditionally, only while
+`state.cooldown_authority_generation` still equals the record's. `reconcile_cooldown` bumps
+that generation on every fresh authoritative `player.weaponCooldownMs` sample, so a rejected
+shot whose in-flight window saw a fresher host cooldown deliberately keeps the newer value
+rather than rolling back to a stale one. The new state widens *when* that path fires, not
+what it does.
 
 **Warrant, V4 needs no new slot.** `AmmoSlotProjection::for_pawn` already calls
-`WeaponComponent::reload_status()` (`state_slots.rs:503`) and reads
+`WeaponComponent::reload_status()` and reads
 `weapon.magazine`. Redefining `reload_status()` to report the current *step*
 changes what the projection publishes without changing the projection.
 Per-shell progress is separately observable because `player.ammo` republishes the
@@ -119,27 +125,28 @@ live magazine every frame, which increments once per credited shell.
 
 | File | Total | Production (pre-`mod tests`) | Verdict |
 |---|---|---|---|
-| `crates/postretro/src/sim/mod.rs` | 3453 | 1446 | **split before extend** — extract the weapon stage |
-| `crates/postretro/src/weapon/mod.rs` | 2201 | 706 | under the line; extend in place |
+| `crates/postretro/src/sim/mod.rs` | 3453 | 1445 | **split before extend** — extract the weapon stage |
+| `crates/postretro/src/weapon/mod.rs` | 2268 | 752 | under the line; extend in place |
 | `crates/entities/src/components/weapon.rs` | 417 | 198 | fine |
 | `crates/postretro/src/sim/reload.rs` | 212 | 191 | fine; becomes the machine's driver |
 | `crates/foundation/src/data_descriptors/types/combat.rs` | 399 | 222 | fine |
-| `crates/postretro/src/netcode/mod.rs` | 4334 | — | not extended by this plan |
+| `crates/postretro/src/netcode/mod.rs` | 5072 | — | not extended by this plan |
 
-The extractable seam in `sim/mod.rs` is contiguous and cohesive: `normalize_aim_direction`
-(`:1160`), `run_remote_weapon_commands` (`:1171`), `run_local_weapon_command` (`:1255`),
-`apply_weapon_impact_damage` (`:1310`), `apply_authorized_weapon_impact_damage` (`:1339`),
-`apply_weapon_impact_damage_with_source` (`:1357`), `deliver_reload_to_weapon` (`:1424`),
-plus `weapon_fire_command` (`:1134`). ~290 lines. `run_death_sweep` (`:1410`) sits inside
+The extractable seam in `sim/mod.rs` is contiguous and cohesive: `weapon_fire_command`,
+`normalize_aim_direction`, `run_remote_weapon_commands`, `run_local_weapon_command`,
+`apply_weapon_impact_damage`, `apply_authorized_weapon_impact_damage`,
+`apply_weapon_impact_damage_with_source`, and the `#[cfg(test)]`
+`deliver_reload_to_weapon`. ~290 lines. `run_death_sweep` sits inside
 that address range but is the death stage, not the weapon stage — it stays.
 
 ## 5. Multi-pellet — why it stays out
 
-`AuthorizedShot.pellet_count` exists (`crates/postretro/src/netcode/mod.rs:660`) and is
-hardcoded `1` at both construction sites (`sim/mod.rs:1244`, `netcode/lifecycle.rs:767`
-and `:943`). It is already consumed generically: hit-declaration acceptance clamps
-records with `.take(pellet_count)` (`netcode/mod.rs:2232`) and rejects `pellet_count == 0`
-(`:2224`), and a test already drives `pellet_count = 2` (`:3056`). So the wire and
+`AuthorizedShot.pellet_count` exists (`crates/postretro/src/netcode/mod.rs`) and is
+hardcoded `1` at every construction site — one in `run_remote_weapon_commands`
+(`sim/mod.rs`), two in `netcode/lifecycle.rs`. It is already consumed generically:
+hit-declaration acceptance clamps
+records with `.take(pellet_count)` and rejects `pellet_count == 0` in `netcode/mod.rs`,
+and a test there already drives `pellet_count = 2`. So the wire and
 validation side is *already* pellet-count-general — raising it above 1 is an additive
 change owned by the Resolution Modes milestone, not a prerequisite for reload style.
 
@@ -150,9 +157,9 @@ neither reviewed properly.
 
 ## 6. Reload edge transport — why no new wire field
 
-`SimCommand.reload` (`sim/mod.rs:27`) is a held level bit with a dedicated reliable
+`SimCommand.reload` (`sim/mod.rs`) is a held level bit with a dedicated reliable
 edge lane on the host (`pending_reload_presses` / `observe_reload_level` /
-`preserve_due_reload_press`, `crates/postretro/src/netcode/command_queue.rs:187-231`),
+`preserve_due_reload_press`, `crates/postretro/src/netcode/command_queue.rs`),
 documented in `networking.md` §Host input command queue. The lane exists because a
 *rising edge* can be destroyed by stale-drop or catch-up trimming.
 
@@ -164,33 +171,37 @@ therefore no cancel — the loop simply continues, which is the correct degradat
 
 ## 7. Descriptor / SDK surface as it stands
 
-- `AmmoResource` (`crates/foundation/src/data_descriptors/types/combat.rs:33`):
+- `AmmoResource` (`crates/foundation/src/data_descriptors/types/combat.rs`):
   `ammo_type` (wire `type`), `magazine`, `cost_per_shot` (`costPerShot`, default 1),
-  `reserve`, `reload_ms` (`reloadMs`, default 1000). Validation at `:119-133` requires
-  `magazine`, `costPerShot`, `reloadMs` all `>= 1`.
-- `WeaponDescriptor` (`:56`) has no `Default` impl, so any field added to it breaks every
+  `reserve`, `reload_ms` (`reloadMs`, default 1000). `WeaponDescriptor::validate` requires
+  `magazine`, `costPerShot`, `reloadMs` all `>= 1`. `AmmoResource` derives `Eq` and has no
+  `Default` impl, so exhaustive struct literals break on an added field.
+- `WeaponDescriptor` has no `Default` impl either, so any field added to it breaks every
   struct literal in the workspace. This spec adds none — the only new authored field is
   `reloadStyle`, on the nested `AmmoResource`.
 - Enum serde convention is `#[serde(rename_all = "camelCase")]` on the enum, so variant
-  wire values are camelCase — `FireMode::Semi` → `"semi"` (`combat.rs:12-17`). This is
+  wire values are camelCase — `FireMode::Semi` → `"semi"` (`combat.rs`). This is
   why `PerShell` serializes `"perShell"`, **not** the `"per-shell"` kebab spelling
-  sketched in `context/research/weapon-model.md:131`.
-- SDK types are generated: `sdk/types/postretro.d.ts:238-255` and
-  `sdk/types/postretro.d.luau:237-254` already carry `AmmoResource` and the
+  sketched in `context/research/weapon-model.md` §3.
+- SDK types are generated: `sdk/types/postretro.d.ts` and
+  `sdk/types/postretro.d.luau` already carry `AmmoResource` and the
   `WeaponResource` union, from `register_type` / `register_tagged_union`
-  (`crates/scripting-core/src/primitives_registry.rs:231`, `:252`) driven from
-  `crates/postretro/src/scripting/primitives/mod.rs`.
-- `docs/scripting-reference.md` `## components.weapon` (line 193) documents the
-  block and the `resource` row, and already states reload duration is read through the
-  effective-stat seam.
+  (`crates/scripting-core/src/primitives_registry.rs`) driven from
+  `crates/postretro/src/scripting/primitives/mod.rs`. That registration also owns the
+  `reloadMs` doc line the typedefs carry, which reads "Reload duration in milliseconds".
+- `docs/scripting-reference.md` `## components.weapon` documents the
+  block and the `resource` row, and closes with a trailing paragraph stating the authored
+  `reloadMs` is the base reload duration read through the effective-stat seam.
 
 ## 8. Hot-reload precedent
 
-`refresh_from_descriptor` (`crates/entities/src/components/weapon.rs:128-137`)
+`refresh_from_descriptor` (`crates/entities/src/components/weapon.rs`)
 deliberately preserves cooldown, input edges, magazine, and every reload timer value,
-and its comment names them. `reload::tick`'s completion path re-reads
+and its comment names them. It assigns unconditionally except for `credit_source`, which
+is assigned only when the descriptor carries one so an absent value keeps the spawn-time
+resolution. `reload::tick`'s completion path re-reads
 `component.effective()` at completion so "a hot descriptor refresh during reload
-redirects capacity and transfer to the refreshed ammo pool" (`sim/reload.rs:97-102`).
+redirects capacity and transfer to the refreshed ammo pool" (`sim/reload.rs`).
 Those two precedents settle the new field's policy: **state and its timers are live
 instance state (preserved); durations and style are authored tuning (refreshed, and
 honored at the next decision point).**
@@ -357,41 +368,53 @@ earn a line there.
   equip: a raise lockout fires on every swap, so a per-swap mispredict-and-rollback would
   be visible on every weapon change rather than at the edges of an ammo count.
 
-  The standard that choice must be argued against is already written down.
-  `plans/in-progress/E15--session-lifecycle` §Decisions commits that "the host replicates
-  the values a client predicts with," and gives the reason: "a client predicting with its
-  own numbers fights reconciliation instead of diverging cleanly." E15 replicates the four
-  weapon fire fields a client reads through `default_weapon` — `range`, `cooldown_ms`,
-  `fire_mode`, `resolution` — precisely so prediction and authority agree. An equip-timing
-  field is the same shape of number, and cutting `raiseMs` means this spec introduces no
-  such field for E15's rule to bite on. Whichever spec authors one owes the argument
-  against that thesis: either replicate it and teach `ClientWeaponState` the equip
-  transition, or state why a per-swap rollback is the cheaper trade here than the
-  reconciliation fight E15 is avoiding.
+  The mechanism an equip-timing field would join is already shipped.
+  `plans/done/E15--session-lifecycle/` §Decisions commits that "the host replicates
+  the values a client predicts with," for the reason "a client predicting with its
+  own numbers fights reconciliation instead of diverging cleanly," and the machinery
+  exists: `netcode::DefaultWeaponFirePayload` carries exactly the four weapon fire fields a
+  client reads through `default_weapon` — `range`, `cooldown_ms`, `fire_mode`,
+  `resolution` — `TuningPayload` versions them behind `TUNING_PAYLOAD_EPOCH`, and the host
+  re-sends whenever they change. So an equip-timing field is a fifth field on an existing
+  payload, not a new mechanism. Cutting `raiseMs` means this spec authors no such field;
+  whichever spec does inherits a concrete choice rather than an open argument — add the
+  field, bump the epoch, teach `ClientWeaponState` the equip transition, or argue that a
+  per-swap rollback beats the reconciliation fight.
+
+  `reloadStyle` is deliberately **not** on that payload, and it is not the same question:
+  the client predicts nothing that reads it. That also sharpens the accepted cost above —
+  the dev-default mispredict is an unmodelled-state problem, which E15 does not address,
+  rather than the divergent-numbers problem E15 solves.
 
 ## 13. Test-independence audit — does anything depend on `reference_pistol` being the dev default?
 
 This spec flips `content/dev/scripts/player.ts`'s `defaultWeapon` from
 `reference_pistol` to `reference_shotgun`. Audit result: **no existing test breaks.**
 
-Grep for `reference_pistol` across `crates/` returns six files, all of which use it as a
+Grep for `reference_pistol` across `crates/` returns eleven files, all of which use it as a
 free-standing string literal in a fixture the test itself constructs — none of them reads
 dev content:
 
 | Site | Use | Coupled to the dev default? |
 |---|---|---|
-| `crates/entities/src/components/weapon.rs:359, 371, 390, 408` | `canonical_name` argument to `from_descriptor_with_canonical`, asserted back out as `credit_source` | no — the string is the test's own input |
-| `crates/scripting-core/src/data_descriptors/tests/entity.rs:134, 147, 163, 552, 630, 643, 658, 678` | inline JS/Luau descriptor source in the test body | no |
-| `crates/net/src/wire.rs:2071, 2092, 2222, 2251, 2265` | `active_weapon_archetype` payload value | no |
-| `crates/net/src/replication.rs:1568, 1580` | `active_weapon_archetype` payload value | no |
-| `crates/postretro/src/main.rs:6504, 6514, 6536, 6551, 6560, 6564` | synthetic `DescriptorProvenance` / viewmodel descriptor | no |
+| `crates/entities/src/components/weapon.rs` | `canonical_name` argument to `from_descriptor_with_canonical`, asserted back out as `credit_source` | no — the string is the test's own input |
+| `crates/scripting-core/src/data_descriptors/tests/entity.rs` | inline JS/Luau descriptor source in the test body | no |
+| `crates/net/src/wire.rs` | `active_weapon_archetype` payload value | no |
+| `crates/net/src/replication.rs` | `active_weapon_archetype` payload value | no |
+| `crates/postretro/src/main.rs` | synthetic `DescriptorProvenance` / viewmodel descriptor | no |
+| `crates/postretro/src/netcode/client.rs` | `active_weapon_archetype` on self-built remote-slot fixtures | no |
+| `crates/postretro/src/netcode/lifecycle.rs` | `player_with_default_weapon` / `weapon_descriptor` fixture arguments | no |
+| `crates/postretro/src/netcode/mod.rs` | `canonical_name` on a self-built descriptor provenance fixture | no |
+| `crates/postretro/src/netcode/remote_materialize.rs` | third-person weapon descriptor fixture name | no |
+| `crates/postretro/src/scripting/builtins/data_archetype.rs` | `player_with_default_weapon` / `weapon_descriptor` fixture arguments | no |
+| `crates/postretro/src/scripting/builtins/net_descriptor.rs` | `player_with_default_weapon` / `weapon_descriptor` fixture arguments | no |
 
 No Rust test loads `content/dev/start-script.ts` or `content/dev/scripts/player.ts`. The
 only tests that read dev-content files at all are in
 `crates/postretro/src/scripting/entity_world_primitives.rs`, whose `dev_script_fixture`
-helper (`:508`) is called with `trigger-fanout-fixture.{ts,luau}` and
-`trigger-event-presser-fixture.{ts,luau}` only (`:794`, `:795`, `:835`, `:836`).
-`crates/postretro/src/movement/mod.rs:254` mirrors `player.ts` — but its movement block,
+helper is called with `trigger-fanout-fixture.{ts,luau}` and
+`trigger-event-presser-fixture.{ts,luau}` only.
+`crates/postretro/src/movement/mod.rs` mirrors `player.ts` — but its movement block,
 not `defaultWeapon`.
 
 So the requirement is forward-looking, not remedial: it constrains the tests **this spec

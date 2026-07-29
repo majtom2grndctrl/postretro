@@ -196,7 +196,7 @@ the ordering constraints between three become unwritable. The rest: `research.md
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| A weapon is in exactly one state; the fire gate authorizes a shot only from `Idle`; a `ShellLoading` cancel must transition to `Idle` before the shot is authorized, never authorize from `ShellLoading` directly | Task 2 | the state added in Task 4 must extend the legality predicates, not bypass them | AC 2, 6, 7, 17 |
+| A weapon is in exactly one state; the fire gate authorizes a shot only from `Idle`; a `ShellLoading` cancel must transition to `Idle` before the shot is authorized, never authorize from `ShellLoading` directly | Task 2 | the state added in Task 4 must extend the legality predicates, not bypass them | AC 2, 6, 7, 17 behaviorally; AC 13's grep gate for the code shape, since an implementation returning `true` from `allows_fire()` for `ShellLoading` while still emitting `reload_cancelled` passes every behavioral check |
 | The machine stays open for extension: new states are arms and rows, never a reshape | Task 2 | Task 4 is the first extension and must land as arms and rows itself | AC 14 |
 | Rounds credited by a per-shell loop are never rolled back — not by cancel, not by hot reload | Task 4 | Task 2's hot-reload policy | AC 4, 6, 9 |
 | The pawn `AmmoReserve` is debited exactly once per credited round, through `AmmoReserve::take` only | Task 4 | the tick where one step completes and the next starts | AC 3, 6, 13 |
@@ -215,7 +215,8 @@ the ordering constraints between three become unwritable. The rest: `research.md
   exactly as today: one timer of `reloadMs`, one atomic transfer at completion,
   uncancellable by firing, same four reload events with the same `transferred` count.
   The shipped atomic-reload *behavior* assertions pass with no change beyond the
-  timer-field rename and an added `state` initializer.
+  timer-field rename, an added `state` initializer, and the reload test harness
+  re-pointed at the machine entry point.
 - [ ] A `perShell` reload loads one round per `reloadMs`: after N steps the magazine has
   grown by exactly N and the pawn reserve shrunk by exactly N, one `reload_shell_loaded`
   per step, and exactly one `reload_started` for the whole loop rather than one per step.
@@ -250,8 +251,10 @@ the ordering constraints between three become unwritable. The rest: `research.md
   driven through the same command path.
 - [ ] A connected client that predicts a shot the host refuses — mid-`magazine` reload, or
   mid-`ShellLoading` with the host magazine still below `costPerShot` — sees it rolled back
-  through the existing verdict path: no authorized shot minted, predicted cooldown
-  restored, muzzle/hitmarker feedback cleared. The same predicted shot mid-`ShellLoading`
+  through the existing verdict path: no authorized shot minted, muzzle/hitmarker feedback
+  cleared, and the predicted cooldown restored **unless a fresher authoritative cooldown
+  has since landed**, per `ClientPredictedShots::apply_verdict`'s
+  `cooldown_authority_generation` guard. The same predicted shot mid-`ShellLoading`
   with the magazine at or above `costPerShot` is authorized instead and cancels the loop.
 - [ ] `player.reloadActive` is true for the entire duration of a reload of either style,
   including across step boundaries, and false at every other time except the shipped
@@ -260,9 +263,16 @@ the ordering constraints between three become unwritable. The rest: `research.md
   for `perShell`. `player.ammo` increments once per credited shell. The owner-private
   projection publishes the same values to a remote client's owner.
 - [ ] No wire message, `WIRE_VERSION`, app-protocol constant, replicated-slot schema
-  entry, or state-slot fingerprint input changes (review/grep gate). No switching,
+  entry, or state-slot fingerprint input changes (review/grep gate). `DefaultWeaponFirePayload`
+  and `TUNING_PAYLOAD_EPOCH` (`crates/postretro/src/netcode/tuning_payload.rs`) are unchanged:
+  the client models no reload state, so nothing this spec adds belongs on the host tuning
+  payload, and an implementer who rode `reloadStyle` to clients would trip its committed JSON
+  fixture rather than this gate (review/grep gate). No switching,
   inventory, pickup, or multi-pellet behavior is built, and no `Raising`, `Lowering`, or
-  `Stowed` variant and no equip-timing descriptor field are added (review/grep gate). The
+  `Stowed` variant and no equip-timing descriptor field are added (review/grep gate).
+  `allows_fire()` returns true for `Idle` only, so a `ShellLoading` cancel reaches `Idle`
+  before the shot is authorized and no site authorizes from `ShellLoading` directly
+  (review/grep gate). The
   pawn `AmmoReserve` is mutated only through `credit` / `take`, and only from the weapon
   stage (review/grep gate). No new `unsafe` (review/grep gate).
 - [ ] Openness is demonstrated, not asserted: adding a placeholder timed `WieldableState`
@@ -295,20 +305,26 @@ the ordering constraints between three become unwritable. The rest: `research.md
 ### Task 1: Extract the weapon stage out of `sim/mod.rs`
 
 Behavior-preserving split, no functional change. `crates/postretro/src/sim/mod.rs`
-carries 1446 production lines and this plan extends its weapon orchestration. Move into
+carries 1445 production lines and this plan extends its weapon orchestration. Move into
 a new `crates/postretro/src/sim/weapon_stage.rs`: `weapon_fire_command`,
 `normalize_aim_direction`, `run_remote_weapon_commands`, `run_local_weapon_command`,
 `apply_weapon_impact_damage`, `apply_authorized_weapon_impact_damage`,
 `apply_weapon_impact_damage_with_source`, and the test-only `deliver_reload_to_weapon`.
 Keep `run_death_sweep` in `sim/mod.rs` — it sits inside that address range but is the
-death stage. Exactly one function has a consumer outside the sim module:
+death stage, and it has two consumers outside the sim module (`main.rs` and
+`impact_policy.rs`), so moving it would widen the re-export surface for no gain. Exactly
+one moved function has a consumer outside the sim module:
 `apply_authorized_weapon_impact_damage`, called by fully-qualified path
 (`crate::sim::apply_authorized_weapon_impact_damage`) from
 `crates/postretro/src/netcode/mod.rs`. Re-export it from `sim/mod.rs` so that path still
-resolves; the other seven are sim-internal and need no re-export. `sim/mod.rs`'s existing
-`pub(crate) use reload::{…}` block keeps its current shape and location — `reload.rs`
-stays a sibling module of `weapon_stage.rs` under `sim/`, and Task 2's fusion consumes it
-in place rather than relocating it.
+resolves; the other seven are sim-internal and need no re-export.
+
+`reload.rs` stays a sibling module of `weapon_stage.rs` under `sim/`, and keeps its types
+and helpers: `ReloadDelivery`, `ReloadOutcome` and its `event_name`, the timer-advance
+helper, and the `clear_all_feedback` / `clear_feedback_for_weapon` pair. `sim/mod.rs`'s
+existing `pub(crate) use reload::{…}` block keeps its current shape and location —
+`main.rs` consumes the renamed feedback-clear exports through it. Only the orchestrating
+`reload::tick` entry point is at stake, and Task 2 fuses it away.
 
 Test boundary: move every test whose subject is one of the eight moved functions, plus
 every caller of `deliver_reload_to_weapon`. A test spanning both stages stays with the
@@ -329,8 +345,11 @@ authored surface and no new production states. Define `WieldableState` in a new
 wieldables, and the switching spec will extend this machine with equip states. Hosting it
 on the weapon kind is equally deliberate while weapon is the only wieldable kind that
 exists — do not invent a wieldable component for it. Derive at least
-`Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize`, matching
-`WeaponComponent`'s derives and its sibling enums.
+`Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize`. The model is
+`FireMode` — `Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize` — plus an explicit
+`#[default] Idle`, which no sibling enum carries because none of them has a defaultable
+variant. `WeaponComponent` itself derives only `Debug, Clone, PartialEq, Serialize,
+Deserialize`, so it is not the source of `Copy`, `Eq`, or `Default` here.
 
 Add to `WeaponComponent`
 (`crates/entities/src/components/weapon.rs`) a `state: WieldableState` field
@@ -354,9 +373,10 @@ The timer rename reaches seven files: `crates/entities/src/components/weapon.rs`
 `crates/postretro/src/weapon/mod.rs`, `crates/postretro/src/netcode/state_slots.rs`,
 `crates/postretro/src/netcode/lifecycle.rs`, and
 `crates/postretro/src/scripting/systems/ui_proxy.rs`. Several shipped tests fabricate
-mid-reload state by writing the timer directly (`reload_remaining_ms = 250` and
-similar). Those must also set `state`, because `reload_status()` now derives from state
-plus timers — renamed and left alone they still compile and assert the wrong thing.
+mid-reload state by writing the timer directly (`reload_remaining_ms = 275`, `= 300`,
+`= 600` and similar). Those must also set `state`, because `reload_status()` now derives
+from state plus timers — renamed and left alone they still compile and assert the wrong
+thing.
 
 Fuse the two producers. `sim/reload.rs::tick` and the private
 `weapon/mod.rs::apply_weapon_fire_state` become one machine tick with a single ordered
@@ -374,9 +394,19 @@ at the call sites disappear; the machine returns its own outcome list plus the f
 authorization. Keep `ReloadDelivery`, `ReloadOutcome`, and every existing event name and
 payload byte-identical.
 
+The machine calls the helpers that stay in `reload.rs` rather than re-implementing them:
+the timer-advance helper, `ReloadDelivery` / `ReloadOutcome` construction, and the
+feedback-clear pair. Only `reload::tick`'s orchestration is absorbed. The `#[cfg(test)]
+deliver_reload_to_weapon` harness in `sim/mod.rs` re-points at the machine entry point with
+a no-fire command, so its roughly twenty call sites in that test module keep their shape
+and their assertions.
+
 That leaves the two `weapon::tick_*` entry points with different fates.
-`tick_state_only_component` did nothing but call `apply_weapon_fire_state`, so it and its
-`#[cfg(test)] tick_state_only` wrapper are deleted; `run_remote_weapon_commands` matches
+`tick_state_only_component` did nothing but derive the fire mode, cooldown, and per-shot
+cost from `weapon.effective()` and hand them to `apply_weapon_fire_state` — a derivation
+the machine must reproduce — so it and its
+`#[cfg(test)] tick_state_only` wrapper are deleted, and that wrapper's single test caller
+in `weapon/mod.rs` is rewritten against the machine; `run_remote_weapon_commands` matches
 the machine's `WeaponFireAuthorization` directly, keeping its existing
 `Empty` → `weapon_events.push("dry_fire")` arm unchanged. `tick_resolved_component`
 survives as pure shot resolution: it drops `tick_dt` and `reload_started_this_tick`, takes
@@ -411,15 +441,29 @@ read. The single real constraint is the one stated in Direction — the machine 
 when it is `None` (fly-camera and headless harnesses). Keep that behavior. The machine
 still advances timers, resolves expiries, and gates fire, but any transition that would
 touch the reserve is refused **silently, emitting no delivery** — `ReloadDelivery` carries
-a non-optional `pawn`, so a blocked outcome is unconstructible without one. A pawnless
-weapon fires and cools; it cannot reload.
+a non-optional `pawn`, so a blocked outcome is unconstructible without one. That refusal
+must not strand the state: an expiry reached with no pawn returns to `Idle` with no
+transfer and no delivery. Timers advance pawnlessly under the machine where today
+`reload::tick` is skipped wholesale, so a weapon that entered a reload with a pawn and
+then ticks without one would otherwise sit in `Reloading` forever with fire locked. A
+pawnless weapon fires and cools; it cannot reload.
 
 Define the **hot-reload policy** the later tasks depend on. `refresh_from_descriptor` has
 no preserved set to extend — it assigns the authored tuning and nothing else, and
-preservation is by omission, documented in a trailing comment. So: leave `state`, the
-timed triple, and `reload_credited` out of the assignment list, extend that trailing
+preservation is by omission, documented in a trailing comment. The one exception is
+`credit_source`, assigned under an `if let Some(...)` so an absent authored value keeps the
+spawn-time resolution; it is not a counterexample to the rule, but a literal reader will
+trip on it. So: leave `state`, the
+timed triple, and `reload_credited` out of the assignment list, and extend that trailing
 comment to name them alongside the cooldown, magazine, and input edges it already
-describes, and extend the existing preserve-all-live-state test to assert them. Durations
+describes. Three tests in `crates/entities/src/components/weapon.rs` assert refresh
+preservation and all three must be updated:
+`refresh_updates_ammo_tuning_and_preserves_all_live_state` and
+`refresh_from_descriptor_updates_stats_and_preserves_live_state` extend to assert the new
+fields, a mechanical addition; `refresh_can_remove_ammo_tuning_without_aborting_live_reload`
+needs a semantic edit rather than a rename, because it fabricates mid-reload state by
+writing the timer directly and then asserts `reload_status() == (0.625, true)` — a tuple
+that no longer follows once `reload_status()` derives from `state`. Durations
 and classifiers refresh and take effect at the next decision point, matching the existing
 precedent that reload completion re-reads `effective()`.
 Rewrite `reload_status()` to derive `(progress, active)` from `is_reload_activity()` plus
@@ -438,9 +482,19 @@ Add `ReloadStyle { Magazine, PerShell }` to
 `crates/foundation/src/data_descriptors/types/combat.rs`, deriving the same trait set as
 the sibling `FireMode` / `ResolutionMode` enums and carrying
 `#[serde(rename_all = "camelCase")]` so wire values are `"magazine"` and `"perShell"`.
+`Eq` is not optional in that set: `AmmoResource` and `WeaponAmmoTuning` both derive it, so
+a non-`Eq` member breaks them.
 Add `reload_style: ReloadStyle` to `AmmoResource` with
 `#[serde(default, rename = "reloadStyle")]` and a `Default` impl returning `Magazine`, so
-every existing authored resource block and struct literal keeps today's behavior. No new
+every existing authored resource block keeps today's behavior. `AmmoResource` itself has
+no `Default` impl, so exhaustive Rust struct literals still break: nine of them across
+seven files — three in `crates/foundation/src/data_descriptors/types/combat.rs`, one each
+in `crates/entities/src/components/weapon.rs`, `crates/postretro/src/sim/mod.rs`,
+`crates/postretro/src/weapon/mod.rs`,
+`crates/postretro/src/scripting/systems/ui_proxy.rs`,
+`crates/postretro/src/scripting/builtins/data_archetype.rs`, and
+`crates/postretro/src/scripting/builtins/net_descriptor.rs`. The compiler enumerates them;
+each takes `ReloadStyle::Magazine`. No new
 `validate()` rule is needed — serde rejects unknown values — but state that in the task's
 test list rather than leaving it implicit. Carry the field through `WeaponAmmoTuning` and
 `EffectiveAmmoStats` in `crates/entities/src/components/weapon.rs` so producers read it
@@ -450,11 +504,18 @@ routed. Register it beside the other `AmmoResource` fields in
 a `register_enum("ReloadStyle")` declaration with a doc line per variant, matching the
 sibling `FireMode` / `ResolutionMode` registrations. Without it the field's `"ReloadStyle"`
 type name is a dangling reference in the emitted typedefs and the drift test fails
-opaquely. Regenerate the committed
-`sdk/types/postretro.d.ts` / `.d.luau` fixtures. Document the field and both values in the
-`components.weapon` resource row of `docs/scripting-reference.md`, stating there that
-`reloadMs` is the duration of one reload *step* — the whole reload under `magazine`, one
-shell under `perShell`.
+opaquely. Rewrite the neighbouring `reloadMs` registration doc line in the same pass — it
+reads "Reload duration in milliseconds" and lands verbatim in the committed typedefs, the
+surface a modder reads in-editor, so leaving it stale ships the re-meaning everywhere
+except where it is read. Regenerate the committed
+`sdk/types/postretro.d.ts` / `.d.luau` fixtures.
+
+Two `docs/scripting-reference.md` edits, both under `## components.weapon`: document the
+field and both values in the `resource` row, and rewrite the trailing paragraph that
+begins "The authored `reloadMs` is the base reload duration" — it sits outside the row and
+carries the same stale meaning. Both must state that `reloadMs` is the duration of one
+reload *step* — the whole reload under `magazine`, one shell under `perShell` — while the
+trailing paragraph keeps its point about the effective-stat seam.
 
 ### Task 4: The per-shell loop
 
@@ -471,9 +532,14 @@ meter concern and does not change this firing count.
 
 On each step expiry, credit exactly one round via `AmmoReserve::take(type, 1)` — never by
 indexing the pool — add the returned amount to the magazine and to `reload_credited`, and
-emit `reload_shell_loaded`. Then evaluate the loop-continue predicate against live state:
-continue when the magazine is below the effective capacity **and** the reserve still has
-rounds; otherwise end the reload, emit `reload_completed` carrying `reload_credited` as
+emit `reload_shell_loaded`. Then evaluate the loop-continue predicate against live state,
+re-reading all three terms each step: continue when the magazine is below the effective
+capacity, **and** the reserve still has rounds, **and** the effective `reloadStyle` is
+still `PerShell` — a mid-loop flip to `magazine` therefore ends the reload after the
+in-flight step credits its round, and the reverse flip mid-`Reloading` completes atomically
+as the shipped atomic reload does, both following Task 2's rule that refreshed classifiers
+take effect at the next decision point. Otherwise end the reload, emit `reload_completed`
+carrying `reload_credited` as
 the cumulative transferred count for the whole reload, and return to `Idle`. `take`
 returning `0` — the reserve emptied between check and credit — ends the reload with no
 shell event but the same `reload_completed`, cumulative count included, so all three
@@ -487,17 +553,24 @@ overshoot is bounded by the tick, roughly 16.67 ms at 60 Hz, not by 1 ms; writin
 the carry field would be silently discarded by that guard and the step cadence would drift.
 So: the expiry path returns the whole overshoot as `f64` milliseconds, the restart
 subtracts its integer-millisecond part from the new step's remaining time and stores only
-the fractional part in the carry, and the restart loops when the overshoot exceeds a full
-step — crediting several shells in one tick rather than losing the excess.
+the fractional part in the carry, and the restart loops while the overshoot is `>=` a full
+step — crediting several shells in one tick rather than losing the excess. The comparison
+is inclusive on purpose: at an overshoot of exactly `reloadMs` a strict `>` leaves the new
+step at `0` remaining without looping, deferring that shell a whole tick — precisely the
+drift the anti-drift test in Task 6 targets.
 
 Add the cancel edge, the reason Task 2's fusion exists. When the fire intent evaluates to
 authorized against the current gate on this tick — `can_fire` included, since the remote
 path repurposes it to mean "pawn has a `NetworkId`" and a remote pawn with no `shot_id`
 would otherwise cancel its own loop every tick while firing nothing — `ShellLoading` does
 not reject the shot: it cancels, discards the in-flight step with no round credited and no
-reserve debit, emits `reload_cancelled` carrying `reload_credited`, transitions to `Idle`,
+reserve debit, emits `reload_cancelled` carrying `reload_credited`, clears
+`reload_feedback` outright, transitions to `Idle`,
 and lets the shot resolve on that same tick. Name that condition once and reuse it, rather
-than restating the gate's terms, so the two cannot drift apart.
+than restating the gate's terms, so the two cannot drift apart. The feedback clear lands
+here rather than in Task 5 because phases are sequential: without it, the end of this task
+leaves a cancelled weapon `Idle` with `Some(ReloadFeedback::Started)`, so `reload_status()`
+reports `(0.0, true)` and AC 6 fails until Task 5 ships.
 
 A trigger pull that would not be authorized anyway leaves the loop running and emits no
 `dry_fire`. The warrant is parity with `Reloading`, which already rejects before the
@@ -532,9 +605,9 @@ sub-tick step still contributes its `0.0` and `1.0` samples, keeping the single-
 `magazine` case bit-identical; when a step's end and the next step's start land in the same
 tick the completion sample wins, matching the existing precedent for a reload shorter than
 one tick. This is a meter lifecycle only — it is independent of Task 4's one
-`reload_started` per whole reload, and neither constrains the other. A cancel clears
-`reload_feedback` outright: left at `Some(Started)` it would report `(0.0, true)` on an
-`Idle` weapon.
+`reload_started` per whole reload, and neither constrains the other. Task 4's cancel
+already clears `reload_feedback`; the rationale belongs to this task's subject, which is
+that a stale `Some(Started)` would report `(0.0, true)` on an `Idle` weapon.
 
 Neither producer needs a new input — both already reach the component
 (`research.md` §3, V4 warrant) — and no slot is added, so the replicated schema and its
@@ -543,7 +616,7 @@ unlike Task 3 this task regenerates no SDK typedefs. Update the slot description
 `docs/scripting-reference.md` and the engine-state catalog comments to state the
 step-scoped meaning.
 
-### Task 6: Dev content, docs, and the cross-vantage test suite
+### Task 6: Dev content and the cross-vantage test suite
 
 Author `content/dev/scripts/reference-shotgun.ts` — `canonicalName "reference_shotgun"`,
 `fireMode: "semi"`, `resolution: "hitscan"`, `damage: 12` (matching the reference pistol so
@@ -558,23 +631,30 @@ from `content/dev/start-script.ts` beside the pistol. Point
 the per-shell loop is demoable without switching or pickups. That flip is decided, not
 proposed; it is the only production consumer of the per-shell path in this spec, and it is
 one line to revert. It also makes a co-op mispredict the default dev configuration —
-accepted, and argued in the plan's Direction section, so do not re-litigate it here or
+accepted, because the rollback path is the shipped `ShotVerdict` one and is correct. Do not
+re-litigate it here or
 add prediction machinery to compensate. Add an explicit `reloadStyle: "magazine"` to
 `content/dev/scripts/reference-pistol.ts` so both classifier values appear in dev content;
 the pistol archetype stays registered.
 
-The flip strands five content sites, and the shotgun keeps its own ammo `type` — a shared
+The flip strands the dev mod's ammo grants and its combat prose, and the shotgun keeps its
+own ammo `type` — a shared
 pool would make the type meaningless — so the content moves rather than the descriptor.
-Retarget both ammo grants to the shotgun's ammo type: `content/dev/scripts/combat-demo-reaction.ts`'s
-24-round `ammoPickup` trigger reaction, and `content/dev/scripts/combat-lifecycle.ts`'s
+Retarget both ammo grants to the shotgun's ammo type, each together with the comment that
+describes it: `content/dev/scripts/combat-demo-reaction.ts`'s
+24-round `ammoPickup` trigger reaction, whose file-header item 3 names the same 24-round
+`bullets.light` grant, and `content/dev/scripts/combat-lifecycle.ts`'s
 8-round `dev:ammo-on-kill` payout. Both currently credit `bullets.light`, which no equipped
-weapon would draw from. Then update the three prose sites that name the pistol as the
+weapon would draw from. Then update the prose that names the pistol as the
 equipped weapon: `content/dev/scripts/target-dummy.ts`'s header comment,
 `content/dev/scripts/combat-lifecycle.ts`'s finisher-overshoot comment, and
-`content/dev/maps/combat-demo.README.md` — the last of which also names the grants' ammo
-type and assumes the pistol's `fireRateMs: 180` cadence, so its walkthrough needs the
-shotgun's slower cadence. The three-shot dummy math survives unchanged because the shotgun
-matches the pistol's `damage: 12`.
+`content/dev/maps/combat-demo.README.md`. In the README, update every mention of the
+stranded ammo type and every prose reference to the pistol as the equipped weapon — do not
+work to a site count, the two are interleaved. Its shot-count walkthroughs survive
+unchanged because the shotgun matches the pistol's `damage: 12`, and so does the
+three-shot dummy math. One intended addition rather than a discovery: a magazine of 8
+against the pistol's 12 means the `reference_enemy` engagement now spans a reload, so the
+walkthrough gains a reload beat.
 
 Add the test suite spanning the four vantages in `research.md` §3. Every fixture is
 constructed in-test — no test reads dev content or assumes which archetype is the dev
@@ -596,7 +676,13 @@ cancelling a `ShellLoading` loop on an authorized shot, and observing the `Reloa
 lockout. Then the prediction seam: a
 connected client's predicted shot during a host-side `magazine` reload minting no
 authorized shot and rolling back through the verdict path, and the same outcome for a shot
-predicted mid-`ShellLoading` while the host magazine is still below `costPerShot`. HUD
+predicted mid-`ShellLoading` while the host magazine is still below `costPerShot`. The
+cooldown-restore half of that rollback is conditional — `apply_verdict` restores
+`cooldown_before_ms` only while `cooldown_authority_generation` still matches, and
+`reconcile_cooldown` bumps it on every fresh authoritative sample — so each such test must
+either pin the generation, interleaving no `reconcile_cooldown` across the in-flight
+window, or assert the guard rather than the restored value. The no-shot-minted and
+feedback-cleared halves are unconditional and assert directly. HUD
 layer: `reloadActive` not blinking across a step boundary, `reloadProgress`
 ramping once per shell, `player.ammo` incrementing per shell, and the owner-private
 projection reporting the pawn's own values.
@@ -624,7 +710,7 @@ assert everything above.
 | Atomic style value | `ReloadStyle::Magazine` (default) | `"magazine"` | `"magazine"` | same | n/a |
 | Per-shell style value | `ReloadStyle::PerShell` | `"perShell"` | `"perShell"` | same | n/a |
 | Step duration (reused) | `AmmoResource::reload_ms` | `"reloadMs"` | `resource.reloadMs` | same | n/a |
-| Wieldable state | `WeaponComponent::state` (`WieldableState`) | not replicated, not authored | n/a | n/a | n/a |
+| Wieldable state | `WeaponComponent::state` (`WieldableState`) | `#[serde(default)]`, component-local only | n/a | n/a | n/a |
 | Timed-state triple (rename) | `WeaponComponent::state_remaining_ms` / `state_total_ms` / `state_elapsed_sub_ms` | `#[serde(default)]`, component-local only | n/a | n/a | n/a |
 | Cumulative credited count | `WeaponComponent::reload_credited` | `#[serde(default)]`, component-local only | n/a | n/a | n/a |
 | Shell credited | `ReloadOutcome` variant → `event_name` | `"reload_shell_loaded"` | reaction / audio consumer | same | n/a |

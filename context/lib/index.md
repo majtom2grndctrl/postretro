@@ -15,7 +15,7 @@
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8 · `plans/done/E20--frame-capture`
-- **PRL format / level compiler / runtime portal vis** → `build_pipeline.md`
+- **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`

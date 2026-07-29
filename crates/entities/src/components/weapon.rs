@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
 use std::sync::Once;
 
+use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor, WeaponResource};
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
@@ -64,14 +65,20 @@ pub struct WeaponComponent {
     #[serde(default)]
     pub magazine: u32,
     #[serde(default)]
-    pub reload_remaining_ms: u32,
+    pub state: WieldableState,
     #[serde(default)]
-    pub reload_total_ms: u32,
+    pub state_remaining_ms: u32,
+    #[serde(default)]
+    pub state_total_ms: u32,
     /// Fractional elapsed milliseconds carried between fixed ticks. Public HUD
     /// and replication fields remain integer milliseconds; this remainder keeps
     /// their countdown from accumulating per-tick rounding bias.
     #[serde(default)]
-    pub reload_elapsed_sub_ms: f64,
+    pub state_elapsed_sub_ms: f64,
+    /// Rounds credited during the active reload. This is reset on every state
+    /// transition into or out of reload activity, never inferred from magazine.
+    #[serde(default)]
+    pub reload_credited: u32,
     /// One-frame lifecycle endpoint retained until network projection and local
     /// HUD publication have both observed it.
     #[serde(skip)]
@@ -101,9 +108,11 @@ impl WeaponComponent {
             credit_source: resolve_credit_source(desc, canonical_name),
             ammo,
             magazine,
-            reload_remaining_ms: 0,
-            reload_total_ms: 0,
-            reload_elapsed_sub_ms: 0.0,
+            state: WieldableState::Idle,
+            state_remaining_ms: 0,
+            state_total_ms: 0,
+            state_elapsed_sub_ms: 0.0,
+            reload_credited: 0,
             reload_feedback: None,
         }
     }
@@ -135,24 +144,28 @@ impl WeaponComponent {
             self.credit_source = credit_source.clone();
         }
         self.ammo = ammo_tuning(desc);
-        // Cooldown, input edges, magazine, and all reload timer values are live
-        // instance state. Hot reload changes authored tuning, not
-        // the current input edges, ammunition, active reload sample, or whether
-        // this instance is mid-cooldown. An absent `creditSource` also keeps the
-        // already-resolved spawn-time default so canonical defaults do not
-        // regress to `weapon.unknown` on reload.
+        // Cooldown, input edges, magazine, state, timed-state fields, and reload
+        // credit are live instance state. Hot reload changes authored tuning, not
+        // the active state sample or whether this instance is mid-cooldown. An
+        // absent `creditSource` also keeps the already-resolved spawn-time default
+        // so canonical defaults do not regress to `weapon.unknown` on reload.
     }
 
     pub fn reload_status(&self) -> (f32, bool) {
         match self.reload_feedback {
             Some(ReloadFeedback::Started) => (0.0, true),
             Some(ReloadFeedback::Completed) => (1.0, true),
-            None if self.reload_remaining_ms > 0 && self.reload_total_ms > 0 => (
-                (1.0 - self.reload_remaining_ms as f32 / self.reload_total_ms as f32)
-                    .clamp(0.0, 1.0),
-                true,
-            ),
-            None if self.reload_remaining_ms > 0 => (0.0, true),
+            None if self.state.is_reload_activity()
+                && self.state_remaining_ms > 0
+                && self.state_total_ms > 0 =>
+            {
+                (
+                    (1.0 - self.state_remaining_ms as f32 / self.state_total_ms as f32)
+                        .clamp(0.0, 1.0),
+                    true,
+                )
+            }
+            None if self.state.is_reload_activity() => (0.0, true),
             None => (0.0, false),
         }
     }
@@ -247,9 +260,11 @@ mod tests {
             })
         );
         assert_eq!(component.magazine, 12);
-        assert_eq!(component.reload_remaining_ms, 0);
-        assert_eq!(component.reload_total_ms, 0);
-        assert_eq!(component.reload_elapsed_sub_ms, 0.0);
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.state_remaining_ms, 0);
+        assert_eq!(component.state_total_ms, 0);
+        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+        assert_eq!(component.reload_credited, 0);
         assert_eq!(component.reload_feedback, None);
     }
 
@@ -259,8 +274,9 @@ mod tests {
 
         assert_eq!(component.ammo, None);
         assert_eq!(component.magazine, 0);
-        assert_eq!(component.reload_remaining_ms, 0);
-        assert_eq!(component.reload_total_ms, 0);
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.state_remaining_ms, 0);
+        assert_eq!(component.state_total_ms, 0);
         assert_eq!(component.effective().ammo, None);
     }
 
@@ -285,10 +301,12 @@ mod tests {
         let mut component =
             WeaponComponent::from_descriptor(&ammo_descriptor("bullets", 12, 1, 800));
         component.magazine = 3;
-        component.reload_remaining_ms = 275;
-        component.reload_total_ms = 800;
-        component.reload_elapsed_sub_ms = 0.625;
+        component.state = WieldableState::Reloading;
+        component.state_remaining_ms = 275;
+        component.state_total_ms = 800;
+        component.state_elapsed_sub_ms = 0.625;
         component.reload_feedback = Some(ReloadFeedback::Started);
+        component.reload_credited = 2;
         component.cooldown_remaining_ms = 42.0;
         component.shoot_press_consumed = true;
         component.reload_press_consumed = true;
@@ -306,10 +324,12 @@ mod tests {
         );
         assert_eq!(component.effective().ammo.unwrap().reload_ms, 1400);
         assert_eq!(component.magazine, 3);
-        assert_eq!(component.reload_remaining_ms, 275);
-        assert_eq!(component.reload_total_ms, 800);
-        assert_eq!(component.reload_elapsed_sub_ms, 0.625);
+        assert_eq!(component.state, WieldableState::Reloading);
+        assert_eq!(component.state_remaining_ms, 275);
+        assert_eq!(component.state_total_ms, 800);
+        assert_eq!(component.state_elapsed_sub_ms, 0.625);
         assert_eq!(component.reload_feedback, Some(ReloadFeedback::Started));
+        assert_eq!(component.reload_credited, 2);
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
         assert!(component.reload_press_consumed);
@@ -320,15 +340,16 @@ mod tests {
         let mut component =
             WeaponComponent::from_descriptor(&ammo_descriptor("bullets", 12, 1, 800));
         component.magazine = 4;
-        component.reload_remaining_ms = 300;
-        component.reload_total_ms = 800;
+        component.state = WieldableState::Reloading;
+        component.state_remaining_ms = 300;
+        component.state_total_ms = 800;
 
         component.refresh_from_descriptor(&descriptor(10.0, 20.0, 100.0));
 
         assert_eq!(component.ammo, None);
         assert_eq!(component.magazine, 4);
-        assert_eq!(component.reload_remaining_ms, 300);
-        assert_eq!(component.reload_total_ms, 800);
+        assert_eq!(component.state_remaining_ms, 300);
+        assert_eq!(component.state_total_ms, 800);
         assert_eq!(component.reload_status(), (0.625, true));
     }
 
@@ -336,19 +357,20 @@ mod tests {
     fn reload_status_exposes_lifecycle_endpoints_and_timer_without_ammo_tuning() {
         let mut component =
             WeaponComponent::from_descriptor(&ammo_descriptor("bullets", 12, 1, 800));
-        component.reload_remaining_ms = 600;
-        component.reload_total_ms = 800;
+        component.state_remaining_ms = 600;
+        component.state_total_ms = 800;
+        component.state = WieldableState::Reloading;
         assert_eq!(component.reload_status(), (0.25, true));
 
         component.reload_feedback = Some(ReloadFeedback::Started);
         assert_eq!(component.reload_status(), (0.0, true));
         component.reload_feedback = Some(ReloadFeedback::Completed);
-        component.reload_remaining_ms = 0;
+        component.state_remaining_ms = 0;
         assert_eq!(component.reload_status(), (1.0, true));
 
         component.ammo = None;
         component.reload_feedback = None;
-        component.reload_remaining_ms = 400;
+        component.state_remaining_ms = 400;
         assert_eq!(component.reload_status(), (0.5, true));
     }
 
@@ -360,6 +382,11 @@ mod tests {
         );
         component.cooldown_remaining_ms = 42.0;
         component.shoot_press_consumed = true;
+        component.state = WieldableState::Reloading;
+        component.state_remaining_ms = 600;
+        component.state_total_ms = 800;
+        component.state_elapsed_sub_ms = 0.5;
+        component.reload_credited = 3;
 
         component.refresh_from_descriptor(&descriptor(25.0, 80.0, 250.0));
 
@@ -368,6 +395,11 @@ mod tests {
         assert_eq!(component.cooldown_ms, 250.0);
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
+        assert_eq!(component.state, WieldableState::Reloading);
+        assert_eq!(component.state_remaining_ms, 600);
+        assert_eq!(component.state_total_ms, 800);
+        assert_eq!(component.state_elapsed_sub_ms, 0.5);
+        assert_eq!(component.reload_credited, 3);
         assert_eq!(component.credit_source, "reference_pistol");
     }
 

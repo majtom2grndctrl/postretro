@@ -20,3 +20,4 @@ pub mod spawner;
 pub mod sprite_visual;
 pub mod trigger_volume;
 pub mod weapon;
+pub mod wieldable_state;

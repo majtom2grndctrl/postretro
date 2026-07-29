@@ -145,6 +145,7 @@ mod tests {
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::components::weapon::ReloadFeedback;
+    use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::registry::{EntityId, Transform};
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
@@ -240,8 +241,9 @@ mod tests {
         };
         let mut weapon = WeaponComponent::from_descriptor(&descriptor);
         weapon.magazine = 5;
-        weapon.reload_remaining_ms = 250;
-        weapon.reload_total_ms = 500;
+        weapon.state = WieldableState::Reloading;
+        weapon.state_remaining_ms = 250;
+        weapon.state_total_ms = 500;
         let mut reserve = AmmoReserve::new();
         reserve.credit("bullets.light", 20);
         let mut registry = ctx.registry.borrow_mut();
@@ -306,7 +308,7 @@ mod tests {
             .unwrap()
             .clone();
         weapon.reload_feedback = Some(ReloadFeedback::Completed);
-        weapon.reload_remaining_ms = 0;
+        weapon.state_remaining_ms = 0;
         ctx.registry
             .borrow_mut()
             .set_component(weapon_id, weapon)
@@ -327,8 +329,9 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
-        weapon.reload_remaining_ms = 0;
+        weapon.state_remaining_ms = 0;
         weapon.reload_feedback = None;
+        weapon.state = WieldableState::Idle;
         ctx.registry
             .borrow_mut()
             .set_component(weapon_id, weapon)
@@ -349,8 +352,9 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
-        weapon.reload_remaining_ms = 10;
-        weapon.reload_total_ms = 0;
+        weapon.state_remaining_ms = 10;
+        weapon.state_total_ms = 0;
+        weapon.state = WieldableState::Reloading;
         ctx.registry
             .borrow_mut()
             .set_component(weapon_id, weapon)

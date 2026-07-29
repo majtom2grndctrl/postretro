@@ -925,8 +925,10 @@ mod tests {
             .get_component::<postretro_entities::components::weapon::WeaponComponent>(old_weapon)
             .unwrap()
             .clone();
-        reloading_weapon.reload_remaining_ms = 500;
-        reloading_weapon.reload_total_ms = 1000;
+        reloading_weapon.state_remaining_ms = 500;
+        reloading_weapon.state_total_ms = 1000;
+        reloading_weapon.state =
+            postretro_entities::components::wieldable_state::WieldableState::Reloading;
         registry
             .set_component(old_weapon, reloading_weapon)
             .unwrap();

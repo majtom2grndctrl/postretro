@@ -1,8 +1,8 @@
 // Weapon reload timing, reserve transfer, feedback endpoints, and delivery events.
 // See: context/lib/entity_model.md §5 · context/lib/ui.md §3
 
-use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
-use postretro_entities::{AmmoReserve, ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReloadDelivery {
@@ -30,102 +30,7 @@ impl ReloadOutcome {
     }
 }
 
-pub(super) fn tick(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    weapon: EntityId,
-    component: &mut WeaponComponent,
-    reload: bool,
-    tick_dt: f32,
-) -> Vec<ReloadDelivery> {
-    let was_reloading = component.reload_remaining_ms > 0;
-    let fresh_press = reload && !component.reload_press_consumed;
-    component.reload_press_consumed = reload;
-    let mut deliveries = Vec::new();
-
-    if !was_reloading {
-        if !fresh_press {
-            return deliveries;
-        }
-
-        let Some(ammo) = component.effective().ammo else {
-            return deliveries;
-        };
-        let capacity = ammo.capacity;
-        let reload_ms = ammo.reload_ms;
-        let ammo_type = ammo.ammo_type.to_string();
-        if component.magazine >= capacity {
-            deliveries.push(ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: ReloadOutcome::BlockedFull,
-            });
-            return deliveries;
-        }
-        let available = registry
-            .get_component::<AmmoReserve>(pawn)
-            .map_or(0, |reserve| reserve.available(&ammo_type));
-        if available == 0 {
-            deliveries.push(ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: ReloadOutcome::BlockedEmpty,
-            });
-            return deliveries;
-        }
-
-        component.reload_total_ms = reload_ms;
-        component.reload_remaining_ms = reload_ms;
-        component.reload_elapsed_sub_ms = 0.0;
-        component.reload_feedback = Some(ReloadFeedback::Started);
-        deliveries.push(ReloadDelivery {
-            pawn,
-            weapon,
-            outcome: ReloadOutcome::Started,
-        });
-
-        // The feedback marker preserves the exact zero-progress start sample
-        // while the authoritative timer still advances on this tick. A duration
-        // no longer than one tick therefore retains immediate completion.
-    }
-
-    advance_timer(component, tick_dt);
-    if component.reload_remaining_ms > 0 {
-        return deliveries;
-    }
-
-    // Completion honors current effective tuning: a hot descriptor refresh
-    // during reload redirects capacity and transfer to the refreshed ammo pool.
-    let effective_ammo = component
-        .effective()
-        .ammo
-        .map(|ammo| (ammo.capacity, ammo.ammo_type.to_string()));
-    let transferred = if let Some((capacity, ammo_type)) = effective_ammo {
-        let need = capacity.saturating_sub(component.magazine);
-        let mut reserve = registry
-            .get_component::<AmmoReserve>(pawn)
-            .cloned()
-            .unwrap_or_default();
-        let requested = need.min(reserve.available(&ammo_type));
-        let transferred = reserve.take(&ammo_type, requested);
-        component.magazine = component.magazine.saturating_add(transferred);
-        if registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true) {
-            let _ = registry.set_component(pawn, reserve);
-        }
-        transferred
-    } else {
-        0
-    };
-    component.reload_feedback = Some(ReloadFeedback::Completed);
-    deliveries.push(ReloadDelivery {
-        pawn,
-        weapon,
-        outcome: ReloadOutcome::Completed { transferred },
-    });
-    deliveries
-}
-
-fn tick_ms(tick_dt: f32) -> f64 {
+pub(super) fn tick_ms(tick_dt: f32) -> f64 {
     if tick_dt.is_finite() && tick_dt > 0.0 {
         f64::from(tick_dt) * 1000.0
     } else {
@@ -133,25 +38,25 @@ fn tick_ms(tick_dt: f32) -> f64 {
     }
 }
 
-fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) {
-    let carried_ms = if component.reload_elapsed_sub_ms.is_finite()
-        && component.reload_elapsed_sub_ms >= 0.0
-        && component.reload_elapsed_sub_ms < 1.0
+pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) {
+    let carried_ms = if component.state_elapsed_sub_ms.is_finite()
+        && component.state_elapsed_sub_ms >= 0.0
+        && component.state_elapsed_sub_ms < 1.0
     {
-        component.reload_elapsed_sub_ms
+        component.state_elapsed_sub_ms
     } else {
         0.0
     };
     let elapsed_ms = carried_ms + tick_ms(tick_dt);
-    if elapsed_ms >= f64::from(component.reload_remaining_ms) {
-        component.reload_remaining_ms = 0;
-        component.reload_elapsed_sub_ms = 0.0;
+    if elapsed_ms >= f64::from(component.state_remaining_ms) {
+        component.state_remaining_ms = 0;
+        component.state_elapsed_sub_ms = 0.0;
         return;
     }
 
     let whole_ms = elapsed_ms.floor() as u32;
-    component.reload_remaining_ms -= whole_ms;
-    component.reload_elapsed_sub_ms = elapsed_ms - f64::from(whole_ms);
+    component.state_remaining_ms -= whole_ms;
+    component.state_elapsed_sub_ms = elapsed_ms - f64::from(whole_ms);
 }
 
 /// Clear feedback endpoints after network projection and local HUD publication

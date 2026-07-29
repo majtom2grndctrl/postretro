@@ -879,6 +879,7 @@ fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
 mod tests {
     use super::*;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponAmmoTuning};
+    use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
@@ -1164,9 +1165,11 @@ mod tests {
                     credit_source: "weapon.test".to_string(),
                     ammo: None,
                     magazine: 0,
-                    reload_remaining_ms: 0,
-                    reload_total_ms: 0,
-                    reload_elapsed_sub_ms: 0.0,
+                    state: WieldableState::Idle,
+                    state_remaining_ms: 0,
+                    state_total_ms: 0,
+                    state_elapsed_sub_ms: 0.0,
+                    reload_credited: 0,
                     reload_feedback: None,
                 },
             )
@@ -1183,8 +1186,8 @@ mod tests {
         ammo_type: &'a str,
         magazine: u32,
         reserve: Option<u32>,
-        reload_remaining_ms: u32,
-        reload_total_ms: u32,
+        state_remaining_ms: u32,
+        state_total_ms: u32,
     }
 
     fn add_owned_ammo_pawn(
@@ -1215,9 +1218,15 @@ mod tests {
                         reload_ms: 500,
                     }),
                     magazine: spec.magazine,
-                    reload_remaining_ms: spec.reload_remaining_ms,
-                    reload_total_ms: spec.reload_total_ms,
-                    reload_elapsed_sub_ms: 0.0,
+                    state: if spec.state_remaining_ms > 0 {
+                        WieldableState::Reloading
+                    } else {
+                        WieldableState::Idle
+                    },
+                    state_remaining_ms: spec.state_remaining_ms,
+                    state_total_ms: spec.state_total_ms,
+                    state_elapsed_sub_ms: 0.0,
+                    reload_credited: 0,
                     reload_feedback: None,
                 },
             )
@@ -1253,8 +1262,8 @@ mod tests {
                 ammo_type: "cells",
                 magazine: 3,
                 reserve: Some(11),
-                reload_remaining_ms: 250,
-                reload_total_ms: 500,
+                state_remaining_ms: 250,
+                state_total_ms: 500,
             },
         );
         add_owned_ammo_pawn(
@@ -1266,8 +1275,8 @@ mod tests {
                 ammo_type: "shells",
                 magazine: 8,
                 reserve: None,
-                reload_remaining_ms: 10,
-                reload_total_ms: 0,
+                state_remaining_ms: 10,
+                state_total_ms: 0,
             },
         );
 
@@ -1311,8 +1320,9 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_idle)
             .unwrap()
             .clone();
-        idle_weapon.reload_remaining_ms = 0;
-        idle_weapon.reload_total_ms = 500;
+        idle_weapon.state_remaining_ms = 0;
+        idle_weapon.state_total_ms = 500;
+        idle_weapon.state = WieldableState::Idle;
         registry.set_component(weapon_idle, idle_weapon).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(
@@ -1343,8 +1353,8 @@ mod tests {
                 ammo_type: "cells",
                 magazine: 3,
                 reserve: Some(11),
-                reload_remaining_ms: 250,
-                reload_total_ms: 500,
+                state_remaining_ms: 250,
+                state_total_ms: 500,
             },
         );
 
@@ -1364,7 +1374,7 @@ mod tests {
             .unwrap()
             .clone();
         weapon.reload_feedback = Some(ReloadFeedback::Completed);
-        weapon.reload_remaining_ms = 0;
+        weapon.state_remaining_ms = 0;
         registry.set_component(weapon_id, weapon).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
@@ -1381,7 +1391,8 @@ mod tests {
             .clone();
         weapon.ammo = None;
         weapon.reload_feedback = None;
-        weapon.reload_remaining_ms = 250;
+        weapon.state = WieldableState::Reloading;
+        weapon.state_remaining_ms = 250;
         registry.set_component(weapon_id, weapon).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.ammo", pawn, &weapon_owners),

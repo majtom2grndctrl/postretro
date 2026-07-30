@@ -198,8 +198,12 @@ Concurrent-by-default argues against this, and that is the point: under the plai
 
 Six questions govern whether a spec is a reasonable solution to the problem at
 hand. Here they are a solo exercise — generative, shaping what you write.
-`/validate-plan` asks the same six adversarially at step 8, through a reviewer
+`/validate-plan` asks the same six adversarially at step 9, through a reviewer
 who did not draft the spec. Same questions, opposite direction.
+
+Work them yourself, in this context — never dispatch an agent for them. The
+exercise shapes what you write next, which only works if you did the thinking;
+a delegated answer is a report, and it grounds no one.
 
 The questions are defined normatively in `/validate-plan`. If the two lists
 disagree, `/validate-plan` wins — update this one to match.

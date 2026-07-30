@@ -52,7 +52,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus a **Brain** component carrying the behavior state graph the AI tick evaluates (§7c). Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
 
-**Weapon state.** Timed weapon states live in one component-level state machine: a new state is a variant plus its transition arms, never a new component field or boolean. Fire authorization is computed without consulting weapon state, so a preemption check and the real fire gate share one evaluation and cannot drift — state-dependent terms are applied by the caller around that shared verdict, not folded into it.
+**Weapon state.** Timed weapon states live in one component-level state machine: a new state is a variant plus its transition arms, never a new component field or boolean. Fire authorization is computed without consulting weapon state, so a preemption check and the real fire gate share one evaluation and cannot drift. State-dependent terms are applied by the caller around that shared verdict, not folded into it.
 
 ---
 

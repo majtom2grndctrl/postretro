@@ -95,9 +95,9 @@ Context files describe what survives refactoring. Task descriptions describe wha
 
 **Litmus test:** would an agent speed-reading the code learn this? Yes → code comment or task description. No → context file.
 
-Code shows what is, never what must remain. A rule's modality does not survive the read, which is why a constraint that looks obvious in source still earns its line — the reader cannot tell a rule from an accident.
+Code shows what is, never what must remain. A reader cannot tell a rule from an accident, so a constraint that looks obvious in source still earns its line.
 
-**Cross-folder exception.** A contract smeared across folders belongs here even when each half reads plainly on its own, because an agent speed-reading one folder learns a coherent half-truth. A contract living inside one module does not qualify: a code comment reaches whoever edits that line, and that is the only reader who needs it.
+**Cross-folder exception.** A contract smeared across folders belongs here even when each half reads plainly on its own, because an agent speed-reading one folder learns a coherent half-truth. A contract inside one module does not qualify: a code comment reaches whoever edits that line, and that is the only reader who needs it.
 
 **Bias to lean.** The exception is not a licence. Every line here is loaded by agents who needed one other thing in the same file. Prefer one sentence naming the coupling over a paragraph explaining it; the source carries the detail.
 

@@ -1,9 +1,13 @@
 ---
-name: draft-plan
+name: draft-plan-priced-deferral
 description: >
-  Drafts feature or epic specs for PostRetro. A session may produce zero, one,
-  or several plans depending on scope. Use when starting new planning work.
-  Does not promote to ready/ — that is a separate step after review.
+  Drafts feature or epic specs for PostRetro — priced-deferral variant of
+  draft-plan, which additionally requires every scope-eliminating claim
+  ("out of scope," "a later spec owns this") to name the source that
+  forecloses the case, or go to the owner as a defect decision. A session
+  may produce zero, one, or several plans depending on scope. Use when
+  starting new planning work. Does not promote to ready/ — that is a
+  separate step after review.
 ---
 
 # Draft Plan
@@ -42,7 +46,13 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Warrant every work-eliminating claim.** Code-grounding's sibling failure: asserting from memory that something *need not be built*. A spec's riskiest sentences are the ones whose function is to buy it out of work it would otherwise owe — "identical by construction," "follows automatically," "no separate test required," "derivable from existing state," "same as the single-player path." Each removes a task, a test, or a code path, and each is the one kind of sentence that produces no artifact to check it against. They are usually true, which is what makes the false ones expensive: they survive to implementation and surface as rewrites, not as bugs.
 
-State the warrant inline — the specific reason, grounded in source, not a restatement of the claim. "Identical because both paths call `apply_command()` with the same input struct" is a warrant; "identical by construction" is the claim wearing a warrant's clothes. If the warrant cannot be written, the claim is a guess: spec the work instead, or record it as an open question. `/review-draft-spec` challenges every one of these, so an unwarranted claim costs a review round.
+State the warrant inline — the specific reason, grounded in source, not a restatement of the claim. "Identical because both paths call `apply_command()` with the same input struct" is a warrant; "identical by construction" is the claim wearing a warrant's clothes. If the warrant cannot be written, the claim is a guess: spec the work instead, or record it as an open question. `/review-draft-spec-priced-deferral` challenges every one of these, so an unwarranted claim costs a review round.
+
+**Warrant every scope-eliminating claim.** The same failure one level up: the sentence buys the spec out of *scope* rather than out of work — "this spec does not build it," "deferred to the follow-on spec," "out of scope," "a later spec owns this," "not reachable today." A deferral is valid only when something in **source** makes the deferred case unreachable, and the spec names that code: a validation rule that rejects the input, a type that cannot represent the state, a call site that cannot be reached. Name the file and the identifier, the way a work-eliminating claim names its warrant. Naming the code that *produces* the case is not naming code that forecloses it — tracing the mechanism in detail explains the defect rather than removing it.
+
+Observations about content are never foreclosures. "No shipped content does this," "no dev map reaches it," "authors are unlikely to" — content is authored, so these describe today's assets, not the permitted surface. One paired with an expectation that authored content will reach the case has stated a defect rather than deferred one.
+
+If nothing in source forecloses the case, it is not out of scope. It is a known defect the spec is choosing to ship, and it goes to the owner as a defect decision — one sentence, in those terms. Not a footnote, not an AC caveat, not a named "fix seam"; pointing at where the fix would go reads like planning and forecloses nothing. Deferring costs the author nothing and always reads responsible, while building costs rounds and complexity — so the deferral is what owes the checkable reason.
 
 **Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
 
@@ -213,6 +223,10 @@ spec text:
 Question 2 needs a reader who has not spent the session inside the solution —
 a drafter who placed something in the wrong layer does not know it. Answer it
 for yourself; do not trust your own answer.
+
+A deferral with no source-level foreclosure is a direction question, not an
+authoring choice — it decides what ships broken, so it goes to the owner beside
+these.
 
 ### 6. Cross-check
 

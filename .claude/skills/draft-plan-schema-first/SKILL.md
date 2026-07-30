@@ -1,12 +1,14 @@
 ---
-name: draft-plan
+name: draft-plan-schema-first
 description: >
-  Drafts feature or epic specs for PostRetro. A session may produce zero, one,
-  or several plans depending on scope. Use when starting new planning work.
-  Does not promote to ready/ — that is a separate step after review.
+  Experimental variant of draft-plan. Drafts feature or epic specs for PostRetro,
+  authoring the structured tables before any prose. A session may produce zero,
+  one, or several plans depending on scope. Use when starting new planning work
+  and testing schema-first authoring order. Does not promote to ready/ — that is
+  a separate step after review.
 ---
 
-# Draft Plan
+# Draft Plan (schema-first)
 
 Explore scope, write specs. Output lives in `context/plans/drafts/<feature-name>/index.md`.
 
@@ -44,7 +46,7 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 State the warrant inline — the specific reason, grounded in source, not a restatement of the claim. "Identical because both paths call `apply_command()` with the same input struct" is a warrant; "identical by construction" is the claim wearing a warrant's clothes. If the warrant cannot be written, the claim is a guess: spec the work instead, or record it as an open question. `/review-draft-spec` challenges every one of these, so an unwarranted claim costs a review round.
 
-**Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
+**Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§4).
 
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
@@ -52,11 +54,19 @@ State the warrant inline — the specific reason, grounded in source, not a rest
 
 **Enumerate observers, not just the flow.** A flow diagram traces one path and renders every vantage on it as a single line. When the same state is observed from more than one position — host and client, local and remote, live and replayed, authored and generated — the spec owes the cross-product of vantage × lifecycle stage, not the flow. Name the vantages explicitly, then say which ones differ and which are the same. A vantage asserted identical to another is a work-eliminating claim and needs its warrant.
 
-**Enumerate orderings, not just the sequence.** A lifecycle diagram traces one ordering and renders every other as impossible. When the plan introduces mutable state, a timer, or an event, the spec owes the orderings that actually occur: two events the prose separates landing on one tick, B arriving before A, a timer crossing a reset or unload, N of an event where the handler expects one, a duration authored at zero, a consumer sampling slower than the producer mutates. Pin them as a table of scenario, ordering, and expected outcome. Unlike the diagram, this table is spec text, not `research.md`: task agents need it, and the test task cites its rows rather than restating them.
+**Enumerate orderings, not just the sequence.** A lifecycle diagram traces one ordering and renders every other as impossible. When the plan introduces mutable state, a timer, or an event, the spec owes the orderings that actually occur: two events the prose separates landing on one tick, B arriving before A, a timer crossing a reset or unload, N of an event where the handler expects one, a duration authored at zero, a consumer sampling slower than the producer mutates. Pin them as a table of scenario, ordering, and expected outcome — the Ordering matrix section (§3). Unlike the diagram, this table is spec text, not `research.md`: task agents need it, and the test task cites its rows rather than restating them.
 
-### 3. Write the spec
+### 3. Fill the schema
 
-Create `context/plans/drafts/<feature-name>/index.md`.
+Structured sections first, from source. Create `context/plans/drafts/<feature-name>/index.md` from the template in §4, then fill every table the plan needs — Boundary inventory, Wire format, Invariants, Ordering matrix — before writing a line of Direction, Acceptance criteria, or Tasks. Skip a table only under its own "Required when" clause.
+
+A filled schema is checkable in a way a paragraph is not; prose written against it cannot drift without the drift showing.
+
+**No prose without a row.** Prose may not introduce a boundary, an invariant, or an ordering that is not already a row. If writing a task paragraph surfaces one, stop and add the row first. Every cell is either anchored to a named source location or explicitly marked as new — a cell that is neither is a guess.
+
+### 4. Write the spec
+
+Full template below. The structured sections are already filled (§3); write the prose against them.
 
 ```markdown
 # <Feature Name>
@@ -71,6 +81,38 @@ Create `context/plans/drafts/<feature-name>/index.md`.
 
 ### Out of scope
 - Explicit non-goals. No "TBD" — decide or drop.
+
+## Boundary inventory
+(Required when the plan crosses Rust ↔ JS/Lua ↔ wire ↔ FGD KVP boundaries. Skip otherwise.)
+
+Pin casing and encoding once for every cross-boundary name. Reference this inventory throughout the spec instead of re-deciding inline.
+
+| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| (example) `BillboardEmitter` | `ComponentValue::BillboardEmitter` | `"billboard_emitter"` | `"billboard_emitter"` | `"billboard_emitter"` | n/a |
+
+## Wire format
+(Required when the plan adds a binary or PRL section. Skip otherwise.)
+
+For each new binary surface, pin: endianness, integer signedness, length-prefix integer width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null representation per runtime. State explicitly which existing section the new layout mirrors.
+
+## Invariants
+(Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
+
+Pin each cross-task invariant once. `/orchestrate` hands this table to every task agent with the Goal and AC list — task paragraphs reference rows, never restate them.
+
+| Invariant | Established by | Preserved / threatened at | Verified by |
+|---|---|---|---|
+| (example) Kill reported exactly once, at removal | Task 1 (sweep latch), Task 2 (removal-pass sink) | `setHealth` clears latch + pending credit; direct `registry.despawn` bypasses the sink | AC 7, 8, 9 |
+
+## Ordering matrix
+(Required when the plan introduces mutable state, a timer, or an event. Skip otherwise.)
+
+Pin the orderings that actually occur, not the one the lifecycle traces. Spec text, not `research.md` — task agents read it, and the test task cites rows rather than restating them.
+
+| Scenario | Ordering | Expected outcome |
+|---|---|---|
+| (example) Two hits, one tick | Both damage events land before the removal sweep | Kill credited once, to the first hit |
 
 ## Direction
 (Three short subsections. See "Direction questions while drafting" below.)
@@ -106,29 +148,6 @@ One paragraph. What to build.
 ## Rough sketch
 (Optional.) Implementation direction, key modules, algorithm hints. Named types and functions live here, not in AC.
 
-## Boundary inventory
-(Required when the plan crosses Rust ↔ JS/Lua ↔ wire ↔ FGD KVP boundaries. Skip otherwise.)
-
-Pin casing and encoding once for every cross-boundary name. Reference this inventory throughout the spec instead of re-deciding inline.
-
-| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
-|---|---|---|---|---|---|
-| (example) `BillboardEmitter` | `ComponentValue::BillboardEmitter` | `"billboard_emitter"` | `"billboard_emitter"` | `"billboard_emitter"` | n/a |
-
-## Wire format
-(Required when the plan adds a binary or PRL section. Skip otherwise.)
-
-For each new binary surface, pin: endianness, integer signedness, length-prefix integer width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null representation per runtime. State explicitly which existing section the new layout mirrors.
-
-## Invariants
-(Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
-
-Pin each cross-task invariant once. `/orchestrate` hands this table to every task agent with the Goal and AC list — task paragraphs reference rows, never restate them.
-
-| Invariant | Established by | Preserved / threatened at | Verified by |
-|---|---|---|---|
-| (example) Kill reported exactly once, at removal | Task 1 (sweep latch), Task 2 (removal-pass sink) | `setHealth` clears latch + pending credit; direct `registry.despawn` bypasses the sink | AC 7, 8, 9 |
-
 ## Script syntax examples
 Show examples of what scripts authored by modders utilizing this functionality would look like (only use section when applicable).
 
@@ -144,7 +163,7 @@ Unresolved items, risks, alternatives considered, if applicable (only use sectio
 
 **Split-before-extend rule.** When the plan adds functionality to a source file already past ~800 lines, split it first — a behavior-preserving task that breaks the file along seams you already see. Sequence the split right before the task that extends that file; don't drag an off-critical-path file forward. Splitting and extending in one task buries a refactor inside a feature diff — keep them separate.
 
-### 4. Acceptance criteria
+### 5. Acceptance criteria
 
 AC names observable behavior. Someone who didn't write the plan must be able to verify it without reading the implementation.
 
@@ -159,7 +178,7 @@ The last row is the general lesson, not a movement one: AC written against stead
 
 Named types, functions, and line numbers belong in the sketch — not AC. AC survives a rewrite of the implementation; a spec keyed to function names does not.
 
-### 5. Sequencing
+### 6. Sequencing
 
 Feeds `/orchestrate`. Terse is fine — models read short phase blocks reliably.
 
@@ -175,11 +194,11 @@ One phase per line. No per-task sub-bullets unless a dependency needs calling ou
 
 Concurrent-by-default argues against this, and that is the point: under the plain rule the producer tasks are independent, so they all run first and integration lands last. That ordering keeps the spec's assumptions unfalsified until the widest possible moment. A slice exists to falsify them while rewrites are still cheap — it is a test of the spec, not a delivery increment, so make it the thinnest path that crosses every seam rather than the first useful feature. Name it as such in the phase line: "Phase 1 (sequential): Task 1 — thin slice, falsifies the boundary assumptions."
 
-### 5b. Direction questions while drafting
+### 6b. Direction questions while drafting
 
 Six questions govern whether a spec is a reasonable solution to the problem at
 hand. Here they are a solo exercise — generative, shaping what you write.
-`/validate-plan` asks the same six adversarially at step 8, through a reviewer
+`/validate-plan` asks the same six adversarially at step 9, through a reviewer
 who did not draft the spec. Same questions, opposite direction.
 
 Work them yourself, in this context — never dispatch an agent for them. The
@@ -214,7 +233,7 @@ Question 2 needs a reader who has not spent the session inside the solution —
 a drafter who placed something in the wrong layer does not know it. Answer it
 for yourself; do not trust your own answer.
 
-### 6. Cross-check
+### 7. Cross-check
 
 Before committing, walk the spec:
 
@@ -224,13 +243,13 @@ Before committing, walk the spec:
 
 All directions must close. Gaps signal that something was assumed without being written down.
 
-### 7. Commit
+### 8. Commit
 
 Stage and commit the plan folder (`index.md` + optional `research.md`).
 
 **Do not update `context/lib/` during drafting.** Durable capture happens at promotion — after review. Reviewer agents often reshape the spec; library updates should land once, against the final shape.
 
-### 8. Validate direction
+### 9. Validate direction
 
 Run `/validate-plan <name>` on each plan the session produced, before reporting.
 
@@ -242,7 +261,7 @@ and a drafting session is maximally immersed.
 Surface its verdict; never act on a *Reshape*, *Not a spec*, or *Under-scoped*
 finding unilaterally. Those are owner decisions.
 
-### 9. Report
+### 10. Report
 
 - What was planned, or if the session produced no plan (scope already covered, etc.)
 - Task count and phase summary

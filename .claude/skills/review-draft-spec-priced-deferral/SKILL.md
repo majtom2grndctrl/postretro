@@ -1,11 +1,14 @@
 ---
-name: review-draft-spec
+name: review-draft-spec-priced-deferral
 description: >
-  Multi-agent review of a draft spec in `context/plans/drafts/`. Spawns
-  three parallel reviewers: one broad, one anchored to source that
-  fact-checks every named identifier, and one temporal that attacks the
-  spec's orderings. Auto-applies mechanical fixes via a Sonnet sub-agent
-  unless --no-auto-apply is set. Recommends apply / re-review / promote.
+  Multi-agent review of a draft spec in `context/plans/drafts/` —
+  priced-deferral variant of review-draft-spec, whose broad reviewer
+  additionally sweeps every scope-eliminating claim and reports each one
+  the spec does not foreclose in source. Spawns three parallel reviewers:
+  one broad, one anchored to source that fact-checks every named
+  identifier, and one temporal that attacks the spec's orderings.
+  Auto-applies mechanical fixes via a Sonnet sub-agent unless
+  --no-auto-apply is set. Recommends apply / re-review / promote.
   Use after a draft session, or when a human wants to validate before
   promoting to ready/.
 ---
@@ -51,9 +54,12 @@ Receives:
   - Plumbing handwaves — "edit X to do Y" without stating how X gets access
   - Missing wire-format or FFI pins
   - Unwarranted work-eliminating claims (see below) — report each as a finding
+  - Unforeclosed scope-eliminating claims (see below) — report each as a finding
   - Anything else that forces an implementer to guess
 
-Plus an explicit sweep, run as its own pass rather than folded into general reading:
+Plus two explicit sweeps, each run as its own pass rather than folded into general reading.
+
+**Work-eliminating claims:**
 
 > Extract every claim whose function is to eliminate work — to assert that some
 > code path, test, or task need not exist. Markers: "identical by construction,"
@@ -64,6 +70,29 @@ Plus an explicit sweep, run as its own pass rather than folded into general read
 > they are, and do not manufacture doubt. But they are the only sentences in a
 > spec that produce no artifact to verify, so an unexamined one survives to
 > implementation and surfaces as a rewrite rather than a bug.
+
+**Scope-eliminating claims:**
+
+> Extract every claim whose function is to eliminate scope — to assert that some
+> case is not this spec's to handle. Markers: "this spec does not build it,"
+> "deferred to the follow-on spec," "out of scope," "a later spec owns this,"
+> "not reachable today," "a future spec fixes it." For each, ask whether the
+> spec names source that forecloses the case — a validation rule that rejects
+> the input, a type that cannot represent the state, a call site that cannot be
+> reached — or only asserts the deferral. Code that *produces* the case does not
+> count as code that forecloses it: a spec tracing the mechanism in detail has
+> explained the defect, not removed it. Content observations do not count:
+> "no shipped content does this," "no dev map reaches it," "authors are unlikely
+> to" describe today's assets, not the permitted surface. A spec that pairs one
+> with an expectation that authored content will reach the case has stated a
+> defect. Naming where a future fix would go — a "fix seam," a marker that would
+> have to change shape — does not count either. Report every claim with no
+> source-level foreclosure, and say plainly that the case is reachable: it is a
+> defect the spec is choosing to ship, the owner's decision, not a footnote or
+> an AC caveat. Most deferrals are legitimate — say so where they are, and do
+> not manufacture doubt. But deferring costs the author nothing and always reads
+> responsible, so an unexamined one survives to implementation and surfaces
+> there as the case the spec said would not arise.
 
 Output: list of `{ location, problem, fix }` triples. "No issues found" if clean. No padding, no praise.
 
@@ -169,4 +198,4 @@ Cap at ~15 lines unless architectural findings demand more.
 - No emojis anywhere — skill or prompts.
 - Reviewer prompts inline the spec content. Paths drift.
 - Tables for mappings, prose for behavior.
-- Voice match draft-plan.
+- Voice match draft-plan-priced-deferral.

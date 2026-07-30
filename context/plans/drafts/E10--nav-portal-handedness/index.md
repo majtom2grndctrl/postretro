@@ -118,9 +118,10 @@ the existing hand-built path fixtures). Because previously-baked sections violat
 the now-pinned convention with no way to detect it, bump `NAVMESH_VERSION` 1 → 2
 and make `NavMeshSection::from_bytes` reject any other version (today it reads
 the version field without validating; the version check must be the first
-validation in `from_bytes`, before region-count or length checks, so a stale
-section always reports the version mismatch, not a downstream structural
-error. The rejection message should name the version mismatch explicitly
+semantic validation in `from_bytes` — immediately after the minimum-length
+guard and the version field read, before the region-count or length checks —
+so a stale section always reports the version mismatch, not a downstream
+structural error. The rejection message should name the version mismatch explicitly
 (e.g. 'navmesh section version {v}, expected {NAVMESH_VERSION} — recompile the
 map') so the runtime warning is actionable); the runtime loader already turns a
 rejected section into warn-and-ignore → no navigation, which is the intended
@@ -167,9 +168,15 @@ New `#[cfg(test)]` sibling module under `crates/postretro/src/nav/` (declared
 from `nav/mod.rs`; keep it out of `path.rs` so Task 4 can run concurrently).
 Each test builds fixture floor triangles (a ~40-line local floor-quad →
 `GeometryResult` builder mirroring the bake's own test helpers — those are
-`#[cfg(test)]`-private to the compiler crate, so replicate, don't import), bakes
+`#[cfg(test)]`-private to the compiler crate, so replicate, don't import;
+the types involved are `GeometryResult` and `FaceIndexRange` from
+`postretro_level_compiler::geometry`, `Vertex`/`FaceMeta`/`GeometrySection`
+from `postretro_level_format::geometry`, `TextureNamesSection` from
+`postretro_level_format::texture_names`, and `NavParams` from
+`postretro_level_compiler::map_data`), bakes
 with `postretro_level_compiler::navmesh_bake::bake_navmesh` at `cell_size` 0.25
-and zero erosion, wraps the section in `NavGraph::from_section`, and runs
+and zero erosion (`agent_radius: 0.0`), wraps the section in
+`NavGraph::from_section`, and runs
 `find_path` (which now returns `NavPath` — a struct with `points: Vec<Vec3>` and
 `mandatory_waypoints: Vec<bool>` — rather than bare `Option<Vec<Vec3>>`).
 Fixtures, each traversed in both directions: (1) east-west doorway —
@@ -178,8 +185,10 @@ line misses the neck; assert the interior waypoints sit at the near jamb (both
 portal endpoints on the jamb side nearer the straight line, within epsilon;
 waypoints will land at the **inset** near-jamb point — offset by
 `agent_radius + SKIN_DISTANCE` from the raw portal endpoint — since the
-capsule-clearance insetting pipeline is now active; assertions should compare
-against the inset position, not the raw endpoint) and
+capsule-clearance insetting pipeline is now active; with zero-erosion
+fixtures (`agent_radius: 0.0`) the effective inset is just `SKIN_DISTANCE`
+(0.02 m); assertions should compare against the inset position, not the raw
+endpoint) and
 no waypoint at the far jamb; (2) north-south doorway — the same shape rotated,
 covering the constant-Z emitter and the room-depth vertical portals its
 decomposition produces (the empirical far-wall case in `research.md`); (3)

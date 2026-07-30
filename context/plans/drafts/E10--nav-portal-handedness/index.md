@@ -7,9 +7,10 @@
 >
 > **Adjacent specs:** `E10--enemy-stuck-recovery` (shipped; steering-side backstop
 > that could not fix this — the path data itself is wrong) and
-> `E10--navmesh-capsule-clearance` (conditional draft; touches the same bake
-> functions for erosion/waypoint-inset, orthogonal to endpoint order — whichever
-> lands second bumps the navmesh stage version again).
+> `E10--navmesh-capsule-clearance` (shipped; touched the same bake
+> functions for Euclidean erosion and funnel waypoint insetting, orthogonal to
+> endpoint order — split the test file out of `navmesh_bake.rs` and bumped the
+> stage version to 3).
 
 ## Goal
 
@@ -44,10 +45,14 @@ costs on real start/goal positions instead of region centroids.
 ### Out of scope
 
 - Euclidean erosion and funnel waypoint inset off portal endpoints —
-  `E10--navmesh-capsule-clearance`.
+  `E10--navmesh-capsule-clearance` (shipped).
 - Region decomposition changes (greedy rectangles stay; the contour tracer stays
   future work).
-- Steering, replan policy, target selection — shipped E10 specs, untouched.
+- Steering, replan policy, target selection — shipped; the behavior state machine
+  has since replaced the engine-closed FSM with an authored state graph
+  (`components.behavior` descriptor, `scripting/systems/ai/` module tree), but the
+  `agent_steering` API surface (`set_destination`/`clear_destination`/`path_state`)
+  consumed by this spec is unchanged.
 - Off-mesh links, portal kinds, multi-agent bakes.
 
 ## Acceptance criteria
@@ -114,11 +119,12 @@ the now-pinned convention with no way to detect it, bump `NAVMESH_VERSION` 1 →
 and make `NavMeshSection::from_bytes` reject any other version (today it reads
 the version field without validating); the runtime loader already turns a
 rejected section into warn-and-ignore → no navigation, which is the intended
-loud degradation. Bump `NAVMESH_STAGE_VERSION` by one so the `"navmesh"` build
+loud degradation. Bump `NAVMESH_STAGE_VERSION` by one (currently 3 after the capsule-clearance bump; becomes 4) so the `"navmesh"` build
 cache stage invalidates. Add bake unit tests asserting the emitted endpoint
 order for a constant-X portal with `region_a` forced onto the west side and onto
 the east side (stack the second fixture's regions so the east region's z0 sorts
-first), and a `from_bytes` version-rejection test.
+first), and a `from_bytes` version-rejection test. Bake unit tests now live in
+`navmesh_bake/tests.rs` (tests were split to a sibling file by capsule-clearance).
 
 ### Task 2: Expose the bake to cross-crate tests (plumbing)
 
@@ -127,6 +133,9 @@ crate can call `bake_navmesh` — and `fixture_pipeline.rs` documents that pain.
 Following the `bc5`/`texture_mips` precedent (modules declared in both targets),
 declare the dependency closure in `crates/level-compiler/src/lib.rs`:
 `navmesh_bake`, `geometry`, `map_data`, `map_format`, `partition`, `cache`
+— note that `navmesh_bake` is now a directory module (`navmesh_bake/mod.rs` +
+`navmesh_bake/tests.rs`) after the capsule-clearance split; the
+`pub mod navmesh_bake;` declaration covers both.
 (`navmesh_bake`'s own test module uses `cache::CacheKey`; `geometry` pulls
 `map_data`, `map_format`, `partition`; none reach further). `main.rs` keeps its
 declarations unchanged. Then add `postretro-level-compiler.workspace = true` under
@@ -146,10 +155,16 @@ Each test builds fixture floor triangles (a ~40-line local floor-quad →
 `#[cfg(test)]`-private to the compiler crate, so replicate, don't import), bakes
 with `postretro_level_compiler::navmesh_bake::bake_navmesh` at `cell_size` 0.25
 and zero erosion, wraps the section in `NavGraph::from_section`, and runs
-`find_path`. Fixtures, each traversed in both directions: (1) east-west doorway —
+`find_path` (which now returns `NavPath` — a struct with `points: Vec<Vec3>` and
+`mandatory_waypoints: Vec<bool>` — rather than bare `Option<Vec<Vec3>>`).
+Fixtures, each traversed in both directions: (1) east-west doorway —
 two rooms abutting in X joined by a 1 m neck, start/goal offset so the straight
 line misses the neck; assert the interior waypoints sit at the near jamb (both
-portal endpoints on the jamb side nearer the straight line, within epsilon) and
+portal endpoints on the jamb side nearer the straight line, within epsilon;
+waypoints will land at the **inset** near-jamb point — offset by
+`agent_radius + SKIN_DISTANCE` from the raw portal endpoint — since the
+capsule-clearance insetting pipeline is now active; assertions should compare
+against the inset position, not the raw endpoint) and
 no waypoint at the far jamb; (2) north-south doorway — the same shape rotated,
 covering the constant-Z emitter and the room-depth vertical portals its
 decomposition produces (the empirical far-wall case in `research.md`); (3)
@@ -158,7 +173,10 @@ endpoint, mirroring the existing hand-built L tests but over baked data; (4) a
 straight two-room corridor asserting the `[start, goal]` collapse (AC3). Include
 the one-line regression comment naming this bug per the testing guide. These
 tests close the AC1/AC3 contract: the bake and the funnel meet in CI for the
-first time.
+first time. Note: the funnel now operates on `FunnelGate`/`FunnelEndpoint`
+types rather than raw `(Vec3, Vec3)` tuples — this does not affect the contract
+test API (they call `find_path` which handles the internal types), but fixture
+authors should be aware in case internal assertions need updating.
 
 ### Task 4: Anchor A* costs on portals and true endpoints
 
@@ -174,8 +192,8 @@ region at mid-to-mid cost; reaching any portal of the goal region closes with
 `CorridorHop { portal_index, from_region }` values consumed by
 `oriented_portals`, including the exact-portal guarantee when two portals join
 the same region pair. Same-region start/goal short-circuit is unchanged. Callers
-are unchanged (`find_path` is the only entry; `agent_steering` consumes
-waypoints). Add tests: a large single region with two doorways to the goal region
+are unchanged (`find_path` is the primary entry; `agent_steering` and
+`combat_positioning` consume waypoints). Add tests: a large single region with two doorways to the goal region
 where each start position must exit through its adjacent doorway (AC6), and keep
 `find_path_follows_cheaper_of_two_doorways_between_same_region_pair` plus the
 reversed-traversal test green.
@@ -214,14 +232,13 @@ surface), Task 4 (path.rs only; no file overlap with Task 3's sibling module).
 - `NAVMESH_VERSION` bump forces no PRL container change; only the navmesh
   section body's version field value changes. `from_bytes` gains one equality
   check returning the existing `invalid(...)` error shape.
-- `navmesh_bake.rs` feature code is ~790 lines (tests from ~line 792) — under
-  the split threshold, and Task 1 is an edit-in-place, so no pre-split task. The
-  capsule-clearance draft owns the eventual split.
+- `navmesh_bake/mod.rs` feature code is ~790 lines (tests split to
+  `navmesh_bake/tests.rs`, 617 lines, after the capsule-clearance pre-split) —
+  Task 1 is an edit-in-place. The capsule-clearance spec completed this split.
 
 ## Open questions
 
-- None blocking. If `E10--navmesh-capsule-clearance` lands before this, its
-  waypoint inset moves waypoints slightly off portal endpoints; Task 3's
-  near-jamb assertions should then compare against the inset point (nearest
-  corridor point to the jamb), not the raw endpoint — the executor should check
-  which landed first.
+- Capsule clearance has shipped. Task 3's near-jamb assertions must compare
+  against the inset point (portal endpoint offset inward by
+  `agent_radius + SKIN_DISTANCE`), not the raw endpoint. The `inset_portals`
+  pipeline and `ensure_endpoint_clearance` repair pass are active in `find_path`.

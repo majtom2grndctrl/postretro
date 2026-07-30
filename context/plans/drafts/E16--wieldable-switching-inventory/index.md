@@ -29,13 +29,13 @@ Switch behavior divides cleanly along a line the codebase already draws:
 | **Input** (local to the machine the player sits at) | the pending cursor, the dwell timer, direct-select-versus-cycle, the player's dwell override | never — it produces a commit intent, nothing more |
 | **Simulation** (authoritative) | whether a commit intent is honored, the repoint, the timed lower/raise | yes, through the existing command and snapshot paths |
 
-`PlayerOptions.crouch_mode` is the precedent and it is exact: toggle-versus-hold is resolved in the input layer, and `crates/postretro/src/movement/mod.rs:51` records that the movement intent *"NEVER sees the raw button or the mode."* A wheel dwell is the same kind of value. Keeping it out of the simulation means the dwell never has to agree across peers — the client decides *when* it wants to switch, the host decides *whether* it may.
+`PlayerOptions.crouch_mode` is the precedent and it is exact: toggle-versus-hold is resolved in the input layer, and the `MovementInput::crouch_intent` doc comment (`crates/postretro/src/movement/mod.rs`) records that the movement intent *"NEVER sees the raw button or the mode."* A wheel dwell is the same kind of value. Keeping it out of the simulation means the dwell never has to agree across peers — the client decides *when* it wants to switch, the host decides *whether* it may.
 
 ### Out of scope
 
-- **Pickup and drop.** A weapon-only descriptor is rejected as a direct map placement (`is_directly_map_placeable`, `scripting/builtins/data_archetype.rs:771`; rejection at `:1323`, "equip targets, not direct map placements"), so no weapon instance can exist in the world to be picked up. Roadmap `E16 › Weapon Systems › pickup` owns it; its prompt affordance is owned by the unbuilt **combat presentation substrate** (`context/plans/roadmap.md:229`).
+- **Pickup and drop.** The map-placement spawn path never attaches a weapon component, even to a descriptor that is otherwise placeable — pinned by `map_sweep_skips_weapon_component_on_otherwise_placeable_descriptor` in `scripting/builtins/data_archetype.rs`. So no weapon instance can exist in the world to be picked up. (`is_directly_map_placeable` alone does **not** foreclose this: it returns true for any descriptor carrying `light`, `emitter`, `movement`, `mesh`, or `health`, so a mesh-bearing weapon descriptor *is* placeable. The refusal to attach the component is the foreclosure.) Roadmap `E16 › Weapon Systems › pickup` owns the feature; its prompt affordance is owned by the unbuilt **combat presentation substrate** (`context/plans/roadmap.md:229`).
 - **A settings UI for the dwell override.** The options store ships the field and its persistence; the menu that edits it is a separate deliverable by standing policy — `context/lib/player_options.md` §4 splits the store from the E13 settings menu, and §3 records that no save-on-change occurs at runtime until that menu is wired.
-- **Dual-wield.** No descriptor field can express an off-hand wieldable — `EntityTypeDescriptor` (`crates/entities/src/data_descriptors/types/entity.rs:315`) carries a single weapon slot, and this plan's active reference is a single index. The state is unrepresentable, so the case is unreachable.
+- **Dual-wield.** This plan's `Inventory` carries a single active index (Task 2), and no authored surface can request a second — the `switching` block declares only commit rules and the loadout is an ordered list with no off-hand position. Nothing an author can write reaches the case. It is *reachable by extension* rather than unrepresentable-forever: the roadmap's `E16 › Weapon Systems › dual-wield` entry reads "generalize the single active reference to a primary/off-hand pair… Depends on switching," so this plan is its prerequisite, not its blocker. (Do not warrant this on `EntityTypeDescriptor::weapon` — that field is what makes a descriptor *be* a weapon archetype, not what a pawn holds.)
 - **Augments, rolls, and non-passthrough stat resolution.** `WeaponComponent::effective` takes `&self` only and is a pure projection (`crates/entities/src/components/weapon.rs:316`); the component stores no modifier or roll data, so no composed stat can exist.
 - **Heat and cell resources.** `WeaponResource` is a tagged union with exactly one arm, `{ kind: "ammo" }` (`sdk/types/postretro.d.ts:262`).
 - **Secondary activation / alt-fire.** `Action::AltFire` is bound (`crates/postretro/src/input/defaults.rs:30`) with zero consumers outside `input/`; roadmap `E16 › Weapon Systems › secondary activation` owns it.
@@ -184,7 +184,9 @@ Machine work is confined to the dispatch function Task 1 splits out of `sim/weap
 
 The cursor and dwell live beside the crouch-mode resolution in `crates/postretro/src/input/`, and the override field beside `crouch_mode` in `crates/postretro/src/options/mod.rs`.
 
-Manifest changes are in `sdk/lib/data_script.ts` and its Luau parity file plus the `ModManifest` type; the weapon block and `lowerMs`/`raiseMs` are on `WeaponDescriptor` in `crates/foundation/src/data_descriptors/types/combat.rs` and its typedef surfaces.
+Manifest changes are **not** in `sdk/lib/data_script.ts` — `defineMod` is `(config: ModManifest) => ModManifest` and needs no edit for a new field, and `sdk/types/postretro.d.ts` is generated ("Do not edit by hand"). The real sites are `ModManifestResult` in `crates/scripting-core/src/runtime/types.rs`, the registered `ModManifest` shape in `crates/postretro/src/scripting/primitives/manifest.rs` (a parity test forces those two to stay in lockstep), the manifest drain and validation path, and regenerated typedefs. The weapon block and `lowerMs`/`raiseMs` are on `WeaponDescriptor` in `crates/foundation/src/data_descriptors/types/combat.rs` and its typedef surfaces.
+
+`ComponentKind` uses explicit discriminants (`crates/entities/src/registry.rs`), so `Inventory` appends at the next free value and no existing wire discriminant moves.
 
 Tuning payload changes are local to `crates/postretro/src/netcode/tuning_payload.rs` plus its build/send path in `netcode/mod.rs`; the committed fixture is `crates/postretro/src/netcode/tests/fixtures/tuning_payload.expected.json`.
 
@@ -196,7 +198,7 @@ State slots are entries in `BUILTIN_ENGINE_STATE` (`crates/entities/src/engine_s
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| Inventory component | `ComponentValue::Inventory` | `"inventory"` | `inventory` (descriptor block) | `inventory` | n/a |
+| Inventory component | `ComponentValue::Inventory` | `"inventory"` — **serde tag only, never a replicated payload** | `inventory` (descriptor block) | `inventory` | n/a |
 | Loadout list | `InventoryDescriptor::loadout` | `"loadout"` (array of canonical-name strings) | `loadout` (array of descriptor refs) | `loadout` | n/a |
 | Lower duration | `WeaponDescriptor::lower_ms` | `"lowerMs"` | `lowerMs` | `lowerMs` | n/a |
 | Raise duration | `WeaponDescriptor::raise_ms` | `"raiseMs"` | `raiseMs` | `raiseMs` | n/a |
@@ -206,8 +208,8 @@ State slots are entries in `BUILTIN_ENGINE_STATE` (`crates/entities/src/engine_s
 | Cycle dwell | `SwitchingDescriptor::cycle_commit_dwell_ms` | `"cycleCommitDwellMs"` | `cycleCommitDwellMs` | `cycleCommitDwellMs` | n/a |
 | Reload-block rule | `SwitchingDescriptor::block_during_reload` | `"blockDuringReload"` | `blockDuringReload` | `blockDuringReload` | n/a |
 | Dwell player override | `PlayerOptions::switch_cycle_dwell_ms` | `switch_cycle_dwell_ms` (TOML, snake_case) | n/a — no SDK surface | n/a | n/a |
-| Lowering state | `WieldableState::Lowering` | `"lowering"` | n/a | n/a | n/a |
-| Raising state | `WieldableState::Raising` | `"raising"` | n/a | n/a | n/a |
+| Lowering state | `WieldableState::Lowering` | `"Lowering"` | n/a | n/a | n/a |
+| Raising state | `WieldableState::Raising` | `"Raising"` | n/a | n/a | n/a |
 | Current weapon slot | n/a (catalog entry) | `"player.weapon.current"` | `getGameState().player.weapon.current` | same path | n/a |
 | Pending weapon slot | n/a (catalog entry) | `"player.weapon.pending"` | `getGameState().player.weapon.pending` | same path | n/a |
 | Switching flag slot | n/a (catalog entry) | `"player.weapon.switching"` | `getGameState().player.weapon.switching` | same path | n/a |
@@ -218,7 +220,7 @@ State slots are entries in `BUILTIN_ENGINE_STATE` (`crates/entities/src/engine_s
 // Proposed design — a weapon is a `weapon` block on defineEntity.
 // There is no defineWeapon (plans/done/M10--weapon-primitives).
 export const referenceShotgunEntity = defineEntity({
-  name: "reference_shotgun",
+  canonicalName: "reference_shotgun",
   components: {
     weapon: {
       damage: 12, range: 1200, fireRateMs: 700,
@@ -243,9 +245,13 @@ import { referenceShotgunEntity } from "./reference-shotgun";
 import { referencePistolEntity } from "./reference-pistol";
 
 export const playerEntity = defineEntity({
-  name: "player",
+  canonicalName: "player",
   components: {
     movement: playerMovement,
+    // Replaces the shipped TOP-LEVEL `defaultWeapon` string. M10 placed equip
+    // at the top level deliberately ("equip is a different concern at the same
+    // level"); moving it into `components.inventory` reverses that, because
+    // equip now carries per-pawn runtime state and not just a name.
     inventory: { loadout: [referenceShotgunEntity, referencePistolEntity] },
   },
 })

@@ -19,6 +19,41 @@ paint the engine into a corner.
 
 ---
 
+## Amendment (2026-07) — there is no `defineWeapon`
+
+**A weapon archetype is a `weapon` block on `defineEntity`, not a standalone
+`defineWeapon`.** The §9 declaration-surface fork is settled that way; owner
+decision, 2026-07. Every `defineWeapon(...)` form below has been rewritten to
+the settled shape.
+
+M10 chose the block for expedience and recorded the choice as a known cost
+(`plans/done/M10--weapon-primitives/index.md:101`: *"the §9 declaration-surface
+fork resolves the other way for the looter shape, but the movement parallel
+keeps M10 cheap and consistent"*). That cost is now withdrawn rather than
+carried: the block is the durable surface, and the looter shape is expected to
+grow inside it. Two reasons it holds. Every `define*` in the SDK is a pure
+builder returning manifest data, so a separate constructor buys no registration
+behavior a block lacks (`context/lib/scripting.md` §Mod init). And a wieldable
+is an *entity instance*, so declaring its archetype anywhere but the entity
+surface would split one concept across two authoring forms.
+
+Two further corrections to the samples below, both from shipped source:
+
+- **No `initialStats` wrapper.** Weapon stats are flat on the block —
+  `damage`, `range`, `fireRateMs`, `fireMode`, `resolution`, with `resource`
+  as the one nested tagged union. The `initialStats: { … }` grouping in the
+  original samples was never built.
+- **`augmentSlots` is unbuilt**, as is `defineAugment`. Both remain proposals;
+  they are kept below as design intent, marked. When augments land, their
+  declaration surface should follow the same settled answer unless someone
+  argues otherwise in a spec.
+
+The proposed-but-unbuilt fields in the samples (charge, augment slots, the heat
+and cell resource variants, `secondary`) are still proposals. Only the shape of
+the *declaration* is settled here.
+
+---
+
 ## 1. Vision
 
 The long-term target is looter-shooter weapons: a pistol and an SMG are
@@ -91,8 +126,8 @@ Four concepts cover the surface. Archetype, instance, and augment are
 wieldable-general; the stat/fire/resolution/ammo specifics below are the weapon
 kind filling them in.
 
-- **Archetype** — the template. Script-declared (`defineWeapon`-style, or a
-  wieldable block on an entity definition). For a weapon: base stats, fire mode,
+- **Archetype** — the template. Script-declared as a wieldable block on an
+  entity definition (settled — see the Amendment). For a weapon: base stats, fire mode,
   resolution mode, a **resource** (the tagged consumable model — ammo, heat, or
   cell), per-activation `primary`/`secondary` blocks (each declaring its use and
   the events it emits), and the augment-slot count. Immutable. Many instances per
@@ -121,75 +156,88 @@ kind filling them in.
 // not free-form strings — same convention as existing descriptors
 // (e.g. `primitive: "setLightAnimation"`), emitted by gen-script-types.
 // Numerics are TS `number`; the Rust type each resolves to is noted per field.
-defineWeapon({
-  name: "smg",                 // string — canonical archetype name
-  initialStats: {
-    damage: 8,                 // number → f32 — base damage, pre-roll/augment
-    range: 1200,               // number → f32 — world units; clamps the cast's max_toi
-    fireRateMs: 90,            // number → f32 — ms; converted to ticks at materialization
-  },
-  fireMode: "auto",            // FireMode = "semi" | "auto" — orthogonal, stays flat
-  resolution: "hitscan",       // ResolutionMode = "hitscan" — orthogonal, stays flat
-  augmentSlots: 2,             // number → u32 — slot count this archetype exposes
-  // Resource is a tagged union: fields differ per kind, so a flat field set
-  // would carry meaningless members (an `ammoType` on a heat gun). Tag it.
-  // The ammo variant's numbers live in this block, not in `initialStats`.
-  resource: {
-    kind: "ammo",              // ResourceKind — "ammo" today; "heat" | "cell" are open
-    type: "heavy",             // string — authored ASCII identifier; the reserve pool key
-    magazine: 30,              // number → u32 — rounds the magazine holds
-    costPerShot: 1,            // number → u32 — rounds debited per shot
-    reserve: 90,               // number → u32 — reserve credited to the pawn at spawn
-    reloadMs: 1800,            // number → u32 — ms for one atomic reload
-    // Unbuilt: `reloadStyle` ("magazine" | "per-shell" | "internal" | "energy")
-    //   — a fixed classifier (a trait), not a number. Only atomic reload exists.
-  },
-  // Per-activation blocks. `emits` is co-located on the activation that fires it
-  // — there is NO top-level emits. The activation is the single source of truth
-  // for what it does AND what it sounds like.
-  primary: {
-    use: "fire",               // ActivationUse = "fire" | "none" | (future) "scan" | …
-    emits: {
-      activate: "smgFire",     // EventName — &'static str the fire tick returns
-      impact: "smgImpact",     // EventName — per-activation: a secondary resolves differently
+// SHIPPED shape: a `weapon` block on defineEntity. Stats are flat on the block;
+// `resource` is the one nested member. Fields marked PROPOSED are not built.
+defineEntity({
+  name: "smg",                     // string — canonical archetype name
+  components: {
+    weapon: {
+      damage: 8,                   // number → f32 — base damage, pre-roll/augment
+      range: 1200,                 // number → f32 — max hitscan distance, metres
+      fireRateMs: 90,              // number → f32 — min interval between shots, ms
+      fireMode: "auto",            // FireMode = "semi" | "auto" — orthogonal, stays flat
+      resolution: "hitscan",       // ResolutionMode = "hitscan" — orthogonal, stays flat
+      augmentSlots: 2,             // PROPOSED — slot count this archetype exposes
+      // Resource is a tagged union: fields differ per kind, so a flat field set
+      // would carry meaningless members (an `ammoType` on a heat gun). Tag it.
+      // The ammo variant's numbers live in this block, beside the flat stats.
+      resource: {
+        kind: "ammo",              // ResourceKind — "ammo" today; "heat" | "cell" are open
+        type: "heavy",             // string — authored ASCII identifier; the reserve pool key
+        magazine: 30,              // number → u32 — rounds the magazine holds
+        costPerShot: 1,            // number → u32 — rounds debited per shot
+        reserve: 90,               // number → u32 — reserve credited to the pawn at spawn
+        reloadMs: 1800,            // number → u32 — ms for one reload step
+        reloadStyle: "magazine",   // ReloadStyle = "magazine" | "perShell"
+      },
+      // PROPOSED — per-activation blocks. `emits` is co-located on the activation
+      // that fires it; there is NO top-level emits. The activation is the single
+      // source of truth for what it does AND what it sounds like. Shipped code
+      // emits its activate/impact events without this authoring surface.
+      primary: {
+        use: "fire",               // ActivationUse = "fire" | "none" | (future) "scan" | …
+        emits: {
+          activate: "smgFire",     // EventName — &'static str the fire tick returns
+          impact: "smgImpact",     // EventName — per-activation: a secondary resolves differently
+        },
+      },
+      secondary: { use: "none" },  // a `use: "none"` activation carries no emits — no desync risk
     },
   },
-  secondary: { use: "none" },  // a `use: "none"` activation carries no emits — no desync risk
 })
 
-// Resource variants — unbuilt, sketched here so the union's shape is legible.
-// Note the two sketches still put their numbers in `initialStats`, where the
-// shipped ammo variant puts its own on the resource; which placement generalizes
-// is settled when the first of these lands.
+// Resource variants — PROPOSED, sketched here so the union's shape is legible.
+// Their tuning numbers sit flat on the weapon block beside `damage`/`range`,
+// the same placement the shipped flat stats use.
 //   Heat — passive dissipation + an overheat punish state, no reserve, no reload:
 //     resource: { kind: "heat", overheatBehavior: "lockout" }
 //       // overheatBehavior = "lockout" | "vent"
-//     // its modifiable numbers live in initialStats: heatPerShot / overheatAt / ventRate
+//     // its modifiable numbers sit flat: heatPerShot / overheatAt / ventRate
 //   Cell — per-instance charge that depletes and passively regens, no reserve, no reload:
 //     resource: { kind: "cell", regenDelayMs: 1500 }  // number → f32 — ms before regen starts
 
 // A railgun shows charge as an activation axis (orthogonal to the resource —
 // here charge + heat compose; a charged plasma bolt would be charge + ammo).
-defineWeapon({
+// PROPOSED throughout except the declaration shape itself.
+defineEntity({
   name: "railgun",
-  initialStats: { damage: 60, range: 4000, fireRateMs: 150,
-    heatPerShot: 40, overheatAt: 100, ventRate: 25 },
-  fireMode: "semi",
-  resolution: "hitscan",
-  augmentSlots: 2,
-  resource: { kind: "heat", overheatBehavior: "vent" },
-  primary: {
-    use: "fire",
-    charge: {                  // charge lives on the ACTIVATION, not the resource
-      minMs: 200,              // number → f32 — fire floor; minMs:0 also tap-fires
-      fullMs: 800,             // number → f32 — ms to reach charge level 1.0
-      scales: ["damage", "range"], // StatId[] — charge level (0..1) scales these at release
+  components: {
+    weapon: {
+      damage: 60, range: 4000, fireRateMs: 150,
+      heatPerShot: 40, overheatAt: 100, ventRate: 25,
+      fireMode: "semi",
+      resolution: "hitscan",
+      augmentSlots: 2,
+      resource: { kind: "heat", overheatBehavior: "vent" },
+      primary: {
+        use: "fire",
+        charge: {                  // charge lives on the ACTIVATION, not the resource
+          minMs: 200,              // number → f32 — fire floor; minMs:0 also tap-fires
+          fullMs: 800,             // number → f32 — ms to reach charge level 1.0
+          scales: ["damage", "range"], // StatId[] — charge level (0..1) scales these at release
+        },
+        emits: { activate: "railFire", impact: "railImpact" },
+      },
+      secondary: { use: "none" },  // releasing applies the resource cost (here, heat)
     },
-    emits: { activate: "railFire", impact: "railImpact" },
   },
-  secondary: { use: "none" },  // releasing applies the resource cost (here, heat)
 })
 
+// PROPOSED — augments are unbuilt, and `defineAugment` is a sketch, not a
+// surface. Its declaration form is deliberately left open: the settled answer
+// for weapons (a block on defineEntity) is the default an augment spec should
+// argue against rather than inherit silently, because an augment is an owned
+// loot item that may never be a spawned entity.
 defineAugment({
   // Internal augment — no physical presence, just deltas + a behavior hook.
   name: "incendiary-core",     // string — augment identifier
@@ -234,7 +282,7 @@ meaningless on a heat weapon. That's exactly when a tagged union beats flat
 fields: members that don't apply to every variant. `fireMode` and `resolution`
 stay flat top-level fields because they *are* orthogonal — a heat weapon still
 has both. Ammo's *numbers* turned out to be variant-local as well, so they're
-authored on the resource rather than in `initialStats`: `magazine`,
+authored on the resource rather than flat on the block: `magazine`,
 `costPerShot`, `reserve`, `reloadMs`. Authoring placement is not the modifier
 seam — `effective()` projects the resource's numbers beside the flat stats (§3),
 so an augment raising magazine capacity or reload speed has somewhere to land
@@ -527,9 +575,13 @@ These aren't decided — they want a human call before this becomes durable:
   effective-stats accessor; promote to a map when the first augment that needs an
   unanticipated stat actually lands. Open: is that promotion cheap enough, or do
   we eat the map's cost up front?
-- **Where the archetype is declared:** a dedicated `defineWeapon` vs. a wieldable
-  block on the existing entity-definition surface. Affects how a pickup entity
-  and a weapon archetype relate.
+- ~~**Where the archetype is declared:** a dedicated `defineWeapon` vs. a
+  wieldable block on the existing entity-definition surface.~~ **Settled
+  (2026-07):** the wieldable block on `defineEntity`. See the Amendment at the
+  head of this file. M10 chose the block for expedience and logged the looter
+  shape as an accepted cost; that cost is withdrawn, not carried. Still open
+  underneath it: how a pickup entity and a weapon archetype relate — the
+  `E16 › Weapon Systems › pickup` spec owns that.
 - **How the wieldable/weapon split is typed:** a wieldable marker plus a per-kind
   component (weapon component, later scanner component) vs. one component with a
   kind tag. M10 has one kind and can defer the choice — but the inventory and

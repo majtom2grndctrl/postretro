@@ -294,10 +294,16 @@ stamps a **source id**, defaulting to its canonical name. A mod that credits by
 damage-type instead of weapon overrides it:
 
 ```ts
-// Proposed design.
-const flamethrower = defineWeapon({
-  // …
-  creditSource: "fire", // ledger keys on "fire", not "flamethrower" — per-element credit
+// A weapon archetype is a `weapon` block on defineEntity — there is no
+// defineWeapon (see the Amendment in weapon-model.md). `creditSource` is shipped.
+const flamethrower = defineEntity({
+  name: "flamethrower",
+  components: {
+    weapon: {
+      // …
+      creditSource: "fire", // ledger keys on "fire", not "flamethrower" — per-element credit
+    },
+  },
 });
 ```
 

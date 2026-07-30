@@ -117,13 +117,22 @@ left in the XZ funnel projection; equivalently, constant-X portal crossed toward
 the existing hand-built path fixtures). Because previously-baked sections violate
 the now-pinned convention with no way to detect it, bump `NAVMESH_VERSION` 1 → 2
 and make `NavMeshSection::from_bytes` reject any other version (today it reads
-the version field without validating); the runtime loader already turns a
+the version field without validating; the version check must be the first
+validation in `from_bytes`, before region-count or length checks, so a stale
+section always reports the version mismatch, not a downstream structural
+error. The rejection message should name the version mismatch explicitly
+(e.g. 'navmesh section version {v}, expected {NAVMESH_VERSION} — recompile the
+map') so the runtime warning is actionable); the runtime loader already turns a
 rejected section into warn-and-ignore → no navigation, which is the intended
 loud degradation. Bump `NAVMESH_STAGE_VERSION` by one (currently 3 after the capsule-clearance bump; becomes 4) so the `"navmesh"` build
 cache stage invalidates. Add bake unit tests asserting the emitted endpoint
 order for a constant-X portal with `region_a` forced onto the west side and onto
 the east side (stack the second fixture's regions so the east region's z0 sorts
-first), and a `from_bytes` version-rejection test. Bake unit tests now live in
+first), and a `from_bytes` version-rejection test. Note: the orientation fix
+changes the `left` field of constant-X portals when `ra` is the west region
+(from z_lo to z_hi), which changes the deterministic portal sort order;
+existing bake test assertions on portal endpoint values or array ordering in
+`navmesh_bake/tests.rs` may need updating. Bake unit tests now live in
 `navmesh_bake/tests.rs` (tests were split to a sibling file by capsule-clearance).
 
 ### Task 2: Expose the bake to cross-crate tests (plumbing)
@@ -133,16 +142,22 @@ crate can call `bake_navmesh` — and `fixture_pipeline.rs` documents that pain.
 Following the `bc5`/`texture_mips` precedent (modules declared in both targets),
 declare the dependency closure in `crates/level-compiler/src/lib.rs`:
 `navmesh_bake`, `geometry`, `map_data`, `map_format`, `partition`, `cache`
-— note that `navmesh_bake` is now a directory module (`navmesh_bake/mod.rs` +
+— note that `navmesh_bake` is now a file + directory module (`navmesh_bake.rs` +
 `navmesh_bake/tests.rs`) after the capsule-clearance split; the
 `pub mod navmesh_bake;` declaration covers both.
 (`navmesh_bake`'s own test module uses `cache::CacheKey`; `geometry` pulls
-`map_data`, `map_format`, `partition`; none reach further). `main.rs` keeps its
+`map_data`, `map_format`, `partition`; none reach further). Verify the closure
+compiles with `cargo check -p postretro-level-compiler --lib` and chase any
+missing-module errors — the list above is the expected minimum, not a
+guaranteed closure. `main.rs` keeps its
 declarations unchanged. Then add `postretro-level-compiler.workspace = true` under
 the `postretro` crate's `[dev-dependencies]` — the workspace dependency entry
 already exists in the root `Cargo.toml`. `postretro` is bin-only, but
-`#[cfg(test)]` modules under `src/` see dev-dependencies. Pure plumbing: no behavior change, no new public API beyond
-the module declarations; the level-compiler's existing `--lib` test target will
+`#[cfg(test)]` modules under `src/` see dev-dependencies. Pure plumbing: no
+behavior change; the declared modules become part of the lib crate's public
+API, which is acceptable because `postretro-level-compiler` is
+workspace-internal and not published. The level-compiler's existing `--lib`
+test target will
 now also compile those modules' co-located tests, which is acceptable (bc5 already
 double-compiles).
 
@@ -232,7 +247,7 @@ surface), Task 4 (path.rs only; no file overlap with Task 3's sibling module).
 - `NAVMESH_VERSION` bump forces no PRL container change; only the navmesh
   section body's version field value changes. `from_bytes` gains one equality
   check returning the existing `invalid(...)` error shape.
-- `navmesh_bake/mod.rs` feature code is ~790 lines (tests split to
+- `navmesh_bake.rs` feature code is ~790 lines (tests split to
   `navmesh_bake/tests.rs`, 617 lines, after the capsule-clearance pre-split) —
   Task 1 is an edit-in-place. The capsule-clearance spec completed this split.
 

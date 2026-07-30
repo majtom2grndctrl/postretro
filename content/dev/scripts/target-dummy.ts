@@ -11,13 +11,13 @@
 // loops clip 0 on the animation clock.
 //
 // Sizing:
-//   - `max: 30`. The shipped `reference_pistol` deals 12 damage per hitscan hit
-//     (see content/dev/scripts/reference-pistol.ts), so a dummy downs in three
+//   - `max: 30`. The shipped `reference_shotgun` deals 12 damage per hitscan hit
+//     (see content/dev/scripts/reference-shotgun.ts), so a dummy downs in three
 //     shots (12 + 12 + 12 = 36 ≥ 30), then a fourth shot demonstrates the
 //     authored follow-up finisher.
 //   - The model supplies its own torso/head/limb hit-zone capsules. The demo
 //     uses those authored zones directly, so aiming at its torso is the most
-//     reliable way to demonstrate the fixed 12-damage pistol hits.
+//     reliable way to demonstrate the fixed 12-damage shotgun hits.
 //
 // See content/dev/maps/combat-demo.README.md for the full end-to-end loop.
 

@@ -24,8 +24,8 @@ DEMO CONTENT exercising three connected paths end to end:
 
 3. **Reference resource grants.** The engine has no concept of a reward. This
    dev mod supplies two replaceable policies instead: a dummy kill-edge impact
-   policy grants its damager 8 `bullets.light`, while a nearby trigger volume
-   grants its entering activators 24 `bullets.light`. The walkthrough keeps the
+   policy grants its damager 8 `shells.buck`, while a nearby trigger volume
+   grants its entering activators 24 `shells.buck`. The walkthrough keeps the
    two entry points visibly distinct.
 
 ## Floor plan
@@ -157,7 +157,7 @@ to reach you.
 - `content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf` — the visible
   skinned body. The current asset supplies one looping animation clip and
   torso/head/limb hit-zone capsules. The demo has no zone damage multipliers,
-  so every successful hit uses the pistol's base damage.
+  so every successful hit uses the shotgun's base damage.
 - `content/dev/scripts/player.ts` — the player archetype, which carries
   `health: { max: 100 }` and DELIBERATELY no `hitbox` (the player is not
   ray-targetable; this also forecloses self-hit). Its HP is driven only through
@@ -166,14 +166,14 @@ to reach you.
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
   the `player` tag. It also binds the `ammo_pickup` trigger's enter edge to a
-  24-`bullets.light` grant for its activators. Wired into the map via the
+  24-`shells.buck` grant for its activators. Wired into the map via the
   worldspawn `data_script` KVP.
 - `content/dev/scripts/combat-lifecycle.ts` — a **mod-global**
   `defineImpactEvent` registered from `start-script.ts`. `target_dummy` is
   exclusive to combat-demo, so it works when the map is opened from the catalog
   or directly by CLI while still composing with the level-local progress reactions.
   Its `dev:ammo-on-kill` policy is reference content: it pays the damager 8
-  `bullets.light` on a dummy kill edge, but a mod replaces the policy wholesale.
+  `shells.buck` on a dummy kill edge, but a mod replaces the policy wholesale.
 - `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
   tagged `player` (far west), four `target_dummy` instances tagged `dummy` (just
@@ -211,7 +211,7 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
 `apply_damage` chokepoint → mod-global impact policy → authored lifecycle, end to end:
 
 - Each `target_dummy` (max 30 HP) spawns standing in front of the player. Aiming
-  the reference pistol (12 damage/hit) at one and firing **takes 12 HP per hit**,
+  the reference shotgun (12 damage/hit) at one and firing **takes 12 HP per hit**,
   routed through the `apply_damage` chokepoint. Three torso hits down it
   (12 + 12 + 12 = 36 ≥ 30), but **do not remove it**: the mod-global policy queues
   `setHealth(maxHealth, { afterMs: 3000 })`. The target remains ray-targetable at
@@ -224,8 +224,15 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
   There is no distinct down animation in the current single-clip fixture model;
   verify the down/recovery loop by waiting three seconds and downing it again.
 
+- After the four-shot dummy demonstration, hold reload and watch the shotgun
+  refill one `shells.buck` round every 450 ms. The shotgun holds eight rounds:
+  the dummy's four shots and the enemy's six shots each fit within one magazine,
+  but a reload deliberately separates those two encounters. Fire during that
+  reload to see the in-flight shell step cancel; keep reload held through the
+  shot to see it restart on the following tick.
+
 - The far `reference_enemy` is the visual companion demo. Five body shots
-  (60 HP at 12 damage per pistol hit) down it; its declared `death` state plays
+  (60 HP at 12 damage per shotgun hit) down it; its declared `death` state plays
   and its brain and navigation agent pause while the same three-second recovery
   is queued. Recovery immediately returns it to its idle pose, then normal AI
   resumes and selects its walk animation as it pursues. A sixth body shot while
@@ -233,7 +240,7 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
   this map, so other reference-enemy fixtures retain their existing behavior.
 
 - **Model-authored hit zones.** The dummy uses the visible model's torso, head,
-  arm, and leg capsules. Aim at the torso for the most reliable 12-damage pistol
+  arm, and leg capsules. Aim at the torso for the most reliable 12-damage shotgun
   hits; the demo deliberately defines no zone damage multipliers.
 
 - The `progress` reaction's denominator (4 tagged dummies) is captured at level
@@ -253,8 +260,8 @@ below are dev-mod reference content that another mod replaces with its own
 policies; they exercise two distinct recipient paths.
 
 1. **Kill payout — impact source.** Shoot a `target_dummy` three times with the
-   reference pistol. The third hit crosses from positive health to zero or below,
-   so `dev:ammo-on-kill` grants the damager **8 `bullets.light`**. This is a kill
+   reference shotgun. The third hit crosses from positive health to zero or below,
+   so `dev:ammo-on-kill` grants the damager **8 `shells.buck`**. This is a kill
    edge, not a corpse-hit level gate. `combatDummyLifecycle` resurrects a merely
    downed dummy after three seconds, so downing it again earns another 8-ammo
    payout. A follow-up fourth hit while it is down reaches the `-12` gib threshold
@@ -262,7 +269,7 @@ policies; they exercise two distinct recipient paths.
 
 2. **Volume payout — trigger activator.** From the player start, walk east through
    `ammo_pickup_volume` (the `A` in the floor plan). Its `onTriggerEvent` enter
-   binding grants the entering player **24 `bullets.light`**, independently of
+   binding grants the entering player **24 `shells.buck`**, independently of
    combat. The touch volume uses `fire_mode: multiple` with a 3-second rearm and
    deliberately never self-disarms in v1, so leave it, wait three seconds, and
    enter again for another volume payout.

@@ -4,13 +4,13 @@ description: >
   Multi-agent review of a draft spec in `context/plans/drafts/` —
   priced-deferral variant of review-draft-spec, whose broad reviewer
   additionally sweeps every scope-eliminating claim and reports each one
-  the spec does not foreclose in source. Spawns three parallel reviewers
-  — a broad reviewer, a codebase-anchor reviewer that fact-checks every
-  named identifier against source, and a temporal reviewer that attacks
-  the spec's orderings. Auto-applies mechanical fixes via a Sonnet
-  sub-agent unless --no-auto-apply is set. Recommends apply / re-review /
-  promote. Use after a draft session, or when a human wants to validate
-  before promoting to ready/.
+  the spec does not foreclose in source. Spawns three parallel reviewers:
+  one broad, one anchored to source that fact-checks every named
+  identifier, and one temporal that attacks the spec's orderings.
+  Auto-applies mechanical fixes via a Sonnet sub-agent unless
+  --no-auto-apply is set. Recommends apply / re-review / promote.
+  Use after a draft session, or when a human wants to validate before
+  promoting to ready/.
 ---
 
 # Review Draft Spec
@@ -39,7 +39,7 @@ Read the full spec yourself before delegating. Decisions about which reviewers t
 
 One message, three `Agent` tool calls. No sequential rounds.
 
-**One lens per agent.** A lens needs sustained attention; an agent handed two satisfices and does both shallowly. Never blend them — a lens that does not fit the spec is skipped whole, not folded into another. Independence is the point: the same defect reported by two lenses that could not see each other is the signal worth acting on, and it is how a confidently wrong finding gets caught. Merging costs that and saves only a duplicated spec read.
+**One lens per agent.** A lens needs sustained attention; an agent handed two satisfices and does both shallowly. Never blend them — a lens that does not fit the spec is skipped whole, not folded into another. Independence is the point: the same defect reported by two lenses that could not see each other is the signal worth acting on, and it is how a confidently wrong finding gets caught. Merging saves only a duplicated spec read.
 
 #### Broad reviewer (Opus)
 
@@ -83,16 +83,16 @@ Plus two explicit sweeps, each run as its own pass rather than folded into gener
 > count as code that forecloses it: a spec tracing the mechanism in detail has
 > explained the defect, not removed it. Content observations do not count:
 > "no shipped content does this," "no dev map reaches it," "authors are unlikely
-> to" describe today's assets, not the permitted surface, and a spec that pairs
-> one with an expectation that authored content will reach the case has stated a
+> to" describe today's assets, not the permitted surface. A spec that pairs one
+> with an expectation that authored content will reach the case has stated a
 > defect. Naming where a future fix would go — a "fix seam," a marker that would
 > have to change shape — does not count either. Report every claim with no
 > source-level foreclosure, and say plainly that the case is reachable: it is a
-> defect the spec is choosing to ship, which is the owner's decision, not a
-> footnote or an AC caveat. Most deferrals are legitimate — say so where they
-> are, and do not manufacture doubt. But deferring costs the author nothing and
-> always reads responsible, so an unexamined one survives to implementation and
-> surfaces there as the case the spec said would not arise.
+> defect the spec is choosing to ship, the owner's decision, not a footnote or
+> an AC caveat. Most deferrals are legitimate — say so where they are, and do
+> not manufacture doubt. But deferring costs the author nothing and always reads
+> responsible, so an unexamined one survives to implementation and surfaces
+> there as the case the spec said would not arise.
 
 Output: list of `{ location, problem, fix }` triples. "No issues found" if clean. No padding, no praise.
 
@@ -107,7 +107,7 @@ Output: same `{ location, problem, fix }` triples. Each fix references the sourc
 
 #### Temporal reviewer (Opus)
 
-Skip only for a spec that introduces no mutable state, no timer, and no event ordering — rare enough to justify inline.
+Skip only for a spec that introduces no mutable state, no timer, and no event ordering.
 
 Receives:
 - Full spec content inline
@@ -133,7 +133,7 @@ Receives:
 
 Output: `{ location, problem, fix }` triples, **plus a pin table** — `(scenario, ordering, expected outcome)` rows the spec ought to state and does not, each concrete enough to write a test from.
 
-The pin table is the lens's primary artifact. The defect class it targets is "invariant stated, mechanics unpinned," and prose findings get applied and forgotten while a table becomes a spec section later rounds check against. Fold it in as its own section rather than dissolving its rows into existing paragraphs, and have the spec's test task reference the rows instead of restating them.
+The pin table is the lens's primary artifact. The defect class it targets is "invariant stated, mechanics unpinned." Prose findings get applied and forgotten; a table becomes a spec section later rounds check against. Fold it in as its own section rather than dissolving its rows into existing paragraphs, and have the spec's test task reference the rows instead of restating them.
 
 ### 4. Aggregate
 

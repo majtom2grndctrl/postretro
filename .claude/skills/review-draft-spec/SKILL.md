@@ -2,11 +2,10 @@
 name: review-draft-spec
 description: >
   Multi-agent review of a draft spec in `context/plans/drafts/`. Spawns
-  three parallel reviewers — a broad reviewer, a codebase-anchor
-  reviewer that fact-checks every named identifier against source, and a
-  temporal reviewer that attacks the spec's orderings.
-  Auto-applies mechanical fixes via a Sonnet sub-agent unless
-  --no-auto-apply is set. Recommends apply / re-review / promote.
+  three parallel reviewers: one broad, one anchored to source that
+  fact-checks every named identifier, and one temporal that attacks the
+  spec's orderings. Auto-applies mechanical fixes via a Sonnet sub-agent
+  unless --no-auto-apply is set. Recommends apply / re-review / promote.
   Use after a draft session, or when a human wants to validate before
   promoting to ready/.
 ---
@@ -37,7 +36,7 @@ Read the full spec yourself before delegating. Decisions about which reviewers t
 
 One message, three `Agent` tool calls. No sequential rounds.
 
-**One lens per agent.** A lens needs sustained attention; an agent handed two satisfices and does both shallowly. Never blend them — a lens that does not fit the spec is skipped whole, not folded into another. Independence is the point: the same defect reported by two lenses that could not see each other is the signal worth acting on, and it is how a confidently wrong finding gets caught. Merging costs that and saves only a duplicated spec read.
+**One lens per agent.** A lens needs sustained attention; an agent handed two satisfices and does both shallowly. Never blend them — a lens that does not fit the spec is skipped whole, not folded into another. Independence is the point: the same defect reported by two lenses that could not see each other is the signal worth acting on, and it is how a confidently wrong finding gets caught. Merging saves only a duplicated spec read.
 
 #### Broad reviewer (Opus)
 
@@ -79,7 +78,7 @@ Output: same `{ location, problem, fix }` triples. Each fix references the sourc
 
 #### Temporal reviewer (Opus)
 
-Skip only for a spec that introduces no mutable state, no timer, and no event ordering — rare enough to justify inline.
+Skip only for a spec that introduces no mutable state, no timer, and no event ordering.
 
 Receives:
 - Full spec content inline
@@ -105,7 +104,7 @@ Receives:
 
 Output: `{ location, problem, fix }` triples, **plus a pin table** — `(scenario, ordering, expected outcome)` rows the spec ought to state and does not, each concrete enough to write a test from.
 
-The pin table is the lens's primary artifact. The defect class it targets is "invariant stated, mechanics unpinned," and prose findings get applied and forgotten while a table becomes a spec section later rounds check against. Fold it in as its own section rather than dissolving its rows into existing paragraphs, and have the spec's test task reference the rows instead of restating them.
+The pin table is the lens's primary artifact. The defect class it targets is "invariant stated, mechanics unpinned." Prose findings get applied and forgotten; a table becomes a spec section later rounds check against. Fold it in as its own section rather than dissolving its rows into existing paragraphs, and have the spec's test task reference the rows instead of restating them.
 
 ### 4. Aggregate
 

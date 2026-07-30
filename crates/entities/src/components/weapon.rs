@@ -2,6 +2,7 @@
 // See: context/lib/entity_model.md §4, §5
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 #[cfg(debug_assertions)]
 use std::sync::Once;
 
@@ -51,6 +52,197 @@ pub enum ReloadFeedback {
     Completed,
 }
 
+const RELOAD_FEEDBACK_STREAM_CAPACITY: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloadFeedbackConsumer {
+    Hud,
+    OwnerProjection,
+}
+
+/// Endpoint metadata exposed to frame-rate consumers.
+///
+/// Consecutive equal endpoints produced in one simulation tick share one
+/// observation. `occurrences` reports how many endpoints it represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReloadFeedbackObservation {
+    pub feedback: ReloadFeedback,
+    pub producer_tick: u64,
+    pub occurrences: u32,
+    pub coalesced: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReloadFeedbackSample {
+    pub progress: f32,
+    pub active: bool,
+    pub endpoint: Option<ReloadFeedbackObservation>,
+    /// Endpoints evicted before this consumer acknowledged them.
+    pub lost_endpoints: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReloadFeedbackEntry {
+    sequence: u64,
+    feedback: ReloadFeedback,
+    producer_tick: u64,
+    occurrences: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ReloadFeedbackCursor {
+    next_sequence: u64,
+    lost_endpoints: u64,
+    last_endpoint: Option<ReloadFeedback>,
+}
+
+/// One bounded endpoint stream shared by HUD and owner-private projection.
+///
+/// Equal adjacent endpoints coalesce only when one machine tick produced them
+/// and neither consumer has consumed the run. When 32 retained runs are full,
+/// the oldest run is evicted; affected cursors report its occurrence count as
+/// loss. Retained runs always remain FIFO, so a new endpoint never bypasses an
+/// older separator or endpoint. Occurrence and loss counters saturate at their
+/// integer maxima. Consumers acknowledge independently.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReloadFeedbackStream {
+    entries: VecDeque<ReloadFeedbackEntry>,
+    next_sequence: u64,
+    producer_tick: u64,
+    hud: ReloadFeedbackCursor,
+    owner_projection: ReloadFeedbackCursor,
+}
+
+impl ReloadFeedbackStream {
+    fn begin_producer_tick(&mut self) -> u64 {
+        self.producer_tick = self.producer_tick.wrapping_add(1);
+        self.producer_tick
+    }
+
+    fn push(&mut self, feedback: ReloadFeedback, producer_tick: u64) {
+        let tail_is_unread = self.entries.back().is_some_and(|tail| {
+            self.hud.next_sequence <= tail.sequence
+                && self.owner_projection.next_sequence <= tail.sequence
+        });
+        if tail_is_unread
+            && let Some(tail) = self.entries.back_mut()
+            && tail.feedback == feedback
+            && tail.producer_tick == producer_tick
+        {
+            tail.occurrences = tail.occurrences.saturating_add(1);
+            return;
+        }
+
+        if self.entries.len() == RELOAD_FEEDBACK_STREAM_CAPACITY {
+            self.evict_oldest();
+        }
+        if self.entries.is_empty() {
+            self.entries.reserve(RELOAD_FEEDBACK_STREAM_CAPACITY);
+        }
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.entries.push_back(ReloadFeedbackEntry {
+            sequence,
+            feedback,
+            producer_tick,
+            occurrences: 1,
+        });
+    }
+
+    fn evict_oldest(&mut self) {
+        let Some(entry) = self.entries.pop_front() else {
+            return;
+        };
+        Self::record_eviction(&mut self.hud, entry);
+        Self::record_eviction(&mut self.owner_projection, entry);
+    }
+
+    fn record_eviction(cursor: &mut ReloadFeedbackCursor, entry: ReloadFeedbackEntry) {
+        if cursor.next_sequence <= entry.sequence {
+            cursor.next_sequence = entry.sequence.wrapping_add(1);
+            cursor.lost_endpoints = cursor
+                .lost_endpoints
+                .saturating_add(u64::from(entry.occurrences));
+        }
+    }
+
+    fn cursor(&self, consumer: ReloadFeedbackConsumer) -> &ReloadFeedbackCursor {
+        match consumer {
+            ReloadFeedbackConsumer::Hud => &self.hud,
+            ReloadFeedbackConsumer::OwnerProjection => &self.owner_projection,
+        }
+    }
+
+    fn cursor_mut(&mut self, consumer: ReloadFeedbackConsumer) -> &mut ReloadFeedbackCursor {
+        match consumer {
+            ReloadFeedbackConsumer::Hud => &mut self.hud,
+            ReloadFeedbackConsumer::OwnerProjection => &mut self.owner_projection,
+        }
+    }
+
+    fn next_entry(&self, consumer: ReloadFeedbackConsumer) -> Option<ReloadFeedbackEntry> {
+        let next_sequence = self.cursor(consumer).next_sequence;
+        self.entries
+            .iter()
+            .copied()
+            .find(|entry| entry.sequence >= next_sequence)
+    }
+
+    fn retain_same_tick_completion(&mut self, producer_tick: u64) {
+        self.entries.retain(|entry| {
+            entry.feedback == ReloadFeedback::Completed && entry.producer_tick == producer_tick
+        });
+        self.reseat_after_filter(ReloadFeedbackConsumer::Hud);
+        self.reseat_after_filter(ReloadFeedbackConsumer::OwnerProjection);
+    }
+
+    fn reseat_after_filter(&mut self, consumer: ReloadFeedbackConsumer) {
+        let current = self.cursor(consumer).next_sequence;
+        let next = self
+            .entries
+            .iter()
+            .find(|entry| entry.sequence >= current)
+            .map_or(self.next_sequence, |entry| entry.sequence);
+        self.cursor_mut(consumer).next_sequence = next;
+    }
+
+    fn acknowledge(&mut self, consumer: ReloadFeedbackConsumer) -> bool {
+        let next = self.next_entry(consumer);
+        let cursor = self.cursor_mut(consumer);
+        let had_last_endpoint = cursor.last_endpoint.is_some();
+        if let Some(entry) = next {
+            if cursor.last_endpoint == Some(entry.feedback) {
+                // A consumed endpoint value needs a live-state separator before an
+                // identical endpoint can be consumed. Wait for the next publication.
+                cursor.last_endpoint = None;
+            } else {
+                cursor.next_sequence = entry.sequence.wrapping_add(1);
+                cursor.last_endpoint = Some(entry.feedback);
+            }
+        } else {
+            cursor.last_endpoint = None;
+        }
+        let advanced = next.is_some() || cursor.lost_endpoints > 0 || had_last_endpoint;
+        cursor.lost_endpoints = 0;
+        self.discard_fully_consumed();
+        advanced
+    }
+
+    fn discard_fully_consumed(&mut self) {
+        let consumed_before = self
+            .hud
+            .next_sequence
+            .min(self.owner_projection.next_sequence);
+        while self
+            .entries
+            .front()
+            .is_some_and(|entry| entry.sequence < consumed_before)
+        {
+            self.entries.pop_front();
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponComponent {
     pub damage: f32,
@@ -84,10 +276,9 @@ pub struct WeaponComponent {
     /// transition into or out of reload activity, never inferred from magazine.
     #[serde(default)]
     pub reload_credited: u32,
-    /// One-frame lifecycle endpoint retained until network projection and local
-    /// HUD publication have both observed it.
+    /// Bounded endpoint stream with independent HUD and owner-projection cursors.
     #[serde(skip)]
-    pub reload_feedback: Option<ReloadFeedback>,
+    pub reload_feedback: ReloadFeedbackStream,
 }
 
 impl WeaponComponent {
@@ -118,7 +309,7 @@ impl WeaponComponent {
             state_total_ms: 0,
             state_elapsed_sub_ms: 0.0,
             reload_credited: 0,
-            reload_feedback: None,
+            reload_feedback: ReloadFeedbackStream::default(),
         }
     }
 
@@ -158,10 +349,57 @@ impl WeaponComponent {
     }
 
     pub fn reload_status(&self) -> (f32, bool) {
-        match self.reload_feedback {
-            Some(ReloadFeedback::Started) => (0.0, true),
-            Some(ReloadFeedback::Completed) => (1.0, true),
-            None if self.state.is_reload_activity()
+        let sample = self.reload_feedback_sample(ReloadFeedbackConsumer::Hud);
+        (sample.progress, sample.active)
+    }
+
+    pub fn owner_reload_status(&self) -> (f32, bool) {
+        let sample = self.reload_feedback_sample(ReloadFeedbackConsumer::OwnerProjection);
+        (sample.progress, sample.active)
+    }
+
+    pub fn begin_reload_feedback_tick(&mut self) -> u64 {
+        self.reload_feedback.begin_producer_tick()
+    }
+
+    pub fn publish_reload_feedback(&mut self, feedback: ReloadFeedback, producer_tick: u64) {
+        self.reload_feedback.push(feedback, producer_tick);
+    }
+
+    pub fn acknowledge_reload_feedback(&mut self, consumer: ReloadFeedbackConsumer) -> bool {
+        self.reload_feedback.acknowledge(consumer)
+    }
+
+    pub fn clear_cancelled_reload_feedback(&mut self, producer_tick: u64) {
+        self.reload_feedback
+            .retain_same_tick_completion(producer_tick);
+    }
+
+    pub fn reload_feedback_sample(&self, consumer: ReloadFeedbackConsumer) -> ReloadFeedbackSample {
+        let cursor = self.reload_feedback.cursor(consumer);
+        let endpoint = self.reload_feedback.next_entry(consumer);
+        if let Some(entry) = endpoint
+            && cursor.last_endpoint != Some(entry.feedback)
+        {
+            let (progress, active) = match entry.feedback {
+                ReloadFeedback::Started => (0.0, true),
+                ReloadFeedback::Completed => (1.0, true),
+            };
+            return ReloadFeedbackSample {
+                progress,
+                active,
+                endpoint: Some(ReloadFeedbackObservation {
+                    feedback: entry.feedback,
+                    producer_tick: entry.producer_tick,
+                    occurrences: entry.occurrences,
+                    coalesced: entry.occurrences > 1,
+                }),
+                lost_endpoints: cursor.lost_endpoints,
+            };
+        }
+
+        let (progress, active) = match () {
+            () if self.state.is_reload_activity()
                 && self.state_remaining_ms > 0
                 && self.state_total_ms > 0 =>
             {
@@ -171,8 +409,14 @@ impl WeaponComponent {
                     true,
                 )
             }
-            None if self.state.is_reload_activity() => (0.0, true),
-            None => (0.0, false),
+            () if self.state.is_reload_activity() => (0.0, true),
+            () => (0.0, false),
+        };
+        ReloadFeedbackSample {
+            progress,
+            active,
+            endpoint: None,
+            lost_endpoints: cursor.lost_endpoints,
         }
     }
 }
@@ -276,9 +520,9 @@ mod tests {
         assert_eq!(component.state, WieldableState::Idle);
         assert_eq!(component.state_remaining_ms, 0);
         assert_eq!(component.state_total_ms, 0);
-        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+        assert!((component.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
         assert_eq!(component.reload_credited, 0);
-        assert_eq!(component.reload_feedback, None);
+        assert_eq!(component.reload_feedback, ReloadFeedbackStream::default());
     }
 
     #[test]
@@ -323,7 +567,8 @@ mod tests {
         component.state_remaining_ms = 275;
         component.state_total_ms = 800;
         component.state_elapsed_sub_ms = 0.625;
-        component.reload_feedback = Some(ReloadFeedback::Started);
+        let feedback_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
         component.reload_credited = 2;
         component.cooldown_remaining_ms = 42.0;
         component.shoot_press_consumed = true;
@@ -346,10 +591,16 @@ mod tests {
         assert_eq!(component.state, WieldableState::Reloading);
         assert_eq!(component.state_remaining_ms, 275);
         assert_eq!(component.state_total_ms, 800);
-        assert_eq!(component.state_elapsed_sub_ms, 0.625);
-        assert_eq!(component.reload_feedback, Some(ReloadFeedback::Started));
+        assert!((component.state_elapsed_sub_ms - 0.625).abs() < f64::EPSILON);
+        assert_eq!(
+            component
+                .reload_feedback_sample(ReloadFeedbackConsumer::Hud)
+                .endpoint
+                .map(|endpoint| endpoint.feedback),
+            Some(ReloadFeedback::Started)
+        );
         assert_eq!(component.reload_credited, 2);
-        assert_eq!(component.cooldown_remaining_ms, 42.0);
+        assert!((component.cooldown_remaining_ms - 42.0).abs() < f32::EPSILON);
         assert!(component.shoot_press_consumed);
         assert!(component.reload_press_consumed);
     }
@@ -411,22 +662,159 @@ mod tests {
         assert!((progress - 0.25).abs() < f32::EPSILON);
         assert!(is_reloading);
 
-        component.reload_feedback = Some(ReloadFeedback::Started);
+        let feedback_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
         let (progress, is_reloading) = component.reload_status();
         assert!((progress - 0.0).abs() < f32::EPSILON);
         assert!(is_reloading);
-        component.reload_feedback = Some(ReloadFeedback::Completed);
+        component.reload_feedback = ReloadFeedbackStream::default();
+        let feedback_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
         component.state_remaining_ms = 0;
         let (progress, is_reloading) = component.reload_status();
         assert!((progress - 1.0).abs() < f32::EPSILON);
         assert!(is_reloading);
 
         component.ammo = None;
-        component.reload_feedback = None;
+        component.reload_feedback = ReloadFeedbackStream::default();
         component.state_remaining_ms = 400;
         let (progress, is_reloading) = component.reload_status();
         assert!((progress - 0.5).abs() < f32::EPSILON);
         assert!(is_reloading);
+    }
+
+    #[test]
+    fn reload_feedback_consumers_advance_independently_in_endpoint_order() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let first_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, first_tick);
+        let second_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Completed, second_tick);
+
+        let (hud_progress, hud_active) = component.reload_status();
+        let (owner_progress, owner_active) = component.owner_reload_status();
+        assert!((hud_progress - 0.0).abs() < f32::EPSILON);
+        assert!(hud_active);
+        assert!((owner_progress - 0.0).abs() < f32::EPSILON);
+        assert!(owner_active);
+
+        component.acknowledge_reload_feedback(ReloadFeedbackConsumer::OwnerProjection);
+        let (hud_progress, _) = component.reload_status();
+        let (owner_progress, _) = component.owner_reload_status();
+        assert!((hud_progress - 0.0).abs() < f32::EPSILON);
+        assert!((owner_progress - 1.0).abs() < f32::EPSILON);
+
+        component.acknowledge_reload_feedback(ReloadFeedbackConsumer::Hud);
+        let (hud_progress, _) = component.reload_status();
+        assert!((hud_progress - 1.0).abs() < f32::EPSILON);
+    }
+
+    // Regression: a newly produced endpoint bypassed an older identical endpoint
+    // while that older endpoint still needed a live separator.
+    #[test]
+    fn reload_feedback_live_separator_does_not_invert_fifo() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let first_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Completed, first_tick);
+        component.acknowledge_reload_feedback(ReloadFeedbackConsumer::Hud);
+
+        let older_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Completed, older_tick);
+        let newer_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, newer_tick);
+
+        let separator = component.reload_feedback_sample(ReloadFeedbackConsumer::Hud);
+        assert!(separator.endpoint.is_none());
+        component.acknowledge_reload_feedback(ReloadFeedbackConsumer::Hud);
+
+        let older = component
+            .reload_feedback_sample(ReloadFeedbackConsumer::Hud)
+            .endpoint
+            .unwrap();
+        assert_eq!(older.feedback, ReloadFeedback::Completed);
+        assert_eq!(older.producer_tick, older_tick);
+        component.acknowledge_reload_feedback(ReloadFeedbackConsumer::Hud);
+
+        let newer = component
+            .reload_feedback_sample(ReloadFeedbackConsumer::Hud)
+            .endpoint
+            .unwrap();
+        assert_eq!(newer.feedback, ReloadFeedback::Started);
+        assert_eq!(newer.producer_tick, newer_tick);
+    }
+
+    // Regression: cancellation retained stale completion endpoints from earlier
+    // simulation ticks.
+    #[test]
+    fn cancellation_retains_only_same_tick_completed_endpoints() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let stale_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, stale_tick);
+        component.publish_reload_feedback(ReloadFeedback::Completed, stale_tick);
+        let cancel_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, cancel_tick);
+        component.publish_reload_feedback(ReloadFeedback::Completed, cancel_tick);
+
+        component.clear_cancelled_reload_feedback(cancel_tick);
+
+        for consumer in [
+            ReloadFeedbackConsumer::Hud,
+            ReloadFeedbackConsumer::OwnerProjection,
+        ] {
+            let endpoint = component
+                .reload_feedback_sample(consumer)
+                .endpoint
+                .expect("same-tick completion survives");
+            assert_eq!(endpoint.feedback, ReloadFeedback::Completed);
+            assert_eq!(endpoint.producer_tick, cancel_tick);
+            assert_eq!(endpoint.occurrences, 1);
+        }
+    }
+
+    #[test]
+    fn feedback_stream_coalesces_same_tick_run_with_observable_count() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let tick = component.begin_reload_feedback_tick();
+        for _ in 0..300 {
+            component.publish_reload_feedback(ReloadFeedback::Completed, tick);
+        }
+
+        for consumer in [
+            ReloadFeedbackConsumer::Hud,
+            ReloadFeedbackConsumer::OwnerProjection,
+        ] {
+            let sample = component.reload_feedback_sample(consumer);
+            let endpoint = sample.endpoint.unwrap();
+            assert_eq!(endpoint.occurrences, 300);
+            assert!(endpoint.coalesced);
+            assert_eq!(sample.lost_endpoints, 0);
+        }
+    }
+
+    // Regression: a full backlog silently overwrote the tail endpoint type.
+    #[test]
+    fn feedback_stream_overflow_drops_oldest_and_reports_loss_to_both_consumers() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        for index in 0..(RELOAD_FEEDBACK_STREAM_CAPACITY + 5) {
+            let tick = component.begin_reload_feedback_tick();
+            let feedback = if index % 2 == 0 {
+                ReloadFeedback::Started
+            } else {
+                ReloadFeedback::Completed
+            };
+            component.publish_reload_feedback(feedback, tick);
+        }
+
+        for consumer in [
+            ReloadFeedbackConsumer::Hud,
+            ReloadFeedbackConsumer::OwnerProjection,
+        ] {
+            let sample = component.reload_feedback_sample(consumer);
+            assert_eq!(sample.lost_endpoints, 5);
+            let endpoint = sample.endpoint.unwrap();
+            assert_eq!(endpoint.producer_tick, 6);
+            assert_eq!(endpoint.feedback, ReloadFeedback::Completed);
+        }
     }
 
     #[test]
@@ -445,15 +833,15 @@ mod tests {
 
         component.refresh_from_descriptor(&descriptor(25.0, 80.0, 250.0));
 
-        assert_eq!(component.damage, 25.0);
-        assert_eq!(component.range, 80.0);
-        assert_eq!(component.cooldown_ms, 250.0);
-        assert_eq!(component.cooldown_remaining_ms, 42.0);
+        assert!((component.damage - 25.0).abs() < f32::EPSILON);
+        assert!((component.range - 80.0).abs() < f32::EPSILON);
+        assert!((component.cooldown_ms - 250.0).abs() < f32::EPSILON);
+        assert!((component.cooldown_remaining_ms - 42.0).abs() < f32::EPSILON);
         assert!(component.shoot_press_consumed);
         assert_eq!(component.state, WieldableState::Reloading);
         assert_eq!(component.state_remaining_ms, 600);
         assert_eq!(component.state_total_ms, 800);
-        assert_eq!(component.state_elapsed_sub_ms, 0.5);
+        assert!((component.state_elapsed_sub_ms - 0.5).abs() < f64::EPSILON);
         assert_eq!(component.reload_credited, 3);
         assert_eq!(component.credit_source, "reference_pistol");
     }

@@ -270,8 +270,10 @@ the ordering constraints between three become unwritable. The rest: `research.md
   previously credited rounds stay in the magazine, the reserve is not refunded, one
   `reload_cancelled` fires carrying the cumulative credited count, `reload_press_consumed`
   clears, and `reload_feedback` clears so the meter reads inactive from the cancel tick
-  onward. The one exception to that clear is a `Completed` marker written earlier in the
-  same tick, which survives it, so the meter's last sample is the shell that landed. The
+  onward. Each endpoint carries a per-weapon producer-tick stamp. The one exception to that
+  clear is a `Completed` endpoint stamped by the same machine tick before cancellation;
+  it survives, while every older or same-tick `Started` endpoint is discarded. The
+  meter's last sample is therefore the shell that landed. The
   cumulative count rides on the Rust `ReloadOutcome` variant and is asserted through
   `TickEvents.reload_deliveries`; the script-visible event carries the name only, since the
   drain calls `fire_named_event(delivery.outcome.event_name(), …)` with no payload.
@@ -339,22 +341,21 @@ the ordering constraints between three become unwritable. The rest: `research.md
   exact `0.0`, and a step shorter than one tick produces endpoint samples only.
 
   **Publication-level, weaker, for `player.reloadProgress` / `player.reloadActive` /
-  `player.ammo` at the HUD and at the owner-private projection:** every endpoint the machine
-  produces is published at least once, quantized to the publishing cadence, and may arrive up
-  to one snapshot interval after the tick it describes. `player.ammo` follows the live
-  magazine, so it rises by however many shells were credited since the last publication —
-  one per tick at ordinary step durations, more when several steps complete inside one tick.
-  The projection carries every endpoint to a remote client's owner under that same
-  quantization; it does not carry the per-tick sample sequence.
+  `player.ammo` at the HUD and at the owner-private projection:** endpoints enter one
+  bounded FIFO stream per weapon. HUD and owner projection hold independent cursors and
+  advance only after that consumer sampled the weapon. Equal endpoints produced in one
+  simulation tick coalesce into one retained run whose occurrence count and coalesced flag
+  remain observable at the Rust consumer contract. A repeated retained endpoint publishes
+  one live ramp/idle separator first; that separator does not consume or bypass the endpoint.
+  `player.ammo` follows the live magazine, so it rises by however many shells were credited
+  since the last publication.
 
-  The bound on "at least once" is real and stated rather than hidden: `reload_feedback` holds
-  one endpoint, and `clear_all_reload_feedback` runs only on
-  `host_owner_state_projection_due()` — every second tick. Two step boundaries inside one
-  snapshot window therefore coalesce and one endpoint never reaches a remote owner. Reaching
-  it needs an effective `reloadMs` at or below roughly one snapshot interval (two fixed
-  ticks, ~33 ms at 60 Hz). No shipped or dev content reaches it; authored content is expected
-  to. The fix seam is the marker: it would have to carry a count of endpoints rather than a
-  single endpoint. This spec does not build it.
+  The stream retains at most 32 runs. When full, it drops the oldest run, adds that run's
+  occurrence count to each lagging consumer's observable loss count, then appends the new
+  run. It never overwrites the tail or changes retained FIFO order. This deliberately does
+  not promise every individual endpoint when `reloadMs: 1` or sustained production outruns
+  publication; it bounds stale playback and preserves exact counts for same-tick
+  coalescing and explicit loss for overflow.
 
   `docs/scripting-reference.md` documents both slots, where it documents neither today:
   `player.reloadProgress` as the current step's progress, `player.reloadActive` as true
@@ -454,7 +455,7 @@ state timer → **3** resolve any expiry → **4** fire intent.
 | Non-restarting expiry and the sub-ms carry | An ending that does not restart a step discards the overshoot rather than storing it | Remaining time and carry both `0`, so no surviving fraction biases the next reload's first tick |
 | N steps inside one tick | Expiry returns the whole overshoot in ms; the restart subtracts its integer part and loops while the overshoot is `>=` a full step; the loop-continue predicate and the credit `take` read one working `AmmoReserve` copy, written back once after the loop | N shells credited, N `reload_shell_loaded`, `reload_credited` +N, reserve −N. The HUD publishes one `+N` step and one progress sample. The `take → 0` guard does not fire |
 | Catch-up frame containing both a start and an expiry | Events accumulate across every fixed tick and drain once, after the loop | `reload_started` then `reload_shell_loaded`, in tick order, in one frame. Every handler reads the same final ammo state |
-| Step boundary between snapshots | `clear_all_reload_feedback` runs only when `host_owner_state_projection_due()` | The `Completed` marker survives to the next projection, so a remote owner sees the endpoint, up to one snapshot interval late. Two boundaries inside one window coalesce to one published endpoint — the bound AC 12 states |
+| Step boundary between snapshots | Owner cursor advances only for weapon mappings actually sampled by owner-private projection | A retained `Completed` run survives to projection. Same-tick boundaries coalesce with a count; overflow drops oldest runs with observable loss and preserves retained FIFO |
 | Cancel with the reload level still held | The cancel clears `reload_press_consumed` | The following tick sees a rising edge and restarts the loop from `Idle` |
 | Reload edge on the tick a loop ends by capacity | Stage 1 evaluates the edge against the pre-expiry state, where `allows_reload()` is false | The edge is a no-op, matching the shipped rising-edge dedup. Stage 3 still ends the loop with `reload_completed`. The consumed-press flag is set, so no second loop starts until the key is released |
 | Event drain order on a cancel tick | `main.rs` drains `pending_weapon_events` before `pending_reload_deliveries` | Scripts observe `activate` (or `dry_fire`) before `reload_cancelled` |
@@ -480,7 +481,7 @@ resolves; the other seven are sim-internal and need no re-export.
 
 `reload.rs` stays a sibling module of `weapon_stage.rs` under `sim/`, and keeps its types
 and helpers: `ReloadDelivery`, `ReloadOutcome` and its `event_name`, the timer-advance
-helper, and the `clear_all_feedback` / `clear_feedback_for_weapon` pair. `sim/mod.rs`'s
+helper, and the HUD / sampled-owner feedback acknowledgement helpers. `sim/mod.rs`'s
 existing `pub(crate) use reload::{…}` block keeps its current shape and location —
 `main.rs` consumes the renamed feedback-clear exports through it. Only the orchestrating
 `reload::tick` entry point is at stake, and Task 2 fuses it away.
@@ -787,9 +788,9 @@ and classifiers refresh and take effect at the next decision point, matching the
 precedent that reload completion re-reads `effective()`.
 Rewrite `reload_status()` to derive `(progress, active)` from `is_reload_activity()` plus
 the timers rather than from `reload_remaining_ms > 0`, keeping today's outputs identical
-for `Idle` and `Reloading` including the one-frame `ReloadFeedback` endpoints. **The
-`reload_feedback` arms stay first, and the state term is the `None` arm.** Matching the
-one-frame endpoint markers ahead of everything else is what produces the `(1.0, true)`
+for `Idle` and `Reloading` including retained `ReloadFeedback` endpoints. **The
+consumer's next stream endpoint stays ahead of live state.** Sampling a retained endpoint
+ahead of everything else is what produces the `(1.0, true)`
 completion frame: by then the state is already `Idle`, so a state-first accessor reports
 `(0.0, false)` and drops the endpoint sample the shipped meter depends on.
 
@@ -984,9 +985,10 @@ remote path repurposes it to mean "pawn has a `NetworkId`" and a remote pawn wit
 no round credited for it and no reserve debit, emits `reload_cancelled` carrying
 `reload_credited`, clears `reload_press_consumed` so a held reload key restarts the loop on
 the following tick, clears `reload_feedback`, transitions to `Idle`,
-and lets the shot resolve on that same tick. The one thing the feedback clear leaves alone is
-a `Completed` marker written earlier in the same tick by a step that expired at stage 3: it
-survives, so the meter's last sample is the shell that landed rather than a blank. The
+and lets the shot resolve on that same tick. Endpoint producer-tick provenance lets the
+feedback clear retain only a `Completed` endpoint written earlier by stage 3 of this exact
+machine tick; every prior-tick endpoint and every `Started` endpoint is discarded. The
+meter's last sample is the shell that landed rather than stale playback. The
 feedback clear lands
 here rather than in Task 5 because phases are sequential: without it, the end of this task
 leaves a cancelled weapon `Idle` with `Some(ReloadFeedback::Started)`, so `reload_status()`
@@ -1027,18 +1029,17 @@ one per shell, the conventional shotgun readout. Reach that decision through Tas
 forbids a `_` arm, and a fifth match site is exactly what AC 14's four-site guarantee
 rules out.
 
-**Keep the `reload_feedback` arms first.** `reload_status()` matches the one-frame endpoint
-markers before it consults anything else, and that ordering is what produces the
+**Keep the stream endpoint first.** `reload_status()` samples the consumer's next retained
+endpoint before it consults live state, and that ordering is what produces the
 `(1.0, true)` completion frame — by then the state is already `Idle`, so a state-first
 accessor would report `(0.0, false)` and drop the endpoint sample the shipped meter depends
 on. Task 2 preserves that ordering; this task must not invert it while adding the state
 term.
 
-Extend the `ReloadFeedback` one-frame
-endpoint lifecycle to mark step boundaries rather than whole-reload boundaries, so every
-step ends on a `Completed` marker and a step shorter than one tick still contributes its
-endpoint samples; when a step's end and the next step's start land in the same tick the
-completion sample wins, matching the existing precedent for a reload shorter than one tick.
+Extend `ReloadFeedback` into one bounded endpoint stream shared by both frame-rate
+consumers. It marks step boundaries rather than whole-reload boundaries. Equal endpoints
+from one simulation tick coalesce into one run with an occurrence count; a step shorter
+than one tick remains representable without allocating an unbounded backlog.
 The single-step `magazine` case is bit-identical, because there one step is the whole
 reload. The consequence, which AC 12 states and this task owns: the per-shell sample
 sequence is an exact `0.0` on the reload's start tick (the `Started` marker, fired once for
@@ -1046,28 +1047,24 @@ the reload, not once per step), a ramp to the first expiry, then `1.0` on each s
 tick followed by a ramp rising from just above `0`. Steps 2..N publish no exact `0.0`,
 because completion wins at the boundary they would have published it on. `active` stays true
 across every boundary. Assert that sequence, not "a `0.0` per shell". This is a meter
-lifecycle only, on a channel disjoint from the event one: the markers are `#[serde(skip)]`
-one-frame component state read by `reload_status()`, while `reload_started` is a
+lifecycle only, on a channel disjoint from the event one: the bounded stream is
+`#[serde(skip)]` component state read by `reload_status()`, while `reload_started` is a
 `ReloadOutcome` on `TickEvents.reload_deliveries`. So the step-scoped markers do not drive
 event firing — Task 4's one `reload_started` per whole reload stands, and neither
 constrains the other. Wire the markers to the events and the loop emits N `reload_started`s
-and breaks AC 3. Task 4's cancel
-already clears `reload_feedback`; the rationale belongs to this task's subject, which is
-that a stale `Some(Started)` would report `(0.0, true)` on an `Idle` weapon. The one marker
-that clear spares is a `Completed` written earlier in the same tick — the meter's last sample
-must be the shell that landed.
+and breaks AC 3. Task 4's cancel filters the endpoint stream; the rationale belongs to
+this task's subject, which is that a stale prior `Started` would report `(0.0, true)` on an
+`Idle` weapon. Producer-tick provenance spares only a `Completed` written earlier in the
+same machine tick — the meter's last sample must be the shell that landed.
 
-**The clear cadence does not change.** `clear_reload_feedback_for_weapon` runs per frame for
-the local active wieldable and `clear_all_reload_feedback` stays gated on
-`host_owner_state_projection_due()`, true only every second tick. That gate is the reason a
-marker reaches a remote owner at all — it must outlive the tick that wrote it until every
-consumer has sampled it — so tightening it to fix the sample sequence would break the
-projection instead. What it costs is the bound AC 12 states: two step boundaries inside one
-snapshot window coalesce, and one endpoint never publishes to a remote owner. The seam that
-would fix it is the marker's shape — a count of endpoints rather than a single endpoint — and
-this spec does not build it. Assert the per-tick sequence against `reload_status()` directly;
-assert only "every endpoint publishes at least once, cadence-quantized" against the two
-producers.
+**Acknowledgement follows sampling, not cadence.** The HUD cursor advances only after the
+HUD publisher resolved a live pawn and weapon and wrote its sample. Owner projection returns
+the exact mapped weapon ids it sampled; only those cursors advance after snapshot ingest.
+A due cadence with no participant, pawn, or weapon mapping advances nothing. The shared
+stream retains 32 runs, coalesces only equal same-tick endpoints, and drops oldest runs on
+overflow while accumulating per-consumer loss counts. Retained entries remain FIFO. A live
+separator between identical retained endpoints is itself sampled before the later endpoint
+advances. Assert direct machine status separately from this bounded publication contract.
 
 Neither producer needs a new input — both already read `reload_status()` off the component —
 and no slot is added, so the replicated schema and its
@@ -1198,9 +1195,10 @@ across the in-flight window, or assert the guard rather than the restored value.
 V4 / HUD layer, split the way AC 12 is: against `reload_status()` per tick, `active` not
 blinking across a step boundary and `progress` following Task 5's per-step sample sequence;
 against the two producers, `player.ammo` rising by the shells credited since the last
-publication and the owner-private projection carrying every endpoint at least once for the
-pawn's own values, cadence-quantized. Do not assert a producer sample per tick — the
-producers run per frame.
+publication, independent cursor advancement, same-tick occurrence counts, FIFO retained
+runs, and observable oldest-run loss when both consumers are outrun. Do not assert a
+producer sample per tick or indefinite delivery under `reloadMs: 1` — producers run per
+frame and the backlog is deliberately bounded.
 
 Close the epic by discharging AC 14, the spec's sole extension-openness guarantee, on a
 throwaway branch: add a placeholder timed `WieldableState` variant, run
@@ -1239,6 +1237,7 @@ assert everything above.
 | Cumulative credited count | `WeaponComponent::reload_credited` | `#[serde(default)]`, component-local only | n/a | n/a | n/a |
 | Shell credited | `ReloadOutcome` variant → `event_name` | `"reload_shell_loaded"` | reaction / audio consumer | same | n/a |
 | Reload cancelled | `ReloadOutcome` variant → `event_name` | `"reload_cancelled"` | reaction / audio consumer | same | n/a |
+| Reload endpoint publication | One bounded stream; HUD and owner-projection cursors | Component-local, `#[serde(skip)]` | slots expose sampled progress/active only | same | n/a |
 | Reload progress (re-meaning) | `reload_status()` step progress | `player.reloadProgress` | `getGameState().player.reloadProgress` | same | n/a |
 | Reload active (re-meaning) | `reload_status()` whole-reload active | `player.reloadActive` | `getGameState().player.reloadActive` | same | n/a |
 

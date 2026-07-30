@@ -27,15 +27,15 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
 fn weapon_hud_values(
     registry: &EntityRegistry,
     active_wieldable: Option<EntityId>,
-) -> (Option<(u32, u32)>, f32, bool) {
+) -> (Option<EntityId>, Option<(u32, u32)>, f32, bool) {
     let Some(pawn) = registry.local_player_movement_pawn() else {
-        return (None, 0.0, false);
+        return (None, None, 0.0, false);
     };
     let Some(weapon_id) = active_wieldable else {
-        return (None, 0.0, false);
+        return (None, None, 0.0, false);
     };
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
-        return (None, 0.0, false);
+        return (None, None, 0.0, false);
     };
     let (progress, active) = weapon.reload_status();
     let ammo = weapon.effective().ammo.map(|ammo| {
@@ -44,7 +44,7 @@ fn weapon_hud_values(
             .map_or(0, |reserve| reserve.available(ammo.ammo_type));
         (weapon.magazine, reserve)
     });
-    (ammo, progress, active)
+    (Some(weapon_id), ammo, progress, active)
 }
 
 /// Engine-side producer for the HUD store slots.
@@ -64,13 +64,17 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) {
-        if let Err(err) = write_store_slot(&self.ctx, name, value)
-            && self.write_failure_warned_slots.insert(name)
-        {
-            log::warn!(
-                "[HUD] failed to publish built-in slot `{name}`; suppressing repeated warnings for this slot: {err}"
-            );
+    fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) -> bool {
+        match write_store_slot(&self.ctx, name, value) {
+            Ok(()) => true,
+            Err(err) => {
+                if self.write_failure_warned_slots.insert(name) {
+                    log::warn!(
+                        "[HUD] failed to publish built-in slot `{name}`; suppressing repeated warnings for this slot: {err}"
+                    );
+                }
+                false
+            }
         }
     }
 
@@ -78,21 +82,30 @@ impl PlayerHudStatePublisher {
     /// a connected client.
     ///
     /// Owner-private `player.*` HUD slots are replicated. On a connected client
-    /// the server writes them through the
-    /// state-slot apply path, so the local (non-authoritative) publisher must not
-    /// overwrite them. The host and single-player keep publishing as before. The
-    /// `is_connected_client` decision is owned by the `main.rs` call site (the
-    /// `NetEndpoint` role lives there); this method keeps the gate testable without
-    /// an `App`.
+    /// the server writes them through the state-slot apply path, so the local
+    /// (non-authoritative) publisher must not overwrite them. The host and
+    /// single-player keep publishing as before. The `is_connected_client`
+    /// decision is owned by the `main.rs` call site (the `NetEndpoint` role
+    /// lives there); this test-only wrapper keeps the gate testable without an
+    /// `App`.
+    #[cfg(test)]
     pub(crate) fn tick_for_role(
         &mut self,
         is_connected_client: bool,
         active_wieldable: Option<EntityId>,
     ) {
+        let _ = self.tick_for_role_and_report_sampled_weapon(is_connected_client, active_wieldable);
+    }
+
+    pub(crate) fn tick_for_role_and_report_sampled_weapon(
+        &mut self,
+        is_connected_client: bool,
+        active_wieldable: Option<EntityId>,
+    ) -> Option<EntityId> {
         if is_connected_client {
-            return;
+            return None;
         }
-        self.tick(active_wieldable);
+        self.tick_and_report_sampled_weapon(active_wieldable)
     }
 
     /// Republish the player HUD store slots for this frame.
@@ -106,7 +119,15 @@ impl PlayerHudStatePublisher {
     ///
     /// Runs in the frame loop after game logic and before the UI read-snapshot
     /// build, so the snapshot picks up these values the same frame.
+    #[cfg(test)]
     pub(crate) fn tick(&mut self, active_wieldable: Option<EntityId>) {
+        let _ = self.tick_and_report_sampled_weapon(active_wieldable);
+    }
+
+    fn tick_and_report_sampled_weapon(
+        &mut self,
+        active_wieldable: Option<EntityId>,
+    ) -> Option<EntityId> {
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
@@ -128,14 +149,21 @@ impl PlayerHudStatePublisher {
             }
         }
 
-        let (ammo, reload_progress, reload_active) =
+        let (sampled_weapon, ammo, reload_progress, reload_active) =
             weapon_hud_values(&self.ctx.registry.borrow(), active_wieldable);
         if let Some((magazine, reserve)) = ammo {
             self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
             self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
         }
-        self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
-        self.write_hud_slot("player.reloadActive", SlotValue::Boolean(reload_active));
+        let reload_progress_written =
+            self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
+        let reload_active_written =
+            self.write_hud_slot("player.reloadActive", SlotValue::Boolean(reload_active));
+        if reload_progress_written && reload_active_written {
+            sampled_weapon
+        } else {
+            None
+        }
     }
 }
 
@@ -287,7 +315,8 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
-        weapon.reload_feedback = Some(ReloadFeedback::Started);
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
         ctx.registry
             .borrow_mut()
             .set_component(weapon_id, weapon)
@@ -308,7 +337,9 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
-        weapon.reload_feedback = Some(ReloadFeedback::Completed);
+        weapon.reload_feedback = Default::default();
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
         weapon.state_remaining_ms = 0;
         ctx.registry
             .borrow_mut()
@@ -331,7 +362,7 @@ mod tests {
             .unwrap()
             .clone();
         weapon.state_remaining_ms = 0;
-        weapon.reload_feedback = None;
+        weapon.reload_feedback = Default::default();
         weapon.state = WieldableState::Idle;
         ctx.registry
             .borrow_mut()
@@ -387,7 +418,8 @@ mod tests {
         weapon.state = WieldableState::ShellLoading;
         weapon.state_remaining_ms = 100;
         weapon.state_total_ms = 100;
-        weapon.reload_feedback = Some(ReloadFeedback::Completed);
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
         ctx.registry
             .borrow_mut()
             .set_component(weapon_id, weapon)
@@ -431,6 +463,58 @@ mod tests {
     }
 
     #[test]
+    fn tick_publishes_started_then_completed_after_fixed_tick_catch_up() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.state = WieldableState::Idle;
+        weapon.state_remaining_ms = 0;
+        weapon.state_total_ms = 0;
+        let start_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Started, start_tick);
+        let completed_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, completed_tick);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        // Regression: catch-up overwrote Started with Completed before the HUD sampled.
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        crate::sim::clear_reload_feedback_for_weapon(&mut ctx.registry.borrow_mut(), weapon_id);
+
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(1.0)
+        );
+        crate::sim::clear_reload_feedback_for_weapon(&mut ctx.registry.borrow_mut(), weapon_id);
+
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(false)
+        );
+    }
+
+    #[test]
     fn weapon_hud_values_use_movement_pawn_without_requiring_health() {
         let ctx = ScriptCtx::new();
         let pawn = spawn_movement_pawn(&ctx);
@@ -438,7 +522,7 @@ mod tests {
 
         assert_eq!(pawn_health_values(&ctx.registry.borrow()), None);
         assert_eq!(
-            weapon_hud_values(&ctx.registry.borrow(), Some(weapon)).0,
+            weapon_hud_values(&ctx.registry.borrow(), Some(weapon)).1,
             Some((5, 20)),
             "ammo HUD identity is independent of the Health component"
         );
@@ -827,6 +911,86 @@ mod tests {
             publisher.write_failure_warned_slots,
             HashSet::from(["player.reloadActive", "player.reloadProgress"]),
             "persistent failures stay latched while distinct slots remain visible"
+        );
+    }
+
+    #[test]
+    fn hud_feedback_acknowledgement_waits_for_both_reload_slot_writes() {
+        use crate::scripting::primitives::store::read_store_slot;
+        use postretro_entities::slot_table::SlotType;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .get_mut("player.reloadActive")
+                .unwrap()
+                .schema
+                .slot_type = SlotType::Number;
+        }
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        // Regression: a failed reload-slot write advanced the HUD cursor and
+        // discarded an endpoint that never reached the complete HUD surface.
+        assert_eq!(
+            publisher.tick_for_role_and_report_sampled_weapon(false, Some(weapon_id)),
+            None
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(1.0),
+            "the valid half of the projection still writes"
+        );
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .reload_status(),
+            (1.0, true),
+            "the endpoint remains pending while either reload-slot write fails"
+        );
+
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("player.reloadActive")
+            .unwrap()
+            .schema
+            .slot_type = SlotType::Boolean;
+        assert_eq!(
+            publisher.tick_for_role_and_report_sampled_weapon(false, Some(weapon_id)),
+            Some(weapon_id),
+            "successful retry reports the weapon for acknowledgement"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        crate::sim::clear_reload_feedback_for_weapon(&mut ctx.registry.borrow_mut(), weapon_id);
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .reload_status(),
+            (0.5, true),
+            "acknowledgement advances to the live reload sample after projection"
         );
     }
 }

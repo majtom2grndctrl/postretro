@@ -1,8 +1,8 @@
 // Weapon reload timing, reserve transfer, feedback endpoints, and delivery events.
 // See: context/lib/entity_model.md §5 · context/lib/ui.md §3
 
-use postretro_entities::components::weapon::WeaponComponent;
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::components::weapon::{ReloadFeedbackConsumer, WeaponComponent};
+use postretro_entities::{EntityId, EntityRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReloadDelivery {
@@ -76,37 +76,29 @@ pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) -> Op
     None
 }
 
-/// Clear feedback endpoints after network projection and local HUD publication
-/// have both observed the settled frame. Only endpoint-bearing weapons clone and
-/// write back, so the idle fixed-tick path remains allocation-free beyond the
-/// pre-existing shared weapon checkout.
-pub(crate) fn clear_all_feedback(registry: &mut EntityRegistry) {
-    let ids: Vec<EntityId> = registry
-        .iter_with_kind(ComponentKind::Weapon)
-        .filter_map(|(id, _)| {
-            registry
-                .get_component::<WeaponComponent>(id)
-                .ok()
-                .and_then(|weapon| weapon.reload_feedback.map(|_| id))
-        })
-        .collect();
-
-    for id in ids {
-        clear_feedback_for_weapon(registry, id);
+/// Acknowledge only weapons actually sampled by owner-private projection.
+pub(crate) fn clear_owner_feedback_for_weapons(registry: &mut EntityRegistry, ids: &[EntityId]) {
+    for (index, &id) in ids.iter().enumerate() {
+        if ids[..index].contains(&id) {
+            continue;
+        }
+        clear_feedback_for_consumer(registry, id, ReloadFeedbackConsumer::OwnerProjection);
     }
 }
 
 pub(crate) fn clear_feedback_for_weapon(registry: &mut EntityRegistry, id: EntityId) {
-    if registry
-        .get_component::<WeaponComponent>(id)
-        .map_or(true, |weapon| weapon.reload_feedback.is_none())
-    {
-        return;
-    }
+    clear_feedback_for_consumer(registry, id, ReloadFeedbackConsumer::Hud);
+}
+
+fn clear_feedback_for_consumer(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    consumer: ReloadFeedbackConsumer,
+) {
     let Ok(mut weapon) = registry.get_component::<WeaponComponent>(id).cloned() else {
         return;
     };
-    if weapon.reload_feedback.take().is_some() {
+    if weapon.acknowledge_reload_feedback(consumer) {
         let _ = registry.set_component(id, weapon);
     }
 }
@@ -134,9 +126,11 @@ mod tests {
             component.state_remaining_ms = remaining_ms;
             component.state_total_ms = remaining_ms;
 
-            assert_eq!(advance_timer(&mut component, tick_dt), Some(0.0));
+            let overshoot = advance_timer(&mut component, tick_dt)
+                .expect("an exact tick duration expires the timer");
+            assert!((overshoot - 0.0).abs() < f64::EPSILON);
             assert_eq!(component.state_remaining_ms, 0);
-            assert_eq!(component.state_elapsed_sub_ms, 0.0);
+            assert!((component.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
         }
     }
 

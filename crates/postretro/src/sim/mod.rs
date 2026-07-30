@@ -1094,8 +1094,8 @@ mod weapon_stage;
 
 pub(crate) use reload::{ReloadDelivery, ReloadOutcome};
 pub(crate) use reload::{
-    clear_all_feedback as clear_all_reload_feedback,
     clear_feedback_for_weapon as clear_reload_feedback_for_weapon,
+    clear_owner_feedback_for_weapons as clear_owner_reload_feedback_for_weapons,
 };
 pub(crate) use weapon_stage::apply_authorized_weapon_impact_damage;
 

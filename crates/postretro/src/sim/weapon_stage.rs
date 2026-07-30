@@ -29,16 +29,29 @@ struct WeaponMachineTick {
     deliveries: Vec<ReloadDelivery>,
 }
 
+struct FireAuthorizationContext<'a> {
+    tick_dt: f32,
+    reload_started_this_tick: bool,
+    feedback_tick: u64,
+    pawn: Option<EntityId>,
+    weapon: EntityId,
+    deliveries: &'a mut Vec<ReloadDelivery>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum WieldableStateEvent {
     BeginReload {
         duration_ms: u32,
         reload_style: ReloadStyle,
+        feedback_tick: u64,
     },
     Expired {
         pawn_present: bool,
+        feedback_tick: u64,
     },
-    Cancel,
+    Cancel {
+        feedback_tick: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +80,8 @@ fn tick_weapon_machine(
     command: &WeaponFireCommand,
     tick_dt: f32,
 ) -> WeaponMachineTick {
+    let pawn = pawn.filter(|pawn| registry.exists(*pawn));
+    let feedback_tick = component.begin_reload_feedback_tick();
     let mut deliveries = Vec::new();
     let mut reload_started_this_tick = false;
 
@@ -107,6 +122,7 @@ fn tick_weapon_machine(
                     WieldableStateEvent::BeginReload {
                         duration_ms: reload_ms,
                         reload_style,
+                        feedback_tick,
                     },
                     None,
                 ) == StateTransition::ReloadStarted
@@ -134,6 +150,7 @@ fn tick_weapon_machine(
             weapon,
             component,
             overshoot_ms,
+            feedback_tick,
             &mut deliveries,
         );
     }
@@ -142,11 +159,14 @@ fn tick_weapon_machine(
     let authorization = authorize_fire(
         component,
         command,
-        tick_dt,
-        reload_started_this_tick,
-        pawn,
-        weapon,
-        &mut deliveries,
+        FireAuthorizationContext {
+            tick_dt,
+            reload_started_this_tick,
+            feedback_tick,
+            pawn,
+            weapon,
+            deliveries: &mut deliveries,
+        },
     );
     WeaponMachineTick {
         authorization,
@@ -167,6 +187,7 @@ fn transition_wieldable_state(
             WieldableStateEvent::BeginReload {
                 duration_ms,
                 reload_style,
+                feedback_tick,
             },
         ) => {
             component.state = match reload_style {
@@ -177,15 +198,21 @@ fn transition_wieldable_state(
             component.state_remaining_ms = duration_ms;
             component.state_elapsed_sub_ms = 0.0;
             component.reload_credited = 0;
-            component.reload_feedback = Some(ReloadFeedback::Started);
+            component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
             StateTransition::ReloadStarted
         }
         (WieldableState::Idle, WieldableStateEvent::Expired { .. })
-        | (WieldableState::Idle, WieldableStateEvent::Cancel) => StateTransition::Noop,
+        | (WieldableState::Idle, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
         (WieldableState::Reloading, WieldableStateEvent::BeginReload { .. }) => {
             StateTransition::Noop
         }
-        (WieldableState::Reloading, WieldableStateEvent::Expired { pawn_present }) => {
+        (
+            WieldableState::Reloading,
+            WieldableStateEvent::Expired {
+                pawn_present,
+                feedback_tick,
+            },
+        ) => {
             if !pawn_present {
                 transition_to_idle(component);
                 return StateTransition::Noop;
@@ -210,12 +237,18 @@ fn transition_wieldable_state(
                 0
             };
             component.reload_credited = component.reload_credited.saturating_add(transferred);
-            complete_reload(component, false)
+            complete_reload(component, false, feedback_tick)
         }
         (WieldableState::ShellLoading, WieldableStateEvent::BeginReload { .. }) => {
             StateTransition::Noop
         }
-        (WieldableState::ShellLoading, WieldableStateEvent::Expired { pawn_present }) => {
+        (
+            WieldableState::ShellLoading,
+            WieldableStateEvent::Expired {
+                pawn_present,
+                feedback_tick,
+            },
+        ) => {
             if !pawn_present {
                 transition_to_idle(component);
                 return StateTransition::Noop;
@@ -231,18 +264,18 @@ fn transition_wieldable_state(
                     )
                 })
             else {
-                return complete_reload(component, false);
+                return complete_reload(component, false, feedback_tick);
             };
 
             // The continue guard reads this same one-tick working copy as the
             // debit below. A zero result is unreachable during ordinary play but
             // protects a reserve that was emptied between guard and credit.
             let Some(reserve) = reserve else {
-                return complete_reload(component, false);
+                return complete_reload(component, false, feedback_tick);
             };
             let transferred = reserve.take(&ammo_type, 1);
             if transferred == 0 {
-                return complete_reload(component, false);
+                return complete_reload(component, false, feedback_tick);
             }
 
             component.magazine = component.magazine.saturating_add(transferred);
@@ -253,33 +286,35 @@ fn transition_wieldable_state(
             if continues {
                 // A per-shell boundary completes the current meter step even
                 // though the loop immediately starts the next one.
-                component.reload_feedback = Some(ReloadFeedback::Completed);
+                component.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
                 StateTransition::ReloadStep {
                     shell_loaded: true,
                     completed: None,
                     restart_duration_ms: Some(reload_ms),
                 }
             } else {
-                complete_reload(component, true)
+                complete_reload(component, true, feedback_tick)
             }
         }
-        (WieldableState::ShellLoading, WieldableStateEvent::Cancel) => {
+        (WieldableState::ShellLoading, WieldableStateEvent::Cancel { feedback_tick }) => {
             let transferred = component.reload_credited;
             transition_to_idle(component);
             component.reload_press_consumed = false;
-            if component.reload_feedback != Some(ReloadFeedback::Completed) {
-                component.reload_feedback = None;
-            }
+            component.clear_cancelled_reload_feedback(feedback_tick);
             StateTransition::ReloadCancelled { transferred }
         }
-        (WieldableState::Reloading, WieldableStateEvent::Cancel) => StateTransition::Noop,
+        (WieldableState::Reloading, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
     }
 }
 
-fn complete_reload(component: &mut WeaponComponent, shell_loaded: bool) -> StateTransition {
+fn complete_reload(
+    component: &mut WeaponComponent,
+    shell_loaded: bool,
+    feedback_tick: u64,
+) -> StateTransition {
     let transferred = component.reload_credited;
     transition_to_idle(component);
-    component.reload_feedback = Some(ReloadFeedback::Completed);
+    component.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
     StateTransition::ReloadStep {
         shell_loaded,
         completed: Some(transferred),
@@ -293,6 +328,7 @@ fn resolve_expired_state(
     weapon: EntityId,
     component: &mut WeaponComponent,
     mut overshoot_ms: f64,
+    feedback_tick: u64,
     deliveries: &mut Vec<ReloadDelivery>,
 ) {
     let reserve_was_present = pawn.is_some_and(|pawn| {
@@ -310,6 +346,7 @@ fn resolve_expired_state(
             component,
             WieldableStateEvent::Expired {
                 pawn_present: pawn.is_some(),
+                feedback_tick,
             },
             working_reserve.as_mut(),
         );
@@ -387,26 +424,27 @@ fn transition_to_idle(component: &mut WeaponComponent) {
 fn authorize_fire(
     weapon: &mut WeaponComponent,
     command: &WeaponFireCommand,
-    tick_dt: f32,
-    reload_started_this_tick: bool,
-    pawn: Option<EntityId>,
-    weapon_id: EntityId,
-    deliveries: &mut Vec<ReloadDelivery>,
+    context: FireAuthorizationContext<'_>,
 ) -> WeaponFireAuthorization {
-    let dt_ms = (tick_dt.max(0.0)) * 1000.0;
+    let dt_ms = (context.tick_dt.max(0.0)) * 1000.0;
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
     let verdict = weapon_fire_authorization_verdict(weapon, command);
     if weapon.state == WieldableState::ShellLoading
         && verdict == WeaponFireAuthorization::Accepted
-        && !reload_started_this_tick
-        && let StateTransition::ReloadCancelled { transferred } =
-            transition_wieldable_state(weapon, WieldableStateEvent::Cancel, None)
-        && let Some(pawn) = pawn
+        && !context.reload_started_this_tick
+        && let StateTransition::ReloadCancelled { transferred } = transition_wieldable_state(
+            weapon,
+            WieldableStateEvent::Cancel {
+                feedback_tick: context.feedback_tick,
+            },
+            None,
+        )
+        && let Some(pawn) = context.pawn
     {
-        deliveries.push(ReloadDelivery {
+        context.deliveries.push(ReloadDelivery {
             pawn,
-            weapon: weapon_id,
+            weapon: context.weapon,
             outcome: ReloadOutcome::Cancelled { transferred },
         });
     }
@@ -418,7 +456,7 @@ fn authorize_fire(
         weapon.shoot_press_consumed = false;
     }
 
-    if reload_started_this_tick || !weapon.state.allows_fire() {
+    if context.reload_started_this_tick || !weapon.state.allows_fire() {
         return WeaponFireAuthorization::Rejected;
     }
 
@@ -522,6 +560,11 @@ pub(super) fn run_remote_weapon_commands(
     let mut weapon_events = Vec::new();
 
     for remote in remote_pawn_commands {
+        // Remote authorization requires live ownership. A delayed command for a
+        // despawned pawn must not mutate its former weapon or mint an open shot.
+        if !registry.exists(remote.pawn) {
+            continue;
+        }
         let Some(weapon) = remote.weapon else {
             continue;
         };
@@ -553,7 +596,7 @@ pub(super) fn run_remote_weapon_commands(
         let credit_source = effective.credit_source.to_string();
         let _ = registry.set_component(weapon, weapon_component);
         match machine.authorization {
-            WeaponFireAuthorization::Accepted => {}
+            WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
             WeaponFireAuthorization::Empty => {
                 weapon_events.push("dry_fire");
                 continue;
@@ -1068,7 +1111,7 @@ mod tests {
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.magazine, 12);
         assert_eq!(component.state_remaining_ms, 450);
-        assert_eq!(component.cooldown_remaining_ms, 0.0);
+        assert!((component.cooldown_remaining_ms - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1088,7 +1131,7 @@ mod tests {
         assert!(fired.deliveries.is_empty());
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.magazine, 1);
-        assert_eq!(component.cooldown_remaining_ms, 100.0);
+        assert!((component.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
         assert!(!component.reload_press_consumed);
 
         let cooling = tick_machine(
@@ -1101,13 +1144,11 @@ mod tests {
         );
         assert_eq!(cooling.authorization, WeaponFireAuthorization::Rejected);
         assert!(cooling.deliveries.is_empty());
-        assert_eq!(
-            registry
-                .get_component::<WeaponComponent>(weapon)
-                .unwrap()
-                .cooldown_remaining_ms,
-            50.0
-        );
+        let cooldown = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .cooldown_remaining_ms;
+        assert!((cooldown - 50.0).abs() < f32::EPSILON);
 
         let restored_pawn = tick_machine(
             &mut registry,
@@ -1125,6 +1166,49 @@ mod tests {
                 outcome: ReloadOutcome::Started,
             }]
         );
+    }
+
+    #[test]
+    fn despawned_pawn_id_is_pawnless_for_reload_entry_and_expiry() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        registry.despawn(pawn).unwrap();
+
+        // Regression: Option presence treated a stale pawn id as live ownership,
+        // emitting blocked-empty on entry.
+        let entry = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            true,
+            &fire_command(false, false),
+            0.0,
+        );
+        assert!(entry.deliveries.is_empty());
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert!(!component.reload_press_consumed);
+
+        let mut component = component.clone();
+        component.state = WieldableState::ShellLoading;
+        component.state_remaining_ms = 1;
+        component.state_total_ms = 1;
+        component.reload_credited = 3;
+        registry.set_component(weapon, component).unwrap();
+
+        // Regression: stale ownership also emitted a completed outcome on expiry.
+        let expiry = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.001,
+        );
+        assert!(expiry.deliveries.is_empty());
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::Idle);
+        assert_eq!(component.reload_credited, 0);
     }
 
     #[test]
@@ -1281,11 +1365,50 @@ mod tests {
         assert_eq!(events.authorized_shots[0].shot.pawn, pawn);
         assert_eq!(events.authorized_shots[0].shot.fire_tick, 33);
         assert_eq!(events.authorized_shots[0].owner_client_id, 7);
+        assert_eq!(events.weapon, vec!["activate"]);
         let registry = registry.borrow();
         let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
-        assert_eq!(weapon_state.cooldown_remaining_ms, 100.0);
+        assert!((weapon_state.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
         let health = registry.get_component::<HealthComponent>(target).unwrap();
-        assert_eq!(health.current, 100.0);
+        assert!((health.current - 100.0).abs() < f32::EPSILON);
+    }
+
+    // Regression: a delayed command for a despawned remote pawn cancelled and
+    // fired its stale weapon, minting an OpenAuthorizedShot.
+    #[test]
+    fn stale_remote_pawn_command_is_silent_and_does_not_mutate_weapon() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon, before) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+            let mut component = registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .clone();
+            component.state = WieldableState::ShellLoading;
+            component.state_remaining_ms = 50;
+            component.state_total_ms = 100;
+            registry.set_component(weapon, component.clone()).unwrap();
+            registry.despawn(pawn).unwrap();
+            (pawn, weapon, component)
+        };
+
+        let events = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 9, true, true)],
+        );
+
+        assert!(events.authorized_shots.is_empty());
+        assert!(events.weapon.is_empty());
+        assert!(events.reload_deliveries.is_empty());
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap(),
+            &before
+        );
     }
 
     #[test]
@@ -1319,6 +1442,7 @@ mod tests {
         );
 
         assert_eq!(events.authorized_shots.len(), 2);
+        assert_eq!(events.weapon, vec!["activate", "activate"]);
         assert_eq!(events.authorized_shots[0].shot.pawn, pawn_a);
         assert_eq!(events.authorized_shots[1].shot.pawn, pawn_b);
         assert_ne!(
@@ -1326,27 +1450,21 @@ mod tests {
             events.authorized_shots[1].shot.shot_id
         );
         let registry = registry.borrow();
-        assert_eq!(
-            registry
-                .get_component::<WeaponComponent>(weapon_a)
-                .unwrap()
-                .cooldown_remaining_ms,
-            100.0
-        );
-        assert_eq!(
-            registry
-                .get_component::<WeaponComponent>(weapon_b)
-                .unwrap()
-                .cooldown_remaining_ms,
-            100.0
-        );
-        assert_eq!(
-            registry
-                .get_component::<WeaponComponent>(idle_weapon)
-                .unwrap()
-                .cooldown_remaining_ms,
-            0.0
-        );
+        let weapon_a_cooldown = registry
+            .get_component::<WeaponComponent>(weapon_a)
+            .unwrap()
+            .cooldown_remaining_ms;
+        let weapon_b_cooldown = registry
+            .get_component::<WeaponComponent>(weapon_b)
+            .unwrap()
+            .cooldown_remaining_ms;
+        let idle_cooldown = registry
+            .get_component::<WeaponComponent>(idle_weapon)
+            .unwrap()
+            .cooldown_remaining_ms;
+        assert!((weapon_a_cooldown - 100.0).abs() < f32::EPSILON);
+        assert!((weapon_b_cooldown - 100.0).abs() < f32::EPSILON);
+        assert!((idle_cooldown - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1492,9 +1610,9 @@ mod tests {
         assert_eq!(completed.state, WieldableState::Idle);
         assert_eq!(completed.state_remaining_ms, 0);
         assert_eq!(completed.state_total_ms, 0);
-        assert_eq!(completed.state_elapsed_sub_ms, 0.0);
+        assert!((completed.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
         assert_eq!(completed.reload_credited, 0);
-        assert_eq!(completed.cooldown_remaining_ms, 0.0);
+        assert!((completed.cooldown_remaining_ms - 0.0).abs() < f32::EPSILON);
         assert!(!completed.reload_press_consumed);
         assert_eq!(
             registry
@@ -1797,7 +1915,7 @@ mod tests {
         );
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.state, WieldableState::ShellLoading);
-        assert_eq!(component.cooldown_remaining_ms, 80.0);
+        assert!((component.cooldown_remaining_ms - 80.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1898,6 +2016,7 @@ mod tests {
             .reload_status();
         assert!((progress - 0.5).abs() < f32::EPSILON);
         assert!(active);
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
 
         assert_eq!(
             deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.05),
@@ -1922,6 +2041,7 @@ mod tests {
             .reload_status();
         assert!((progress - 0.5).abs() < f32::EPSILON);
         assert!(active);
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
 
         assert_eq!(
             deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.05),
@@ -1947,17 +2067,27 @@ mod tests {
             .get_component::<WeaponComponent>(weapon)
             .unwrap()
             .reload_status();
+        assert!((progress - 0.0).abs() < f32::EPSILON);
+        assert!(
+            !active,
+            "identical endpoints publish a live separator first"
+        );
+
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
         assert!((progress - 1.0).abs() < f32::EPSILON);
         assert!(active, "the final completion endpoint remains active");
 
         crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
-        assert_eq!(
-            registry
-                .get_component::<WeaponComponent>(weapon)
-                .unwrap()
-                .reload_status(),
-            (0.0, false)
-        );
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 0.0).abs() < f32::EPSILON);
+        assert!(!active);
     }
 
     #[test]
@@ -1987,7 +2117,10 @@ mod tests {
                 },
             ]
         );
-        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
         assert_eq!(component.magazine, 5);
         assert_eq!(component.reload_credited, 3);
         assert_eq!(component.state_remaining_ms, 49);
@@ -2000,10 +2133,26 @@ mod tests {
             7
         );
         assert_eq!(
-            component.reload_feedback,
-            Some(ReloadFeedback::Completed),
-            "the boundary endpoint survives the same-tick cancel"
+            component
+                .reload_feedback_sample(
+                    postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+                )
+                .endpoint
+                .map(|endpoint| endpoint.feedback),
+            Some(ReloadFeedback::Started)
         );
+        component.acknowledge_reload_feedback(
+            postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+        );
+        let boundary = component
+            .reload_feedback_sample(
+                postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+            )
+            .endpoint
+            .expect("same-tick shell boundaries remain observable");
+        assert_eq!(boundary.feedback, ReloadFeedback::Completed);
+        assert_eq!(boundary.occurrences, 3);
+        assert!(boundary.coalesced);
     }
 
     // Regression: a widened exact whole-step overshoot deferred a shell one tick.
@@ -2046,7 +2195,7 @@ mod tests {
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.state, WieldableState::ShellLoading);
         assert_eq!(component.state_remaining_ms, 10);
-        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+        assert!((component.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
         assert_eq!(component.magazine, 4);
         assert_eq!(
             registry
@@ -2102,7 +2251,7 @@ mod tests {
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.state, WieldableState::Idle);
         assert_eq!(component.state_remaining_ms, 0);
-        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+        assert!((component.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2235,7 +2384,14 @@ mod tests {
         );
         assert_eq!(component.reload_credited, 0);
         assert!(!component.reload_press_consumed);
-        assert_eq!(component.reload_feedback, None);
+        assert!(
+            component
+                .reload_feedback_sample(
+                    postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+                )
+                .endpoint
+                .is_none()
+        );
         assert_eq!(
             registry
                 .get_component::<AmmoReserve>(pawn)
@@ -2362,6 +2518,15 @@ mod tests {
         assert_eq!(component.state, WieldableState::Idle);
         assert_eq!(component.magazine, 2);
         assert!(!component.reload_press_consumed);
+        assert!(
+            component
+                .reload_feedback_sample(
+                    postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+                )
+                .endpoint
+                .is_none(),
+            "a later cancellation clears prior-tick completion feedback"
+        );
         assert_eq!(
             registry
                 .get_component::<AmmoReserve>(pawn)
@@ -2415,6 +2580,14 @@ mod tests {
                 .available("bullets.light"),
             7
         );
+        let endpoint = component
+            .reload_feedback_sample(
+                postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+            )
+            .endpoint
+            .expect("same-tick completion survives cancellation");
+        assert_eq!(endpoint.feedback, ReloadFeedback::Completed);
+        assert_eq!(endpoint.occurrences, 1);
     }
 
     #[test]
@@ -2442,8 +2615,40 @@ mod tests {
         assert!(result.deliveries.is_empty());
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.state, WieldableState::ShellLoading);
-        assert_eq!(component.cooldown_remaining_ms, 0.0);
+        assert!((component.cooldown_remaining_ms - 0.0).abs() < f32::EPSILON);
         assert_eq!(component.magazine, 0);
+    }
+
+    #[test]
+    fn cooldown_suppressed_shell_fire_only_applies_normal_decrement() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.cooldown_remaining_ms = 75.0;
+        registry.set_component(weapon, component).unwrap();
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+
+        // Regression: a cooldown-suppressed pull took the Empty path, cancelling
+        // the loop and resetting cooldown instead of applying only the tick decrement.
+        let result = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(true, true),
+            0.025,
+        );
+
+        assert_eq!(result.authorization, WeaponFireAuthorization::Rejected);
+        assert!(result.deliveries.is_empty());
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.state, WieldableState::ShellLoading);
+        assert!((component.cooldown_remaining_ms - 50.0).abs() < f32::EPSILON);
+        assert_eq!(component.magazine, 2);
     }
 
     #[test]
@@ -2459,7 +2664,8 @@ mod tests {
         component.state_remaining_ms = 0;
         component.state_total_ms = 100;
         component.reload_credited = 2;
-        component.reload_feedback = Some(ReloadFeedback::Started);
+        let feedback_tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
         registry.set_component(weapon, component).unwrap();
         registry.set_component(pawn, AmmoReserve::new()).unwrap();
 
@@ -2478,7 +2684,7 @@ mod tests {
         assert_eq!(component.magazine, 4);
         assert_eq!(component.reload_credited, 0);
         assert_eq!(component.state_remaining_ms, 0);
-        assert_eq!(component.state_elapsed_sub_ms, 0.0);
+        assert!((component.state_elapsed_sub_ms - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2487,6 +2693,7 @@ mod tests {
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 3, 1, 100, 2);
         set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
         let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0);
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
 
         let result = tick_machine(
             &mut registry,
@@ -2518,7 +2725,15 @@ mod tests {
             component.magazine, 2,
             "completion refills before the shot spends"
         );
-        assert_eq!(component.reload_feedback, Some(ReloadFeedback::Completed));
+        assert_eq!(
+            component
+                .reload_feedback_sample(
+                    postretro_entities::components::weapon::ReloadFeedbackConsumer::Hud,
+                )
+                .endpoint
+                .map(|endpoint| endpoint.feedback),
+            Some(ReloadFeedback::Completed)
+        );
     }
 
     #[test]
@@ -2709,6 +2924,24 @@ mod tests {
                 .magazine,
             10
         );
+        let (progress, active) = registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 0.0).abs() < f32::EPSILON);
+        assert!(active);
+
+        // Regression: a start and completion produced during one short catch-up
+        // tick must reach the frame consumer as two ordered publications.
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry.borrow_mut(), weapon);
+        let (progress, active) = registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 1.0).abs() < f32::EPSILON);
+        assert!(active);
     }
 
     #[test]
@@ -2867,7 +3100,7 @@ mod tests {
             &[remote_command(pawn, Some(weapon), 42, 2, true, false)],
         );
         assert_eq!(cancelled.authorized_shots.len(), 1);
-        assert!(cancelled.weapon.is_empty());
+        assert_eq!(cancelled.weapon, vec!["activate"]);
         assert_eq!(
             cancelled.reload_deliveries,
             vec![ReloadDelivery {
@@ -3168,13 +3401,13 @@ mod tests {
         apply_weapon_impact_damage(&mut registry, Some(weapon_id), attacker, &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
-        assert_eq!(health.current, 75.0);
+        assert!((health.current - 75.0).abs() < f32::EPSILON);
         let entries = health.contributor_ledger.entries();
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
         assert_eq!(entry.source_id, "weapon.test.rifle");
-        assert_eq!(entry.accumulated_damage, 25.0);
-        assert_eq!(entry.last_hit_damage, 25.0);
+        assert!((entry.accumulated_damage - 25.0).abs() < f32::EPSILON);
+        assert!((entry.last_hit_damage - 25.0).abs() < f32::EPSILON);
         assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
         assert_eq!(entry.last_weapon, Some(weapon_id));
         assert_eq!(entry.last_attacker, attacker);
@@ -3212,7 +3445,7 @@ mod tests {
         apply_weapon_impact_damage(&mut registry, Some(weapon_id), None, &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
-        assert_eq!(health.current, 100.0);
+        assert!((health.current - 100.0).abs() < f32::EPSILON);
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(health.contributor_ledger.overflow().is_none());
     }

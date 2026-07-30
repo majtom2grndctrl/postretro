@@ -2110,6 +2110,7 @@ impl ApplicationHandler for App {
                 let mut pending_weapon_script_events = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
+                let mut host_snapshot_due = false;
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
                 // `progress` reaction naming a sequence resolves — unlike the
@@ -2400,7 +2401,7 @@ impl ApplicationHandler for App {
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
-                        self.host_advance_fixed_sim_tick();
+                        self.host_advance_fixed_sim_tick(&mut host_snapshot_due);
                         // Unconditional per-tick sweep, not gated on "did a spawn happen this
                         // tick": it must catch enemies materialized by any runtime
                         // spawnFromSpawner before the post-loop serialize below, and threading
@@ -2411,7 +2412,6 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let host_owner_state_projected = self.host_owner_state_projection_due();
                 // Regression: a turntable's transform slerps through this tick while
                 // carry_yaw previously held the local view until the next input seam.
                 let render_camera_yaw = effective_render_yaw(
@@ -2529,12 +2529,17 @@ impl ApplicationHandler for App {
                 // authoritative) pawn. Host and single-player keep publishing.
                 let is_connected_client = self.is_connected_client();
                 let active_wieldable = self.active_wieldable;
-                if let Some(session) = self.session.as_mut() {
+                let hud_sampled_weapon = if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
                         .player_hud_state
-                        .tick_for_role(is_connected_client, active_wieldable);
-                }
+                        .tick_for_role_and_report_sampled_weapon(
+                            is_connected_client,
+                            active_wieldable,
+                        )
+                } else {
+                    None
+                };
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
@@ -2599,19 +2604,20 @@ impl ApplicationHandler for App {
                 // Host serialize + send after terminal removals, so the
                 // authoritative snapshot cannot carry an entity already reaped
                 // this frame. No-op for the client and single-player.
-                self.net_serialize_and_send();
+                let owner_projected_weapons = self.net_serialize_and_send(host_snapshot_due);
 
-                // HUD publication and network projection have both observed
-                // one-frame reload endpoints. Clear them only now.
-                if let Some(weapon) = active_wieldable {
+                // Advance each reload-endpoint consumer only after it sampled
+                // this frame. Catch-up endpoints remain queued in tick order.
+                if let Some(weapon) = hud_sampled_weapon {
                     sim::clear_reload_feedback_for_weapon(
                         &mut script_ctx.registry.borrow_mut(),
                         weapon,
                     );
                 }
-                if host_owner_state_projected {
-                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
-                }
+                sim::clear_owner_reload_feedback_for_weapons(
+                    &mut script_ctx.registry.borrow_mut(),
+                    &owner_projected_weapons,
+                );
 
                 // Reconcile the input seam + focus with the modal stack's top
                 // capture mode, now that every command drain this frame has
@@ -4863,6 +4869,7 @@ impl App {
                 pending_hit_declarations,
                 weaponless_fire_logged,
                 tick,
+                last_emitted_snapshot_tick: _,
                 host_pawn: _,
                 map_enemies: _,
                 loaded_movers: _,
@@ -5290,11 +5297,11 @@ impl App {
     }
 
     /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
-    /// the replicable set from the registry (immutable borrow) into the per-client
-    /// replication tracker every sim tick and, on the 30 Hz cadence, encodes and
-    /// sends each accepted client a per-client delta snapshot over the snapshot
-    /// channel. No-op for single-player and the client.
-    fn net_serialize_and_send(&mut self) {
+    /// the settled replicable set from the registry (immutable borrow) and, when
+    /// this redraw completed a 30 Hz cadence tick, sends each accepted client a
+    /// per-client delta snapshot over the snapshot channel. No-op for single-player
+    /// and the client.
+    fn net_serialize_and_send(&mut self, snapshot_due: bool) -> Vec<postretro_entities::EntityId> {
         let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
@@ -5303,10 +5310,10 @@ impl App {
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())
         else {
-            return;
+            return Vec::new();
         };
         let Some(session) = self.session.as_mut() else {
-            return;
+            return Vec::new();
         };
         let mesh_clip_tables = &session.mesh_clip_tables;
         let hit_zone_store = &session.hit_zone_store;
@@ -5314,6 +5321,7 @@ impl App {
             server,
             allocator,
             tick,
+            last_emitted_snapshot_tick,
             replication,
             replicable,
             slot_pawns: _,
@@ -5332,7 +5340,7 @@ impl App {
             missing_identity_warned: _,
         }) = session.net_endpoint.as_mut()
         else {
-            return;
+            return Vec::new();
         };
 
         // Demo path only (POSTRETRO_NET_DEMO_MOVER=1): spawn-and-drive the
@@ -5383,7 +5391,9 @@ impl App {
                 command_queues,
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 *tick,
-            );
+                snapshot_due,
+                last_emitted_snapshot_tick,
+            )
         }
     }
 
@@ -5629,21 +5639,12 @@ impl App {
         sim::run_death_sweep(&registry)
     }
 
-    fn host_owner_state_projection_due(&self) -> bool {
-        matches!(
-            self.session
-                .as_ref()
-                .and_then(|session| session.net_endpoint.as_ref()),
-            Some(netcode::NetEndpoint::Host { tick, .. })
-                if *tick % netcode::SNAPSHOT_TICK_INTERVAL == 0
-        )
-    }
-
     /// Advance the listen host's authoritative fixed-simulation tick after one
     /// completed fixed tick. Snapshot stamps and time-sync echoes read this value, so
     /// mover replay deltas are measured in simulation ticks rather than render/network
-    /// frames.
-    fn host_advance_fixed_sim_tick(&mut self) {
+    /// frames. `snapshot_due` retains cadence edges crossed earlier in the same
+    /// catch-up redraw for the post-loop serializer.
+    fn host_advance_fixed_sim_tick(&mut self, snapshot_due: &mut bool) {
         let Some(netcode::NetEndpoint::Host { tick, .. }) = self
             .session
             .as_mut()
@@ -5651,7 +5652,7 @@ impl App {
         else {
             return;
         };
-        *tick = tick.wrapping_add(1);
+        netcode::complete_host_fixed_tick(tick, snapshot_due);
     }
 
     /// Register the listen host's OWN player pawn for outbound replication after a

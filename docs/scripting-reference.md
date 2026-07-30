@@ -240,7 +240,7 @@ defineEntity({
 | `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
 | `resolution` | `"hitscan"` | Shot resolution mode. Hitscan is the supported mode today. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
-| `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1`; `reloadMs` defaults to `1000`; and `reloadStyle` defaults to `"magazine"`. Set `reloadStyle` to `"magazine"` for a whole-magazine reload or `"perShell"` for one-shell steps. Omit the block for unlimited fire. |
+| `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1`; `reloadMs` defaults to `1000`; and `reloadStyle` defaults to `"magazine"`. With `"magazine"`, `reloadMs` times the complete reload; with `"perShell"`, it times one shell step. Omit the block for unlimited fire. |
 
 The authored `reloadMs` is the duration of one reload step: the whole reload
 under `"magazine"`, or one shell under `"perShell"`. Runtime systems read it
@@ -1635,7 +1635,12 @@ step's progress from `0` to `1`: one step covers a whole magazine reload, while 
 per-shell reload repeats the progress ramp for each shell. It publishes
 `player.reloadActive` as `true` for the whole reload, including the boundary
 between per-shell steps. Both slots are **read-only from scripts**; HUD authors
-bind to them for presentation, but scripts cannot write reload state.
+bind to them for presentation, but scripts cannot write reload state. Endpoint
+samples are publication-cadence signals, not an unbounded event log. Several
+identical boundaries produced in one simulation tick may publish as one endpoint;
+if production outruns a consumer's bounded backlog, older samples may be dropped
+so stale feedback does not replay indefinitely. Ammo always publishes the latest
+authoritative count.
 
 ## Operable UI
 

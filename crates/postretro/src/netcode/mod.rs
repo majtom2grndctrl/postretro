@@ -321,6 +321,10 @@ pub(crate) enum NetEndpoint {
         /// Monotonic fixed-simulation tick stamp written into each snapshot.
         /// Advanced once per completed host fixed tick, not once per network send.
         tick: u32,
+        /// Last fixed tick that emitted a snapshot batch. Redraws may run the
+        /// send path again without advancing `tick`; they must not emit or sample
+        /// owner-private projection twice for that tick.
+        last_emitted_snapshot_tick: Option<u32>,
         /// Phase 2 per-client replication tracker (acked baselines, deltas,
         /// tombstones, refresh queue), keyed by `NetworkId`. Registry-blind: fed
         /// owned wire-mirror snapshots, never the registry.
@@ -609,6 +613,7 @@ impl NetEndpoint {
                     server: Box::new(server),
                     allocator: Box::new(NetworkIdAllocator::new()),
                     tick: 0,
+                    last_emitted_snapshot_tick: None,
                     replication: Box::new(ServerReplication::new()),
                     replicable: ReplicableSet::new(),
                     slot_pawns: SlotPawns::new(),
@@ -1838,6 +1843,14 @@ pub(crate) const SERVER_TICK_MICROS: u64 = timesync::DEFAULT_MICROS_PER_TICK;
 /// snapshot bandwidth is acceptable for co-op's small player count.
 pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 2;
 
+/// Advance the authoritative host tick and retain whether this redraw crossed a
+/// snapshot-cadence edge. Catch-up frames call this once per completed fixed tick,
+/// while the post-loop serializer consumes the accumulated `snapshot_due` bit once.
+pub(crate) fn complete_host_fixed_tick(tick: &mut u32, snapshot_due: &mut bool) {
+    *tick = tick.wrapping_add(1);
+    *snapshot_due |= *tick % SNAPSHOT_TICK_INTERVAL == 0;
+}
+
 /// Host-only Phase 2 net-demo fixture state. Activation is a startup decision read
 /// once from the environment; the spawned `EntityId` is filled in lazily on the first
 /// host tick that has a registry to spawn into.
@@ -1908,8 +1921,10 @@ pub(crate) fn host_drive_demo_mover(
 /// the 30 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
 /// client.
 ///
-/// `tick` is the monotonic fixed-simulation tick stamp. A snapshot is encoded only
-/// when `tick % SNAPSHOT_TICK_INTERVAL == 0`.
+/// `tick` is the monotonic fixed-simulation tick stamp. `snapshot_due` records that
+/// at least one completed tick reached the cadence during this redraw. A snapshot
+/// is still encoded at most once for `tick`, even if a caller reaches this path
+/// more than once before another fixed tick completes.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
@@ -1924,7 +1939,9 @@ pub(crate) fn host_replicate(
     command_queues: &HostCommandQueues,
     host_aim: Option<(EntityId, f32)>,
     tick: u32,
-) {
+    snapshot_due: bool,
+    last_emitted_snapshot_tick: &mut Option<u32>,
+) -> Vec<EntityId> {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
     // Owned movement pawns also carry their owner id + resolved cursor (Phase 3).
@@ -1939,15 +1956,21 @@ pub(crate) fn host_replicate(
     );
     replication.ingest_tick(owned);
 
-    // Snapshots emit at 30 Hz (every second 60 Hz tick); ingest ran every tick above.
-    if tick % SNAPSHOT_TICK_INTERVAL != 0 {
-        return;
+    // Catch-up may finish past a cadence edge (for example 1 -> 2 -> 3). The
+    // completed-tick seam retains that edge for this post-loop send.
+    if !snapshot_due {
+        return Vec::new();
     }
 
     let participating = server.participating_clients();
     if participating.is_empty() {
-        return;
+        return Vec::new();
     }
+    if *last_emitted_snapshot_tick == Some(tick) {
+        return Vec::new();
+    }
+    *last_emitted_snapshot_tick = Some(tick);
+
     // The replicated-state schema fingerprint is stamped into every snapshot carrying
     // state records so the client gates on a match. Built once from the live slot table.
     let state_fingerprint = state_slots.fingerprint(slot_table);
@@ -1955,7 +1978,12 @@ pub(crate) fn host_replicate(
     // the scan is frame-wide (every replicated slot, every owned pawn), so running it
     // per client would repeat it O(clients) times. Each client's `produce_for_client`
     // below only reads the now-ingested per-client view.
-    state_slots.ingest_frame(slot_table, registry, owners, weapon_owners);
+    let sampled_weapons = state_slots.ingest_frame_and_collect_sampled_weapons(
+        slot_table,
+        registry,
+        owners,
+        weapon_owners,
+    );
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
@@ -1977,6 +2005,7 @@ pub(crate) fn host_replicate(
             let _ = server.send_snapshot(client_id, bytes);
         }
     }
+    sampled_weapons
 }
 
 /// Spawn and register the slot-owned pawn on entry to participation. The engine
@@ -2863,7 +2892,7 @@ mod tests {
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
     use postretro_entities::components::mesh::MeshAttachment;
-    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
     use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
     use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
 
@@ -3127,6 +3156,195 @@ mod tests {
             client.drain_snapshots().is_empty(),
             "no old-world snapshot survives the world-less frame"
         );
+    }
+
+    // Regression: a 1 -> 2 -> 3 catch-up redraw skipped the qualifying tick-2
+    // snapshot because cadence was checked only once against the final tick.
+    #[test]
+    fn host_catch_up_preserves_snapshot_cadence_and_zero_tick_ack_semantics() {
+        const CLIENT_ID: u64 = 72;
+        let server_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("bind relay server");
+        let server_addr = server_socket.local_addr().expect("relay server address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 2, Duration::from_secs(1), None)
+                .expect("construct relay server");
+        let client_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("bind relay client");
+        let mut client = NetClient::new(
+            client_socket,
+            server_addr,
+            CLIENT_ID,
+            Duration::from_secs(1),
+            None,
+        )
+        .expect("construct relay client");
+        server.add_relay_connection(CLIENT_ID);
+        client.set_connected();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.update_connections(Duration::from_millis(16));
+        for packet in client.packets_to_send() {
+            server.process_packet_from(&packet, CLIENT_ID);
+        }
+        let poll = server.poll_handshakes();
+        assert!(matches!(
+            poll.lifecycle.as_slice(),
+            [postretro_net::slots::SlotEvent::Participating { .. }]
+        ));
+        for packet in server.packets_to_send(CLIENT_ID) {
+            client.process_packet(&packet);
+        }
+        assert!(client.drain_control().is_empty());
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        let mut weapon = test_weapon(10.0, 100.0);
+        let start_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Started, start_tick);
+        let completed_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, completed_tick);
+        registry.set_component(weapon_id, weapon).unwrap();
+
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(pawn);
+        let mut replicable = ReplicableSet::new();
+        replicable.register(pawn);
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, CLIENT_ID);
+        let mut weapon_owners = WeaponOwners::new();
+        weapon_owners.set(pawn, weapon_id);
+        let command_queues = HostCommandQueues::new();
+        let slot_table = SlotTable::new();
+        let mut replication = ServerReplication::new();
+        let mut state_slots = state_slots::HostStateReplication::new();
+        let mut last_emitted_snapshot_tick = None;
+        let mut timing = crate::frame_timing::FrameTiming::new(
+            crate::frame_timing::InterpolableState::new(Vec3::ZERO),
+        );
+        let catch_up = timing.accumulate(crate::frame_timing::TICK_DURATION * 3);
+        assert_eq!(catch_up.ticks, 3);
+        let mut tick = 0;
+        let mut snapshot_due = false;
+        for _ in 0..catch_up.ticks {
+            complete_host_fixed_tick(&mut tick, &mut snapshot_due);
+        }
+        assert_eq!(tick, 3);
+        assert!(
+            snapshot_due,
+            "the completed-tick wiring must retain the tick-2 cadence edge"
+        );
+
+        let sampled = host_replicate(
+            &registry,
+            &slot_table,
+            &mut server,
+            &mut allocator,
+            &mut replication,
+            &mut state_slots,
+            &replicable,
+            &owners,
+            &weapon_owners,
+            &command_queues,
+            None,
+            tick,
+            snapshot_due,
+            &mut last_emitted_snapshot_tick,
+        );
+        assert_eq!(sampled, vec![weapon_id]);
+        crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .owner_reload_status(),
+            (1.0, true)
+        );
+
+        let zero_tick_redraw = timing.accumulate(Duration::ZERO);
+        assert_eq!(zero_tick_redraw.ticks, 0);
+        let mut snapshot_due = false;
+        for _ in 0..zero_tick_redraw.ticks {
+            complete_host_fixed_tick(&mut tick, &mut snapshot_due);
+        }
+        let sampled = host_replicate(
+            &registry,
+            &slot_table,
+            &mut server,
+            &mut allocator,
+            &mut replication,
+            &mut state_slots,
+            &replicable,
+            &owners,
+            &weapon_owners,
+            &command_queues,
+            None,
+            tick,
+            snapshot_due,
+            &mut last_emitted_snapshot_tick,
+        );
+        assert!(sampled.is_empty());
+        crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .owner_reload_status(),
+            (1.0, true),
+            "the second redraw must not acknowledge the completed endpoint"
+        );
+        for packet in server.packets_to_send(CLIENT_ID) {
+            client.process_packet(&packet);
+        }
+        assert_eq!(
+            client.drain_snapshots().len(),
+            1,
+            "one catch-up redraw emits one current snapshot batch"
+        );
+
+        let next_tick = timing.accumulate(crate::frame_timing::TICK_DURATION);
+        assert_eq!(next_tick.ticks, 1);
+        let mut snapshot_due = false;
+        for _ in 0..next_tick.ticks {
+            complete_host_fixed_tick(&mut tick, &mut snapshot_due);
+        }
+        assert_eq!(tick, 4);
+        assert!(snapshot_due);
+        let sampled = host_replicate(
+            &registry,
+            &slot_table,
+            &mut server,
+            &mut allocator,
+            &mut replication,
+            &mut state_slots,
+            &replicable,
+            &owners,
+            &weapon_owners,
+            &command_queues,
+            None,
+            tick,
+            snapshot_due,
+            &mut last_emitted_snapshot_tick,
+        );
+        assert_eq!(sampled, vec![weapon_id]);
+        crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .owner_reload_status(),
+            (0.0, false),
+            "the next qualifying fixed tick advances the next endpoint"
+        );
+        for packet in server.packets_to_send(CLIENT_ID) {
+            client.process_packet(&packet);
+        }
+        assert_eq!(client.drain_snapshots().len(), 1);
     }
 
     // Regression: client level unload reset entity replication but retained the

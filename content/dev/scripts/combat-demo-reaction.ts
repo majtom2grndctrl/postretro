@@ -22,7 +22,7 @@
 //      `player`-tagged entity, so the player's HP drops and the readonly
 //      `player.health` HUD slot follows.
 //
-//   3. `ammoPickup` grants the trigger's activators 24 `bullets.light` ammo on
+//   3. `ammoPickup` grants the trigger's activators 24 `shells.buck` ammo on
 //      the `ammo_pickup` volume's enter edge. This is reference content only:
 //      the engine has no concept of a reward, so a mod replaces the policy.
 //
@@ -86,7 +86,7 @@ export function setupLevel(_ctx: unknown): {
   // The volume is a repeating dispenser in v1: it deliberately does not
   // disarm after paying the current activators.
   const ammoPickup = defineReaction(AMMO_PICKUP_REACTION, (on) =>
-    grantAmmo(on.activators, "bullets.light", 24),
+    grantAmmo(on.activators, "shells.buck", 24),
   );
   reactions.push(ammoPickup);
 

@@ -275,8 +275,8 @@ pub(crate) struct HostStateReplication {
     /// the next reset. `None` until built.
     schema: Option<ReplicatedSlotSchema>,
     tracker: ServerStateReplication,
-    /// Set to `true` the first time `ingest_frame` runs. Used only in debug builds
-    /// to assert the ingest-before-produce ordering contract.
+    /// Set to `true` the first time frame ingest runs. Used only in debug builds to
+    /// assert the ingest-before-produce ordering contract.
     #[cfg(debug_assertions)]
     ingested: bool,
 }
@@ -368,11 +368,10 @@ impl HostStateReplication {
     /// Returns `None` for an unregistered (pending/rejected/closed) client, so such a
     /// client receives no state records.
     ///
-    /// PRODUCE ONLY — the caller must run [`ingest_frame`](Self::ingest_frame) ONCE per
-    /// frame BEFORE the per-client produce loop. Ingest is a frame-wide registry/table
-    /// scan; running it once per client would repeat it O(clients) times. To keep one
-    /// ack per frame, the caller passes the shared `sequence` from the entity tracker's
-    /// batch.
+    /// PRODUCE ONLY — the caller must run frame ingest ONCE per frame BEFORE the
+    /// per-client produce loop. Ingest is a frame-wide registry/table scan; running it
+    /// once per client would repeat it O(clients) times. To keep one ack per frame, the
+    /// caller passes the shared `sequence` from the entity tracker's batch.
     pub(crate) fn produce_for_client(
         &mut self,
         client_id: u64,
@@ -381,11 +380,13 @@ impl HostStateReplication {
         #[cfg(debug_assertions)]
         debug_assert!(
             self.ingested,
-            "produce_for_client called before ingest_frame; ingest must run once per frame before the per-client produce loop"
+            "produce_for_client called before frame ingest; ingest must run once per frame before the per-client produce loop"
         );
         self.tracker.produce_in_batch(client_id, sequence)
     }
 
+    /// Test-only convenience wrapper around frame ingest. Production consumes the
+    /// sampled-weapon result to clear accepted reload feedback.
     /// Collect and ingest this frame's authoritative source values into the tracker.
     /// Shared slots take the slot table's current value; owner-private slots take a
     /// per-owner value (descriptor-fed health from each owned pawn's `HealthComponent`,
@@ -395,6 +396,7 @@ impl HostStateReplication {
     ///
     /// Run ONCE per frame before the per-client produce loop: the scan is frame-wide,
     /// not per-client.
+    #[cfg(test)]
     pub(crate) fn ingest_frame(
         &mut self,
         slot_table: &SlotTable,
@@ -402,6 +404,23 @@ impl HostStateReplication {
         owners: &MovementOwners,
         weapon_owners: &WeaponOwners,
     ) {
+        let _ = self.ingest_frame_and_collect_sampled_weapons(
+            slot_table,
+            registry,
+            owners,
+            weapon_owners,
+        );
+    }
+
+    /// Ingest one frame and report only weapons whose owner-private reload
+    /// values were actually sampled.
+    pub(crate) fn ingest_frame_and_collect_sampled_weapons(
+        &mut self,
+        slot_table: &SlotTable,
+        registry: &EntityRegistry,
+        owners: &MovementOwners,
+        weapon_owners: &WeaponOwners,
+    ) -> Vec<EntityId> {
         // Snapshot the schema entries we need (id, name, scope) so the schema borrow is
         // released before the `&mut self.tracker` calls below.
         let entries: Vec<(StateSlotId, String, ReplicationScope)> = self
@@ -419,6 +438,10 @@ impl HostStateReplication {
                     AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners),
                 )
             })
+            .collect();
+        let sampled_weapons = owner_projections
+            .iter()
+            .filter_map(|(_, _, projection)| projection.weapon)
             .collect();
 
         #[cfg(debug_assertions)]
@@ -451,6 +474,7 @@ impl HostStateReplication {
                 }
             }
         }
+        sampled_weapons
     }
 }
 
@@ -513,6 +537,7 @@ fn descriptor_ammo_for_pawn(
 }
 
 struct AmmoSlotProjection {
+    weapon: Option<EntityId>,
     magazine: Option<f32>,
     reserve: Option<f32>,
     reload_progress: f32,
@@ -521,11 +546,16 @@ struct AmmoSlotProjection {
 
 impl AmmoSlotProjection {
     fn for_pawn(registry: &EntityRegistry, pawn: EntityId, weapon_owners: &WeaponOwners) -> Self {
-        let component = weapon_owners
-            .weapon_of(pawn)
-            .and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
+        let weapon = if registry.exists(pawn) {
+            weapon_owners.weapon_of(pawn)
+        } else {
+            None
+        }
+        .filter(|weapon| registry.get_component::<WeaponComponent>(*weapon).is_ok());
+        let component =
+            weapon.and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
         let (reload_progress, reload_active) = component
-            .map(WeaponComponent::reload_status)
+            .map(WeaponComponent::owner_reload_status)
             .unwrap_or((0.0, false));
         let mut magazine = None;
         let mut reserve = None;
@@ -543,6 +573,7 @@ impl AmmoSlotProjection {
         }
 
         Self {
+            weapon,
             magazine,
             reserve,
             reload_progress,
@@ -879,6 +910,8 @@ fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
 mod tests {
     use super::*;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponAmmoTuning};
+    use postretro_entities::components::wieldable_state::WieldableState;
+    use postretro_entities::data_descriptors::ReloadStyle;
     use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
@@ -1164,10 +1197,12 @@ mod tests {
                     credit_source: "weapon.test".to_string(),
                     ammo: None,
                     magazine: 0,
-                    reload_remaining_ms: 0,
-                    reload_total_ms: 0,
-                    reload_elapsed_sub_ms: 0.0,
-                    reload_feedback: None,
+                    state: WieldableState::Idle,
+                    state_remaining_ms: 0,
+                    state_total_ms: 0,
+                    state_elapsed_sub_ms: 0.0,
+                    reload_credited: 0,
+                    reload_feedback: Default::default(),
                 },
             )
             .unwrap();
@@ -1183,8 +1218,8 @@ mod tests {
         ammo_type: &'a str,
         magazine: u32,
         reserve: Option<u32>,
-        reload_remaining_ms: u32,
-        reload_total_ms: u32,
+        state_remaining_ms: u32,
+        state_total_ms: u32,
     }
 
     fn add_owned_ammo_pawn(
@@ -1213,12 +1248,19 @@ mod tests {
                         capacity: 12,
                         cost_per_shot: 1,
                         reload_ms: 500,
+                        reload_style: ReloadStyle::Magazine,
                     }),
                     magazine: spec.magazine,
-                    reload_remaining_ms: spec.reload_remaining_ms,
-                    reload_total_ms: spec.reload_total_ms,
-                    reload_elapsed_sub_ms: 0.0,
-                    reload_feedback: None,
+                    state: if spec.state_remaining_ms > 0 {
+                        WieldableState::Reloading
+                    } else {
+                        WieldableState::Idle
+                    },
+                    state_remaining_ms: spec.state_remaining_ms,
+                    state_total_ms: spec.state_total_ms,
+                    state_elapsed_sub_ms: 0.0,
+                    reload_credited: 0,
+                    reload_feedback: Default::default(),
                 },
             )
             .unwrap();
@@ -1253,8 +1295,8 @@ mod tests {
                 ammo_type: "cells",
                 magazine: 3,
                 reserve: Some(11),
-                reload_remaining_ms: 250,
-                reload_total_ms: 500,
+                state_remaining_ms: 250,
+                state_total_ms: 500,
             },
         );
         add_owned_ammo_pawn(
@@ -1266,8 +1308,8 @@ mod tests {
                 ammo_type: "shells",
                 magazine: 8,
                 reserve: None,
-                reload_remaining_ms: 10,
-                reload_total_ms: 0,
+                state_remaining_ms: 10,
+                state_total_ms: 0,
             },
         );
 
@@ -1311,8 +1353,9 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_idle)
             .unwrap()
             .clone();
-        idle_weapon.reload_remaining_ms = 0;
-        idle_weapon.reload_total_ms = 500;
+        idle_weapon.state_remaining_ms = 0;
+        idle_weapon.state_total_ms = 500;
+        idle_weapon.state = WieldableState::Idle;
         registry.set_component(weapon_idle, idle_weapon).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(
@@ -1330,7 +1373,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_private_reload_projection_preserves_endpoints_and_hot_refresh_timer() {
+    fn owner_private_reload_projection_publishes_catch_up_endpoints_in_order() {
         let mut registry = EntityRegistry::new();
         let mut owners = MovementOwners::new();
         let mut weapon_owners = WeaponOwners::new();
@@ -1343,8 +1386,8 @@ mod tests {
                 ammo_type: "cells",
                 magazine: 3,
                 reserve: Some(11),
-                reload_remaining_ms: 250,
-                reload_total_ms: 500,
+                state_remaining_ms: 250,
+                state_total_ms: 500,
             },
         );
 
@@ -1352,23 +1395,45 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
-        weapon.reload_feedback = Some(ReloadFeedback::Started);
+        weapon.state = WieldableState::ShellLoading;
+        let start_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Started, start_tick);
+        let boundary_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, boundary_tick);
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, boundary_tick);
         registry.set_component(weapon_id, weapon).unwrap();
+
+        // Regression: a catch-up frame completed a short reload before the
+        // owner-private projection sampled its Started endpoint.
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
             Some(Some(SlotValue::Number(0.0)))
         );
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &weapon_owners),
+            Some(Some(SlotValue::Boolean(true)))
+        );
 
-        let mut weapon = registry
-            .get_component::<WeaponComponent>(weapon_id)
-            .unwrap()
-            .clone();
-        weapon.reload_feedback = Some(ReloadFeedback::Completed);
-        weapon.reload_remaining_ms = 0;
-        registry.set_component(weapon_id, weapon).unwrap();
+        // Each cadence-gated acknowledgement advances only the sampled owner.
+        crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &[weapon_id]);
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
             Some(Some(SlotValue::Number(1.0)))
+        );
+        let observation = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .reload_feedback_sample(
+                postretro_entities::components::weapon::ReloadFeedbackConsumer::OwnerProjection,
+            )
+            .endpoint
+            .expect("coalesced boundary remains observable");
+        assert_eq!(observation.occurrences, 2);
+        assert!(observation.coalesced);
+        crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &[weapon_id]);
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
+            Some(Some(SlotValue::Number(0.5)))
         );
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &weapon_owners),
@@ -1380,8 +1445,9 @@ mod tests {
             .unwrap()
             .clone();
         weapon.ammo = None;
-        weapon.reload_feedback = None;
-        weapon.reload_remaining_ms = 250;
+        weapon.reload_feedback = Default::default();
+        weapon.state = WieldableState::Reloading;
+        weapon.state_remaining_ms = 250;
         registry.set_component(weapon_id, weapon).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.ammo", pawn, &weapon_owners),
@@ -1395,6 +1461,60 @@ mod tests {
             descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &weapon_owners),
             Some(Some(SlotValue::Boolean(true)))
         );
+    }
+
+    // Regression: cadence alone advanced owner feedback while pawn-to-weapon
+    // projection had no live mapping.
+    #[test]
+    fn owner_feedback_advances_only_after_a_mapped_weapon_is_projected() {
+        let table = owner_private_player_table();
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let (pawn, weapon) = add_owned_ammo_pawn(
+            &mut registry,
+            &mut owners,
+            &mut weapon_owners,
+            OwnedAmmoPawnSpec {
+                client: CLIENT_A,
+                ammo_type: "cells",
+                magazine: 3,
+                reserve: Some(11),
+                state_remaining_ms: 250,
+                state_total_ms: 500,
+            },
+        );
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        let tick = component.begin_reload_feedback_tick();
+        component.publish_reload_feedback(ReloadFeedback::Started, tick);
+        registry.set_component(weapon, component).unwrap();
+
+        weapon_owners.remove_pawn(pawn);
+        let mut host = HostStateReplication::new();
+        let sampled = host.ingest_frame_and_collect_sampled_weapons(
+            &table,
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
+        assert!(sampled.is_empty());
+        crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
+
+        weapon_owners.set(pawn, weapon);
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
+            Some(Some(SlotValue::Number(0.0)))
+        );
+        let sampled = host.ingest_frame_and_collect_sampled_weapons(
+            &table,
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
+        assert_eq!(sampled, vec![weapon]);
     }
 
     #[test]

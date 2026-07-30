@@ -11,7 +11,7 @@
 import { defineImpactEvent } from "postretro";
 
 const RESURRECT_DELAY_MS = 3_000;
-// The reference pistol deals 12 damage. A third hit from 6 HP lands at -6 and
+// The reference shotgun deals 12 damage. A third hit from 6 HP lands at -6 and
 // downs the dummy; the next hit from zero lands at -12 and becomes the finisher.
 const FINISHER_OVERSHOOT = -12;
 
@@ -75,15 +75,16 @@ export const enemyDeath = defineImpactEvent(
   },
 );
 
-// REFERENCE CONTENT — this mod-global kill payout is one possible economy
-// policy, not engine behavior. A real mod replaces it with its own policy.
+// REFERENCE CONTENT — this mod-global kill payout grants 8 `shells.buck` per
+// dummy kill. It is one possible economy policy, not engine behavior; a real
+// mod replaces it with its own policy.
 export const ammoOnKill = defineImpactEvent(
   "dev:ammo-on-kill",
   { tag: "dummy" },
   (impact) => {
     const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
 
-    return [{ when: killed, do: [impact.source.grantAmmo("bullets.light", 8)] }];
+    return [{ when: killed, do: [impact.source.grantAmmo("shells.buck", 8)] }];
   },
 );
 

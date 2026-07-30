@@ -7,7 +7,7 @@ description: >
   clean and reviewers have no bias from prior work. Use mid-session after
   implementing a feature, or before opening a pull request.
 allowed-tools: Read, Glob, Grep, Bash, Agent
-argument-hint: "[file-path | plan-name] [reviewers:N] [effort:high|medium]"
+argument-hint: "[file-path | plan-name] [reviewers:N] [effort:xhigh|high|medium]"
 ---
 
 # Review Panel
@@ -46,7 +46,7 @@ Determine review target from first argument (same rules as `/code-review`):
 Extract from `$ARGUMENTS`:
 - The review target (plan name, file path, or empty for uncommitted changes)
 - `reviewers:N` — force exactly N depth agents, bypassing the dispatch table
-- `effort:high|medium` — reasoning effort for the depth agents (default: high)
+- `effort:xhigh|high|medium` — reasoning effort for the depth agents (default: xhigh)
 
 ### 2. Partition large diffs
 
@@ -78,16 +78,16 @@ Size each slice's panel from its triage:
 
 **Floor.** Always run the hygiene+drift agent. For any slice carrying logic, run at least one depth agent alongside it — one agent reviewing everything loses the cross-check that makes this a panel. Typical slice panel is 2–3; rarely past 5. Counts and the cap-3 are per slice, not per branch.
 
-`reviewers:N` forces the depth-agent count to N and skips the table — triage still picks the lens mix (N=3 might be two tracers and one verifier). `effort:medium` runs depth agents at medium reasoning effort. The hygiene+drift agent always runs at medium reasoning effort, unaffected by overrides.
+`reviewers:N` forces the depth-agent count to N and skips the table — triage still picks the lens mix (N=3 might be two tracers and one verifier). `effort:high` or `effort:medium` lowers the depth-agent reasoning effort. The hygiene+drift agent always runs at medium reasoning effort, unaffected by overrides.
 
 ### 5. Spawn all agents in parallel
 
 Launch a slice's agents in a single message. Slices and the seam pass can run concurrently — triage is done, so nothing blocks. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
 
-- **Each depth agent:** a `worker` agent with `model: "gpt-5.6-sol"` and the specified `reasoning_effort` (default: high). Pass the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job.
+- **Each depth agent:** a `worker` agent with `model: "gpt-5.6-terra"` and the specified `reasoning_effort` (default: xhigh). Pass the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job.
 - **Hygiene + drift agent:** a `worker` agent with `model: "gpt-5.6-terra"` and `reasoning_effort: "medium"`. Pass full content of `.Codex/skills/code-review/SKILL.md` (the breadth checklist), then the hygiene+drift prompt (below).
 
-`gpt-5.6-sol` at high is the default for deep, cross-subsystem checking. If Sol is unavailable, use `gpt-5.6-terra` at high; reserve `max` for a small number of unusually consequential or subtle flows rather than making it the panel default.
+`gpt-5.6-terra` at xhigh is the default for deep, cross-subsystem checking. Reserve `max` for a small number of unusually consequential or subtle flows rather than making it the panel default.
 
 Every agent reports findings **bucketed by lens** so coverage per lens stays visible at aggregation.
 

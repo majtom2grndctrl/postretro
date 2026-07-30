@@ -3,7 +3,8 @@
 Investigation record behind `index.md`. Symptom, root-cause verification, empirical
 reproduction over real baked data, direction analysis against the playtest report,
 and why prior fixes missed. Line numbers are as of this investigation (branch
-`claude/epic-10-ai-nav-risks-8jl4yy`, 2026-07-07) — expect drift.
+`claude/epic-10-ai-nav-risks-8jl4yy`, 2026-07-07). Line numbers updated
+2026-07-30 to reflect capsule-clearance and behavior-graph shipping.
 
 ## Symptom (playtest)
 
@@ -22,32 +23,34 @@ handedness convention at all, so nothing forced them to agree.
 
 **Runtime convention** (`crates/postretro/src/nav/path.rs`):
 
-- `oriented_portals` (path.rs:204-225): stored `left`/`right` are taken as
+- `oriented_portals` (path.rs:278-295): stored `left`/`right` are taken as
   oriented for `region_a → region_b` traversal; crossing `region_b → region_a`
   swaps them. So stored `left` must sit on the agent's left when crossing
   `region_a → region_b`.
-- The funnel's turn tests (`triangle_area_xz`, path.rs:232-238) encode that
+- The funnel's turn tests (`triangle_area_xz`, path.rs:302-308) encode that
   chirality: for travel direction `d` and stored offset `s = left - right`,
   correctness requires `d.z*s.x - d.x*s.z < 0`. Concretely: a constant-X portal
   crossed toward +X needs `left` at the **greater-Z** endpoint; a constant-Z
   portal crossed toward +Z needs `left` at the **lesser-X** endpoint.
 - Hand-built test fixtures agree: L-corridor portal at x=4 crossed west→east
-  stores `left = [4,0,8]` (z_hi) (path.rs:453-458); the reversed-traversal
-  fixture stores `left = z_lo` for an east→west `region_a → region_b` crossing
-  (path.rs:520-526). Straight corridor (+Z travel) stores `left = x_lo`
-  (path.rs:361-373).
+  stores `left = [4,0,8]` (z_hi) (`l_corridor_section` fixture,
+  path.rs:951-971); the reversed-traversal fixture stores `left = z_lo` for
+  an east→west `region_a → region_b` crossing
+  (`find_path_handles_reversed_portal_traversal_via_left_right_swap`,
+  path.rs:1136-1185). Straight corridor (+Z travel) stores `left = x_lo`
+  (`straight_corridor_section` fixture, path.rs:840-950).
 
 **Bake convention** (`crates/level-compiler/src/navmesh_bake.rs`):
 
-- `shared_vertical_edge` (constant-X portals, navmesh_bake.rs:682-732) emits
+- `shared_vertical_edge` (constant-X portals, navmesh_bake.rs:681-731) emits
   `left = [x, y, world_z0]`, `right = [x, y, world_z1]` — **z_lo first,
-  unconditionally** (lines 726-731), regardless of which side `region_a` is on.
-- `shared_horizontal_edge` (constant-Z portals, navmesh_bake.rs:744-783) emits
-  `left = x_lo`, `right = x_hi` (lines 778-782).
+  unconditionally** (lines 725-730), regardless of which side `region_a` is on.
+- `shared_horizontal_edge` (constant-Z portals, navmesh_bake.rs:736-783) emits
+  `left = x_lo`, `right = x_hi` (lines 777-782).
 
 **Which portals are wrong.** `region_a`/`region_b` come from the region sort
-(z0-then-x0-then-…, navmesh_bake.rs:573-579) via the `a < b` pair loop
-(navmesh_bake.rs:653-668).
+(z0-then-x0-then-…, navmesh_bake.rs:570-579) via the `a < b` pair loop
+(navmesh_bake.rs:645-669).
 
 - Horizontal portals: for regions abutting in Z, the south region always has the
   smaller z0, so `region_a` is always the south region; `region_a → region_b` is
@@ -145,14 +148,18 @@ but was not independently re-derived from a full movement-feel bake.
 - `E10--enemy-mp-target-selection` + replan-policy rework
   (`REPLAN_DEST_THRESHOLD`, agent_steering.rs:86-104): which target and when to
   replan — replans re-run the same funnel over the same inverted portals.
-- `E10--navmesh-capsule-clearance` (draft, conditional): erosion shape and
-  waypoint inset — adjacent bake work, but orthogonal to endpoint order.
+- `E10--navmesh-capsule-clearance` (shipped): Euclidean erosion and funnel
+  waypoint insetting — adjacent bake work, orthogonal to endpoint order.
+  Split the test file and bumped stage version to 3.
 
 All patched layers **downstream of the baked data**. Runtime path tests
-hand-build portals in the correct convention (path.rs:361-373, 444-460,
-517-535), so they pass; bake tests assert portal *presence*, Y, and the shared
-line (`climbable_step_yields_a_portal`, navmesh_bake.rs:1033-1063 — a
-horizontal portal; no test asserts a **vertical** portal's endpoint order).
+hand-build portals in the correct convention (`straight_corridor_section`
+fixture, `l_corridor_section` fixture, and the reversed-traversal test
+`find_path_handles_reversed_portal_traversal_via_left_right_swap` — now in
+the test module starting at path.rs:795), so they pass; bake tests assert
+portal *presence*, Y, and the shared line (`climbable_step_yields_a_portal`,
+navmesh_bake/tests.rs:425 — a horizontal portal; no test asserts a
+**vertical** portal's endpoint order).
 **No test bakes geometry and runs `find_path` over the result** — the two
 self-consistent layers never met in CI.
 
@@ -170,16 +177,16 @@ self-consistent layers never met in CI.
 - Module closure needed on the lib target: `navmesh_bake`, `geometry`,
   `map_data`, `map_format`, `partition` (via `geometry`), `cache` (used by
   navmesh_bake's own test module). None import further crate-internal modules.
-- `navmesh_bake.rs` is 1226 lines with tests from ~line 792 — feature code
-  ~790 lines, under the ~800 split threshold; the orientation fix is a small
-  edit, not an extension, so no pre-split task. (The capsule-clearance draft
-  plans a pre-split for its larger change; if it lands first, fine.)
+- ~790 lines of feature code in `navmesh_bake/mod.rs`; tests split to
+  `navmesh_bake/tests.rs` (617 lines) by the capsule-clearance spec.
+  The orientation fix is a small edit, not an extension, so no further split
+  needed. (The capsule-clearance spec completed this pre-split.)
 
 ## Secondary: centroid-anchored A* costs
 
-Verified in `astar_corridor` (path.rs:119-181): heuristic = XZ distance between
-**region centroids** (:124-125); edge cost = centroid → portal midpoint →
-centroid (:162-167). Neither anchors on the true start/goal positions, so in
+Verified in `astar_corridor` (path.rs:189-251): heuristic = XZ distance between
+**region centroids** (:195); edge cost = centroid → portal midpoint →
+centroid (:235-237). Neither anchors on the true start/goal positions, so in
 large regions (the arena floor is one or few big rectangles) the first-hop cost
 is charged from the region centroid regardless of where the agent stands —
 mis-picking doorways/corridors when alternatives exist. Milder than the
@@ -188,20 +195,20 @@ portal nodes anchored at the true start/goal (see spec Task 4).
 
 ## Version / invalidation findings
 
-- `NAVMESH_STAGE_VERSION = 2` (navmesh_bake.rs:15) keys the `"navmesh"` build
+- `NAVMESH_STAGE_VERSION = 3` (navmesh_bake.rs:15) keys the `"navmesh"` build
   cache stage; bumping it invalidates cached bakes
-  (`cache_key_changes_with_each_nav_param`, navmesh_bake.rs:1173-1230).
+  (`cache_key_changes_with_each_nav_param`, navmesh_bake/tests.rs:565).
 - No `.prl` files are committed (`git ls-files content/dev/maps | grep prl` →
   0); compiled maps are dev-local. A stage bump alone fixes the *cache* but a
   stale local `.prl` still carries inverted portals until recompiled.
-- `NavMeshSection::from_bytes` (level-format navmesh.rs:140-165) reads the
+- `NavMeshSection::from_bytes` (level-format navmesh.rs:141-235) reads the
   section version but **does not validate it**. The loader treats a malformed
   navmesh section as warn-and-ignore → `navmesh: None` → AI disabled
-  (`prl_loader.rs:1958-1978`) — an existing graceful degradation path the spec
+  (`prl_loader.rs:~2389-2410`) — an existing graceful degradation path the spec
   reuses for loud stale-section rejection (`NAVMESH_VERSION` 1 → 2).
 - Portal endpoint consumers: the funnel (orientation-sensitive) and the
   Alt+Shift+N navmesh overlay (`render/nav_diagnostics.rs:53-54`, draws the
   segment — orientation-agnostic). Nothing else reads `left`/`right`.
 - Alt+Shift+A is the all-agent movement overlay
-  (`renderer/src/render/renderer_diagnostics.rs:443`), the instrument for the
+  (`renderer/src/render/renderer_diagnostics.rs:~443`), the instrument for the
   playtest AC.

@@ -294,7 +294,7 @@ fn optional_weapon_model_paths_reject_escape_and_platform_absolute_forms_in_both
 fn paired_weapon_ammo_resource_defaults_match() {
     let js = ammo_resource(
         parse_js_ammo_resource(
-            r#"{ kind: "ammo", type: "bullets.light", magazine: 12, costPerShot: undefined, reserve: 48, reloadMs: undefined }"#,
+            r#"{ kind: "ammo", type: "bullets.light", magazine: 12, costPerShot: undefined, reserve: 48, reloadMs: undefined, reloadStyle: undefined }"#,
         )
         .unwrap(),
     );
@@ -310,6 +310,39 @@ fn paired_weapon_ammo_resource_defaults_match() {
     assert_eq!(js.cost_per_shot, 1);
     assert_eq!(js.reserve, 48);
     assert_eq!(js.reload_ms, 1000);
+    assert_eq!(js.reload_style, ReloadStyle::Magazine);
+}
+
+#[test]
+fn paired_weapon_ammo_resource_accepts_reload_style_values_and_rejects_unknown() {
+    for (js_resource, lua_resource, expected) in [
+        (
+            r#"{ kind: "ammo", type: "shells", magazine: 8, reserve: 32, reloadStyle: "magazine" }"#,
+            r#"{ kind = "ammo", type = "shells", magazine = 8, reserve = 32, reloadStyle = "magazine" }"#,
+            ReloadStyle::Magazine,
+        ),
+        (
+            r#"{ kind: "ammo", type: "shells", magazine: 8, reserve: 32, reloadStyle: "perShell" }"#,
+            r#"{ kind = "ammo", type = "shells", magazine = 8, reserve = 32, reloadStyle = "perShell" }"#,
+            ReloadStyle::PerShell,
+        ),
+    ] {
+        let js = ammo_resource(parse_js_ammo_resource(js_resource).unwrap());
+        let lua = ammo_resource(parse_lua_ammo_resource(lua_resource).unwrap());
+        assert_eq!(js.reload_style, expected);
+        assert_eq!(js, lua);
+    }
+
+    let js_error = parse_js_ammo_resource(
+        r#"{ kind: "ammo", type: "shells", magazine: 8, reserve: 32, reloadStyle: "belt" }"#,
+    );
+    let lua_error = parse_lua_ammo_resource(
+        r#"{ kind = "ammo", type = "shells", magazine = 8, reserve = 32, reloadStyle = "belt" }"#,
+    );
+    let js_error = js_error.unwrap_err().to_string();
+    let lua_error = lua_error.unwrap_err().to_string();
+    assert!(js_error.contains("unknown variant"), "{js_error}");
+    assert_eq!(js_error, lua_error);
 }
 
 #[test]

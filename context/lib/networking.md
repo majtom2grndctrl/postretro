@@ -161,7 +161,12 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
 
-**One-frame markers.** Replication samples on a slower cadence than the fixed tick that produces state, and the HUD samples once per rendered frame. A one-frame marker cleared on its producer's cadence is silently lost for every slower consumer; clear it only after every consumer has sampled it.
+**Reload endpoint stream.** Reload endpoints cross the fixed-tick/frame boundary
+through one bounded stream per weapon. HUD and owner-private projection keep
+independent cursors and acknowledge only after sampling. Equal endpoints from one
+simulation tick coalesce with an observable count. On overflow, the oldest retained
+run is dropped and loss is observable per consumer; retained runs stay FIFO. This
+bounds stale playback when authored reload cadence outruns publication.
 
 ### Snapshot apply ordering
 

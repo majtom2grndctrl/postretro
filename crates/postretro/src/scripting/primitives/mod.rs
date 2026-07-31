@@ -326,6 +326,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .field("lowerMs?", "u32", "Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.")
         .field("raiseMs?", "u32", "Raising duration in milliseconds. Optional; defaults to 0.")
+        .field("blockDuringReload?", "bool", "Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin.")
         .finish();
     registry
         .register_type("HitboxDescriptor")

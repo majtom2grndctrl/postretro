@@ -246,6 +246,7 @@ mod tests {
             id: "com.postretro.digest-fixture".to_string(),
             version: "1.0.0".to_string(),
             render: ModRenderProfile::default(),
+            switching: Default::default(),
             entities: vec![entity_descriptor()],
             ui_trees: Vec::new(),
             theme: ModThemeTokens::default(),
@@ -363,6 +364,7 @@ mod tests {
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         });
 
         let mut inventory = entity_descriptor();

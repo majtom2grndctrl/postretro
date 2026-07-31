@@ -138,6 +138,7 @@ pub(in crate::sim) fn run_local_weapon_command(
     registry: &Rc<RefCell<EntityRegistry>>,
     pawn: Option<EntityId>,
     active_wieldable: Option<EntityId>,
+    mod_block_during_reload: bool,
     select_slot: Option<usize>,
     command: &WeaponFireCommand,
     reload_pressed: bool,
@@ -160,25 +161,29 @@ pub(in crate::sim) fn run_local_weapon_command(
     let Some(weapon_id) = weapon_id else {
         return (Vec::new(), Vec::new());
     };
-    let begin_lower = inventory.as_ref().is_some_and(|inventory| {
-        select_slot.is_some_and(|slot| {
-            slot < inventory.wieldables.len()
-                && slot != inventory.active_slot
-                && inventory.wieldables[slot].is_some()
-                && inventory.switch_target != Some(slot)
-        })
-    });
-    if begin_lower {
-        if let Some(inventory) = inventory.as_mut() {
-            inventory.switch_target = select_slot;
-        }
-    }
     let Ok(mut weapon_component) = registry
         .get_component::<WeaponComponent>(weapon_id)
         .cloned()
     else {
         return (Vec::new(), Vec::new());
     };
+    // The descriptor override stays unresolved in the component. Only this
+    // App-fed local input gate resolves it against the mod-global policy.
+    let block_during_reload = weapon_component
+        .block_during_reload
+        .unwrap_or(mod_block_during_reload);
+    let begin_lower = inventory.as_ref().is_some_and(|inventory| {
+        select_slot.is_some_and(|slot| {
+            slot < inventory.wieldables.len()
+                && slot != inventory.active_slot
+                && inventory.wieldables[slot].is_some()
+                && inventory.switch_target != Some(slot)
+                && !(block_during_reload && weapon_component.state.is_reload_activity())
+        })
+    });
+    if begin_lower && let Some(inventory) = inventory.as_mut() {
+        inventory.switch_target = select_slot;
+    }
     if begin_lower {
         let lower_ms = weapon_component.lower_ms;
         let _ = transition_wieldable_state(

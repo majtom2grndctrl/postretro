@@ -90,6 +90,10 @@ pub struct WeaponDescriptor {
     pub lower_ms: u32,
     #[serde(default, rename = "raiseMs")]
     pub raise_ms: u32,
+    /// Optional override of the mod-global reload-interrupt policy. Resolution
+    /// belongs to the commit gate, so the component retains this unresolved.
+    #[serde(default, rename = "blockDuringReload")]
+    pub block_during_reload: Option<bool>,
 }
 
 impl WeaponDescriptor {
@@ -254,6 +258,7 @@ mod tests {
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         }
     }
 

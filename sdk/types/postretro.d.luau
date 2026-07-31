@@ -292,6 +292,8 @@ export type WeaponDescriptor = {
   lowerMs: number?,
   --- Raising duration in milliseconds. Optional; defaults to 0.
   raiseMs: number?,
+  --- Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin.
+  blockDuringReload: boolean?,
 }
 
 --- One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
@@ -617,6 +619,16 @@ export type RenderProfile = {
   bloom: BloomRenderProfile?,
 }
 
+--- Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.
+export type SwitchingDescriptor = {
+  --- Whether a direct slot-select action emits a commit immediately. Input-layer policy only.
+  commitOnDirectSelect: boolean,
+  --- Cycle-selection dwell in milliseconds. Must be finite and >= 0. Input-layer policy only.
+  cycleCommitDwellMs: number,
+  --- Whether a weapon without its own override must finish reload activity before a switch can begin.
+  blockDuringReload: boolean,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -627,6 +639,8 @@ export type ModManifest = {
   version: string,
   --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.
   render: RenderProfile?,
+  --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
+  switching: SwitchingDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.

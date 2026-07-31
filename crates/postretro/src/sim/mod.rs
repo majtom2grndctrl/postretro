@@ -155,6 +155,7 @@ pub(crate) fn simulate_tick(
         nav_graph,
         gravity,
         active_wieldable,
+        false,
         anim_time,
         (0.0, 0.0),
         _progress_tracker,
@@ -181,6 +182,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     nav_graph: Option<&NavGraph>,
     gravity: f32,
     active_wieldable: Option<EntityId>,
+    mod_block_during_reload: bool,
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
@@ -402,6 +404,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         &registry,
         own_pawn,
         active_wieldable,
+        mod_block_during_reload,
         command.select_slot,
         &weapon_fire,
         command.reload,
@@ -1329,6 +1332,7 @@ mod tests {
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         })
     }
 
@@ -1357,6 +1361,7 @@ mod tests {
             })),
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         };
         let descriptor = descriptor.validate().unwrap();
         let mut ammo_reserve = AmmoReserve::new();

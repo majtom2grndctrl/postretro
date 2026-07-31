@@ -34,6 +34,10 @@ pub struct EffectiveStats<'a> {
     pub resolution: ResolutionMode,
     pub lower_ms: u32,
     pub raise_ms: u32,
+    /// Per-weapon override of the mod-global reload-interrupt policy. This is
+    /// deliberately unresolved: only the App-owned commit gates know the mod
+    /// default.
+    pub block_during_reload: Option<bool>,
     pub credit_source: &'a str,
     pub ammo: Option<EffectiveAmmoStats<'a>>,
 }
@@ -256,6 +260,8 @@ pub struct WeaponComponent {
     pub lower_ms: u32,
     #[serde(default)]
     pub raise_ms: u32,
+    #[serde(default)]
+    pub block_during_reload: Option<bool>,
     pub cooldown_remaining_ms: f32,
     #[serde(default)]
     pub shoot_press_consumed: bool,
@@ -306,6 +312,7 @@ impl WeaponComponent {
             resolution: desc.resolution,
             lower_ms: desc.lower_ms,
             raise_ms: desc.raise_ms,
+            block_during_reload: desc.block_during_reload,
             cooldown_remaining_ms: 0.0,
             shoot_press_consumed: false,
             reload_press_consumed: false,
@@ -330,6 +337,7 @@ impl WeaponComponent {
             resolution: self.resolution,
             lower_ms: self.lower_ms,
             raise_ms: self.raise_ms,
+            block_during_reload: self.block_during_reload,
             credit_source: &self.credit_source,
             ammo: self.ammo.as_ref().map(|ammo| EffectiveAmmoStats {
                 ammo_type: &ammo.ammo_type,
@@ -349,6 +357,7 @@ impl WeaponComponent {
         self.resolution = desc.resolution;
         self.lower_ms = desc.lower_ms;
         self.raise_ms = desc.raise_ms;
+        self.block_during_reload = desc.block_during_reload;
         if let Some(credit_source) = desc.credit_source.as_ref() {
             self.credit_source = credit_source.clone();
         }
@@ -510,6 +519,7 @@ mod tests {
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         }
     }
 
@@ -572,21 +582,25 @@ mod tests {
         let mut descriptor = descriptor(10.0, 20.0, 100.0);
         descriptor.lower_ms = 25;
         descriptor.raise_ms = 40;
+        descriptor.block_during_reload = Some(true);
         let mut component = WeaponComponent::from_descriptor(&descriptor);
 
         assert_eq!(component.lower_ms, 25);
         assert_eq!(component.raise_ms, 40);
         assert_eq!(component.effective().lower_ms, 25);
         assert_eq!(component.effective().raise_ms, 40);
+        assert_eq!(component.effective().block_during_reload, Some(true));
 
         descriptor.lower_ms = 60;
         descriptor.raise_ms = 75;
+        descriptor.block_during_reload = Some(false);
         component.refresh_from_descriptor(&descriptor);
 
         assert_eq!(component.lower_ms, 60);
         assert_eq!(component.raise_ms, 75);
         assert_eq!(component.effective().lower_ms, 60);
         assert_eq!(component.effective().raise_ms, 75);
+        assert_eq!(component.effective().block_during_reload, Some(false));
     }
 
     #[test]

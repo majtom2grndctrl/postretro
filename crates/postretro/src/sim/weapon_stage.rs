@@ -143,6 +143,7 @@ mod tests {
             })),
             lower_ms: 0,
             raise_ms: 0,
+            block_during_reload: None,
         }
     }
 
@@ -232,6 +233,7 @@ mod tests {
             &registry,
             Some(pawn),
             Some(outgoing),
+            false,
             Some(1),
             &command,
             true,
@@ -259,6 +261,7 @@ mod tests {
             &registry,
             Some(pawn),
             Some(outgoing),
+            false,
             Some(2),
             &command,
             true,
@@ -282,6 +285,7 @@ mod tests {
             &registry,
             Some(pawn),
             Some(outgoing),
+            false,
             None,
             &command,
             true,
@@ -311,6 +315,79 @@ mod tests {
         assert_eq!(second_target.state, WieldableState::Raising);
         assert_eq!(second_target.state_remaining_ms, 15);
         assert!(second_target.reload_press_consumed);
+    }
+
+    #[test]
+    fn reload_switch_gate_resolves_weapon_override_before_mod_global() {
+        let attempt_switch = |mod_block_during_reload: bool, weapon_override: Option<bool>| {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let (pawn, outgoing) = {
+                let mut registry_ref = registry.borrow_mut();
+                let pawn = registry_ref.spawn(Transform::default());
+                let outgoing = registry_ref.spawn(Transform::default());
+                let target = registry_ref.spawn(Transform::default());
+                let mut outgoing_component = gate_weapon_component(FireMode::Semi, 100.0);
+                outgoing_component.lower_ms = 10;
+                outgoing_component.block_during_reload = weapon_override;
+                outgoing_component.state = WieldableState::Reloading;
+                outgoing_component.state_remaining_ms = 20;
+                outgoing_component.state_total_ms = 20;
+                registry_ref
+                    .set_component(outgoing, outgoing_component)
+                    .unwrap();
+                registry_ref
+                    .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                    .unwrap();
+                let mut inventory = Inventory::default();
+                inventory.wieldables[0] = Some(outgoing);
+                inventory.wieldables[1] = Some(target);
+                registry_ref.set_component(pawn, inventory).unwrap();
+                (pawn, outgoing)
+            };
+            let collision_world = CollisionWorld::default();
+            let hit_zone_store = HitZoneStore::new();
+            let mut no_impact = ignore_impact;
+            let _ = run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                Some(outgoing),
+                mod_block_during_reload,
+                Some(1),
+                &fire_command(false, false),
+                false,
+                &collision_world,
+                &hit_zone_store,
+                0.0,
+                0.0,
+                &mut no_impact,
+            );
+            let registry_ref = registry.borrow();
+            (
+                registry_ref
+                    .get_component::<WeaponComponent>(outgoing)
+                    .unwrap()
+                    .state,
+                registry_ref
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .switch_target,
+            )
+        };
+
+        assert_eq!(
+            attempt_switch(true, None),
+            (WieldableState::Reloading, None)
+        );
+        assert_eq!(
+            attempt_switch(true, Some(false)),
+            (WieldableState::Lowering, Some(1)),
+            "a weapon override can allow reload interruption under a blocking mod policy"
+        );
+        assert_eq!(
+            attempt_switch(false, Some(true)),
+            (WieldableState::Reloading, None),
+            "a weapon override can block reload interruption under a permissive mod policy"
+        );
     }
 
     #[test]

@@ -258,6 +258,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
+                block_during_reload: None,
             }),
         )
         .expect("weapon component should attach");

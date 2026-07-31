@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree,
-    TriggerEventDescriptor, TriggerPoolDescriptor,
+    SwitchingDescriptor, TriggerEventDescriptor, TriggerPoolDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -68,6 +68,9 @@ pub struct ModManifestResult {
     /// Static mod-owned render preferences parsed from `render`. Omission or
     /// malformed optional fields normalize to the current renderer defaults.
     pub render: ModRenderProfile,
+    /// Mod-global weapon-switching rules. Omission resolves to the engine
+    /// compatibility defaults before this manifest is committed.
+    pub switching: SwitchingDescriptor,
     /// Entity-type descriptors returned by the mod manifest. Empty when the
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.

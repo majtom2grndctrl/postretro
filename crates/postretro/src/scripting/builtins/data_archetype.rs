@@ -2039,6 +2039,7 @@ mod tests {
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
+                block_during_reload: None,
             }),
             mesh: None,
             health: None,

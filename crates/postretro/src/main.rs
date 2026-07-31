@@ -138,7 +138,7 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
 use postretro_entities::SystemReactionCommand;
-use postretro_foundation::ModThemeTokens;
+use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
     dispatch_deferred_named_events_with_sequences, fire_named_event,
@@ -621,6 +621,11 @@ pub(crate) struct App {
     /// commits replace this complete snapshot before a fresh merge over engine
     /// defaults reaches the renderer.
     mod_theme_override: ModThemeTokens,
+
+    /// Current mod-global switching policy. This remains App-owned because
+    /// input policy is not replicated state; the local weapon commit gate is
+    /// the sole simulation consumer of its reload-interrupt rule.
+    switching: SwitchingDescriptor,
 
     /// The mode signal observed during THIS frame's input phase, resolved into
     /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
@@ -2341,6 +2346,7 @@ impl ApplicationHandler for App {
                             self.nav_graph.as_ref(),
                             script_ctx.gravity.get(),
                             self.active_wieldable,
+                            self.switching.block_during_reload,
                             frame_anim_time,
                             presentation_camera_aim,
                             progress_tracker,
@@ -6686,6 +6692,7 @@ mod tests {
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
+                block_during_reload: None,
             }),
             mesh: None,
             health: None,
@@ -8400,6 +8407,7 @@ mod tests {
                     id: "ui-commit".to_string(),
                     version: "1".to_string(),
                     render: Default::default(),
+                    switching: Default::default(),
                     entities: Vec::new(),
                     maps: Vec::new(),
                     reactions: Vec::new(),

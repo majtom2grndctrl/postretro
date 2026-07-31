@@ -8,8 +8,8 @@ mod machine;
 mod state;
 
 pub(super) use commands::{
-    normalize_all_inventory_liveness, normalize_inventory_liveness, rebase_local_switch,
-    refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
+    normalize_all_inventory_liveness, normalize_inventory_liveness, refuse_local_switch,
+    run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
 
@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_refusal_restores_origin_after_local_repoint_and_clears_equip_state() {
+    fn o25_switch_refusal_restores_origin_after_local_repoint_and_clears_equip_state() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let origin = registry.spawn(Transform::default());
@@ -1038,16 +1038,18 @@ mod tests {
     }
 
     #[test]
-    fn despawned_active_slot_is_cleared_and_first_live_slot_becomes_active() {
+    fn o21_active_instance_despawn_during_lower_abandons_switch_without_raise() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let (pawn, stale, live) = {
             let mut registry = registry.borrow_mut();
             let pawn = registry.spawn(Transform::default());
             let stale = registry.spawn(Transform::default());
             let live = registry.spawn(Transform::default());
-            registry
-                .set_component(stale, gate_weapon_component(FireMode::Semi, 100.0))
-                .unwrap();
+            let mut lowering = gate_weapon_component(FireMode::Semi, 100.0);
+            lowering.state = WieldableState::Lowering;
+            lowering.state_total_ms = 20;
+            lowering.state_remaining_ms = 10;
+            registry.set_component(stale, lowering).unwrap();
             registry
                 .set_component(live, gate_weapon_component(FireMode::Semi, 100.0))
                 .unwrap();
@@ -1083,6 +1085,14 @@ mod tests {
         assert_eq!(inventory.active_wieldable(), Some(live));
         assert_eq!(inventory.switch_target, None);
         assert_eq!(inventory.switch_origin, None);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(live)
+                .unwrap()
+                .state,
+            WieldableState::Idle,
+            "liveness repair selects the first occupied slot without starting a raise"
+        );
         assert!(!registry.exists(stale));
     }
 

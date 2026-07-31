@@ -1,5 +1,5 @@
-// Player HUD state publisher. Publishes authoritative pawn health and active
-// weapon ammo/reload state into readonly engine-owned slots each frame.
+// Player HUD state publisher. Host publishes authoritative health, ammo, and reload slots;
+// every role publishes local display-only `player.weapon.*` slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use std::collections::HashSet;
@@ -121,6 +121,19 @@ impl PlayerHudStatePublisher {
         }
     }
 
+    fn clear_hud_slot(&mut self, name: &'static str) -> bool {
+        let mut slots = self.ctx.slot_table.borrow_mut();
+        let Some(record) = slots.get_mut(name) else {
+            drop(slots);
+            if self.write_failure_warned_slots.insert(name) {
+                log::warn!("[HUD] failed to clear missing built-in slot `{name}`");
+            }
+            return false;
+        };
+        record.write_value(None);
+        true
+    }
+
     /// Republish the player HUD store slots for this frame.
     #[cfg(test)]
     pub(crate) fn tick_for_role(
@@ -189,9 +202,18 @@ impl PlayerHudStatePublisher {
 
         let (sampled_weapon, ammo, reload_progress, reload_active) =
             weapon_hud_values(&self.ctx.registry.borrow());
-        if let Some((magazine, reserve)) = ammo {
-            self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
-            self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
+        match (sampled_weapon, ammo) {
+            (_, Some((magazine, reserve))) => {
+                self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
+                self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
+            }
+            (Some(_), None) => {
+                // A live resourceless weapon is an authoritative absence, unlike a
+                // missing pawn. Clear the outgoing weapon's values at the repoint.
+                self.clear_hud_slot("player.ammo");
+                self.clear_hud_slot("player.ammoReserve");
+            }
+            (None, None) => {}
         }
         let reload_progress_written =
             self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
@@ -664,6 +686,53 @@ mod tests {
     }
 
     #[test]
+    fn o39_o40_one_frame_publish_observes_only_a_completed_short_switch() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let first = spawn_ammo_weapon(&ctx, pawn);
+        let second = {
+            let mut registry = ctx.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    DescriptorProvenance {
+                        canonical_name: "instant_weapon".to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(id);
+            // The zero-duration lower/repoint/raise completed during the frame's
+            // fixed-tick loop before the once-per-frame publisher runs.
+            inventory.active_slot = 1;
+            inventory.switch_target = None;
+            inventory.switch_origin = None;
+            registry.set_component(pawn, inventory).unwrap();
+            id
+        };
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick_for_role(false, None);
+
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.current").unwrap(),
+            SlotValue::String("instant_weapon".to_string())
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.switching").unwrap(),
+            SlotValue::Boolean(false),
+            "a sub-publish or multi-tick-frame switch exposes only its final state"
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn tick_keeps_reload_active_when_hot_refresh_removes_ammo_tuning() {
         use crate::scripting::primitives::store::{read_store_slot, write_store_slot};
 
@@ -687,9 +756,9 @@ mod tests {
         publisher.tick(Some(weapon_id));
 
         assert_eq!(
-            read_store_slot(&ctx, "player.ammo").unwrap(),
-            SlotValue::Number(7.0),
-            "removed tuning still suppresses ammo publication"
+            read_store_slot(&ctx, "player.ammo").ok(),
+            None,
+            "a live weapon with no ammo resource clears stale ammo presentation"
         );
         assert_eq!(
             read_store_slot(&ctx, "player.reloadProgress").unwrap(),
@@ -702,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_skips_ammo_but_clears_reload_without_pawn_weapon_or_resource() {
+    fn o38_resourceless_incoming_weapon_clears_outgoing_ammo_and_reserve_slots() {
         use crate::scripting::primitives::store::{read_store_slot, write_store_slot};
 
         let ctx = ScriptCtx::new();
@@ -755,11 +824,22 @@ mod tests {
                 .unwrap();
             id
         };
-        let _ = pawn;
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, inventory)
+            .unwrap();
         publisher.tick(Some(weapon_id));
         assert_eq!(
-            read_store_slot(&ctx, "player.ammo").unwrap(),
-            SlotValue::Number(7.0)
+            read_store_slot(&ctx, "player.ammo").ok(),
+            None,
+            "incoming resourceless weapon cannot retain outgoing magazine"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammoReserve").ok(),
+            None,
+            "incoming resourceless weapon cannot retain outgoing reserve"
         );
         assert_eq!(
             read_store_slot(&ctx, "player.reloadActive").unwrap(),

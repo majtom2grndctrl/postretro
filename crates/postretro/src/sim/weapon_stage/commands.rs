@@ -394,30 +394,3 @@ pub(crate) fn refuse_local_switch(
     let _ = registry.set_component(pawn, inventory);
     true
 }
-
-/// Rebase the rollback origin of the newest local declaration after an earlier
-/// ordered host outcome. The visible newer switch remains in progress/accepted.
-pub(crate) fn rebase_local_switch(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    target_slot: usize,
-    rollback_slot: usize,
-) -> bool {
-    let Ok(mut inventory) = registry.get_component::<Inventory>(pawn).cloned() else {
-        return false;
-    };
-    let target_is_current = inventory.switch_target == Some(target_slot)
-        || (inventory.active_slot == target_slot && inventory.switch_origin.is_some());
-    let rollback_is_live = inventory
-        .wieldables
-        .get(rollback_slot)
-        .copied()
-        .flatten()
-        .is_some();
-    if !target_is_current || !rollback_is_live {
-        return false;
-    }
-    inventory.switch_origin = Some(rollback_slot);
-    let _ = registry.set_component(pawn, inventory);
-    true
-}

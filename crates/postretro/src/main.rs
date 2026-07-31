@@ -7956,7 +7956,7 @@ mod tests {
     }
 
     #[test]
-    fn unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
+    fn o27_unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
         let registry = postretro_entities::EntityRegistry::new();
         let mut allocator = netcode::NetworkIdAllocator::new();
@@ -8028,7 +8028,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_fire_resolves_declared_possessed_slot_not_active_slot() {
+    fn o26_remote_fire_resolves_declared_possessed_slot_during_equip_transition() {
         let mut registry = postretro_entities::EntityRegistry::new();
         let pawn = registry.spawn(postretro_entities::Transform::default());
         let active = registry.spawn(postretro_entities::Transform::default());
@@ -8036,6 +8036,8 @@ mod tests {
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
         inventory.wieldables[0] = Some(active);
         inventory.wieldables[1] = Some(declared);
+        inventory.switch_target = Some(1);
+        inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory).unwrap();
 
         let mut allocator = netcode::NetworkIdAllocator::new();

@@ -134,8 +134,9 @@ pub(crate) enum SlotPawnSource<'a> {
 /// returns the existing pawn without spawning a duplicate. A re-accept whose mapped
 /// pawn has gone stale (despawned out from under us) re-spawns a fresh one.
 ///
-/// The pawn is **server-authoritative and inert** in Phase 2 (no gameplay input is
-/// applied to it). The `NetworkId` is allocated by the shared monotonic allocator,
+/// The host is authoritative for the pawn's simulation: it applies the owning
+/// client's movement and firing-slot input, and processes reload and switch
+/// declarations. The `NetworkId` is allocated by the shared monotonic allocator,
 /// which never recycles ids — so a slot reused by a later connection gets a fresh
 /// `EntityId` and thus a fresh `NetworkId`; the old id is never re-emitted.
 pub(crate) fn on_slot_accepted(
@@ -737,7 +738,7 @@ mod tests {
     // Demotion is the same exit from participation as a close, so gameplay must
     // clear every slot-owned domain while the transport remains alive.
     #[test]
-    fn descriptor_accept_and_lifecycle_demotion_clear_all_slot_owned_state() {
+    fn o22_o24_demotion_mid_switch_clears_then_repromotion_builds_fresh_inventory() {
         let mut registry = EntityRegistry::new();
         let mut slot_pawns = SlotPawns::new();
         let mut allocator = NetworkIdAllocator::new();
@@ -785,6 +786,18 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(weapons.len(), 2, "fixture equips two inventory slots");
+        let mut lowering = registry
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapons[0])
+            .unwrap()
+            .clone();
+        lowering.state = postretro_entities::components::wieldable_state::WieldableState::Lowering;
+        lowering.state_total_ms = 40;
+        lowering.state_remaining_ms = 20;
+        registry.set_component(weapons[0], lowering).unwrap();
+        let mut switching_inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        switching_inventory.switch_target = Some(1);
+        switching_inventory.switch_origin = Some(0);
+        registry.set_component(pawn, switching_inventory).unwrap();
         let weapon = weapons[0];
         let pawn_net = allocator
             .network_id_for_entity(pawn)
@@ -920,6 +933,96 @@ mod tests {
         assert!(
             !weaponless_fire_logged.contains(&pawn),
             "slot close clears weaponless-fire latch"
+        );
+
+        crate::netcode::host_handle_accept_descriptor(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            CLIENT_A,
+            &spawn_points,
+            &descriptors,
+            None,
+        );
+        let replacement = slot_pawns
+            .pawn_for(CLIENT_A)
+            .expect("re-promotion materializes a fresh pawn");
+        assert_ne!(replacement, pawn);
+        let replacement_inventory = registry
+            .get_component::<Inventory>(replacement)
+            .expect("fresh tuning/loadout materializes a new inventory");
+        assert_eq!(replacement_inventory.active_slot, 0);
+        assert_eq!(replacement_inventory.switch_target, None);
+        assert_eq!(replacement_inventory.switch_origin, None);
+        assert!(
+            replacement_inventory
+                .wieldables
+                .iter()
+                .flatten()
+                .all(|weapon| !weapons.contains(weapon)),
+            "no pre-demotion instance or slot holder survives re-promotion"
+        );
+    }
+
+    #[test]
+    fn o23_slot_close_after_pawn_despawn_removes_all_three_inventory_instances() {
+        let mut registry = EntityRegistry::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        let descriptors = [
+            player_with_loadout(&["reference_pistol", "reference_pistol", "reference_pistol"]),
+            weapon_descriptor("reference_pistol"),
+        ];
+
+        let (pawn, _) = on_slot_accepted(
+            &mut registry,
+            &mut slot_pawns,
+            &mut allocator,
+            &mut replicable,
+            CLIENT_A,
+            SlotPawnSource::Descriptor {
+                placement: &synthetic_placement(),
+                descriptors: &descriptors,
+                agent_params: None,
+            },
+        )
+        .expect("descriptor slot materializes");
+        let weapons = registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .wieldables
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(weapons.len(), 3);
+        registry
+            .despawn(pawn)
+            .expect("fixture reproduces pawn-before-slot cleanup ordering");
+
+        assert_eq!(
+            on_slot_closed(
+                &mut registry,
+                &mut slot_pawns,
+                &mut allocator,
+                &mut replicable,
+                &mut replication,
+                CLIENT_A,
+            ),
+            Some(pawn)
+        );
+        assert!(
+            weapons.iter().all(|weapon| !registry.exists(*weapon)),
+            "the slot's retained teardown ids remove every sibling after the pawn is gone"
         );
     }
 

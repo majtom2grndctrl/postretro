@@ -81,17 +81,6 @@ pub(crate) fn refuse_local_wieldable_switch(
     weapon_stage::refuse_local_switch(registry, pawn, refused_slot, rollback_slot)
 }
 
-/// Rebase the newest declaration onto the authoritative result of its immediate
-/// predecessor without cancelling the newer local presentation.
-pub(crate) fn rebase_local_wieldable_switch(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    target_slot: usize,
-    rollback_slot: usize,
-) -> bool {
-    weapon_stage::rebase_local_switch(registry, pawn, target_slot, rollback_slot)
-}
-
 /// Clear despawned wieldable slots and surface pawns whose active instance changed.
 /// The caller feeds those pawns into the existing attachment-dirty path.
 pub(crate) fn normalize_wieldable_inventories(registry: &mut EntityRegistry) -> Vec<EntityId> {

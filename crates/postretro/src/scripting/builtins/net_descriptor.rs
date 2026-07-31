@@ -63,10 +63,9 @@ pub(crate) fn spawn_net_slot_pawn(
         registry,
         descriptor,
         placement,
-        // Attach the descriptor's own weapon component to the pawn just like the
-        // player-start path (so the remote pawn is armed); the sibling
-        // The inventory instance below is what `spawn_from_player_starts` would
-        // promote to active — here it is spawned but never promoted.
+        // Keep generic descriptor weapon attachment enabled for parity with the
+        // player-start path. Inventory composition independently materializes
+        // live siblings and makes its first populated slot the active instance.
         true,
         DescriptorSpawnPath::NetworkSlot,
         agent_params,
@@ -838,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn later_tuning_merges_without_rematerializing_live_wieldable_state() {
+    fn o41_tuning_arrival_mid_switch_merges_without_rematerializing_live_state() {
         let mut reg = EntityRegistry::new();
         let pawn = reg.spawn(Transform::default());
         let descriptors = vec![
@@ -864,7 +863,7 @@ mod tests {
             .clone();
         before.magazine = 3;
         before.cooldown_remaining_ms = 47.0;
-        before.state = WieldableState::Lowering;
+        before.state = WieldableState::Raising;
         before.state_remaining_ms = 18;
         before.state_total_ms = 60;
         reg.set_component(weapon_id, before).unwrap();
@@ -892,7 +891,7 @@ mod tests {
         assert_eq!(after.raise_ms, 95);
         assert_eq!(after.magazine, 3);
         assert_eq!(after.cooldown_remaining_ms, 47.0);
-        assert_eq!(after.state, WieldableState::Lowering);
+        assert_eq!(after.state, WieldableState::Raising);
         assert_eq!(after.state_remaining_ms, 18);
         assert_eq!(after.state_total_ms, 60);
     }

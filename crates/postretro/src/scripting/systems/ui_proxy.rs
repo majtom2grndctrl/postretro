@@ -56,19 +56,29 @@ fn weapon_hud_values(
 /// The committed active instance names the current weapon; a switch target means
 /// the machine is in flight. Descriptor provenance preserves the canonical
 /// archetype identity of spawned wieldables.
-fn weapon_state_values(registry: &EntityRegistry) -> (String, bool) {
+fn weapon_state_values(
+    registry: &EntityRegistry,
+    pending_slot: Option<usize>,
+) -> (String, String, bool) {
     let Some(pawn) = registry.local_player_movement_pawn() else {
-        return (String::new(), false);
+        return (String::new(), String::new(), false);
     };
     let Some(inventory) = registry.get_component::<Inventory>(pawn).ok() else {
-        return (String::new(), false);
+        return (String::new(), String::new(), false);
     };
-    let current = inventory
-        .active_wieldable()
-        .and_then(|weapon| registry.get_component::<DescriptorProvenance>(weapon).ok())
-        .map(|provenance| provenance.canonical_name.clone())
-        .unwrap_or_default();
-    (current, inventory.switch_target.is_some())
+    let weapon_name = |slot: usize| {
+        inventory
+            .wieldables
+            .get(slot)
+            .copied()
+            .flatten()
+            .and_then(|weapon| registry.get_component::<DescriptorProvenance>(weapon).ok())
+            .map(|provenance| provenance.canonical_name.clone())
+            .unwrap_or_default()
+    };
+    let current = weapon_name(inventory.active_slot);
+    let pending = pending_slot.map(weapon_name).unwrap_or_default();
+    (current, pending, inventory.switch_target.is_some())
 }
 
 /// Engine-side producer for the HUD store slots.
@@ -76,6 +86,9 @@ pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
     invalid_max_warned_for: Option<EntityId>,
     write_failure_warned_slots: HashSet<&'static str>,
+    /// Input-layer cursor selection. It is local on every role and deliberately
+    /// never enters `Inventory`, simulation, or replication.
+    pending_weapon_slot: Option<usize>,
 }
 
 impl PlayerHudStatePublisher {
@@ -85,7 +98,13 @@ impl PlayerHudStatePublisher {
             ctx,
             invalid_max_warned_for: None,
             write_failure_warned_slots: HashSet::new(),
+            pending_weapon_slot: None,
         }
+    }
+
+    /// Set the input layer's local pending cursor for this frame's HUD publish.
+    pub(crate) fn set_pending_weapon_slot(&mut self, pending_weapon_slot: Option<usize>) {
+        self.pending_weapon_slot = pending_weapon_slot;
     }
 
     fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) -> bool {
@@ -186,11 +205,10 @@ impl PlayerHudStatePublisher {
     }
 
     fn publish_local_weapon_state(&mut self) {
-        let (current, switching) = weapon_state_values(&self.ctx.registry.borrow());
+        let (current, pending, switching) =
+            weapon_state_values(&self.ctx.registry.borrow(), self.pending_weapon_slot);
         self.write_hud_slot("player.weapon.current", SlotValue::String(current));
-        // Pending is owned by Task 7's input cursor. Its catalog default is the
-        // deliberate pre-producer value, and it remains stable until that task.
-        self.write_hud_slot("player.weapon.pending", SlotValue::String(String::new()));
+        self.write_hud_slot("player.weapon.pending", SlotValue::String(pending));
         self.write_hud_slot("player.weapon.switching", SlotValue::Boolean(switching));
     }
 }
@@ -602,6 +620,7 @@ mod tests {
             id
         };
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.set_pending_weapon_slot(Some(1));
 
         publisher.tick_for_role_and_report_sampled_weapon(true, None);
         assert_eq!(
@@ -611,7 +630,8 @@ mod tests {
         );
         assert_eq!(
             read_store_slot(&ctx, "player.weapon.pending").unwrap(),
-            SlotValue::String(String::new())
+            SlotValue::String("reference_shotgun".to_string()),
+            "pending projects the input-layer cursor before any inventory repoint"
         );
         assert_eq!(
             read_store_slot(&ctx, "player.weapon.switching").unwrap(),

@@ -31,6 +31,9 @@ pub enum Action {
     SelectWieldable8,
     SelectWieldable9,
     SelectWieldable10,
+    CycleWieldableNext,
+    CycleWieldablePrevious,
+    ToggleLastWieldable,
 }
 
 impl Action {
@@ -110,6 +113,12 @@ impl AxisValue {
 pub enum PhysicalInput {
     Key(KeyCode),
     MouseButton(MouseButton),
+    /// Momentary physical wheel event. Unlike mouse buttons this is cleared by
+    /// the input system after every snapshot because the window API has no
+    /// matching release event.
+    MouseWheelUp,
+    /// Momentary physical wheel event. See [`PhysicalInput::MouseWheelUp`].
+    MouseWheelDown,
     MouseAxisX,
     MouseAxisY,
     GamepadButton(GilrsButton),

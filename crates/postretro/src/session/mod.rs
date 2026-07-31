@@ -366,6 +366,7 @@ impl Session {
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
         input_system.set_invert_y(player_options.invert_y);
+        input_system.set_scroll_notch_pixels(player_options.scroll_notch_pixels);
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's

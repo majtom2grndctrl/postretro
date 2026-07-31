@@ -13,12 +13,14 @@ mod types;
 mod ui_dispatch;
 mod ui_focus;
 mod ui_nav;
+mod wieldable_selection;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
 pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
+pub use wieldable_selection::{WieldableSelection, WieldableSelectionPolicy};
 // `UiCaptureMode` is the capture/passthrough mode flag, driven by the active
 // gameplay UI descriptor via `UiDispatch::set_mode`. The boot splash leaves the
 // default `Passthrough`.
@@ -54,7 +56,7 @@ pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
 use std::collections::{HashMap, HashSet};
 
 use gilrs::Axis as GilrsAxis;
-use winit::event::MouseButton;
+use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
 /// Read-only snapshot of all action states for a single frame.
@@ -63,6 +65,9 @@ use winit::keyboard::KeyCode;
 pub struct ActionSnapshot {
     button_states: HashMap<Action, ButtonState>,
     axis_values: HashMap<Action, Vec<AxisValue>>,
+    /// Discrete wheel notches are not button states: several can arrive in one
+    /// frame, while a wheel event has no release edge.
+    notch_counts: HashMap<Action, u32>,
 }
 
 impl ActionSnapshot {
@@ -72,6 +77,7 @@ impl ActionSnapshot {
         Self {
             button_states: HashMap::new(),
             axis_values: HashMap::new(),
+            notch_counts: HashMap::new(),
         }
     }
 
@@ -104,6 +110,81 @@ impl ActionSnapshot {
     pub fn axis_value(&self, action: Action) -> f32 {
         self.axis(action).iter().map(|v| v.value).sum()
     }
+
+    /// Number of discrete wheel notches bound to `action` during this frame.
+    pub fn notch_count(&self, action: Action) -> u32 {
+        self.notch_counts.get(&action).copied().unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_notch_counts<const N: usize>(counts: [(Action, u32); N]) -> Self {
+        let mut snapshot = Self::neutral();
+        snapshot.notch_counts.extend(counts);
+        snapshot
+    }
+}
+
+/// Explicit per-frame scroll count. Pixel and line remainders survive until
+/// they form a whole notch; only the emitted counts reset each snapshot.
+#[derive(Debug, Default)]
+struct ScrollNotchAccumulator {
+    up: u32,
+    down: u32,
+    line_remainder: f64,
+    pixel_remainder: f64,
+}
+
+impl ScrollNotchAccumulator {
+    fn add_line_delta(&mut self, delta: f64) {
+        if !delta.is_finite() {
+            return;
+        }
+        self.line_remainder += delta;
+        let notches = self.line_remainder.trunc() as i64;
+        self.line_remainder -= notches as f64;
+        self.add_signed_notches(notches);
+    }
+
+    fn add_pixel_delta(&mut self, delta: f64, pixels_per_notch: f64) {
+        if !delta.is_finite() || !pixels_per_notch.is_finite() || pixels_per_notch <= 0.0 {
+            return;
+        }
+        self.pixel_remainder += delta;
+        let notches = (self.pixel_remainder / pixels_per_notch).trunc() as i64;
+        self.pixel_remainder -= notches as f64 * pixels_per_notch;
+        self.add_signed_notches(notches);
+    }
+
+    fn add_signed_notches(&mut self, notches: i64) {
+        if notches > 0 {
+            self.up = self
+                .up
+                .saturating_add(u32::try_from(notches).unwrap_or(u32::MAX));
+        } else if notches < 0 {
+            self.down = self
+                .down
+                .saturating_add(u32::try_from(notches.unsigned_abs()).unwrap_or(u32::MAX));
+        }
+    }
+
+    fn count(&self, input: PhysicalInput) -> u32 {
+        match input {
+            PhysicalInput::MouseWheelUp => self.up,
+            PhysicalInput::MouseWheelDown => self.down,
+            _ => 0,
+        }
+    }
+
+    fn clear_frame(&mut self) {
+        self.up = 0;
+        self.down = 0;
+    }
+
+    fn clear_all(&mut self) {
+        self.clear_frame();
+        self.line_remainder = 0.0;
+        self.pixel_remainder = 0.0;
+    }
 }
 
 /// Carries button press edges across render frames until fixed game logic runs.
@@ -114,6 +195,7 @@ impl ActionSnapshot {
 #[derive(Debug, Default)]
 pub struct GameplayInputLatch {
     pressed_buttons: HashSet<Action>,
+    wieldable_selection: WieldableSelection,
 }
 
 impl GameplayInputLatch {
@@ -123,10 +205,19 @@ impl GameplayInputLatch {
 
     pub fn clear(&mut self) {
         self.pressed_buttons.clear();
+        self.wieldable_selection.clear();
     }
 
     pub fn clear_pressed(&mut self, action: Action) {
         self.pressed_buttons.remove(&action);
+    }
+
+    pub fn wieldable_selection_mut(&mut self) -> &mut WieldableSelection {
+        &mut self.wieldable_selection
+    }
+
+    pub fn wieldable_selection(&self) -> &WieldableSelection {
+        &self.wieldable_selection
     }
 
     pub fn snapshot_for_ticks(
@@ -179,6 +270,13 @@ pub struct InputSystem {
     /// Mouse axis values resolved from accumulated delta for the current frame.
     mouse_axes: HashMap<Action, f32>,
 
+    /// Explicit wheel notch counts, distinct from `ButtonState` so one frame
+    /// can retain several wheel inputs.
+    scroll_notches: ScrollNotchAccumulator,
+
+    /// Player-configured pixel distance corresponding to one wheel notch.
+    scroll_notch_pixels: f64,
+
     /// Raw gamepad axis values keyed by gilrs Axis. Resolved through bindings.
     gamepad_axes: HashMap<GilrsAxis, f32>,
 
@@ -212,6 +310,8 @@ impl InputSystem {
             prev_button_states: HashMap::with_capacity(button_action_count),
             mouse_delta: (0.0, 0.0),
             mouse_axes: HashMap::new(),
+            scroll_notches: ScrollNotchAccumulator::default(),
+            scroll_notch_pixels: 120.0,
             gamepad_axes: HashMap::new(),
             mouse_sensitivity: DEFAULT_MOUSE_SENSITIVITY,
             invert_y: false,
@@ -232,6 +332,15 @@ impl InputSystem {
     /// Enable or disable invert-Y for mouse look.
     pub fn set_invert_y(&mut self, invert: bool) {
         self.invert_y = invert;
+    }
+
+    /// Set the pixel-scroll normalization threshold loaded from player options.
+    pub fn set_scroll_notch_pixels(&mut self, pixels: f32) {
+        self.scroll_notch_pixels = if pixels.is_finite() && pixels > 0.0 {
+            f64::from(pixels)
+        } else {
+            120.0
+        };
     }
 
     /// Whether invert-Y is currently enabled.
@@ -257,6 +366,28 @@ impl InputSystem {
             .insert(PhysicalInput::MouseButton(button), pressed);
     }
 
+    /// Normalize a winit wheel event into explicit per-frame notches. Wheel
+    /// inputs are momentary, so `snapshot` clears their physical states itself.
+    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        match delta {
+            MouseScrollDelta::LineDelta(_, vertical) => {
+                self.scroll_notches.add_line_delta(f64::from(vertical));
+            }
+            MouseScrollDelta::PixelDelta(position) => {
+                self.scroll_notches
+                    .add_pixel_delta(position.y, self.scroll_notch_pixels);
+            }
+        }
+        if self.scroll_notches.up != 0 {
+            self.physical_state
+                .insert(PhysicalInput::MouseWheelUp, true);
+        }
+        if self.scroll_notches.down != 0 {
+            self.physical_state
+                .insert(PhysicalInput::MouseWheelDown, true);
+        }
+    }
+
     /// Set a raw gamepad axis value. Called by GamepadSystem after dead zone processing.
     /// The value is resolved through bindings to produce action axis values.
     pub fn set_gamepad_axis(&mut self, axis: GilrsAxis, value: f32) {
@@ -278,6 +409,7 @@ impl InputSystem {
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
         self.gamepad_axes.clear();
+        self.scroll_notches.clear_all();
     }
 
     /// Resolve all bindings and produce the action snapshot for this frame.
@@ -288,6 +420,7 @@ impl InputSystem {
 
         let mut button_states = HashMap::new();
         let mut axis_values = HashMap::new();
+        let mut notch_counts = HashMap::new();
 
         for &action in &self.unique_actions {
             if action.is_axis() {
@@ -309,6 +442,15 @@ impl InputSystem {
                     &self.prev_button_states,
                 );
                 button_states.insert(action, state);
+                let count = self
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.action == action)
+                    .map(|binding| self.scroll_notches.count(binding.input))
+                    .sum();
+                if count != 0 {
+                    notch_counts.insert(action, count);
+                }
             }
         }
 
@@ -323,10 +465,14 @@ impl InputSystem {
         // Reset per-frame accumulators.
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
+        self.scroll_notches.clear_frame();
+        self.physical_state.remove(&PhysicalInput::MouseWheelUp);
+        self.physical_state.remove(&PhysicalInput::MouseWheelDown);
 
         ActionSnapshot {
             button_states,
             axis_values,
+            notch_counts,
         }
     }
 
@@ -666,6 +812,51 @@ mod tests {
     }
 
     #[test]
+    fn scroll_notches_preserve_multiple_line_events_and_clear_after_snapshot() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        sys.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, -2.0));
+
+        let snap = sys.snapshot();
+        assert_eq!(snap.notch_count(Action::CycleWieldableNext), 3);
+        assert_eq!(
+            snap.button(Action::CycleWieldableNext),
+            ButtonState::Pressed,
+            "the physical wheel input is momentary even though the explicit count carries all three notches"
+        );
+
+        let next = sys.snapshot();
+        assert_eq!(next.notch_count(Action::CycleWieldableNext), 0);
+        assert_eq!(
+            next.button(Action::CycleWieldableNext),
+            ButtonState::Released,
+            "wheel physical state must be explicitly cleared because winit emits no release event"
+        );
+    }
+
+    #[test]
+    fn pixel_scroll_accumulates_against_configured_notch_threshold() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.set_scroll_notch_pixels(120.0);
+        sys.handle_mouse_wheel(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, 50.0),
+        ));
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            0
+        );
+
+        sys.handle_mouse_wheel(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, 70.0),
+        ));
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            1,
+            "pixel residual from the prior frame completes one 120-pixel notch"
+        );
+    }
+
+    #[test]
     fn gameplay_input_latch_carries_pressed_button_across_zero_tick_frame() {
         let mut sys = InputSystem::new(test_bindings());
         let mut latch = GameplayInputLatch::new();
@@ -719,6 +910,31 @@ mod tests {
         assert_eq!(
             gameplay_snapshot.button(Action::Shoot),
             ButtonState::Pressed
+        );
+    }
+
+    #[test]
+    fn gameplay_input_latch_clear_discards_pending_wieldable_commit() {
+        let mut latch = GameplayInputLatch::new();
+        let occupied = [true, true];
+        latch.wieldable_selection_mut().advance_frame(
+            &ActionSnapshot::with_button_state(Action::SelectWieldable2, ButtonState::Pressed),
+            &occupied,
+            Some(0),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: true,
+                cycle_dwell_ms: 0.0,
+            },
+            0.0,
+        );
+
+        latch.clear();
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&occupied, Some(0)),
+            None,
+            "modal/focus input clears must discard the local declaration holder"
         );
     }
 

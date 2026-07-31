@@ -203,6 +203,14 @@ impl App {
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
+            // The selection holder shares the gameplay input latch's clear path.
+            // Surface-level teardown includes level unload, so no cursor, dwell,
+            // last-slot memory, or unconsumed declaration can reach the next level.
+            session.gameplay_input_latch.clear();
+            session
+                .scripting
+                .player_hud_state
+                .set_pending_weapon_slot(None);
         }
         self.collision_world.clear();
         self.kinematic_mover_colliders.clear();

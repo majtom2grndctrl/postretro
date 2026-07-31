@@ -1030,6 +1030,37 @@ fn local_player_ground(
         })
 }
 
+/// Snapshot the local pawn's inventory at the input phase. On a single-player
+/// or listen-host role this reflects the last completed local tick; on a
+/// connected client it reflects the last applied local-inventory snapshot. The
+/// incoming snapshot for this frame applies later in game logic, so the cursor
+/// can be one frame stale but never reads a wire-only mirror or simulation-only
+/// preference state.
+fn local_wieldable_occupancy(
+    registry: &postretro_entities::EntityRegistry,
+) -> (
+    [bool; postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY],
+    Option<usize>,
+) {
+    let Some(inventory) = registry.local_player_movement_pawn().and_then(|pawn| {
+        registry
+            .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+            .ok()
+    }) else {
+        return (
+            [false; postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY],
+            None,
+        );
+    };
+    let occupied = inventory.wieldables.map(|wieldable| wieldable.is_some());
+    let active = occupied
+        .get(inventory.active_slot)
+        .copied()
+        .unwrap_or(false)
+        .then_some(inventory.active_slot);
+    (occupied, active)
+}
+
 fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
@@ -1732,6 +1763,22 @@ impl ApplicationHandler for App {
                         .handle_mouse_button(button, state.is_pressed());
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if egui_consumed {
+                    return;
+                }
+                let Some(session) = self.session.as_mut() else {
+                    return;
+                };
+                if session
+                    .ui_dispatch
+                    .dispatch_event(None)
+                    .forwards_to_gameplay()
+                    && session.input_focus == InputFocus::Gameplay
+                {
+                    session.input_system.handle_mouse_wheel(delta);
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 // Track cursor *position* (not delta) for UI hit-testing while
                 // the cursor is released. This is tracked state, never queued —
@@ -2079,6 +2126,38 @@ impl ApplicationHandler for App {
                         ticks,
                         ui_captures_gameplay,
                     );
+                    if !ui_captures_gameplay {
+                        let (occupied, active_slot) = {
+                            let registry = session.scripting.script_ctx.registry.borrow();
+                            local_wieldable_occupancy(&registry)
+                        };
+                        let cycle_dwell_ms = session
+                            .player_options
+                            .switch_cycle_dwell_ms
+                            .map(|dwell| dwell as f32)
+                            .unwrap_or(self.switching.cycle_commit_dwell_ms);
+                        session
+                            .gameplay_input_latch
+                            .wieldable_selection_mut()
+                            .advance_frame(
+                                &frame_snapshot,
+                                &occupied,
+                                active_slot,
+                                input::WieldableSelectionPolicy {
+                                    commit_on_direct_select: self.switching.commit_on_direct_select,
+                                    cycle_dwell_ms,
+                                },
+                                frame_dt * 1000.0,
+                            );
+                    }
+                    let pending_weapon_slot = session
+                        .gameplay_input_latch
+                        .wieldable_selection()
+                        .cursor_slot();
+                    session
+                        .scripting
+                        .player_hud_state
+                        .set_pending_weapon_slot(pending_weapon_slot);
                     let zero_tick_fire_snapshot =
                         (!ui_captures_gameplay && ticks == 0).then_some(frame_snapshot);
                     // Apply look rotation once at render rate, not once per tick —
@@ -2211,7 +2290,6 @@ impl ApplicationHandler for App {
                             && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
                         let shoot_pressed = tick_index == 0
                             && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
-                        let select_pressed = tick_index == 0;
                         let use_pressed = tick_index == 0
                             && matches!(snapshot.button(Action::Use), ButtonState::Pressed);
                         let mut trigger_use_edges = HashMap::new();
@@ -2231,15 +2309,30 @@ impl ApplicationHandler for App {
                             );
                             self.mover_yaw_carry_ground = local_player_ground(&registry);
                         }
-                        let command = build_sim_command(
+                        let select_slot = if tick_index == 0 {
+                            let (occupied, active_slot) = {
+                                let registry = script_ctx.registry.borrow();
+                                local_wieldable_occupancy(&registry)
+                            };
+                            self.session
+                                .as_mut()
+                                .expect("running session installed")
+                                .gameplay_input_latch
+                                .wieldable_selection_mut()
+                                .take_pending_commit(&occupied, active_slot)
+                        } else {
+                            None
+                        };
+                        let mut command = build_sim_command(
                             snapshot,
                             &self.camera,
                             crouch_intent,
                             dash_pressed,
                             shoot_pressed,
-                            select_pressed,
+                            false,
                             use_pressed,
                         );
+                        command.select_slot = select_slot;
 
                         // Connected-client prediction (M15 Phase 3 Task 3): send one
                         // Input command and advance ONLY the local pawn's movement
@@ -7059,6 +7152,38 @@ mod tests {
             crouch: None,
             view_feel: None,
         }
+    }
+
+    #[test]
+    fn o45_cursor_occupancy_reads_the_local_inventory_from_the_prior_frame() {
+        use postretro_entities::components::inventory::Inventory;
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::PlayerMovementComponent;
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                pawn,
+                PlayerMovementComponent::from_descriptor(&minimal_player_descriptor()),
+            )
+            .unwrap();
+        registry.mark_local_player_pawn(pawn).unwrap();
+        let first = registry.spawn(Transform::default());
+        let third = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(first);
+        inventory.wieldables[2] = Some(third);
+        registry.set_component(pawn, inventory).unwrap();
+
+        let (occupied, active) = local_wieldable_occupancy(&registry);
+        assert_eq!(active, Some(0));
+        assert_eq!(
+            occupied,
+            [
+                true, false, true, false, false, false, false, false, false, false
+            ]
+        );
     }
 
     #[test]

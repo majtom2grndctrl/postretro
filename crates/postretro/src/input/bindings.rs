@@ -57,7 +57,10 @@ pub(crate) fn resolve_axis_values(
     // Keyboard and gamepad axis contributions resolved through bindings.
     for binding in bindings.iter().filter(|b| b.action == action) {
         match binding.input {
-            PhysicalInput::Key(_) | PhysicalInput::MouseButton(_) => {
+            PhysicalInput::Key(_)
+            | PhysicalInput::MouseButton(_)
+            | PhysicalInput::MouseWheelUp
+            | PhysicalInput::MouseWheelDown => {
                 let active = *key_state.get(&binding.input).unwrap_or(&false);
                 if active {
                     let value = binding.scale; // key produces 1.0 * scale

@@ -13,6 +13,9 @@ use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 
 /// Filename written into the platform config directory.
 const SETTINGS_FILENAME: &str = "settings.toml";
+const DEFAULT_SCROLL_NOTCH_PIXELS: f32 = 120.0;
+const MAX_SCROLL_NOTCH_PIXELS: f32 = 4_096.0;
+const MAX_SWITCH_CYCLE_DWELL_MS: u32 = 60_000;
 
 /// How the crouch action is interpreted by the input layer. Resolved upstream
 /// of the movement intent: the movement intent only ever sees the single
@@ -61,6 +64,17 @@ pub struct PlayerOptions {
     /// surface (see player_options.md §6).
     #[serde(default)]
     pub crouch_mode: CrouchMode,
+
+    /// Optional local override for the mod's cycle-selection dwell. `None`
+    /// preserves the mod policy; an explicit zero selects immediately.
+    #[serde(default)]
+    pub switch_cycle_dwell_ms: Option<u32>,
+
+    /// Pixel distance treated as one scroll-wheel notch. This is a concrete
+    /// per-device setting, not a policy override; 120 matches the OS-standard
+    /// wheel quantum.
+    #[serde(default = "default_scroll_notch_pixels")]
+    pub scroll_notch_pixels: f32,
 }
 
 fn default_mouse_sensitivity() -> f32 {
@@ -75,6 +89,10 @@ fn default_view_feel_scale() -> f32 {
     1.0
 }
 
+fn default_scroll_notch_pixels() -> f32 {
+    DEFAULT_SCROLL_NOTCH_PIXELS
+}
+
 impl Default for PlayerOptions {
     fn default() -> Self {
         Self {
@@ -82,6 +100,8 @@ impl Default for PlayerOptions {
             invert_y: default_invert_y(),
             view_feel_scale: default_view_feel_scale(),
             crouch_mode: CrouchMode::default(),
+            switch_cycle_dwell_ms: None,
+            scroll_notch_pixels: default_scroll_notch_pixels(),
         }
     }
 }
@@ -95,6 +115,14 @@ impl PlayerOptions {
         self.view_feel_scale = self.view_feel_scale.clamp(0.0, 1.0);
         if !(self.mouse_sensitivity.is_finite() && self.mouse_sensitivity > 0.0) {
             self.mouse_sensitivity = default_mouse_sensitivity();
+        }
+        self.switch_cycle_dwell_ms = self
+            .switch_cycle_dwell_ms
+            .map(|dwell| dwell.min(MAX_SWITCH_CYCLE_DWELL_MS));
+        if !self.scroll_notch_pixels.is_finite() || self.scroll_notch_pixels <= 0.0 {
+            self.scroll_notch_pixels = default_scroll_notch_pixels();
+        } else {
+            self.scroll_notch_pixels = self.scroll_notch_pixels.min(MAX_SCROLL_NOTCH_PIXELS);
         }
     }
 
@@ -195,6 +223,13 @@ mod tests {
             b.view_feel_scale
         );
         assert_eq!(a.crouch_mode, b.crouch_mode);
+        assert_eq!(a.switch_cycle_dwell_ms, b.switch_cycle_dwell_ms);
+        assert!(
+            (a.scroll_notch_pixels - b.scroll_notch_pixels).abs() < EPSILON,
+            "scroll_notch_pixels: {} vs {}",
+            a.scroll_notch_pixels,
+            b.scroll_notch_pixels
+        );
     }
 
     #[test]
@@ -204,6 +239,8 @@ mod tests {
             invert_y: true,
             view_feel_scale: 0.5,
             crouch_mode: CrouchMode::Toggle,
+            switch_cycle_dwell_ms: Some(250),
+            scroll_notch_pixels: 96.0,
         };
         let serialized = toml::to_string_pretty(&original).unwrap();
         let restored: PlayerOptions = toml::from_str(&serialized).unwrap();
@@ -232,6 +269,8 @@ mod tests {
             invert_y: true,
             view_feel_scale: 0.25,
             crouch_mode: CrouchMode::Toggle,
+            switch_cycle_dwell_ms: Some(400),
+            scroll_notch_pixels: 100.0,
         };
         options.save(&path).unwrap();
 
@@ -277,6 +316,8 @@ mod tests {
             invert_y: false,
             view_feel_scale: 0.75,
             crouch_mode: CrouchMode::Toggle,
+            switch_cycle_dwell_ms: Some(500),
+            scroll_notch_pixels: 80.0,
         };
         options.save(&path).unwrap();
 
@@ -361,5 +402,34 @@ mod tests {
 
         let loaded = PlayerOptions::load(&path);
         assert_eq!(loaded.crouch_mode, CrouchMode::Toggle);
+    }
+
+    #[test]
+    fn wieldable_input_options_default_when_absent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "invert_y = true\n").unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(loaded.switch_cycle_dwell_ms, None);
+        assert!((loaded.scroll_notch_pixels - DEFAULT_SCROLL_NOTCH_PIXELS).abs() < EPSILON);
+    }
+
+    #[test]
+    fn wieldable_input_options_sanitize_to_supported_ranges() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(
+            &path,
+            "switch_cycle_dwell_ms = 999999\nscroll_notch_pixels = -1.0\n",
+        )
+        .unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(
+            loaded.switch_cycle_dwell_ms,
+            Some(MAX_SWITCH_CYCLE_DWELL_MS)
+        );
+        assert!((loaded.scroll_notch_pixels - DEFAULT_SCROLL_NOTCH_PIXELS).abs() < EPSILON);
     }
 }

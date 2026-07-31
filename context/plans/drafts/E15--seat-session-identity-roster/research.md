@@ -74,8 +74,9 @@ So the client's local `AmmoReserve` and `magazine` are write-mostly and never di
 | Magazines | per-inventory-slot `u32`, 10 slots | yes — `Array` of `f32` |
 | Ammo reserve | `HashMap<String, u32>` (`ammo_reserve.rs:10`) | no — string-keyed map |
 | Inventory composition | 10 canonical name strings | no — `Array` holds floats |
+| Spawn placement | index | yes — `Number` |
 
-Two of five resist, and composition is the load-bearing one: without it the seat cannot rebuild a loadout, which is the carry's purpose. A structured per-seat record is therefore required no matter how much else moves into slots.
+Two of six resist, and composition is the load-bearing one: without it the seat cannot rebuild a loadout, which is the carry's purpose. A structured per-seat record is therefore required no matter how much else moves into slots.
 
 The seat still serves as the shared key. A per-seat *scalar* axis and a per-seat *record* coexist on one key without duplicating a store, because they hold disjoint values.
 

@@ -1080,6 +1080,7 @@ fn build_sim_command(
             active: shoot.is_active(),
         },
         reload: reload.is_active(),
+        firing_slot: 0,
         select_slot,
         use_pressed,
     }
@@ -2248,6 +2249,9 @@ impl ApplicationHandler for App {
                         // pawn; frame timing pushes the predicted camera pose. Task 5
                         // adds reconciliation/smoothing on top of this seam.
                         if self.is_connected_client() {
+                            if let Some(slot) = command.select_slot {
+                                self.client_declare_switch(slot);
+                            }
                             self.client_predict_loaded_movers_tick(tick_dt);
                             if let Some(client_tick) =
                                 self.client_predict_movement_tick(&command, tick_dt)
@@ -4844,6 +4848,7 @@ impl App {
         // inside the client arm (a disjoint `self` field from `self.session`).
         let gravity = script_ctx.gravity.get();
         let collision_world = &self.collision_world;
+        let mod_block_during_reload = self.switching.block_during_reload;
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
         // so the client arm's `mesh_clip_tables` read does not re-borrow the
@@ -4889,7 +4894,10 @@ impl App {
                         // participation state: entry registers/spawns, while either exit
                         // cleans up. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
-                        if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
+                        if !poll.handshakes.is_empty()
+                            || !poll.lifecycle.is_empty()
+                            || !poll.switch_declarations.is_empty()
+                        {
                             let mut registry = script_ctx.registry.borrow_mut();
                             for outcome in &poll.handshakes {
                                 match outcome {
@@ -4987,6 +4995,17 @@ impl App {
                                         payload,
                                     );
                                 }
+                            }
+                            for &(client_id, declaration) in &poll.switch_declarations {
+                                netcode::host_handle_switch_declaration(
+                                    &mut registry,
+                                    server,
+                                    slot_pawns,
+                                    weapon_owners,
+                                    client_id,
+                                    declaration.slot,
+                                    mod_block_during_reload,
+                                );
                             }
                         }
                     }
@@ -5562,13 +5581,18 @@ impl App {
         fire_tick: u32,
         resolved: &netcode::ResolvedPawnCommand,
     ) -> sim::RemotePawnCommand {
-        let weapon = netcode::active_wieldable_for_pawn(registry, resolved.pawn);
+        let firing_slot = usize::from(resolved.command.firing_slot);
+        let weapon = registry
+            .get_component::<postretro_entities::components::inventory::Inventory>(resolved.pawn)
+            .ok()
+            .and_then(|inventory| inventory.wieldables.get(firing_slot).copied().flatten());
         let wants_fire =
             resolved.command.fire_button.pressed || resolved.command.fire_button.active;
         if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
-            log::info!(
-                "[Net] owned pawn {} has no active weapon; ignoring remote fire",
-                resolved.pawn
+            log::warn!(
+                "[Net] pawn {} declared unowned firing slot {}; rejecting remote fire",
+                resolved.pawn,
+                resolved.command.firing_slot,
             );
         }
         let shot_id = allocator
@@ -5856,6 +5880,16 @@ impl App {
         };
         let gravity = script_ctx.gravity.get();
         let mut registry = script_ctx.registry.borrow_mut();
+        let mut command = command.clone();
+        command.firing_slot = registry
+            .local_player_movement_pawn()
+            .and_then(|pawn| {
+                registry
+                    .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+                    .ok()
+            })
+            .and_then(|inventory| u8::try_from(inventory.active_slot).ok())
+            .unwrap_or_default();
         let combined_collision = collision::moving::CombinedCollisionWorld::new(
             &self.collision_world,
             &self.kinematic_mover_colliders,
@@ -5866,13 +5900,54 @@ impl App {
             client,
             prediction,
             netcode::ClientPredictionTickContext {
-                command,
+                command: &command,
                 aim_pitch,
                 collision: &combined_collision,
                 gravity,
                 tick_dt,
             },
         ))
+    }
+
+    /// Send a locally accepted direct-select to the host over reliable Control.
+    /// Cursor timing belongs to the input layer; this seam only filters impossible
+    /// inventory targets so empty slots never become gameplay declarations.
+    fn client_declare_switch(&mut self, slot: usize) {
+        let Ok(slot) = u8::try_from(slot) else {
+            return;
+        };
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let eligible = {
+            let registry = script_ctx.registry.borrow();
+            registry
+                .local_player_movement_pawn()
+                .and_then(|pawn| {
+                    registry
+                        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+                        .ok()
+                })
+                .is_some_and(|inventory| {
+                    inventory.wieldables[usize::from(slot)].is_some()
+                        && inventory.active_slot != usize::from(slot)
+                        && inventory.switch_target != Some(usize::from(slot))
+                })
+        };
+        if !eligible {
+            return;
+        }
+        if let Some(endpoint) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        {
+            endpoint.send_client_switch_declaration(slot);
+        }
     }
 
     fn client_predict_loaded_movers_tick(&mut self, tick_dt: f32) {
@@ -7258,6 +7333,7 @@ mod tests {
                 active: false,
             },
             reload: false,
+            firing_slot: 0,
             select_slot: None,
             use_pressed: false,
         };
@@ -7569,7 +7645,7 @@ mod tests {
     }
 
     #[test]
-    fn weaponless_remote_fire_logs_once_as_info_and_stays_unarmed() {
+    fn unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
         let registry = postretro_entities::EntityRegistry::new();
         let mut allocator = netcode::NetworkIdAllocator::new();
@@ -7591,6 +7667,7 @@ mod tests {
                     facing_yaw: 0.0,
                     use_pressed: false,
                     aim_pitch: 0.0,
+                    firing_slot: 0,
                 },
                 fire_button: postretro_net::wire::WireFireButtonState {
                     pressed: true,
@@ -7623,20 +7700,72 @@ mod tests {
 
         let weaponless_logs: Vec<_> = captured
             .iter()
-            .filter(|(_, message)| message.contains("has no active weapon"))
+            .filter(|(_, message)| message.contains("declared unowned firing slot"))
             .collect();
         assert_eq!(
             weaponless_logs.len(),
             1,
-            "the same weaponless pawn logs its ignored fire once"
+            "the same unowned firing slot logs its rejected fire once"
         );
-        assert_eq!(weaponless_logs[0].0, log::Level::Info);
+        assert_eq!(weaponless_logs[0].0, log::Level::Warn);
         assert!(
             captured
                 .iter()
                 .all(|(level, _)| *level != log::Level::Error),
-            "weaponless remote fire is informational, not an error"
+            "an unowned firing slot is diagnostic, never a fatal error"
         );
+    }
+
+    #[test]
+    fn remote_fire_resolves_declared_possessed_slot_not_active_slot() {
+        let mut registry = postretro_entities::EntityRegistry::new();
+        let pawn = registry.spawn(postretro_entities::Transform::default());
+        let active = registry.spawn(postretro_entities::Transform::default());
+        let declared = registry.spawn(postretro_entities::Transform::default());
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(active);
+        inventory.wieldables[1] = Some(declared);
+        registry.set_component(pawn, inventory).unwrap();
+
+        let mut allocator = netcode::NetworkIdAllocator::new();
+        allocator.stamp(pawn);
+        let mut owners = netcode::MovementOwners::new();
+        owners.set(pawn, 7);
+        let mut queues = netcode::HostCommandQueues::new();
+        queues.ingest(
+            7,
+            &postretro_net::wire::InputCommand {
+                client_tick: 33,
+                movement: postretro_net::wire::WireMovementInput {
+                    wish_dir: [0.0, 0.0],
+                    jump_pressed: false,
+                    dash_pressed: false,
+                    running: false,
+                    crouch_intent: false,
+                    facing_yaw: 0.0,
+                    use_pressed: false,
+                    aim_pitch: 0.0,
+                    firing_slot: 1,
+                },
+                fire_button: postretro_net::wire::WireFireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+                reload: false,
+            },
+        );
+        let resolved = netcode::host_resolve_remote_commands(&owners, &mut queues);
+        let resolved = resolved.first().expect("remote command resolves");
+
+        let command = App::prepare_remote_pawn_command(
+            &allocator,
+            &registry,
+            &mut std::collections::HashSet::new(),
+            99,
+            resolved,
+        );
+
+        assert_eq!(command.weapon, Some(declared));
     }
 
     #[test]
@@ -7693,6 +7822,7 @@ mod tests {
                 active: true,
             },
             reload: false,
+            firing_slot: 0,
             select_slot: None,
             use_pressed: false,
         };

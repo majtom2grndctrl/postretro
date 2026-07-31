@@ -64,6 +64,7 @@ impl PrototypeCommand {
                 active: false,
             },
             reload: false,
+            firing_slot: 0,
             select_slot: None,
             use_pressed: false,
         }

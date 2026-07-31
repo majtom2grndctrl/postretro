@@ -127,6 +127,7 @@ impl RecordedCommand {
                 active: self.fire_active,
             },
             reload: false,
+            firing_slot: 0,
             select_slot: None,
             use_pressed: false,
         }
@@ -1191,6 +1192,7 @@ fn run_driven_agent_sim_tick(
             active: false,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     };
@@ -3161,6 +3163,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     };
@@ -3234,6 +3237,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             active: true,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     };
@@ -3313,6 +3317,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             active: true,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     };
@@ -3397,6 +3402,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             active: true,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     };

@@ -238,6 +238,8 @@ fn run_headless_inner(
             movement,
             fire_button,
             reload,
+            firing_slot: 0,
+            select_slot: None,
             // No "use" verb in the runspec yet; headless drives no trigger stage.
             use_pressed: false,
         };

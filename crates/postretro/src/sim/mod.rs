@@ -52,6 +52,9 @@ pub(crate) struct SimCommand {
     pub(crate) movement: MovementInput,
     pub(crate) fire_button: FireButtonState,
     pub(crate) reload: bool,
+    /// Slot the local client declares as the source of fire. The host resolves it
+    /// from pawn inventory by possession rather than from its active pointer.
+    pub(crate) firing_slot: u8,
     /// Direct number-row selection is a discrete simulation command. Cursor and
     /// dwell remain input-only state.
     pub(crate) select_slot: Option<usize>,
@@ -64,6 +67,17 @@ pub(crate) struct SimCommand {
 pub(crate) struct PostMovementCommand {
     pub(crate) aim_origin: Vec3,
     pub(crate) aim_direction: Vec3,
+}
+
+/// Roll back a host-refused locally-running inventory switch without entering a
+/// second equip transition. The network Control drain owns when this is invoked;
+/// the weapon stage owns the machine-state cleanup.
+pub(crate) fn refuse_local_wieldable_switch(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    refused_slot: usize,
+) -> bool {
+    weapon_stage::refuse_local_switch(registry, pawn, refused_slot)
 }
 
 fn player_is_present_for_trigger_occupancy(
@@ -1392,6 +1406,7 @@ mod tests {
                 active: fire,
             },
             reload,
+            firing_slot: 0,
             select_slot: None,
             use_pressed: false,
         }

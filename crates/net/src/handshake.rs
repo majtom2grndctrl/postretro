@@ -8,6 +8,9 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// E15's tagged-control vocabulary.
 pub const PROTOCOL_ID: u32 = 0x_5052_4C35; // "PRL5"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
+/// E16 switching deliberately keeps this value: its added input field and Control
+/// variants have no deployed-peer compatibility obligation, and the Task 5 tuning
+/// payload epoch rejects a stale client before it can run old weapon values.
 pub const WIRE_VERSION: u32 = 15;
 
 #[must_use]

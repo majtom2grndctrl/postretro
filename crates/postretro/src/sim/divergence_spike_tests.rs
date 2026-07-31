@@ -74,6 +74,7 @@ impl RecordedCommand {
                 active: self.fire_active,
             },
             reload: false,
+            firing_slot: 0,
             select_slot: None,
             use_pressed: false,
         }

@@ -109,9 +109,10 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
-    self, ComponentPayload, DivergenceReason, EntityRecord, NetworkId, RawSnapshotMessage,
-    ServerControlMessage, SnapshotMessage, ValidationError, WireError, WireKinematicMoverState,
-    WireMovementState, WirePlayerMovementState, WireTransform,
+    self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord, NetworkId,
+    RawSnapshotMessage, ServerControlMessage, ServerSwitchRefused, SnapshotMessage,
+    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
+    WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};
@@ -549,6 +550,20 @@ pub(crate) enum WorldLessPoll {
 pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
+            ServerControlMessage::SwitchRefused(refusal) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                let Some(pawn) = registry.local_player_movement_pawn() else {
+                    continue;
+                };
+                let _ = crate::sim::refuse_local_wieldable_switch(
+                    &mut registry,
+                    pawn,
+                    usize::from(refusal.slot),
+                );
+            }
             ServerControlMessage::Relevel(catalog_id) => {
                 app.follow_relevel_catalog(catalog_id);
             }
@@ -590,6 +605,15 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
 }
 
 impl NetEndpoint {
+    /// Send a client-local switch declaration over reliable Control. The client
+    /// transport refuses to queue it before participation, so an old level cannot
+    /// leak a selection into a newly promoted pawn.
+    pub(crate) fn send_client_switch_declaration(&mut self, slot: u8) {
+        if let Self::Client { client, .. } = self {
+            client.send_switch_declaration(ClientSwitchDeclaration { slot });
+        }
+    }
+
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
     /// The netcode clock origin is `SystemTime::now()` since the unix epoch
@@ -2305,6 +2329,73 @@ pub(crate) fn tuning_payload_for_pawn(
             resolution: weapon.resolution,
         });
     TuningPayload::new(movement, default_weapon)
+}
+
+/// Validate one client-declared switch against the host's live pawn inventory.
+/// The client owns its equip presentation, while the host owns the committed slot
+/// used by snapshots and server-side systems. A refusal is owner-private reliable
+/// Control because a snapshot cannot recover a stationary client with no later
+/// baseline change to compare against.
+pub(crate) fn host_handle_switch_declaration(
+    registry: &mut EntityRegistry,
+    server: &mut NetServer,
+    slot_pawns: &SlotPawns,
+    weapon_owners: &mut WeaponOwners,
+    client_id: u64,
+    slot: u8,
+    mod_block_during_reload: bool,
+) {
+    let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+        return;
+    };
+    let Ok(mut inventory) = registry
+        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+        .cloned()
+    else {
+        send_switch_refusal(server, client_id, slot);
+        return;
+    };
+    let target_slot = usize::from(slot);
+    let Some(_target) = inventory.wieldables.get(target_slot).copied().flatten() else {
+        send_switch_refusal(server, client_id, slot);
+        return;
+    };
+    if target_slot == inventory.active_slot {
+        return;
+    }
+
+    let reload_blocks_switch = inventory
+        .active_wieldable()
+        .and_then(|active| {
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(active)
+                .ok()
+        })
+        .is_some_and(|weapon| {
+            weapon
+                .block_during_reload
+                .unwrap_or(mod_block_during_reload)
+                && weapon.state.is_reload_activity()
+        });
+    if reload_blocks_switch {
+        send_switch_refusal(server, client_id, slot);
+        return;
+    }
+
+    inventory.active_slot = target_slot;
+    inventory.switch_target = None;
+    inventory.switch_origin = None;
+    let _ = registry.set_component(pawn, inventory);
+    weapon_owners.mark_attachment_dirty(pawn);
+}
+
+fn send_switch_refusal(server: &mut NetServer, client_id: u64, slot: u8) {
+    server.send_control(
+        client_id,
+        wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+            slot,
+        })),
+    );
 }
 
 pub(crate) fn host_send_tuning_if_changed(

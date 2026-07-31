@@ -33,6 +33,7 @@ pub(crate) fn sim_command_to_input(
             facing_yaw: cmd.movement.facing_yaw,
             use_pressed: cmd.use_pressed,
             aim_pitch,
+            firing_slot: cmd.firing_slot,
         },
         fire_button: WireFireButtonState {
             pressed: cmd.fire_button.pressed,
@@ -67,6 +68,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
             active: input.fire_button.active,
         },
         reload: input.reload,
+        firing_slot: input.movement.firing_slot,
         select_slot: None,
         use_pressed: input.movement.use_pressed,
     }
@@ -129,6 +131,7 @@ mod tests {
                 active: false,
             },
             reload: true,
+            firing_slot: 4,
             select_slot: None,
             use_pressed: true,
         }
@@ -146,6 +149,7 @@ mod tests {
         assert_eq!(a.fire_button.pressed, b.fire_button.pressed);
         assert_eq!(a.fire_button.active, b.fire_button.active);
         assert_eq!(a.reload, b.reload);
+        assert_eq!(a.firing_slot, b.firing_slot);
         assert_eq!(a.use_pressed, b.use_pressed);
     }
 

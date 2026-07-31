@@ -8,7 +8,7 @@ mod machine;
 mod state;
 
 pub(super) use commands::{
-    run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
+    refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
 
@@ -250,6 +250,7 @@ mod tests {
             let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
             assert_eq!(inventory.active_slot, 0);
             assert_eq!(inventory.switch_target, Some(1));
+            assert_eq!(inventory.switch_origin, Some(0));
             assert_eq!(outgoing.state, WieldableState::Lowering);
             assert_eq!(outgoing.state_remaining_ms, 11);
             assert!(!outgoing.reload_status().1);
@@ -276,6 +277,7 @@ mod tests {
             let inventory = registry.get_component::<Inventory>(pawn).unwrap();
             let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
             assert_eq!(inventory.switch_target, Some(2));
+            assert_eq!(inventory.switch_origin, Some(0));
             assert_eq!(outgoing.state_remaining_ms, 11);
         }
 
@@ -312,6 +314,39 @@ mod tests {
         assert_eq!(second_target.state, WieldableState::Raising);
         assert_eq!(second_target.state_remaining_ms, 15);
         assert!(second_target.reload_press_consumed);
+    }
+
+    #[test]
+    fn switch_refusal_restores_origin_after_local_repoint_and_clears_equip_state() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let origin = registry.spawn(Transform::default());
+        let refused = registry.spawn(Transform::default());
+        registry
+            .set_component(origin, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut refused_component = gate_weapon_component(FireMode::Semi, 100.0);
+        refused_component.state = WieldableState::Raising;
+        refused_component.state_total_ms = 15;
+        refused_component.state_remaining_ms = 11;
+        registry.set_component(refused, refused_component).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(origin);
+        inventory.wieldables[1] = Some(refused);
+        inventory.active_slot = 1;
+        inventory.switch_origin = Some(0);
+        registry.set_component(pawn, inventory).unwrap();
+
+        assert!(refuse_local_switch(&mut registry, pawn, 1));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        let refused = registry.get_component::<WeaponComponent>(refused).unwrap();
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        assert_eq!(refused.state, WieldableState::Idle);
+        assert_eq!(refused.state_total_ms, 0);
+        assert_eq!(refused.state_remaining_ms, 0);
     }
 
     #[test]

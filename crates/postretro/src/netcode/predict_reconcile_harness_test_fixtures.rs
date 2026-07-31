@@ -214,6 +214,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     }
@@ -235,6 +236,7 @@ pub(crate) fn idle_command() -> SimCommand {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     }
@@ -265,6 +267,7 @@ pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
             facing_yaw: 0.0,
             use_pressed: false,
             aim_pitch: 0.0,
+            firing_slot: 0,
         },
         fire_button: WireFireButtonState {
             pressed: false,

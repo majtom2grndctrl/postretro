@@ -907,6 +907,10 @@ pub struct WireMovementInput {
     /// Camera pitch, appended after the E17 input layout. It is replicated for
     /// remote-avatar presentation and does not participate in movement simulation.
     pub aim_pitch: f32,
+    /// Slot the client currently declares as the source of its fire intent. This
+    /// is a level like `reload`, not a switch edge: a held value survives input-gap
+    /// replay and the host resolves it against the pawn's possessed inventory.
+    pub firing_slot: u8,
 }
 
 /// Wire mirror of the engine `FireButtonState`.
@@ -918,7 +922,9 @@ pub struct WireFireButtonState {
 
 /// Input-command envelope: the client's per-tick intent, mirroring the engine
 /// `SimCommand` (movement + fire button + reload). Round-tripped in Phase 1; applied to
-/// gameplay in Phase 2; reconciled against in Phase 3.
+/// gameplay in Phase 2; reconciled against in Phase 3. `movement.firing_slot` is
+/// deliberately part of this bitcode layout; Task 5's tuning-payload epoch rejects
+/// stale peers rather than changing the transport protocol constants.
 ///
 /// `client_tick` is the client's monotonic command-frame number, stamped first so
 /// the host can record which command tick it last resolved for that pawn (echoed
@@ -1116,6 +1122,16 @@ pub enum ClientControlMessage {
         mod_version: String,
     },
     Parity(ParityDeclaration),
+    /// A client-authoritative inventory switch declaration. The transport only
+    /// carries its slot; engine code validates the owned pawn and its inventory.
+    SwitchDeclaration(ClientSwitchDeclaration),
+}
+
+/// Reliable client -> host declaration of the inventory slot the client switched to.
+/// This stays registry-blind so it may cross the transport Control gate directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ClientSwitchDeclaration {
+    pub slot: u8,
 }
 
 /// A terminal immutable-admission mismatch.
@@ -1235,6 +1251,15 @@ pub enum ServerControlMessage {
     /// Host-selected map catalog id. The engine resolves it against the local
     /// catalog and follows through its normal queued level-load path.
     Relevel(String),
+    /// The host refused a client switch declaration. The client restores its
+    /// previous active slot locally; no snapshot correction is required.
+    SwitchRefused(ServerSwitchRefused),
+}
+
+/// Reliable host -> client refusal for one requested inventory slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ServerSwitchRefused {
+    pub slot: u8,
 }
 
 /// Transport-owned frame around one server Control payload. The optional epoch
@@ -1451,6 +1476,7 @@ mod tests {
                 facing_yaw: 1.234_5,
                 use_pressed: true,
                 aim_pitch: -0.45,
+                firing_slot: 3,
             },
             fire_button: WireFireButtonState {
                 pressed: true,
@@ -1654,12 +1680,18 @@ mod tests {
                 level: Some(("map-a".to_string(), [0xa5; 32])),
             }
         )));
+        assert!(round_trips(&ClientControlMessage::SwitchDeclaration(
+            ClientSwitchDeclaration { slot: 3 }
+        )));
         assert!(round_trips(&ServerControlMessage::Divergence(
             DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
         )));
         assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
         assert!(round_trips(&ServerControlMessage::Relevel(
             "e1m1".to_string()
+        )));
+        assert!(round_trips(&ServerControlMessage::SwitchRefused(
+            ServerSwitchRefused { slot: 3 }
         )));
     }
 

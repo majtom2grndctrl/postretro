@@ -545,6 +545,7 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
         select_slot: None,
         use_pressed: false,
     }
@@ -589,6 +590,7 @@ mod tests {
                 facing_yaw: 0.5,
                 use_pressed: false,
                 aim_pitch: 0.0,
+                firing_slot: 0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,

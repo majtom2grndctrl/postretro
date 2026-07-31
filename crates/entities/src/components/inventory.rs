@@ -18,6 +18,10 @@ pub struct Inventory {
     pub wieldables: [Option<EntityId>; WIELDABLE_SLOT_CAPACITY],
     pub active_slot: usize,
     pub switch_target: Option<usize>,
+    /// Slot active when the current local switch began. It lets a delayed host
+    /// refusal restore the prior holder even after the local lower has repointed.
+    /// The cursor and dwell remain input-only; this is switch lifecycle state.
+    pub switch_origin: Option<usize>,
 }
 
 impl Default for Inventory {
@@ -26,6 +30,7 @@ impl Default for Inventory {
             wieldables: [None; WIELDABLE_SLOT_CAPACITY],
             active_slot: 0,
             switch_target: None,
+            switch_origin: None,
         }
     }
 }
@@ -58,6 +63,7 @@ mod tests {
         assert_eq!(inventory.wieldables, [None; WIELDABLE_SLOT_CAPACITY]);
         assert_eq!(inventory.active_slot, 0);
         assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
     }
 
     #[test]

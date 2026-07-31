@@ -8,6 +8,7 @@ use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::{EntityId, EntityRegistry};
 
 use super::super::{OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand};
@@ -175,6 +176,9 @@ pub(in crate::sim) fn run_local_weapon_command(
         })
     });
     if begin_lower && let Some(inventory) = inventory.as_mut() {
+        if inventory.switch_target.is_none() {
+            inventory.switch_origin = Some(inventory.active_slot);
+        }
         inventory.switch_target = select_slot;
     }
     if begin_lower {
@@ -237,4 +241,55 @@ pub(in crate::sim) fn run_local_weapon_command(
         on_impact(&mut registry);
     }
     (machine.deliveries, events.event_names(), repointed_pawn)
+}
+
+/// Apply a host refusal to the locally-running switch machine. A refusal can
+/// arrive after the local lower already repointed, so the inventory retains the
+/// original slot until this path settles it. Equip state is presentation-only on
+/// the client and must not survive the correction as a second visible transition.
+pub(crate) fn refuse_local_switch(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    refused_slot: usize,
+) -> bool {
+    let Ok(mut inventory) = registry.get_component::<Inventory>(pawn).cloned() else {
+        return false;
+    };
+
+    let refused_in_flight = inventory.switch_target == Some(refused_slot);
+    let refused_after_repoint = inventory.active_slot == refused_slot
+        && inventory.switch_origin.is_some_and(|origin| {
+            origin < inventory.wieldables.len() && inventory.wieldables[origin].is_some()
+        });
+    if !refused_in_flight && !refused_after_repoint {
+        return false;
+    }
+
+    if refused_after_repoint {
+        // Safe by the occupied-origin predicate above.
+        inventory.active_slot = inventory
+            .switch_origin
+            .expect("occupied origin was checked");
+    }
+    inventory.switch_target = None;
+    inventory.switch_origin = None;
+
+    for weapon in inventory.wieldables.iter().flatten().copied() {
+        let Ok(mut component) = registry.get_component::<WeaponComponent>(weapon).cloned() else {
+            continue;
+        };
+        if matches!(
+            component.state,
+            WieldableState::Lowering | WieldableState::Raising
+        ) {
+            component.state = WieldableState::Idle;
+            component.state_total_ms = 0;
+            component.state_remaining_ms = 0;
+            component.state_elapsed_sub_ms = 0.0;
+            let _ = registry.set_component(weapon, component);
+        }
+    }
+
+    let _ = registry.set_component(pawn, inventory);
+    true
 }

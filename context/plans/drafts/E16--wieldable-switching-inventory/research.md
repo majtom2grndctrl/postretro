@@ -196,3 +196,20 @@ External research, primary sources preferred. Settles the client equip-timer cad
 **Artifacts players report**, each downstream of the missing replay path: switch "rubberbanding" back to the previous weapon after a correction (CS2 reports at ~65 ping); viewmodel/actual-weapon desync (`ValveSoftware/halflife` issue #3819 — switching while `+attack` is held leaves the wrong viewmodel locally and the wrong weapon on the player model for others); switches that never register and need a full resync (Fortnite Grappler); inconsistent switch-during-reload behavior and its associated fire-timer exploit.
 
 Sourcing note: Q1 and Q2 above rest on shipped engine source, which is stronger than commentary. The table-stakes and artifact sections lean on community and press material and are correspondingly lower confidence, though the mechanics themselves are verifiable in shipped code and patch notes.
+
+
+## 13. Authority model — why switching follows fire, not movement
+
+Settled by owner decision after the movement-prediction design was drafted and rejected.
+
+Movement is predicted and reconciled because both peers simulate continuously from the same buffered inputs and **drift** — there is a divergence every tick that replay corrects. A switch is a discrete declaration; nothing drifts. The host does not need to re-derive it, only to accept or refuse it. That is the shape `E16--client-authoritative-combat` already shipped for per-shot geometry: client-detected, host-validated, no server rewind.
+
+Choosing the movement shape cost the earlier draft a correction channel, a snapshot-recency gate, and tick-exact equip agreement. The recency gate was an unsolved blocker: authority metadata refreshes on every ingest **without bumping the baseline** (`crates/net/src/replication.rs`), deliberately, so an unchanged pawn is never resent — a stationary client's refused switch had no comparand and could never converge. The declaration model removes the mechanism rather than repairing it.
+
+**Possession-based fire validation** removes the remaining coupling. The host resolves a firing weapon today from its own active pointer — `prepare_remote_pawn_command` calls `weapon_owners.weapon_of(pawn)` — and `HitDeclaration` carries `{ shot_id, records }` with no weapon identity. Resolving from the client instead, and validating that the pawn *possesses* that weapon rather than that it is *selected*, means the two peers never have to agree on the active slot for a shot to be correct. The equip-boundary false-rejection case disappears, and a refused switch degrades to a presentational difference.
+
+The firing slot rides the per-tick input command as a **level**, the shape `reload` already uses on the wire (the host re-derives the edge). A level repeats harmlessly across a gap-hold and needs no edge machinery. The switch declaration itself rides the reliable path, since it is an event rather than a per-tick value.
+
+Ammo and fire rate were already host-authoritative and per-instance before this plan (`E16--ammo-resource`, `E16--client-authoritative-combat`); the only change is which instance is resolved.
+
+**Priced cheat surface.** Possession validation lets a client declare a shot from any owned weapon at any time — including while visibly holding another, or alternating to obtain two weapons' fire rates. Accepted: `context/lib/index.md` §4 non-goals anti-cheat and competitive PvP, this is co-op, and each shot still debits a real per-instance magazine.

@@ -640,9 +640,36 @@ export function scopeReactions<S>(
 }
 
 /** Identity builder for entity type descriptors returned from `ModManifest.entities`. `descriptor` is the full archetype object: optional `canonicalName`, optional `components.inventory.loadout`, and optional component presets. Pure: no engine side effects. */
-export function defineEntity(
-  descriptor: import("postretro").EntityTypeDescriptor,
-): import("postretro").EntityTypeDescriptor {
+/**
+ * Lowers authored weapon descriptor references to the canonical names carried
+ * across the manifest boundary. This compares descriptor values only: module
+ * identity is not stable across the separate script VMs.
+ */
+function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
+  const loadout = descriptor.components?.inventory?.loadout;
+  if (loadout === undefined) return;
+  const loweredLoadout = loadout as unknown as string[];
+
+  for (let index = 0; index < loadout.length; index += 1) {
+    const entry = loadout[index];
+    const entryName = `components.inventory.loadout[${index}]`;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${entryName} must reference an entity descriptor`);
+    }
+    if (entry.components?.weapon === undefined || entry.components.weapon === null) {
+      throw new Error(`${entryName} must reference a descriptor with a weapon block`);
+    }
+    if (typeof entry.canonicalName !== "string" || entry.canonicalName.length === 0) {
+      throw new Error(`${entryName} must reference a descriptor with a canonical name`);
+    }
+    loweredLoadout[index] = entry.canonicalName;
+  }
+}
+
+export function defineEntity<T extends import("postretro").EntityTypeDescriptor>(
+  descriptor: T,
+): T {
+  lowerLoadoutReferences(descriptor);
   return descriptor;
 }
 

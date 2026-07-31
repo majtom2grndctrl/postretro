@@ -223,10 +223,10 @@ declare module "postretro" {
     behavior?: BehaviorGraphDescriptor | null;
   };
 
-  /** Ordered canonical wieldable archetype names composed beside a player pawn at spawn. The ten-slot engine capacity truncates longer authored lists. */
+  /** Ordered weapon descriptor references composed beside a player pawn at spawn. The SDK lowers them to canonical wieldable archetype names before the manifest crosses FFI. The ten-slot engine capacity truncates longer authored lists. */
   export type InventoryDescriptor = {
-    /** Ordered canonical wieldable archetype names. Omission is an empty loadout. */
-    loadout?: ReadonlyArray<string>;
+    /** Ordered references returned by `defineEntity` for descriptors declaring a weapon block. Omission is an empty loadout. */
+    loadout?: ReadonlyArray<WeaponEntityDescriptor>;
   };
 
   /** Valid values: `semi`, `auto`. */
@@ -1346,8 +1346,10 @@ declare module "postretro" {
     accessibleName?: string;
     role?: WidgetRole;
   };
-  /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `components.inventory`, and optional component presets. */
-  export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
+  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
+  export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
+  /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
+  export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */

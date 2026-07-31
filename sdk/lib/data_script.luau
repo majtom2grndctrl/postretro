@@ -867,7 +867,30 @@ end
 --- `ModManifest.entities`. `descriptor` is the full archetype object: optional
 --- `canonicalName`, optional `components.inventory.loadout`, and optional component presets.
 --- Pure: no engine side effects.
-function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+local function lowerLoadoutReferences(descriptor: EntityTypeDescriptor)
+  local components = descriptor.components
+  if components == nil or components.inventory == nil or components.inventory.loadout == nil then
+    return
+  end
+
+  local loadout = components.inventory.loadout
+  for index, entry in ipairs(loadout) do
+    local entryName = "components.inventory.loadout[" .. tostring(index - 1) .. "]"
+    if type(entry) ~= "table" then
+      error(entryName .. " must reference an entity descriptor", 3)
+    end
+    if type(entry.components) ~= "table" or entry.components.weapon == nil then
+      error(entryName .. " must reference a descriptor with a weapon block", 3)
+    end
+    if type(entry.canonicalName) ~= "string" or entry.canonicalName == "" then
+      error(entryName .. " must reference a descriptor with a canonical name", 3)
+    end
+    (loadout :: any)[index] = entry.canonicalName
+  end
+end
+
+function DataScriptSdk.defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
+  lowerLoadoutReferences(descriptor)
   return descriptor
 end
 

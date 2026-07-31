@@ -516,10 +516,11 @@ declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
---- Pure identity builder for entity-type descriptors returned from
---- `ModManifest.entities`. `descriptor` is the full archetype table: optional
---- `canonicalName`, optional `components.inventory`, and optional component presets.
-declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+--- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout.
+export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } }
+--- Lowers `components.inventory.loadout` weapon descriptor references to their
+--- canonical names after validating each reference by value.
+declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must
 --- declare the same id to connect. Must be non-empty ASCII, at most 64

@@ -1,8 +1,9 @@
 import { defineEntity, runtime } from "postretro";
+import { referencePistolEntity } from "./reference-pistol";
+import { referenceShotgunEntity } from "./reference-shotgun";
 
 export const playerEntity = defineEntity({
   canonicalName: "player",
-  defaultWeapon: "reference_shotgun",
   components: {
     // The player pawn carries health but DELIBERATELY no `hitbox`: a hitbox is
     // what makes an entity hitscan-targetable, so omitting it keeps the player
@@ -12,6 +13,9 @@ export const playerEntity = defineEntity({
     // producer, its `[0, max]` slot range, and any player-damage reaction all
     // silently no-op. `max: 100` is the conventional full-health baseline.
     health: { max: 100 },
+    inventory: {
+      loadout: [referenceShotgunEntity, referencePistolEntity],
+    },
     mesh: {
       model: "models/exo_red/model.gltf",
       shadowOnly: true,

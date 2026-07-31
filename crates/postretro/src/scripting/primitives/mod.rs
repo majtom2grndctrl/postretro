@@ -276,8 +276,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("InventoryDescriptor")
-        .doc("Ordered canonical wieldable archetype names composed beside a player pawn at spawn. The ten-slot engine capacity truncates longer authored lists.")
-        .field("loadout?", "Vec<String>", "Ordered canonical wieldable archetype names. Omission is an empty loadout.")
+        .doc("Ordered weapon descriptor references composed beside a player pawn at spawn. The SDK lowers them to canonical wieldable archetype names before the manifest crosses FFI. The ten-slot engine capacity truncates longer authored lists.")
+        .field("loadout?", "Vec<WeaponEntityDescriptor>", "Ordered references returned by `defineEntity` for descriptors declaring a weapon block. Omission is an empty loadout.")
         .finish();
     registry
         .register_enum("FireMode")

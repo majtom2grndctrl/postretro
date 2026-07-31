@@ -222,10 +222,10 @@ export type EntityTypeComponents = {
   behavior: BehaviorGraphDescriptor?,
 }
 
---- Ordered canonical wieldable archetype names composed beside a player pawn at spawn. The ten-slot engine capacity truncates longer authored lists.
+--- Ordered weapon descriptor references composed beside a player pawn at spawn. The SDK lowers them to canonical wieldable archetype names before the manifest crosses FFI. The ten-slot engine capacity truncates longer authored lists.
 export type InventoryDescriptor = {
-  --- Ordered canonical wieldable archetype names. Omission is an empty loadout.
-  loadout: {string}?,
+  --- Ordered references returned by `defineEntity` for descriptors declaring a weapon block. Omission is an empty loadout.
+  loadout: {WeaponEntityDescriptor}?,
 }
 
 --- Valid values: `semi`, `auto`.
@@ -1336,10 +1336,11 @@ declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
---- Pure identity builder for entity-type descriptors returned from
---- `ModManifest.entities`. `descriptor` is the full archetype table: optional
---- `canonicalName`, optional `components.inventory`, and optional component presets.
-declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+--- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout.
+export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } }
+--- Lowers `components.inventory.loadout` weapon descriptor references to their
+--- canonical names after validating each reference by value.
+declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must
 --- declare the same id to connect. Must be non-empty ASCII, at most 64

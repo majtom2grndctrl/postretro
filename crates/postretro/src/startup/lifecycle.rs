@@ -128,7 +128,7 @@ impl App {
 
     /// Re-resolve participating pawns after a committed manifest changes. The
     /// retained payload map makes this cheap on reloads that did not alter movement
-    /// or default-weapon fire values.
+    /// or live wieldable tuning.
     fn refresh_host_tuning(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;

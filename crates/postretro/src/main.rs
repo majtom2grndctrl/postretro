@@ -5092,6 +5092,7 @@ impl App {
                         tuning
                             .as_ref()
                             .and_then(|payload| payload.movement.as_ref()),
+                        tuning.as_ref(),
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
@@ -5149,7 +5150,7 @@ impl App {
                 replication.local_pawn_entity(),
                 endpoint
                     .client_tuning()
-                    .and_then(|(payload, _)| payload.default_weapon.clone()),
+                    .and_then(|(payload, _)| payload.first_wieldable().cloned()),
             ))
         });
         if let Some((pawn, tuning)) = client_host_tuning {
@@ -5160,7 +5161,7 @@ impl App {
     fn sync_client_weapon_state(
         &mut self,
         pawn: Option<postretro_entities::EntityId>,
-        tuning: Option<&netcode::DefaultWeaponFirePayload>,
+        tuning: Option<&netcode::WieldableTuningPayload>,
     ) {
         let preserve_prediction_history = weapon::ClientWeaponState::sync_from_host_tuning(
             &mut self.client_weapon_state,

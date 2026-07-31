@@ -26,6 +26,7 @@ pub struct WieldableSelection {
     dwell_remaining_ms: Option<f32>,
     pending_commit: Option<PendingCommit>,
     last_weapon_slot: Option<usize>,
+    last_weapon_slot_before_declaration: Option<Option<usize>>,
 }
 
 impl WieldableSelection {
@@ -37,11 +38,39 @@ impl WieldableSelection {
         self.dwell_remaining_ms = None;
         self.pending_commit = None;
         self.last_weapon_slot = None;
+        self.last_weapon_slot_before_declaration = None;
     }
 
     /// Current local cursor for the HUD's pending-weapon projection.
     pub const fn cursor_slot(&self) -> Option<usize> {
         self.cursor_slot
+    }
+
+    /// Settle an ordered network refusal with the last-weapon memory retained by
+    /// that declaration's authoritative pre-state.
+    pub fn reset_to_active_with_last(
+        &mut self,
+        active_slot: Option<usize>,
+        last_weapon_slot: Option<usize>,
+    ) {
+        self.cursor_slot = active_slot;
+        self.dwell_remaining_ms = None;
+        self.pending_commit = None;
+        self.last_weapon_slot = last_weapon_slot;
+        self.last_weapon_slot_before_declaration = None;
+    }
+
+    /// Apply the last-weapon state resolved by an accepted declaration or by a
+    /// predecessor outcome that rebased the newest declaration.
+    pub fn confirm_latest_declaration(&mut self, last_weapon_slot: Option<usize>) {
+        self.last_weapon_slot = last_weapon_slot;
+        self.last_weapon_slot_before_declaration = None;
+    }
+
+    /// Last-weapon memory before the most recently emitted declaration. The
+    /// network tracker carries this beside the active rollback slot.
+    pub const fn last_weapon_slot_before_latest_declaration(&self) -> Option<usize> {
+        self.last_weapon_slot_before_declaration.flatten()
     }
 
     /// Apply one rendered frame of direct-select, wheel, and last-weapon input.
@@ -132,6 +161,7 @@ impl WieldableSelection {
         }
         // The previous weapon is the slot actually held when this declaration is
         // accepted, not a transient cursor target overwritten before the tick.
+        self.last_weapon_slot_before_declaration = Some(self.last_weapon_slot);
         self.last_weapon_slot = Some(active_slot);
         Some(pending.slot)
     }

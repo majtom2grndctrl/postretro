@@ -55,10 +55,6 @@ impl TuningPayload {
             wieldables,
         }
     }
-
-    pub(crate) fn first_wieldable(&self) -> Option<&WieldableTuningPayload> {
-        self.wieldables.iter().flatten().next()
-    }
 }
 
 #[derive(Debug, Error)]

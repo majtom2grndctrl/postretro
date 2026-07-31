@@ -656,7 +656,8 @@ function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescri
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       throw new Error(`${entryName} must reference an entity descriptor`);
     }
-    if (entry.components?.weapon === undefined || entry.components.weapon === null) {
+    const weapon = entry.components?.weapon;
+    if (weapon === null || typeof weapon !== "object" || Array.isArray(weapon)) {
       throw new Error(`${entryName} must reference a descriptor with a weapon block`);
     }
     if (typeof entry.canonicalName !== "string" || entry.canonicalName.length === 0) {

@@ -162,6 +162,46 @@ fn js_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
 }
 
 #[test]
+fn js_loadout_builder_rejects_invalid_descriptor_references() {
+    let rt = rquickjs::Runtime::new().expect("QuickJS runtime creates");
+    let ctx = rquickjs::Context::full(&rt).expect("QuickJS context creates");
+
+    ctx.with(|jsctx| {
+        crate::quickjs::evaluate_prelude(&jsctx).expect("SDK prelude evaluates");
+
+        for (label, source, expected) in [
+            (
+                "non-descriptor",
+                r#"defineEntity({ components: { inventory: { loadout: [42] } } });"#,
+                "must reference an entity descriptor",
+            ),
+            (
+                "descriptor without weapon",
+                r#"defineEntity({ components: { inventory: { loadout: [{ canonicalName: "not_weapon", components: {} }] } } });"#,
+                "must reference a descriptor with a weapon block",
+            ),
+            (
+                "descriptor with non-object weapon",
+                r#"defineEntity({ components: { inventory: { loadout: [{ canonicalName: "not_weapon", components: { weapon: [] } }] } } });"#,
+                "components.inventory.loadout[0] must reference a descriptor with a weapon block",
+            ),
+            (
+                "descriptor without canonical name",
+                r#"defineEntity({ components: { inventory: { loadout: [{ components: { weapon: {} } }] } } });"#,
+                "must reference a descriptor with a canonical name",
+            ),
+        ] {
+            let error = crate::quickjs::run_script::<()>(&jsctx, source, label)
+                .expect_err("invalid loadout reference must reject");
+            assert!(
+                error.to_string().contains(expected),
+                "QuickJS {label} rejection should contain {expected:?}, got: {error}"
+            );
+        }
+    });
+}
+
+#[test]
 fn js_weapon_descriptor_without_credit_source_parses_as_none() {
     let src = r#"({
         canonicalName: "reference_pistol",
@@ -691,6 +731,59 @@ fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
         weapon.credit_source.as_deref(),
         Some("player.reference-pistol:alt")
     );
+}
+
+#[test]
+fn luau_loadout_builder_rejects_invalid_descriptor_references() {
+    const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
+
+    let lua = mlua::Lua::new();
+    let sdk: mlua::Table = lua
+        .load(DATA_SCRIPT_LUAU)
+        .set_name("data_script.luau")
+        .eval()
+        .expect("data-script SDK evaluates");
+    lua.globals()
+        .set("Postretro", sdk)
+        .expect("SDK installs for test");
+
+    for (label, source, expected) in [
+        (
+            "non-descriptor",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { 42 } } } })"#,
+            "must reference an entity descriptor",
+        ),
+        (
+            "descriptor without weapon",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { canonicalName = "not_weapon", components = {} } } } } })"#,
+            "must reference a descriptor with a weapon block",
+        ),
+        (
+            "descriptor with non-table weapon",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { canonicalName = "not_weapon", components = { weapon = 42 } } } } } })"#,
+            "components.inventory.loadout[0] must reference a descriptor with a weapon block",
+        ),
+        (
+            "descriptor with array-like weapon",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { canonicalName = "not_weapon", components = { weapon = { 42 } } } } } } })"#,
+            "components.inventory.loadout[0] must reference a descriptor with a weapon block",
+        ),
+        (
+            "descriptor without canonical name",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { components = { weapon = {} } } } } } })"#,
+            "must reference a descriptor with a canonical name",
+        ),
+    ] {
+        let error = lua
+            .load(source)
+            .set_name(label)
+            .exec()
+            .expect_err("invalid loadout reference must reject");
+        assert!(
+            error.to_string().contains(expected),
+            "Luau {label} rejection should contain {expected:?}, got: {error}"
+        );
+    }
 }
 
 #[test]

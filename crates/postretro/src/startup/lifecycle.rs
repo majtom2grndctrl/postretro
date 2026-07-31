@@ -219,7 +219,6 @@ impl App {
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
-        self.client_weapon_state = None;
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
     }
@@ -2216,7 +2215,6 @@ mod tests {
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
-            client_weapon_state: None,
             client_fire_resolutions: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             boot_state: BootState::Running,

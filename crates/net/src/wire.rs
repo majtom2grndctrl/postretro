@@ -1131,6 +1131,7 @@ pub enum ClientControlMessage {
 /// This stays registry-blind so it may cross the transport Control gate directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct ClientSwitchDeclaration {
+    pub declaration_id: u32,
     pub slot: u8,
 }
 
@@ -1254,11 +1255,22 @@ pub enum ServerControlMessage {
     /// The host refused a client switch declaration. The client restores its
     /// previous active slot locally; no snapshot correction is required.
     SwitchRefused(ServerSwitchRefused),
+    /// The host accepted a client switch declaration. Explicit acknowledgements
+    /// bound the client's rollback chain even when every declaration succeeds.
+    SwitchAccepted(ServerSwitchAccepted),
+}
+
+/// Reliable host -> client acknowledgement for one accepted inventory slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ServerSwitchAccepted {
+    pub declaration_id: u32,
+    pub slot: u8,
 }
 
 /// Reliable host -> client refusal for one requested inventory slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct ServerSwitchRefused {
+    pub declaration_id: u32,
     pub slot: u8,
 }
 
@@ -1681,7 +1693,10 @@ mod tests {
             }
         )));
         assert!(round_trips(&ClientControlMessage::SwitchDeclaration(
-            ClientSwitchDeclaration { slot: 3 }
+            ClientSwitchDeclaration {
+                declaration_id: 7,
+                slot: 3,
+            }
         )));
         assert!(round_trips(&ServerControlMessage::Divergence(
             DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
@@ -1691,7 +1706,16 @@ mod tests {
             "e1m1".to_string()
         )));
         assert!(round_trips(&ServerControlMessage::SwitchRefused(
-            ServerSwitchRefused { slot: 3 }
+            ServerSwitchRefused {
+                declaration_id: 7,
+                slot: 3,
+            }
+        )));
+        assert!(round_trips(&ServerControlMessage::SwitchAccepted(
+            ServerSwitchAccepted {
+                declaration_id: 8,
+                slot: 4,
+            }
         )));
     }
 

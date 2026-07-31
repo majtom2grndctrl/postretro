@@ -76,8 +76,130 @@ pub(crate) fn refuse_local_wieldable_switch(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     refused_slot: usize,
+    rollback_slot: usize,
 ) -> bool {
-    weapon_stage::refuse_local_switch(registry, pawn, refused_slot)
+    weapon_stage::refuse_local_switch(registry, pawn, refused_slot, rollback_slot)
+}
+
+/// Rebase the newest declaration onto the authoritative result of its immediate
+/// predecessor without cancelling the newer local presentation.
+pub(crate) fn rebase_local_wieldable_switch(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    target_slot: usize,
+    rollback_slot: usize,
+) -> bool {
+    weapon_stage::rebase_local_switch(registry, pawn, target_slot, rollback_slot)
+}
+
+/// Clear despawned wieldable slots and surface pawns whose active instance changed.
+/// The caller feeds those pawns into the existing attachment-dirty path.
+pub(crate) fn normalize_wieldable_inventories(registry: &mut EntityRegistry) -> Vec<EntityId> {
+    weapon_stage::normalize_all_inventory_liveness(registry)
+}
+
+/// Normalize one pawn before a host declaration and report whether its active
+/// instance changed so presentation dirtiness follows the same liveness result.
+pub(crate) fn normalize_wieldable_inventory(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+) -> Option<(postretro_entities::components::inventory::Inventory, bool)> {
+    weapon_stage::normalize_inventory_liveness(registry, pawn)
+}
+
+/// Advance only the connected client's local wieldable machine. Movement stays on
+/// the prediction path and authoritative combat stays on the host; this pass owns
+/// the immediate local lower/raise/repoint and suppresses fire while doing so.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn simulate_client_wieldable_tick(
+    registry: Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    pawn: Option<EntityId>,
+    mod_block_during_reload: bool,
+    select_slot: Option<usize>,
+    fire_button: crate::weapon::FireButtonState,
+    reload_held: bool,
+    anim_time: f64,
+    tick_dt: f32,
+) -> (bool, Option<EntityId>) {
+    let mut equip_was_active = false;
+    let mut requested_new_slot = false;
+    let cooldown_before = pawn.and_then(|pawn| {
+        let registry = registry.borrow();
+        let inventory = registry
+            .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+            .ok()?;
+        requested_new_slot = select_slot.is_some_and(|slot| {
+            slot != inventory.active_slot
+                && inventory.switch_target != Some(slot)
+                && inventory.wieldables.get(slot).copied().flatten().is_some()
+        });
+        let weapon = inventory.active_wieldable()?;
+        let component = registry
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+            .ok()?;
+        equip_was_active = matches!(
+            component.state,
+            postretro_entities::components::wieldable_state::WieldableState::Lowering
+                | postretro_entities::components::wieldable_state::WieldableState::Raising
+        );
+        let cooldown = component.cooldown_remaining_ms;
+        Some((weapon, cooldown))
+    });
+    let machine_button = if select_slot.is_some() || equip_was_active {
+        fire_button
+    } else {
+        crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        }
+    };
+    let machine_reload = (select_slot.is_some() || equip_was_active) && reload_held;
+    let command = crate::weapon::WeaponFireCommand {
+        button: machine_button,
+        aim_origin: Vec3::ZERO,
+        aim_direction: Vec3::Z,
+        can_fire: false,
+    };
+    let mut ignore_impact = |_: &mut EntityRegistry| {};
+    let (_, _, repointed) = weapon_stage::run_local_weapon_command(
+        &registry,
+        pawn,
+        mod_block_during_reload,
+        select_slot,
+        &command,
+        machine_reload,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        &mut ignore_impact,
+    );
+    // Client fire prediction advances cooldown once at render rate after the
+    // fixed-tick loop. Keep this equip-only pass from charging the same elapsed
+    // time twice while preserving deploy clamps on the incoming instance.
+    if let Some((weapon, cooldown)) = cooldown_before {
+        let mut registry = registry.borrow_mut();
+        if let Ok(mut component) = registry
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+            .cloned()
+        {
+            component.cooldown_remaining_ms = cooldown;
+            let _ = registry.set_component(weapon, component);
+        }
+    }
+    let accepted = requested_new_slot
+        && match (pawn, select_slot) {
+            (Some(pawn), Some(slot)) => registry
+                .borrow()
+                .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+                .is_ok_and(|inventory| {
+                    inventory.switch_target == Some(slot) || inventory.active_slot == slot
+                }),
+            _ => false,
+        };
+    (accepted, repointed)
 }
 
 fn player_is_present_for_trigger_occupancy(

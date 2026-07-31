@@ -150,8 +150,9 @@ pub(in crate::sim) fn run_local_weapon_command(
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> (Vec<ReloadDelivery>, Vec<&'static str>, Option<EntityId>) {
     let mut registry = registry.borrow_mut();
-    let mut inventory =
-        pawn.and_then(|pawn| registry.get_component::<Inventory>(pawn).ok().cloned());
+    let mut inventory = pawn.and_then(|pawn| {
+        normalize_inventory_liveness(&mut registry, pawn).map(|(inventory, _)| inventory)
+    });
     let weapon_id = inventory.as_ref().and_then(Inventory::active_wieldable);
     let Some(weapon_id) = weapon_id else {
         return (Vec::new(), Vec::new(), None);
@@ -183,9 +184,9 @@ pub(in crate::sim) fn run_local_weapon_command(
         && weapon_component.state == WieldableState::Reloading
         && super::super::reload::timer_expires_this_tick(&weapon_component, tick_dt);
     if begin_lower && let Some(inventory) = inventory.as_mut() {
-        if inventory.switch_target.is_none() {
-            inventory.switch_origin = Some(inventory.active_slot);
-        }
+        // Each accepted declaration supersedes the rollback origin retained for
+        // the prior one. Correlated refusals ignore the older declaration.
+        inventory.switch_origin = Some(inventory.active_slot);
         inventory.switch_target = select_slot;
     }
     if begin_lower && !complete_reload_before_lower {
@@ -265,6 +266,83 @@ pub(in crate::sim) fn run_local_weapon_command(
     (machine.deliveries, events.event_names(), repointed_pawn)
 }
 
+pub(crate) fn normalize_inventory_liveness(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+) -> Option<(Inventory, bool)> {
+    let mut inventory = registry.get_component::<Inventory>(pawn).ok()?.clone();
+    let original_active = inventory.active_wieldable();
+    let mut changed = false;
+    for wieldable in &mut inventory.wieldables {
+        if wieldable.is_some_and(|id| {
+            !registry.exists(id)
+                || registry.has_component_kind(id, postretro_entities::ComponentKind::Weapon)
+                    != Ok(true)
+        }) {
+            *wieldable = None;
+            changed = true;
+        }
+    }
+
+    let active_is_live = inventory
+        .wieldables
+        .get(inventory.active_slot)
+        .copied()
+        .flatten()
+        .is_some();
+    let target_is_live = inventory
+        .switch_target
+        .is_none_or(|slot| inventory.wieldables.get(slot).copied().flatten().is_some());
+    if !active_is_live || !target_is_live {
+        inventory.active_slot = inventory
+            .wieldables
+            .iter()
+            .position(Option::is_some)
+            .unwrap_or_default();
+        inventory.switch_target = None;
+        inventory.switch_origin = None;
+        for weapon in inventory.wieldables.iter().flatten().copied() {
+            let Ok(mut component) = registry.get_component::<WeaponComponent>(weapon).cloned()
+            else {
+                continue;
+            };
+            if matches!(
+                component.state,
+                WieldableState::Lowering | WieldableState::Raising
+            ) {
+                finish_lowering(&mut component);
+                let _ = registry.set_component(weapon, component);
+            }
+        }
+        changed = true;
+    }
+
+    if changed {
+        let _ = registry.set_component(pawn, inventory.clone());
+    }
+    let active_changed = inventory.active_wieldable() != original_active;
+    Some((inventory, active_changed))
+}
+
+/// Normalize every live pawn inventory independently of command arrival. Host-owned
+/// remote pawns can go several ticks without a command, but a despawned sibling must
+/// still abandon its equip transition and update presentation in that interval.
+pub(in crate::sim) fn normalize_all_inventory_liveness(
+    registry: &mut EntityRegistry,
+) -> Vec<EntityId> {
+    let pawns = registry
+        .iter_with_kind(postretro_entities::ComponentKind::Inventory)
+        .map(|(pawn, _)| pawn)
+        .collect::<Vec<_>>();
+    pawns
+        .into_iter()
+        .filter(|pawn| {
+            normalize_inventory_liveness(registry, *pawn)
+                .is_some_and(|(_, active_changed)| active_changed)
+        })
+        .collect()
+}
+
 /// Apply a host refusal to the locally-running switch machine. A refusal can
 /// arrive after the local lower already repointed, so the inventory retains the
 /// original slot until this path settles it. Equip state is presentation-only on
@@ -273,26 +351,27 @@ pub(crate) fn refuse_local_switch(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     refused_slot: usize,
+    rollback_slot: usize,
 ) -> bool {
     let Ok(mut inventory) = registry.get_component::<Inventory>(pawn).cloned() else {
         return false;
     };
 
     let refused_in_flight = inventory.switch_target == Some(refused_slot);
-    let refused_after_repoint = inventory.active_slot == refused_slot
-        && inventory.switch_origin.is_some_and(|origin| {
-            origin < inventory.wieldables.len() && inventory.wieldables[origin].is_some()
-        });
+    let refused_after_repoint = inventory.active_slot == refused_slot;
     if !refused_in_flight && !refused_after_repoint {
         return false;
     }
-
-    if refused_after_repoint {
-        // Safe by the occupied-origin predicate above.
-        inventory.active_slot = inventory
-            .switch_origin
-            .expect("occupied origin was checked");
+    if inventory
+        .wieldables
+        .get(rollback_slot)
+        .copied()
+        .flatten()
+        .is_none()
+    {
+        return false;
     }
+    inventory.active_slot = rollback_slot;
     inventory.switch_target = None;
     inventory.switch_origin = None;
 
@@ -312,6 +391,33 @@ pub(crate) fn refuse_local_switch(
         }
     }
 
+    let _ = registry.set_component(pawn, inventory);
+    true
+}
+
+/// Rebase the rollback origin of the newest local declaration after an earlier
+/// ordered host outcome. The visible newer switch remains in progress/accepted.
+pub(crate) fn rebase_local_switch(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    target_slot: usize,
+    rollback_slot: usize,
+) -> bool {
+    let Ok(mut inventory) = registry.get_component::<Inventory>(pawn).cloned() else {
+        return false;
+    };
+    let target_is_current = inventory.switch_target == Some(target_slot)
+        || (inventory.active_slot == target_slot && inventory.switch_origin.is_some());
+    let rollback_is_live = inventory
+        .wieldables
+        .get(rollback_slot)
+        .copied()
+        .flatten()
+        .is_some();
+    if !target_is_current || !rollback_is_live {
+        return false;
+    }
+    inventory.switch_origin = Some(rollback_slot);
     let _ = registry.set_component(pawn, inventory);
     true
 }

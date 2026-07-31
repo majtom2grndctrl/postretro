@@ -112,8 +112,8 @@ use postretro_net::timesync::{
 use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
     self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord, NetworkId,
-    RawSnapshotMessage, ServerControlMessage, ServerSwitchRefused, SnapshotMessage,
-    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
+    RawSnapshotMessage, ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused,
+    SnapshotMessage, ValidationError, WireError, WireKinematicMoverState, WireMovementState,
     WirePlayerMovementState, WireTransform,
 };
 
@@ -447,6 +447,40 @@ pub(crate) enum NetEndpoint {
         tuning: Option<Box<TuningPayload>>,
         tuning_generation: u64,
         applied_movement_tuning_generation: u64,
+        next_switch_declaration_id: u32,
+        pending_switch_declarations: VecDeque<PendingSwitchDeclaration>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingSwitchDeclaration {
+    declaration_id: u32,
+    target_slot: u8,
+    rollback_slot: usize,
+    rollback_last_weapon_slot: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchOutcome {
+    Accepted(ServerSwitchAccepted),
+    Refused(ServerSwitchRefused),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentSwitchResolution {
+    None,
+    Rebase {
+        target_slot: usize,
+        rollback_slot: usize,
+        last_weapon_slot: Option<usize>,
+    },
+    Accepted {
+        last_weapon_slot: Option<usize>,
+    },
+    Refused {
+        target_slot: usize,
+        rollback_slot: usize,
+        last_weapon_slot: Option<usize>,
     },
 }
 
@@ -454,7 +488,8 @@ pub(crate) enum NetEndpoint {
 pub(crate) struct ClientApplyFrameOutcome {
     pub(crate) materialized_remote_entity_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
-    pub(crate) owner_private_weapon_cooldown_fresh: bool,
+    /// Host slot identity carried with the latest fresh owner-private cooldown.
+    pub(crate) owner_private_weapon_cooldown_slot: Option<usize>,
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub(crate) mover_corrections: Vec<client::MoverCorrection>,
@@ -556,19 +591,25 @@ pub(crate) enum WorldLessPoll {
 pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
+            ServerControlMessage::SwitchAccepted(accepted) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution = endpoint.take_switch_outcome(SwitchOutcome::Accepted(accepted));
+                apply_client_switch_resolution(session, resolution);
+            }
             ServerControlMessage::SwitchRefused(refusal) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;
                 };
-                let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-                let Some(pawn) = registry.local_player_movement_pawn() else {
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
                     continue;
                 };
-                let _ = crate::sim::refuse_local_wieldable_switch(
-                    &mut registry,
-                    pawn,
-                    usize::from(refusal.slot),
-                );
+                let resolution = endpoint.take_switch_outcome(SwitchOutcome::Refused(refusal));
+                apply_client_switch_resolution(session, resolution);
             }
             ServerControlMessage::Relevel(catalog_id) => {
                 app.follow_relevel_catalog(catalog_id);
@@ -588,7 +629,11 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                 {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
                     endpoint.demote_client_state(&mut registry);
+                    drop(registry);
+                    session.gameplay_input_latch.clear();
                 }
+                app.client_fire_resolutions.clear();
+                app.client_predicted_shots.clear();
             }
             ServerControlMessage::Tuning(bytes) => {
                 let script_ctx = app
@@ -610,14 +655,96 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
     }
 }
 
+fn apply_client_switch_resolution(
+    session: &mut crate::session::Session,
+    resolution: CurrentSwitchResolution,
+) {
+    let (target_slot, rollback_slot, last_weapon_slot, refused) = match resolution {
+        CurrentSwitchResolution::None => return,
+        CurrentSwitchResolution::Accepted { last_weapon_slot } => {
+            session
+                .gameplay_input_latch
+                .wieldable_selection_mut()
+                .confirm_latest_declaration(last_weapon_slot);
+            return;
+        }
+        CurrentSwitchResolution::Rebase {
+            target_slot,
+            rollback_slot,
+            last_weapon_slot,
+        } => (target_slot, rollback_slot, last_weapon_slot, false),
+        CurrentSwitchResolution::Refused {
+            target_slot,
+            rollback_slot,
+            last_weapon_slot,
+        } => (target_slot, rollback_slot, last_weapon_slot, true),
+    };
+    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return;
+    };
+    let applied = if refused {
+        crate::sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot)
+    } else {
+        crate::sim::rebase_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot)
+    };
+    if !applied {
+        return;
+    }
+    let active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.active_slot);
+    drop(registry);
+    let selection = session.gameplay_input_latch.wieldable_selection_mut();
+    if refused {
+        selection.reset_to_active_with_last(active_slot, last_weapon_slot);
+    } else {
+        selection.confirm_latest_declaration(last_weapon_slot);
+    }
+}
+
 impl NetEndpoint {
     /// Send a client-local switch declaration over reliable Control. The client
     /// transport refuses to queue it before participation, so an old level cannot
     /// leak a selection into a newly promoted pawn.
-    pub(crate) fn send_client_switch_declaration(&mut self, slot: u8) {
-        if let Self::Client { client, .. } = self {
-            client.send_switch_declaration(ClientSwitchDeclaration { slot });
+    pub(crate) fn send_client_switch_declaration(
+        &mut self,
+        slot: u8,
+        rollback_slot: usize,
+        rollback_last_weapon_slot: Option<usize>,
+    ) {
+        if let Self::Client {
+            client,
+            next_switch_declaration_id,
+            pending_switch_declarations,
+            ..
+        } = self
+        {
+            let declaration_id = *next_switch_declaration_id;
+            *next_switch_declaration_id = (*next_switch_declaration_id).wrapping_add(1);
+            pending_switch_declarations.push_back(PendingSwitchDeclaration {
+                declaration_id,
+                target_slot: slot,
+                rollback_slot,
+                rollback_last_weapon_slot,
+            });
+            client.send_switch_declaration(ClientSwitchDeclaration {
+                declaration_id,
+                slot,
+            });
         }
+    }
+
+    fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
+        let Self::Client {
+            pending_switch_declarations,
+            ..
+        } = self
+        else {
+            return CurrentSwitchResolution::None;
+        };
+        resolve_switch_outcome(pending_switch_declarations, outcome)
     }
 
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
@@ -680,6 +807,8 @@ impl NetEndpoint {
                     tuning: None,
                     tuning_generation: 0,
                     applied_movement_tuning_generation: 0,
+                    next_switch_declaration_id: 0,
+                    pending_switch_declarations: VecDeque::new(),
                 }))
             }
         }
@@ -780,6 +909,7 @@ impl NetEndpoint {
             interpolation_delay,
             prediction,
             state_slots,
+            pending_switch_declarations,
             ..
         } = self
         else {
@@ -793,6 +923,7 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
+        pending_switch_declarations.clear();
     }
 
     /// Clear state whose entity ids belong to the old host level. This is separate
@@ -860,6 +991,7 @@ impl NetEndpoint {
             prediction,
             tuning,
             applied_movement_tuning_generation,
+            pending_switch_declarations,
             ..
         } = self
         else {
@@ -871,6 +1003,7 @@ impl NetEndpoint {
         interpolation_delay.reset_for_level_unload();
         *tuning = None;
         *applied_movement_tuning_generation = 0;
+        pending_switch_declarations.clear();
     }
 
     fn install_tuning_payload(
@@ -910,15 +1043,61 @@ impl NetEndpoint {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }
     }
+}
 
-    pub(crate) fn client_tuning(&self) -> Option<(&TuningPayload, u64)> {
-        match self {
-            Self::Client {
-                tuning: Some(tuning),
-                tuning_generation,
-                ..
-            } => Some((tuning.as_ref(), *tuning_generation)),
-            _ => None,
+fn resolve_switch_outcome(
+    pending: &mut VecDeque<PendingSwitchDeclaration>,
+    outcome: SwitchOutcome,
+) -> CurrentSwitchResolution {
+    let (declaration_id, target_slot, accepted) = match outcome {
+        SwitchOutcome::Accepted(accepted) => (accepted.declaration_id, accepted.slot, true),
+        SwitchOutcome::Refused(refused) => (refused.declaration_id, refused.slot, false),
+    };
+    let Some(front) = pending.front().copied() else {
+        return CurrentSwitchResolution::None;
+    };
+    // Both directions use reliable-ordered Control. Refuse an out-of-order or
+    // stale outcome rather than letting it skip an unresolved predecessor.
+    if front.declaration_id != declaration_id || front.target_slot != target_slot {
+        return CurrentSwitchResolution::None;
+    }
+    let settled = pending
+        .pop_front()
+        .expect("the non-empty declaration chain was checked");
+    let (settled_active, settled_last_weapon) = if accepted {
+        (
+            usize::from(settled.target_slot),
+            Some(settled.rollback_slot),
+        )
+    } else {
+        (settled.rollback_slot, settled.rollback_last_weapon_slot)
+    };
+
+    let current_is_next = pending.len() == 1;
+    if let Some(next) = pending.front_mut() {
+        next.rollback_slot = settled_active;
+        next.rollback_last_weapon_slot = settled_last_weapon;
+        if current_is_next {
+            return CurrentSwitchResolution::Rebase {
+                target_slot: usize::from(next.target_slot),
+                rollback_slot: settled_active,
+                // The current declaration is locally presented as accepted, so
+                // last-weapon points at its newly authoritative origin.
+                last_weapon_slot: Some(settled_active),
+            };
+        }
+        return CurrentSwitchResolution::None;
+    }
+
+    if accepted {
+        CurrentSwitchResolution::Accepted {
+            last_weapon_slot: settled_last_weapon,
+        }
+    } else {
+        CurrentSwitchResolution::Refused {
+            target_slot: usize::from(settled.target_slot),
+            rollback_slot: settled_active,
+            last_weapon_slot: settled_last_weapon,
         }
     }
 }
@@ -1424,10 +1603,10 @@ pub(crate) fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
-            frame_outcome.owner_private_weapon_cooldown_fresh |= state_outcome
-                .fresh_slots
-                .iter()
-                .any(|name| name == "player.weaponCooldownMs");
+            if state_outcome.fresh_weapon_cooldown_slot.is_some() {
+                frame_outcome.owner_private_weapon_cooldown_slot =
+                    state_outcome.fresh_weapon_cooldown_slot;
+            }
             if let Some(ack) = outcome.ack.as_mut() {
                 ack.slot_baselines = state_outcome.slot_baselines;
             }
@@ -2357,32 +2536,60 @@ pub(crate) fn tuning_payload_for_pawn(
 /// used by snapshots and server-side systems. A refusal is owner-private reliable
 /// Control because a snapshot cannot recover a stationary client with no later
 /// baseline change to compare against.
+#[allow(clippy::too_many_arguments)] // keeps the wire declaration handler a flat leaf entry point.
 pub(crate) fn host_handle_switch_declaration(
     registry: &mut EntityRegistry,
     server: &mut NetServer,
     slot_pawns: &SlotPawns,
     weapon_owners: &mut WeaponOwners,
     client_id: u64,
+    declaration_id: u32,
     slot: u8,
     mod_block_during_reload: bool,
 ) {
     let Some(pawn) = slot_pawns.pawn_for(client_id) else {
         return;
     };
-    let Ok(mut inventory) = registry
-        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
-        .cloned()
+    if apply_host_switch_declaration(
+        registry,
+        pawn,
+        weapon_owners,
+        usize::from(slot),
+        mod_block_during_reload,
+    ) == HostSwitchDecision::Accepted
+    {
+        send_switch_accepted(server, client_id, declaration_id, slot);
+    } else {
+        send_switch_refusal(server, client_id, declaration_id, slot);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostSwitchDecision {
+    Accepted,
+    Refused,
+}
+
+fn apply_host_switch_declaration(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    weapon_owners: &mut WeaponOwners,
+    target_slot: usize,
+    mod_block_during_reload: bool,
+) -> HostSwitchDecision {
+    let Some((mut inventory, active_changed)) =
+        crate::sim::normalize_wieldable_inventory(registry, pawn)
     else {
-        send_switch_refusal(server, client_id, slot);
-        return;
+        return HostSwitchDecision::Refused;
     };
-    let target_slot = usize::from(slot);
+    if active_changed {
+        weapon_owners.mark_attachment_dirty(pawn);
+    }
     let Some(_target) = inventory.wieldables.get(target_slot).copied().flatten() else {
-        send_switch_refusal(server, client_id, slot);
-        return;
+        return HostSwitchDecision::Refused;
     };
     if target_slot == inventory.active_slot {
-        return;
+        return HostSwitchDecision::Accepted;
     }
 
     let reload_blocks_switch = inventory
@@ -2399,8 +2606,7 @@ pub(crate) fn host_handle_switch_declaration(
                 && weapon.state.is_reload_activity()
         });
     if reload_blocks_switch {
-        send_switch_refusal(server, client_id, slot);
-        return;
+        return HostSwitchDecision::Refused;
     }
 
     inventory.active_slot = target_slot;
@@ -2408,12 +2614,26 @@ pub(crate) fn host_handle_switch_declaration(
     inventory.switch_origin = None;
     let _ = registry.set_component(pawn, inventory);
     weapon_owners.mark_attachment_dirty(pawn);
+    HostSwitchDecision::Accepted
 }
 
-fn send_switch_refusal(server: &mut NetServer, client_id: u64, slot: u8) {
+fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+    server.send_control(
+        client_id,
+        wire::encode(&ServerControlMessage::SwitchAccepted(
+            ServerSwitchAccepted {
+                declaration_id,
+                slot,
+            },
+        )),
+    );
+}
+
+fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
     server.send_control(
         client_id,
         wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+            declaration_id,
             slot,
         })),
     );
@@ -3011,6 +3231,93 @@ mod tests {
     // approximate comparison for computed/converted floats).
     const EPSILON: f32 = 1e-6;
 
+    #[test]
+    fn delayed_double_refusal_rebases_newer_declaration_to_authoritative_origin() {
+        // Regression: A->B D1 completed locally, then B->C D2 completed. When the
+        // host refused both, retaining only D2 rolled the client back to B, not A.
+        let mut pending = VecDeque::from([
+            PendingSwitchDeclaration {
+                declaration_id: 11,
+                target_slot: 1,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(9),
+            },
+            PendingSwitchDeclaration {
+                declaration_id: 12,
+                target_slot: 2,
+                rollback_slot: 1,
+                rollback_last_weapon_slot: Some(0),
+            },
+        ]);
+
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 11,
+                    slot: 1,
+                }),
+            ),
+            CurrentSwitchResolution::Rebase {
+                target_slot: 2,
+                rollback_slot: 0,
+                last_weapon_slot: Some(0),
+            }
+        );
+        assert_eq!(pending.front().unwrap().rollback_slot, 0);
+        assert_eq!(pending.front().unwrap().rollback_last_weapon_slot, Some(9));
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 12,
+                    slot: 2,
+                }),
+            ),
+            CurrentSwitchResolution::Refused {
+                target_slot: 2,
+                rollback_slot: 0,
+                last_weapon_slot: Some(9),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn host_liveness_repoint_marks_attachment_dirty_before_already_active_acceptance() {
+        // Regression: declaration-time liveness repair repointed the active slot,
+        // then the already-active early return skipped third-person attachment work.
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let stale = registry.spawn(Transform::default());
+        let live = registry.spawn(Transform::default());
+        registry
+            .set_component(stale, test_weapon(1.0, 10.0))
+            .unwrap();
+        registry
+            .set_component(live, test_weapon(1.0, 10.0))
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(stale);
+        inventory.wieldables[1] = Some(live);
+        registry.set_component(pawn, inventory).unwrap();
+        registry.despawn(stale).unwrap();
+        let mut weapon_owners = WeaponOwners::new();
+
+        assert_eq!(
+            apply_host_switch_declaration(&mut registry, pawn, &mut weapon_owners, 1, false),
+            HostSwitchDecision::Accepted
+        );
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            1
+        );
+        assert!(weapon_owners.has_attachment_changes());
+    }
+
     fn sample_transform() -> Transform {
         Transform {
             position: Vec3::new(1.5, -2.0, 3.25),
@@ -3089,6 +3396,80 @@ mod tests {
         assert_eq!(slot.fire_mode, FireMode::Auto);
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
+    }
+
+    // Regression: staged descriptor refresh updated the live host component but the
+    // connected client kept its old equip durations because change detection never
+    // observed a rebuilt payload.
+    #[test]
+    fn live_weapon_retune_changes_payload_without_recomposing_inventory_state() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        let mut weapon = test_weapon(10.0, 96.0);
+        weapon.lower_ms = 20;
+        weapon.raise_ms = 30;
+        weapon.cooldown_remaining_ms = 77.0;
+        weapon.state = postretro_entities::components::wieldable_state::WieldableState::Raising;
+        weapon.state_total_ms = 30;
+        weapon.state_remaining_ms = 12;
+        registry.set_component(weapon_id, weapon).unwrap();
+        registry
+            .set_component(
+                weapon_id,
+                DescriptorProvenance {
+                    canonical_name: "live_ion_rifle".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        inventory.switch_origin = Some(0);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+
+        let before = tuning_payload_for_pawn(&registry, pawn, &[]);
+        let mut last_sent = HashMap::from([(41_u64, before.clone())]);
+        let refreshed = WeaponDescriptor {
+            damage: 14.0,
+            range: 140.0,
+            cooldown_ms: 180.0,
+            fire_mode: FireMode::Auto,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: Some("weapon.test.retuned".to_string()),
+            third_person_model: None,
+            viewmodel: None,
+            resource: None,
+            lower_ms: 45,
+            raise_ms: 70,
+            block_during_reload: None,
+        };
+        let mut live = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        live.refresh_from_descriptor(&refreshed);
+        registry.set_component(weapon_id, live).unwrap();
+
+        let after = tuning_payload_for_pawn(&registry, pawn, &[]);
+
+        assert_ne!(last_sent.get(&41), Some(&after));
+        last_sent.insert(41, after.clone());
+        assert_eq!(last_sent.get(&41), Some(&after));
+        assert_eq!(after.wieldables[0].as_ref().unwrap().lower_ms, 45);
+        assert_eq!(after.wieldables[0].as_ref().unwrap().raise_ms, 70);
+        assert_eq!(
+            registry.get_component::<Inventory>(pawn).unwrap(),
+            &inventory,
+            "tuning refresh must not recompose live loadout or switch state"
+        );
+        let live = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(live.cooldown_remaining_ms, 77.0);
+        assert_eq!(live.state_remaining_ms, 12);
     }
 
     // Regression: a malformed replacement retained the previously accepted

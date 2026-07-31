@@ -319,8 +319,9 @@ pub struct EntityTypeDescriptor {
     pub behavior: Option<BehaviorGraphDescriptor>,
 }
 
-/// Author-side player inventory composition. The string references remain
-/// untyped until Task 9 replaces them with descriptor references in the SDK.
+/// Author-side player inventory composition. SDK builders validate typed
+/// descriptor references, then lower them to canonical archetype names for
+/// this runtime descriptor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InventoryDescriptor {

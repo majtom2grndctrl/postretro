@@ -26,14 +26,12 @@ use crate::netcode::TuningPayload;
 /// deliberately NOT the local-player path:
 ///
 /// - it does NOT call `mark_local_player_pawn` (a remote pawn is never the host's
-///   local player), and
-/// - it does NOT assign a global `active_wieldable` (the host does not wield a
-///   remote client's weapon).
+///   local player).
 ///
 /// The pawn's `components.inventory.loadout` still materializes host-side sibling
 /// wieldable instances, so active-weapon resolution has the same shape as the
-/// player-start path. It does not replicate weapon payloads, and these siblings
-/// are never promoted to the host's active wieldable.
+/// player-start path. Inventory owns its active slot; no global active-wieldable
+/// holder exists.
 ///
 /// Provenance is stamped [`DescriptorSpawnPath::NetworkSlot`] so these pawns are
 /// distinguishable from map-start single-player spawns. The per-placement KVP bag is

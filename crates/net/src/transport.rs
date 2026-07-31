@@ -1124,7 +1124,10 @@ mod tests {
         // controls are emitted. Set it directly here so the public client send
         // path, rather than the test-only raw Renet handle, is exercised.
         client.active_participation_epoch = Some(1);
-        client.send_switch_declaration(ClientSwitchDeclaration { slot: 2 });
+        client.send_switch_declaration(ClientSwitchDeclaration {
+            declaration_id: 9,
+            slot: 2,
+        });
 
         relay_client_to_server(&mut client, &mut server);
         let poll = server.poll_handshakes();
@@ -1133,7 +1136,13 @@ mod tests {
         assert!(poll.lifecycle.is_empty());
         assert_eq!(
             poll.switch_declarations,
-            vec![(RELAY_CLIENT_ID, ClientSwitchDeclaration { slot: 2 })]
+            vec![(
+                RELAY_CLIENT_ID,
+                ClientSwitchDeclaration {
+                    declaration_id: 9,
+                    slot: 2,
+                },
+            )]
         );
     }
 

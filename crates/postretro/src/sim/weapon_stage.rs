@@ -8,6 +8,7 @@ mod machine;
 mod state;
 
 pub(super) use commands::{
+    normalize_all_inventory_liveness, normalize_inventory_liveness, rebase_local_switch,
     refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
@@ -1024,7 +1025,7 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory).unwrap();
 
-        assert!(refuse_local_switch(&mut registry, pawn, 1));
+        assert!(refuse_local_switch(&mut registry, pawn, 1, 0));
 
         let inventory = registry.get_component::<Inventory>(pawn).unwrap();
         let refused = registry.get_component::<WeaponComponent>(refused).unwrap();
@@ -1034,6 +1035,176 @@ mod tests {
         assert_eq!(refused.state, WieldableState::Idle);
         assert_eq!(refused.state_total_ms, 0);
         assert_eq!(refused.state_remaining_ms, 0);
+    }
+
+    #[test]
+    fn despawned_active_slot_is_cleared_and_first_live_slot_becomes_active() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, stale, live) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let stale = registry.spawn(Transform::default());
+            let live = registry.spawn(Transform::default());
+            registry
+                .set_component(stale, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            registry
+                .set_component(live, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(stale);
+            inventory.wieldables[1] = Some(live);
+            inventory.switch_target = Some(1);
+            inventory.switch_origin = Some(0);
+            registry.set_component(pawn, inventory).unwrap();
+            registry.despawn(stale).unwrap();
+            (pawn, stale, live)
+        };
+        let mut no_impact = ignore_impact;
+
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+
+        let registry = registry.borrow();
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[0], None);
+        assert_eq!(inventory.active_slot, 1);
+        assert_eq!(inventory.active_wieldable(), Some(live));
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        assert!(!registry.exists(stale));
+    }
+
+    // Regression: host-mirrored inventories were normalized only while consuming a
+    // weapon command, so a despawned sibling could remain active indefinitely.
+    #[test]
+    fn commandless_liveness_sweep_repairs_active_and_target_and_surfaces_repoint() {
+        let mut registry = EntityRegistry::new();
+
+        let active_stale_pawn = registry.spawn(Transform::default());
+        let stale_active = registry.spawn(Transform::default());
+        let replacement = registry.spawn(Transform::default());
+        registry
+            .set_component(stale_active, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        registry
+            .set_component(replacement, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut active_stale_inventory = Inventory::default();
+        active_stale_inventory.wieldables[0] = Some(stale_active);
+        active_stale_inventory.wieldables[1] = Some(replacement);
+        registry
+            .set_component(active_stale_pawn, active_stale_inventory)
+            .unwrap();
+        registry.despawn(stale_active).unwrap();
+
+        let target_stale_pawn = registry.spawn(Transform::default());
+        let retained_active = registry.spawn(Transform::default());
+        let stale_target = registry.spawn(Transform::default());
+        let mut lowering = gate_weapon_component(FireMode::Semi, 100.0);
+        lowering.state = WieldableState::Lowering;
+        lowering.state_total_ms = 20;
+        lowering.state_remaining_ms = 10;
+        registry.set_component(retained_active, lowering).unwrap();
+        registry
+            .set_component(stale_target, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut target_stale_inventory = Inventory::default();
+        target_stale_inventory.wieldables[0] = Some(retained_active);
+        target_stale_inventory.wieldables[1] = Some(stale_target);
+        target_stale_inventory.switch_target = Some(1);
+        target_stale_inventory.switch_origin = Some(0);
+        registry
+            .set_component(target_stale_pawn, target_stale_inventory)
+            .unwrap();
+        registry.despawn(stale_target).unwrap();
+
+        let attachment_dirty = normalize_all_inventory_liveness(&mut registry);
+
+        assert_eq!(attachment_dirty, vec![active_stale_pawn]);
+        let repaired = registry
+            .get_component::<Inventory>(active_stale_pawn)
+            .unwrap();
+        assert_eq!(repaired.active_slot, 1);
+        assert_eq!(repaired.active_wieldable(), Some(replacement));
+        let abandoned = registry
+            .get_component::<Inventory>(target_stale_pawn)
+            .unwrap();
+        assert_eq!(abandoned.active_slot, 0);
+        assert_eq!(abandoned.switch_target, None);
+        assert_eq!(abandoned.switch_origin, None);
+        let retained = registry
+            .get_component::<WeaponComponent>(retained_active)
+            .unwrap();
+        assert_eq!(retained.state, WieldableState::Idle);
+        assert_eq!(retained.state_remaining_ms, 0);
+    }
+
+    #[test]
+    fn despawned_switch_target_abandons_lower_and_keeps_first_live_active() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, active, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let active = registry.spawn(Transform::default());
+            let target = registry.spawn(Transform::default());
+            let mut active_component = gate_weapon_component(FireMode::Semi, 100.0);
+            active_component.state = WieldableState::Lowering;
+            active_component.state_total_ms = 20;
+            active_component.state_remaining_ms = 10;
+            registry.set_component(active, active_component).unwrap();
+            registry
+                .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(active);
+            inventory.wieldables[1] = Some(target);
+            inventory.switch_target = Some(1);
+            inventory.switch_origin = Some(0);
+            registry.set_component(pawn, inventory).unwrap();
+            registry.despawn(target).unwrap();
+            (pawn, active, target)
+        };
+
+        let mut no_impact = ignore_impact;
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+
+        let registry = registry.borrow();
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[1], None);
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(active)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert!(!registry.exists(target));
     }
 
     #[test]

@@ -138,6 +138,7 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
 use postretro_entities::SystemReactionCommand;
+use postretro_entities::components::inventory::Inventory;
 use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
@@ -682,10 +683,6 @@ pub(crate) struct App {
     /// clients retain the default empty report because they never run the pass.
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
-    /// Connected-client local weapon gate for the host-owned local pawn. The client
-    /// owns no local `Weapon` component; this descriptor-seeded carrier is read-only
-    /// with respect to world state and feeds local hit resolution only.
-    client_weapon_state: Option<weapon::ClientWeaponState>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
 
@@ -1052,7 +1049,13 @@ fn local_wieldable_occupancy(
             None,
         );
     };
-    let occupied = inventory.wieldables.map(|wieldable| wieldable.is_some());
+    let occupied = inventory.wieldables.map(|wieldable| {
+        wieldable.is_some_and(|id| {
+            registry.exists(id)
+                && registry.has_component_kind(id, postretro_entities::ComponentKind::Weapon)
+                    == Ok(true)
+        })
+    });
     let active = occupied
         .get(inventory.active_slot)
         .copied()
@@ -1126,27 +1129,28 @@ struct ClientFrameFireCommand {
 
 fn client_fire_ticks_for_post_loop(
     commands: &[ClientFrameFireCommand],
-    state: &weapon::ClientWeaponState,
+    weapon: &postretro_entities::components::weapon::WeaponComponent,
 ) -> Vec<u32> {
     let mut selected = Vec::new();
-    let mut cooldown_ms = state.cooldown_remaining_ms.max(0.0);
+    let mut cooldown_ms = weapon.cooldown_remaining_ms.max(0.0);
     let mut previous_elapsed_ms = 0.0;
+    let stats = weapon.effective();
 
     for command in commands {
         let elapsed_delta_ms = (command.elapsed_ms - previous_elapsed_ms).max(0.0);
         cooldown_ms = (cooldown_ms - elapsed_delta_ms).max(0.0);
         previous_elapsed_ms = command.elapsed_ms;
 
-        let wants_fire = match state.fire_mode {
+        let wants_fire = match stats.fire_mode {
             postretro_foundation::FireMode::Semi => {
-                command.button.pressed && !state.shoot_press_consumed
+                command.button.pressed && !weapon.shoot_press_consumed
             }
             postretro_foundation::FireMode::Auto => command.button.active,
         };
-        if wants_fire && cooldown_ms <= 0.0 {
+        if weapon.state.allows_fire() && wants_fire && cooldown_ms <= 0.0 {
             selected.push(command.client_tick);
-            cooldown_ms = state.cooldown_ms;
-            if state.fire_mode == postretro_foundation::FireMode::Semi {
+            cooldown_ms = stats.cooldown_ms;
+            if stats.fire_mode == postretro_foundation::FireMode::Semi {
                 break;
             }
         }
@@ -1176,18 +1180,56 @@ fn client_weapon_cooldown_from_slot_table(
 }
 
 fn reconcile_client_weapon_cooldown_from_slot_table(
-    state: &mut weapon::ClientWeaponState,
+    predicted: &mut weapon::ClientPredictedShots,
+    registry: &mut postretro_entities::EntityRegistry,
     slot_table: &postretro_entities::SlotTable,
-    cooldown_fresh_this_frame: bool,
+    authoritative_slot: Option<usize>,
 ) -> bool {
-    if !cooldown_fresh_this_frame {
+    let Some(authoritative_slot) = authoritative_slot else {
         return false;
-    }
+    };
     let Some(cooldown_ms) = client_weapon_cooldown_from_slot_table(slot_table) else {
         return false;
     };
-    weapon::ClientPredictedShots::reconcile_cooldown(state, cooldown_ms);
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return false;
+    };
+    let Some(weapon_id) = registry
+        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+        .ok()
+        .and_then(|inventory| inventory.wieldables.get(authoritative_slot))
+        .copied()
+        .flatten()
+        .filter(|weapon| registry.exists(*weapon))
+    else {
+        return false;
+    };
+    let Ok(mut component) = registry
+        .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_id)
+        .cloned()
+    else {
+        return false;
+    };
+    predicted.reconcile_cooldown(weapon_id, &mut component, cooldown_ms);
+    let _ = registry.set_component(weapon_id, component);
     true
+}
+
+fn local_active_wieldable(
+    registry: &postretro_entities::EntityRegistry,
+) -> Option<(usize, postretro_entities::EntityId)> {
+    let pawn = registry.local_player_movement_pawn()?;
+    let inventory = registry
+        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+        .ok()?;
+    let weapon = inventory.active_wieldable()?;
+    if !registry.exists(weapon)
+        || registry.has_component_kind(weapon, postretro_entities::ComponentKind::Weapon)
+            != Ok(true)
+    {
+        return None;
+    }
+    Some((inventory.active_slot, weapon))
 }
 
 fn client_fire_snapshot_for_post_loop<'a>(
@@ -2342,7 +2384,54 @@ impl ApplicationHandler for App {
                         // pawn; frame timing pushes the predicted camera pose. Task 5
                         // adds reconciliation/smoothing on top of this seam.
                         if self.is_connected_client() {
-                            if let Some(slot) = command.select_slot {
+                            let local_pawn = {
+                                let registry = script_ctx.registry.borrow();
+                                registry.local_player_movement_pawn()
+                            };
+                            let (switch_accepted, repointed) = {
+                                let hit_zone_store = &self
+                                    .session
+                                    .as_ref()
+                                    .expect("connected client session installed")
+                                    .hit_zone_store;
+                                sim::simulate_client_wieldable_tick(
+                                    script_ctx.registry.clone(),
+                                    &self.collision_world,
+                                    hit_zone_store,
+                                    local_pawn,
+                                    self.switching.block_during_reload,
+                                    command.select_slot,
+                                    command.fire_button,
+                                    command.reload,
+                                    frame_anim_time,
+                                    tick_dt,
+                                )
+                            };
+                            if let Some(pawn) = repointed {
+                                repointed_pawns.push(pawn);
+                            }
+                            let (allows_fire, allows_reload) = {
+                                let registry = script_ctx.registry.borrow();
+                                local_active_wieldable(&registry)
+                                    .and_then(|(_, weapon)| {
+                                        registry
+                                            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+                                            .ok()
+                                    })
+                                    .map_or((false, false), |weapon| {
+                                        (weapon.state.allows_fire(), weapon.state.allows_reload())
+                                    })
+                            };
+                            if !allows_fire {
+                                command.fire_button = weapon::FireButtonState {
+                                    pressed: false,
+                                    active: false,
+                                };
+                            }
+                            if !allows_reload {
+                                command.reload = false;
+                            }
+                            if switch_accepted && let Some(slot) = command.select_slot {
                                 self.client_declare_switch(slot);
                             }
                             self.client_predict_loaded_movers_tick(tick_dt);
@@ -2399,6 +2488,14 @@ impl ApplicationHandler for App {
                                 .push_state(InterpolableState::new(self.camera.position));
                             continue;
                         }
+
+                        // Inventory liveness is entity lifecycle, not an input event.
+                        // Normalize every authoritative pawn even when a remote queue
+                        // produces no command this tick; active changes reuse the
+                        // ordinary repoint attachment-dirty path below.
+                        repointed_pawns.extend(sim::normalize_wieldable_inventories(
+                            &mut script_ctx.registry.borrow_mut(),
+                        ));
 
                         // Host: resolve remote (owned) pawn inputs up front, then the
                         // shared `simulate_tick` runs loaded movers and every player
@@ -2645,9 +2742,8 @@ impl ApplicationHandler for App {
                 //
                 // A connected client skips host-authoritative HUD slot writes:
                 // those values arrive through state-slot apply. It still samples
-                // a local inventory weapon when materialized so reload-feedback
-                // acknowledgement cannot accumulate; Task 5's temporary absence
-                // of client inventory is a safe no-op.
+                // a materialized local weapon so reload-feedback acknowledgement
+                // cannot accumulate. A missing local weapon is a safe no-op.
                 let is_connected_client = self.is_connected_client();
                 let hud_sampled_weapon = if let Some(session) = self.session.as_mut() {
                     session
@@ -3165,8 +3261,8 @@ impl ApplicationHandler for App {
 
                         // The first-person model is not an entity attachment. Every
                         // role prefers the local pawn's inventory; a connected client
-                        // without Task 5's materialized inventory safely falls back to
-                        // the replicated archetype for this transitional release.
+                        // without materialized local inventory safely falls back to the
+                        // replicated archetype.
                         let descriptors = script_ctx.data_registry.borrow();
                         if let Some(local_pawn) = followed_player_pawn(&registry) {
                             let viewmodel =
@@ -5096,6 +5192,7 @@ impl App {
                                     slot_pawns,
                                     weapon_owners,
                                     client_id,
+                                    declaration.declaration_id,
                                     declaration.slot,
                                     mod_block_during_reload,
                                 );
@@ -5140,16 +5237,6 @@ impl App {
                 // its own monotonic clock for send/receive microseconds.
                 let client_tick = script_ctx.frame.get() as u32;
                 let shot_verdicts = netcode::client_drive_time_sync(client, time_sync, client_tick);
-                if let Some(state) = self.client_weapon_state.as_mut() {
-                    for verdict in shot_verdicts {
-                        let _ = self.client_predicted_shots.apply_verdict(
-                            state,
-                            verdict.shot_id,
-                            verdict.accept,
-                            verdict.hit_accepted,
-                        );
-                    }
-                }
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
                 // baseline, apply replicated state-slot records through the store-write
@@ -5158,6 +5245,14 @@ impl App {
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = script_ctx.registry.borrow_mut();
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
+                for verdict in shot_verdicts {
+                    let _ = self.client_predicted_shots.apply_verdict(
+                        &mut registry,
+                        verdict.shot_id,
+                        verdict.accept,
+                        verdict.hit_accepted,
+                    );
+                }
                 let mover_target_tick = time_sync
                     .estimated_server_tick()
                     .map(|tick| tick.floor().clamp(0.0, f64::from(u32::MAX)) as u32);
@@ -5203,14 +5298,13 @@ impl App {
                     &mut self.kinematic_mover_tick_states,
                     &apply_outcome.mover_corrections,
                 );
-                if apply_outcome.owner_private_weapon_cooldown_fresh {
-                    if let Some(state) = self.client_weapon_state.as_mut() {
-                        let _ = reconcile_client_weapon_cooldown_from_slot_table(
-                            state,
-                            &slot_table,
-                            true,
-                        );
-                    }
+                if apply_outcome.owner_private_weapon_cooldown_slot.is_some() {
+                    let _ = reconcile_client_weapon_cooldown_from_slot_table(
+                        &mut self.client_predicted_shots,
+                        &mut registry,
+                        &slot_table,
+                        apply_outcome.owner_private_weapon_cooldown_slot,
+                    );
                 }
                 if apply_outcome.materialized_remote_entity_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
@@ -5234,37 +5328,6 @@ impl App {
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
-        let client_host_tuning = self.session.as_ref().and_then(|session| {
-            let endpoint = session.net_endpoint.as_ref()?;
-            let netcode::NetEndpoint::Client { replication, .. } = endpoint else {
-                return None;
-            };
-            Some((
-                replication.local_pawn_entity(),
-                endpoint
-                    .client_tuning()
-                    .and_then(|(payload, _)| payload.first_wieldable().cloned()),
-            ))
-        });
-        if let Some((pawn, tuning)) = client_host_tuning {
-            self.sync_client_weapon_state(pawn, tuning.as_ref());
-        }
-    }
-
-    fn sync_client_weapon_state(
-        &mut self,
-        pawn: Option<postretro_entities::EntityId>,
-        tuning: Option<&netcode::WieldableTuningPayload>,
-    ) {
-        let preserve_prediction_history = weapon::ClientWeaponState::sync_from_host_tuning(
-            &mut self.client_weapon_state,
-            pawn,
-            tuning,
-        );
-        if !preserve_prediction_history {
-            self.client_fire_resolutions.clear();
-            self.client_predicted_shots.clear();
-        }
     }
 
     fn run_client_fire_path_post_loop(
@@ -5297,20 +5360,37 @@ impl App {
             pressed: matches!(shoot, ButtonState::Pressed),
             active: shoot.is_active(),
         };
-        let zero_tick_fire_command =
+        let mut zero_tick_fire_command =
             zero_tick_snapshot
                 .filter(|_| button.pressed)
                 .map(|snapshot| {
                     build_sim_command(snapshot, &self.camera, false, false, true, false, false)
                 });
-        let Some(state) = self.client_weapon_state.as_mut() else {
-            if zero_tick_fire_command.is_some() {
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-            }
+        let Some(session) = self.session.as_ref() else {
             return;
         };
+        let script_ctx = session.scripting.script_ctx.clone();
+        let (active_slot, weapon_id, mut component) = {
+            let registry = script_ctx.registry.borrow();
+            let Some((active_slot, weapon_id)) = local_active_wieldable(&registry) else {
+                if zero_tick_fire_command.is_some()
+                    && let Some(session) = self.session.as_mut()
+                {
+                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
+                }
+                return;
+            };
+            let Ok(component) = registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_id)
+                .cloned()
+            else {
+                return;
+            };
+            (active_slot, weapon_id, component)
+        };
+        if let Some(command) = zero_tick_fire_command.as_mut() {
+            command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
+        }
         let client_ticks = if zero_tick_fire_command.is_some() {
             netcode::client_peek_next_command_tick(
                 self.session
@@ -5320,10 +5400,12 @@ impl App {
             .into_iter()
             .collect::<Vec<_>>()
         } else {
-            client_fire_ticks_for_post_loop(sent_fire_commands, state)
+            client_fire_ticks_for_post_loop(sent_fire_commands, &component)
         };
         let Some(&client_tick) = client_ticks.first() else {
-            let _ = weapon::advance_client_fire_state(state, button, frame_dt);
+            let _ = weapon::advance_client_fire_state(&mut component, button, frame_dt);
+            let mut registry = script_ctx.registry.borrow_mut();
+            let _ = registry.set_component(weapon_id, component);
             if zero_tick_fire_command.is_some() {
                 if let Some(session) = self.session.as_mut() {
                     session.gameplay_input_latch.clear_pressed(Action::Shoot);
@@ -5331,16 +5413,12 @@ impl App {
             }
             return;
         };
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
         let (aim_origin, aim_direction) = self.camera.aim_ray();
-        let cooldown_before_ms = state.cooldown_remaining_ms;
-        let cooldown_authority_generation = state.cooldown_authority_generation;
+        let cooldown_before_ms = component.cooldown_remaining_ms;
         let resolution = {
-            let registry = session.scripting.script_ctx.registry.borrow();
+            let registry = script_ctx.registry.borrow();
             weapon::resolve_client_fire(
-                state,
+                &mut component,
                 button,
                 aim_origin,
                 aim_direction,
@@ -5352,6 +5430,11 @@ impl App {
                 frame_dt,
             )
         };
+        let cooldown_after_ms = component.cooldown_remaining_ms;
+        {
+            let mut registry = script_ctx.registry.borrow_mut();
+            let _ = registry.set_component(weapon_id, component);
+        }
         if let Some(resolution) = resolution {
             if let Some(command) = zero_tick_fire_command.as_ref() {
                 let aim_pitch = self.camera.pitch;
@@ -5369,14 +5452,13 @@ impl App {
                     session.gameplay_input_latch.clear_pressed(Action::Shoot);
                 }
             }
-            let cooldown_after_ms = state.cooldown_remaining_ms;
             let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
             self.client_predicted_shots.predict(
                 shot_id,
+                weapon_id,
                 &resolution,
                 cooldown_before_ms,
                 cooldown_after_ms,
-                cooldown_authority_generation,
             );
             // Predict the muzzle FX on a gated local fire, mirroring the host/
             // single-player weapon-activation ("activate") event. It drains with the
@@ -6003,44 +6085,35 @@ impl App {
         ))
     }
 
-    /// Send a locally accepted direct-select to the host over reliable Control.
-    /// Cursor timing belongs to the input layer; this seam only filters impossible
-    /// inventory targets so empty slots never become gameplay declarations.
+    /// Send a switch already accepted by the local wieldable machine to the host.
+    /// Occupancy and reload policy were checked before the immediate local lower,
+    /// including a zero-duration lower that may already have repointed.
     fn client_declare_switch(&mut self, slot: usize) {
         let Ok(slot) = u8::try_from(slot) else {
             return;
         };
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
+        let Some(session) = self.session.as_mut() else {
             return;
         };
-        let eligible = {
-            let registry = script_ctx.registry.borrow();
-            registry
-                .local_player_movement_pawn()
-                .and_then(|pawn| {
-                    registry
-                        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
-                        .ok()
-                })
-                .is_some_and(|inventory| {
-                    inventory.wieldables[usize::from(slot)].is_some()
-                        && inventory.active_slot != usize::from(slot)
-                        && inventory.switch_target != Some(usize::from(slot))
-                })
+        let rollback_slot = {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            let Some(pawn) = registry.local_player_movement_pawn() else {
+                return;
+            };
+            let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
+                return;
+            };
+            let Some(rollback_slot) = inventory.switch_origin else {
+                return;
+            };
+            rollback_slot
         };
-        if !eligible {
-            return;
-        }
-        if let Some(endpoint) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        {
-            endpoint.send_client_switch_declaration(slot);
+        let rollback_last_weapon_slot = session
+            .gameplay_input_latch
+            .wieldable_selection()
+            .last_weapon_slot_before_latest_declaration();
+        if let Some(endpoint) = session.net_endpoint.as_mut() {
+            endpoint.send_client_switch_declaration(slot, rollback_slot, rollback_last_weapon_slot);
         }
     }
 
@@ -6989,29 +7062,136 @@ mod tests {
             .get_mut("player.weaponCooldownMs")
             .expect("default player weapon cooldown slot exists")
             .value = Some(postretro_entities::SlotValue::Number(100.0));
-        let mut state = weapon::ClientWeaponState {
-            pawn: postretro_entities::EntityId::from_raw(1),
-            cooldown_remaining_ms: 72.0,
-            cooldown_ms: 100.0,
-            cooldown_authority_generation: 0,
-            fire_mode: postretro_foundation::FireMode::Semi,
-            resolution: postretro_foundation::ResolutionMode::Hitscan,
-            range: 10.0,
-            shoot_press_consumed: false,
-        };
+        let mut registry = postretro_entities::EntityRegistry::new();
+        let pawn = registry.spawn(postretro_entities::Transform::default());
+        registry
+            .set_component(
+                pawn,
+                postretro_foundation::PlayerMovementComponent::from_descriptor(
+                    &minimal_player_descriptor(),
+                ),
+            )
+            .unwrap();
+        let weapon_id = registry.spawn(postretro_entities::Transform::default());
+        let mut component =
+            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        component.cooldown_remaining_ms = 72.0;
+        registry.set_component(weapon_id, component).unwrap();
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        registry.set_component(pawn, inventory).unwrap();
+        let mut predicted = weapon::ClientPredictedShots::new();
 
         assert!(!reconcile_client_weapon_cooldown_from_slot_table(
-            &mut state, &table, false
+            &mut predicted,
+            &mut registry,
+            &table,
+            None
         ));
         assert_eq!(
-            state.cooldown_remaining_ms, 72.0,
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(
+                    weapon_id,
+                )
+                .unwrap()
+                .cooldown_remaining_ms,
+            72.0,
             "stale slot value must not reset locally-decayed cooldown"
         );
 
         assert!(reconcile_client_weapon_cooldown_from_slot_table(
-            &mut state, &table, true
+            &mut predicted,
+            &mut registry,
+            &table,
+            Some(0)
         ));
-        assert_eq!(state.cooldown_remaining_ms, 100.0);
+        assert_eq!(
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(
+                    weapon_id,
+                )
+                .unwrap()
+                .cooldown_remaining_ms,
+            100.0
+        );
+    }
+
+    // Regression: an authoritative cooldown for A arrived after the client had
+    // locally repointed to B and overwrote B's independent prediction state.
+    #[test]
+    fn correlated_cooldown_updates_pending_shot_weapon_after_local_switch() {
+        let mut table = postretro_entities::SlotTable::new();
+        table.get_mut("player.weaponCooldownMs").unwrap().value =
+            Some(postretro_entities::SlotValue::Number(64.0));
+        let mut registry = postretro_entities::EntityRegistry::new();
+        let pawn = registry.spawn(postretro_entities::Transform::default());
+        registry
+            .set_component(
+                pawn,
+                postretro_foundation::PlayerMovementComponent::from_descriptor(
+                    &minimal_player_descriptor(),
+                ),
+            )
+            .unwrap();
+        let weapon_a = registry.spawn(postretro_entities::Transform::default());
+        let weapon_b = registry.spawn(postretro_entities::Transform::default());
+        let mut component_a =
+            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        component_a.cooldown_remaining_ms = 80.0;
+        let mut component_b =
+            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+        component_b.cooldown_remaining_ms = 11.0;
+        registry.set_component(weapon_a, component_a).unwrap();
+        registry.set_component(weapon_b, component_b).unwrap();
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(weapon_a);
+        inventory.wieldables[1] = Some(weapon_b);
+        inventory.active_slot = 1;
+        registry.set_component(pawn, inventory).unwrap();
+
+        let mut predicted = weapon::ClientPredictedShots::new();
+        predicted.predict(
+            7,
+            weapon_a,
+            &weapon::ClientFireResolution {
+                client_tick: 3,
+                hits: Vec::new(),
+            },
+            0.0,
+            80.0,
+        );
+
+        assert!(reconcile_client_weapon_cooldown_from_slot_table(
+            &mut predicted,
+            &mut registry,
+            &table,
+            Some(0),
+        ));
+        assert_eq!(
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_a,)
+                .unwrap()
+                .cooldown_remaining_ms,
+            64.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_b,)
+                .unwrap()
+                .cooldown_remaining_ms,
+            11.0,
+            "A's authoritative sample must not overwrite locally-active B"
+        );
+
+        let _ = predicted.apply_verdict(&mut registry, 7, false, false);
+        assert_eq!(
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_a,)
+                .unwrap()
+                .cooldown_remaining_ms,
+            64.0,
+            "A's fresh authority must also block its older predicted-shot rollback"
+        );
     }
 
     #[test]
@@ -7038,17 +7218,10 @@ mod tests {
         fire_mode: postretro_foundation::FireMode,
         cooldown_remaining_ms: f32,
         cooldown_ms: f32,
-    ) -> weapon::ClientWeaponState {
-        weapon::ClientWeaponState {
-            pawn: postretro_entities::EntityId::from_raw(1),
-            cooldown_remaining_ms,
-            cooldown_ms,
-            cooldown_authority_generation: 0,
-            fire_mode,
-            resolution: postretro_foundation::ResolutionMode::Hitscan,
-            range: 10.0,
-            shoot_press_consumed: false,
-        }
+    ) -> postretro_entities::components::weapon::WeaponComponent {
+        let mut component = weapon::tests::weapon_component(fire_mode, cooldown_ms);
+        component.cooldown_remaining_ms = cooldown_remaining_ms;
+        component
     }
 
     #[test]
@@ -7171,6 +7344,18 @@ mod tests {
         registry.mark_local_player_pawn(pawn).unwrap();
         let first = registry.spawn(Transform::default());
         let third = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                first,
+                weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0),
+            )
+            .unwrap();
+        registry
+            .set_component(
+                third,
+                weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0),
+            )
+            .unwrap();
         let mut inventory = Inventory::default();
         inventory.wieldables[0] = Some(first);
         inventory.wieldables[2] = Some(third);

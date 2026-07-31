@@ -434,8 +434,8 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         }),
         persist: false,
         capability: EngineStateCapability::Readonly,
-        // E16 Task 3: owner-private authoritative weapon cooldown for the
-        // client's own pawn, projected via the host pawn -> weapon map.
+        // Owner-private cooldown projects the active Inventory sibling's
+        // WeaponComponent.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {

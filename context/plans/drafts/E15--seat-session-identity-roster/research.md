@@ -91,7 +91,7 @@ The seat still serves as the shared key. A per-seat *scalar* axis and a per-seat
 
 | Concept | Type | Lifetime | Assertable by the player |
 |---|---|---|---|
-| Connection | bare `u64`, client-minted from wall-clock nanos (`netcode/mod.rs:642`) | one connection | no — `NetClient` does not even retain it |
+| Connection | bare `u64`, client-minted from wall-clock nanos (`NetEndpoint::from_role`, `NetRole::Connect` arm, `netcode/mod.rs`) | one connection | no — `NetClient` does not even retain it |
 | Pawn | `EntityId` (`registry.rs:37`) | one level | no |
 | Network entity | `NetworkId` (`wire.rs:32`) | one level (allocator map reset, counter monotonic) | no |
 | Within-level player | `PlayerId::{Local(EntityId), Remote(u64)}` (`trigger_system.rs:22`) | one level | no |

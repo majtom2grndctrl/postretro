@@ -59,7 +59,7 @@ The client column is why Task 8 exists. Composition follows the host for free be
 
 Warrant for the composition claim, stated because it eliminates work: `WieldableTuningPayload.canonical_name` (`tuning_payload.rs:22`) is built from the host pawn's live inventory, and the client composes through `compose_wieldable_inventory_from_slots` from exactly those names (`net_descriptor.rs:207-213`). Seeding the host pawn before tuning is sent therefore propagates composition. The same warrant does **not** extend to magazines or reserve: `WieldableTuningPayload` (`tuning_payload.rs:21-29`) carries neither, and `TuningPayload` (`:38-42`) carries no ammo at all.
 
-## Why the carried set is not slot-shaped
+## Why the carried set needs a structured record
 
 `SlotType` is `Number | Boolean | String | Enum | Array` (`slot_table.rs:20-27`), and `SlotValue::Array` is **`Vec<f32>`** (`slot_table.rs:15`) — floats only, no string arrays and no maps.
 

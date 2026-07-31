@@ -19,7 +19,7 @@ Give the engine a durable per-player key. Today every per-player address dies at
 
 ### Out of scope
 
-- **Per-seat scalar state slots and the `perOwner` mod-store authoring surface.** `drafts/E16--per-player-currency` owns them. This spec mints the key that surface will use; it does not build the surface. The two are separable because the carried set here is structured (a map, two arrays, an index) and has no scalar-slot representation — see Direction.
+- **Per-seat scalar state slots and the `perOwner` mod-store authoring surface.** `drafts/E16--per-player-currency` owns them. This spec mints the key that surface will use; it does not build the surface. Nothing here needs it: the rejection at `store_bridge.rs:505` applies to mod-declared stores only, and this spec declares none — every engine slot it touches already has owner-private replication. The carried set stays a structured record because two of its five values, the ammo-reserve map and the inventory composition, have no slot representation at all — see Direction.
 - **Lobby UI, join predicate, session-phase vocabulary.** Spec 3 of the band, deferred there by `plans/done/E15--session-lifecycle/index.md:72-75`.
 - **Authentication.** `context/lib/index.md:102` names anti-cheat a non-goal of this project's multiplayer; `research/coop-session-lobby.md:80-84` states the friends-group trust posture and says plainly that the player id "is not an authentication mechanism." The connect token is unsecured and its claim is forgeable. Two forward-compat constraints are honored instead — invariants I3 and I4.
 - **Host migration and session-state serialization.** `plans/done/E15--session-lifecycle/index.md:78-80` opened the ledger without serializing it. This spec adds two entries to that ledger and keeps the roster rebuildable (I5); it writes no serializer.
@@ -38,7 +38,6 @@ Give the engine a durable per-player key. Today every per-player address dies at
 | Roster entry | `RosterEntry` — new, `crates/net/src/wire.rs` | struct in `Vec<RosterEntry>` | n/a | n/a | n/a |
 | Roster message | `ServerControlMessage::SessionRoster` — new, appended | positional tag, appended last | n/a | n/a | n/a |
 | Seat record | `SeatSessionState` — new, `crates/postretro/src/netcode/seat.rs` | **never crosses the wire** | n/a | n/a | n/a |
-| Carried loadout | `CarriedLoadout` — new, binary-local | never | n/a | n/a | n/a |
 | Replication scope (engine) | `postretro_entities::slot_table::ReplicationScope` (`slot_table.rs:52`, has `None`) | — | — | — | — |
 | Replication scope (wire) | `postretro_net::state_slots::ReplicationScope` (`state_slots.rs:76`, no `None`) | — | — | — | — |
 
@@ -52,7 +51,7 @@ Display names are UTF-8 `String` on the wire and are never used as a key.
 
 ## Wire format
 
-Two new surfaces.
+Two new surfaces and one extension to a shipped payload.
 
 ### Connect claim — connect-token `user_data`
 
@@ -86,7 +85,9 @@ Conventions followed from the crate: variable-length lists are a `Vec` of a name
 
 Reserve travels **per inventory slot**, carrying the balance for that slot's ammo type, rather than as a map of ammo type to balance. Two slots sharing a type carry the same number. This keeps a string-keyed map off the wire entirely and matches the shape the client already consumes, since it composes per slot from this same payload.
 
-`SeatSessionState` never crosses the wire. The net crate stays registry-blind (I8); it carries seat *ids*, never seat *contents*.
+### What does not cross the wire
+
+`SeatSessionState` — the seat's carried record — stays host-local. The net crate carries seat *ids* and never seat *contents*, which is what keeps it registry-blind (I8).
 
 ## Invariants
 
@@ -131,7 +132,7 @@ Two divergences, both deliberate.
 
 *Terminal closed slots become reclaimable.* `SlotState::Closed` is terminal by two independent mechanisms — an early return in `transition` (`slots.rs:69-72`) and `entry().or_insert()` in `on_connect` (`slots.rs:59`) — and `SlotTable` has no `remove`, `clear`, or `retain`, so the map grows for the endpoint's lifetime. Reclaim requires relaxing both in a coordinated way, and the never-connected tombstone population must stay terminal. This is a shipped contract change and the riskiest edit in the spec.
 
-*Placement in the layer stack.* Three placements, decided separately because they answer to different constraints. The seat **table** lives in the binary's `netcode/` module: it holds engine types, and `entities` is a compile chokepoint with six dependents including the whole render and UI stack that `development_guide.md:41` keeps domain logic out of. The nearest existing thing to a seat — `placement_assignments`, a durable per-client map surviving a close (`netcode/lifecycle.rs:35-42`) — is already there. The seat **id type** lives in `foundation`, because it is the only crate both `entities` and the binary can name, and per-seat storage reaches the floor slot table as soon as the currency spec lands. Session id and player id live in `net` alongside the other wire identities, mirroring `NetworkId` — a wire type whose allocator lives in the binary. Recorded as a fact for the reviewer, not as a cleared question.
+*Placement in the layer stack.* Three placements, decided separately because they answer to different constraints. The seat **table** lives in the binary's `netcode/` module: it holds engine types, and `entities` is a compile chokepoint with six dependents including the whole render and UI stack that `development_guide.md:41` keeps domain logic out of. The nearest existing thing to a seat — `placement_assignments`, a durable per-client map surviving a close (`netcode/lifecycle.rs:35-42`) — is already there. The seat **id type** lives in `foundation`, because it is the only crate both `entities` and the binary can name, and per-seat storage reaches the floor slot table as soon as the currency spec lands. Session id and player id live in `net` alongside the other wire identities, mirroring `NetworkId` — a wire type whose allocator lives in the binary.
 
 *Carry is mechanism; whether a level carries is policy.* This spec makes the seat able to carry and makes carrying unconditional, matching the continuous-progression shape the campaign wants today. Pistol-start is a live design axis for a Doom-lineage shooter, and the repo's mechanism-versus-policy thesis is explicit — `E16--impact-policy-substrate` builds a substrate holding no opinion about what a hit means. The opt-out seam is named rather than built: seeding reads the seat's carried record through one call per spawn path, so a policy that suppresses carry for a level suppresses that read. No authored knob ships here; adding one is a descriptor field and a check at that call, not a redesign.
 
@@ -141,9 +142,11 @@ Two divergences, both deliberate.
 
 *Carry state through the existing `persist` save path.* Rejected on two shipped rules: a connected client does not write the save file (`should_save_persisted_state`), and client-to-host state writes are a stated Phase 3.5 non-goal. Persist is also machine-scoped where the carry is session-scoped — the wrong lifetime.
 
-*Carry through per-seat state slots instead of a structured record.* The strongest rival, and the one that would also serve the currency spec. Its upside is real: the state store has engine-global lifetime and is never cleared on level unload (`scripting.md:110`), which would delete the harvest hook, the ordering constraint against `unload_level`'s first statement, and most of the harvest rows in the Ordering matrix. Owner-private replication to the owning client already ships, which is much of Task 8.
+*Carry through per-seat state slots instead of a structured record.* The strongest rival, and the one that would also serve the currency spec. Its upside is real and worth naming: the state store has engine-global lifetime and is never cleared on level unload (`scripting.md:110`), so this path would delete the harvest hook, the ordering constraint against `unload_level`'s first statement, and most of the harvest rows in the Ordering matrix.
 
 Rejected on shape, stated precisely because the loose version of this claim is wrong. `SlotType::Array` does exist (`slot_table.rs:20-27`), so magazines fit, and health and active slot are `Number`. But `SlotValue::Array` is `Vec<f32>` (`slot_table.rs:15`) — floats only. Inventory composition is a list of canonical *name strings* and has no representation at all, and the ammo reserve is a map keyed by ammo-type string, which no slot type expresses. Composition is the load-bearing value: without it the seat cannot rebuild a loadout, which is the carry's whole point. So a structured record is required regardless of what else moves into slots, and taking this path would also mean absorbing the `perOwner` authoring axis that `drafts/E16--per-player-currency` owns.
+
+Note what this alternative would *not* have bought. Owner-private replication already ships, but it would not have supplied Task 8: the reserve is the value the client is missing across non-active weapons, and a string-keyed map cannot be a slot, so that gap needs a non-slot channel either way.
 
 The seat still stands as the key a scalar per-seat axis will use when that spec builds one — same key, two shapes, one store each with no overlap in what they hold.
 

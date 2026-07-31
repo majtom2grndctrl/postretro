@@ -187,7 +187,6 @@ fn run_headless_inner(
 
     let mover_colliders = products.mover_colliders;
     let mut mover_tick_states = products.mover_tick_states;
-    let active_wieldable = products.active_wieldable;
 
     // 6. Tick loop. Persistent per-run state: the registry handle, the progress
     //    tracker (above), the AI-warning set, the mover tick states, and the
@@ -264,7 +263,7 @@ fn run_headless_inner(
             &hit_zone_store,
             nav_graph.as_ref(),
             gravity,
-            active_wieldable,
+            None,
             anim_time,
             &mut progress_tracker,
             &mut ai_runtime,

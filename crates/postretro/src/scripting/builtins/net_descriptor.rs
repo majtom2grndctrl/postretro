@@ -35,15 +35,14 @@ use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 /// distinguishable from map-start single-player spawns. The per-placement KVP bag is
 /// forwarded with `entity_class` stripped, matching `spawn_from_player_starts`.
 ///
-/// Returns the spawned pawn `EntityId` and optional sibling active-weapon `EntityId`,
-/// or `None` if the pawn descriptor is unregistered or the registry is exhausted
-/// (logged, like the player-start path).
+/// Returns the spawned pawn `EntityId`, or `None` if the pawn descriptor is
+/// unregistered or the registry is exhausted (logged, like the player-start path).
 pub(crate) fn spawn_net_slot_pawn(
     placement: &MapEntity,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
-) -> Option<(EntityId, Option<EntityId>)> {
+) -> Option<EntityId> {
     let entity_class = placement
         .key_values
         .get("entity_class")
@@ -84,13 +83,12 @@ pub(crate) fn spawn_net_slot_pawn(
     kvps.remove("entity_class");
     let _ = registry.set_map_kvps(id, kvps);
 
-    // The host materializes every remote pawn's owned instances. The first
-    // occupied slot remains the temporary active return until Task 3 removes
-    // the legacy owner map.
-    let active_weapon =
-        compose_wieldable_inventory(registry, id, descriptor, placement, descriptors);
+    // The host materializes every remote pawn's owned instances. Consumers resolve
+    // the selected instance from the pawn inventory; no sibling id escapes this
+    // spawn boundary.
+    let _ = compose_wieldable_inventory(registry, id, descriptor, placement, descriptors);
 
-    Some((id, active_weapon))
+    Some(id)
 }
 
 /// Materialize the descriptor-derived `PlayerMovementComponent` for a client's LOCAL
@@ -704,12 +702,8 @@ mod tests {
         let descriptors = vec![player_with_movement("player")];
         let placement = spawn_point_at(Vec3::new(2.0, 1.0, -3.0), Vec3::ZERO, &[]);
 
-        let (id, active_weapon) = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
+        let id = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
             .expect("net-slot pawn spawns from a player descriptor");
-        assert_eq!(
-            active_weapon, None,
-            "a player descriptor without an inventory loadout returns no active weapon"
-        );
 
         // It is a movement pawn at the placement origin.
         assert!(matches!(
@@ -743,9 +737,13 @@ mod tests {
         ];
         let placement = spawn_point(&[]);
 
-        let (pawn, active_weapon) = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
+        let pawn = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
             .expect("net-slot pawn spawns from a player descriptor");
-        let weapon = active_weapon.expect("inventory loadout materializes an active weapon entity");
+        let weapon = reg
+            .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("inventory loadout materializes an active weapon entity");
 
         assert_ne!(
             pawn, weapon,
@@ -770,9 +768,12 @@ mod tests {
             ammo_weapon_descriptor("reference_pistol"),
         ];
 
-        let (pawn, weapon) =
-            spawn_net_slot_pawn(&spawn_point(&[]), &descriptors, &mut reg, None).unwrap();
-        let weapon = weapon.expect("net-slot sibling weapon");
+        let pawn = spawn_net_slot_pawn(&spawn_point(&[]), &descriptors, &mut reg, None).unwrap();
+        let weapon = reg
+            .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("net-slot sibling weapon");
 
         assert_eq!(
             reg.get_component::<postretro_entities::AmmoReserve>(pawn)
@@ -798,13 +799,8 @@ mod tests {
 
         // Default entity_class -> "player".
         let default_placement = spawn_point(&[]);
-        let (_pawn, active_weapon) =
-            spawn_net_slot_pawn(&default_placement, &descriptors, &mut reg, None)
-                .expect("default entity_class spawns a pawn");
-        assert_eq!(
-            active_weapon, None,
-            "weaponless descriptor records no active weapon"
-        );
+        let _pawn = spawn_net_slot_pawn(&default_placement, &descriptors, &mut reg, None)
+            .expect("default entity_class spawns a pawn");
 
         // Explicit unknown entity_class -> skipped.
         let unknown = spawn_point(&[("entity_class", "no_such_class")]);

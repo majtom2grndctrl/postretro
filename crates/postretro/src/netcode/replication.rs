@@ -14,7 +14,6 @@ use postretro_entities::{
 };
 use postretro_foundation::PlayerMovementComponent;
 
-use super::WeaponOwners;
 use super::descriptor_class::{descriptor_entity_class, is_networked_ai_enemy};
 use super::movement_state::movement_state_to_wire;
 use super::{
@@ -107,15 +106,7 @@ pub(crate) fn produce_owned_snapshots(
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
 ) -> Vec<EntitySnapshot> {
-    produce_owned_snapshots_with_host_aim(
-        registry,
-        set,
-        allocator,
-        owners,
-        &WeaponOwners::new(),
-        command_queues,
-        None,
-    )
+    produce_owned_snapshots_with_host_aim(registry, set, allocator, owners, command_queues, None)
 }
 
 /// Production listen-host variant. Remote-owned pawn pitch comes from the resolved
@@ -127,7 +118,6 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
     set: &ReplicableSet,
     allocator: &mut NetworkIdAllocator,
     owners: &MovementOwners,
-    weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
     host_aim: Option<(EntityId, f32)>,
 ) -> Vec<EntitySnapshot> {
@@ -161,8 +151,7 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
         // `"player"`); a networked AI enemy stamps its descriptor class on any record
         // carrying finite `Transform` data. A non-descriptor entity stays `None`.
         let entity_class = descriptor_entity_class(registry, id, &components);
-        let active_weapon_archetype =
-            active_weapon_archetype(registry, id, &components, weapon_owners);
+        let active_weapon_archetype = active_weapon_archetype(registry, id, &components);
         snapshots.push(EntitySnapshot {
             network_id,
             components,
@@ -239,15 +228,13 @@ fn collect_payloads(
 }
 
 /// Shared-visible active-weapon identity for a replicated movement pawn. The
-/// host-only `WeaponOwners` map provides the pawn-to-weapon relationship; the
-/// weapon's descriptor provenance provides the canonical archetype name clients use
-/// for presentation. A missing map entry, missing provenance, or empty name means no
-/// equipped weapon on the wire.
+/// pawn inventory provides the active instance; the weapon's descriptor provenance
+/// provides the canonical archetype name clients use for presentation. A missing
+/// inventory entry, provenance, or empty name means no equipped weapon on the wire.
 fn active_weapon_archetype(
     registry: &EntityRegistry,
     pawn: EntityId,
     components: &[ComponentPayload],
-    weapon_owners: &WeaponOwners,
 ) -> Option<String> {
     let carries_movement = components
         .iter()
@@ -255,7 +242,7 @@ fn active_weapon_archetype(
     if !carries_movement {
         return None;
     }
-    let weapon = weapon_owners.weapon_of(pawn)?;
+    let weapon = super::active_wieldable_for_pawn(registry, pawn)?;
     registry
         .get_component::<DescriptorProvenance>(weapon)
         .ok()

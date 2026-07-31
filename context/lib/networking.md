@@ -350,11 +350,12 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
 
 ### Ownership and identity maps
 
-- **`WeaponOwners`** (`crate::netcode`): host-only pawn -> active-weapon map, mirroring
-  `MovementOwners`. A connected client's pawn carries no host-visible local weapon
-  simulation; the host resolves fire legitimacy, credit, and cooldown for a remote pawn
-  through this map. A pawn whose descriptor names no weapon has no entry and never fires
-  host-side.
+- **Pawn `Inventory`** (`postretro_entities`): the single source of truth for a pawn's
+  active wieldable instance on every role. Host fire legitimacy, credit, cooldown,
+  snapshot archetypes, owner-private projections, HUD feedback, and presentation all
+  resolve through this component. `WeaponOwners` is only a host-side dirty attachment
+  queue; it contains no pawn -> weapon mapping. A pawn with no active inventory entry
+  cannot fire host-side.
 - **`NetworkId <-> EntityId` reverse maps, one per peer role.** The client keeps
   `EntityId -> NetworkId` (to name a locally-hit remote enemy on the wire); the host keeps
   `NetworkId -> EntityId` (to resolve a declared target back to a live entity). Both are

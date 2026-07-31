@@ -2,19 +2,22 @@ use crate::weapon;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{EntityId, EntityRegistry};
 
 pub(crate) fn apply_weapon_impact_damage(
     registry: &mut EntityRegistry,
-    active_wieldable: Option<EntityId>,
     attacker: Option<EntityId>,
     impact: &weapon::WeaponImpact,
 ) {
     let (Some(_), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome) else {
         return;
     };
-    let Some(weapon_id) = active_wieldable else {
+    let Some(weapon_id) = attacker
+        .and_then(|pawn| registry.get_component::<Inventory>(pawn).ok())
+        .and_then(Inventory::active_wieldable)
+    else {
         log::warn!("[Weapon] hitscan impact had no active wieldable; dropping damage");
         return;
     };

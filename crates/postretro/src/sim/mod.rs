@@ -110,6 +110,10 @@ pub(crate) struct TickEvents {
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
+    /// Pawns whose active inventory slot repointed this tick. Presentation drains
+    /// this after simulation so the hand socket follows committed ownership, never
+    /// a pending selection.
+    pub(crate) repointed_pawns: Vec<EntityId>,
     /// Bound trigger residuals drained app-side after every fixed tick this frame.
     pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
@@ -135,7 +139,7 @@ pub(crate) fn simulate_tick(
     hit_zone_store: &HitZoneStore,
     nav_graph: Option<&NavGraph>,
     gravity: f32,
-    active_wieldable: Option<EntityId>,
+    _legacy_active_wieldable: Option<EntityId>,
     anim_time: f64,
     _progress_tracker: &mut ProgressTracker,
     ai_runtime: &mut scripting_systems::ai::AiRuntime,
@@ -154,7 +158,6 @@ pub(crate) fn simulate_tick(
         hit_zone_store,
         nav_graph,
         gravity,
-        active_wieldable,
         false,
         anim_time,
         (0.0, 0.0),
@@ -181,7 +184,6 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     hit_zone_store: &HitZoneStore,
     nav_graph: Option<&NavGraph>,
     gravity: f32,
-    active_wieldable: Option<EntityId>,
     mod_block_during_reload: bool,
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
@@ -400,10 +402,9 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         registry.local_player_movement_pawn()
     };
     let weapon_fire = weapon_stage::weapon_fire_command(command.fire_button, post_movement_command);
-    let (local_deliveries, mut weapon) = weapon_stage::run_local_weapon_command(
+    let (local_deliveries, mut weapon, repointed_pawn) = weapon_stage::run_local_weapon_command(
         &registry,
         own_pawn,
-        active_wieldable,
         mod_block_during_reload,
         command.select_slot,
         &weapon_fire,
@@ -425,6 +426,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         death,
         authorized_shots,
         reload_deliveries,
+        repointed_pawns: repointed_pawn.into_iter().collect(),
         trigger_residuals,
         #[cfg(test)]
         trigger_fires,
@@ -1170,6 +1172,7 @@ mod tests {
     use glam::Vec2;
     use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::components::brain::graph_state_index;
+    use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
@@ -1408,6 +1411,9 @@ mod tests {
         component.magazine = magazine;
         registry.set_component(weapon, component).unwrap();
         registry.set_component(pawn, reserve_component).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         (pawn, weapon)
     }
 

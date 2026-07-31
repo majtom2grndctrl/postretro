@@ -35,6 +35,7 @@ use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_state_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
     RATE_MIN, resolve_pending_animation_stamps,
@@ -278,7 +279,15 @@ impl SimHarness {
                 role_ids.push((role, id));
             }
             let enemy = spawn_enemy(&mut registry, Vec3::new(-1.0, 1.0, 0.0));
-            (spawn_weapon(&mut registry), enemy)
+            let weapon = spawn_weapon(&mut registry);
+            let alpha = role_ids
+                .iter()
+                .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
+                .expect("alpha role is always spawned");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry.set_component(alpha, inventory).unwrap();
+            (weapon, enemy)
         };
         let selected_player = role_ids
             .iter()

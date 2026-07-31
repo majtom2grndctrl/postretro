@@ -682,11 +682,6 @@ pub(crate) struct App {
     /// clients retain the default empty report because they never run the pass.
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
-    /// Active wieldable instance equipped by the player. The companion
-    /// descriptor name lets mod-init hot reload refresh authored weapon stats
-    /// while preserving per-instance cooldown.
-    active_wieldable: Option<postretro_entities::EntityId>,
-    active_wieldable_descriptor: Option<String>,
     /// Connected-client local weapon gate for the host-owned local pawn. The client
     /// owns no local `Weapon` component; this descriptor-seeded carrier is read-only
     /// with respect to world state and feeds local hit resolution only.
@@ -1193,10 +1188,9 @@ fn followed_player_pawn(
 fn local_viewmodel_asset<'a>(
     registry: &postretro_entities::EntityRegistry,
     local_pawn: postretro_entities::EntityId,
-    weapon_owners: &netcode::WeaponOwners,
     descriptors: &'a [postretro_entities::EntityTypeDescriptor],
 ) -> Option<(postretro_entities::EntityId, &'a str)> {
-    let weapon = weapon_owners.weapon_of(local_pawn)?;
+    let weapon = netcode::active_wieldable_for_pawn(registry, local_pawn)?;
     let provenance = registry
         .get_component::<postretro_entities::provenance::DescriptorProvenance>(weapon)
         .ok()?;
@@ -2134,6 +2128,7 @@ impl ApplicationHandler for App {
                 let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
                 let mut pending_weapon_script_events = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
+                let mut repointed_pawns = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 let mut host_snapshot_due = false;
                 // Death-event names accumulate here and drain through the
@@ -2345,7 +2340,6 @@ impl ApplicationHandler for App {
                             hit_zone_store,
                             self.nav_graph.as_ref(),
                             script_ctx.gravity.get(),
-                            self.active_wieldable,
                             self.switching.block_during_reload,
                             frame_anim_time,
                             presentation_camera_aim,
@@ -2388,23 +2382,6 @@ impl ApplicationHandler for App {
                             }),
                             |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
                         );
-                        // Task 3 will replace this compatibility bridge with
-                        // pawn-owned presentation dirties. Until then, mirror the
-                        // inventory's committed slot only after lowering has
-                        // repointed it: HUD and the first-person viewmodel never
-                        // observe the pending target during the lower dwell.
-                        {
-                            let registry = script_ctx.registry.borrow();
-                            if let Some(inventory) = followed_player_pawn(&registry)
-                                .and_then(|pawn| {
-                                    registry
-                                        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
-                                        .ok()
-                                })
-                            {
-                                self.active_wieldable = inventory.active_wieldable();
-                            }
-                        }
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -2441,6 +2418,7 @@ impl ApplicationHandler for App {
                             tick_events.weapon,
                             tick_events.reload_deliveries,
                         );
+                        repointed_pawns.extend(tick_events.repointed_pawns);
                         pending_death_events.extend(tick_events.death);
                         pending_trigger_residuals.extend(tick_events.trigger_residuals);
 
@@ -2474,6 +2452,7 @@ impl ApplicationHandler for App {
                 // render stage reads entities, so the renderer stays read-only.
                 // No-op for single-player and the host.
                 self.net_sample_remote_interpolation(frame_dt, frame_anim_time);
+                self.update_repointed_weapon_attachments(&script_ctx, &repointed_pawns);
                 // Connected clients skip the authoritative `simulate_tick`, so
                 // generate renderer-facing pose inputs here from the freshly
                 // interpolated displayed transforms. These transient mesh fields
@@ -2567,21 +2546,17 @@ impl ApplicationHandler for App {
                 // snapshot construction, so same-frame consumers see the
                 // settled pawn and weapon state. See: context/lib/scripting.md §5.
                 //
-                // Skip on a connected client. The player HUD slots are
-                // owner-private replicated; the server writes them through the
-                // state-slot apply path, so a client
-                // must not overwrite the replicated values from its own (non-
-                // authoritative) pawn. Host and single-player keep publishing.
+                // A connected client skips host-authoritative HUD slot writes:
+                // those values arrive through state-slot apply. It still samples
+                // a local inventory weapon when materialized so reload-feedback
+                // acknowledgement cannot accumulate; Task 5's temporary absence
+                // of client inventory is a safe no-op.
                 let is_connected_client = self.is_connected_client();
-                let active_wieldable = self.active_wieldable;
                 let hud_sampled_weapon = if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
                         .player_hud_state
-                        .tick_for_role_and_report_sampled_weapon(
-                            is_connected_client,
-                            active_wieldable,
-                        )
+                        .tick_for_role_and_report_sampled_weapon(is_connected_client, None)
                 } else {
                     None
                 };
@@ -3091,54 +3066,34 @@ impl ApplicationHandler for App {
                             &session.hit_zone_store,
                         );
 
-                        // The first-person model is not an entity attachment. Host and
-                        // single-player resolve through their weapon entity; a connected
-                        // client resolves the recipient-local replicated archetype
-                        // directly because it intentionally owns no gameplay weapon.
-                        // Missing descriptors/models degrade to no instance this frame.
-                        let mut single_player_weapon_owners = netcode::WeaponOwners::new();
-                        if let (Some(local_pawn), Some(active_weapon)) =
-                            (followed_player_pawn(&registry), self.active_wieldable)
-                        {
-                            single_player_weapon_owners.set(local_pawn, active_weapon);
-                        }
+                        // The first-person model is not an entity attachment. Every
+                        // role prefers the local pawn's inventory; a connected client
+                        // without Task 5's materialized inventory safely falls back to
+                        // the replicated archetype for this transitional release.
                         let descriptors = script_ctx.data_registry.borrow();
                         if let Some(local_pawn) = followed_player_pawn(&registry) {
-                            let network_viewmodel =
-                                session
-                                    .net_endpoint
-                                    .as_ref()
-                                    .and_then(|endpoint| match endpoint {
-                                        netcode::NetEndpoint::Host { weapon_owners, .. } => {
-                                            local_viewmodel_asset(
-                                                &registry,
-                                                local_pawn,
-                                                weapon_owners,
-                                                &descriptors.entities,
-                                            )
-                                            .map(|(weapon, model)| (weapon.to_raw(), model))
-                                        }
-                                        netcode::NetEndpoint::Client { replication, .. } => {
-                                            replication
-                                                .local_active_weapon_archetype()
-                                                .and_then(|archetype| {
-                                                    viewmodel_asset_for_archetype(
-                                                        archetype,
-                                                        &descriptors.entities,
-                                                    )
-                                                })
-                                                .map(|model| (local_pawn.to_raw(), model))
-                                        }
+                            let viewmodel =
+                                local_viewmodel_asset(&registry, local_pawn, &descriptors.entities)
+                                    .map(|(weapon, model)| (weapon.to_raw(), model))
+                                    .or_else(|| {
+                                        session.net_endpoint.as_ref().and_then(|endpoint| {
+                                            match endpoint {
+                                                netcode::NetEndpoint::Client {
+                                                    replication,
+                                                    ..
+                                                } => replication
+                                                    .local_active_weapon_archetype()
+                                                    .and_then(|archetype| {
+                                                        viewmodel_asset_for_archetype(
+                                                            archetype,
+                                                            &descriptors.entities,
+                                                        )
+                                                    })
+                                                    .map(|model| (local_pawn.to_raw(), model)),
+                                                netcode::NetEndpoint::Host { .. } => None,
+                                            }
+                                        })
                                     });
-                            let viewmodel = network_viewmodel.or_else(|| {
-                                local_viewmodel_asset(
-                                    &registry,
-                                    local_pawn,
-                                    &single_player_weapon_owners,
-                                    &descriptors.entities,
-                                )
-                                .map(|(weapon, model)| (weapon.to_raw(), model))
-                            });
                             if let Some((weapon_seed, model)) = viewmodel {
                                 session.mesh_render.collect_viewmodel(
                                     model,
@@ -5566,9 +5521,15 @@ impl App {
         &mut self,
         resolved: &[netcode::ResolvedPawnCommand],
     ) -> Vec<sim::RemotePawnCommand> {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return Vec::new();
+        };
         let Some(netcode::NetEndpoint::Host {
             allocator,
-            weapon_owners,
             weaponless_fire_logged,
             tick,
             ..
@@ -5585,7 +5546,7 @@ impl App {
             .map(|resolved| {
                 Self::prepare_remote_pawn_command(
                     allocator,
-                    weapon_owners,
+                    &script_ctx.registry.borrow(),
                     weaponless_fire_logged,
                     *tick,
                     resolved,
@@ -5596,12 +5557,12 @@ impl App {
 
     fn prepare_remote_pawn_command(
         allocator: &netcode::NetworkIdAllocator,
-        weapon_owners: &netcode::WeaponOwners,
+        registry: &postretro_entities::EntityRegistry,
         weaponless_fire_logged: &mut std::collections::HashSet<postretro_entities::EntityId>,
         fire_tick: u32,
         resolved: &netcode::ResolvedPawnCommand,
     ) -> sim::RemotePawnCommand {
-        let weapon = weapon_owners.weapon_of(resolved.pawn);
+        let weapon = netcode::active_wieldable_for_pawn(registry, resolved.pawn);
         let wants_fire =
             resolved.command.fire_button.pressed || resolved.command.fire_button.active;
         if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
@@ -5718,7 +5679,6 @@ impl App {
     /// `simulate_tick` — this only replicates its Transform + PlayerMovementState
     /// outbound.
     fn host_register_own_pawn_after_install(&mut self) {
-        let active_weapon = self.active_wieldable;
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -5748,14 +5708,49 @@ impl App {
             netcode::host_unregister_own_pawn(allocator, replicable, host_pawn, weapon_owners);
             return;
         };
-        netcode::host_register_own_pawn(
-            allocator,
-            replicable,
-            host_pawn,
-            weapon_owners,
-            pawn,
-            active_weapon,
-        );
+        netcode::host_register_own_pawn(allocator, replicable, host_pawn, weapon_owners, pawn);
+    }
+
+    /// Route committed inventory repoints to third-person presentation. Hosts queue
+    /// the change for their pre-snapshot attachment pass; single-player and a future
+    /// client-local inventory update their local pawn immediately.
+    fn update_repointed_weapon_attachments(
+        &mut self,
+        script_ctx: &postretro_entities::ScriptCtx,
+        repointed_pawns: &[postretro_entities::EntityId],
+    ) {
+        if repointed_pawns.is_empty() {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if let Some(netcode::NetEndpoint::Host { weapon_owners, .. }) =
+            session.net_endpoint.as_mut()
+        {
+            for &pawn in repointed_pawns {
+                weapon_owners.mark_attachment_dirty(pawn);
+            }
+            return;
+        }
+
+        let descriptors = script_ctx.data_registry.borrow().entities.clone();
+        let mut registry = script_ctx.registry.borrow_mut();
+        for &pawn in repointed_pawns {
+            if crate::netcode::synchronize_weapon_attachment_for_pawn(
+                &mut registry,
+                pawn,
+                &descriptors,
+                &session.hit_zone_store,
+            ) {
+                crate::resolve_mesh_entity_bindings_for_entities(
+                    &mut registry,
+                    &session.mesh_clip_tables,
+                    &session.hit_zone_store,
+                    [pawn],
+                );
+            }
+        }
     }
 
     /// Register the listen host's networked AI enemies for outbound replication after a
@@ -6701,7 +6696,7 @@ mod tests {
     }
 
     #[test]
-    fn local_viewmodel_asset_uses_weapon_owner_and_weapon_provenance() {
+    fn local_viewmodel_asset_uses_inventory_weapon_and_weapon_provenance() {
         use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
         use postretro_entities::{EntityRegistry, Transform};
 
@@ -6719,15 +6714,16 @@ mod tests {
                 },
             )
             .unwrap();
-        let mut owners = netcode::WeaponOwners::new();
-        owners.set(pawn, weapon);
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         let descriptors = vec![weapon_viewmodel_descriptor(
             "reference_pistol",
             Some("models/pistol/view.gltf"),
         )];
 
         assert_eq!(
-            local_viewmodel_asset(&registry, pawn, &owners, &descriptors),
+            local_viewmodel_asset(&registry, pawn, &descriptors),
             Some((weapon, "models/pistol/view.gltf")),
         );
     }
@@ -6751,14 +6747,14 @@ mod tests {
                 },
             )
             .unwrap();
-        let mut owners = netcode::WeaponOwners::new();
-        owners.set(pawn, weapon);
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
 
         assert!(
             local_viewmodel_asset(
                 &registry,
                 pawn,
-                &owners,
                 &[weapon_viewmodel_descriptor("reference_pistol", None)],
             )
             .is_none()
@@ -7575,9 +7571,9 @@ mod tests {
     #[test]
     fn weaponless_remote_fire_logs_once_as_info_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
+        let registry = postretro_entities::EntityRegistry::new();
         let mut allocator = netcode::NetworkIdAllocator::new();
         allocator.stamp(pawn);
-        let weapon_owners = netcode::WeaponOwners::new();
         let mut weaponless_fire_logged = std::collections::HashSet::new();
         let mut owners = netcode::MovementOwners::new();
         owners.set(pawn, 7);
@@ -7609,14 +7605,14 @@ mod tests {
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             let first = App::prepare_remote_pawn_command(
                 &allocator,
-                &weapon_owners,
+                &registry,
                 &mut weaponless_fire_logged,
                 99,
                 resolved,
             );
             let second = App::prepare_remote_pawn_command(
                 &allocator,
-                &weapon_owners,
+                &registry,
                 &mut weaponless_fire_logged,
                 100,
                 resolved,

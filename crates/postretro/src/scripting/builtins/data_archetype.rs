@@ -894,8 +894,6 @@ pub(crate) const PLAYER_START_CLASSNAME: &str = "player_spawn";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PlayerSpawnResult {
     pub(crate) spawned: usize,
-    pub(crate) active_wieldable: Option<EntityId>,
-    pub(crate) active_wieldable_descriptor: Option<String>,
 }
 
 pub(crate) fn spawn_from_player_starts(
@@ -905,8 +903,6 @@ pub(crate) fn spawn_from_player_starts(
     agent_params: Option<NavAgentParams>,
 ) -> PlayerSpawnResult {
     let mut spawned = 0usize;
-    let mut active_wieldable = None;
-    let mut active_wieldable_descriptor = None;
 
     for entity in spawn_points {
         let entity_class = entity
@@ -954,16 +950,7 @@ pub(crate) fn spawn_from_player_starts(
         kvps.remove("entity_class");
         let _ = registry.set_map_kvps(id, kvps);
 
-        if let Some(weapon_id) =
-            compose_wieldable_inventory(registry, id, descriptor, entity, descriptors)
-            && active_wieldable.is_none()
-        {
-            active_wieldable = Some(weapon_id);
-            active_wieldable_descriptor = registry
-                .get_component::<DescriptorProvenance>(weapon_id)
-                .ok()
-                .map(|provenance| provenance.canonical_name.clone());
-        }
+        let _ = compose_wieldable_inventory(registry, id, descriptor, entity, descriptors);
 
         spawned += 1;
     }
@@ -975,11 +962,7 @@ pub(crate) fn spawn_from_player_starts(
         );
     }
 
-    PlayerSpawnResult {
-        spawned,
-        active_wieldable,
-        active_wieldable_descriptor,
-    }
+    PlayerSpawnResult { spawned }
 }
 
 #[cfg(test)]
@@ -1972,13 +1955,13 @@ mod tests {
         ];
         let points = vec![spawn_point(&[])];
 
-        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+        let _result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let player_id = reg
-            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| Some(*id) != result.active_wieldable)
-            .expect("player entity should spawn");
+            .expect("player entity should spawn with inventory");
         let player_provenance = reg
             .get_component::<DescriptorProvenance>(player_id)
             .expect("player provenance should be recorded");
@@ -1988,8 +1971,10 @@ mod tests {
         );
         assert_eq!(player_provenance.canonical_name, "player");
 
-        let weapon_id = result
-            .active_wieldable
+        let weapon_id = reg
+            .get_component::<Inventory>(player_id)
+            .unwrap()
+            .active_wieldable()
             .expect("default weapon should spawn as active wieldable");
         let weapon_provenance = reg
             .get_component::<DescriptorProvenance>(weapon_id)
@@ -2090,7 +2075,7 @@ mod tests {
         descriptors.extend(names.iter().map(|name| weapon_descriptor(name)));
         let mut reg = EntityRegistry::new();
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
 
         let pawn = reg
             .iter_with_kind(ComponentKind::Inventory)
@@ -2100,7 +2085,6 @@ mod tests {
         let inventory = reg.get_component::<Inventory>(pawn).unwrap();
         assert_eq!(inventory.active_slot, 0);
         assert_eq!(inventory.switch_target, None);
-        assert_eq!(result.active_wieldable, inventory.active_wieldable());
         assert!(inventory.wieldables.iter().all(Option::is_some));
         assert_eq!(
             reg.iter_with_kind(ComponentKind::Weapon).count(),
@@ -2334,11 +2318,16 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
-        let weapon_id = result.active_wieldable.expect("active wieldable");
-        assert_eq!(
-            result.active_wieldable_descriptor.as_deref(),
-            Some("reference_pistol")
-        );
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("player inventory");
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("active wieldable");
         let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
         assert_eq!(weapon.damage, 12.0);
         assert_eq!(weapon.effective().credit_source, "reference_pistol");
@@ -2353,13 +2342,17 @@ mod tests {
             ammo_weapon_descriptor("reference_pistol"),
         ];
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
-        let weapon_id = result.active_wieldable.expect("active wieldable");
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
         let pawn = reg
-            .iter_with_kind(ComponentKind::Transform)
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| *id != weapon_id)
             .expect("spawned pawn");
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("active wieldable");
 
         assert_eq!(
             reg.get_component::<AmmoReserve>(pawn)
@@ -2383,12 +2376,16 @@ mod tests {
             weapon_descriptor("reference_pistol"),
         ];
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
-        let weapon_id = result.active_wieldable.unwrap();
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
         let pawn = reg
-            .iter_with_kind(ComponentKind::Transform)
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| *id != weapon_id)
+            .unwrap();
+        let _weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
             .unwrap();
 
         assert!(reg.get_component::<AmmoReserve>(pawn).is_err());
@@ -2406,8 +2403,17 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
-        assert!(result.active_wieldable.is_none());
-        assert!(result.active_wieldable_descriptor.is_none());
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("pawn receives empty inventory");
+        assert!(
+            reg.get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_wieldable()
+                .is_none()
+        );
         assert_eq!(
             live_count(&reg),
             1,

@@ -229,10 +229,9 @@ mod tests {
         let command = fire_command(true, true);
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events) = run_local_weapon_command(
+        let (deliveries, events, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
-            Some(outgoing),
             false,
             Some(1),
             &command,
@@ -257,10 +256,9 @@ mod tests {
             assert!(!outgoing.owner_reload_status().1);
         }
 
-        let (deliveries, events) = run_local_weapon_command(
+        let (deliveries, events, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
-            Some(outgoing),
             false,
             Some(2),
             &command,
@@ -281,10 +279,9 @@ mod tests {
             assert_eq!(outgoing.state_remaining_ms, 11);
         }
 
-        let (deliveries, events) = run_local_weapon_command(
+        let (deliveries, events, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
-            Some(outgoing),
             false,
             None,
             &command,
@@ -350,7 +347,6 @@ mod tests {
             let _ = run_local_weapon_command(
                 &registry,
                 Some(pawn),
-                Some(outgoing),
                 mod_block_during_reload,
                 Some(1),
                 &fire_command(false, false),
@@ -2867,8 +2863,11 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
         };
 
-        let attacker = Some(registry.spawn(Transform::default()));
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), attacker, &impact);
+        let attacker = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        registry.set_component(attacker, inventory).unwrap();
+        apply_weapon_impact_damage(&mut registry, Some(attacker), &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 75.0).abs() < f32::EPSILON);
@@ -2880,7 +2879,7 @@ mod tests {
         assert!((entry.last_hit_damage - 25.0).abs() < f32::EPSILON);
         assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
         assert_eq!(entry.last_weapon, Some(weapon_id));
-        assert_eq!(entry.last_attacker, attacker);
+        assert_eq!(entry.last_attacker, Some(attacker));
     }
 
     #[test]
@@ -2912,7 +2911,11 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: f32::MAX }),
         };
 
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), None, &impact);
+        let attacker = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        registry.set_component(attacker, inventory).unwrap();
+        apply_weapon_impact_damage(&mut registry, Some(attacker), &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 100.0).abs() < f32::EPSILON);

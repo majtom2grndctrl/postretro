@@ -60,7 +60,7 @@ mod enemy_replication_harness_test;
 pub(crate) use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub(crate) use command_queue::{
     HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
-    host_resolve_remote_commands,
+    active_wieldable_for_pawn, host_resolve_remote_commands,
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
@@ -121,10 +121,10 @@ use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
 use tuning_payload::decode_tuning_payload;
 
-/// Synchronize the host's active-weapon table into third-person presentation
-/// attachments immediately before snapshot production. The table remains the
-/// authority source; this only mirrors its canonical descriptor identity onto the
-/// pawn mesh so the host body and outgoing snapshot describe the same weapon.
+/// Synchronize dirty pawn inventory changes into third-person presentation
+/// attachments immediately before snapshot production. `WeaponOwners` is only the
+/// dirty attachment queue; each drain resolves the active instance from live pawn
+/// inventory before mirroring its descriptor identity onto the pawn mesh.
 pub(crate) fn synchronize_weapon_owner_attachments(
     registry: &mut EntityRegistry,
     weapon_owners: &mut WeaponOwners,
@@ -132,7 +132,7 @@ pub(crate) fn synchronize_weapon_owner_attachments(
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
 ) -> Vec<EntityId> {
     weapon_owners
-        .take_attachment_changes()
+        .take_attachment_changes(registry)
         .into_iter()
         .filter_map(|(pawn, weapon)| {
             let active_weapon_archetype = weapon.and_then(|weapon| {
@@ -153,17 +153,16 @@ pub(crate) fn synchronize_weapon_owner_attachments(
         .collect()
 }
 
-/// Synchronize one local pawn's third-person attachment from its active weapon.
-/// Single-player has no [`WeaponOwners`] table, and the listen host installs its
-/// own pawn before the regular pre-snapshot synchronization can run.
+/// Synchronize one local pawn's third-person attachment from its active inventory
+/// weapon. Single-player has no dirty attachment queue, and the listen host installs
+/// its own pawn before the regular pre-snapshot synchronization can run.
 pub(crate) fn synchronize_weapon_attachment_for_pawn(
     registry: &mut EntityRegistry,
     pawn: EntityId,
-    active_weapon: Option<EntityId>,
     descriptors: &[EntityTypeDescriptor],
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
 ) -> bool {
-    let active_weapon_archetype = active_weapon.and_then(|weapon| {
+    let active_weapon_archetype = active_wieldable_for_pawn(registry, pawn).and_then(|weapon| {
         registry
             .get_component::<DescriptorProvenance>(weapon)
             .ok()
@@ -346,10 +345,9 @@ pub(crate) enum NetEndpoint {
         /// Stamps `owner_client_id` + the resolved cursor onto each owned pawn's
         /// snapshot so the net crate can derive per-recipient `local_player`.
         owners: MovementOwners,
-        /// E16 host active-weapon owner map: remote pawn `EntityId -> active weapon
-        /// EntityId`. Host-authoritative fire, the owner-private cooldown projection,
-        /// and hit-declaration ingest resolve a client's pawn to its weapon here;
-        /// weaponless pawns have no entry.
+        /// E16 host dirty attachment queue. Fire, owner-private projections, snapshot
+        /// archetypes, and hit-declaration ingest resolve a pawn's active weapon from
+        /// its `Inventory`; this queue only schedules mesh attachment refreshes.
         weapon_owners: WeaponOwners,
         /// E16 host-authorized shots that are still open for a future client HIT
         /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
@@ -1951,7 +1949,6 @@ pub(crate) fn host_replicate(
         replicable,
         allocator,
         owners,
-        weapon_owners,
         command_queues,
         host_aim,
     );
@@ -2102,7 +2099,7 @@ pub(crate) fn host_handle_accept_descriptor(
         },
     );
 
-    if let Some((pawn, _net_id, active_weapon)) = spawned {
+    if let Some((pawn, _net_id)) = spawned {
         let entity_class = placement
             .key_values
             .get("entity_class")
@@ -2118,9 +2115,7 @@ pub(crate) fn host_handle_accept_descriptor(
         // `owner_client_id` and the resolved cursor. The client's command queue is
         // created lazily on its first ingested command.
         owners.set(pawn, client_id);
-        if let Some(weapon) = active_weapon {
-            weapon_owners.set(pawn, weapon);
-        }
+        weapon_owners.mark_attachment_dirty(pawn);
         let _ = command_queues;
         return Some(pawn);
     }
@@ -2140,8 +2135,9 @@ pub(crate) fn host_handle_accept_descriptor(
 /// Idempotent and reload-safe: registering the same pawn twice is a no-op (the set and
 /// the allocator are both stable per `EntityId`). On a level reload the freshly-spawned
 /// pawn is a distinct `EntityId`, so the previously-tracked host pawn (if any) is
-/// unregistered and removed from `WeaponOwners` first. The new active weapon binding
-/// is recorded here so ownership and host-pawn identity change atomically.
+/// unregistered and marked for attachment removal first. The new pawn is marked for
+/// inventory-derived attachment resolution here so ownership and presentation change
+/// atomically.
 ///
 /// Game-logic-owned: it reads the registry through the borrow the caller threads in and
 /// only touches host bookkeeping; it never reaches into `App`.
@@ -2151,7 +2147,6 @@ pub(crate) fn host_register_own_pawn(
     host_pawn: &mut Option<EntityId>,
     weapon_owners: &mut WeaponOwners,
     pawn: EntityId,
-    active_weapon: Option<EntityId>,
 ) {
     // A level reload spawns a fresh host pawn (distinct EntityId). Drop the stale
     // registration before registering the new one so the replicable set never names a
@@ -2169,11 +2164,7 @@ pub(crate) fn host_register_own_pawn(
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
     *host_pawn = Some(pawn);
-    if let Some(weapon) = active_weapon {
-        weapon_owners.set(pawn, weapon);
-    } else {
-        weapon_owners.remove_pawn(pawn);
-    }
+    weapon_owners.mark_attachment_dirty(pawn);
     log::info!("[Net] host registered own pawn {pawn:?} as {net_id:?} (outbound replication only)");
 }
 
@@ -2254,6 +2245,7 @@ pub(crate) fn host_handle_lifecycle(
                         weaponless_fire_logged,
                         *client_id,
                         pawn,
+                        &[],
                     );
                 } else if let Some(pawn) = previous_pawn {
                     cleanup_remote_pawn_owned_state(
@@ -2267,6 +2259,7 @@ pub(crate) fn host_handle_lifecycle(
                         weaponless_fire_logged,
                         *client_id,
                         pawn,
+                        &[],
                     );
                 }
             }
@@ -2353,7 +2346,9 @@ fn cleanup_stale_slot_replacement(
         return;
     }
 
-    let _ = slot_pawns.remove_client(client_id);
+    let Some((_removed_pawn, wieldables)) = slot_pawns.remove_client(client_id) else {
+        return;
+    };
     command_queues.remove_client(client_id);
     cleanup_remote_pawn_owned_state(
         registry,
@@ -2366,6 +2361,7 @@ fn cleanup_stale_slot_replacement(
         weaponless_fire_logged,
         client_id,
         pawn,
+        &wieldables,
     );
 }
 
@@ -2381,11 +2377,11 @@ fn cleanup_remote_pawn_owned_state(
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     client_id: u64,
     pawn: EntityId,
+    wieldables: &[EntityId],
 ) {
     // Pawn and sibling weapon are one runtime ownership unit. Despawning both
     // prevents a non-cancellable reload from surviving without the reserve-owning
     // pawn that must finish its transfer.
-    let weapon = weapon_owners.weapon_of(pawn);
     pending_hit_declarations.remove_client(client_id);
     open_shots.remove_client(client_id);
     open_shots.remove_pawn(pawn);
@@ -2394,10 +2390,10 @@ fn cleanup_remote_pawn_owned_state(
     weapon_owners.remove_pawn(pawn);
     replicable.unregister(pawn);
     allocator.forget(pawn);
-    if let Some(weapon) = weapon {
-        replicable.unregister(weapon);
-        allocator.forget(weapon);
-        let _ = registry.despawn(weapon);
+    for &wieldable in wieldables {
+        replicable.unregister(wieldable);
+        allocator.forget(wieldable);
+        let _ = registry.despawn(wieldable);
     }
     let _ = registry.despawn(pawn);
 }
@@ -3072,6 +3068,12 @@ mod tests {
         })
     }
 
+    fn set_active_inventory(registry: &mut EntityRegistry, pawn: EntityId, weapon: EntityId) {
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
+    }
+
     #[test]
     fn world_less_poll_advances_both_roles_without_touching_registry_state() {
         use std::net::{Ipv4Addr, SocketAddr};
@@ -3223,8 +3225,8 @@ mod tests {
         replicable.register(pawn);
         let mut owners = MovementOwners::new();
         owners.set(pawn, CLIENT_ID);
-        let mut weapon_owners = WeaponOwners::new();
-        weapon_owners.set(pawn, weapon_id);
+        let weapon_owners = WeaponOwners::new();
+        set_active_inventory(&mut registry, pawn, weapon_id);
         let command_queues = HostCommandQueues::new();
         let slot_table = SlotTable::new();
         let mut replication = ServerReplication::new();
@@ -3473,7 +3475,8 @@ mod tests {
             behavior: None,
         }];
         let mut weapon_owners = WeaponOwners::new();
-        weapon_owners.set(pawn, weapon);
+        set_active_inventory(&mut registry, pawn, weapon);
+        weapon_owners.mark_attachment_dirty(pawn);
 
         let changed = synchronize_weapon_owner_attachments(
             &mut registry,
@@ -3483,9 +3486,9 @@ mod tests {
         );
         assert_eq!(changed, vec![pawn]);
         assert_eq!(
-            weapon_owners.weapon_of(pawn),
+            active_wieldable_for_pawn(&registry, pawn),
             Some(weapon),
-            "draining presentation changes preserves snapshot/combat provenance"
+            "draining presentation changes preserves inventory provenance"
         );
         assert!(
             registry
@@ -3592,7 +3595,6 @@ mod tests {
         registry: EntityRegistry,
         allocator: NetworkIdAllocator,
         owners: MovementOwners,
-        weapon_owners: WeaponOwners,
         open_shots: OpenAuthorizedShots,
         collision_world: CollisionWorld,
         pawn: EntityId,
@@ -3641,8 +3643,7 @@ mod tests {
             let shot_id = ShotId::from_parts(pawn_net, 11);
             let mut owners = MovementOwners::new();
             owners.set(pawn, 7);
-            let mut weapon_owners = WeaponOwners::new();
-            weapon_owners.set(pawn, weapon);
+            set_active_inventory(&mut registry, pawn, weapon);
             let mut open_shots = OpenAuthorizedShots::new();
             open_shots.record(
                 authorized_test_shot(shot_id, pawn, weapon, 99, 10.0, 10.0),
@@ -3653,7 +3654,6 @@ mod tests {
                 registry,
                 allocator,
                 owners,
-                weapon_owners,
                 open_shots,
                 collision_world,
                 pawn,
@@ -3988,7 +3988,7 @@ mod tests {
             .registry
             .set_component(switched_weapon, test_weapon(90.0, 100.0))
             .unwrap();
-        fixture.weapon_owners.set(fixture.pawn, switched_weapon);
+        set_active_inventory(&mut fixture.registry, fixture.pawn, switched_weapon);
         fixture
             .registry
             .despawn(original_weapon)
@@ -4817,7 +4817,6 @@ mod tests {
             &mut host_pawn,
             &mut weapon_owners,
             pawn,
-            None,
         );
 
         // It is in the replicable set, tracked, and carries an allocated NetworkId.
@@ -4960,16 +4959,19 @@ mod tests {
         // First install.
         let first = spawn_host_boot_pawn(&mut registry);
         let first_weapon = registry.spawn(Transform::default());
+        set_active_inventory(&mut registry, first, first_weapon);
         host_register_own_pawn(
             &mut allocator,
             &mut replicable,
             &mut host_pawn,
             &mut weapon_owners,
             first,
-            Some(first_weapon),
         );
         assert!(replicable.contains(first));
-        assert_eq!(weapon_owners.weapon_of(first), Some(first_weapon));
+        assert_eq!(
+            active_wieldable_for_pawn(&registry, first),
+            Some(first_weapon)
+        );
 
         // Re-registering the SAME pawn (idempotent install) keeps exactly one entry.
         host_register_own_pawn(
@@ -4978,7 +4980,6 @@ mod tests {
             &mut host_pawn,
             &mut weapon_owners,
             first,
-            Some(first_weapon),
         );
         let count_after_idempotent = replicable.iter().count();
         assert_eq!(
@@ -4998,7 +4999,6 @@ mod tests {
             &mut host_pawn,
             &mut weapon_owners,
             second,
-            None,
         );
         assert_eq!(host_pawn, Some(second), "tracks the fresh host pawn");
         assert!(
@@ -5010,26 +5010,24 @@ mod tests {
             "the fresh host pawn is registered"
         );
         assert_eq!(
-            weapon_owners.weapon_of(first),
-            None,
-            "reload removes the old local pawn's weapon ownership"
-        );
-        assert_eq!(
             replicable.iter().count(),
             1,
             "exactly one host pawn is registered after reload"
         );
 
         let second_weapon = registry.spawn(Transform::default());
+        set_active_inventory(&mut registry, second, second_weapon);
         host_register_own_pawn(
             &mut allocator,
             &mut replicable,
             &mut host_pawn,
             &mut weapon_owners,
             second,
-            Some(second_weapon),
         );
-        assert_eq!(weapon_owners.weapon_of(second), Some(second_weapon));
+        assert_eq!(
+            active_wieldable_for_pawn(&registry, second),
+            Some(second_weapon)
+        );
         assert_eq!(
             host_unregister_own_pawn(
                 &mut allocator,
@@ -5041,7 +5039,6 @@ mod tests {
             "a replacement map without a player spawn unregisters the old host pawn"
         );
         assert_eq!(host_pawn, None);
-        assert_eq!(weapon_owners.weapon_of(second), None);
         assert!(!replicable.contains(second));
     }
 

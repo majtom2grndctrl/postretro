@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use crate::scripting::primitives::store::write_store_slot;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::health::pawn_with_health;
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::registry::{EntityId, EntityRegistry};
@@ -26,12 +27,15 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
 
 fn weapon_hud_values(
     registry: &EntityRegistry,
-    active_wieldable: Option<EntityId>,
 ) -> (Option<EntityId>, Option<(u32, u32)>, f32, bool) {
     let Some(pawn) = registry.local_player_movement_pawn() else {
         return (None, None, 0.0, false);
     };
-    let Some(weapon_id) = active_wieldable else {
+    let Some(weapon_id) = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .and_then(Inventory::active_wieldable)
+    else {
         return (None, None, 0.0, false);
     };
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
@@ -78,34 +82,29 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    /// Republish the player HUD store slots for this frame unless this endpoint is
-    /// a connected client.
-    ///
-    /// Owner-private `player.*` HUD slots are replicated. On a connected client
-    /// the server writes them through the state-slot apply path, so the local
-    /// (non-authoritative) publisher must not overwrite them. The host and
-    /// single-player keep publishing as before. The `is_connected_client`
-    /// decision is owned by the `main.rs` call site (the `NetEndpoint` role
-    /// lives there); this test-only wrapper keeps the gate testable without an
-    /// `App`.
+    /// Republish the player HUD store slots for this frame.
     #[cfg(test)]
     pub(crate) fn tick_for_role(
         &mut self,
         is_connected_client: bool,
-        active_wieldable: Option<EntityId>,
+        _legacy_active_wieldable: Option<EntityId>,
     ) {
-        let _ = self.tick_for_role_and_report_sampled_weapon(is_connected_client, active_wieldable);
+        let _ = self.tick_for_role_and_report_sampled_weapon(is_connected_client, None);
     }
 
     pub(crate) fn tick_for_role_and_report_sampled_weapon(
         &mut self,
         is_connected_client: bool,
-        active_wieldable: Option<EntityId>,
+        _legacy_active_wieldable: Option<EntityId>,
     ) -> Option<EntityId> {
+        // A connected client currently suppresses host-authoritative HUD writes,
+        // but still samples its locally-owned active component so the HUD feedback
+        // consumer can acknowledge and drain its stream. Task 8 can add local slot
+        // writes here without widening this role boundary.
         if is_connected_client {
-            return None;
+            return weapon_hud_values(&self.ctx.registry.borrow()).0;
         }
-        self.tick_and_report_sampled_weapon(active_wieldable)
+        self.tick_and_report_sampled_weapon()
     }
 
     /// Republish the player HUD store slots for this frame.
@@ -120,14 +119,11 @@ impl PlayerHudStatePublisher {
     /// Runs in the frame loop after game logic and before the UI read-snapshot
     /// build, so the snapshot picks up these values the same frame.
     #[cfg(test)]
-    pub(crate) fn tick(&mut self, active_wieldable: Option<EntityId>) {
-        let _ = self.tick_and_report_sampled_weapon(active_wieldable);
+    pub(crate) fn tick(&mut self, _legacy_active_wieldable: Option<EntityId>) {
+        let _ = self.tick_and_report_sampled_weapon();
     }
 
-    fn tick_and_report_sampled_weapon(
-        &mut self,
-        active_wieldable: Option<EntityId>,
-    ) -> Option<EntityId> {
+    fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
@@ -150,7 +146,7 @@ impl PlayerHudStatePublisher {
         }
 
         let (sampled_weapon, ammo, reload_progress, reload_active) =
-            weapon_hud_values(&self.ctx.registry.borrow(), active_wieldable);
+            weapon_hud_values(&self.ctx.registry.borrow());
         if let Some((magazine, reserve)) = ammo {
             self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
             self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
@@ -282,6 +278,9 @@ mod tests {
         registry.set_component(pawn, reserve).unwrap();
         let id = registry.spawn(Transform::default());
         registry.set_component(id, weapon).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(id);
+        registry.set_component(pawn, inventory).unwrap();
         id
     }
 
@@ -521,11 +520,11 @@ mod tests {
     fn weapon_hud_values_use_movement_pawn_without_requiring_health() {
         let ctx = ScriptCtx::new();
         let pawn = spawn_movement_pawn(&ctx);
-        let weapon = spawn_ammo_weapon(&ctx, pawn);
+        let _weapon = spawn_ammo_weapon(&ctx, pawn);
 
         assert_eq!(pawn_health_values(&ctx.registry.borrow()), None);
         assert_eq!(
-            weapon_hud_values(&ctx.registry.borrow(), Some(weapon)).1,
+            weapon_hud_values(&ctx.registry.borrow()).1,
             Some((5, 20)),
             "ammo HUD identity is independent of the Health component"
         );
@@ -655,22 +654,51 @@ mod tests {
     }
 
     #[test]
-    fn tick_for_role_skips_player_slots_on_connected_client() {
+    fn connected_client_skips_authoritative_slots_but_samples_inventory_feedback() {
         use crate::scripting::primitives::store::read_store_slot;
+        use postretro_entities::components::weapon::ReloadFeedbackConsumer;
 
         // M15 Phase 3.5 Task 4: a connected client must NOT publish the player
         // slots — the server replicates them through the state-slot apply path.
         // With a live pawn present, the gated tick still writes nothing, so the
         // engine-owned slots keep their (unset) value.
         let ctx = ScriptCtx::new();
-        spawn_pawn_with_health(&ctx, 73.0);
+        let pawn = spawn_pawn_with_health(&ctx, 73.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick_for_role(true, None);
+        assert_eq!(
+            publisher.tick_for_role_and_report_sampled_weapon(true, None),
+            Some(weapon_id),
+            "connected clients resolve the local inventory weapon for feedback acknowledgement"
+        );
         assert_eq!(
             read_store_slot(&ctx, "player.health").ok(),
             None,
             "connected client does not publish player.health",
+        );
+        crate::sim::clear_reload_feedback_for_weapon(&mut ctx.registry.borrow_mut(), weapon_id);
+        assert!(
+            ctx.registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .reload_feedback_sample(ReloadFeedbackConsumer::Hud)
+                .endpoint
+                .is_none(),
+            "the sampled client feedback endpoint is acknowledged rather than accumulating"
         );
 
         // Host / single-player (is_connected_client == false) still publishes.

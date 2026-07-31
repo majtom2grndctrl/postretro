@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
 use postretro_foundation::NavAgentParams;
 use postretro_net::replication::ServerReplication;
@@ -25,6 +26,12 @@ use super::{NetworkIdAllocator, ReplicableSet};
 #[derive(Debug, Default)]
 pub(crate) struct SlotPawns {
     pawns: HashMap<u64, EntityId>,
+    /// Last materialized sibling ids for each slot pawn. Inventory remains the
+    /// authority while the pawn is live; this is only a teardown fallback when
+    /// another system has already despawned the pawn before its slot closes.
+    /// Keeping the ids with the slot, rather than in `WeaponOwners`, preserves
+    /// the latter as a presentation-only dirty attachment queue.
+    wieldables: HashMap<u64, Vec<EntityId>>,
     /// Deterministic slot → `player_spawn` placement-index assignment (M15 Phase 3).
     /// Recorded BEFORE the descriptor spawn so a reused slot has an auditable source:
     /// the same client id always resolves to the same placement for the session, and
@@ -80,8 +87,11 @@ impl SlotPawns {
         self.pawns.get(&client_id).copied()
     }
 
-    pub(crate) fn remove_client(&mut self, client_id: u64) -> Option<EntityId> {
-        self.pawns.remove(&client_id)
+    pub(crate) fn remove_client(&mut self, client_id: u64) -> Option<(EntityId, Vec<EntityId>)> {
+        self.pawns.remove(&client_id).map(|pawn| {
+            let wieldables = self.wieldables.remove(&client_id).unwrap_or_default();
+            (pawn, wieldables)
+        })
     }
 
     /// Number of live slot pawns. Test-only assertion helper.
@@ -118,8 +128,7 @@ pub(crate) enum SlotPawnSource<'a> {
 
 /// React to a slot being accepted: create the slot-owned pawn, stamp it with a
 /// fresh session-monotonic `NetworkId`, add it to the replicable set, and record the
-/// slot mapping. Returns the pawn `EntityId`, its assigned `NetworkId`, and the
-/// optional active weapon spawned beside it.
+/// slot mapping. Returns the pawn `EntityId` and its assigned `NetworkId`.
 ///
 /// Idempotent per slot: a second accept for an already-mapped, still-live slot
 /// returns the existing pawn without spawning a duplicate. A re-accept whose mapped
@@ -136,7 +145,7 @@ pub(crate) fn on_slot_accepted(
     replicable: &mut ReplicableSet,
     client_id: u64,
     source: SlotPawnSource,
-) -> Option<(EntityId, NetworkId, Option<EntityId>)> {
+) -> Option<(EntityId, NetworkId)> {
     // Idempotency: an accept for a slot that already owns a live pawn is a no-op
     // beyond returning the existing identity. Re-registering in the replicable set is
     // harmless (it is a set), and re-stamping the allocator returns the same stable
@@ -145,17 +154,17 @@ pub(crate) fn on_slot_accepted(
         if registry.exists(existing) {
             let net_id = allocator.stamp(existing);
             replicable.register(existing);
-            return Some((existing, net_id, None));
+            return Some((existing, net_id));
         }
         // The mapped pawn is stale (despawned elsewhere). Fall through and re-create.
         slot_pawns.pawns.remove(&client_id);
     }
 
-    let (pawn, active_weapon) = match source {
+    let pawn = match source {
         // Transform-only fixture: an inert pawn at the world origin. No
         // PlayerMovementComponent is materialized (tests/dev only — not a real
         // movement pawn, never marked local).
-        SlotPawnSource::TransformFixture => (registry.spawn(Transform::default()), None),
+        SlotPawnSource::TransformFixture => registry.spawn(Transform::default()),
         // Descriptor-backed Phase 3 movement pawn from the slot's assigned
         // placement. A spawn failure (unregistered descriptor / registry exhausted)
         // is logged inside the helper; the accept then leaves the slot unmapped so a
@@ -165,24 +174,29 @@ pub(crate) fn on_slot_accepted(
             descriptors,
             agent_params,
         } => {
-            let Some((id, active_weapon)) =
-                spawn_net_slot_pawn(placement, descriptors, registry, agent_params)
+            let Some(id) = spawn_net_slot_pawn(placement, descriptors, registry, agent_params)
             else {
                 log::warn!(
                     "[Net] slot {client_id} accepted but descriptor spawn failed; slot left unmapped"
                 );
                 return None;
             };
-            (id, active_weapon)
+            id
         }
     };
 
     // Stamp the stable session-monotonic NetworkId and register for replication.
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
+    let wieldables = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
+        .unwrap_or_default();
     slot_pawns.pawns.insert(client_id, pawn);
+    slot_pawns.wieldables.insert(client_id, wieldables);
     log::info!("[Net] slot {client_id} accepted: spawned remote pawn {pawn:?} as {net_id:?}");
-    Some((pawn, net_id, active_weapon))
+    Some((pawn, net_id))
 }
 
 /// React to a slot closing (clean disconnect OR timeout — the single Phase 2 cleanup
@@ -207,6 +221,15 @@ pub(crate) fn on_slot_closed(
     replication.remove_client(client_id);
 
     let pawn = slot_pawns.pawns.remove(&client_id)?;
+    let retained_wieldables = slot_pawns.wieldables.remove(&client_id).unwrap_or_default();
+    // Inventory owns every sibling wieldable. Snapshot their ids before the pawn
+    // dies, then despawn every instance before clearing the owner; after pawn
+    // despawn its component column is inaccessible by design.
+    let wieldables: Vec<EntityId> = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
+        .unwrap_or(retained_wieldables);
     // Remove from the replicable set FIRST so the next ingest sees the entity gone
     // and emits the despawn tombstone; then despawn through game logic. (Order does
     // not matter for correctness here since both run before the next ingest, but
@@ -214,6 +237,11 @@ pub(crate) fn on_slot_closed(
     // despawned id" true at every yield point.)
     replicable.unregister(pawn);
     allocator.forget(pawn);
+    for wieldable in wieldables {
+        replicable.unregister(wieldable);
+        allocator.forget(wieldable);
+        let _ = registry.despawn(wieldable);
+    }
     // `despawn` errors only on a stale id; the pawn may already be gone if game logic
     // despawned it. Either way the post-state is "gone", so the error is swallowed.
     let _ = registry.despawn(pawn);
@@ -265,7 +293,7 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
 
-        let (pawn, net_id, active_weapon) = on_slot_accepted(
+        let (pawn, net_id) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -274,10 +302,6 @@ mod tests {
             SlotPawnSource::TransformFixture,
         )
         .expect("transform fixture accept always spawns");
-        assert_eq!(
-            active_weapon, None,
-            "transform fixture has no active weapon"
-        );
 
         assert!(
             registry.exists(pawn),
@@ -330,7 +354,7 @@ mod tests {
         // Two slots so one remains to receive the despawn of the other.
         replication.register_client(CLIENT_A);
         replication.register_client(CLIENT_B);
-        let (pawn_a, net_a, _) = on_slot_accepted(
+        let (pawn_a, net_a) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -424,7 +448,7 @@ mod tests {
         let mut replication = ServerReplication::new();
 
         // First connection on slot A.
-        let (_pawn1, net_first, _) = on_slot_accepted(
+        let (_pawn1, net_first) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -445,7 +469,7 @@ mod tests {
 
         // A later connection reuses the same ClientId (slot reuse). It must get a
         // fresh pawn and a fresh NetworkId — the old one is never re-emitted.
-        let (_pawn2, net_second, _) = on_slot_accepted(
+        let (_pawn2, net_second) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -493,7 +517,7 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
 
-        let (pawn1, net1, _) = on_slot_accepted(
+        let (pawn1, net1) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -502,7 +526,7 @@ mod tests {
             SlotPawnSource::TransformFixture,
         )
         .expect("transform fixture accept always spawns");
-        let (pawn2, net2, _) = on_slot_accepted(
+        let (pawn2, net2) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -576,9 +600,13 @@ mod tests {
     }
 
     fn player_with_default_weapon(default_weapon: &str) -> EntityTypeDescriptor {
+        player_with_loadout(&[default_weapon])
+    }
+
+    fn player_with_loadout(loadout: &[&str]) -> EntityTypeDescriptor {
         let mut descriptor = player_descriptor();
         descriptor.inventory = Some(postretro_entities::InventoryDescriptor {
-            loadout: vec![default_weapon.to_string()],
+            loadout: loadout.iter().map(|weapon| (*weapon).to_string()).collect(),
         });
         descriptor
     }
@@ -635,7 +663,7 @@ mod tests {
         let descriptors = [player_descriptor()];
         let placement = synthetic_placement();
 
-        let (pawn, net_id, active_weapon) = on_slot_accepted(
+        let (pawn, net_id) = on_slot_accepted(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
@@ -648,10 +676,6 @@ mod tests {
             },
         )
         .expect("descriptor accept spawns a pawn from the synthetic placement");
-        assert_eq!(
-            active_weapon, None,
-            "a descriptor with no default weapon returns no active weapon"
-        );
 
         // It is a real movement pawn.
         assert!(
@@ -727,7 +751,7 @@ mod tests {
         let mut pending_hit_declarations = crate::netcode::PendingHitDeclarations::new();
         let mut weaponless_fire_logged = std::collections::HashSet::new();
         let descriptors = [
-            player_with_default_weapon("reference_pistol"),
+            player_with_loadout(&["reference_pistol", "reference_pistol"]),
             weapon_descriptor("reference_pistol"),
         ];
         let spawn_points = [synthetic_placement()];
@@ -752,14 +776,27 @@ mod tests {
         let pawn = slot_pawns
             .pawn_for(CLIENT_A)
             .expect("descriptor accept spawned a slot pawn");
-        let weapon = weapon_owners
-            .weapon_of(pawn)
-            .expect("descriptor accept maps pawn to spawned active weapon");
+        let weapons: Vec<EntityId> = registry
+            .get_component::<Inventory>(pawn)
+            .expect("descriptor accept materializes pawn inventory")
+            .wieldables
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(weapons.len(), 2, "fixture equips two inventory slots");
+        let weapon = weapons[0];
         let pawn_net = allocator
             .network_id_for_entity(pawn)
             .expect("accepted pawn is stamped");
-        let weapon_net = allocator.stamp(weapon);
-        replicable.register(weapon);
+        let weapon_nets: Vec<NetworkId> = weapons
+            .iter()
+            .map(|&weapon| {
+                let net_id = allocator.stamp(weapon);
+                replicable.register(weapon);
+                net_id
+            })
+            .collect();
         let shot_id = crate::netcode::ShotId::from_parts(pawn_net, 5);
         open_shots.record(
             crate::netcode::AuthorizedShot {
@@ -797,7 +834,6 @@ mod tests {
             &replicable,
             &mut allocator,
             &owners,
-            &weapon_owners,
             &command_queues,
             None,
         );
@@ -808,7 +844,7 @@ mod tests {
         assert_eq!(
             pawn_snapshot.active_weapon_archetype,
             Some("reference_pistol".to_string()),
-            "WeaponOwners resolves the weapon descriptor's canonical name onto the pawn record"
+            "the pawn inventory resolves the weapon descriptor's canonical name onto the snapshot"
         );
 
         let host_pitch_snapshots =
@@ -817,7 +853,6 @@ mod tests {
                 &replicable,
                 &mut allocator,
                 &crate::netcode::MovementOwners::new(),
-                &weapon_owners,
                 &command_queues,
                 Some((pawn, -0.37)),
             );
@@ -864,24 +899,22 @@ mod tests {
             None,
             "slot close clears movement ownership"
         );
-        assert_eq!(
-            weapon_owners.weapon_of(pawn),
-            None,
-            "slot close clears active-weapon ownership"
-        );
         assert!(
-            !registry.exists(weapon),
-            "slot close despawns the descriptor-spawned sibling weapon"
+            weapons.iter().all(|&weapon| !registry.exists(weapon)),
+            "slot close despawns every descriptor-spawned inventory sibling"
         );
         assert!(
             !allocator.maps_entity(pawn)
                 && !allocator.maps_network_id(pawn_net)
-                && !allocator.maps_entity(weapon)
-                && !allocator.maps_network_id(weapon_net),
+                && weapons
+                    .iter()
+                    .zip(&weapon_nets)
+                    .all(|(&weapon, net_id)| !allocator.maps_entity(weapon)
+                        && !allocator.maps_network_id(*net_id)),
             "slot close clears allocator forward and reverse mappings"
         );
         assert!(!replicable.contains(pawn));
-        assert!(!replicable.contains(weapon));
+        assert!(weapons.iter().all(|&weapon| !replicable.contains(weapon)));
         assert_eq!(open_shots.len(), 0);
         assert_eq!(pending_hit_declarations.len(), 0);
         assert!(
@@ -925,7 +958,8 @@ mod tests {
             None,
         );
         let old_pawn = slot_pawns.pawn_for(CLIENT_A).expect("first pawn");
-        let old_weapon = weapon_owners.weapon_of(old_pawn).expect("first weapon");
+        let old_weapon = crate::netcode::active_wieldable_for_pawn(&registry, old_pawn)
+            .expect("first inventory weapon");
         let mut reloading_weapon = registry
             .get_component::<postretro_entities::components::weapon::WeaponComponent>(old_weapon)
             .unwrap()
@@ -993,7 +1027,6 @@ mod tests {
             "stale pawn cleanup must not strand a reload-locked sibling weapon"
         );
         assert_eq!(owners.owner_of(old_pawn), None);
-        assert_eq!(weapon_owners.weapon_of(old_pawn), None);
         assert!(!allocator.maps_entity(old_pawn));
         assert!(!allocator.maps_network_id(old_pawn_net));
         assert!(!allocator.maps_entity(old_weapon));

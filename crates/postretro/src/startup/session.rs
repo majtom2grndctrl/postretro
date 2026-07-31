@@ -252,8 +252,6 @@ pub(crate) fn build_session() -> Result<BootSession> {
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
-        active_wieldable: None,
-        active_wieldable_descriptor: None,
         client_weapon_state: None,
         client_fire_resolutions: Vec::new(),
         client_predicted_shots: crate::weapon::ClientPredictedShots::new(),

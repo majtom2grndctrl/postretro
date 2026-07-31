@@ -258,6 +258,8 @@ use postretro_net::state_slots::{RawStateSlotRecord, WireSlotValue};
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
 use postretro_entities::EntityId;
 use postretro_entities::components::health::HealthComponent;
+#[cfg(test)]
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 
 /// Host-side replicated-state production: owns the deterministic replicated-slot
@@ -435,7 +437,7 @@ impl HostStateReplication {
                 (
                     pawn,
                     client_id,
-                    AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners),
+                    AmmoSlotProjection::for_pawn(registry, pawn),
                 )
             })
             .collect();
@@ -496,7 +498,7 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 /// The per-owner source value for an owner-private slot. Descriptor-fed player slots
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
 /// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, and
-/// reload state resolve through `WeaponOwners` to the sibling `WeaponComponent`;
+/// reload state resolve through its `Inventory` to the sibling `WeaponComponent`;
 /// ammo reserve reads the owning pawn's `AmmoReserve`. Any other owner-private
 /// slot falls back to the slot table's current value keyed to this owner (a
 /// single global value replicated privately). `None` when no source value exists.
@@ -505,13 +507,13 @@ fn owner_private_source_value(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-    weapon_owners: &WeaponOwners,
+    _weapon_owners: &WeaponOwners,
     ammo_projection: &AmmoSlotProjection,
 ) -> Option<WireSlotValue> {
     if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
         return slot_value_to_wire(&value);
     }
-    if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn, weapon_owners) {
+    if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn) {
         return slot_value_to_wire(&value);
     }
     if let Some(value) = ammo_projection.slot_value(name) {
@@ -531,9 +533,9 @@ fn descriptor_ammo_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-    weapon_owners: &WeaponOwners,
+    _weapon_owners: &WeaponOwners,
 ) -> Option<Option<SlotValue>> {
-    AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners).slot_value(name)
+    AmmoSlotProjection::for_pawn(registry, pawn).slot_value(name)
 }
 
 struct AmmoSlotProjection {
@@ -545,9 +547,9 @@ struct AmmoSlotProjection {
 }
 
 impl AmmoSlotProjection {
-    fn for_pawn(registry: &EntityRegistry, pawn: EntityId, weapon_owners: &WeaponOwners) -> Self {
+    fn for_pawn(registry: &EntityRegistry, pawn: EntityId) -> Self {
         let weapon = if registry.exists(pawn) {
-            weapon_owners.weapon_of(pawn)
+            super::active_wieldable_for_pawn(registry, pawn)
         } else {
             None
         }
@@ -623,18 +625,16 @@ enum HealthField {
 }
 
 /// Read the owner-private active weapon cooldown for `pawn`. The value is not on
-/// the pawn: net-slot pawn materialization creates a sibling weapon entity, and
-/// E16's host-only [`WeaponOwners`] map ties them together.
+/// the pawn: its inventory identifies the active sibling weapon entity.
 fn descriptor_weapon_cooldown_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-    weapon_owners: &WeaponOwners,
 ) -> Option<SlotValue> {
     if name != "player.weaponCooldownMs" {
         return None;
     }
-    let weapon = weapon_owners.weapon_of(pawn)?;
+    let weapon = super::active_wieldable_for_pawn(registry, pawn)?;
     let component = registry.get_component::<WeaponComponent>(weapon).ok()?;
     Some(SlotValue::Number(component.cooldown_remaining_ms))
 }
@@ -1211,8 +1211,10 @@ mod tests {
             .unwrap();
         let mut owners = MovementOwners::new();
         owners.set(pawn, client_id);
-        let mut weapon_owners = WeaponOwners::new();
-        weapon_owners.set(pawn, weapon);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
+        let weapon_owners = WeaponOwners::new();
         (registry, owners, weapon_owners, pawn, weapon)
     }
 
@@ -1228,7 +1230,7 @@ mod tests {
     fn add_owned_ammo_pawn(
         registry: &mut EntityRegistry,
         owners: &mut MovementOwners,
-        weapon_owners: &mut WeaponOwners,
+        _weapon_owners: &mut WeaponOwners,
         spec: OwnedAmmoPawnSpec<'_>,
     ) -> (EntityId, EntityId) {
         let pawn = registry.spawn(Transform::default());
@@ -1276,7 +1278,9 @@ mod tests {
             registry.set_component(pawn, ammo_reserve).unwrap();
         }
         owners.set(pawn, spec.client);
-        weapon_owners.set(pawn, weapon);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         (pawn, weapon)
     }
 
@@ -1498,7 +1502,7 @@ mod tests {
         component.publish_reload_feedback(ReloadFeedback::Started, tick);
         registry.set_component(weapon, component).unwrap();
 
-        weapon_owners.remove_pawn(pawn);
+        registry.set_component(pawn, Inventory::default()).unwrap();
         let mut host = HostStateReplication::new();
         let sampled = host.ingest_frame_and_collect_sampled_weapons(
             &table,
@@ -1509,7 +1513,9 @@ mod tests {
         assert!(sampled.is_empty());
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
 
-        weapon_owners.set(pawn, weapon);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
             Some(Some(SlotValue::Number(0.0)))

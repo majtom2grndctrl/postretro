@@ -137,7 +137,6 @@ pub(in crate::sim) fn run_remote_weapon_commands(
 pub(in crate::sim) fn run_local_weapon_command(
     registry: &Rc<RefCell<EntityRegistry>>,
     pawn: Option<EntityId>,
-    active_wieldable: Option<EntityId>,
     mod_block_during_reload: bool,
     select_slot: Option<usize>,
     command: &WeaponFireCommand,
@@ -147,25 +146,19 @@ pub(in crate::sim) fn run_local_weapon_command(
     anim_time: f64,
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-) -> (Vec<ReloadDelivery>, Vec<&'static str>) {
+) -> (Vec<ReloadDelivery>, Vec<&'static str>, Option<EntityId>) {
     let mut registry = registry.borrow_mut();
-    // Task 3 retires the temporary App-held active handle. Keeping it as a
-    // fallback here preserves the split driver's focused legacy fixtures
-    // until then; production player composition always supplies Inventory.
     let mut inventory =
         pawn.and_then(|pawn| registry.get_component::<Inventory>(pawn).ok().cloned());
-    let weapon_id = inventory
-        .as_ref()
-        .and_then(Inventory::active_wieldable)
-        .or(active_wieldable);
+    let weapon_id = inventory.as_ref().and_then(Inventory::active_wieldable);
     let Some(weapon_id) = weapon_id else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), None);
     };
     let Ok(mut weapon_component) = registry
         .get_component::<WeaponComponent>(weapon_id)
         .cloned()
     else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), None);
     };
     // The descriptor override stays unresolved in the component. Only this
     // App-fed local input gate resolves it against the mod-global policy.
@@ -212,6 +205,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         anim_time,
         machine.authorization,
     );
+    let mut repointed_pawn = None;
     if machine.lowered {
         if let (Some(pawn), Some(inventory)) = (pawn, inventory.as_mut())
             && let Some(target_slot) = inventory.switch_target
@@ -229,6 +223,7 @@ pub(in crate::sim) fn run_local_weapon_command(
             inventory.switch_target = None;
             let _ = registry.set_component(incoming_id, incoming);
             let _ = registry.set_component(pawn, inventory.clone());
+            repointed_pawn = Some(pawn);
         }
     } else if begin_lower {
         if let (Some(pawn), Some(inventory)) = (pawn, inventory) {
@@ -238,8 +233,8 @@ pub(in crate::sim) fn run_local_weapon_command(
     let _ = registry.set_component(weapon_id, weapon_component);
     if let Some(impact) = events.impact.as_ref() {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), pawn, impact);
+        apply_weapon_impact_damage(&mut registry, pawn, impact);
         on_impact(&mut registry);
     }
-    (machine.deliveries, events.event_names())
+    (machine.deliveries, events.event_names(), repointed_pawn)
 }

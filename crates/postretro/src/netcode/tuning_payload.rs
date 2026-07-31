@@ -209,7 +209,7 @@ mod tests {
             range: 256.0,
             cooldown_ms: 240.0,
             fire_mode: FireMode::Semi,
-            resolution: ResolutionMode::Projectile,
+            resolution: ResolutionMode::Hitscan,
             lower_ms: 75,
             raise_ms: 90,
         });

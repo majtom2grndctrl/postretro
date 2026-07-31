@@ -83,7 +83,7 @@ pub(super) fn compose_wieldable_inventory(
     placement: &MapEntity,
     descriptors: &[EntityTypeDescriptor],
 ) -> Option<EntityId> {
-    let mut inventory = Inventory::default();
+    let inventory = Inventory::default();
     let Some(loadout) = pawn_descriptor
         .inventory
         .as_ref()

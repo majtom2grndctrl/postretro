@@ -52,6 +52,9 @@ pub(crate) struct SimCommand {
     pub(crate) movement: MovementInput,
     pub(crate) fire_button: FireButtonState,
     pub(crate) reload: bool,
+    /// Direct number-row selection is a discrete simulation command. Cursor and
+    /// dwell remain input-only state.
+    pub(crate) select_slot: Option<usize>,
     /// Use rising edge routed to the host-authoritative trigger stage. Kept on
     /// the full command alongside fire/reload; `MovementInput` mirrors it for the
     /// client-prediction input boundary.
@@ -399,6 +402,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         &registry,
         own_pawn,
         active_wieldable,
+        command.select_slot,
         &weapon_fire,
         command.reload,
         collision_world,
@@ -1323,6 +1327,8 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         })
     }
 
@@ -1349,6 +1355,8 @@ mod tests {
                 reload_ms,
                 reload_style: ReloadStyle::Magazine,
             })),
+            lower_ms: 0,
+            raise_ms: 0,
         };
         let descriptor = descriptor.validate().unwrap();
         let mut ammo_reserve = AmmoReserve::new();
@@ -1376,6 +1384,7 @@ mod tests {
                 active: fire,
             },
             reload,
+            select_slot: None,
             use_pressed: false,
         }
     }

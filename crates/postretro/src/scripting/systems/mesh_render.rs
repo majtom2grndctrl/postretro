@@ -2204,7 +2204,7 @@ mod tests {
         let id = registry.spawn(Transform::default());
         let descriptor = EntityTypeDescriptor {
             canonical_name: Some("remote-holder".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,

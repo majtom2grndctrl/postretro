@@ -773,7 +773,7 @@ mod tests {
     fn weapon_descriptor(name: &str, damage: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -787,6 +787,8 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
             mesh: None,
             health: None,
@@ -797,7 +799,7 @@ mod tests {
     fn light_descriptor(name: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [0.1, 0.2, 0.3],
                 intensity: 2.0,
@@ -834,7 +836,7 @@ mod tests {
     fn emitter_descriptor(name: &str, sprite: &str, rate: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(emitter_component(sprite, rate)),
             movement: None,
@@ -858,7 +860,7 @@ mod tests {
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
@@ -938,7 +940,7 @@ mod tests {
         use crate::data_descriptors::HealthDescriptor;
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -1580,7 +1582,7 @@ mod tests {
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,

@@ -1036,12 +1036,31 @@ fn build_sim_command(
     crouch_intent: bool,
     dash_pressed: bool,
     shoot_pressed: bool,
+    select_pressed: bool,
     use_pressed: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
     let sprint = snapshot.button(Action::Sprint).is_active();
     let shoot = snapshot.button(Action::Shoot);
     let reload = snapshot.button(Action::Reload);
+    let select_slot = select_pressed
+        .then(|| {
+            [
+                Action::SelectWieldable1,
+                Action::SelectWieldable2,
+                Action::SelectWieldable3,
+                Action::SelectWieldable4,
+                Action::SelectWieldable5,
+                Action::SelectWieldable6,
+                Action::SelectWieldable7,
+                Action::SelectWieldable8,
+                Action::SelectWieldable9,
+                Action::SelectWieldable10,
+            ]
+            .into_iter()
+            .position(|action| matches!(snapshot.button(action), ButtonState::Pressed))
+        })
+        .flatten();
 
     sim::SimCommand {
         movement: movement::MovementInput {
@@ -1061,6 +1080,7 @@ fn build_sim_command(
             active: shoot.is_active(),
         },
         reload: reload.is_active(),
+        select_slot,
         use_pressed,
     }
 }
@@ -2190,6 +2210,7 @@ impl ApplicationHandler for App {
                             && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
                         let shoot_pressed = tick_index == 0
                             && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
+                        let select_pressed = tick_index == 0;
                         let use_pressed = tick_index == 0
                             && matches!(snapshot.button(Action::Use), ButtonState::Pressed);
                         let mut trigger_use_edges = HashMap::new();
@@ -2215,6 +2236,7 @@ impl ApplicationHandler for App {
                             crouch_intent,
                             dash_pressed,
                             shoot_pressed,
+                            select_pressed,
                             use_pressed,
                         );
 
@@ -2360,6 +2382,23 @@ impl ApplicationHandler for App {
                             }),
                             |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
                         );
+                        // Task 3 will replace this compatibility bridge with
+                        // pawn-owned presentation dirties. Until then, mirror the
+                        // inventory's committed slot only after lowering has
+                        // repointed it: HUD and the first-person viewmodel never
+                        // observe the pending target during the lower dwell.
+                        {
+                            let registry = script_ctx.registry.borrow();
+                            if let Some(inventory) = followed_player_pawn(&registry)
+                                .and_then(|pawn| {
+                                    registry
+                                        .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+                                        .ok()
+                                })
+                            {
+                                self.active_wieldable = inventory.active_wieldable();
+                            }
+                        }
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -5184,9 +5223,12 @@ impl App {
             pressed: matches!(shoot, ButtonState::Pressed),
             active: shoot.is_active(),
         };
-        let zero_tick_fire_command = zero_tick_snapshot
-            .filter(|_| button.pressed)
-            .map(|snapshot| build_sim_command(snapshot, &self.camera, false, false, true, false));
+        let zero_tick_fire_command =
+            zero_tick_snapshot
+                .filter(|_| button.pressed)
+                .map(|snapshot| {
+                    build_sim_command(snapshot, &self.camera, false, false, true, false, false)
+                });
         let Some(state) = self.client_weapon_state.as_mut() else {
             if zero_tick_fire_command.is_some() {
                 if let Some(session) = self.session.as_mut() {
@@ -6628,7 +6670,7 @@ mod tests {
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
             canonical_name: Some(canonical_name.to_owned()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -6642,6 +6684,8 @@ mod tests {
                 third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
             mesh: None,
             health: None,
@@ -7211,6 +7255,7 @@ mod tests {
                 active: false,
             },
             reload: false,
+            select_slot: None,
             use_pressed: false,
         };
 
@@ -7409,7 +7454,17 @@ mod tests {
 
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
-            .map(|_| build_sim_command(&snapshot, &camera, crouch_intent, false, false, false))
+            .map(|_| {
+                build_sim_command(
+                    &snapshot,
+                    &camera,
+                    crouch_intent,
+                    false,
+                    false,
+                    false,
+                    false,
+                )
+            })
             .collect();
 
         assert_eq!(commands.len(), 2);
@@ -7439,7 +7494,7 @@ mod tests {
             .map(|tick_index| {
                 let dash_pressed = tick_index == 0
                     && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
-                build_sim_command(&snapshot, &camera, false, dash_pressed, false, false)
+                build_sim_command(&snapshot, &camera, false, dash_pressed, false, false, false)
             })
             .collect();
 
@@ -7465,7 +7520,15 @@ mod tests {
             .map(|tick_index| {
                 let shoot_pressed = tick_index == 0
                     && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
-                build_sim_command(&snapshot, &camera, false, false, shoot_pressed, false)
+                build_sim_command(
+                    &snapshot,
+                    &camera,
+                    false,
+                    false,
+                    shoot_pressed,
+                    false,
+                    false,
+                )
             })
             .collect();
 
@@ -7493,7 +7556,7 @@ mod tests {
 
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
-            .map(|_| build_sim_command(&snapshot, &camera, false, false, false, false))
+            .map(|_| build_sim_command(&snapshot, &camera, false, false, false, false, false))
             .collect();
 
         assert!(
@@ -7627,6 +7690,7 @@ mod tests {
                 active: true,
             },
             reload: false,
+            select_slot: None,
             use_pressed: false,
         };
         let mut resolved_aim_origin = None;
@@ -9129,7 +9193,7 @@ mod tests {
 
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("remote_enemy".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,

@@ -1266,6 +1266,7 @@ fn scripted_command(tick: u32) -> SimCommand {
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     }
 }

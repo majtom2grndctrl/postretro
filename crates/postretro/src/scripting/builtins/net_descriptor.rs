@@ -3,7 +3,8 @@
 
 use super::MapEntity;
 use super::data_archetype::{
-    descriptor_mesh_component, find_descriptor, seed_weapon_reserve, spawn_descriptor_instance,
+    compose_wieldable_inventory, descriptor_mesh_component, find_descriptor,
+    spawn_descriptor_instance,
 };
 #[cfg(test)]
 use postretro_entities::components::mesh::MeshComponent;
@@ -25,10 +26,10 @@ use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 /// - it does NOT assign a global `active_wieldable` (the host does not wield a
 ///   remote client's weapon).
 ///
-/// The pawn's `defaultWeapon` still materializes a host-side sibling weapon
-/// instance when the descriptor declares one, so active-weapon resolution has the
-/// same shape as the player-start path. It does not replicate a weapon payload,
-/// and that weapon is never promoted to the host's active wieldable.
+/// The pawn's `components.inventory.loadout` still materializes host-side sibling
+/// wieldable instances, so active-weapon resolution has the same shape as the
+/// player-start path. It does not replicate weapon payloads, and these siblings
+/// are never promoted to the host's active wieldable.
 ///
 /// Provenance is stamped [`DescriptorSpawnPath::NetworkSlot`] so these pawns are
 /// distinguishable from map-start single-player spawns. The per-placement KVP bag is
@@ -63,7 +64,7 @@ pub(crate) fn spawn_net_slot_pawn(
         placement,
         // Attach the descriptor's own weapon component to the pawn just like the
         // player-start path (so the remote pawn is armed); the sibling
-        // `defaultWeapon` instance below is what `spawn_from_player_starts` would
+        // The inventory instance below is what `spawn_from_player_starts` would
         // promote to active — here it is spawned but never promoted.
         true,
         DescriptorSpawnPath::NetworkSlot,
@@ -83,45 +84,11 @@ pub(crate) fn spawn_net_slot_pawn(
     kvps.remove("entity_class");
     let _ = registry.set_map_kvps(id, kvps);
 
-    // Materialize the sibling defaultWeapon instance if the descriptor declares one,
-    // mirroring `spawn_from_player_starts` — but NEVER promote it to a global active
-    // wieldable. The host does not wield a remote client's weapon.
-    let mut active_weapon = None;
-    if let Some(default_weapon) = descriptor.default_weapon.as_deref() {
-        match find_descriptor(descriptors, default_weapon) {
-            Some(weapon_descriptor) if weapon_descriptor.weapon.is_some() => {
-                let weapon_entity = MapEntity {
-                    classname: default_weapon.to_string(),
-                    origin: placement.origin,
-                    angles: placement.angles,
-                    key_values: Default::default(),
-                    tags: vec![],
-                };
-                match spawn_descriptor_instance(
-                    registry,
-                    weapon_descriptor,
-                    &weapon_entity,
-                    true,
-                    DescriptorSpawnPath::DefaultWeapon,
-                    None,
-                ) {
-                    Some(weapon_id) => {
-                        let _ = registry.set_map_kvps(weapon_id, Default::default());
-                        seed_weapon_reserve(registry, id, weapon_descriptor);
-                        active_weapon = Some(weapon_id);
-                    }
-                    None => log::warn!(
-                        "[Net] {origin}: entity registry exhausted; dropping net-slot defaultWeapon `{default_weapon}`",
-                        origin = placement.diagnostic_origin(),
-                    ),
-                }
-            }
-            _ => log::warn!(
-                "[Net] {origin}: defaultWeapon `{default_weapon}` not registered or has no weapon component; net-slot pawn spawned unarmed",
-                origin = placement.diagnostic_origin(),
-            ),
-        }
-    }
+    // The host materializes every remote pawn's owned instances. The first
+    // occupied slot remains the temporary active return until Task 3 removes
+    // the legacy owner map.
+    let active_weapon =
+        compose_wieldable_inventory(registry, id, descriptor, placement, descriptors);
 
     Some((id, active_weapon))
 }
@@ -316,7 +283,7 @@ mod tests {
 
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -640,7 +607,7 @@ mod tests {
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(movement_descriptor()),
@@ -654,7 +621,9 @@ mod tests {
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: Some(default_weapon.to_string()),
+            inventory: Some(postretro_entities::InventoryDescriptor {
+                loadout: vec![default_weapon.to_string()],
+            }),
             light: None,
             emitter: None,
             movement: Some(movement_descriptor()),
@@ -668,7 +637,7 @@ mod tests {
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -682,6 +651,8 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
             mesh: None,
             health: None,
@@ -736,7 +707,7 @@ mod tests {
             .expect("net-slot pawn spawns from a player descriptor");
         assert_eq!(
             active_weapon, None,
-            "a player descriptor without defaultWeapon returns no active weapon"
+            "a player descriptor without an inventory loadout returns no active weapon"
         );
 
         // It is a movement pawn at the placement origin.
@@ -773,11 +744,11 @@ mod tests {
 
         let (pawn, active_weapon) = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
             .expect("net-slot pawn spawns from a player descriptor");
-        let weapon = active_weapon.expect("defaultWeapon materializes an active weapon entity");
+        let weapon = active_weapon.expect("inventory loadout materializes an active weapon entity");
 
         assert_ne!(
             pawn, weapon,
-            "the active weapon is the sibling defaultWeapon entity, not the pawn"
+            "the active weapon is the sibling inventory entity, not the pawn"
         );
         assert!(matches!(
             reg.has_component_kind(weapon, ComponentKind::Weapon),

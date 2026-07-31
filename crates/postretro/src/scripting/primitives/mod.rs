@@ -135,16 +135,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("EntityTypeDescriptor")
         .doc("Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
-        .field("canonicalName?", "String", "Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.")
-        .field(
-            "defaultWeapon?",
-            "String",
-            "The `canonicalName` of a registered weapon archetype to instantiate and equip when this descriptor is selected by a `player_spawn` marker. Other spawn paths ignore this key.",
-        )
+        .field("canonicalName?", "String", "Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name.")
         .field(
             "components?",
             "EntityTypeComponents",
-            "Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` does the same and may also equip `defaultWeapon`; weapon presets materialize on the separate wieldable entity created by that route.",
+            "Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` also composes its inventory loadout into separate wieldable instances.",
         )
         .finish();
     registry
@@ -273,10 +268,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("light?", "Option<LightDescriptor>", "Dynamic-light preset materialized on each spawned instance.")
         .field("emitter?", "Option<BillboardEmitterComponent>", "Billboard-particle emitter preset materialized on each spawned instance.")
         .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
-        .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.")
+        .field("inventory?", "Option<InventoryDescriptor>", "Pawn-owned ordered wieldable loadout. Input cursor and dwell state are never stored here.")
+        .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`.")
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards.")
+        .finish();
+    registry
+        .register_type("InventoryDescriptor")
+        .doc("Ordered canonical wieldable archetype names composed beside a player pawn at spawn. The ten-slot engine capacity truncates longer authored lists.")
+        .field("loadout?", "Vec<String>", "Ordered canonical wieldable archetype names. Omission is an empty loadout.")
         .finish();
     registry
         .register_enum("FireMode")
@@ -323,6 +324,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
+        .field("lowerMs?", "u32", "Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.")
+        .field("raiseMs?", "u32", "Raising duration in milliseconds. Optional; defaults to 0.")
         .finish();
     registry
         .register_type("HitboxDescriptor")

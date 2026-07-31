@@ -1206,6 +1206,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Spawner => 16,
         ComponentKind::EntityState => 17,
         ComponentKind::DeferredEffect => 18,
+        ComponentKind::Inventory => 19,
     }
 }
 
@@ -2295,7 +2296,9 @@ pub(crate) fn tuning_payload_for_pawn(
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(class));
     let movement = descriptor.and_then(|descriptor| descriptor.movement.clone());
     let default_weapon = descriptor
-        .and_then(|descriptor| descriptor.default_weapon.as_deref())
+        .and_then(|descriptor| descriptor.inventory.as_ref())
+        .and_then(|inventory| inventory.loadout.first())
+        .map(String::as_str)
         .and_then(|name| {
             descriptors
                 .iter()
@@ -3063,6 +3066,8 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         })
     }
 
@@ -3444,7 +3449,7 @@ mod tests {
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("reference_pistol".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -3458,6 +3463,8 @@ mod tests {
                 third_person_model: Some("models/pistol/model.gltf".to_string()),
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
             mesh: None,
             health: None,
@@ -4230,7 +4237,8 @@ mod tests {
                 ComponentKind::AmmoReserve => Some(ComponentKind::Spawner),
                 ComponentKind::Spawner => Some(ComponentKind::EntityState),
                 ComponentKind::EntityState => Some(ComponentKind::DeferredEffect),
-                ComponentKind::DeferredEffect => None,
+                ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
+                ComponentKind::Inventory => None,
             }
         }
 
@@ -4655,7 +4663,7 @@ mod tests {
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some("player".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {

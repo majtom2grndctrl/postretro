@@ -27,6 +27,7 @@ pub(super) fn deliver_reload_to_weapon(
 mod tests {
     use super::impact::apply_weapon_impact_damage;
     use super::machine::{WeaponMachineTick, tick_weapon_machine};
+    use super::state::{WieldableStateEvent, transition_wieldable_state};
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -46,7 +47,10 @@ mod tests {
     use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
     use glam::Vec3;
     use postretro_entities::components::health::HealthComponent;
-    use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
+    use postretro_entities::components::inventory::Inventory;
+    use postretro_entities::components::weapon::{
+        ReloadFeedback, ReloadFeedbackConsumer, WeaponComponent,
+    };
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::data_descriptors::{
         AmmoResource, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
@@ -64,6 +68,8 @@ mod tests {
             can_fire: true,
         }
     }
+
+    fn ignore_impact(_: &mut EntityRegistry) {}
 
     fn tick_machine(
         registry: &mut EntityRegistry,
@@ -135,7 +141,176 @@ mod tests {
                 reload_ms: 100,
                 reload_style,
             })),
+            lower_ms: 0,
+            raise_ms: 0,
         }
+    }
+
+    #[test]
+    fn begin_lower_clears_reload_feedback_for_every_state_row() {
+        for (state, existing_remaining_ms) in [
+            (WieldableState::Idle, 0),
+            (WieldableState::Reloading, 9),
+            (WieldableState::ShellLoading, 9),
+            (WieldableState::Lowering, 9),
+            (WieldableState::Raising, 9),
+        ] {
+            let mut weapon = gate_weapon_component(FireMode::Semi, 100.0);
+            weapon.state = state;
+            weapon.state_remaining_ms = existing_remaining_ms;
+            weapon.state_total_ms = existing_remaining_ms;
+            let feedback_tick = weapon.begin_reload_feedback_tick();
+            weapon.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
+
+            let _ = transition_wieldable_state(
+                &mut weapon,
+                WieldableStateEvent::BeginLower { duration_ms: 17 },
+                None,
+            );
+
+            assert_eq!(weapon.state, WieldableState::Lowering);
+            assert_eq!(
+                weapon.state_remaining_ms,
+                if state == WieldableState::Lowering {
+                    existing_remaining_ms
+                } else {
+                    17
+                },
+                "lowering must not restart when retargeted"
+            );
+            for consumer in [
+                ReloadFeedbackConsumer::Hud,
+                ReloadFeedbackConsumer::OwnerProjection,
+            ] {
+                assert!(
+                    weapon.reload_feedback_sample(consumer).endpoint.is_none(),
+                    "{state:?} BeginLower must drain reload feedback"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_select_retargets_lowering_then_commits_and_raises_without_fire_or_reload() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, first_target, second_target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let outgoing = registry.spawn(Transform::default());
+            let first_target = registry.spawn(Transform::default());
+            let second_target = registry.spawn(Transform::default());
+            let mut outgoing_component = gate_weapon_component(FireMode::Semi, 100.0);
+            outgoing_component.lower_ms = 20;
+            let feedback_tick = outgoing_component.begin_reload_feedback_tick();
+            outgoing_component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
+            let mut first_target_component = gate_weapon_component(FireMode::Semi, 100.0);
+            first_target_component.raise_ms = 15;
+            let mut second_target_component = gate_weapon_component(FireMode::Semi, 100.0);
+            second_target_component.raise_ms = 15;
+            registry
+                .set_component(outgoing, outgoing_component)
+                .unwrap();
+            registry
+                .set_component(first_target, first_target_component)
+                .unwrap();
+            registry
+                .set_component(second_target, second_target_component)
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(outgoing);
+            inventory.wieldables[1] = Some(first_target);
+            inventory.wieldables[2] = Some(second_target);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, outgoing, first_target, second_target)
+        };
+        let collision_world = CollisionWorld::default();
+        let hit_zone_store = HitZoneStore::new();
+        let command = fire_command(true, true);
+        let mut no_impact = ignore_impact;
+
+        let (deliveries, events) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            Some(outgoing),
+            Some(1),
+            &command,
+            true,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.01,
+            &mut no_impact,
+        );
+        assert!(deliveries.is_empty());
+        assert!(events.is_empty());
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+            assert_eq!(inventory.active_slot, 0);
+            assert_eq!(inventory.switch_target, Some(1));
+            assert_eq!(outgoing.state, WieldableState::Lowering);
+            assert_eq!(outgoing.state_remaining_ms, 11);
+            assert!(!outgoing.reload_status().1);
+            assert!(!outgoing.owner_reload_status().1);
+        }
+
+        let (deliveries, events) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            Some(outgoing),
+            Some(2),
+            &command,
+            true,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+        assert!(deliveries.is_empty());
+        assert!(events.is_empty());
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+            assert_eq!(inventory.switch_target, Some(2));
+            assert_eq!(outgoing.state_remaining_ms, 11);
+        }
+
+        let (deliveries, events) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            Some(outgoing),
+            None,
+            &command,
+            true,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.01,
+            &mut no_impact,
+        );
+        assert!(deliveries.is_empty());
+        assert!(events.is_empty());
+        let registry_ref = registry.borrow();
+        let inventory = registry_ref.get_component::<Inventory>(pawn).unwrap();
+        let outgoing = registry_ref
+            .get_component::<WeaponComponent>(outgoing)
+            .unwrap();
+        let first_target = registry_ref
+            .get_component::<WeaponComponent>(first_target)
+            .unwrap();
+        let second_target = registry_ref
+            .get_component::<WeaponComponent>(second_target)
+            .unwrap();
+        assert_eq!(inventory.active_slot, 2);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(outgoing.state, WieldableState::Idle);
+        assert_eq!(first_target.state, WieldableState::Idle);
+        assert_eq!(second_target.state, WieldableState::Raising);
+        assert_eq!(second_target.state_remaining_ms, 15);
+        assert!(second_target.reload_press_consumed);
     }
 
     #[test]

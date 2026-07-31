@@ -286,7 +286,7 @@ mod tests {
         );
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -359,6 +359,8 @@ mod tests {
             third_person_model: Some(model.to_string()),
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         });
         descriptor
     }

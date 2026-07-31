@@ -639,7 +639,7 @@ export function scopeReactions<S>(
   return list.map((reaction) => ({ ...reaction, levels: tags }));
 }
 
-/** Identity builder for entity type descriptors returned from `ModManifest.entities`. `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. Pure: no engine side effects. */
+/** Identity builder for entity type descriptors returned from `ModManifest.entities`. `descriptor` is the full archetype object: optional `canonicalName`, optional `components.inventory.loadout`, and optional component presets. Pure: no engine side effects. */
 export function defineEntity(
   descriptor: import("postretro").EntityTypeDescriptor,
 ): import("postretro").EntityTypeDescriptor {

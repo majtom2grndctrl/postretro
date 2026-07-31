@@ -12,6 +12,7 @@ use super::state::{
 pub(super) struct WeaponMachineTick {
     pub(super) authorization: WeaponFireAuthorization,
     pub(super) deliveries: Vec<ReloadDelivery>,
+    pub(super) lowered: bool,
 }
 /// Run the one ordered weapon machine shared by local and host-simulated pawns.
 /// Reload entry must run before expiry and fire: a reload started this tick owns
@@ -84,12 +85,13 @@ pub(super) fn tick_weapon_machine(
     }
 
     // 2. Timer advance. The shared helper owns the sub-millisecond carry.
-    if component.state.is_reload_activity()
+    let mut lowered = false;
+    if component.state.is_timed_state()
         && let Some(overshoot_ms) = super::super::reload::advance_timer(component, tick_dt)
     {
         // 3. State expiry. Its meaning is selected by the state/event transition,
         // never by a second state match in the machine.
-        resolve_expired_state(
+        lowered = resolve_expired_state(
             registry,
             pawn,
             weapon,
@@ -116,6 +118,7 @@ pub(super) fn tick_weapon_machine(
     WeaponMachineTick {
         authorization,
         deliveries,
+        lowered,
     }
 }
 

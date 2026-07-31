@@ -535,6 +535,7 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     }
 }

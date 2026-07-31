@@ -530,7 +530,7 @@ mod tests {
     fn player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some("player".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
@@ -577,14 +577,16 @@ mod tests {
 
     fn player_with_default_weapon(default_weapon: &str) -> EntityTypeDescriptor {
         let mut descriptor = player_descriptor();
-        descriptor.default_weapon = Some(default_weapon.to_string());
+        descriptor.inventory = Some(postretro_entities::InventoryDescriptor {
+            loadout: vec![default_weapon.to_string()],
+        });
         descriptor
     }
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -598,6 +600,8 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
             mesh: None,
             health: None,

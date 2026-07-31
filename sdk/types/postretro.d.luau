@@ -73,11 +73,9 @@ export type LocomotionDescriptor = {
 
 --- Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
 export type EntityTypeDescriptor = {
-  --- Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.
+  --- Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
-  --- The `canonicalName` of a registered weapon archetype to instantiate and equip when this descriptor is selected by a `player_spawn` marker. Other spawn paths ignore this key.
-  defaultWeapon: string?,
-  --- Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` does the same and may also equip `defaultWeapon`; weapon presets materialize on the separate wieldable entity created by that route.
+  --- Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` also composes its inventory loadout into separate wieldable instances.
   components: EntityTypeComponents?,
 }
 
@@ -212,7 +210,9 @@ export type EntityTypeComponents = {
   emitter: BillboardEmitterComponent?,
   --- Player movement, collision capsule, and first-person view-feel preset.
   movement: PlayerMovementDescriptor?,
-  --- Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.
+  --- Pawn-owned ordered wieldable loadout. Input cursor and dwell state are never stored here.
+  inventory: InventoryDescriptor?,
+  --- Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`.
   weapon: WeaponDescriptor?,
   --- Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.
   mesh: MeshDescriptor?,
@@ -220,6 +220,12 @@ export type EntityTypeComponents = {
   health: HealthDescriptor?,
   --- Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards.
   behavior: BehaviorGraphDescriptor?,
+}
+
+--- Ordered canonical wieldable archetype names composed beside a player pawn at spawn. The ten-slot engine capacity truncates longer authored lists.
+export type InventoryDescriptor = {
+  --- Ordered canonical wieldable archetype names. Omission is an empty loadout.
+  loadout: {string}?,
 }
 
 --- Valid values: `semi`, `auto`.
@@ -282,6 +288,10 @@ export type WeaponDescriptor = {
   viewmodel: string?,
   --- Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.
   resource: WeaponResource?,
+  --- Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.
+  lowerMs: number?,
+  --- Raising duration in milliseconds. Optional; defaults to 0.
+  raiseMs: number?,
 }
 
 --- One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
@@ -1309,7 +1319,7 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 
 --- Pure identity builder for entity-type descriptors returned from
 --- `ModManifest.entities`. `descriptor` is the full archetype table: optional
---- `canonicalName`, optional `defaultWeapon`, and optional component presets.
+--- `canonicalName`, optional `components.inventory`, and optional component presets.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must

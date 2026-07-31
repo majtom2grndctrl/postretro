@@ -14,6 +14,8 @@ pub enum WieldableState {
     Idle,
     Reloading,
     ShellLoading,
+    Lowering,
+    Raising,
 }
 
 impl WieldableState {
@@ -22,6 +24,8 @@ impl WieldableState {
             Self::Idle => true,
             Self::Reloading => false,
             Self::ShellLoading => false,
+            Self::Lowering => false,
+            Self::Raising => false,
         }
     }
 
@@ -30,6 +34,8 @@ impl WieldableState {
             Self::Idle => true,
             Self::Reloading => false,
             Self::ShellLoading => false,
+            Self::Lowering => false,
+            Self::Raising => false,
         }
     }
 
@@ -38,6 +44,18 @@ impl WieldableState {
             Self::Idle => false,
             Self::Reloading => true,
             Self::ShellLoading => true,
+            Self::Lowering => false,
+            Self::Raising => false,
+        }
+    }
+
+    pub const fn is_timed_state(self) -> bool {
+        match self {
+            Self::Idle => false,
+            Self::Reloading => true,
+            Self::ShellLoading => true,
+            Self::Lowering => true,
+            Self::Raising => true,
         }
     }
 }
@@ -53,24 +71,38 @@ mod tests {
                 WieldableState::Idle.allows_fire(),
                 WieldableState::Idle.allows_reload(),
                 WieldableState::Idle.is_reload_activity(),
+                WieldableState::Idle.is_timed_state(),
             ),
-            (true, true, false)
+            (true, true, false, false)
         );
         assert_eq!(
             (
                 WieldableState::Reloading.allows_fire(),
                 WieldableState::Reloading.allows_reload(),
                 WieldableState::Reloading.is_reload_activity(),
+                WieldableState::Reloading.is_timed_state(),
             ),
-            (false, false, true)
+            (false, false, true, true)
         );
         assert_eq!(
             (
                 WieldableState::ShellLoading.allows_fire(),
                 WieldableState::ShellLoading.allows_reload(),
                 WieldableState::ShellLoading.is_reload_activity(),
+                WieldableState::ShellLoading.is_timed_state(),
             ),
-            (false, false, true)
+            (false, false, true, true)
         );
+        for state in [WieldableState::Lowering, WieldableState::Raising] {
+            assert_eq!(
+                (
+                    state.allows_fire(),
+                    state.allows_reload(),
+                    state.is_reload_activity(),
+                    state.is_timed_state()
+                ),
+                (false, false, false, true)
+            );
+        }
     }
 }

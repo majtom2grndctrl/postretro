@@ -86,6 +86,10 @@ pub struct WeaponDescriptor {
     pub viewmodel: Option<String>,
     #[serde(default)]
     pub resource: Option<WeaponResource>,
+    #[serde(default, rename = "lowerMs")]
+    pub lower_ms: u32,
+    #[serde(default, rename = "raiseMs")]
+    pub raise_ms: u32,
 }
 
 impl WeaponDescriptor {
@@ -248,6 +252,8 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         }
     }
 

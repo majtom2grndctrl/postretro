@@ -2287,7 +2287,7 @@ mod tests {
     fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,

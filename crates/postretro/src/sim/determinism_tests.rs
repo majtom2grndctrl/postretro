@@ -126,6 +126,7 @@ impl RecordedCommand {
                 active: self.fire_active,
             },
             reload: false,
+            select_slot: None,
             use_pressed: false,
         }
     }
@@ -945,6 +946,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
         )
         .expect("weapon component should attach");
@@ -1178,6 +1181,7 @@ fn run_driven_agent_sim_tick(
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     };
     let _ = simulate_tick(
@@ -3147,6 +3151,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     };
 
@@ -3219,6 +3224,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             active: true,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     };
 
@@ -3297,6 +3303,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             active: true,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     };
 
@@ -3380,6 +3387,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             active: true,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     };
 

@@ -726,7 +726,7 @@
   /** State-helper namespace (state helpers are namespaced; reactions stay bare). */
   export const ui: { createLocalState: typeof createLocalState };
 
-  /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
+  /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `components.inventory`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;

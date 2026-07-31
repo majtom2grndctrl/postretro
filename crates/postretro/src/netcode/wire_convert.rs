@@ -67,6 +67,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
             active: input.fire_button.active,
         },
         reload: input.reload,
+        select_slot: None,
         use_pressed: input.movement.use_pressed,
     }
 }
@@ -128,6 +129,7 @@ mod tests {
                 active: false,
             },
             reload: true,
+            select_slot: None,
             use_pressed: true,
         }
     }

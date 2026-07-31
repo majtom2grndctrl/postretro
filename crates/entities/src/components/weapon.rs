@@ -32,6 +32,8 @@ pub struct EffectiveStats<'a> {
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
+    pub lower_ms: u32,
+    pub raise_ms: u32,
     pub credit_source: &'a str,
     pub ammo: Option<EffectiveAmmoStats<'a>>,
 }
@@ -250,6 +252,10 @@ pub struct WeaponComponent {
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
+    #[serde(default)]
+    pub lower_ms: u32,
+    #[serde(default)]
+    pub raise_ms: u32,
     pub cooldown_remaining_ms: f32,
     #[serde(default)]
     pub shoot_press_consumed: bool,
@@ -298,6 +304,8 @@ impl WeaponComponent {
             cooldown_ms: desc.cooldown_ms,
             fire_mode: desc.fire_mode,
             resolution: desc.resolution,
+            lower_ms: desc.lower_ms,
+            raise_ms: desc.raise_ms,
             cooldown_remaining_ms: 0.0,
             shoot_press_consumed: false,
             reload_press_consumed: false,
@@ -320,6 +328,8 @@ impl WeaponComponent {
             cooldown_ms: self.cooldown_ms,
             fire_mode: self.fire_mode,
             resolution: self.resolution,
+            lower_ms: self.lower_ms,
+            raise_ms: self.raise_ms,
             credit_source: &self.credit_source,
             ammo: self.ammo.as_ref().map(|ammo| EffectiveAmmoStats {
                 ammo_type: &ammo.ammo_type,
@@ -337,6 +347,8 @@ impl WeaponComponent {
         self.cooldown_ms = desc.cooldown_ms;
         self.fire_mode = desc.fire_mode;
         self.resolution = desc.resolution;
+        self.lower_ms = desc.lower_ms;
+        self.raise_ms = desc.raise_ms;
         if let Some(credit_source) = desc.credit_source.as_ref() {
             self.credit_source = credit_source.clone();
         }
@@ -373,6 +385,22 @@ impl WeaponComponent {
     pub fn clear_cancelled_reload_feedback(&mut self, producer_tick: u64) {
         self.reload_feedback
             .retain_same_tick_completion(producer_tick);
+    }
+
+    /// Discard every reload endpoint when an equip transition takes ownership
+    /// of this instance. Unlike cancellation, a switch must not preserve a
+    /// same-tick completion: the next active weapon needs a fresh endpoint
+    /// observation even when it publishes the same value.
+    pub fn clear_equip_reload_feedback(&mut self) {
+        self.reload_feedback.entries.clear();
+        self.reload_feedback
+            .reseat_after_filter(ReloadFeedbackConsumer::Hud);
+        self.reload_feedback
+            .reseat_after_filter(ReloadFeedbackConsumer::OwnerProjection);
+        self.reload_feedback.hud.last_endpoint = None;
+        self.reload_feedback.owner_projection.last_endpoint = None;
+        self.reload_feedback.hud.lost_endpoints = 0;
+        self.reload_feedback.owner_projection.lost_endpoints = 0;
     }
 
     pub fn reload_feedback_sample(&self, consumer: ReloadFeedbackConsumer) -> ReloadFeedbackSample {
@@ -480,6 +508,8 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         }
     }
 
@@ -535,6 +565,28 @@ mod tests {
         assert_eq!(component.state_remaining_ms, 0);
         assert_eq!(component.state_total_ms, 0);
         assert_eq!(component.effective().ammo, None);
+    }
+
+    #[test]
+    fn equip_timing_materializes_and_refreshes_with_descriptor_tuning() {
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.lower_ms = 25;
+        descriptor.raise_ms = 40;
+        let mut component = WeaponComponent::from_descriptor(&descriptor);
+
+        assert_eq!(component.lower_ms, 25);
+        assert_eq!(component.raise_ms, 40);
+        assert_eq!(component.effective().lower_ms, 25);
+        assert_eq!(component.effective().raise_ms, 40);
+
+        descriptor.lower_ms = 60;
+        descriptor.raise_ms = 75;
+        component.refresh_from_descriptor(&descriptor);
+
+        assert_eq!(component.lower_ms, 60);
+        assert_eq!(component.raise_ms, 75);
+        assert_eq!(component.effective().lower_ms, 60);
+        assert_eq!(component.effective().raise_ms, 75);
     }
 
     #[test]

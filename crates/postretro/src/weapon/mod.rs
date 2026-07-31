@@ -5,10 +5,10 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
-#[cfg(test)]
-use postretro_entities::EntityTypeDescriptor;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry};
+#[cfg(test)]
+use postretro_entities::{EntityTypeDescriptor, InventoryDescriptor};
 use postretro_foundation::{FireMode, ResolutionMode};
 
 use crate::collision::{CollisionWorld, cast_ray};
@@ -124,17 +124,17 @@ impl ClientWeaponState {
             );
             return None;
         };
-        let default_weapon = pawn_descriptor.default_weapon.as_deref()?;
-        let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
+        let weapon_name = pawn_descriptor.inventory.as_ref()?.loadout.first()?;
+        let Some(weapon_descriptor) = find_descriptor(descriptors, weapon_name) else {
             log::warn!(
-                "[Net] local pawn defaultWeapon `{default_weapon}` not registered; client weapon \
+                "[Net] local pawn inventory weapon `{weapon_name}` not registered; client weapon \
                  prediction stays inert for this pawn"
             );
             return None;
         };
         let Some(weapon) = weapon_descriptor.weapon.as_ref() else {
             log::warn!(
-                "[Net] local pawn defaultWeapon `{default_weapon}` has no weapon component; \
+                "[Net] local pawn inventory weapon `{weapon_name}` has no weapon component; \
                  client weapon prediction stays inert for this pawn"
             );
             return None;
@@ -691,6 +691,8 @@ pub(crate) mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         })
     }
 
@@ -723,6 +725,8 @@ pub(crate) mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         }
     }
 
@@ -730,7 +734,9 @@ pub(crate) mod tests {
         vec![
             EntityTypeDescriptor {
                 canonical_name: Some("player".to_string()),
-                default_weapon: default_weapon.map(str::to_string),
+                inventory: default_weapon.map(|name| InventoryDescriptor {
+                    loadout: vec![name.to_string()],
+                }),
                 light: None,
                 emitter: None,
                 movement: None,
@@ -741,7 +747,7 @@ pub(crate) mod tests {
             },
             EntityTypeDescriptor {
                 canonical_name: Some("pistol".to_string()),
-                default_weapon: None,
+                inventory: None,
                 light: None,
                 emitter: None,
                 movement: None,
@@ -850,7 +856,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn client_weapon_state_seeds_from_local_pawn_default_weapon() {
+    fn client_weapon_state_seeds_from_local_pawn_inventory() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let state = ClientWeaponState::from_local_pawn_descriptor(
@@ -858,7 +864,7 @@ pub(crate) mod tests {
             "player",
             &descriptor_table(Some("pistol")),
         )
-        .expect("player default weapon resolves");
+        .expect("player inventory weapon resolves");
 
         assert_eq!(state.pawn, pawn);
         assert_eq!(state.cooldown_remaining_ms, 0.0);
@@ -879,7 +885,7 @@ pub(crate) mod tests {
         );
     }
 
-    // Regression: a host retune from default_weapon Some to None left the
+    // Regression: a host retune from inventory Some to None left the
     // previously seeded client weapon prediction carrier active.
     #[test]
     fn client_weapon_state_clears_stale_state_when_host_tuning_is_none() {

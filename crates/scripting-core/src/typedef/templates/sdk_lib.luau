@@ -518,7 +518,7 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 
 --- Pure identity builder for entity-type descriptors returned from
 --- `ModManifest.entities`. `descriptor` is the full archetype table: optional
---- `canonicalName`, optional `defaultWeapon`, and optional component presets.
+--- `canonicalName`, optional `components.inventory`, and optional component presets.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must

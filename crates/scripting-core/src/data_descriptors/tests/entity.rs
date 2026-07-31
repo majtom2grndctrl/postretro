@@ -121,22 +121,24 @@ fn entity_descriptor_without_components_field_deserializes() {
     let src = r#"({ canonicalName: "vignette" })"#;
     let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
     assert_eq!(d.canonical_name.as_deref(), Some("vignette"));
-    assert!(d.default_weapon.is_none());
+    assert!(d.inventory.is_none());
     assert!(d.light.is_none());
     assert!(d.emitter.is_none());
     assert!(d.weapon.is_none());
 }
 
 #[test]
-fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() {
+fn js_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
     let src = r#"({
         canonicalName: "player",
-        defaultWeapon: "reference_pistol",
         components: {
+            inventory: { loadout: ["reference_pistol"] },
             weapon: {
                 damage: 12.0,
                 range: 64.0,
                 fireRateMs: 180.0,
+                lowerMs: 25,
+                raiseMs: 40,
                 fireMode: "semi",
                 resolution: "hitscan",
                 creditSource: "player.reference-pistol:primary"
@@ -144,11 +146,13 @@ fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() 
         }
     })"#;
     let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-    assert_eq!(d.default_weapon.as_deref(), Some("reference_pistol"));
+    assert_eq!(d.inventory.unwrap().loadout, ["reference_pistol"]);
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.damage, 12.0);
     assert_eq!(weapon.range, 64.0);
     assert_eq!(weapon.cooldown_ms, 180.0);
+    assert_eq!(weapon.lower_ms, 25);
+    assert_eq!(weapon.raise_ms, 40);
     assert_eq!(weapon.fire_mode, FireMode::Semi);
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     assert_eq!(
@@ -657,15 +661,17 @@ fn entity_descriptor_with_light_only_deserializes_lua() {
 }
 
 #[test]
-fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() {
+fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
     let src = r#"return {
         canonicalName = "player",
-        defaultWeapon = "reference_pistol",
         components = {
+            inventory = { loadout = { "reference_pistol" } },
             weapon = {
                 damage = 12.0,
                 range = 64.0,
                 fireRateMs = 180.0,
+                lowerMs = 25,
+                raiseMs = 40,
                 fireMode = "auto",
                 resolution = "hitscan",
                 creditSource = "player.reference-pistol:alt",
@@ -673,10 +679,12 @@ fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes()
         }
     }"#;
     let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
-    assert_eq!(d.default_weapon.as_deref(), Some("reference_pistol"));
+    assert_eq!(d.inventory.unwrap().loadout, ["reference_pistol"]);
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.damage, 12.0);
     assert_eq!(weapon.cooldown_ms, 180.0);
+    assert_eq!(weapon.lower_ms, 25);
+    assert_eq!(weapon.raise_ms, 40);
     assert_eq!(weapon.fire_mode, FireMode::Auto);
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     assert_eq!(

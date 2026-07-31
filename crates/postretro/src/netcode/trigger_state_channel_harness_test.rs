@@ -226,6 +226,7 @@ fn idle_command() -> SimCommand {
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     }
 }

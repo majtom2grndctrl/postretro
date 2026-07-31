@@ -18,6 +18,9 @@ pub(super) enum WieldableStateEvent {
     Cancel {
         feedback_tick: u64,
     },
+    BeginLower {
+        duration_ms: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +35,7 @@ pub(super) enum StateTransition {
     ReloadCancelled {
         transferred: u32,
     },
+    Lowered,
 }
 
 /// The sole state/event dispatch. New wieldable states add rows here rather than
@@ -63,6 +67,10 @@ pub(super) fn transition_wieldable_state(
         }
         (WieldableState::Idle, WieldableStateEvent::Expired { .. })
         | (WieldableState::Idle, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
+        (WieldableState::Idle, WieldableStateEvent::BeginLower { duration_ms }) => {
+            begin_lowering(component, duration_ms);
+            StateTransition::Noop
+        }
         (WieldableState::Reloading, WieldableStateEvent::BeginReload { .. }) => {
             StateTransition::Noop
         }
@@ -164,6 +172,33 @@ pub(super) fn transition_wieldable_state(
             StateTransition::ReloadCancelled { transferred }
         }
         (WieldableState::Reloading, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
+        (WieldableState::Reloading, WieldableStateEvent::BeginLower { duration_ms }) => {
+            begin_lowering(component, duration_ms);
+            StateTransition::Noop
+        }
+        (WieldableState::ShellLoading, WieldableStateEvent::BeginLower { duration_ms }) => {
+            begin_lowering(component, duration_ms);
+            StateTransition::Noop
+        }
+        (WieldableState::Lowering, WieldableStateEvent::BeginReload { .. }) => {
+            StateTransition::Noop
+        }
+        (WieldableState::Lowering, WieldableStateEvent::Expired { .. }) => StateTransition::Lowered,
+        (WieldableState::Lowering, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
+        (WieldableState::Lowering, WieldableStateEvent::BeginLower { .. }) => {
+            component.clear_equip_reload_feedback();
+            StateTransition::Noop
+        }
+        (WieldableState::Raising, WieldableStateEvent::BeginReload { .. }) => StateTransition::Noop,
+        (WieldableState::Raising, WieldableStateEvent::Expired { .. }) => {
+            transition_to_idle(component);
+            StateTransition::Noop
+        }
+        (WieldableState::Raising, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
+        (WieldableState::Raising, WieldableStateEvent::BeginLower { duration_ms }) => {
+            begin_lowering(component, duration_ms);
+            StateTransition::Noop
+        }
     }
 }
 
@@ -190,7 +225,7 @@ pub(super) fn resolve_expired_state(
     mut overshoot_ms: f64,
     feedback_tick: u64,
     deliveries: &mut Vec<ReloadDelivery>,
-) {
+) -> bool {
     let reserve_was_present = pawn.is_some_and(|pawn| {
         registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true)
     });
@@ -201,7 +236,8 @@ pub(super) fn resolve_expired_state(
             .unwrap_or_default()
     });
 
-    while component.state.is_reload_activity() && component.state_remaining_ms == 0 {
+    let mut lowered = false;
+    while component.state.is_timed_state() && component.state_remaining_ms == 0 {
         let transition = transition_wieldable_state(
             component,
             WieldableStateEvent::Expired {
@@ -210,6 +246,11 @@ pub(super) fn resolve_expired_state(
             },
             working_reserve.as_mut(),
         );
+        if transition == StateTransition::Lowered {
+            lowered = true;
+            break;
+        }
+
         let StateTransition::ReloadStep {
             shell_loaded,
             completed,
@@ -249,6 +290,7 @@ pub(super) fn resolve_expired_state(
     if reserve_was_present && let (Some(pawn), Some(reserve)) = (pawn, working_reserve) {
         let _ = registry.set_component(pawn, reserve);
     }
+    lowered
 }
 
 /// Restart a repeated timed step. The carry stores only the fractional
@@ -277,6 +319,27 @@ fn transition_to_idle(component: &mut WeaponComponent) {
     component.state = WieldableState::Idle;
     component.state_remaining_ms = 0;
     component.state_total_ms = 0;
+    component.state_elapsed_sub_ms = 0.0;
+    component.reload_credited = 0;
+}
+
+fn begin_lowering(component: &mut WeaponComponent, duration_ms: u32) {
+    component.clear_equip_reload_feedback();
+    component.state = WieldableState::Lowering;
+    component.state_remaining_ms = duration_ms;
+    component.state_total_ms = duration_ms;
+    component.state_elapsed_sub_ms = 0.0;
+    component.reload_credited = 0;
+}
+
+pub(super) fn finish_lowering(component: &mut WeaponComponent) {
+    transition_to_idle(component);
+}
+
+pub(super) fn begin_raising(component: &mut WeaponComponent) {
+    component.state = WieldableState::Raising;
+    component.state_remaining_ms = component.raise_ms;
+    component.state_total_ms = component.raise_ms;
     component.state_elapsed_sub_ms = 0.0;
     component.reload_credited = 0;
 }

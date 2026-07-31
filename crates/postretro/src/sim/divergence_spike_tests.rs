@@ -73,6 +73,7 @@ impl RecordedCommand {
                 active: self.fire_active,
             },
             reload: false,
+            select_slot: None,
             use_pressed: false,
         }
     }
@@ -255,6 +256,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             }),
         )
         .expect("weapon component should attach");

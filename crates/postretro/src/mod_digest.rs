@@ -276,7 +276,7 @@ mod tests {
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some("fixture-entity".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -361,10 +361,14 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
         });
 
-        let mut default_weapon = entity_descriptor();
-        default_weapon.default_weapon = Some("fixture-weapon".to_string());
+        let mut inventory = entity_descriptor();
+        inventory.inventory = Some(postretro_entities::InventoryDescriptor {
+            loadout: vec!["fixture-weapon".to_string()],
+        });
 
         let mut health = entity_descriptor();
         health.health = Some(HealthDescriptor {
@@ -393,7 +397,7 @@ mod tests {
         vec![
             ("movement", movement),
             ("weapon", weapon),
-            ("default_weapon", default_weapon),
+            ("inventory", inventory),
             ("health", health),
             ("behavior", behavior),
             ("canonical_name", canonical_name),

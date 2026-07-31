@@ -21,6 +21,16 @@ pub enum Action {
     Shoot,
     AltFire,
     Reload,
+    SelectWieldable1,
+    SelectWieldable2,
+    SelectWieldable3,
+    SelectWieldable4,
+    SelectWieldable5,
+    SelectWieldable6,
+    SelectWieldable7,
+    SelectWieldable8,
+    SelectWieldable9,
+    SelectWieldable10,
 }
 
 impl Action {

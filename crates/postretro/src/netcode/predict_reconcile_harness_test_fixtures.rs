@@ -172,7 +172,7 @@ pub(crate) const ENTITY_CLASS: &str = "player";
 pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
     vec![EntityTypeDescriptor {
         canonical_name: Some(ENTITY_CLASS.to_string()),
-        default_weapon: None,
+        inventory: None,
         light: None,
         emitter: None,
         movement: Some(player_descriptor()),
@@ -214,6 +214,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     }
 }
@@ -234,6 +235,7 @@ pub(crate) fn idle_command() -> SimCommand {
             active: false,
         },
         reload: false,
+        select_slot: None,
         use_pressed: false,
     }
 }

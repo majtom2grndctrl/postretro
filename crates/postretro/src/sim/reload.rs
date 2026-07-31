@@ -122,6 +122,8 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
             });
             component.state_remaining_ms = remaining_ms;
             component.state_total_ms = remaining_ms;

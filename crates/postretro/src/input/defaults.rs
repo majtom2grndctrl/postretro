@@ -32,6 +32,46 @@ pub fn default_keyboard_mouse_bindings() -> Vec<Binding> {
             Action::AltFire,
         ),
         Binding::new(PhysicalInput::Key(KeyCode::KeyR), Action::Reload),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit1),
+            Action::SelectWieldable1,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit2),
+            Action::SelectWieldable2,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit3),
+            Action::SelectWieldable3,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit4),
+            Action::SelectWieldable4,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit5),
+            Action::SelectWieldable5,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit6),
+            Action::SelectWieldable6,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit7),
+            Action::SelectWieldable7,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit8),
+            Action::SelectWieldable8,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit9),
+            Action::SelectWieldable9,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit0),
+            Action::SelectWieldable10,
+        ),
     ]
 }
 

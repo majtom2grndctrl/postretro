@@ -2,11 +2,9 @@
 name: spec-session
 description: >
   Grounds an agent at the start of a spec-writing or spec-revising session
-  with the habits that keep defects out of a draft. Not a review skill —
-  `/validate-plan`, `/review-draft-spec`, and `/review-implementability`
-  review the artifact after the fact; this one runs before or during
-  writing. Invoke before starting a spec, or from a drafting skill that
-  points at it.
+  with the habits that keep defects out of a draft. Invoke first, before
+  any drafting or review skill, so the habits are in place while the draft
+  is being written rather than applied to it afterward.
 ---
 
 # Spec Session
@@ -95,6 +93,5 @@ self-review is necessary, not sufficient.
 
 ## Closing note
 
-This skill prevents defects. It does not verify their absence. Run
-`/validate-plan`, `/review-draft-spec`, or `/review-implementability` as
-appropriate — they still run, and they still find things.
+This skill prevents defects. It does not verify their absence. The review
+skills still run afterward, and they still find things.

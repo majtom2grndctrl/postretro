@@ -475,6 +475,194 @@ mod tests {
     }
 
     #[test]
+    fn o13_direct_select_of_the_active_slot_emits_no_declaration() {
+        let mut selection = WieldableSelection::default();
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable1),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+
+        assert_eq!(selection.cursor_slot(), Some(0));
+        assert_eq!(selection.take_pending_commit(&THREE_SLOTS, Some(0)), None);
+    }
+
+    #[test]
+    fn o14_cursor_returning_to_active_during_lower_does_not_replace_in_flight_target() {
+        let mut selection = WieldableSelection::default();
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable2),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+        assert_eq!(
+            selection.take_pending_commit(&THREE_SLOTS, Some(0)),
+            Some(1)
+        );
+
+        // The fixed-tick machine is still lowering slot 0, so input still observes
+        // 0 as active. Returning the cursor there must not declare a reversal.
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable1),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+
+        assert_eq!(selection.take_pending_commit(&THREE_SLOTS, Some(0)), None);
+    }
+
+    #[test]
+    fn o15_last_weapon_toggle_during_lower_targets_still_active_slot_and_emits_nothing() {
+        let mut selection = WieldableSelection {
+            last_weapon_slot: Some(0),
+            ..WieldableSelection::default()
+        };
+        selection.advance_frame(
+            &snapshot(Action::ToggleLastWieldable),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+
+        assert_eq!(selection.take_pending_commit(&THREE_SLOTS, Some(0)), None);
+    }
+
+    #[test]
+    fn o16_last_weapon_toggle_without_live_history_emits_nothing() {
+        let mut selection = WieldableSelection::default();
+        selection.advance_frame(
+            &snapshot(Action::ToggleLastWieldable),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+        assert_eq!(selection.take_pending_commit(&THREE_SLOTS, Some(0)), None);
+
+        selection.last_weapon_slot = Some(1);
+        let remembered_slot_emptied = [true, false, true];
+        selection.advance_frame(
+            &snapshot(Action::ToggleLastWieldable),
+            &remembered_slot_emptied,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+        assert_eq!(
+            selection.take_pending_commit(&remembered_slot_emptied, Some(0)),
+            None
+        );
+    }
+
+    #[test]
+    fn o17_empty_or_out_of_range_target_keeps_active_slot_and_cursor() {
+        let mut selection = WieldableSelection::default();
+        let occupied = [true, false, true];
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable2),
+            &occupied,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable10),
+            &occupied,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+
+        assert_eq!(selection.cursor_slot(), Some(0));
+        assert_eq!(selection.take_pending_commit(&occupied, Some(0)), None);
+    }
+
+    #[test]
+    fn o18_cycle_from_last_occupied_slot_wraps_past_trailing_capacity() {
+        let mut selection = WieldableSelection::default();
+        let occupied = [true, true, false, false, false];
+        selection.advance_frame(
+            &scroll_snapshot(1, 0),
+            &occupied,
+            Some(1),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: true,
+                cycle_dwell_ms: 0.0,
+            },
+            0.0,
+        );
+
+        assert_eq!(selection.cursor_slot(), Some(0));
+        assert_eq!(selection.take_pending_commit(&occupied, Some(1)), Some(0));
+    }
+
+    #[test]
+    fn o19_cycle_skips_an_interior_slot_that_was_emptied() {
+        let mut selection = WieldableSelection::default();
+        let occupied = [true, false, true];
+        selection.advance_frame(
+            &scroll_snapshot(1, 0),
+            &occupied,
+            Some(0),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: true,
+                cycle_dwell_ms: 0.0,
+            },
+            0.0,
+        );
+
+        assert_eq!(selection.cursor_slot(), Some(2));
+        assert_eq!(selection.take_pending_commit(&occupied, Some(0)), Some(2));
+    }
+
+    #[test]
+    fn o20_slot_emptied_between_cursor_move_and_declaration_resets_to_active() {
+        let mut selection = WieldableSelection::default();
+        let initially_occupied = [true, true];
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable2),
+            &initially_occupied,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+
+        let target_emptied = [true, false];
+        assert_eq!(
+            selection.take_pending_commit(&target_emptied, Some(0)),
+            None,
+            "a stale input-layer target must not reach the fixed-tick machine"
+        );
+        assert_eq!(selection.cursor_slot(), Some(0));
+    }
+
+    #[test]
+    fn o45_cursor_uses_the_occupancy_snapshot_from_its_own_input_frame() {
+        let mut selection = WieldableSelection::default();
+        let occupied_this_frame = [true, false, true];
+        selection.advance_frame(
+            &scroll_snapshot(1, 0),
+            &occupied_this_frame,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+
+        assert_eq!(
+            selection.cursor_slot(),
+            Some(2),
+            "the frame-rate cursor skips the slot that was already absent in this frame's sample"
+        );
+    }
+
+    #[test]
     fn direct_select_ignores_empty_slots_without_moving_the_cursor() {
         let mut selection = WieldableSelection::default();
         let occupied = [true, false, true];

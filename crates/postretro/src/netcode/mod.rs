@@ -83,7 +83,7 @@ pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
-pub(crate) use tuning_payload::{DefaultWeaponFirePayload, TuningPayload};
+pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -97,6 +97,8 @@ use glam::{Quat, Vec3};
 use parry3d::math::{Point, Vector};
 
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
@@ -906,6 +908,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
         descriptors,
         registry,
         tuning.and_then(|payload| payload.movement.as_ref()),
+        tuning,
         true,
     );
     *applied_generation = tuning_generation;
@@ -921,7 +924,9 @@ fn replace_client_tuning(
     bytes: &[u8],
 ) -> Result<(), tuning_payload::TuningPayloadError> {
     // Invalidate first. A bad replacement must never leave the last accepted
-    // descriptor-derived prediction state live.
+    // descriptor-derived prediction state live. This reaches only the queued
+    // tuning value: live Inventory instances are intentionally untouched, so an
+    // in-flight equip keeps its already-latched duration and state.
     *tuning = None;
     *tuning_generation = tuning_generation.wrapping_add(1);
     *tuning = Some(decode_tuning_payload(bytes)?);
@@ -1334,6 +1339,7 @@ pub(crate) fn client_receive_and_apply(
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
     host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    host_tuning: Option<&TuningPayload>,
     rebuild_movement_tuning: bool,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
@@ -1416,6 +1422,7 @@ pub(crate) fn client_receive_and_apply(
                     descriptors,
                     registry,
                     host_movement_tuning,
+                    host_tuning,
                     rebuild_movement_tuning,
                 );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
@@ -2272,8 +2279,10 @@ pub(crate) fn host_handle_lifecycle(
 }
 
 /// Resolve the host-authoritative prediction values for one spawned slot pawn.
-/// Descriptor lookup remains engine-side; the net crate carries the resulting JSON
-/// bytes without learning this vocabulary.
+/// The wieldable rows come from its live inventory, not the authored loadout: a
+/// descriptor refresh retunes existing instances, while loadout changes wait for
+/// the next pawn install. The net crate carries the resulting JSON bytes without
+/// learning this vocabulary.
 pub(crate) fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -2288,23 +2297,31 @@ pub(crate) fn tuning_payload_for_pawn(
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(class));
     let movement = descriptor.and_then(|descriptor| descriptor.movement.clone());
-    let default_weapon = descriptor
-        .and_then(|descriptor| descriptor.inventory.as_ref())
-        .and_then(|inventory| inventory.loadout.first())
-        .map(String::as_str)
-        .and_then(|name| {
-            descriptors
-                .iter()
-                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name))
+    let wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY] = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| {
+            std::array::from_fn(|slot| {
+                let weapon_id = inventory.wieldables[slot]?;
+                let canonical_name = registry
+                    .get_component::<DescriptorProvenance>(weapon_id)
+                    .ok()?
+                    .canonical_name
+                    .clone();
+                let weapon = registry.get_component::<WeaponComponent>(weapon_id).ok()?;
+                Some(WieldableTuningPayload {
+                    canonical_name,
+                    range: weapon.range,
+                    cooldown_ms: weapon.cooldown_ms,
+                    fire_mode: weapon.fire_mode,
+                    resolution: weapon.resolution,
+                    lower_ms: weapon.lower_ms,
+                    raise_ms: weapon.raise_ms,
+                })
+            })
         })
-        .and_then(|descriptor| descriptor.weapon.as_ref())
-        .map(|weapon| tuning_payload::DefaultWeaponFirePayload {
-            range: weapon.range,
-            cooldown_ms: weapon.cooldown_ms,
-            fire_mode: weapon.fire_mode,
-            resolution: weapon.resolution,
-        });
-    TuningPayload::new(movement, default_weapon)
+        .unwrap_or_else(|| std::array::from_fn(|_| None));
+    TuningPayload::new(movement, wieldables)
 }
 
 pub(crate) fn host_send_tuning_if_changed(
@@ -2918,17 +2935,62 @@ mod tests {
     }
 
     fn install_test_tuning(tuning: &mut Option<TuningPayload>, generation: &mut u64) -> Vec<u8> {
+        let mut wieldables = std::array::from_fn(|_| None);
+        wieldables[0] = Some(WieldableTuningPayload {
+            canonical_name: "reference_pistol".to_string(),
+            range: 12.0,
+            cooldown_ms: 90.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            lower_ms: 25,
+            raise_ms: 35,
+        });
         let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
             host_player_descriptor().movement,
-            Some(DefaultWeaponFirePayload {
-                range: 12.0,
-                cooldown_ms: 90.0,
-                fire_mode: FireMode::Semi,
-                resolution: ResolutionMode::Hitscan,
-            }),
+            wieldables,
         ));
         replace_client_tuning(tuning, generation, &encoded).expect("valid tuning installs");
         encoded
+    }
+
+    #[test]
+    fn tuning_payload_reads_each_live_inventory_slot_not_the_authored_loadout() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        let mut weapon = test_weapon(10.0, 96.0);
+        weapon.cooldown_ms = 180.0;
+        weapon.fire_mode = FireMode::Auto;
+        weapon.lower_ms = 45;
+        weapon.raise_ms = 70;
+        registry.set_component(weapon_id, weapon).unwrap();
+        registry
+            .set_component(
+                weapon_id,
+                DescriptorProvenance {
+                    canonical_name: "live_ion_rifle".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[3] = Some(weapon_id);
+        inventory.active_slot = 3;
+        registry.set_component(pawn, inventory).unwrap();
+
+        let payload = tuning_payload_for_pawn(&registry, pawn, &[]);
+
+        assert!(payload.movement.is_none());
+        assert!(payload.wieldables[0].is_none());
+        let slot = payload.wieldables[3].as_ref().unwrap();
+        assert_eq!(slot.canonical_name, "live_ion_rifle");
+        assert_eq!(slot.range, 96.0);
+        assert_eq!(slot.cooldown_ms, 180.0);
+        assert_eq!(slot.fire_mode, FireMode::Auto);
+        assert_eq!(slot.lower_ms, 45);
+        assert_eq!(slot.raise_ms, 70);
     }
 
     // Regression: a malformed replacement retained the previously accepted
@@ -2997,7 +3059,7 @@ mod tests {
         let mut host_movement = local_descriptor.movement.unwrap();
         host_movement.ground.speed.run = 29.0;
         host_movement.view_feel = None;
-        let first = TuningPayload::new(Some(host_movement.clone()), None);
+        let first = TuningPayload::new(Some(host_movement.clone()), std::array::from_fn(|_| None));
         apply_installed_movement_tuning_to_armed_pawn(
             &armed,
             Some(&first),
@@ -3019,7 +3081,7 @@ mod tests {
         assert_eq!(applied_generation, 1);
 
         host_movement.ground.speed.run = 37.0;
-        let retuned = TuningPayload::new(Some(host_movement), None);
+        let retuned = TuningPayload::new(Some(host_movement), std::array::from_fn(|_| None));
         apply_installed_movement_tuning_to_armed_pawn(
             &armed,
             Some(&retuned),

@@ -84,7 +84,6 @@ pub(super) fn compose_wieldable_inventory(
     descriptors: &[EntityTypeDescriptor],
 ) -> Option<EntityId> {
     let mut inventory = Inventory::default();
-    let mut seeded_ammo_types = HashSet::new();
     let Some(loadout) = pawn_descriptor
         .inventory
         .as_ref()
@@ -94,7 +93,55 @@ pub(super) fn compose_wieldable_inventory(
         return None;
     };
 
-    for (slot, canonical_name) in loadout.iter().take(WIELDABLE_SLOT_CAPACITY).enumerate() {
+    compose_wieldable_inventory_slots(
+        registry,
+        pawn,
+        placement,
+        descriptors,
+        loadout
+            .iter()
+            .take(WIELDABLE_SLOT_CAPACITY)
+            .enumerate()
+            .map(|(slot, canonical_name)| (slot, Some(canonical_name.as_str()))),
+    )
+}
+
+/// Compose a local inventory from explicit slot identities. The connected-client
+/// tuning path uses this only when Control arrives before its pawn baseline: the
+/// host has already resolved the slot layout, including interior empty slots.
+pub(crate) fn compose_wieldable_inventory_from_slots(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    slots: &[Option<String>; WIELDABLE_SLOT_CAPACITY],
+) -> Option<EntityId> {
+    compose_wieldable_inventory_slots(
+        registry,
+        pawn,
+        placement,
+        descriptors,
+        slots
+            .iter()
+            .enumerate()
+            .map(|(slot, canonical_name)| (slot, canonical_name.as_deref())),
+    )
+}
+
+fn compose_wieldable_inventory_slots<'a>(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    slots: impl IntoIterator<Item = (usize, Option<&'a str>)>,
+) -> Option<EntityId> {
+    let mut inventory = Inventory::default();
+    let mut seeded_ammo_types = HashSet::new();
+
+    for (slot, canonical_name) in slots {
+        let Some(canonical_name) = canonical_name else {
+            continue;
+        };
         let Some(weapon_descriptor) = find_descriptor(descriptors, canonical_name) else {
             log::warn!(
                 "[Loader] {}: inventory loadout `{canonical_name}` not registered; slot {slot} stays empty",
@@ -110,7 +157,7 @@ pub(super) fn compose_wieldable_inventory(
             continue;
         };
         let weapon_entity = MapEntity {
-            classname: canonical_name.clone(),
+            classname: canonical_name.to_string(),
             origin: placement.origin,
             angles: placement.angles,
             key_values: Default::default(),

@@ -74,7 +74,7 @@ impl ClientWeaponState {
     /// was introduced to replace.
     pub(crate) fn from_host_tuning(
         pawn: EntityId,
-        tuning: &crate::netcode::DefaultWeaponFirePayload,
+        tuning: &crate::netcode::WieldableTuningPayload,
     ) -> Self {
         Self {
             pawn,
@@ -94,7 +94,7 @@ impl ClientWeaponState {
     pub(crate) fn sync_from_host_tuning(
         state: &mut Option<Self>,
         pawn: Option<EntityId>,
-        tuning: Option<&crate::netcode::DefaultWeaponFirePayload>,
+        tuning: Option<&crate::netcode::WieldableTuningPayload>,
     ) -> bool {
         let (Some(pawn), Some(tuning)) = (pawn, tuning) else {
             *state = None;
@@ -893,11 +893,14 @@ pub(crate) mod tests {
     fn client_weapon_state_clears_stale_state_when_host_tuning_is_none() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
-        let tuning = crate::netcode::DefaultWeaponFirePayload {
+        let tuning = crate::netcode::WieldableTuningPayload {
+            canonical_name: "pistol".to_string(),
             range: 10.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            lower_ms: 0,
+            raise_ms: 0,
         };
         let mut state = Some(ClientWeaponState::from_host_tuning(pawn, &tuning));
 

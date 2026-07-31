@@ -3,16 +3,20 @@
 
 use super::MapEntity;
 use super::data_archetype::{
-    compose_wieldable_inventory, descriptor_mesh_component, find_descriptor,
-    spawn_descriptor_instance,
+    compose_wieldable_inventory, compose_wieldable_inventory_from_slots, descriptor_mesh_component,
+    find_descriptor, spawn_descriptor_instance,
 };
+use postretro_entities::components::inventory::Inventory;
 #[cfg(test)]
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
-use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
+
+use crate::netcode::TuningPayload;
 
 /// Spawn ONE descriptor-backed networked-slot player pawn from a `player_spawn`
 /// placement (M15 Phase 3 Task 4). This is the host-authoritative remote-pawn
@@ -170,6 +174,85 @@ pub(crate) fn materialize_net_local_movement_component_from_tuning(
     true
 }
 
+/// Materialize a connected client's local wieldable inventory and merge the
+/// host's replicated weapon tuning. A local-player baseline normally arrives
+/// first, so descriptor defaults make the pawn responsive until Control arrives.
+/// If Control wins the race, its fixed slot array supplies the composition before
+/// the instances are created. Later payloads update only authored values on the
+/// existing instances; magazine, cooldown, and equip-state timers remain live.
+pub(crate) fn materialize_net_local_wieldable_inventory_from_tuning(
+    entity_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    tuning: Option<&TuningPayload>,
+) -> bool {
+    let has_inventory = matches!(
+        registry.has_component_kind(id, ComponentKind::Inventory),
+        Ok(true)
+    );
+    if !has_inventory {
+        let placement = MapEntity {
+            classname: entity_class.to_string(),
+            origin: registry
+                .get_component::<Transform>(id)
+                .map_or(glam::Vec3::ZERO, |transform| transform.position),
+            angles: glam::Vec3::ZERO,
+            key_values: Default::default(),
+            tags: vec![],
+        };
+        if let Some(tuning) = tuning {
+            let slots = std::array::from_fn(|slot| {
+                tuning.wieldables[slot]
+                    .as_ref()
+                    .map(|weapon| weapon.canonical_name.clone())
+            });
+            let _ = compose_wieldable_inventory_from_slots(
+                registry,
+                id,
+                &placement,
+                descriptors,
+                &slots,
+            );
+        } else if let Some(descriptor) = find_descriptor(descriptors, entity_class) {
+            let _ = compose_wieldable_inventory(registry, id, descriptor, &placement, descriptors);
+        } else {
+            log::warn!(
+                "[Net] local pawn entity_class `{entity_class}` not registered; wieldable inventory stays inert"
+            );
+            return false;
+        }
+    }
+
+    let Ok(inventory) = registry.get_component::<Inventory>(id).cloned() else {
+        return false;
+    };
+    let Some(tuning) = tuning else {
+        return true;
+    };
+
+    for (slot, tuning) in tuning.wieldables.iter().enumerate() {
+        let (Some(weapon_id), Some(tuning)) = (inventory.wieldables[slot], tuning) else {
+            continue;
+        };
+        let Ok(mut weapon) = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .cloned()
+        else {
+            continue;
+        };
+        weapon.range = tuning.range;
+        weapon.cooldown_ms = tuning.cooldown_ms;
+        weapon.fire_mode = tuning.fire_mode;
+        weapon.resolution = tuning.resolution;
+        weapon.lower_ms = tuning.lower_ms;
+        weapon.raise_ms = tuning.raise_ms;
+        let _ = registry.set_component(weapon_id, weapon);
+    }
+
+    true
+}
+
 /// Materialize the presentation-only components for a client's remote descriptor
 /// entity. A connected client does not simulate the remote entity's authoritative
 /// state: the host owns its movement, AI (when any), combat, health, and despawn,
@@ -235,9 +318,10 @@ mod tests {
     use super::*;
     use glam::{Quat, Vec3};
     use log::Level;
+    use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
+    use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::provenance::DescriptorProvenance;
-    use postretro_entities::registry::Transform;
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams,
         FallParams, FireMode, GroundParams, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
@@ -691,6 +775,128 @@ mod tests {
         e.origin = origin;
         e.angles = angles;
         e
+    }
+
+    fn tuning_for_slot(
+        slot: usize,
+        canonical_name: &str,
+        range: f32,
+        cooldown_ms: f32,
+        lower_ms: u32,
+        raise_ms: u32,
+    ) -> TuningPayload {
+        let mut wieldables = std::array::from_fn(|_| None);
+        wieldables[slot] = Some(crate::netcode::WieldableTuningPayload {
+            canonical_name: canonical_name.to_string(),
+            range,
+            cooldown_ms,
+            fire_mode: FireMode::Auto,
+            resolution: ResolutionMode::Hitscan,
+            lower_ms,
+            raise_ms,
+        });
+        TuningPayload::new(None, wieldables)
+    }
+
+    #[test]
+    fn tuning_first_materializes_capacity_slot_from_host_archetype() {
+        let mut reg = EntityRegistry::new();
+        let pawn = reg.spawn(Transform::default());
+        let descriptors = vec![
+            player_with_default_weapon("player", "local_pistol"),
+            weapon_descriptor("local_pistol"),
+            weapon_descriptor("host_ion_rifle"),
+        ];
+        let tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
+
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            Some(&tuning),
+        ));
+
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 2);
+        assert!(inventory.wieldables[0].is_none());
+        let weapon_id = inventory.wieldables[2].expect("host slot materialized");
+        assert_eq!(
+            reg.get_component::<DescriptorProvenance>(weapon_id)
+                .unwrap()
+                .canonical_name,
+            "host_ion_rifle"
+        );
+        let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
+        assert_eq!(weapon.range, 220.0);
+        assert_eq!(weapon.cooldown_ms, 340.0);
+        assert_eq!(weapon.lower_ms, 55);
+        assert_eq!(weapon.raise_ms, 80);
+        assert_eq!(
+            inventory.wieldables.len(),
+            WIELDABLE_SLOT_CAPACITY,
+            "the payload preserves the engine's fixed slot capacity"
+        );
+    }
+
+    #[test]
+    fn later_tuning_merges_without_rematerializing_live_wieldable_state() {
+        let mut reg = EntityRegistry::new();
+        let pawn = reg.spawn(Transform::default());
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            None,
+        ));
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .unwrap();
+        let mut before = reg
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        before.magazine = 3;
+        before.cooldown_remaining_ms = 47.0;
+        before.state = WieldableState::Lowering;
+        before.state_remaining_ms = 18;
+        before.state_total_ms = 60;
+        reg.set_component(weapon_id, before).unwrap();
+
+        let tuning = tuning_for_slot(0, "reference_pistol", 144.0, 215.0, 70, 95);
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            Some(&tuning),
+        ));
+
+        assert_eq!(
+            reg.get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_wieldable(),
+            Some(weapon_id),
+            "retuning keeps the active instance rather than composing a replacement"
+        );
+        let after = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
+        assert_eq!(after.range, 144.0);
+        assert_eq!(after.cooldown_ms, 215.0);
+        assert_eq!(after.lower_ms, 70);
+        assert_eq!(after.raise_ms, 95);
+        assert_eq!(after.magazine, 3);
+        assert_eq!(after.cooldown_remaining_ms, 47.0);
+        assert_eq!(after.state, WieldableState::Lowering);
+        assert_eq!(after.state_remaining_ms, 18);
+        assert_eq!(after.state_total_ms, 60);
     }
 
     // A descriptor-backed net-slot pawn is a real PlayerMovement pawn from the

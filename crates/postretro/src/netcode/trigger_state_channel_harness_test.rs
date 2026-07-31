@@ -762,6 +762,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 Duration::from_secs_f32(frame_dt),
                 None,
                 None,
+                None,
                 false,
             );
         }

@@ -1806,19 +1806,38 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if input::wheel_diagnostics_enabled() {
+                    log::info!(
+                        "[Input] wheel diagnostic: WindowEvent::MouseWheel received ({delta:?})"
+                    );
+                }
                 if egui_consumed {
+                    if input::wheel_diagnostics_enabled() {
+                        log::info!(
+                            "[Input] wheel diagnostic: WindowEvent::MouseWheel dropped because egui consumed it"
+                        );
+                    }
                     return;
                 }
                 let Some(session) = self.session.as_mut() else {
+                    if input::wheel_diagnostics_enabled() {
+                        log::info!(
+                            "[Input] wheel diagnostic: WindowEvent::MouseWheel dropped before session install"
+                        );
+                    }
                     return;
                 };
-                if session
+                let forwards_to_gameplay = session
                     .ui_dispatch
                     .dispatch_event(None)
-                    .forwards_to_gameplay()
-                    && session.input_focus == InputFocus::Gameplay
-                {
+                    .forwards_to_gameplay();
+                if forwards_to_gameplay && session.input_focus == InputFocus::Gameplay {
                     session.input_system.handle_mouse_wheel(delta);
+                } else if input::wheel_diagnostics_enabled() {
+                    log::info!(
+                        "[Input] wheel diagnostic: WindowEvent::MouseWheel dropped; forwards_to_gameplay={forwards_to_gameplay}, focus={:?}",
+                        session.input_focus,
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -3717,6 +3736,13 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        if input::wheel_diagnostics_enabled()
+            && let DeviceEvent::MouseWheel { delta } = &event
+        {
+            log::info!(
+                "[Input] wheel diagnostic: DeviceEvent::MouseWheel received ({delta:?}); raw-device wheel input is not yet routed to gameplay"
+            );
+        }
         // Boot phase ignores device input until the session is installed.
         let Some(session) = self.session.as_mut() else {
             return;

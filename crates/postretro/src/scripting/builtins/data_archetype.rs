@@ -2140,6 +2140,48 @@ mod tests {
         assert_eq!(live_count(&reg), WIELDABLE_SLOT_CAPACITY + 1);
     }
 
+    #[test]
+    fn o37_duplicate_descriptor_loadout_creates_independent_instances_and_one_shared_reserve() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_loadout("player", &["reference_pistol", "reference_pistol"]),
+            ammo_weapon_descriptor("reference_pistol"),
+        ];
+
+        let _ = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("spawned pawn owns an inventory");
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        let first = inventory.wieldables[0].expect("first duplicate slot materializes");
+        let second = inventory.wieldables[1].expect("second duplicate slot materializes");
+        assert_ne!(
+            first, second,
+            "duplicate descriptor entries are distinct instances"
+        );
+
+        let mut first_component = reg.get_component::<WeaponComponent>(first).unwrap().clone();
+        first_component.magazine = 3;
+        reg.set_component(first, first_component).unwrap();
+        assert_eq!(
+            reg.get_component::<WeaponComponent>(second)
+                .unwrap()
+                .magazine,
+            12,
+            "changing one duplicate's magazine does not mutate its sibling"
+        );
+        assert_eq!(
+            reg.get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48,
+            "two slots sharing one ammo type seed its pawn reserve once"
+        );
+    }
+
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
             capsule: CapsuleParams {

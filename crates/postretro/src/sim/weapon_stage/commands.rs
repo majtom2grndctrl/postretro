@@ -97,6 +97,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             &mut weapon_component,
             remote.command.reload,
             &command,
+            false,
             tick_dt,
         );
         reload_deliveries.extend(machine.deliveries);
@@ -175,13 +176,19 @@ pub(in crate::sim) fn run_local_weapon_command(
                 && !(block_during_reload && weapon_component.state.is_reload_activity())
         })
     });
+    // An atomic reload already due this tick resolves before the accepted switch
+    // owns the state machine. This preserves its credit and terminal delivery;
+    // non-expired reloads still take the normal preempt-to-lower path below.
+    let complete_reload_before_lower = begin_lower
+        && weapon_component.state == WieldableState::Reloading
+        && super::super::reload::timer_expires_this_tick(&weapon_component, tick_dt);
     if begin_lower && let Some(inventory) = inventory.as_mut() {
         if inventory.switch_target.is_none() {
             inventory.switch_origin = Some(inventory.active_slot);
         }
         inventory.switch_target = select_slot;
     }
-    if begin_lower {
+    if begin_lower && !complete_reload_before_lower {
         let lower_ms = weapon_component.lower_ms;
         let _ = transition_wieldable_state(
             &mut weapon_component,
@@ -191,15 +198,30 @@ pub(in crate::sim) fn run_local_weapon_command(
             None,
         );
     }
-    let machine = tick_weapon_machine(
+    let mut machine = tick_weapon_machine(
         &mut registry,
         pawn,
         weapon_id,
         &mut weapon_component,
         reload_pressed,
         command,
+        begin_lower,
         tick_dt,
     );
+    if complete_reload_before_lower {
+        let lower_ms = weapon_component.lower_ms;
+        let _ = transition_wieldable_state(
+            &mut weapon_component,
+            WieldableStateEvent::BeginLower {
+                duration_ms: lower_ms,
+            },
+            None,
+        );
+        // The outgoing instance has not been ticked as Lowering yet. A zero
+        // lower therefore resolves exactly once here, without a second machine
+        // pass that would advance cooldown or fire input a second time.
+        machine.lowered = lower_ms == 0;
+    }
     let events = weapon::tick_resolved_component(
         &registry,
         &mut weapon_component,

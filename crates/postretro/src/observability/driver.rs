@@ -470,9 +470,52 @@ fn build_player_summary(registry: &EntityRegistry, facing_yaw: f32) -> Option<Pl
 mod tests {
     use super::*;
     use postretro_entities::DataRegistry;
+    use postretro_entities::components::inventory::Inventory;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::data_descriptors::{
         HealthDescriptor, NamedReaction, ProgressDescriptor, ReactionDescriptor,
     };
+    use postretro_scripting_core::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+    };
+
+    fn test_movement_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        }
+    }
 
     #[test]
     fn headless_install_keeps_direct_prl_paths_untagged() {
@@ -480,6 +523,28 @@ mod tests {
             active_level_tags_for_headless_install().is_empty(),
             "headless runspecs use raw .prl paths and cannot match scoped pools",
         );
+    }
+
+    #[test]
+    fn headless_summary_reads_the_installed_inventory_pawn_via_local_movement_identity() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform {
+            position: glam::Vec3::new(3.0, 2.0, 1.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                pawn,
+                PlayerMovementComponent::from_descriptor(&test_movement_descriptor()),
+            )
+            .unwrap();
+        registry.set_component(pawn, Inventory::default()).unwrap();
+        registry.mark_local_player_pawn(pawn).unwrap();
+
+        let summary = build_player_summary(&registry, 0.25).expect("installed pawn is summarized");
+        assert_eq!(summary.entity, pawn.to_raw());
+        assert_eq!(summary.position, [3.0, 2.0, 1.0]);
+        assert!((summary.facing_yaw - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub(super) fn tick_weapon_machine(
     component: &mut WeaponComponent,
     reload: bool,
     command: &WeaponFireCommand,
+    suppress_fire: bool,
     tick_dt: f32,
 ) -> WeaponMachineTick {
     let pawn = pawn.filter(|pawn| registry.exists(*pawn));
@@ -103,9 +104,13 @@ pub(super) fn tick_weapon_machine(
     }
 
     // 4. Fire intent. Cooldown remains orthogonal to wieldable state.
+    let fire_command = WeaponFireCommand {
+        can_fire: command.can_fire && !suppress_fire,
+        ..*command
+    };
     let authorization = authorize_fire(
         component,
-        command,
+        &fire_command,
         FireAuthorizationContext {
             tick_dt,
             reload_started_this_tick,
@@ -149,6 +154,7 @@ pub(super) fn deliver_reload_to_weapon(
         &mut component,
         reload_pressed,
         &command,
+        false,
         tick_dt,
     );
     let _ = registry.set_component(weapon, component);

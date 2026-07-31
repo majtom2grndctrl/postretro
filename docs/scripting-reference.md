@@ -1642,6 +1642,17 @@ if production outruns a consumer's bounded backlog, older samples may be dropped
 so stale feedback does not replay indefinitely. Ammo always publishes the latest
 authoritative count.
 
+### The readonly `player.weapon.*` slots
+
+`player.weapon.current`, `player.weapon.pending`, and `player.weapon.switching`
+are local, engine-owned display slots for weapon HUDs. `current` is the canonical
+archetype name of the committed active wieldable, so it remains the outgoing
+weapon during lowering and changes when the inventory repoints. `switching` is
+true while that inventory has an accepted in-flight target. `pending` is the
+input cursor's selection and is initially the empty string until the input
+producer supplies it. They are readonly from scripts and are published locally
+on every role rather than replicated from the host.
+
 ## Operable UI
 
 The UI is operable: a closed nav-intent vocabulary, focusable

@@ -799,6 +799,11 @@ declare module "postretro" {
       readonly maxHealth: ReadonlyStateRef<number>;
       readonly reloadActive: ReadonlyStateRef<boolean>;
       readonly reloadProgress: ReadonlyStateRef<number>;
+      readonly weapon: {
+        readonly current: ReadonlyStateRef<string>;
+        readonly pending: ReadonlyStateRef<string>;
+        readonly switching: ReadonlyStateRef<boolean>;
+      };
       readonly weaponCooldownMs: ReadonlyStateRef<number>;
     };
     readonly screen: {

@@ -798,6 +798,11 @@ export type GameStateRefs = {
     maxHealth: ReadonlyStateRef<number>,
     reloadActive: ReadonlyStateRef<boolean>,
     reloadProgress: ReadonlyStateRef<number>,
+    weapon: {
+      current: ReadonlyStateRef<string>,
+      pending: ReadonlyStateRef<string>,
+      switching: ReadonlyStateRef<boolean>,
+    },
     weaponCooldownMs: ReadonlyStateRef<number>,
   },
   screen: {

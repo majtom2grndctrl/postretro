@@ -152,6 +152,9 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | --- | --- |
 | `getGameState().player.health` | `player.health` |
 | `getGameState().player.maxHealth` | `player.maxHealth` |
+| `getGameState().player.weapon.current` | `player.weapon.current` |
+| `getGameState().player.weapon.pending` | `player.weapon.pending` |
+| `getGameState().player.weapon.switching` | `player.weapon.switching` |
 | `getGameState().screen.flash` | `screen.flash` |
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |
@@ -159,6 +162,8 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 The runtime installs the generated tree before SDK prelude evaluation, captures it into a language-native `getGameState()` closure, and hides the bridge global before author code runs. Calling `getGameState()` invokes no host callback or FFI.
 
 `player.health` and `player.maxHealth` are direct readonly refs for HUD authors. `player.health` is current HP. `player.maxHealth` is maximum HP. The engine does not publish `player.healthFraction`; consumers derive fractions from the two direct refs. Use `bindState(ref, options)` for bind-only options such as text formatting or bar tweening, and use `player.maxHealth` directly as the health bar denominator. The same contract applies in Luau. Do not import `"postretro/game-state"` and do not call `.get()` on state refs.
+
+`player.weapon.current`, `player.weapon.pending`, and `player.weapon.switching` are readonly local display slots on every role. `current` names the committed active wieldable and changes only when the inventory repoints; `switching` is true while that inventory has an in-flight target. `pending` is the input-layer cursor's display value and defaults to an empty string until its producer is present. These values are not host-authoritative and do not replicate; HUD crossing behavior follows the local machine's publication cadence.
 
 ---
 

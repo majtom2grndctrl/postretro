@@ -61,16 +61,31 @@ Warrant for the composition claim, stated because it eliminates work: `Wieldable
 
 ## Why the carried set is not slot-shaped
 
-State slots hold numbers and booleans. Of the carried set:
+`SlotType` is `Number | Boolean | String | Enum | Array` (`slot_table.rs:20-27`), and `SlotValue::Array` is **`Vec<f32>`** (`slot_table.rs:15`) — floats only, no string arrays and no maps.
 
 | Value | Shape | Slot-expressible |
 |---|---|---|
-| Current health | `f32` | yes |
-| Ammo reserve | `HashMap<String, u32>` (`ammo_reserve.rs:10`) | no |
-| Magazines | per-inventory-slot `u32`, 10 slots | no |
-| Inventory composition | 10 canonical names + active index | no |
+| Current health | `f32` | yes — `Number` |
+| Active slot | index | yes — `Number` |
+| Magazines | per-inventory-slot `u32`, 10 slots | yes — `Array` of `f32` |
+| Ammo reserve | `HashMap<String, u32>` (`ammo_reserve.rs:10`) | no — string-keyed map |
+| Inventory composition | 10 canonical name strings | no — `Array` holds floats |
 
-Three of four have no scalar representation, so a structured per-seat record is required regardless of what the currency spec later builds. The seat still serves as the shared key: a per-seat *scalar* axis and a per-seat *record* can coexist on one key without duplicating a store.
+Two of five resist, and composition is the load-bearing one: without it the seat cannot rebuild a loadout, which is the carry's purpose. A structured per-seat record is therefore required no matter how much else moves into slots.
+
+The seat still serves as the shared key. A per-seat *scalar* axis and a per-seat *record* coexist on one key without duplicating a store, because they hold disjoint values.
+
+## Where each identity type lives
+
+`net` depends only on renet, renet_netcode, bitcode, and log — postretro-free by contract (`development_guide.md:28`). `entities` depends only on `foundation`, enforced by `layering_invariants_hold` (`crates/xtask/src/crate_graph.rs:496`). There is therefore **no crate from which both `net` and `entities` can name a shared type**.
+
+| Type | Home | Why |
+|---|---|---|
+| `Seat` | `foundation` | Must be nameable from `entities` when per-seat storage reaches the floor slot table, and from the binary now. Wire carries a bare `u16` |
+| `SessionId`, `PlayerClaimId` | `net` | Cross the wire; nothing below the binary names them |
+| `SeatTable`, `SeatSessionState` | binary `netcode/` | Hold engine types; `entities` is a compile chokepoint with six dependents that domain logic stays out of (`development_guide.md:39-41`) |
+
+`NetworkId` is the precedent: a wire type in `net` whose allocator lives in the binary. `Seat` inverts it because the *type* must reach the floor while the *table* must not.
 
 ## Identity inventory, before this spec
 

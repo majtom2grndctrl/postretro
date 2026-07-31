@@ -23,29 +23,27 @@ Hold-start keys to the transport's `ClientDisconnected` edge, not to `SlotEvent:
 
 ```mermaid
 sequenceDiagram
-    participant U as unload_level
+    participant D as any pawn despawn
     participant S as SeatTable
     participant R as EntityRegistry
     participant I as install_world_cpu
 
-    Note over U: harvest window opens
-    U->>S: harvest per bound seat
+    Note over D: level unload, suspend, or a demote with no unload
+    D->>S: harvest per seat, resolved via the seat's own pawn binding
     S->>R: read health / reserve / magazines / inventory
-    Note over U,R: clear_net_level_parity (:238) — SlotPawns destroyed
-    Note over U,R: data_registry.clear() (:274) — descriptors gone
-    Note over U,R: clear_for_level_unload (:280-285) — entities despawned
+    Note over D,R: entities despawned — the only hard deadline
     I->>S: read carried loadout for seat
     S->>I: canonical names, magazines, active slot, reserve, health
     I->>R: compose inventory from names, then override
 ```
 
-Three ordering facts drive the harvest placement, all confirmed in source:
+An early draft placed the harvest inside `unload_level`, ahead of `clear_net_level_parity`, and called that placement non-negotiable. Two facts undid it.
 
-- `clear_net_level_parity` is the **first** statement of `unload_level` (`startup/lifecycle.rs:238`) and replaces `SlotPawns` wholesale (`netcode/mod.rs:949`). After it, no client id resolves to a pawn.
-- `data_registry.clear()` runs at `:274`, before entities die. A harvest needing descriptor lookups must precede it.
-- Entities stay live until `clear_for_level_unload` at `:280-285`.
+The pawn dies on paths that never touch `unload_level`. `host_handle_lifecycle` despawns on a single `Closed | Demoted` arm, and demotes fire without any unload — `set_mod_digest` into `reevaluate_parity` on a mod reload, or `reevaluate_parity(Some(client_id))` when a live client's parity declaration stops matching. `App::suspended` calls `clear_net_level_parity` directly, bypassing `unload_level` entirely. A hook keyed to level unload misses all three and seeds stale values over a live session.
 
-So the harvest window is *before* `:238`, not merely before `:280`.
+And the constraint that forced the placement was self-inflicted. It existed only because the harvest resolved pawns through `SlotPawns`, which `clear_net_level_parity` replaces wholesale (`netcode/mod.rs:949`). Giving the seat its own `pawn` binding removes the dependency. Canonical names come off `DescriptorProvenance` on the entity rather than the data registry, so `data_registry.clear()` does not bound it either.
+
+What remains: harvest before the entity dies. That is one rule — hang it on pawn despawn — and it holds on every path.
 
 ## Observers
 

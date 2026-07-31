@@ -24,7 +24,7 @@ Give a pawn an ordered inventory of wieldable instances and one active reference
 
 ### Authority model
 
-Switching follows **fire**, not movement. Movement is predicted and reconciled because both peers simulate continuously from the same inputs and drift every tick; there is a divergence to correct. A switch is a discrete declaration — nothing drifts, so the host does not re-derive it, it accepts or refuses it. This is the model `E16--client-authoritative-combat` already established for per-shot geometry.
+Switching follows the model `E16--client-authoritative-combat` established for per-shot geometry: the client acts, the host validates. It is not predicted and reconciled the way movement is; the Direction section argues why.
 
 | Concern | Owner |
 |---|---|
@@ -34,9 +34,9 @@ Switching follows **fire**, not movement. Movement is predicted and reconciled b
 | Ammo, fire rate, magazine debit | Host — **already shipped, unchanged by this plan** |
 | Which weapon a declared shot came from | Client declares it; host validates possession |
 
-Two consequences worth stating plainly. Equip timers do **not** need to land on the same tick index on both peers — the client's switch is its own. And a refused switch degrades gracefully: the client's shots still validate on possession, so divergence is presentational rather than correctness-critical.
+Two consequences follow. Equip timers do **not** need to land on the same tick index on both peers. And a refused switch leaves only a presentational difference, because the client's shots still validate on possession.
 
-**Possession-based validation is a priced cheat surface.** A client can declare a shot from any owned weapon at any time, including while visibly holding another, or alternate declarations to get two weapons' fire rates. This is acceptable because the roadmap non-goals anti-cheat and competitive PvP (`context/lib/index.md` §4) and this is co-op; it is also self-limiting, since each shot debits a real per-instance magazine. Remote players may briefly see the held and firing weapons disagree during an equip window, bounded by the equip duration. Recorded as a decision, not an oversight.
+**Possession-based validation accepts a cheat surface.** A client can declare a shot from any owned weapon at any time, including while visibly holding another, or alternate declarations to get two weapons' fire rates. Accepted because `context/lib/index.md` §4 non-goals anti-cheat and competitive PvP and this is co-op, and because each shot still debits a real per-instance magazine. Remote players may briefly see the held and firing weapons disagree during an equip window, bounded by the equip duration.
 
 ### Out of scope
 
@@ -54,7 +54,7 @@ Two consequences worth stating plainly. Equip timers do **not** need to land on 
 
 ### Ships knowingly broken — owner decision
 
-**Inventory and ammo reserve do not survive a level transition.** Nothing in source forecloses carrying them; this is a choice. The durable per-player key carry needs is the host-minted **seat**, unbuilt in E15 Phase 3.75 (`roadmap.md:202`), which `drafts/E16--per-player-currency` is already parked on. Building carry now means blocking on that spec or standing up a single-player-only carry path — a fourth divergent holder, the disease this plan cures. Consequence: every level re-equips from the player descriptor and re-seeds the reserve. Owner decision, 2026-07.
+**Inventory and ammo reserve do not survive a level transition.** Nothing in source forecloses carrying them; this is a choice. The durable per-player key carry needs is the host-minted **seat**, unbuilt in E15 Phase 3.75 (`roadmap.md:202`), which `drafts/E16--per-player-currency` is already parked on. Building carry now means blocking on that spec or standing up a single-player-only carry path — a fourth divergent holder, which is what this plan exists to remove. Consequence: every level re-equips from the player descriptor and re-seeds the reserve. Owner decision, 2026-07.
 
 ## Direction
 
@@ -64,11 +64,11 @@ Two consequences worth stating plainly. Equip timers do **not** need to land on 
 
 `E21--coop-avatar-weapon-presentation` deferred the switch input path to this plan (`index.md:33`) and shipped what assignment needs — the replicated active-archetype field, client-side change detection, and the hand-socket rewrite. Remote-avatar presentation follows once the holder moves. Two paths are **not** free and are named as work in Task 3: the host snapshot fill reads the map Task 3 reduces, and the client's own viewmodel resolves through a replicated archetype value that must yield to its local `Inventory`.
 
-`E16--client-authoritative-combat` is the model this plan follows for authority, and `E16--ammo-resource` already made ammo host-authoritative and per-instance. Neither is re-litigated here.
+`E16--client-authoritative-combat` is the model this plan follows for authority, and `E16--ammo-resource` already made ammo host-authoritative and per-instance. This plan changes neither; it changes only which weapon instance a declared shot resolves to.
 
 The mod-global block follows the shipped manifest rule: `scripting.md:49` records that stores, UI trees, themes, map catalogs, and frontend declarations arrive as **manifest data, not import-time side effects**.
 
-Where this diverges, twice, stated rather than slipped in. `defaultWeapon` is **replaced** by a `loadout` array rather than kept as sugar, because a second one-weapon path preserves the divergence this plan removes. And that loadout moves from the descriptor's **top level** into `components.inventory`, reversing M10's placement ("equip is a different concern at the same level") — justified because equip now carries per-pawn runtime state rather than a name. `content/dev/scripts/player.ts` is the sole content consumer.
+This diverges from two shipped decisions. `defaultWeapon` is **replaced** by a `loadout` array rather than kept as sugar, because a second one-weapon path preserves the divergence this plan removes. And that loadout moves from the descriptor's **top level** into `components.inventory`, reversing M10's placement ("equip is a different concern at the same level") — justified because equip now carries per-pawn runtime state rather than a name. `content/dev/scripts/player.ts` is the sole content consumer.
 
 **Placement.** The inventory and repoint sit in the engine: state a host owns and a client mirrors. The reload-interrupt rule sits in mod-declared data, per-weapon-overridable, because abandoning a per-shell reload and abandoning an atomic load are different design calls. The cursor, dwell, last-weapon memory and player overrides sit in the input layer beside `crouch_mode`, because they describe how one person's hardware is interpreted.
 
@@ -76,7 +76,7 @@ Where this diverges, twice, stated rather than slipped in. `defaultWeapon` is **
 
 *Host-authoritative switching with no client-side run* — the client requests and waits. Rejected because the lower would not begin until a round trip completed, making switching the one player action that visibly waits for the network.
 
-*An authored IR guard for the commit rule* over a `@wieldable.*` namespace was drafted and dropped: it would hang off the player entity descriptor, so every character class re-declares an identical rule, and a switch-commit author sets numbers against engine-fixed structure rather than inventing structure.
+*An authored IR guard for the commit rule* over a `@wieldable.*` namespace is rejected: it would hang off the player entity descriptor, so every character class re-declares an identical rule, and a switch-commit author sets numbers against engine-fixed structure rather than inventing structure.
 
 *A side-table keyed by pawn*, generalizing `WeaponOwners`, is rejected because a side table is what made the state divergent — it lives on `NetEndpoint::Host` and cannot exist single-player, which is why `App.active_wieldable` exists at all.
 
@@ -114,7 +114,7 @@ Where this diverges, twice, stated rather than slipped in. `defaultWeapon` is **
 |---|---|---|---|
 | Exactly one live wieldable machine per pawn, and exactly one instance in an equip state at end of tick | Task 2 | Task 3 removes the global that could name a second; a slot holding a despawned instance must clear | AC 1, 21 |
 | A repoint preserves the instance's own state | Task 2 | Task 5 must not rebuild a component from tuning; Task 3's rewires must not re-seed | AC 5, 9 |
-| Exactly one repoint per accepted commit, and no fire authorized on the repoint tick | Task 2 | a commit arriving on a repoint tick; a zero-duration lower | AC 2, 6, O4, O5 |
+| Exactly one repoint per accepted commit, and no fire authorized on the repoint tick | Task 2 | a commit arriving on a repoint tick; a zero-duration lower | AC 2, 7, O4, O5 |
 | Fire and reload are refused for the whole switch, and a switch is never reload activity | Task 2 | the feedback stream reports active from a queued endpoint regardless of state | AC 7 |
 | Ammo reserve is pooled on the pawn, seeded once per type | Task 2 | Task 9's multi-slot loadout is the first case with more than one seeding source | AC 9 |
 | Every owned instance is despawned with its pawn | Task 3 | slot close despawns the pawn before cleanup runs, so instances must be read first | AC 20 |
@@ -179,7 +179,7 @@ Scenario, ordering, expected outcome. Task 10 cites these rows; other tasks must
 
 ### Task 1: Split `sim/weapon_stage.rs`
 
-The file is 3,452 lines, of which roughly 800 are production code — the rest is its test module. Split it on seam clarity rather than mass: the ordered per-tick machine driver, the state/event dispatch and its transition helpers, the fire authorization path, the local and remote command entry points, and the impact-damage application path the file's own header lists as a first-class concern and which no other task touches. Behavior-preserving: no behavior, signature, or test assertion changes, and the existing tests must pass unmodified. Carry the driver's numbered-step doc comment forward verbatim — it records that reload entry deliberately runs before expiry and fire, and later tasks depend on that order being legible. After the split there is still exactly one function matching state against event, with no wildcard arm.
+The file is 3,452 lines, roughly 800 of them production code and the rest its test module. Split it along the seams already visible in it: the ordered per-tick machine driver, the state/event dispatch and its transition helpers, the fire authorization path, the local and remote command entry points, and the impact-damage application path the file's own header lists as a first-class concern and which no other task touches. Behavior-preserving: no behavior, signature, or test assertion changes, and the existing tests must pass unmodified. Carry the driver's numbered-step doc comment forward verbatim — it records that reload entry deliberately runs before expiry and fire, and later tasks depend on that order being legible. After the split there is still exactly one function matching state against event, with no wildcard arm.
 
 ### Task 2: Thin slice — inventory, equip states, local switch, end to end
 
@@ -191,7 +191,7 @@ Build the narrow real version and integrate it before anything fans out.
 
 **Dispatch.** The dispatch matches `(state, event)` with no wildcard arm. Two new states and one new event make the domain twenty pairs, of which **eleven are new**: three `BeginLower` rows out of the shipped states, and eight covering the two equip states against all four events. Do not modify the existing cancel rows. `BeginLower` from atomic reload forfeits the in-flight reload — nothing has transferred, since the atomic path takes from the reserve only in its expiry arm; from per-shell reload the credited shells stay; from a lower it re-targets without restarting the timer. **Every** `BeginLower` row must drain the outgoing weapon's reload feedback unconditionally — including the row from idle, because a reload that completed earlier in the same tick leaves a queued completion that samples as active regardless of state. Do not reuse the shell-loading cancel row's helper, which deliberately retains a same-tick completion; add a sibling that clears entries, reseats both cursors' sequence, and resets their separator latches, or the next identical endpoint the incoming weapon publishes is suppressed.
 
-**Repoint — constraints, not mechanism.** The spec states what must hold; the placement is settled against the compiler. Note that the dispatch function receives only a component and a reserve, so it cannot reach an `Inventory` or a second component, and that the driver clones one component for the whole tick and writes it back afterwards. Whatever satisfies these is acceptable:
+**Repoint.** Two facts about the driver bound the placement: the dispatch function receives only a component and a reserve, so it cannot reach an `Inventory` or a second component; and the driver clones one component for the whole tick and writes it back afterwards. Any placement satisfying all of the following is acceptable:
 
 - Exactly one repoint per accepted commit, and exactly one instance in an equip state at end of tick.
 - No fire is authorized on the repoint tick, from either instance.
@@ -286,7 +286,7 @@ Cover every row of the Orderings table with a test that names its scenario, plus
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — behavior-preserving split; every later task edits this file.
-**Phase 2 (sequential):** Task 2 — thin slice, integrated end to end before anything fans out.
+**Phase 2 (sequential):** Task 2 — thin slice, integrated end to end before anything fans out. It is deliberately **single-player and listen-host only**: under the declaration model the netcode surface is one reliable message plus one command level, and the client's inventory is created from the tuning payload, so the slice cannot cross that seam before Task 5 exists. The consequence is that the client path's assumptions are not falsified until Phase 5 — Task 5 carries that risk and should be treated as a second integration point, not a fan-out task.
 **Phase 3 (sequential):** Task 6 — Tasks 2, 4 and 7 all consume its declared rules.
 **Phase 4 (sequential):** Task 3 — owns the `WeaponOwners` reduction and the HUD publisher's role gate, which Tasks 4, 5 and 8 build on.
 **Phase 5 (concurrent):** Task 4, Task 5, Task 8 — declaration and validation, the payload and the client's inventory, and the state slots.

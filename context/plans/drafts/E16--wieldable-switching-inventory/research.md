@@ -46,11 +46,11 @@ The IR has no boolean `and`/`or`/`not`. `select` supplies them: `or(a, b)` is `s
 
 ### 3b. Why the scoped namespace was dropped
 
-Two independent challenges landed on the same finding: the direction review's Q6, and the owner's placement objection. The review's evidence was that both reference policies the spec shipped were expressible in three scalars, so the guard's justification was asserted rather than demonstrated. The owner's was stronger and different in kind — a guard on the player entity descriptor means every character class in a game re-declares an identical rule, and switch behavior is uniform across characters in every comparable title. What varies per-thing is equip *duration*, already per-weapon.
+Two facts settle it. A guard on the player entity descriptor means every character class re-declares an identical rule, and switch behavior is uniform across characters in every comparable title — what varies per-thing is equip *duration*, already per-weapon. And both reference policies are expressible in three scalars, so the guard buys expressiveness nothing needs.
 
-The resolution came from the player-options question rather than from either challenge. Once the dwell is recognized as an **input-layer interpretation preference** — the same category as `PlayerOptions.crouch_mode`, whose resolution the `MovementInput::crouch_intent` doc comment (`crates/postretro/src/movement/mod.rs`) records as never reaching the movement intent — it stops being simulation policy entirely. The simulation never sees a dwell, so it needs no vocabulary to express one, and the only rule left crossing into the tick (may a switch interrupt a reload) is a boolean.
+The deeper reason is that the dwell is not simulation policy at all. Once it is recognized as an **input-layer interpretation preference** — the same category as `PlayerOptions.crouch_mode`, whose resolution the `MovementInput::crouch_intent` doc comment (`crates/postretro/src/movement/mod.rs`) records as never reaching the movement intent — it stops being simulation policy entirely. The simulation never sees a dwell, so it needs no vocabulary to express one, and the only rule left crossing into the tick (may a switch interrupt a reload) is a boolean.
 
-This also dissolves what the direction review flagged as the sharper half of the guard's open question: `@wieldable.selectionDwellMs` and `@wieldable.switchInFlight` would have been peer-local accumulations feeding a replicated guard, so an identical expression over divergent local inputs could commit at different moments on the two peers. With the dwell in the input layer, there is nothing to diverge — each peer decides when *it* wants to switch and sends an intent.
+It also removes a divergence the guard would have carried: `@wieldable.selectionDwellMs` and `@wieldable.switchInFlight` are peer-local accumulations, so an identical replicated expression over them could commit at different moments on the two peers. With the dwell in the input layer there is nothing to diverge.
 
 ## 4. Typed cross-references between script-declared things
 
@@ -200,11 +200,9 @@ Sourcing note: Q1 and Q2 above rest on shipped engine source, which is stronger 
 
 ## 13. Authority model — why switching follows fire, not movement
 
-Settled by owner decision after the movement-prediction design was drafted and rejected.
-
 Movement is predicted and reconciled because both peers simulate continuously from the same buffered inputs and **drift** — there is a divergence every tick that replay corrects. A switch is a discrete declaration; nothing drifts. The host does not need to re-derive it, only to accept or refuse it. That is the shape `E16--client-authoritative-combat` already shipped for per-shot geometry: client-detected, host-validated, no server rewind.
 
-Choosing the movement shape cost the earlier draft a correction channel, a snapshot-recency gate, and tick-exact equip agreement. The recency gate was an unsolved blocker: authority metadata refreshes on every ingest **without bumping the baseline** (`crates/net/src/replication.rs`), deliberately, so an unchanged pawn is never resent — a stationary client's refused switch had no comparand and could never converge. The declaration model removes the mechanism rather than repairing it.
+The movement shape would cost a correction channel, a snapshot-recency gate, and tick-exact equip agreement — and the recency gate has no workable comparand: authority metadata refreshes on every ingest **without bumping the baseline** (`crates/net/src/replication.rs`), deliberately, so an unchanged pawn is never resent — a stationary client's refused switch would never converge. The declaration model removes the mechanism rather than repairing it.
 
 **Possession-based fire validation** removes the remaining coupling. The host resolves a firing weapon today from its own active pointer — `prepare_remote_pawn_command` calls `weapon_owners.weapon_of(pawn)` — and `HitDeclaration` carries `{ shot_id, records }` with no weapon identity. Resolving from the client instead, and validating that the pawn *possesses* that weapon rather than that it is *selected*, means the two peers never have to agree on the active slot for a shot to be correct. The equip-boundary false-rejection case disappears, and a refused switch degrades to a presentational difference.
 

@@ -169,7 +169,7 @@ The last row matters: the headless driver is a real read site and its rewire is 
 | `crates/postretro/src/netcode/state_slots.rs` | 2,321 | projection re-source |
 | `crates/entities/src/components/weapon.rs` | 892 | unchanged shape |
 
-Only `weapon_stage.rs` receives genuinely new logic; the rest are rewires that shrink or hold their line count. Split-before-extend applies to `weapon_stage.rs` alone. Splitting `main.rs` is Epic 19's charter and is not pulled forward here.
+Among the oversized files in this table, only `weapon_stage.rs` receives genuinely new logic; the rest of *these* are rewires that shrink or hold their line count. Substantial new logic also lands outside the table — the input layer's cursor, dwell, notch counting and last-weapon memory, and the payload's per-slot shape and correction channel. Split-before-extend applies to `weapon_stage.rs` alone. Splitting `main.rs` is Epic 19's charter and is not pulled forward here.
 
 ## 12. Prior art — predicted weapon switching cadence
 

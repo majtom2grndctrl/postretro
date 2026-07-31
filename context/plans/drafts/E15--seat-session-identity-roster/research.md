@@ -7,15 +7,17 @@ Derivation notes for the spec. Decisions live in `index.md`; this file holds the
 ```mermaid
 stateDiagram-v2
     [*] --> Unminted
-    Unminted --> Bound: slot first reaches participating<br/>(claim recorded, or anonymous)
-    Bound --> Bound: level change — demote then re-promote<br/>(harvest on unload, seed on install)
-    Bound --> Held: slot closes<br/>(harvest, mark disconnected)
-    Held --> Bound: new connection, claim matches exactly<br/>(rebind client id, restore state)
+    Unminted --> Bound: slot first admitted<br/>(stashed claim recorded, or anonymous)
+    Bound --> Bound: level change — demote to Admitted then re-promote<br/>(harvest on unload, seed on install)
+    Bound --> Held: connection drops<br/>(harvest, mark disconnected)
+    Held --> Bound: later admission, claim matches exactly<br/>(rebind client id, restore state)
     Held --> Released: hold deadline passes<br/>(drop from roster; number never reissued)
     Released --> [*]
 ```
 
-The `Bound → Bound` self-edge is the invariant the design turns on. A level change drives a slot out of `Participating` and back in, and `networking.md:98` clears every per-slot value on any such exit. The seat must sit outside that sweep.
+The `Bound → Bound` self-edge is the invariant the design turns on. A level change drives a slot out of `Participating` and back in, and `networking.md:98` clears every per-slot value on any such exit. The seat must sit outside that sweep — which is why every edge above is admission or connection, never participation.
+
+Hold-start keys to the transport's `ClientDisconnected` edge, not to `SlotEvent::Closed`. `SlotTable::transition` emits `Closed` only from `Participating` (`slots.rs:83-92`; the shipped test asserts `close` returns `None` right after a demote), and a level change demotes everyone to `Admitted`. Keying to the slot event would mean a drop during a level load — the likeliest moment to drop — starts no hold at all.
 
 ## Level-transition carry
 
@@ -53,11 +55,15 @@ The same carried value is seen from three positions. The cross-product is not un
 |---|---|---|---|---|
 | Single-player / host pawn | Component, harvested and seeded | Component on pawn | Component per weapon entity | `Inventory` on pawn |
 | Host-owned remote slot pawn | Same as above | Same | Same | Same |
-| Connected client's own pawn | **No component at all** — replicated slot only | Local shadow copy, never read | Local shadow copy, never read | Composed from tuning payload's canonical names |
+| Connected client's own pawn | **No component at all** — replicated slot only | Local shadow copy, never displayed | Local shadow copy, never displayed | Composed from tuning payload's canonical names |
 
-The client column is why Task 8 exists. Composition follows the host for free because the tuning payload carries canonical names and the host builds it from its live inventory — but magazines and reserve have no wire representation, so they do not follow and must be added.
+The client column looks like a gap and is not. Two independent paths already close it, which is why Task 8 verifies rather than builds.
 
-Warrant for the composition claim, stated because it eliminates work: `WieldableTuningPayload.canonical_name` (`tuning_payload.rs:22`) is built from the host pawn's live inventory, and the client composes through `compose_wieldable_inventory_from_slots` from exactly those names (`net_descriptor.rs:207-213`). Seeding the host pawn before tuning is sent therefore propagates composition. The same warrant does **not** extend to magazines or reserve: `WieldableTuningPayload` (`tuning_payload.rs:21-29`) carries neither, and `TuningPayload` (`:38-42`) carries no ammo at all.
+Composition: `WieldableTuningPayload.canonical_name` (`tuning_payload.rs:22`) is built from the host pawn's live inventory, and the client composes through `compose_wieldable_inventory_from_slots` from exactly those names (`net_descriptor.rs:207-213`). Seeding the host pawn before tuning is sent propagates composition.
+
+Magazine and reserve: `AmmoSlotProjection::for_pawn` (`crates/postretro/src/netcode/state_slots.rs`) projects both into owner-private slots for the active weapon's ammo type, re-resolving the active wieldable from live `Inventory` on every ingest, so it follows a weapon switch. `host_replicate` ingests once per snapshot batch at 30 Hz. The HUD binds `player.ammo` and `player.ammoReserve` (`content/dev/scripts/hud.ts`) against `App::build_ui_slot_snapshot`, and on a client those records arrive via `ClientStateApply::apply_snapshot_state`. The HUD never reads a component.
+
+So the client's local `AmmoReserve` and `magazine` are write-mostly and never displayed — `weapon_hud_values` (`scripting/systems/ui_proxy.rs`) computes them and the connected-client branch drops all but the weapon `EntityId`. Only the equipped weapon is ever shown, so the non-active ammo types that have no wire representation also have no consumer. Adding them to the tuning payload would ship values nothing reads, behind a payload rebuilt only on participation entry and mod-content install.
 
 ## Why the carried set needs a structured record
 
@@ -113,16 +119,15 @@ Verified: `ClientAuthentication::Unsecure` carries `user_data: Option<[u8; NETCO
 
 Non-obvious consequence: renetcode fills an absent `user_data` with **random bytes**, not zeros (`token.rs:193-196`). Absence is therefore undetectable without a magic marker, which is why the envelope has one.
 
-## Closed slots are two populations
+## Closed slots stay terminal
 
-`SlotState::Closed` is terminal via two independent mechanisms:
+An early draft had reclaim relaxing closed-slot terminality. It does not need to, and the reasoning is worth keeping because the assumption is easy to re-derive wrongly.
 
-- an early return in `transition` for any slot already closed (`slots.rs:69-72`), which makes every public mutator a silent no-op;
-- `entry().or_insert()` in `on_connect` (`slots.rs:59`), which refuses to reset a closed id to pending.
+`SlotState::Closed` is terminal via two independent mechanisms — an early return in `transition` for any slot already closed (`slots.rs:69-72`), and `entry().or_insert()` in `on_connect` (`slots.rs:59`) that refuses to reset a closed id to pending. `SlotTable` has no `remove`, `clear`, or `retain`, so the map grows for the endpoint's lifetime. `transition` also plants a permanent `Closed` tombstone for ids that were **never connected**, deliberately, so stale packets are refused (`slots.rs:79-82`).
 
-`SlotTable` has no `remove`, `clear`, or `retain` — the only writes are one `or_insert` and two `insert`s — so the map grows for the endpoint's lifetime.
+None of it obstructs reclaim. Client ids are minted per connection from wall-clock nanos at exactly one site (`NetEndpoint::from_role`, `NetRole::Connect` arm), so a rejoining peer always arrives on an id `SlotTable` has never seen. `on_connect` inserts it as `Pending` by the ordinary path; the closed entry for the old id is never consulted; the tombstone population is never approached. Reclaim is entirely a binary-layer operation keyed by player id and seat.
 
-The population split matters more than the terminality. Beyond genuine closes of slots that once participated, `transition` plants a permanent `Closed` tombstone for ids that were **never connected**, deliberately, so stale packets are refused (`slots.rs:79-82`). A reclaim path that treats all closed entries alike reopens that hole.
+Two consequences. The spec loses its only genuine one-way door. And `SlotTable`'s unbounded growth is a pre-existing condition this spec neither causes nor fixes — bounding it would mean evicting tombstones, which is precisely what reopens the stale-packet hole, so it belongs to whoever owns that map.
 
 ## Split-before-extend: production versus test lines
 

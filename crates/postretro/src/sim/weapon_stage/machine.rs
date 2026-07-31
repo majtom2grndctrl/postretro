@@ -17,6 +17,7 @@ pub(super) struct WeaponMachineTick {
 /// Run the one ordered weapon machine shared by local and host-simulated pawns.
 /// Reload entry must run before expiry and fire: a reload started this tick owns
 /// the fire gate even when a short duration completes before that gate runs.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tick_weapon_machine(
     registry: &mut EntityRegistry,
     pawn: Option<EntityId>,

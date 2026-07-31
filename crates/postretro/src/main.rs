@@ -5183,15 +5183,15 @@ impl App {
                         dt,
                         mover_target_tick,
                         tuning
-                            .as_ref()
+                            .as_deref()
                             .and_then(|payload| payload.movement.as_ref()),
-                        tuning.as_ref(),
+                        tuning.as_deref(),
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
                 if apply_outcome.armed_local_pawn.is_some()
                     && tuning
-                        .as_ref()
+                        .as_deref()
                         .and_then(|payload| payload.movement.as_ref())
                         .is_some()
                 {
@@ -9552,10 +9552,11 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use postretro_entities::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values,
-        // except the reload-feedback slots, which start at inactive/zero. Setting
-        // one of the value-less slots asserts the boundary contract: the snapshot
-        // clones value-bearing slots and omits value-less ones.
+        // The default table carries most engine `player.*` slots with `None`
+        // values. Reload feedback and local weapon display slots begin with
+        // concrete inactive/empty values. Setting one of the value-less slots
+        // asserts the boundary contract: the snapshot clones value-bearing slots
+        // and omits value-less ones.
         let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
@@ -9578,6 +9579,21 @@ mod tests {
             snapshot.get("player.reloadProgress"),
             Some(&SlotValue::Number(0.0)),
             "engine-owned player.reloadProgress defaults to zero and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.weapon.current"),
+            Some(&SlotValue::String(String::new())),
+            "local player.weapon.current defaults empty and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.weapon.pending"),
+            Some(&SlotValue::String(String::new())),
+            "local player.weapon.pending defaults empty and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.weapon.switching"),
+            Some(&SlotValue::Boolean(false)),
+            "local player.weapon.switching defaults false and is cloned",
         );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
@@ -9616,8 +9632,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            8,
-            "only the set player.health and default-valued reload-feedback + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
+            11,
+            "only the set player.health and default-valued reload-feedback + local weapon display + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
     }
 

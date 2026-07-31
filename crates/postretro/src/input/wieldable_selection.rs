@@ -171,7 +171,11 @@ impl WieldableSelection {
         let Some(remaining) = self.dwell_remaining_ms else {
             return;
         };
-        let elapsed_ms = elapsed_ms.is_finite().then_some(elapsed_ms).unwrap_or(0.0);
+        let elapsed_ms = if elapsed_ms.is_finite() {
+            elapsed_ms
+        } else {
+            0.0
+        };
         let remaining = remaining - elapsed_ms.max(0.0);
         if remaining > 0.0 {
             self.dwell_remaining_ms = Some(remaining);

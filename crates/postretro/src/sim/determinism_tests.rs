@@ -965,6 +965,22 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
     id
 }
 
+/// Install the local ownership relationship the weapon stage resolves at runtime.
+/// `simulate_tick` no longer uses its retired legacy wieldable argument.
+fn spawn_local_active_weapon(registry: &mut EntityRegistry) -> EntityId {
+    let pawn = spawn_player(registry, Vec3::ZERO);
+    registry
+        .mark_local_player_pawn(pawn)
+        .expect("test pawn can be marked local");
+    let weapon = spawn_weapon(registry);
+    let mut inventory = Inventory::default();
+    inventory.wieldables[0] = Some(weapon);
+    registry
+        .set_component(pawn, inventory)
+        .expect("test pawn inventory should attach");
+    weapon
+}
+
 fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
         capsule: CapsuleParams {
@@ -3138,7 +3154,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
         (
-            spawn_weapon(&mut registry),
+            spawn_local_active_weapon(&mut registry),
             spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0)),
         )
     };
@@ -3212,7 +3228,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
         (
-            spawn_weapon(&mut registry),
+            spawn_local_active_weapon(&mut registry),
             spawn_target(&mut registry, Vec3::new(0.0, 2.0, -45.0)),
         )
     };
@@ -3286,7 +3302,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
-        let weapon = spawn_weapon(&mut registry);
+        let weapon = spawn_local_active_weapon(&mut registry);
         let mut component = registry
             .get_component::<WeaponComponent>(weapon)
             .expect("weapon keeps component")
@@ -3377,7 +3393,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
         (
-            spawn_weapon(&mut registry),
+            spawn_local_active_weapon(&mut registry),
             spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0)),
         )
     };

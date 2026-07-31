@@ -232,7 +232,7 @@ pub fn ts_public_root_sdk_lib_block() -> String {
     replace_range(
         &mut block,
         "  // -------------------------------------------------------------------------\n  // UI theme helpers.",
-        "  /** Pure identity builder for entity-type descriptors.",
+        "  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */",
         TS_ROOT_UI_MANIFEST_TYPES,
     );
     block

@@ -104,11 +104,11 @@ pub fn drain_switching_js<'js>(
     let switching = raw
         .as_object()
         .expect("object type was checked before borrowing");
-    let commit_on_direct_select = get_required_bool_js(&switching, "commitOnDirectSelect")
+    let commit_on_direct_select = get_required_bool_js(switching, "commitOnDirectSelect")
         .map_err(|error| switching_field_error(scope, "commitOnDirectSelect", error))?;
-    let cycle_commit_dwell_ms = get_required_f32_js(&switching, "cycleCommitDwellMs")
+    let cycle_commit_dwell_ms = get_required_f32_js(switching, "cycleCommitDwellMs")
         .map_err(|error| switching_field_error(scope, "cycleCommitDwellMs", error))?;
-    let block_during_reload = get_required_bool_js(&switching, "blockDuringReload")
+    let block_during_reload = get_required_bool_js(switching, "blockDuringReload")
         .map_err(|error| switching_field_error(scope, "blockDuringReload", error))?;
 
     SwitchingDescriptor {

@@ -308,6 +308,10 @@ fn parse_port(value: &str) -> Result<u16, NetArgError> {
 /// Construction can fail (socket bind, transport init); failures are logged at
 /// the call site and degrade to single-player (the field stays `None`) so a
 /// netcode setup error never blocks boot.
+// The host endpoint necessarily retains several live replication maps. Boxing
+// those individually would add indirection to its hot lifecycle paths without
+// reducing the singleton's meaningful footprint.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum NetEndpoint {
     /// Listen server plus the host-side `EntityId -> NetworkId` allocator. The
     /// `NetServer` is boxed: it is by far the largest endpoint payload (the renet
@@ -440,7 +444,7 @@ pub(crate) enum NetEndpoint {
         /// Host-resolved values the client predicts with. The generation lets the
         /// movement materializer rebuild after a staged host retune without relying
         /// on Control/Snapshot ordering.
-        tuning: Option<TuningPayload>,
+        tuning: Option<Box<TuningPayload>>,
         tuning_generation: u64,
         applied_movement_tuning_generation: u64,
     },
@@ -889,14 +893,14 @@ impl NetEndpoint {
         if let Some(armed) = replication.armed_local_pawn() {
             apply_installed_movement_tuning_to_armed_pawn(
                 &armed,
-                tuning.as_ref(),
+                tuning.as_deref(),
                 *tuning_generation,
                 applied_movement_tuning_generation,
                 descriptors,
                 registry,
             );
         } else if tuning
-            .as_ref()
+            .as_deref()
             .and_then(|payload| payload.movement.as_ref())
             .is_none()
         {
@@ -913,7 +917,7 @@ impl NetEndpoint {
                 tuning: Some(tuning),
                 tuning_generation,
                 ..
-            } => Some((tuning, *tuning_generation)),
+            } => Some((tuning.as_ref(), *tuning_generation)),
             _ => None,
         }
     }
@@ -943,7 +947,7 @@ fn discard_world_less_snapshots(client: &mut NetClient) {
 }
 
 fn replace_client_tuning(
-    tuning: &mut Option<TuningPayload>,
+    tuning: &mut Option<Box<TuningPayload>>,
     tuning_generation: &mut u64,
     bytes: &[u8],
 ) -> Result<(), tuning_payload::TuningPayloadError> {
@@ -953,7 +957,7 @@ fn replace_client_tuning(
     // in-flight equip keeps its already-latched duration and state.
     *tuning = None;
     *tuning_generation = tuning_generation.wrapping_add(1);
-    *tuning = Some(decode_tuning_payload(bytes)?);
+    *tuning = Some(Box::new(decode_tuning_payload(bytes)?));
     Ok(())
 }
 
@@ -3025,7 +3029,10 @@ mod tests {
         }
     }
 
-    fn install_test_tuning(tuning: &mut Option<TuningPayload>, generation: &mut u64) -> Vec<u8> {
+    fn install_test_tuning(
+        tuning: &mut Option<Box<TuningPayload>>,
+        generation: &mut u64,
+    ) -> Vec<u8> {
         let mut wieldables = std::array::from_fn(|_| None);
         wieldables[0] = Some(WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),

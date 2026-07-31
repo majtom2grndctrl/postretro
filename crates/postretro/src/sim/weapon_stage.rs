@@ -694,7 +694,7 @@ mod tests {
             spawn_switch_pair(&mut registry, 0, 0, 0, 0)
         };
         let mut no_impact = ignore_impact;
-        let run = |select_slot| {
+        let mut run = |select_slot| {
             run_local_weapon_command(
                 &registry,
                 Some(pawn),
@@ -771,7 +771,7 @@ mod tests {
             spawn_switch_pair(&mut registry, 0, 23, 0, 0)
         };
         let mut no_impact = ignore_impact;
-        let run = |select_slot| {
+        let mut run = |select_slot| {
             run_local_weapon_command(
                 &registry,
                 Some(pawn),
@@ -845,7 +845,7 @@ mod tests {
             spawn_switch_pair(&mut registry, 0, 0, 0, 0)
         };
         let mut no_impact = ignore_impact;
-        let run = |select_slot| {
+        let mut run = |select_slot| {
             run_local_weapon_command(
                 &registry,
                 Some(pawn),
@@ -895,7 +895,7 @@ mod tests {
             ids
         };
         let mut no_impact = ignore_impact;
-        let run = |select_slot, tick_dt| {
+        let mut run = |select_slot, tick_dt| {
             run_local_weapon_command(
                 &registry,
                 Some(pawn),
@@ -943,7 +943,7 @@ mod tests {
             ids
         };
         let mut no_impact = ignore_impact;
-        let run = |select_slot, tick_dt| {
+        let mut run = |select_slot, tick_dt| {
             run_local_weapon_command(
                 &registry,
                 Some(pawn),

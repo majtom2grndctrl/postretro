@@ -3991,7 +3991,7 @@ impl App {
                 seat_table.as_deref_mut(),
                 &host_poll.lifecycle,
             );
-            if let Some(seats) = seat_table.as_deref_mut() {
+            if let Some(seats) = seat_table {
                 netcode::finish_host_poll(server, seats);
             }
         }
@@ -5359,7 +5359,7 @@ impl App {
                                 );
                             }
                         }
-                        if let Some(seats) = seat_table.as_deref_mut() {
+                        if let Some(seats) = seat_table {
                             netcode::finish_host_poll(server, seats);
                         }
                     }

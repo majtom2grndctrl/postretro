@@ -23,7 +23,7 @@ export default defineMod({
   version: "dev",
   switching: {
     commitOnDirectSelect: true,
-    cycleCommitDwellMs: 500,
+    cycleCommitDwellMs: 128,
     blockDuringReload: false,
   },
   maps: mapCatalog,

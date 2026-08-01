@@ -585,10 +585,16 @@ pub(crate) fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::data_descriptors::HealthDescriptor;
     use postretro_entities::registry::Transform;
+    use postretro_net::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
+    use postretro_net::transport::{HandshakeOutcome, NetClient};
+    use postretro_net::wire::encode_connect_claim;
     use postretro_scripting_core::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_test_log_capture::LogCapture;
 
     fn health(max: f32, current: f32) -> HealthComponent {
         let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
@@ -640,6 +646,373 @@ mod tests {
             player_id: postretro_net::wire::PlayerClaimId(id),
             display_name: display_name.to_owned(),
         }
+    }
+
+    const RELAY_STEP: Duration = Duration::from_millis(16);
+    const RELAY_MOD_DIGEST: [u8; 32] = [0x41; 32];
+    const RELAY_LEVEL_DIGEST: [u8; 32] = [0x53; 32];
+
+    /// Construct a claimed relay connection with the real admission and parity
+    /// declarations. The relay is deliberately only a transport stand-in: seat
+    /// ownership remains in the engine-side table below it.
+    fn relay_pair(
+        client_id: u64,
+        claim_data: Option<[u8; postretro_net::wire::NETCODE_USER_DATA_BYTES]>,
+    ) -> (NetServer, NetClient, SocketAddr) {
+        let server_socket =
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture server binds loopback");
+        let server_addr: SocketAddr = server_socket
+            .local_addr()
+            .expect("fixture server resolves loopback address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 4, Duration::from_secs(1), None)
+                .expect("fixture server transport constructs");
+        let mut client = relay_client(server_addr, client_id);
+
+        server.add_relay_connection(client_id, claim_data);
+        configure_relay_parity(&mut server, &mut client, "seat-fixture-level");
+        (server, client, server_addr)
+    }
+
+    fn relay_client(server_addr: SocketAddr, client_id: u64) -> NetClient {
+        let client_socket =
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture client binds loopback");
+        let mut client = NetClient::new(
+            client_socket,
+            server_addr,
+            client_id,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .expect("fixture client transport constructs");
+        client.set_connected();
+        client
+    }
+
+    fn configure_relay_parity(server: &mut NetServer, client: &mut NetClient, level: &str) {
+        server.set_mod_identity("postretro.seat-test".to_string(), "1.0.0".to_string());
+        server.set_mod_digest(Some(RELAY_MOD_DIGEST));
+        server.set_level_parity(Some((level.to_string(), RELAY_LEVEL_DIGEST)));
+        client.set_mod_identity("postretro.seat-test".to_string(), "1.0.0".to_string());
+        client.set_mod_digest(Some(RELAY_MOD_DIGEST));
+        client.set_level_parity(Some((level.to_string(), RELAY_LEVEL_DIGEST)));
+    }
+
+    fn relay_client_to_server(client_id: u64, client: &mut NetClient, server: &mut NetServer) {
+        client.update_connections(RELAY_STEP);
+        for packet in client.packets_to_send() {
+            server.process_packet_from(&packet, client_id);
+        }
+    }
+
+    fn admit_relay_client(
+        client_id: u64,
+        client: &mut NetClient,
+        server: &mut NetServer,
+        seats: &mut SeatTable,
+    ) -> Seat {
+        relay_client_to_server(client_id, client, server);
+        let poll = server.poll_handshakes();
+        assert!(
+            poll.disconnects.is_empty(),
+            "an admission fixture must not disconnect its relay client"
+        );
+        let admitted_client = poll.handshakes.iter().find_map(|outcome| match outcome {
+            HandshakeOutcome::Admitted { client_id } => Some(*client_id),
+            HandshakeOutcome::Rejected { .. } | HandshakeOutcome::ParityHeld { .. } => None,
+        });
+        assert_eq!(admitted_client, Some(client_id));
+        let seat = seats
+            .admit_or_reclaim(
+                client_id,
+                server.connect_claim(client_id).cloned(),
+                server.is_closed(client_id),
+            )
+            .expect("the fixture seat namespace has room");
+        finish_host_poll(server, seats);
+        seat
+    }
+
+    fn hold_closed_relay_client(client_id: u64, server: &mut NetServer, seats: &mut SeatTable) {
+        assert!(matches!(
+            server.close_relay_connection(client_id, CloseCause::Disconnect),
+            Some(SlotEvent::Closed {
+                client_id: closed,
+                cause: CloseCause::Disconnect,
+            }) if closed == client_id
+        ));
+        let poll = server.poll_handshakes();
+        assert_eq!(poll.disconnects, vec![client_id]);
+        assert_eq!(seats.hold_disconnected_client(client_id), Some(Seat(1)));
+        finish_host_poll(server, seats);
+    }
+
+    #[test]
+    fn relay_claim_rejoins_with_its_seat_and_carried_state_after_a_level_change() {
+        const FIRST_CLIENT: u64 = 41;
+        const REJOINED_CLIENT: u64 = 42;
+        let asserted_claim = claim([0x42; 16], "Relay Runner");
+        let (mut server, mut client, server_addr) =
+            relay_pair(FIRST_CLIENT, Some(encode_connect_claim(&asserted_claim)));
+        let mut seats = SeatTable::from_test_session_id([0x99; 16]);
+
+        assert_eq!(server.connect_claim(FIRST_CLIENT), Some(&asserted_claim));
+        let original_seat = admit_relay_client(FIRST_CLIENT, &mut client, &mut server, &mut seats);
+        assert_eq!(original_seat, Seat(1));
+
+        let mut old_level = EntityRegistry::new();
+        let old_pawn = old_level.spawn(Transform::default());
+        old_level
+            .set_component(old_pawn, health(100.0, 37.0))
+            .expect("fixture pawn accepts health");
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("shells", 19);
+        old_level
+            .set_component(old_pawn, reserve)
+            .expect("fixture pawn accepts reserve");
+        seats.bind_pawn(original_seat, old_pawn);
+
+        // A host level change only demotes the connection. Its seat must survive
+        // while the old pawn is harvested and the world retires its entity ids.
+        server.set_level_parity(None);
+        let demotion = server.poll_handshakes();
+        assert!(matches!(
+            demotion.lifecycle.as_slice(),
+            [SlotEvent::Demoted {
+                client_id: FIRST_CLIENT,
+                ..
+            }]
+        ));
+        seats.harvest_bound_pawns(&old_level);
+        old_level.clear_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload();
+        let carried = seats
+            .carried_state(original_seat)
+            .expect("level harvest leaves a carried record");
+        assert_health_eq(carried.health_current.expect("health carries"), 37.0);
+        assert_eq!(carried.reserve.available("shells"), 19);
+        assert_eq!(seats.seat_for_client(FIRST_CLIENT), Some(original_seat));
+
+        configure_relay_parity(&mut server, &mut client, "seat-fixture-next-level");
+        relay_client_to_server(FIRST_CLIENT, &mut client, &mut server);
+        let repromotion = server.poll_handshakes();
+        assert!(matches!(
+            repromotion.lifecycle.as_slice(),
+            [SlotEvent::Participating {
+                client_id: FIRST_CLIENT,
+            }]
+        ));
+        assert_eq!(seats.seat_for_client(FIRST_CLIENT), Some(original_seat));
+        finish_host_poll(&mut server, &mut seats);
+
+        hold_closed_relay_client(FIRST_CLIENT, &mut server, &mut seats);
+        assert_eq!(seats.seat_for_client(FIRST_CLIENT), None);
+        assert!(
+            seats.carried_state(original_seat).is_some(),
+            "the disconnected seat holds its carry until reclaim or expiry"
+        );
+
+        let mut rejoined_client = relay_client(server_addr, REJOINED_CLIENT);
+        server.add_relay_connection(REJOINED_CLIENT, Some(encode_connect_claim(&asserted_claim)));
+        configure_relay_parity(&mut server, &mut rejoined_client, "seat-fixture-next-level");
+        let reclaimed = admit_relay_client(
+            REJOINED_CLIENT,
+            &mut rejoined_client,
+            &mut server,
+            &mut seats,
+        );
+
+        assert_eq!(reclaimed, original_seat);
+        assert_eq!(seats.seat_for_client(REJOINED_CLIENT), Some(original_seat));
+        let restored = seats
+            .carried_state(reclaimed)
+            .expect("reclaimed seat keeps its harvested carry");
+        assert_health_eq(
+            restored.health_current.expect("health remains carried"),
+            37.0,
+        );
+        assert_eq!(restored.reserve.available("shells"), 19);
+    }
+
+    #[test]
+    fn relay_rejoin_after_injected_hold_expiry_mints_fresh_default_seat() {
+        const FIRST_CLIENT: u64 = 51;
+        const REJOINED_CLIENT: u64 = 52;
+        let asserted_claim = claim([0x52; 16], "Expiry Runner");
+        let (mut server, mut client, server_addr) =
+            relay_pair(FIRST_CLIENT, Some(encode_connect_claim(&asserted_claim)));
+        let mut seats = SeatTable::from_test_session_id([0x52; 16]);
+        let expired_seat = admit_relay_client(FIRST_CLIENT, &mut client, &mut server, &mut seats);
+        seats.carried.insert(
+            expired_seat,
+            Some(CarriedState {
+                health_current: Some(18.0),
+                ..Default::default()
+            }),
+        );
+
+        hold_closed_relay_client(FIRST_CLIENT, &mut server, &mut seats);
+        seats.advance_hold_clock(HOLD_WINDOW);
+        finish_host_poll(&mut server, &mut seats);
+        assert_eq!(seats.carried_state(expired_seat), None);
+
+        let mut rejoined_client = relay_client(server_addr, REJOINED_CLIENT);
+        server.add_relay_connection(REJOINED_CLIENT, Some(encode_connect_claim(&asserted_claim)));
+        configure_relay_parity(&mut server, &mut rejoined_client, "seat-fixture-level");
+        let fresh = admit_relay_client(
+            REJOINED_CLIENT,
+            &mut rejoined_client,
+            &mut server,
+            &mut seats,
+        );
+
+        assert_eq!(fresh, Seat(2), "expired seat numbers are never reused");
+        assert!(
+            seats.carried_state(fresh).is_none(),
+            "a rejoin after expiry starts from descriptor defaults"
+        );
+    }
+
+    #[test]
+    fn relay_absent_or_corrupt_claim_mints_anonymous_fresh_seat() {
+        for (client_id, user_data) in [
+            (61, None),
+            (
+                62,
+                Some([0xff; postretro_net::wire::NETCODE_USER_DATA_BYTES]),
+            ),
+        ] {
+            let (mut server, mut client, _) = relay_pair(client_id, user_data);
+            let mut seats = SeatTable::from_test_session_id([client_id as u8; 16]);
+
+            assert_eq!(
+                server.connect_claim(client_id),
+                None,
+                "an absent or corrupt envelope must never create a reclaimable claim"
+            );
+            let seat = admit_relay_client(client_id, &mut client, &mut server, &mut seats);
+            assert_eq!(seat, Seat(1));
+            assert!(
+                seats.carried_state(seat).is_none(),
+                "an anonymous admission begins with descriptor defaults"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_disconnects_while_demoted_or_never_promoted_still_start_a_hold() {
+        const DEMOTED_CLIENT: u64 = 63;
+        let demoted_claim = claim([0x63; 16], "Loading Runner");
+        let (mut demoted_server, mut demoted_client, _) =
+            relay_pair(DEMOTED_CLIENT, Some(encode_connect_claim(&demoted_claim)));
+        let mut demoted_seats = SeatTable::from_test_session_id([0x63; 16]);
+        let demoted_seat = admit_relay_client(
+            DEMOTED_CLIENT,
+            &mut demoted_client,
+            &mut demoted_server,
+            &mut demoted_seats,
+        );
+        demoted_server.set_level_parity(None);
+        assert!(matches!(
+            demoted_server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted {
+                client_id: DEMOTED_CLIENT,
+                ..
+            }]
+        ));
+        assert_eq!(
+            demoted_server.close_relay_connection(DEMOTED_CLIENT, CloseCause::Disconnect),
+            None,
+            "a demoted slot has no closed lifecycle event to key the hold from"
+        );
+        assert_eq!(
+            demoted_server.poll_handshakes().disconnects,
+            vec![DEMOTED_CLIENT]
+        );
+        assert_eq!(
+            demoted_seats.hold_disconnected_client(DEMOTED_CLIENT),
+            Some(demoted_seat)
+        );
+
+        const ADMITTED_CLIENT: u64 = 64;
+        let admitted_claim = claim([0x64; 16], "Waiting Runner");
+        let (mut admitted_server, mut admitted_client, _) =
+            relay_pair(ADMITTED_CLIENT, Some(encode_connect_claim(&admitted_claim)));
+        admitted_server.set_level_parity(None);
+        admitted_client.set_level_parity(None);
+        let mut admitted_seats = SeatTable::from_test_session_id([0x64; 16]);
+        let admitted_seat = admit_relay_client(
+            ADMITTED_CLIENT,
+            &mut admitted_client,
+            &mut admitted_server,
+            &mut admitted_seats,
+        );
+        assert_eq!(
+            admitted_server.slot_state(ADMITTED_CLIENT),
+            Some(SlotState::Admitted)
+        );
+        assert_eq!(
+            admitted_server.close_relay_connection(ADMITTED_CLIENT, CloseCause::Disconnect),
+            None,
+            "an admitted peer that never promoted likewise emits no closed lifecycle event"
+        );
+        assert_eq!(
+            admitted_server.poll_handshakes().disconnects,
+            vec![ADMITTED_CLIENT]
+        );
+        assert_eq!(
+            admitted_seats.hold_disconnected_client(ADMITTED_CLIENT),
+            Some(admitted_seat)
+        );
+    }
+
+    #[test]
+    fn reclaim_with_a_fresh_client_id_never_reopens_the_closed_transport_slot() {
+        const CLOSED_CLIENT: u64 = 71;
+        const REJOINED_CLIENT: u64 = 72;
+        let player_claim = claim([0x71; 16], "Terminal Runner");
+        let mut seats = SeatTable::from_test_session_id([0x71; 16]);
+        let original_seat = seats
+            .admit_or_reclaim(CLOSED_CLIENT, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+        assert_eq!(
+            seats.hold_disconnected_client(CLOSED_CLIENT),
+            Some(original_seat)
+        );
+
+        let mut slots = SlotTable::new();
+        slots.on_connect(CLOSED_CLIENT);
+        let _ = slots.admit(CLOSED_CLIENT);
+        assert_eq!(slots.close(CLOSED_CLIENT, CloseCause::Disconnect), None);
+        assert_eq!(
+            slots.state(CLOSED_CLIENT),
+            Some(SlotState::Closed {
+                cause: CloseCause::Disconnect,
+            })
+        );
+
+        slots.on_connect(REJOINED_CLIENT);
+        assert_eq!(slots.state(REJOINED_CLIENT), Some(SlotState::Pending));
+        let reclaimed = seats
+            .admit_or_reclaim(REJOINED_CLIENT, Some(player_claim), false)
+            .expect("fresh transport id reclaims the held seat");
+        let _ = slots.admit(REJOINED_CLIENT);
+
+        assert_eq!(reclaimed, original_seat);
+        assert_eq!(slots.state(REJOINED_CLIENT), Some(SlotState::Admitted));
+        assert_eq!(
+            slots.state(CLOSED_CLIENT),
+            Some(SlotState::Closed {
+                cause: CloseCause::Disconnect,
+            }),
+            "reclaim binds a new client id instead of touching the terminal slot"
+        );
+        assert_eq!(
+            slots.participate(CLOSED_CLIENT),
+            None,
+            "the previously closed id remains terminal"
+        );
     }
 
     #[test]
@@ -708,6 +1081,8 @@ mod tests {
         registry.despawn(first_pawn).unwrap();
 
         seats.harvest_bound_pawns(&registry);
+        registry.clear_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload();
 
         assert_health_eq(
             seats
@@ -719,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn harvest_carries_inventory_names_magazines_reserve_and_active_slot() {
+    fn single_player_level_change_carries_health_ammo_and_loadout_without_an_endpoint() {
         let mut seats = SeatTable::from_test_session_id([10; 16]);
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
@@ -759,10 +1134,12 @@ mod tests {
         seats.bind_pawn(Seat(0), pawn);
 
         seats.harvest_pawn(&registry, pawn);
+        registry.clear_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload();
 
         let carried = seats
             .carried_state_for_test(Seat(0))
-            .expect("pawn components create a carried record");
+            .expect("the no-endpoint level unload keeps the local carried record");
         assert_health_eq(carried.health_current.expect("health carries"), 41.0);
         assert_eq!(carried.reserve.available("shells"), 13);
         assert_eq!(carried.reserve.available("rockets"), 0);
@@ -1010,6 +1387,7 @@ mod tests {
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
             .expect("seat namespace has room");
 
+        let logs = LogCapture::start();
         let fresh = seats
             .admit_or_reclaim(42, Some(claim([0x16; 16], "Also Runner")), false)
             .expect("live identity collision receives a fresh seat");
@@ -1018,6 +1396,10 @@ mod tests {
         assert_eq!(fresh, Seat(2));
         assert_eq!(seats.seat_for_client(41), Some(held_by_live_client));
         assert_eq!(seats.seat_for_client(42), Some(fresh));
+        logs.assert_logged_once(
+            log::Level::Warn,
+            "asserted a player identity already held by a live connection",
+        );
     }
 
     #[test]
@@ -1096,10 +1478,13 @@ mod tests {
         );
 
         seats.clear_pawn_bindings_for_level_unload();
+        let post_level_admission = seats
+            .admit_or_reclaim(44, None, false)
+            .expect("a post-level admission mints a fresh seat");
         assert_eq!(
-            seats.assign_placement(first, 3, [0, 1]),
+            seats.assign_placement(post_level_admission, 3, [0, 1]),
             Some(2),
-            "level unload clears assignments but preserves the cursor and scans occupancy"
+            "a post-level admission scans live pawn occupancy before assigning a spawn"
         );
     }
 }

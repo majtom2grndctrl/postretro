@@ -3966,6 +3966,9 @@ impl App {
                 seat_table.as_deref_mut(),
                 &host_poll.lifecycle,
             );
+            if let Some(seats) = seat_table.as_deref_mut() {
+                netcode::publish_dirty_roster(server, seats);
+            }
         }
         Some(poll)
     }
@@ -5330,6 +5333,9 @@ impl App {
                                     mod_block_during_reload,
                                 );
                             }
+                        }
+                        if let Some(seats) = seat_table.as_deref_mut() {
+                            netcode::publish_dirty_roster(server, seats);
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),

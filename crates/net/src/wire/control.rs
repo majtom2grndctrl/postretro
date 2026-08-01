@@ -330,19 +330,16 @@ pub enum ServerControlMessage {
     SessionRoster(SessionRosterMessage),
 }
 
-/// One seat's session-visible identity and connection state.
+/// One seat's session-visible connection state.
 ///
-/// `player_id` is absent for an anonymous seat. `display_name` is client-asserted
-/// claim data, never a lookup key. `connected` is a current lifecycle fact; it
-/// does not imply participation, since admitted peers receive the roster too.
+/// Claims remain in the host's seat table for future rejoin handling. They are
+/// deliberately absent from this wire type: a roster exposes only host-minted
+/// seats and the connection lifecycle fact. `connected` does not imply
+/// participation, since admitted peers receive the roster too.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RosterEntry {
     /// Host-minted seat, carried on the wire as its bare `u16` value.
     pub seat: u16,
-    /// Client-asserted durable identity, if the connection supplied one.
-    pub player_id: Option<PlayerClaimId>,
-    /// Client-asserted display label. It is not an identity or protocol key.
-    pub display_name: String,
     /// Whether the host currently has a live connection bound to this seat.
     pub connected: bool,
 }
@@ -352,12 +349,16 @@ pub struct RosterEntry {
 /// The session id accompanies every publication so an arriving client can
 /// distinguish a new hosted run from an update to the prior run. `your_seat` is
 /// encoded separately for each recipient; reusing one encoded frame would leak a
-/// different recipient's own-seat identity.
+/// different recipient's own-seat identity. `open_seats` is the remaining
+/// monotonic seat namespace, letting peers distinguish a full session from a
+/// roster with merely disconnected held seats.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SessionRosterMessage {
     pub session_id: SessionId,
     /// `None` means this admitted recipient could not be assigned a seat.
     pub your_seat: Option<u16>,
+    /// Number of fresh seats that can still be minted during this session.
+    pub open_seats: u32,
     pub entries: Vec<RosterEntry>,
 }
 

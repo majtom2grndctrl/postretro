@@ -1534,10 +1534,9 @@ mod tests {
             SessionRosterMessage {
                 session_id: SessionId([0x21; 16]),
                 your_seat: Some(3),
+                open_seats: 65_532,
                 entries: vec![RosterEntry {
                     seat: 3,
-                    player_id: Some(PlayerClaimId([0x42; 16])),
-                    display_name: "Neon Runner".to_owned(),
                     connected: true,
                 }],
             }

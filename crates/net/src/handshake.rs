@@ -164,23 +164,16 @@ mod tests {
     }
 
     #[test]
-    fn roster_entry_fields_stay_rebuildable_from_claim_data() {
+    fn roster_entry_fields_stay_claim_free() {
         let entry = crate::wire::RosterEntry {
             seat: 4,
-            player_id: Some(crate::wire::PlayerClaimId([0x4d; 16])),
-            display_name: "Neon Runner".to_owned(),
             connected: true,
         };
 
-        // Exhaustive destructuring is the drift guard for AC-ROSTER-2. A future
-        // field cannot silently become an irrecoverable host-minted roster fact.
-        let crate::wire::RosterEntry {
-            seat,
-            player_id,
-            display_name,
-            connected,
-        } = entry;
-        let _host_rederived = (seat, connected);
-        let _client_asserted = (player_id, display_name);
+        // Exhaustive destructuring is the privacy drift guard for AC-ROSTER-2.
+        // Any future field must be explicitly classified before it can cross
+        // the roster boundary.
+        let crate::wire::RosterEntry { seat, connected } = entry;
+        let _host_minted_or_observed = (seat, connected);
     }
 }

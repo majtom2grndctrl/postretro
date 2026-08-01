@@ -353,8 +353,8 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                     endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
                 }
             }
-            // The session roster is received at the control boundary; UI and
-            // client-side presentation ownership are intentionally out of scope.
+            // The session roster carries seat/status only. UI and client-side
+            // presentation ownership are intentionally out of scope.
             ServerControlMessage::SessionRoster(_) => {}
         }
     }

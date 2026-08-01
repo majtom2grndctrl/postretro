@@ -7,10 +7,18 @@ use std::time::Duration;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
-use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+use postretro_entities::provenance::DescriptorProvenance;
+#[cfg(test)]
+use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::Seat;
-use postretro_net::wire::{ConnectClaim, RosterEntry, SessionId};
+use postretro_net::slots::SlotState;
+use postretro_net::transport::NetServer;
+use postretro_net::wire::{
+    ConnectClaim, RosterEntry, ServerControlMessage, SessionId, SessionRosterMessage,
+};
+
+const SEAT_NAMESPACE_SIZE: u32 = u16::MAX as u32 + 1;
 
 /// State retained by a session seat when its current pawn leaves a level.
 ///
@@ -129,24 +137,6 @@ impl SeatTable {
         self.session_id
     }
 
-    /// Record the host player's durable assertion on seat zero when one is
-    /// available. Hosts without a persistable player id remain anonymous.
-    pub(crate) fn set_local_claim(&mut self, claim: Option<ConnectClaim>) {
-        let previous = self.connect_claims.get(&Seat(0));
-        if previous == claim.as_ref() {
-            return;
-        }
-        match claim {
-            Some(claim) => {
-                self.connect_claims.insert(Seat(0), claim);
-            }
-            None => {
-                self.connect_claims.remove(&Seat(0));
-            }
-        }
-        self.roster_dirty = true;
-    }
-
     /// Mint a non-reusable remote seat at the admission edge.
     ///
     /// `None` means the u16 seat namespace is exhausted; the caller keeps the
@@ -202,27 +192,36 @@ impl SeatTable {
         std::mem::take(&mut self.roster_dirty)
     }
 
+    /// The number of never-before-minted seats still available in this session.
+    /// Seat values are monotonic and never reused, including after later release.
+    #[must_use]
+    pub(crate) fn open_seat_count(&self) -> u32 {
+        SEAT_NAMESPACE_SIZE.saturating_sub(self.next_seat)
+    }
+
     /// Build a deterministic seat-keyed roster snapshot from the table's own
-    /// lifecycle bindings and immutable claims. Seat contents never leave this
-    /// table: only the id and the current connection fact are projected.
+    /// lifecycle bindings. Claims and carried contents never leave this table:
+    /// only the host-minted seat and current connection fact are projected.
     #[must_use]
     pub(crate) fn roster_entries(&self) -> Vec<RosterEntry> {
         let mut seats: Vec<Seat> = self.carried.keys().copied().collect();
         seats.sort_unstable_by_key(|seat| seat.0);
         seats
             .into_iter()
-            .map(|seat| {
-                let claim = self.connect_claims.get(&seat);
-                RosterEntry {
-                    seat: seat.0,
-                    player_id: claim.map(|claim| claim.player_id),
-                    display_name: claim
-                        .map(|claim| claim.display_name.clone())
-                        .unwrap_or_default(),
-                    connected: seat == Seat(0) || self.client_bindings.contains_key(&seat),
-                }
+            .map(|seat| RosterEntry {
+                seat: seat.0,
+                connected: seat == Seat(0) || self.client_bindings.contains_key(&seat),
             })
             .collect()
+    }
+
+    fn roster_message_for(&self, client_id: u64) -> SessionRosterMessage {
+        SessionRosterMessage {
+            session_id: self.session_id(),
+            your_seat: self.seat_for_client(client_id).map(|seat| seat.0),
+            open_seats: self.open_seat_count(),
+            entries: self.roster_entries(),
+        }
     }
 
     /// Associate a newly spawned pawn with its durable seat.
@@ -428,6 +427,33 @@ impl SeatTable {
     #[cfg(test)]
     pub(crate) fn from_test_session_id(session_id: [u8; 16]) -> Self {
         Self::with_session_id(SessionId(session_id))
+    }
+}
+
+fn is_roster_recipient(slot_state: Option<SlotState>) -> bool {
+    matches!(
+        slot_state,
+        Some(SlotState::Admitted) | Some(SlotState::Participating)
+    )
+}
+
+/// Publish one coalesced roster revision after an ordered transport lifecycle
+/// drain. Pending and closed peers receive no frame at all; each admitted or
+/// participating recipient gets a separately encoded `your_seat` projection.
+pub(crate) fn publish_dirty_roster(server: &mut NetServer, seats: &mut SeatTable) {
+    if !seats.take_roster_dirty() {
+        return;
+    }
+
+    for client_id in server.connected_clients() {
+        if !is_roster_recipient(server.slot_state(client_id)) {
+            continue;
+        }
+        let roster = seats.roster_message_for(client_id);
+        server.send_control(
+            client_id,
+            postretro_net::wire::encode(&ServerControlMessage::SessionRoster(roster)),
+        );
     }
 }
 
@@ -690,12 +716,8 @@ mod tests {
     }
 
     #[test]
-    fn roster_tracks_claims_and_connection_lifecycle_by_seat() {
+    fn roster_projects_only_seat_status_and_connection_lifecycle() {
         let mut seats = SeatTable::from_test_session_id([6; 16]);
-        seats.set_local_claim(Some(ConnectClaim {
-            player_id: postretro_net::wire::PlayerClaimId([0x10; 16]),
-            display_name: "Host".to_owned(),
-        }));
         let remote = seats
             .mint_admitted(
                 44,
@@ -714,18 +736,18 @@ mod tests {
             vec![
                 RosterEntry {
                     seat: 0,
-                    player_id: Some(postretro_net::wire::PlayerClaimId([0x10; 16])),
-                    display_name: "Host".to_owned(),
                     connected: true,
                 },
                 RosterEntry {
                     seat: remote.0,
-                    player_id: Some(postretro_net::wire::PlayerClaimId([0x20; 16])),
-                    display_name: "Runner".to_owned(),
                     connected: true,
                 },
             ]
         );
+        let roster = seats.roster_message_for(44);
+        assert_eq!(roster.session_id, SessionId([6; 16]));
+        assert_eq!(roster.your_seat, Some(remote.0));
+        assert_eq!(roster.open_seats, SEAT_NAMESPACE_SIZE - 2);
 
         assert_eq!(seats.unbind_client(44), Some(remote));
         assert!(seats.take_roster_dirty());
@@ -733,6 +755,17 @@ mod tests {
             !seats.roster_entries()[1].connected,
             "a dropped seat remains rostered but is no longer connected"
         );
+    }
+
+    #[test]
+    fn roster_recipient_gate_excludes_pending_and_closed_slots() {
+        assert!(!is_roster_recipient(None));
+        assert!(!is_roster_recipient(Some(SlotState::Pending)));
+        assert!(is_roster_recipient(Some(SlotState::Admitted)));
+        assert!(is_roster_recipient(Some(SlotState::Participating)));
+        assert!(!is_roster_recipient(Some(SlotState::Closed {
+            cause: postretro_net::slots::CloseCause::Disconnect,
+        })));
     }
 
     #[test]
@@ -754,7 +787,7 @@ mod tests {
             Some(1),
             "a live pawn at index zero keeps a new seat away from it"
         );
-        assert_eq!(seats.unbind_client(first), Some(first));
+        assert_eq!(seats.unbind_client(41), Some(first));
         assert_eq!(
             seats.assign_placement(third, 3, [1]),
             Some(2),

@@ -421,10 +421,9 @@ impl Session {
         let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
             None
         } else {
-            let mut seats = netcode::SeatTable::new().map_err(|err| {
+            let seats = netcode::SeatTable::new().map_err(|err| {
                 anyhow::anyhow!("failed to mint this run's session identity: {err}")
             })?;
-            seats.set_local_claim(local_claim);
             Some(seats)
         };
         scripting

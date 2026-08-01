@@ -27,7 +27,7 @@ Options persist as `settings.toml` in the platform config directory (e.g. `~/.co
 - **Schema evolution** — every field carries `serde(default)`, so partial or older files load cleanly; absent fields fall back to defaults.
 - **Atomic write** — serialize to a sibling `.tmp` file, then rename over the target. No partial/truncated writes are observable.
 - **Corruption fallback** — malformed files log a warning and fall back to in-memory defaults without overwriting the file.
-- **Device identity** — `player_id` is an optional opaque 16-byte device-local value. It is generated only by `Session::build` when a loadable settings file lacks it, then written through the same atomic save path. `PlayerOptions::load` remains deterministic and never generates one. On connect it becomes the opaque `PlayerClaimId` in the fixed-size connection claim; it is never authentication, parsed, or exposed to scripts. If settings cannot be loaded or saved, the client connects anonymously and cannot reclaim a prior seat.
+- **Device identity** — `player_id` is an optional opaque 16-byte device-local value. It is generated only by `Session::build` when a loadable settings file lacks it, then written through the same atomic save path. `PlayerOptions::load` remains deterministic and never generates one. On connect it becomes the opaque `PlayerClaimId` in the fixed-size connection claim; it is never authentication, parsed, or exposed to scripts. The host retains the claim only for a future seat reclaim; roster controls never contain a player id or display name. If settings cannot be loaded or saved, the client connects anonymously and cannot reclaim a prior seat.
 
 ---
 

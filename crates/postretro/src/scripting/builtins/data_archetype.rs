@@ -12,16 +12,18 @@
 // that appears in BOTH dispatch tables logs a `warn!` once per classname and
 // keeps the built-in result (built-in wins).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use glam::Vec3;
 
 use super::MapEntity;
+#[cfg(test)]
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
 use postretro_entities::components::health::HealthComponent;
+#[cfg(test)]
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
@@ -35,9 +37,9 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::NavAgentParams;
-use postretro_scripting_core::data_descriptors::{
-    EntityTypeDescriptor, LightDescriptor, WeaponResource,
-};
+#[cfg(test)]
+use postretro_scripting_core::data_descriptors::WeaponResource;
+use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
 
 pub(super) use super::wieldable_inventory::compose_wieldable_inventory;
 pub(crate) use super::wieldable_inventory::compose_wieldable_inventory_from_slots;

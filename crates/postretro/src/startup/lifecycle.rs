@@ -1,7 +1,9 @@
 //! Runtime level lifecycle state-machine helpers.
 //! See: context/lib/boot_sequence.md §1
 
+#[path = "lifecycle_net.rs"]
 mod lifecycle_net;
+#[path = "lifecycle_world_cpu.rs"]
 mod lifecycle_world_cpu;
 
 pub(crate) use lifecycle_world_cpu::{install_descriptor_player_health_range, install_world_cpu};

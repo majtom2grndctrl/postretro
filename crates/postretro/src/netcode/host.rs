@@ -605,7 +605,7 @@ mod tests {
         let mut last_sent_tuning = HashMap::new();
         let mut seats = SeatTable::from_test_session_id([5; 16]);
         let seat = seats
-            .mint_admitted(CLIENT_ID, None, false)
+            .admit_or_reclaim(CLIENT_ID, None, false)
             .expect("seat namespace has room");
 
         host_handle_accept(

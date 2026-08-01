@@ -19,6 +19,10 @@ use postretro_net::wire::{
 };
 
 const SEAT_NAMESPACE_SIZE: u32 = u16::MAX as u32 + 1;
+/// Time a disconnected remote seat remains reclaimable by its asserted player
+/// identity. The clock is driven once per render frame, including Frontend and
+/// Loading frames where the fixed simulation does not run.
+pub(crate) const HOLD_WINDOW: Duration = Duration::from_secs(30);
 
 /// State retained by a session seat when its current pawn leaves a level.
 ///
@@ -80,9 +84,6 @@ fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
 }
 
 /// Future rejoin-hold expiry measured against the session's accumulated clock.
-///
-/// Holds are intentionally only represented here; Task 2 neither advances the
-/// clock nor changes admission behavior based on them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HoldDeadline(pub(crate) Duration);
 
@@ -99,8 +100,13 @@ pub(crate) struct SeatTable {
     client_bindings: HashMap<Seat, u64>,
     pawn_bindings: HashMap<Seat, EntityId>,
     connect_claims: HashMap<Seat, ConnectClaim>,
-    #[allow(dead_code)] // The deadline map is structural only until rejoin holds ship.
     hold_deadlines: HashMap<Seat, HoldDeadline>,
+    /// Monotonic ordering is separate from the deadline: two disconnects can
+    /// land in one poll at the same accumulated time, but reclaim must still
+    /// pick the most recently held matching seat deterministically.
+    hold_order: HashMap<Seat, u64>,
+    next_hold_order: u64,
+    hold_clock: Duration,
     next_placement_cursor: usize,
     /// Coalesces all roster-affecting mutations in one transport poll into one
     /// publication after its lifecycle batch completes.
@@ -127,6 +133,9 @@ impl SeatTable {
             pawn_bindings: HashMap::new(),
             connect_claims: HashMap::new(),
             hold_deadlines: HashMap::new(),
+            hold_order: HashMap::new(),
+            next_hold_order: 0,
+            hold_clock: Duration::ZERO,
             next_placement_cursor: 0,
             roster_dirty: true,
         }
@@ -137,11 +146,21 @@ impl SeatTable {
         self.session_id
     }
 
-    /// Mint a non-reusable remote seat at the admission edge.
+    /// Advance the session-relative hold clock once for this rendered frame.
     ///
-    /// `None` means the u16 seat namespace is exhausted; the caller keeps the
-    /// connection live, but it cannot acquire a durable player seat.
-    pub(crate) fn mint_admitted(
+    /// The caller is the sole frame-timing seam. Polling can happen more than
+    /// once on a Splash or install-completion frame, so poll drains must never
+    /// advance this clock themselves.
+    pub(crate) fn advance_hold_clock(&mut self, frame_dt: Duration) {
+        self.hold_clock = self.hold_clock.saturating_add(frame_dt);
+    }
+
+    /// Resolve the one admission chokepoint for a remote seat.
+    ///
+    /// A held seat is reclaimable only by exact equality of the opaque player
+    /// id from the stored and incoming claims. A live holder is never displaced:
+    /// a second connection asserting that id mints a fresh seat instead.
+    pub(crate) fn admit_or_reclaim(
         &mut self,
         client_id: u64,
         claim: Option<ConnectClaim>,
@@ -153,6 +172,69 @@ impl SeatTable {
         if let Some(seat) = self.seat_for_client(client_id) {
             return Some(seat);
         }
+
+        if let Some(incoming_claim) = claim.as_ref() {
+            let held_matches: Vec<(Seat, u64)> = self
+                .hold_deadlines
+                .keys()
+                .filter_map(|seat| {
+                    self.hold_deadlines
+                        .get(seat)
+                        .filter(|deadline| deadline.0 >= self.hold_clock)?;
+                    self.connect_claims
+                        .get(seat)
+                        .filter(|stored_claim| stored_claim.player_id == incoming_claim.player_id)
+                        .map(|_| {
+                            (
+                                *seat,
+                                self.hold_order.get(seat).copied().unwrap_or_default(),
+                            )
+                        })
+                })
+                .collect();
+
+            if let Some((winner, _)) = held_matches.iter().max_by_key(|(_, order)| *order) {
+                let winner = *winner;
+                for (seat, _) in held_matches {
+                    if seat != winner {
+                        self.release_seat(seat);
+                    }
+                }
+                self.hold_deadlines.remove(&winner);
+                self.hold_order.remove(&winner);
+                self.client_bindings.insert(winner, client_id);
+                // The claim is host-local. Retain the rejoining connection's
+                // complete assertion while matching only its opaque player id.
+                self.connect_claims
+                    .insert(winner, claim.expect("claim borrowed above"));
+                self.roster_dirty = true;
+                return Some(winner);
+            }
+
+            let has_live_identity_collision = self.client_bindings.keys().any(|seat| {
+                self.connect_claims
+                    .get(seat)
+                    .is_some_and(|stored_claim| stored_claim.player_id == incoming_claim.player_id)
+            });
+            if has_live_identity_collision {
+                log::warn!(
+                    "[Net] client {client_id} asserted a player identity already held by a live connection; minting a fresh seat"
+                );
+            }
+        } else {
+            log::warn!(
+                "[Net] admitted client {client_id} has no valid player identity claim; minting an anonymous unreclaimable seat"
+            );
+        }
+
+        self.mint_fresh_seat(client_id, claim)
+    }
+
+    /// Mint a non-reusable remote seat after admission chose not to reclaim.
+    ///
+    /// `None` means the u16 seat namespace is exhausted; the caller keeps the
+    /// connection live, but it cannot acquire a durable player seat.
+    fn mint_fresh_seat(&mut self, client_id: u64, claim: Option<ConnectClaim>) -> Option<Seat> {
         let seat = Seat(u16::try_from(self.next_seat).ok()?);
         self.next_seat = self.next_seat.checked_add(1)?;
         self.carried.insert(seat, None);
@@ -178,13 +260,46 @@ impl SeatTable {
             .find_map(|(seat, bound)| (*bound == pawn).then_some(*seat))
     }
 
-    /// Drop the short-lived client-id association after the transport reports a
-    /// slot disconnect. The seat, claim, carried state, and pawn history remain.
-    pub(crate) fn unbind_client(&mut self, client_id: u64) -> Option<Seat> {
+    /// Start a reclaim hold after the transport reports a slot disconnect.
+    ///
+    /// This deliberately does not harvest: lifecycle cleanup owns pawn
+    /// destruction and harvests immediately before it. A drop while demoted or
+    /// Loading can have no lifecycle event, but still reaches this transport edge.
+    pub(crate) fn hold_disconnected_client(&mut self, client_id: u64) -> Option<Seat> {
         let seat = self.seat_for_client(client_id)?;
         self.client_bindings.remove(&seat);
+        let deadline = self.hold_clock.saturating_add(HOLD_WINDOW);
+        self.hold_deadlines.insert(seat, HoldDeadline(deadline));
+        let order = self.next_hold_order;
+        self.next_hold_order = self.next_hold_order.wrapping_add(1);
+        self.hold_order.insert(seat, order);
         self.roster_dirty = true;
         Some(seat)
+    }
+
+    /// Release every hold whose deadline is reached. Seats remain monotonic:
+    /// release removes their host-local state and roster entry, but never moves
+    /// `next_seat` backward.
+    pub(crate) fn release_expired_holds(&mut self) {
+        let expired: Vec<Seat> = self
+            .hold_deadlines
+            .iter()
+            .filter_map(|(seat, deadline)| (deadline.0 <= self.hold_clock).then_some(*seat))
+            .collect();
+        for seat in expired {
+            self.release_seat(seat);
+        }
+    }
+
+    fn release_seat(&mut self, seat: Seat) {
+        debug_assert_ne!(seat, Seat(0), "the local seat is never held or released");
+        self.carried.remove(&seat);
+        self.client_bindings.remove(&seat);
+        self.pawn_bindings.remove(&seat);
+        self.connect_claims.remove(&seat);
+        self.hold_deadlines.remove(&seat);
+        self.hold_order.remove(&seat);
+        self.roster_dirty = true;
     }
 
     /// Whether this poll needs one consolidated roster publication.
@@ -457,6 +572,16 @@ pub(crate) fn publish_dirty_roster(server: &mut NetServer, seats: &mut SeatTable
     }
 }
 
+/// Finish one drained host poll after disconnect, admission, and lifecycle work.
+///
+/// Reclaim is resolved by the admission batch before this function runs, so a
+/// connection arriving on its deadline frame keeps its held seat. Expiry and
+/// roster publication then happen together at this sole post-drain seam.
+pub(crate) fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) {
+    seats.release_expired_holds();
+    publish_dirty_roster(server, seats);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,6 +635,13 @@ mod tests {
         }
     }
 
+    fn claim(id: [u8; 16], display_name: &str) -> ConnectClaim {
+        ConnectClaim {
+            player_id: postretro_net::wire::PlayerClaimId(id),
+            display_name: display_name.to_owned(),
+        }
+    }
+
     #[test]
     fn single_player_health_survives_level_boundary() {
         let mut seats = SeatTable::from_test_session_id([7; 16]);
@@ -545,7 +677,7 @@ mod tests {
     fn fresh_remote_seat_keeps_descriptor_health_default() {
         let mut seats = SeatTable::from_test_session_id([8; 16]);
         let seat = seats
-            .mint_admitted(41, None, false)
+            .admit_or_reclaim(41, None, false)
             .expect("seat space remains");
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
@@ -694,9 +826,9 @@ mod tests {
     #[test]
     fn admission_mints_each_seat_once_and_keeps_session_id() {
         let mut seats = SeatTable::from_test_session_id([3; 16]);
-        let first = seats.mint_admitted(11, None, false).unwrap();
-        let same = seats.mint_admitted(11, None, false).unwrap();
-        let second = seats.mint_admitted(12, None, false).unwrap();
+        let first = seats.admit_or_reclaim(11, None, false).unwrap();
+        let same = seats.admit_or_reclaim(11, None, false).unwrap();
+        let second = seats.admit_or_reclaim(12, None, false).unwrap();
 
         assert_eq!(first, Seat(1));
         assert_eq!(same, first);
@@ -708,7 +840,7 @@ mod tests {
     fn same_poll_rejection_does_not_mint_an_admitted_seat() {
         let mut seats = SeatTable::from_test_session_id([4; 16]);
 
-        let seat = seats.mint_admitted(23, None, true);
+        let seat = seats.admit_or_reclaim(23, None, true);
 
         assert_eq!(seat, None);
         assert_eq!(seats.seat_for_client(23), None);
@@ -719,7 +851,7 @@ mod tests {
     fn roster_projects_only_seat_status_and_connection_lifecycle() {
         let mut seats = SeatTable::from_test_session_id([6; 16]);
         let remote = seats
-            .mint_admitted(
+            .admit_or_reclaim(
                 44,
                 Some(ConnectClaim {
                     player_id: postretro_net::wire::PlayerClaimId([0x20; 16]),
@@ -749,11 +881,175 @@ mod tests {
         assert_eq!(roster.your_seat, Some(remote.0));
         assert_eq!(roster.open_seats, SEAT_NAMESPACE_SIZE - 2);
 
-        assert_eq!(seats.unbind_client(44), Some(remote));
+        assert_eq!(seats.hold_disconnected_client(44), Some(remote));
         assert!(seats.take_roster_dirty());
         assert!(
             !seats.roster_entries()[1].connected,
             "a dropped seat remains rostered but is no longer connected"
+        );
+    }
+
+    #[test]
+    fn admitted_disconnect_without_lifecycle_starts_hold_and_later_releases() {
+        let mut seats = SeatTable::from_test_session_id([13; 16]);
+        let player_claim = claim([0x13; 16], "Runner");
+        let released = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+        seats.carried.insert(
+            released,
+            Some(CarriedState {
+                health_current: Some(22.0),
+                ..Default::default()
+            }),
+        );
+        let _ = seats.take_roster_dirty();
+
+        // An admitted peer can disconnect mid-load without ever producing a
+        // participation lifecycle event. Its transport unbind still starts the
+        // hold and makes the roster status disconnected.
+        assert_eq!(seats.hold_disconnected_client(41), Some(released));
+        seats.advance_hold_clock(HOLD_WINDOW);
+        seats.release_expired_holds();
+
+        assert_eq!(seats.carried_state_for_test(released), None);
+        assert_eq!(
+            seats.roster_entries(),
+            vec![RosterEntry {
+                seat: 0,
+                connected: true,
+            }],
+            "expiry removes the held seat from the roster atomically with its state"
+        );
+        assert!(seats.take_roster_dirty(), "expiry dirties the roster once");
+
+        let fresh = seats
+            .admit_or_reclaim(42, Some(player_claim), false)
+            .expect("seat namespace has room");
+        assert_eq!(fresh, Seat(2), "released seat numbers are never reused");
+        assert!(seats.carried_state_for_test(fresh).is_none());
+    }
+
+    #[test]
+    fn exact_claim_reclaims_before_deadline_expiry() {
+        let mut seats = SeatTable::from_test_session_id([14; 16]);
+        let player_claim = claim([0x14; 16], "Old name");
+        let original = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+        let _ = seats.take_roster_dirty();
+
+        assert_eq!(seats.hold_disconnected_client(41), Some(original));
+        seats.advance_hold_clock(HOLD_WINDOW);
+
+        let reclaimed = seats
+            .admit_or_reclaim(42, Some(claim([0x14; 16], "New name")), false)
+            .expect("deadline-frame admission reclaims before expiry runs");
+        seats.release_expired_holds();
+
+        assert_eq!(reclaimed, original);
+        assert_eq!(seats.seat_for_client(42), Some(original));
+        assert!(
+            seats
+                .roster_entries()
+                .iter()
+                .any(|entry| entry.seat == original.0),
+            "the reconnected seat remains retained after the expiry sweep"
+        );
+    }
+
+    #[test]
+    fn reconnect_after_deadline_mints_fresh_before_the_expiry_sweep() {
+        let mut seats = SeatTable::from_test_session_id([18; 16]);
+        let player_claim = claim([0x18; 16], "Runner");
+        let expired = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+        assert_eq!(seats.hold_disconnected_client(41), Some(expired));
+        seats.advance_hold_clock(HOLD_WINDOW.saturating_add(Duration::from_millis(1)));
+
+        // Admission runs before the post-poll expiry sweep. A strictly overdue
+        // hold is not reclaimable even though the sweep has not removed it yet.
+        let fresh = seats
+            .admit_or_reclaim(42, Some(player_claim), false)
+            .expect("seat namespace has room");
+        seats.release_expired_holds();
+
+        assert_eq!(fresh, Seat(2));
+        assert_eq!(seats.carried_state_for_test(expired), None);
+    }
+
+    #[test]
+    fn reclaim_requires_an_exact_whole_player_identity() {
+        let mut seats = SeatTable::from_test_session_id([15; 16]);
+        let original_claim = claim([0x15; 16], "Runner");
+        let original = seats
+            .admit_or_reclaim(41, Some(original_claim.clone()), false)
+            .expect("seat namespace has room");
+        assert_eq!(seats.hold_disconnected_client(41), Some(original));
+
+        let mut nearly_matching_id = [0x15; 16];
+        nearly_matching_id[7] = 0x16;
+        let fresh = seats
+            .admit_or_reclaim(42, Some(claim(nearly_matching_id, "Runner")), false)
+            .expect("different player id receives a fresh seat");
+        assert_eq!(fresh, Seat(2));
+        assert_eq!(seats.seat_for_client(42), Some(fresh));
+
+        let reclaimed = seats
+            .admit_or_reclaim(43, Some(original_claim), false)
+            .expect("the exact opaque identity reclaims its held seat");
+        assert_eq!(reclaimed, original);
+    }
+
+    #[test]
+    fn live_identity_collision_mints_a_fresh_seat_without_displacing_holder() {
+        let mut seats = SeatTable::from_test_session_id([16; 16]);
+        let player_claim = claim([0x16; 16], "Runner");
+        let held_by_live_client = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+
+        let fresh = seats
+            .admit_or_reclaim(42, Some(claim([0x16; 16], "Also Runner")), false)
+            .expect("live identity collision receives a fresh seat");
+
+        assert_eq!(held_by_live_client, Seat(1));
+        assert_eq!(fresh, Seat(2));
+        assert_eq!(seats.seat_for_client(41), Some(held_by_live_client));
+        assert_eq!(seats.seat_for_client(42), Some(fresh));
+    }
+
+    #[test]
+    fn most_recent_matching_hold_wins_and_releases_stale_duplicate() {
+        let mut seats = SeatTable::from_test_session_id([17; 16]);
+        let player_claim = claim([0x17; 16], "Runner");
+        let stale = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+        assert_eq!(seats.hold_disconnected_client(41), Some(stale));
+
+        // Build the pre-existing duplicate-hold state this recovery rule must
+        // tolerate. Normal admissions cannot create it because the first hold
+        // would be reclaimed; the table still needs a deterministic repair.
+        let recent = seats
+            .admit_or_reclaim(42, Some(claim([0x18; 16], "Other")), false)
+            .expect("seat namespace has room");
+        seats.connect_claims.insert(recent, player_claim.clone());
+        assert_eq!(seats.hold_disconnected_client(42), Some(recent));
+
+        let reclaimed = seats
+            .admit_or_reclaim(43, Some(player_claim), false)
+            .expect("matching hold reclaims");
+
+        assert_eq!(reclaimed, recent);
+        assert_eq!(seats.carried_state_for_test(stale), None);
+        assert!(
+            seats
+                .roster_entries()
+                .iter()
+                .all(|entry| entry.seat != stale.0),
+            "the stale duplicate is released immediately rather than left held"
         );
     }
 
@@ -772,13 +1068,13 @@ mod tests {
     fn placement_assignment_persists_by_seat_and_skips_live_and_held_occupants() {
         let mut seats = SeatTable::from_test_session_id([12; 16]);
         let first = seats
-            .mint_admitted(41, None, false)
+            .admit_or_reclaim(41, None, false)
             .expect("first remote seat");
         let second = seats
-            .mint_admitted(42, None, false)
+            .admit_or_reclaim(42, None, false)
             .expect("second remote seat");
         let third = seats
-            .mint_admitted(43, None, false)
+            .admit_or_reclaim(43, None, false)
             .expect("third remote seat");
 
         assert_eq!(seats.assign_placement(first, 3, []), Some(0));
@@ -787,7 +1083,7 @@ mod tests {
             Some(1),
             "a live pawn at index zero keeps a new seat away from it"
         );
-        assert_eq!(seats.unbind_client(41), Some(first));
+        assert_eq!(seats.hold_disconnected_client(41), Some(first));
         assert_eq!(
             seats.assign_placement(third, 3, [1]),
             Some(2),

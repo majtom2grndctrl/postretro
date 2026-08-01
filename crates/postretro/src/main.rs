@@ -1898,6 +1898,13 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
+                // Seat holds measure elapsed rendered time rather than fixed
+                // simulation time: Frontend and Loading keep polling a host even
+                // though neither runs the simulation loop. Advance exactly here,
+                // once per frame, because a Splash/install frame can drain the
+                // transport more than once.
+                self.advance_seat_hold_clock(frame_dt);
+
                 // Drain changed paths every frame so the watcher channel does
                 // not back up even when the summary is empty. ScriptRuntime
                 // checks them against the active dependency set before queuing
@@ -3872,6 +3879,24 @@ impl frame_order::ReplicatedStateFrame for App {
 }
 
 impl App {
+    /// Advance the host-local seat hold clock once for this rendered frame.
+    ///
+    /// Poll drains only evaluate expiry; they must not consume `frame_dt`, since
+    /// one frame can perform multiple drains while the boot state changes.
+    fn advance_seat_hold_clock(&mut self, frame_dt: f32) {
+        if !frame_dt.is_finite() || frame_dt <= 0.0 {
+            return;
+        }
+        let Some(seats) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.seat_table.as_mut())
+        else {
+            return;
+        };
+        seats.advance_hold_clock(std::time::Duration::from_secs_f32(frame_dt));
+    }
+
     /// Advance a session-owned endpoint on a frame with no installed world.
     ///
     /// The endpoint-presence predicate deliberately has no boot-state branch:
@@ -3924,7 +3949,7 @@ impl App {
             let mut registry = script_ctx.registry.borrow_mut();
             for client_id in &host_poll.disconnects {
                 if let Some(seats) = seat_table.as_deref_mut() {
-                    seats.unbind_client(*client_id);
+                    seats.hold_disconnected_client(*client_id);
                 }
             }
             for outcome in &host_poll.handshakes {
@@ -3941,7 +3966,7 @@ impl App {
                     continue;
                 };
                 if seats
-                    .mint_admitted(*client_id, claim, server.is_closed(*client_id))
+                    .admit_or_reclaim(*client_id, claim, server.is_closed(*client_id))
                     .is_none()
                 {
                     log::warn!(
@@ -3967,7 +3992,7 @@ impl App {
                 &host_poll.lifecycle,
             );
             if let Some(seats) = seat_table.as_deref_mut() {
-                netcode::publish_dirty_roster(server, seats);
+                netcode::finish_host_poll(server, seats);
             }
         }
         Some(poll)
@@ -5161,7 +5186,7 @@ impl App {
                             // a durable seat from historical control traffic.
                             for client_id in &poll.disconnects {
                                 if let Some(seats) = seat_table.as_deref_mut() {
-                                    seats.unbind_client(*client_id);
+                                    seats.hold_disconnected_client(*client_id);
                                 }
                             }
                             for outcome in &poll.handshakes {
@@ -5178,7 +5203,7 @@ impl App {
                                             continue;
                                         };
                                         if seats
-                                            .mint_admitted(
+                                            .admit_or_reclaim(
                                                 *client_id,
                                                 claim,
                                                 server.is_closed(*client_id),
@@ -5335,7 +5360,7 @@ impl App {
                             }
                         }
                         if let Some(seats) = seat_table.as_deref_mut() {
-                            netcode::publish_dirty_roster(server, seats);
+                            netcode::finish_host_poll(server, seats);
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),

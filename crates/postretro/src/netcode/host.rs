@@ -46,7 +46,7 @@ pub(crate) struct DemoMoverState {
 impl DemoMoverState {
     /// Read the demo-mover activation from the environment. `POSTRETRO_NET_DEMO_MOVER=1`
     /// turns it on; anything else (unset, empty, other value) leaves it off.
-    fn from_env() -> Self {
+    pub(crate) fn from_env() -> Self {
         let enabled = std::env::var("POSTRETRO_NET_DEMO_MOVER")
             .map(|v| v == "1")
             .unwrap_or(false);

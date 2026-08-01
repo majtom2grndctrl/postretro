@@ -168,13 +168,13 @@ pub(crate) struct PendingSwitchDeclaration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SwitchOutcome {
+pub(crate) enum SwitchOutcome {
     Accepted(ServerSwitchAccepted),
     Refused(ServerSwitchRefused),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CurrentSwitchResolution {
+pub(crate) enum CurrentSwitchResolution {
     None,
     Accepted {
         last_weapon_slot: Option<usize>,

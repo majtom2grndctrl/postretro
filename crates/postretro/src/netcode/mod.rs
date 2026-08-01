@@ -64,11 +64,14 @@ pub(crate) use command_queue::{
     HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
     active_wieldable_for_pawn, host_resolve_remote_commands,
 };
-pub(crate) use endpoint::NetEndpoint;
+pub(crate) use endpoint::{
+    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
+    NetEndpoint, PendingSwitchDeclaration, SwitchOutcome, WorldLessPoll, client_drain_control,
+};
 pub(crate) use host::{
-    DemoMoverState, SERVER_TICK_MICROS, SNAPSHOT_TICK_INTERVAL, complete_host_fixed_tick,
-    host_drive_demo_mover, host_handle_accept, host_handle_accept_descriptor,
-    host_handle_lifecycle, host_register_own_pawn, host_replicate, host_unregister_own_pawn,
+    DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, host_drive_demo_mover,
+    host_handle_accept, host_handle_accept_descriptor, host_handle_lifecycle,
+    host_register_own_pawn, host_replicate, host_unregister_own_pawn,
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.

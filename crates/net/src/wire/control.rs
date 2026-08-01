@@ -118,29 +118,40 @@ mod tests {
     }
 
     #[test]
-    fn connect_claim_envelope_rejects_random_or_mismatched_headers() {
-        assert_eq!(decode_connect_claim(&[0xa5; NETCODE_USER_DATA_BYTES]), None);
-
+    fn connect_claim_envelope_rejects_magic_mismatch() {
         let mut wrong_magic = encode_connect_claim(&claim("Neon Runner"));
         wrong_magic[0] = b'X';
         assert_eq!(decode_connect_claim(&wrong_magic), None);
+    }
 
+    #[test]
+    fn connect_claim_envelope_rejects_version_mismatch() {
         let mut wrong_version = encode_connect_claim(&claim("Neon Runner"));
         wrong_version[4] = CONNECT_CLAIM_VERSION + 1;
         assert_eq!(decode_connect_claim(&wrong_version), None);
     }
 
     #[test]
-    fn connect_claim_envelope_rejects_invalid_payload_lengths_and_bitcode() {
+    fn connect_claim_envelope_rejects_overlong_payload_length() {
         let mut overlong_length = encode_connect_claim(&claim("Neon Runner"));
         let too_long = (NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES + 1) as u16;
         overlong_length[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&too_long.to_le_bytes());
         assert_eq!(decode_connect_claim(&overlong_length), None);
+    }
 
+    #[test]
+    fn connect_claim_envelope_rejects_bitcode_failure() {
         let mut malformed_payload = encode_connect_claim(&claim("Neon Runner"));
         malformed_payload[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&1_u16.to_le_bytes());
         malformed_payload[CONNECT_CLAIM_HEADER_BYTES] = 0xff;
         assert_eq!(decode_connect_claim(&malformed_payload), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_fixed_random_user_data() {
+        let random_user_data = [0xa5; NETCODE_USER_DATA_BYTES];
+
+        assert_eq!(decode_connect_claim(&random_user_data), None);
     }
 
     #[test]

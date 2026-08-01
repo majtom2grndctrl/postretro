@@ -684,9 +684,22 @@ impl NetServer {
         let _ = self.server.process_packet_from(packet, client_id);
     }
 
-    pub fn add_relay_connection(&mut self, client_id: ClientId) {
+    /// Add an in-memory relay connection for deterministic transport tests.
+    ///
+    /// Relay connections bypass renetcode, so their optional user data is
+    /// decoded here just as it is on the production `ClientConnected` edge.
+    pub fn add_relay_connection(
+        &mut self,
+        client_id: ClientId,
+        user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
+    ) {
         self.server.add_connection(client_id);
         self.slots.on_connect(client_id);
+        if let Some(user_data) = user_data
+            && let Some(claim) = wire::decode_connect_claim(&user_data)
+        {
+            self.connect_claims.insert(client_id, claim);
+        }
     }
 
     #[must_use]
@@ -1076,7 +1089,7 @@ mod tests {
             None,
         )
         .expect("construct relay client");
-        server.add_relay_connection(RELAY_CLIENT_ID);
+        server.add_relay_connection(RELAY_CLIENT_ID, None);
         client.set_connected();
         (server, client)
     }
@@ -1808,6 +1821,27 @@ mod tests {
                 break;
             }
         }
+
+        assert_eq!(server.connect_claim(RELAY_CLIENT_ID), Some(&claim));
+    }
+
+    #[test]
+    fn relay_connection_stashes_decoded_connect_claim() {
+        let server_socket =
+            UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind server socket");
+        let server_addr = server_socket.local_addr().expect("server local address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 8, Duration::from_secs(1), None)
+                .expect("construct relay server");
+        let claim = ConnectClaim {
+            player_id: crate::wire::PlayerClaimId([0x3e; 16]),
+            display_name: "Relay Runner".to_string(),
+        };
+
+        server.add_relay_connection(
+            RELAY_CLIENT_ID,
+            Some(crate::wire::encode_connect_claim(&claim)),
+        );
 
         assert_eq!(server.connect_claim(RELAY_CLIENT_ID), Some(&claim));
     }

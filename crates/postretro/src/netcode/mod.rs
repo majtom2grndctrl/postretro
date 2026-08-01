@@ -2617,7 +2617,7 @@ mod tests {
             None,
         )
         .expect("construct relay client");
-        server.add_relay_connection(CLIENT_ID);
+        server.add_relay_connection(CLIENT_ID, None);
         client.set_connected();
         server.set_mod_identity("postretro.test".to_string(), "1".to_string());
         server.set_mod_digest(Some([7; 32]));
@@ -2672,7 +2672,7 @@ mod tests {
             None,
         )
         .expect("construct relay client");
-        server.add_relay_connection(CLIENT_ID);
+        server.add_relay_connection(CLIENT_ID, None);
         client.set_connected();
         server.set_mod_identity("postretro.test".to_string(), "1".to_string());
         server.set_mod_digest(Some([7; 32]));

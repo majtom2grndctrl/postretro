@@ -5242,9 +5242,10 @@ impl App {
                                     );
                                     continue;
                                 };
-                                let carried_health = seat_table
+                                let carried_loadout = seat_table
                                     .as_deref()
-                                    .and_then(|seats| seats.carried_health(seat));
+                                    .and_then(|seats| seats.carried_state(seat))
+                                    .cloned();
                                 replication.register_client(*client_id);
                                 state_slots.register_client(*client_id);
                                 let pawn = if host_spawn_points.is_empty() {
@@ -5272,7 +5273,7 @@ impl App {
                                         &host_spawn_points,
                                         &net_descriptors,
                                         host_agent_params,
-                                        carried_health,
+                                        carried_loadout.as_ref(),
                                     )
                                 };
                                 if let Some(pawn) = pawn {

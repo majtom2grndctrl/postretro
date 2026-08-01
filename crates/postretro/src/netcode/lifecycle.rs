@@ -9,7 +9,7 @@ use postretro_foundation::NavAgentParams;
 use postretro_net::replication::ServerReplication;
 use postretro_net::wire::NetworkId;
 
-use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_health;
+use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_loadout;
 use crate::scripting::map_entity::MapEntity;
 
 use super::{NetworkIdAllocator, ReplicableSet};
@@ -123,7 +123,7 @@ pub(crate) enum SlotPawnSource<'a> {
         placement: &'a MapEntity,
         descriptors: &'a [EntityTypeDescriptor],
         agent_params: Option<NavAgentParams>,
-        carried_health: Option<f32>,
+        carried_loadout: Option<&'a super::CarriedState>,
     },
 }
 
@@ -175,14 +175,14 @@ pub(crate) fn on_slot_accepted(
             placement,
             descriptors,
             agent_params,
-            carried_health,
+            carried_loadout,
         } => {
-            let Some(id) = spawn_net_slot_pawn_with_carried_health(
+            let Some(id) = spawn_net_slot_pawn_with_carried_loadout(
                 placement,
                 descriptors,
                 registry,
                 agent_params,
-                carried_health,
+                carried_loadout,
             ) else {
                 log::warn!(
                     "[Net] slot {client_id} accepted but descriptor spawn failed; slot left unmapped"
@@ -681,7 +681,7 @@ mod tests {
                 placement: &placement,
                 descriptors: &descriptors,
                 agent_params: None,
-                carried_health: None,
+                carried_loadout: None,
             },
         )
         .expect("descriptor accept spawns a pawn from the synthetic placement");
@@ -1004,7 +1004,7 @@ mod tests {
                 placement: &synthetic_placement(),
                 descriptors: &descriptors,
                 agent_params: None,
-                carried_health: None,
+                carried_loadout: None,
             },
         )
         .expect("descriptor slot materializes");

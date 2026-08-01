@@ -807,10 +807,11 @@ impl App {
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
             suppress_ai_enemies: suppress,
             suppress_boot_pawn: suppress,
-            local_carried_health: session
+            local_carried_loadout: session
                 .seat_table
                 .as_ref()
-                .and_then(|seats| seats.carried_health(postretro_foundation::Seat(0))),
+                .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
+                .cloned(),
         };
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
@@ -1321,9 +1322,9 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// host, headless).
     pub(crate) suppress_ai_enemies: bool,
     pub(crate) suppress_boot_pawn: bool,
-    /// Seat-zero health, resolved by the caller before descriptor spawn. The
+    /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
     /// world installer remains seat-table agnostic.
-    pub(crate) local_carried_health: Option<f32>,
+    pub(crate) local_carried_loadout: Option<crate::netcode::CarriedState>,
 }
 
 /// Connected-client trigger-pool install result exposed only to cross-subsystem
@@ -2090,7 +2091,7 @@ mod tests {
                 trigger_pool_policy: policy,
                 suppress_ai_enemies,
                 suppress_boot_pawn: suppress_ai_enemies,
-                local_carried_health: None,
+                local_carried_loadout: None,
             };
             install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
                 crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
@@ -3646,7 +3647,7 @@ mod tests {
                 trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
                 suppress_ai_enemies: false,
                 suppress_boot_pawn: false,
-                local_carried_health: None,
+                local_carried_loadout: None,
             };
             // No-op mesh hook: headless-shaped, no renderer to upload models.
             let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {

@@ -809,7 +809,7 @@ pub(crate) fn spawn_from_player_starts(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> PlayerSpawnResult {
-    spawn_from_player_starts_with_carried_health(
+    spawn_from_player_starts_with_carried_loadout(
         spawn_points,
         descriptors,
         registry,
@@ -818,15 +818,15 @@ pub(crate) fn spawn_from_player_starts(
     )
 }
 
-/// Player-start materialization with an optional carried health value for the
-/// first local movement pawn. The caller owns seat lookup; this descriptor
-/// layer deliberately receives only the already-resolved scalar.
-pub(crate) fn spawn_from_player_starts_with_carried_health(
+/// Player-start materialization with an optional carried record for the first
+/// local movement pawn. The caller owns seat lookup; this descriptor layer
+/// deliberately receives only the already-resolved record.
+pub(crate) fn spawn_from_player_starts_with_carried_loadout(
     spawn_points: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
-    carried_health: Option<f32>,
+    carried_loadout: Option<&crate::netcode::CarriedState>,
 ) -> PlayerSpawnResult {
     let mut spawned = 0usize;
 
@@ -867,7 +867,10 @@ pub(crate) fn spawn_from_player_starts_with_carried_health(
             );
         if is_first_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
-            if let Some(carried_health) = carried_health {
+            if let Some(carried_health) = carried_loadout
+                .and_then(|loadout| loadout.health_current)
+                .filter(|health| *health > 0.0)
+            {
                 postretro_entities::components::health::set_health_absolute(
                     registry,
                     id,
@@ -883,7 +886,14 @@ pub(crate) fn spawn_from_player_starts_with_carried_health(
         kvps.remove("entity_class");
         let _ = registry.set_map_kvps(id, kvps);
 
-        let _ = compose_wieldable_inventory(registry, id, descriptor, entity, descriptors);
+        let _ = compose_wieldable_inventory(
+            registry,
+            id,
+            descriptor,
+            entity,
+            descriptors,
+            is_first_local_pawn.then_some(carried_loadout).flatten(),
+        );
 
         spawned += 1;
     }
@@ -2148,12 +2158,15 @@ mod tests {
             spawn_point_at(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, &[]),
         ];
 
-        spawn_from_player_starts_with_carried_health(
+        spawn_from_player_starts_with_carried_loadout(
             &starts,
             &[player],
             &mut registry,
             None,
-            Some(36.0),
+            Some(&crate::netcode::CarriedState {
+                health_current: Some(36.0),
+                ..Default::default()
+            }),
         );
 
         let local = registry

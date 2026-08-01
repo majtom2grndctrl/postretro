@@ -26,6 +26,14 @@ impl AmmoReserve {
         *balance = balance.saturating_add(amount);
     }
 
+    /// Replace one ammo type's balance without affecting any other reserve.
+    ///
+    /// Cross-level carry restores the authored type's exact carried amount;
+    /// crediting would incorrectly add the descriptor's default on every spawn.
+    pub fn set_exact(&mut self, ammo_type: &str, amount: u32) {
+        self.amounts.insert(ammo_type.to_string(), amount);
+    }
+
     /// Take up to `n` units and return the amount removed. Centralizing the
     /// clamped debit keeps the backing map private and lets reloads consume a
     /// partial final reserve.
@@ -70,6 +78,18 @@ mod tests {
         reserve.credit("cells", u32::MAX);
         reserve.credit("cells", 1);
         assert_eq!(reserve.available("cells"), u32::MAX);
+    }
+
+    #[test]
+    fn set_exact_replaces_one_balance_without_touching_others() {
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("shells", 24);
+        reserve.credit("cells", 60);
+
+        reserve.set_exact("shells", 7);
+
+        assert_eq!(reserve.available("shells"), 7);
+        assert_eq!(reserve.available("cells"), 60);
     }
 
     #[test]

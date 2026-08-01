@@ -179,7 +179,7 @@ fn run_headless_inner(
             trigger_pool_policy,
             suppress_ai_enemies: false,
             suppress_boot_pawn: false,
-            local_carried_health: None,
+            local_carried_loadout: None,
         };
         install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
             crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide

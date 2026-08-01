@@ -5,7 +5,7 @@ use super::*;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     filter_out_client_ai_enemies, movement_descriptor_mesh_models,
-    spawn_from_player_starts_with_carried_health, suppressed_ai_enemy_mesh_models,
+    spawn_from_player_starts_with_carried_loadout, suppressed_ai_enemy_mesh_models,
     weapon_presentation_models,
 };
 use postretro_scripting_core::data_descriptors::LevelManifest;
@@ -93,7 +93,7 @@ pub(crate) fn install_world_cpu(
         trigger_pool_policy,
         suppress_ai_enemies,
         suppress_boot_pawn,
-        local_carried_health,
+        local_carried_loadout,
     } = handles;
 
     // Fog volumes — one entity per record. Runs after the windowed light-bridge
@@ -281,12 +281,12 @@ pub(crate) fn install_world_cpu(
         if suppress_boot_pawn {
             log::info!("[Loader] connected client: deferring player spawn to host baseline");
         } else if !spawn_points.is_empty() {
-            let _ = spawn_from_player_starts_with_carried_health(
+            let _ = spawn_from_player_starts_with_carried_loadout(
                 &spawn_points,
                 &descriptors,
                 &mut registry,
                 agent_params,
-                local_carried_health,
+                local_carried_loadout.as_ref(),
             );
         } else {
             log::info!("[Loader] no player_spawn in map; skipping player spawn");

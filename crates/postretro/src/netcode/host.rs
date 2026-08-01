@@ -241,7 +241,7 @@ pub(crate) fn host_handle_accept_descriptor(
     spawn_points: &[crate::scripting::map_entity::MapEntity],
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
-    carried_health: Option<f32>,
+    carried_loadout: Option<&super::CarriedState>,
 ) -> Option<EntityId> {
     cleanup_stale_slot_replacement(
         registry,
@@ -276,7 +276,7 @@ pub(crate) fn host_handle_accept_descriptor(
             placement,
             descriptors,
             agent_params,
-            carried_health,
+            carried_loadout,
         },
     );
 
@@ -660,7 +660,8 @@ mod tests {
 
         assert!(!registry.exists(pawn), "demotion despawns the remote pawn");
         let carried_health = seats
-            .carried_health(seat)
+            .carried_state(seat)
+            .and_then(|state| state.health_current)
             .expect("harvest precedes the pawn despawn");
         assert!(
             (carried_health - 31.0).abs() <= 1.0e-6,

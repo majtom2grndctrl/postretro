@@ -5,15 +5,16 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
+use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
+use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::Seat;
 use postretro_net::wire::{ConnectClaim, SessionId};
 
 /// State retained by a session seat when its current pawn leaves a level.
 ///
-/// Every field belongs to the carried-state shape even though Task 2 transfers
-/// health only. A missing record deliberately seeds no defaults on a fresh seat.
+/// A missing record deliberately seeds no defaults on a fresh seat.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CarriedState {
     pub(crate) health_current: Option<f32>,
@@ -35,6 +36,39 @@ impl Default for CarriedState {
             placement: None,
         }
     }
+}
+
+/// One exhaustive binding site for every carried field.
+///
+/// The `CarriedState` destructure has no wildcard: extending the state record
+/// requires deciding whether the new value is harvested, restored, or skipped
+/// at this ledger before the crate compiles.
+enum CarriedField<'a> {
+    HealthCurrent(&'a mut Option<f32>),
+    Reserve(&'a mut AmmoReserve),
+    Wieldables(&'a mut [Option<String>; WIELDABLE_SLOT_CAPACITY]),
+    Magazines(&'a mut [Option<u32>; WIELDABLE_SLOT_CAPACITY]),
+    ActiveSlot(&'a mut usize),
+    Placement(&'a mut Option<usize>),
+}
+
+fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
+    let CarriedState {
+        health_current,
+        reserve,
+        wieldables,
+        magazines,
+        active_slot,
+        placement,
+    } = state;
+    [
+        CarriedField::HealthCurrent(health_current),
+        CarriedField::Reserve(reserve),
+        CarriedField::Wieldables(wieldables),
+        CarriedField::Magazines(magazines),
+        CarriedField::ActiveSlot(active_slot),
+        CarriedField::Placement(placement),
+    ]
 }
 
 /// Future rejoin-hold expiry measured against the session's accumulated clock.
@@ -149,7 +183,7 @@ impl SeatTable {
         }
     }
 
-    /// Preserve only the health component currently present on this pawn.
+    /// Preserve every carryable component currently present on this pawn.
     ///
     /// Lookup is by pawn identity, not current client binding: a same-poll
     /// disconnect/rebind cannot make the old dying pawn write into the new one.
@@ -157,15 +191,71 @@ impl SeatTable {
         let Some(seat) = self.seat_for_pawn(pawn) else {
             return;
         };
-        let Ok(health) = registry.get_component::<HealthComponent>(pawn) else {
+        let health_current = registry
+            .get_component::<HealthComponent>(pawn)
+            .ok()
+            .map(|health| health.current);
+        let reserve = registry.get_component::<AmmoReserve>(pawn).ok().cloned();
+        let inventory = registry.get_component::<Inventory>(pawn).ok().cloned();
+        if health_current.is_none() && reserve.is_none() && inventory.is_none() {
             return;
-        };
+        }
         let carried = self
             .carried
             .entry(seat)
             .or_insert_with(|| Some(CarriedState::default()));
         let state = carried.get_or_insert_with(CarriedState::default);
-        state.health_current = Some(health.current);
+
+        for field in carried_fields(state) {
+            match field {
+                CarriedField::HealthCurrent(carried_health) => {
+                    if let Some(health_current) = health_current {
+                        *carried_health = Some(health_current);
+                    }
+                }
+                CarriedField::Reserve(carried_reserve) => {
+                    if let Some(reserve) = reserve.as_ref() {
+                        *carried_reserve = reserve.clone();
+                    }
+                }
+                CarriedField::Wieldables(carried_wieldables) => {
+                    if let Some(inventory) = inventory.as_ref() {
+                        for (slot, weapon) in inventory.wieldables.iter().enumerate() {
+                            let Some(weapon) = weapon else {
+                                carried_wieldables[slot] = None;
+                                continue;
+                            };
+                            if let Ok(provenance) =
+                                registry.get_component::<DescriptorProvenance>(*weapon)
+                            {
+                                carried_wieldables[slot] = Some(provenance.canonical_name.clone());
+                            }
+                        }
+                    }
+                }
+                CarriedField::Magazines(carried_magazines) => {
+                    if let Some(inventory) = inventory.as_ref() {
+                        for (slot, weapon) in inventory.wieldables.iter().enumerate() {
+                            let Some(weapon) = weapon else {
+                                carried_magazines[slot] = None;
+                                continue;
+                            };
+                            if let Ok(weapon) = registry.get_component::<WeaponComponent>(*weapon) {
+                                carried_magazines[slot] = Some(weapon.magazine);
+                            }
+                        }
+                    }
+                }
+                CarriedField::ActiveSlot(carried_active_slot) => {
+                    if let Some(inventory) = inventory.as_ref() {
+                        *carried_active_slot = inventory.active_slot;
+                    }
+                }
+                // Task 6 owns placement assignment. It is intentionally listed
+                // here so the carry shape cannot grow around the ledger.
+                CarriedField::Placement(_) => {}
+            }
+        }
     }
 
     /// Harvest every currently bound pawn. Missing pawns/components preserve
@@ -189,26 +279,39 @@ impl SeatTable {
         let Some(health_current) = state.health_current else {
             return;
         };
+        if health_current <= 0.0 {
+            return;
+        }
         postretro_entities::components::health::set_health_absolute(registry, pawn, health_current);
     }
 
     #[must_use]
-    pub(crate) fn carried_health(&self, seat: Seat) -> Option<f32> {
-        self.carried
-            .get(&seat)
-            .and_then(|state| state.as_ref())
-            .and_then(|state| state.health_current)
+    pub(crate) fn carried_state(&self, seat: Seat) -> Option<&CarriedState> {
+        self.carried.get(&seat).and_then(Option::as_ref)
     }
 
-    /// Reset only live-pawn identity after actual level unload. Suspension does
-    /// not call this: its world and pawn bindings remain live on resume.
+    /// Reset live-pawn identity and level-scoped placement after actual level
+    /// unload. Suspension does not call this: its world and pawn bindings remain
+    /// live on resume.
     pub(crate) fn clear_pawn_bindings_for_level_unload(&mut self) {
+        for state in self.carried.values_mut().flatten() {
+            for field in carried_fields(state) {
+                match field {
+                    CarriedField::HealthCurrent(_)
+                    | CarriedField::Reserve(_)
+                    | CarriedField::Wieldables(_)
+                    | CarriedField::Magazines(_)
+                    | CarriedField::ActiveSlot(_) => {}
+                    CarriedField::Placement(placement) => *placement = None,
+                }
+            }
+        }
         self.pawn_bindings.clear();
     }
 
     #[cfg(test)]
     fn carried_state_for_test(&self, seat: Seat) -> Option<&CarriedState> {
-        self.carried.get(&seat).and_then(Option::as_ref)
+        self.carried_state(seat)
     }
 
     #[cfg(test)]
@@ -223,6 +326,7 @@ mod tests {
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::data_descriptors::HealthDescriptor;
     use postretro_entities::registry::Transform;
+    use postretro_scripting_core::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
 
     fn health(max: f32, current: f32) -> HealthComponent {
         let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
@@ -239,6 +343,34 @@ mod tests {
             (actual - expected).abs() <= 1.0e-6,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn weapon(magazine: u32) -> WeaponComponent {
+        let mut weapon = WeaponComponent::from_descriptor(&WeaponDescriptor {
+            damage: 10.0,
+            range: 20.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
+            resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
+        });
+        weapon.magazine = magazine;
+        weapon
+    }
+
+    fn provenance(canonical_name: &str) -> DescriptorProvenance {
+        DescriptorProvenance {
+            canonical_name: canonical_name.to_string(),
+            owned_components: Default::default(),
+            map_overrides: Default::default(),
+            spawn_path: DescriptorSpawnPath::DefaultWeapon,
+        }
     }
 
     #[test]
@@ -310,9 +442,115 @@ mod tests {
 
         assert_health_eq(
             seats
-                .carried_health(Seat(0))
+                .carried_state_for_test(Seat(0))
+                .and_then(|state| state.health_current)
                 .expect("harvest retains prior health"),
             42.0,
+        );
+    }
+
+    #[test]
+    fn harvest_carries_inventory_names_magazines_reserve_and_active_slot() {
+        let mut seats = SeatTable::from_test_session_id([10; 16]);
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.set_component(pawn, health(100.0, 41.0)).unwrap();
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("shells", 13);
+        reserve.set_exact("rockets", 0);
+        registry.set_component(pawn, reserve).unwrap();
+
+        let pistol = registry.spawn(Transform::default());
+        registry.set_component(pistol, weapon(4)).unwrap();
+        registry
+            .set_component(pistol, provenance("pistol"))
+            .unwrap();
+        let launcher = registry.spawn(Transform::default());
+        registry.set_component(launcher, weapon(1)).unwrap();
+        registry
+            .set_component(launcher, provenance("rocket_launcher"))
+            .unwrap();
+        let inventory = Inventory {
+            wieldables: [
+                Some(pistol),
+                None,
+                Some(launcher),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            active_slot: 2,
+            ..Inventory::default()
+        };
+        registry.set_component(pawn, inventory).unwrap();
+        seats.bind_pawn(Seat(0), pawn);
+
+        seats.harvest_pawn(&registry, pawn);
+
+        let carried = seats
+            .carried_state_for_test(Seat(0))
+            .expect("pawn components create a carried record");
+        assert_health_eq(carried.health_current.expect("health carries"), 41.0);
+        assert_eq!(carried.reserve.available("shells"), 13);
+        assert_eq!(carried.reserve.available("rockets"), 0);
+        assert_eq!(carried.wieldables[0].as_deref(), Some("pistol"));
+        assert_eq!(carried.wieldables[1], None);
+        assert_eq!(carried.wieldables[2].as_deref(), Some("rocket_launcher"));
+        assert_eq!(carried.magazines[0], Some(4));
+        assert_eq!(carried.magazines[2], Some(1));
+        assert_eq!(carried.active_slot, 2);
+    }
+
+    #[test]
+    fn nonpositive_carried_health_keeps_descriptor_default() {
+        let mut seats = SeatTable::from_test_session_id([11; 16]);
+        let mut old_registry = EntityRegistry::new();
+        let old_pawn = old_registry.spawn(Transform::default());
+        old_registry
+            .set_component(old_pawn, health(100.0, 0.0))
+            .unwrap();
+        seats.bind_pawn(Seat(0), old_pawn);
+        seats.harvest_pawn(&old_registry, old_pawn);
+
+        let mut new_registry = EntityRegistry::new();
+        let new_pawn = new_registry.spawn(Transform::default());
+        new_registry
+            .set_component(new_pawn, health(100.0, 100.0))
+            .unwrap();
+        seats.restore_health(Seat(0), &mut new_registry, new_pawn);
+
+        assert_health_eq(
+            new_registry
+                .get_component::<HealthComponent>(new_pawn)
+                .unwrap()
+                .current,
+            100.0,
+        );
+    }
+
+    #[test]
+    fn level_unload_clears_placement_even_without_a_live_pawn() {
+        let mut seats = SeatTable::from_test_session_id([12; 16]);
+        seats.carried.insert(
+            Seat(0),
+            Some(CarriedState {
+                placement: Some(3),
+                ..Default::default()
+            }),
+        );
+
+        seats.clear_pawn_bindings_for_level_unload();
+
+        assert_eq!(
+            seats
+                .carried_state_for_test(Seat(0))
+                .expect("carried state remains")
+                .placement,
+            None
         );
     }
 

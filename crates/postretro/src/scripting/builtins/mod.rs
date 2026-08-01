@@ -25,7 +25,7 @@ pub(crate) mod data_archetype_test_fixtures;
 pub(crate) use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
 pub(crate) use data_archetype::{
-    PLAYER_START_CLASSNAME, spawn_from_player_starts, spawn_from_player_starts_with_carried_health,
+    PLAYER_START_CLASSNAME, spawn_from_player_starts, spawn_from_player_starts_with_carried_loadout,
 };
 // Connected-client AI-enemy spawn suppression (E10 Task 5). `gen-script-types`
 // pulls in the scripting tree but never installs a level, so the import is

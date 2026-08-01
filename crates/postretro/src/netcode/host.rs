@@ -243,6 +243,48 @@ pub(crate) fn host_handle_accept_descriptor(
     agent_params: Option<NavAgentParams>,
     carried_loadout: Option<&super::CarriedState>,
 ) -> Option<EntityId> {
+    host_handle_accept_descriptor_at_placement(
+        registry,
+        allocator,
+        replicable,
+        slot_pawns,
+        command_queues,
+        owners,
+        weapon_owners,
+        open_shots,
+        pending_hit_declarations,
+        weaponless_fire_logged,
+        client_id,
+        spawn_points,
+        0,
+        descriptors,
+        agent_params,
+        carried_loadout,
+    )
+}
+
+/// Descriptor-backed remote spawn at a placement selected by the durable-seat
+/// layer. The carried-loadout parameter remains entirely Task 5-owned; this
+/// helper receives only the already-chosen map placement index.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn host_handle_accept_descriptor_at_placement(
+    registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    slot_pawns: &mut SlotPawns,
+    command_queues: &mut HostCommandQueues,
+    owners: &mut MovementOwners,
+    weapon_owners: &mut WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
+    client_id: u64,
+    spawn_points: &[crate::scripting::map_entity::MapEntity],
+    placement_index: usize,
+    descriptors: &[EntityTypeDescriptor],
+    agent_params: Option<NavAgentParams>,
+    carried_loadout: Option<&super::CarriedState>,
+) -> Option<EntityId> {
     cleanup_stale_slot_replacement(
         registry,
         allocator,
@@ -257,14 +299,12 @@ pub(crate) fn host_handle_accept_descriptor(
         client_id,
     );
 
-    // Deterministic, auditable slot -> placement assignment recorded BEFORE the spawn.
-    let Some(idx) = slot_pawns.assign_placement(client_id, spawn_points.len()) else {
+    let Some(placement) = spawn_points.get(placement_index) else {
         log::warn!(
-            "[Net] slot {client_id} accepted but the map has no player_spawn placements; no pawn spawned"
+            "[Net] slot {client_id} accepted but player_spawn placement {placement_index} is unavailable; no pawn spawned"
         );
         return None;
     };
-    let placement = &spawn_points[idx];
 
     let spawned = on_slot_accepted(
         registry,

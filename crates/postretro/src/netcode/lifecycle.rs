@@ -32,52 +32,11 @@ pub(crate) struct SlotPawns {
     /// Keeping the ids with the slot, rather than in `WeaponOwners`, preserves
     /// the latter as a presentation-only dirty attachment queue.
     wieldables: HashMap<u64, Vec<EntityId>>,
-    /// Deterministic slot → `player_spawn` placement-index assignment (M15 Phase 3).
-    /// Recorded BEFORE the descriptor spawn so a reused slot has an auditable source:
-    /// the same client id always resolves to the same placement for the session, and
-    /// the assignment is round-robin over the available placements by first-accept
-    /// order. Survives a close so a reconnecting client lands on its prior spawn.
-    placement_assignments: HashMap<u64, usize>,
-    /// Monotonic counter feeding the round-robin placement assignment. Never reset
-    /// within a session, so assignment order is a pure function of accept order.
-    next_assignment: usize,
 }
 
 impl SlotPawns {
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    /// Deterministically assign (or recall) the `player_spawn` placement index for a
-    /// slot, given the number of available placements. Idempotent per client id: the
-    /// first call records a round-robin assignment; later calls (including after a
-    /// reconnect) return the same index. Returns `None` when there are no placements
-    /// to assign from. The assignment is recorded before the spawn so a reused slot's
-    /// source is auditable.
-    pub(crate) fn assign_placement(
-        &mut self,
-        client_id: u64,
-        placement_count: usize,
-    ) -> Option<usize> {
-        if placement_count == 0 {
-            return None;
-        }
-        if let Some(&idx) = self.placement_assignments.get(&client_id) {
-            // Clamp defensively in case the placement set shrank between sessions.
-            return Some(idx.min(placement_count - 1));
-        }
-        let idx = self.next_assignment % placement_count;
-        self.next_assignment = self.next_assignment.wrapping_add(1);
-        self.placement_assignments.insert(client_id, idx);
-        Some(idx)
-    }
-
-    /// The recorded placement-index assignment for a slot, if any. Auditable source
-    /// for a reused slot — read by tests and operator diagnostics; staged until a
-    /// non-test caller (e.g. a `[Net]` audit log) reads it.
-    #[allow(dead_code)]
-    pub(crate) fn placement_assignment(&self, client_id: u64) -> Option<usize> {
-        self.placement_assignments.get(&client_id).copied()
     }
 
     /// The pawn entity for a slot, if one is registered. Used by lifecycle tests and
@@ -1153,23 +1112,5 @@ mod tests {
         assert_eq!(open_shots.len(), 0);
         assert_eq!(pending_hit_declarations.len(), 0);
         assert!(!weaponless_fire_logged.contains(&old_pawn));
-    }
-
-    // The deterministic slot->placement assignment is stable across reconnect: the
-    // same client id always resolves to the same placement index, and the assignment
-    // is recorded (auditable) before the spawn.
-    #[test]
-    fn placement_assignment_is_deterministic_and_survives_close() {
-        let mut slot_pawns = SlotPawns::new();
-        // Three placements; two clients accept in order -> indices 0 and 1.
-        assert_eq!(slot_pawns.assign_placement(CLIENT_A, 3), Some(0));
-        assert_eq!(slot_pawns.assign_placement(CLIENT_B, 3), Some(1));
-        // Re-asking is idempotent (auditable, stable).
-        assert_eq!(slot_pawns.assign_placement(CLIENT_A, 3), Some(0));
-        assert_eq!(slot_pawns.placement_assignment(CLIENT_A), Some(0));
-        assert_eq!(slot_pawns.placement_assignment(CLIENT_B), Some(1));
-        // No placements -> no assignment.
-        let mut empty = SlotPawns::new();
-        assert_eq!(empty.assign_placement(CLIENT_A, 0), None);
     }
 }

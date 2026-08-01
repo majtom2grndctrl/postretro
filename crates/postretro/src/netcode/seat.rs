@@ -358,14 +358,6 @@ impl SeatTable {
         self.pawn_bindings.clear();
     }
 
-    /// Clear the only level-scoped carried member while preserving the allocation
-    /// cursor. A later level's first join must not reset to placement zero.
-    pub(crate) fn clear_placements_for_level_unload(&mut self) {
-        for carried in self.carried.values_mut().flatten() {
-            carried.placement = None;
-        }
-    }
-
     /// Assign or recall a placement for `seat` without allowing a held seat or a
     /// currently-live pawn to be overlapped whenever a free index exists.
     ///
@@ -774,7 +766,7 @@ mod tests {
             "a fresh connection can recover the placement through its durable seat"
         );
 
-        seats.clear_placements_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload();
         assert_eq!(
             seats.assign_placement(first, 3, [0, 1]),
             Some(2),

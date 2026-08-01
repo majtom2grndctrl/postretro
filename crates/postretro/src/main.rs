@@ -137,8 +137,8 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 // tests. Test-only: the boot path calls it through `startup::session`.
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
-use postretro_entities::SystemReactionCommand;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::{ComponentKind, SystemReactionCommand, Transform};
 use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
@@ -5258,7 +5258,25 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
-                                    netcode::host_handle_accept_descriptor(
+                                    let live_placements = occupied_player_spawn_placements(
+                                        &registry,
+                                        &host_spawn_points,
+                                    );
+                                    let Some(placement_index) =
+                                        seat_table.as_deref_mut().and_then(|seats| {
+                                            seats.assign_placement(
+                                                seat,
+                                                host_spawn_points.len(),
+                                                live_placements,
+                                            )
+                                        })
+                                    else {
+                                        log::warn!(
+                                            "[Net] participating client {client_id} could not receive a player_spawn placement"
+                                        );
+                                        continue;
+                                    };
+                                    netcode::host_handle_accept_descriptor_at_placement(
                                         &mut registry,
                                         allocator,
                                         replicable,
@@ -5271,6 +5289,7 @@ impl App {
                                         weaponless_fire_logged,
                                         *client_id,
                                         &host_spawn_points,
+                                        placement_index,
                                         &net_descriptors,
                                         host_agent_params,
                                         carried_loadout.as_ref(),
@@ -6570,6 +6589,30 @@ impl App {
             }
         }
     }
+}
+
+/// Return every `player_spawn` index currently occupied by a live movement pawn.
+/// This intentionally derives occupancy from the registry rather than from seat
+/// assignments: level installation can materialize player pawns that have no
+/// remote seat binding, and those must block a joining peer's placement too.
+fn occupied_player_spawn_placements(
+    registry: &postretro_entities::EntityRegistry,
+    spawn_points: &[crate::scripting::map_entity::MapEntity],
+) -> Vec<usize> {
+    registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .filter_map(|(pawn, _)| {
+            registry
+                .get_component::<Transform>(pawn)
+                .ok()
+                .map(|transform| transform.position)
+        })
+        .filter_map(|position| {
+            spawn_points
+                .iter()
+                .position(|placement| placement.origin == position)
+        })
+        .collect()
 }
 
 #[cfg(feature = "dev-tools")]

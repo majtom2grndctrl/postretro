@@ -155,16 +155,16 @@ pub(crate) enum NetEndpoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PendingSwitchDeclaration {
-    declaration_id: u32,
-    target_slot: u8,
+    pub(crate) declaration_id: u32,
+    pub(crate) target_slot: u8,
     /// Slot the client actually presented as active when this local switch chain
     /// began. Older host outcomes may move the authoritative rollback point, but
     /// must not turn an unpresented intermediate target into last-weapon history.
-    held_origin_slot: usize,
+    pub(crate) held_origin_slot: usize,
     /// Host-authoritative active slot restored if this declaration is refused.
     /// Ordered predecessor outcomes rebase this without changing local history.
-    rollback_slot: usize,
-    rollback_last_weapon_slot: Option<usize>,
+    pub(crate) rollback_slot: usize,
+    pub(crate) rollback_last_weapon_slot: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,13 +223,13 @@ impl MonotonicClock for EngineClock {
 /// estimator (consumed by Task 6 interpolation), and the production monotonic
 /// clock both read through.
 pub(crate) struct ClientTimeSync {
-    clock: EngineClock,
+    pub(crate) clock: EngineClock,
     sender: TimeSyncSender,
-    estimator: ClockEstimator,
+    pub(crate) estimator: ClockEstimator,
 }
 
 impl ClientTimeSync {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             clock: EngineClock {
                 origin: std::time::Instant::now(),
@@ -246,7 +246,7 @@ impl ClientTimeSync {
     /// a caller cannot queue a probe whose echo the estimator's provenance guard
     /// would then reject as never-issued — which would silently freeze the clock
     /// estimate. Returns the request to encode and send, or `None` when not due.
-    fn maybe_send_probe(&mut self, client_tick: u32) -> Option<TimeSyncRequest> {
+    pub(crate) fn maybe_send_probe(&mut self, client_tick: u32) -> Option<TimeSyncRequest> {
         let req = self.sender.maybe_send(&self.clock, client_tick)?;
         self.estimator.record_sent(req.sample_id);
         Some(req)

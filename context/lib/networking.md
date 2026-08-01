@@ -99,7 +99,7 @@ Two rules derive every per-slot effect from the state pair rather than from whic
 - **Any exit from participating clears that slot's state** — pawn, replication, ownership, command, state-slot, and combat — whatever the destination. A demotion clears exactly what a close clears because both are the same edge, and a slot demoted and then closed clears once, not twice.
 - **Any entry to participating registers the slot and spawns its pawn** — first admission and re-promotion alike, so a re-promoted slot needs no special case and no "must re-emit" rider.
 
-The connection survives; its state does not. A client id is stable across a level change, which is what later specs key player identity to.
+The connection survives; its state does not. A client id is stable within one connection but not across a rejoin — a relaunching peer arrives on a freshly minted id — so player identity keys to a durable seat, never to the connection.
 
 **A held slot is gated in both directions.** It is sent no entity state, and its inbound traffic is drained and discarded. The drain is not an optimization: an undrained reliable channel overflows its memory budget and the transport disconnects the peer — which would break the never-close guarantee through a path that never decided anything.
 
@@ -151,6 +151,10 @@ Identity is declared, not proven — tamper resistance is a non-goal, and neithe
 State that survives a level change, enumerated rather than accreted. One entry today: **the connection** — its id, its lifecycle stage, and its last parity declaration.
 
 The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch. Later specs add the seat and the roster to this list rather than discovering one.
+
+Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind.
+
+The roster publishes no lower than admitted. Admission is a compatibility gate, not a trust decision: it checks the build constants and the mod id, admits automatically, and never asks the host who the peer is. A peer below it has proven only that it can reach the socket, so it receives no roster frame — not a redacted one.
 
 ## Game-logic-owned apply invariant
 

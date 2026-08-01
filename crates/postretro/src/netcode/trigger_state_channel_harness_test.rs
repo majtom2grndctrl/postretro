@@ -301,6 +301,7 @@ fn relay_pair() -> (NetServer, NetClient) {
         CLIENT_ID,
         origin,
         Some(static_fingerprint),
+        None,
     )
     .expect("fixture client transport constructs");
 

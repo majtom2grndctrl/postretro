@@ -441,9 +441,13 @@ impl NetEndpoint {
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
     /// The netcode clock origin is `SystemTime::now()` since the unix epoch
-    /// (`NetServer::new`/`NetClient::new` contract). Returns the transport error
-    /// for the caller to log and fall back to single-player.
-    pub(crate) fn from_role(role: &NetRole) -> Result<Option<NetEndpoint>, String> {
+    /// (`NetServer::new`/`NetClient::new` contract). Client user data is carried
+    /// unchanged into the immutable netcode authentication token. Returns the
+    /// transport error for the caller to log and fall back to single-player.
+    pub(crate) fn from_role(
+        role: &NetRole,
+        user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
+    ) -> Result<Option<NetEndpoint>, String> {
         match role {
             NetRole::SinglePlayer => Ok(None),
             NetRole::Host { port } => {
@@ -486,7 +490,7 @@ impl NetEndpoint {
                 // Client id is arbitrary under unsecure auth; use the wall clock
                 // so two clients on one host do not collide.
                 let client_id = now().as_nanos() as u64;
-                let client = NetClient::new(socket, *addr, client_id, now(), None)
+                let client = NetClient::new(socket, *addr, client_id, now(), None, user_data)
                     .map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
@@ -750,7 +754,7 @@ mod tests {
             ..Transform::default()
         });
 
-        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
             .expect("host endpoint constructs")
             .expect("host role yields an endpoint");
         assert!(matches!(
@@ -758,9 +762,12 @@ mod tests {
             WorldLessPoll::Host(_)
         ));
 
-        let mut client = NetEndpoint::from_role(&NetRole::Connect {
-            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        })
+        let mut client = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
         assert!(matches!(
@@ -780,9 +787,12 @@ mod tests {
 
     #[test]
     fn client_level_unload_resets_state_slot_apply_state() {
-        let mut endpoint = NetEndpoint::from_role(&NetRole::Connect {
-            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        })
+        let mut endpoint = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
         let mut slot_table = SlotTable::new();
@@ -823,7 +833,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let old_entity = registry.spawn(Transform::default());
         let new_entity = registry.spawn(Transform::default());
-        let mut endpoint = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+        let mut endpoint = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
             .expect("host endpoint constructs")
             .expect("host role yields an endpoint");
 

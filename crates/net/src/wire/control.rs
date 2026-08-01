@@ -1,5 +1,166 @@
 use bitcode::{Decode, Encode};
 
+/// The fixed size of renetcode's client-authentication user-data field.
+pub const NETCODE_USER_DATA_BYTES: usize = 256;
+const CONNECT_CLAIM_MAGIC: &[u8; 4] = b"PRSC";
+const CONNECT_CLAIM_VERSION: u8 = 1;
+const CONNECT_CLAIM_HEADER_BYTES: usize = 7;
+/// The largest UTF-8 display name accepted in a connection claim.
+pub const DISPLAY_NAME_MAX_BYTES: usize = 200;
+
+/// A player-controlled durable identity carried in a connection claim.
+///
+/// The bytes are opaque. Consumers may retain or compare the whole value, but
+/// must not parse, slice, order, or derive from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct PlayerClaimId(pub [u8; 16]);
+
+/// A host-minted identity for one running session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct SessionId(pub [u8; 16]);
+
+/// Immutable client assertion included in the netcode connection token.
+///
+/// New fields must be appended: bitcode encodes struct fields positionally.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ConnectClaim {
+    pub player_id: PlayerClaimId,
+    pub display_name: String,
+}
+
+/// Encode a claim into renetcode's fixed-width authentication user-data field.
+#[must_use]
+pub fn encode_connect_claim(claim: &ConnectClaim) -> [u8; NETCODE_USER_DATA_BYTES] {
+    let display_name = truncate_display_name(&claim.display_name);
+    let payload = bitcode::encode(&ConnectClaim {
+        player_id: claim.player_id,
+        display_name,
+    });
+    debug_assert!(payload.len() <= NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES);
+
+    let mut user_data = [0; NETCODE_USER_DATA_BYTES];
+    user_data[..CONNECT_CLAIM_MAGIC.len()].copy_from_slice(CONNECT_CLAIM_MAGIC);
+    user_data[4] = CONNECT_CLAIM_VERSION;
+    user_data[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+    user_data[CONNECT_CLAIM_HEADER_BYTES..CONNECT_CLAIM_HEADER_BYTES + payload.len()]
+        .copy_from_slice(&payload);
+    user_data
+}
+
+/// Decode a claim from renetcode's user-data field.
+///
+/// Missing user data is random bytes in renetcode, so malformed, stale, or
+/// absent envelopes all degrade to an anonymous connection without error.
+#[must_use]
+pub fn decode_connect_claim(user_data: &[u8; NETCODE_USER_DATA_BYTES]) -> Option<ConnectClaim> {
+    if user_data[..CONNECT_CLAIM_MAGIC.len()] != *CONNECT_CLAIM_MAGIC
+        || user_data[4] != CONNECT_CLAIM_VERSION
+    {
+        return None;
+    }
+    let payload_len = usize::from(u16::from_le_bytes([user_data[5], user_data[6]]));
+    let payload_end = CONNECT_CLAIM_HEADER_BYTES.checked_add(payload_len)?;
+    let payload = user_data.get(CONNECT_CLAIM_HEADER_BYTES..payload_end)?;
+    let claim = bitcode::decode::<ConnectClaim>(payload).ok()?;
+    (claim.display_name.len() <= DISPLAY_NAME_MAX_BYTES).then_some(claim)
+}
+
+fn truncate_display_name(display_name: &str) -> String {
+    if display_name.len() <= DISPLAY_NAME_MAX_BYTES {
+        return display_name.to_owned();
+    }
+    let mut end = DISPLAY_NAME_MAX_BYTES;
+    while !display_name.is_char_boundary(end) {
+        end -= 1;
+    }
+    display_name[..end].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claim(display_name: &str) -> ConnectClaim {
+        ConnectClaim {
+            player_id: PlayerClaimId([0x5a; 16]),
+            display_name: display_name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn connect_claim_envelope_roundtrips_and_zero_fills() {
+        let encoded = encode_connect_claim(&claim("Neon Runner"));
+
+        assert_eq!(encoded.len(), NETCODE_USER_DATA_BYTES);
+        assert_eq!(&encoded[..4], CONNECT_CLAIM_MAGIC);
+        assert_eq!(encoded[4], CONNECT_CLAIM_VERSION);
+        let payload_len = usize::from(u16::from_le_bytes([encoded[5], encoded[6]]));
+        assert!(
+            encoded[CONNECT_CLAIM_HEADER_BYTES + payload_len..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert_eq!(decode_connect_claim(&encoded), Some(claim("Neon Runner")));
+    }
+
+    #[test]
+    fn connect_claim_envelope_truncates_display_name_on_utf8_boundary() {
+        let name = format!("{}é", "a".repeat(DISPLAY_NAME_MAX_BYTES - 1));
+        let decoded = decode_connect_claim(&encode_connect_claim(&claim(&name)))
+            .expect("encoded claim decodes");
+
+        assert_eq!(decoded.display_name, "a".repeat(DISPLAY_NAME_MAX_BYTES - 1));
+        assert!(
+            decoded
+                .display_name
+                .is_char_boundary(decoded.display_name.len())
+        );
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_random_or_mismatched_headers() {
+        assert_eq!(decode_connect_claim(&[0xa5; NETCODE_USER_DATA_BYTES]), None);
+
+        let mut wrong_magic = encode_connect_claim(&claim("Neon Runner"));
+        wrong_magic[0] = b'X';
+        assert_eq!(decode_connect_claim(&wrong_magic), None);
+
+        let mut wrong_version = encode_connect_claim(&claim("Neon Runner"));
+        wrong_version[4] = CONNECT_CLAIM_VERSION + 1;
+        assert_eq!(decode_connect_claim(&wrong_version), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_invalid_payload_lengths_and_bitcode() {
+        let mut overlong_length = encode_connect_claim(&claim("Neon Runner"));
+        let too_long = (NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES + 1) as u16;
+        overlong_length[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&too_long.to_le_bytes());
+        assert_eq!(decode_connect_claim(&overlong_length), None);
+
+        let mut malformed_payload = encode_connect_claim(&claim("Neon Runner"));
+        malformed_payload[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&1_u16.to_le_bytes());
+        malformed_payload[CONNECT_CLAIM_HEADER_BYTES] = 0xff;
+        assert_eq!(decode_connect_claim(&malformed_payload), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_overlong_decoded_display_name() {
+        let claim = claim(&"a".repeat(DISPLAY_NAME_MAX_BYTES + 1));
+        let payload = bitcode::encode(&claim);
+        assert!(payload.len() <= NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES);
+
+        let mut user_data = [0; NETCODE_USER_DATA_BYTES];
+        user_data[..CONNECT_CLAIM_MAGIC.len()].copy_from_slice(CONNECT_CLAIM_MAGIC);
+        user_data[4] = CONNECT_CLAIM_VERSION;
+        user_data[5..CONNECT_CLAIM_HEADER_BYTES]
+            .copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        user_data[CONNECT_CLAIM_HEADER_BYTES..CONNECT_CLAIM_HEADER_BYTES + payload.len()]
+            .copy_from_slice(&payload);
+
+        assert_eq!(decode_connect_claim(&user_data), None);
+    }
+}
+
 /// Build constants carried by the immutable admission declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct ProtocolVersion {

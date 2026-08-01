@@ -283,6 +283,7 @@ mod tests {
             CLIENT_ID,
             origin,
             Some(static_fingerprint),
+            None,
         )
         .expect("client transport");
 

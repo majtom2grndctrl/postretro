@@ -122,10 +122,10 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
-    self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord, NetworkId,
-    RawSnapshotMessage, ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused,
-    SnapshotMessage, ValidationError, WireError, WireKinematicMoverState, WireMovementState,
-    WirePlayerMovementState, WireTransform,
+    self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord,
+    NETCODE_USER_DATA_BYTES, NetworkId, RawSnapshotMessage, ServerControlMessage,
+    ServerSwitchAccepted, ServerSwitchRefused, SnapshotMessage, ValidationError, WireError,
+    WireKinematicMoverState, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};
@@ -2612,6 +2612,7 @@ mod tests {
             CLIENT_ID,
             Duration::from_secs(1),
             None,
+            None,
         )
         .expect("construct relay client");
         server.add_relay_connection(CLIENT_ID);
@@ -2665,6 +2666,7 @@ mod tests {
             server_addr,
             CLIENT_ID,
             Duration::from_secs(1),
+            None,
             None,
         )
         .expect("construct relay client");
@@ -4346,7 +4348,7 @@ mod tests {
             ..Transform::default()
         });
 
-        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
             .expect("host endpoint constructs")
             .expect("host role yields an endpoint");
         let NetEndpoint::Host { replicable, .. } = &mut host else {
@@ -4365,9 +4367,12 @@ mod tests {
 
         // A Client endpoint with an empty NetworkId -> EntityId map sources its own
         // (empty) map, NOT the host set — confirming the per-endpoint branch.
-        let client = NetEndpoint::from_role(&NetRole::Connect {
-            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        })
+        let client = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
         assert!(
@@ -4395,9 +4400,12 @@ mod tests {
     #[test]
     fn remote_entity_positions_client_excludes_local_predicted_pawn() {
         let mut registry = EntityRegistry::new();
-        let mut client = NetEndpoint::from_role(&NetRole::Connect {
-            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        })
+        let mut client = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
 

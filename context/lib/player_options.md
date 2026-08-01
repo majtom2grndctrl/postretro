@@ -27,14 +27,15 @@ Options persist as `settings.toml` in the platform config directory (e.g. `~/.co
 - **Schema evolution** — every field carries `serde(default)`, so partial or older files load cleanly; absent fields fall back to defaults.
 - **Atomic write** — serialize to a sibling `.tmp` file, then rename over the target. No partial/truncated writes are observable.
 - **Corruption fallback** — malformed files log a warning and fall back to in-memory defaults without overwriting the file.
+- **Device identity** — `player_id` is an optional opaque 16-byte device-local value. It is generated only by `Session::build` when a loadable settings file lacks it, then written through the same atomic save path. `PlayerOptions::load` remains deterministic and never generates one. If settings cannot be loaded or saved, the client connects anonymously.
 
 ---
 
 ## 3. Boot Position
 
-Player options load at engine init (Phase 0), before `InputSystem` is constructed. The loaded options seed input preferences (sensitivity, invert-Y) at startup. On first boot (no file present), the engine writes defaults atomically before continuing — the boot defaults-write is the primary exercise of the atomic-write path.
+Player options load at engine init (Phase 0), before `InputSystem` is constructed. The loaded options seed input preferences (sensitivity, invert-Y) at startup. On first boot (no file present), the engine writes defaults atomically before continuing. Session construction also generates and atomically persists the missing device identity, including for an existing valid settings file created before that field shipped.
 
-No save-on-change occurs at runtime until the E13 settings menu is wired. The boot defaults-write is the only save call before that.
+No save-on-change occurs at runtime until the E13 settings menu is wired. The boot defaults/identity writes are the only save calls before that.
 
 ---
 

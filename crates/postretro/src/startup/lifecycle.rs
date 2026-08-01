@@ -3541,7 +3541,7 @@ mod tests {
 
         // Listen host: authoritative, keeps every placement and replicates them.
         app.session.as_mut().unwrap().net_endpoint = Some(
-            NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
                 .expect("host endpoint constructs")
                 .expect("host role yields an endpoint"),
         );
@@ -3552,9 +3552,12 @@ mod tests {
 
         // Connected client: the only role that suppresses the local spawn.
         app.session.as_mut().unwrap().net_endpoint = Some(
-            NetEndpoint::from_role(&NetRole::Connect {
-                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-            })
+            NetEndpoint::from_role(
+                &NetRole::Connect {
+                    addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
             .expect("client endpoint constructs")
             .expect("connect role yields an endpoint"),
         );

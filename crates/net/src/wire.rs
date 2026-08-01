@@ -28,9 +28,10 @@ use bitcode::{Decode, Encode};
 
 mod control;
 pub use control::{
-    ClientControlMessage, ClientSwitchDeclaration, ClosingCause, DivergenceReason, HoldingCause,
-    ParityDeclaration, ProtocolVersion, ServerControlMessage, ServerSwitchAccepted,
-    ServerSwitchRefused,
+    ClientControlMessage, ClientSwitchDeclaration, ClosingCause, ConnectClaim,
+    DISPLAY_NAME_MAX_BYTES, DivergenceReason, HoldingCause, NETCODE_USER_DATA_BYTES,
+    ParityDeclaration, PlayerClaimId, ProtocolVersion, ServerControlMessage, ServerSwitchAccepted,
+    ServerSwitchRefused, SessionId, decode_connect_claim, encode_connect_claim,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 

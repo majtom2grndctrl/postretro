@@ -9,10 +9,11 @@
 // (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new`) behind first pixels.
 // See: context/lib/boot_sequence.md §1 (Deferred-session boundary and single commit)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use postretro_entities::ScriptCtx;
+use postretro_net::wire::{ConnectClaim, PlayerClaimId, encode_connect_claim};
 
 use crate::impact_policy::ImpactPolicyRuntime;
 use crate::input;
@@ -308,36 +309,7 @@ impl Session {
         //    or a save failure is logged, not fatal: boot proceeds on in-memory
         //    defaults. See: context/lib/player_options.md §3.
         let settings_path = options::settings_path();
-        let player_options = match &settings_path {
-            Some(path) => {
-                // `load` returns defaults for both missing and malformed files,
-                // so detect first-run by probing existence before loading. A
-                // malformed file exists, so it is never overwritten here.
-                let existed = path.exists();
-                let options = options::PlayerOptions::load(path);
-                if !existed {
-                    match options.save(path) {
-                        Ok(()) => log::info!(
-                            "[Options] no settings file found; wrote defaults to {}",
-                            path.display()
-                        ),
-                        Err(err) => log::warn!(
-                            "[Options] failed to write default settings to {}: {err}; \
-                             running on in-memory defaults",
-                            path.display()
-                        ),
-                    }
-                }
-                options
-            }
-            None => {
-                log::warn!(
-                    "[Options] no platform config directory; running on in-memory \
-                     defaults without persistence"
-                );
-                options::PlayerOptions::default()
-            }
-        };
+        let player_options = load_player_options(settings_path.as_deref());
 
         // 2. Audio: fault-tolerant. A kira/device failure logs and runs silent
         //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
@@ -419,7 +391,13 @@ impl Session {
                 netcode::NetRole::SinglePlayer
             }
         };
-        let net_endpoint = match netcode::NetEndpoint::from_role(&net_role) {
+        let client_user_data = player_options.player_id.map(|player_id| {
+            encode_connect_claim(&ConnectClaim {
+                player_id: PlayerClaimId(player_id),
+                display_name: String::new(),
+            })
+        });
+        let net_endpoint = match netcode::NetEndpoint::from_role(&net_role, client_user_data) {
             Ok(endpoint) => {
                 match &net_role {
                     netcode::NetRole::SinglePlayer => {}
@@ -485,6 +463,113 @@ impl Session {
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
         })
+    }
+}
+
+/// Load persisted options and ensure a durable device identity exists when it
+/// can be saved. Called only by [`Session::build`], never by `PlayerOptions::load`,
+/// so pure loading and sanitization remain deterministic.
+fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
+    let Some(path) = settings_path else {
+        log::warn!(
+            "[Options] no platform config directory; running on in-memory defaults without persistence"
+        );
+        return options::PlayerOptions::default();
+    };
+
+    let (mut player_options, load_status) = options::PlayerOptions::load_with_status(path);
+    let missing_settings = load_status == options::PlayerOptionsLoadStatus::Missing;
+    let can_persist = load_status != options::PlayerOptionsLoadStatus::Unavailable;
+    let mut generated_identity = false;
+
+    if player_options.player_id.is_none() && can_persist {
+        let mut player_id = [0; 16];
+        match getrandom::fill(&mut player_id) {
+            Ok(()) => {
+                player_options.player_id = Some(player_id);
+                generated_identity = true;
+            }
+            Err(err) => log::warn!(
+                "[Options] failed to generate device identity: {err}; connecting anonymously"
+            ),
+        }
+    }
+
+    if missing_settings || generated_identity {
+        match player_options.save(path) {
+            Ok(()) if missing_settings => log::info!(
+                "[Options] no settings file found; wrote defaults to {}",
+                path.display()
+            ),
+            Ok(()) => {}
+            Err(err) => {
+                log::warn!(
+                    "[Options] failed to persist device identity to {}: {err}; connecting anonymously",
+                    path.display()
+                );
+                if generated_identity {
+                    player_options.player_id = None;
+                }
+            }
+        }
+    }
+
+    player_options
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn session_options_generate_and_persist_missing_device_identity() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+
+        let generated = load_player_options(Some(&path));
+        let player_id = generated.player_id.expect("session generated player id");
+        assert!(path.exists(), "generated identity is persisted");
+
+        let reloaded = options::PlayerOptions::load(&path);
+        assert_eq!(reloaded.player_id, Some(player_id));
+    }
+
+    #[test]
+    fn session_options_persist_identity_added_to_existing_settings() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "invert_y = true\n").expect("write existing settings");
+
+        let generated = load_player_options(Some(&path));
+        assert!(generated.invert_y);
+        assert!(generated.player_id.is_some());
+
+        let reloaded = options::PlayerOptions::load(&path);
+        assert_eq!(reloaded.player_id, generated.player_id);
+    }
+
+    #[test]
+    fn session_options_connect_anonymously_without_persistent_settings() {
+        let player_options = load_player_options(None);
+
+        assert_eq!(player_options.player_id, None);
+    }
+
+    #[test]
+    fn session_options_leave_malformed_settings_anonymous_and_untouched() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+        let malformed = "this is not valid toml = = =\n";
+        std::fs::write(&path, malformed).expect("write malformed settings");
+
+        let player_options = load_player_options(Some(&path));
+
+        assert_eq!(player_options.player_id, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read malformed settings"),
+            malformed
+        );
     }
 }
 

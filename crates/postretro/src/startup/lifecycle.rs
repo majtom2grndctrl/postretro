@@ -6,7 +6,9 @@ mod lifecycle_net;
 #[path = "lifecycle_world_cpu.rs"]
 mod lifecycle_world_cpu;
 
-pub(crate) use lifecycle_world_cpu::{install_descriptor_player_health_range, install_world_cpu};
+#[cfg(test)]
+pub(crate) use lifecycle_world_cpu::install_descriptor_player_health_range;
+pub(crate) use lifecycle_world_cpu::install_world_cpu;
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;

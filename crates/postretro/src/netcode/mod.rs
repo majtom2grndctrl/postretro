@@ -22,6 +22,7 @@ mod prediction;
 mod reconcile;
 mod remote_materialize;
 mod replication;
+mod seat;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
@@ -94,6 +95,7 @@ pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
+pub(crate) use seat::SeatTable;
 pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 
@@ -4067,6 +4069,7 @@ mod tests {
             CLIENT_ID,
             &spawn_points,
             &descriptors,
+            None,
             None,
         );
 

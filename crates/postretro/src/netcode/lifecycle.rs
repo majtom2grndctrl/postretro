@@ -9,7 +9,7 @@ use postretro_foundation::NavAgentParams;
 use postretro_net::replication::ServerReplication;
 use postretro_net::wire::NetworkId;
 
-use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn;
+use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_health;
 use crate::scripting::map_entity::MapEntity;
 
 use super::{NetworkIdAllocator, ReplicableSet};
@@ -123,6 +123,7 @@ pub(crate) enum SlotPawnSource<'a> {
         placement: &'a MapEntity,
         descriptors: &'a [EntityTypeDescriptor],
         agent_params: Option<NavAgentParams>,
+        carried_health: Option<f32>,
     },
 }
 
@@ -174,9 +175,15 @@ pub(crate) fn on_slot_accepted(
             placement,
             descriptors,
             agent_params,
+            carried_health,
         } => {
-            let Some(id) = spawn_net_slot_pawn(placement, descriptors, registry, agent_params)
-            else {
+            let Some(id) = spawn_net_slot_pawn_with_carried_health(
+                placement,
+                descriptors,
+                registry,
+                agent_params,
+                carried_health,
+            ) else {
                 log::warn!(
                     "[Net] slot {client_id} accepted but descriptor spawn failed; slot left unmapped"
                 );
@@ -674,6 +681,7 @@ mod tests {
                 placement: &placement,
                 descriptors: &descriptors,
                 agent_params: None,
+                carried_health: None,
             },
         )
         .expect("descriptor accept spawns a pawn from the synthetic placement");
@@ -771,6 +779,7 @@ mod tests {
             CLIENT_A,
             &spawn_points,
             &descriptors,
+            None,
             None,
         );
 
@@ -901,6 +910,7 @@ mod tests {
             &mut pending_hit_declarations,
             &mut weaponless_fire_logged,
             &mut last_sent_tuning,
+            None,
             &[postretro_net::slots::SlotEvent::Demoted {
                 client_id: CLIENT_A,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
@@ -950,6 +960,7 @@ mod tests {
             &spawn_points,
             &descriptors,
             None,
+            None,
         );
         let replacement = slot_pawns
             .pawn_for(CLIENT_A)
@@ -993,6 +1004,7 @@ mod tests {
                 placement: &synthetic_placement(),
                 descriptors: &descriptors,
                 agent_params: None,
+                carried_health: None,
             },
         )
         .expect("descriptor slot materializes");
@@ -1059,6 +1071,7 @@ mod tests {
             &spawn_points,
             &descriptors,
             None,
+            None,
         );
         let old_pawn = slot_pawns.pawn_for(CLIENT_A).expect("first pawn");
         let old_weapon = crate::netcode::active_wieldable_for_pawn(&registry, old_pawn)
@@ -1117,6 +1130,7 @@ mod tests {
             CLIENT_A,
             &spawn_points,
             &descriptors,
+            None,
             None,
         );
 

@@ -241,6 +241,7 @@ pub(crate) fn host_handle_accept_descriptor(
     spawn_points: &[crate::scripting::map_entity::MapEntity],
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
+    carried_health: Option<f32>,
 ) -> Option<EntityId> {
     cleanup_stale_slot_replacement(
         registry,
@@ -275,6 +276,7 @@ pub(crate) fn host_handle_accept_descriptor(
             placement,
             descriptors,
             agent_params,
+            carried_health,
         },
     );
 
@@ -385,6 +387,7 @@ pub(crate) fn host_handle_lifecycle(
     pending_hit_declarations: &mut PendingHitDeclarations,
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     last_sent_tuning: &mut HashMap<u64, TuningPayload>,
+    mut seat_table: Option<&mut SeatTable>,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
@@ -392,6 +395,9 @@ pub(crate) fn host_handle_lifecycle(
         match event {
             SlotEvent::Closed { client_id, .. } | SlotEvent::Demoted { client_id, .. } => {
                 let previous_pawn = slot_pawns.pawn_for(*client_id);
+                if let (Some(seats), Some(pawn)) = (seat_table.as_deref_mut(), previous_pawn) {
+                    seats.harvest_pawn(registry, pawn);
+                }
                 if let Some(pawn) = previous_pawn {
                     pending_hit_declarations.remove_pawn_shots(allocator, pawn);
                 }
@@ -561,6 +567,7 @@ mod tests {
                 &mut pending_hit_declarations,
                 &mut weaponless_fire_logged,
                 &mut last_sent_tuning,
+                None,
                 std::slice::from_ref(event),
             );
             if let SlotEvent::Participating { client_id } = event {
@@ -583,6 +590,86 @@ mod tests {
         assert!(
             replicable.iter().next().is_none(),
             "demotion removes the just-spawned pawn from replication"
+        );
+    }
+
+    #[test]
+    fn lifecycle_demotion_harvests_bound_pawn_health_before_despawn() {
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_foundation::Seat;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        const CLIENT_ID: u64 = 44;
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        let mut state_slots = state_slots::HostStateReplication::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut command_queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let mut last_sent_tuning = HashMap::new();
+        let mut seats = SeatTable::from_test_session_id([5; 16]);
+        let seat = seats
+            .mint_admitted(CLIENT_ID, None, false)
+            .expect("seat namespace has room");
+
+        host_handle_accept(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            CLIENT_ID,
+        );
+        let pawn = slot_pawns
+            .pawn_for(CLIENT_ID)
+            .expect("accepted pawn exists");
+        let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+        health.current = 31.0;
+        registry.set_component(pawn, health).unwrap();
+        seats.bind_pawn(seat, pawn);
+
+        host_handle_lifecycle(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &mut state_slots,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            &mut last_sent_tuning,
+            Some(&mut seats),
+            &[postretro_net::slots::SlotEvent::Demoted {
+                client_id: CLIENT_ID,
+                cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
+            }],
+        );
+
+        assert!(!registry.exists(pawn), "demotion despawns the remote pawn");
+        let carried_health = seats
+            .carried_health(seat)
+            .expect("harvest precedes the pawn despawn");
+        assert!(
+            (carried_health - 31.0).abs() <= 1.0e-6,
+            "expected carried health 31.0, got {carried_health}"
+        );
+        assert_ne!(
+            seat,
+            Seat(0),
+            "remote admission never aliases the local seat"
         );
     }
 }

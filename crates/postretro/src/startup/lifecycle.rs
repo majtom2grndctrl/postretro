@@ -807,6 +807,10 @@ impl App {
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
             suppress_ai_enemies: suppress,
             suppress_boot_pawn: suppress,
+            local_carried_health: session
+                .seat_table
+                .as_ref()
+                .and_then(|seats| seats.carried_health(postretro_foundation::Seat(0))),
         };
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
@@ -830,6 +834,17 @@ impl App {
         // has already built both CPU tables; resolve only this changed pawn through
         // the standard socket-binding path.
         let local_pawn = script_ctx.registry.borrow().local_player_pawn();
+        if let Some(pawn) = local_pawn {
+            if let Some(seats) = self
+                .session
+                .as_mut()
+                .expect("session installed before local seat binding")
+                .seat_table
+                .as_mut()
+            {
+                seats.bind_pawn(postretro_foundation::Seat(0), pawn);
+            }
+        }
         let descriptors = script_ctx.data_registry.borrow().entities.clone();
         if let Some(pawn) = local_pawn {
             let session = self
@@ -1306,6 +1321,9 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// host, headless).
     pub(crate) suppress_ai_enemies: bool,
     pub(crate) suppress_boot_pawn: bool,
+    /// Seat-zero health, resolved by the caller before descriptor spawn. The
+    /// world installer remains seat-table agnostic.
+    pub(crate) local_carried_health: Option<f32>,
 }
 
 /// Connected-client trigger-pool install result exposed only to cross-subsystem
@@ -1576,6 +1594,7 @@ mod tests {
                 settings_path: None,
                 frontend: None,
                 net_endpoint: None,
+                seat_table: None,
                 audio: None,
                 #[cfg(feature = "dev-tools")]
                 debug_ui: None,
@@ -2071,6 +2090,7 @@ mod tests {
                 trigger_pool_policy: policy,
                 suppress_ai_enemies,
                 suppress_boot_pawn: suppress_ai_enemies,
+                local_carried_health: None,
             };
             install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
                 crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
@@ -3626,6 +3646,7 @@ mod tests {
                 trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
                 suppress_ai_enemies: false,
                 suppress_boot_pawn: false,
+                local_carried_health: None,
             };
             // No-op mesh hook: headless-shaped, no renderer to upload models.
             let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {

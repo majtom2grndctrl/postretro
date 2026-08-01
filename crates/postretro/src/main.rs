@@ -1493,6 +1493,12 @@ impl ApplicationHandler for App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
+        if let Some(session) = self.session.as_mut() {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            if let Some(seats) = session.seat_table.as_mut() {
+                seats.harvest_bound_pawns(&registry);
+            }
+        }
         self.clear_net_level_parity();
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
@@ -3895,7 +3901,9 @@ impl App {
             let Some(session) = self.session.as_mut() else {
                 return Some(poll);
             };
+            let mut seat_table = session.seat_table.as_mut();
             let Some(netcode::NetEndpoint::Host {
+                server,
                 allocator,
                 replicable,
                 replication,
@@ -3914,6 +3922,33 @@ impl App {
                 return Some(poll);
             };
             let mut registry = script_ctx.registry.borrow_mut();
+            for client_id in &host_poll.disconnects {
+                if let Some(seats) = seat_table.as_deref_mut() {
+                    seats.unbind_client(*client_id);
+                }
+            }
+            for outcome in &host_poll.handshakes {
+                let postretro_net::transport::HandshakeOutcome::Admitted { client_id } = outcome
+                else {
+                    continue;
+                };
+                if server.is_closed(*client_id) {
+                    continue;
+                }
+                let claim = server.connect_claim(*client_id).cloned();
+                let Some(seats) = seat_table.as_deref_mut() else {
+                    log::warn!("[Net] admitted client {client_id} has no host seat table");
+                    continue;
+                };
+                if seats
+                    .mint_admitted(*client_id, claim, server.is_closed(*client_id))
+                    .is_none()
+                {
+                    log::warn!(
+                        "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
+                    );
+                }
+            }
             netcode::host_handle_lifecycle(
                 &mut registry,
                 allocator,
@@ -3928,6 +3963,7 @@ impl App {
                 pending_hit_declarations,
                 weaponless_fire_logged,
                 last_sent_tuning,
+                seat_table.as_deref_mut(),
                 &host_poll.lifecycle,
             );
         }
@@ -5074,6 +5110,7 @@ impl App {
         };
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
+        let mut seat_table = session.seat_table.as_mut();
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -5109,14 +5146,47 @@ impl App {
                         // participation state: entry registers/spawns, while either exit
                         // cleans up. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
-                        if !poll.handshakes.is_empty()
+                        if !poll.disconnects.is_empty()
+                            || !poll.handshakes.is_empty()
                             || !poll.lifecycle.is_empty()
                             || !poll.switch_declarations.is_empty()
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
+                            // A transport disconnect ends the short-lived client-id
+                            // binding before the same poll's admission outcomes are
+                            // considered. A closed admitted slot therefore cannot mint
+                            // a durable seat from historical control traffic.
+                            for client_id in &poll.disconnects {
+                                if let Some(seats) = seat_table.as_deref_mut() {
+                                    seats.unbind_client(*client_id);
+                                }
+                            }
                             for outcome in &poll.handshakes {
                                 match outcome {
                                     HandshakeOutcome::Admitted { client_id } => {
+                                        if server.is_closed(*client_id) {
+                                            continue;
+                                        }
+                                        let claim = server.connect_claim(*client_id).cloned();
+                                        let Some(seats) = seat_table.as_deref_mut() else {
+                                            log::warn!(
+                                                "[Net] admitted client {client_id} has no host seat table"
+                                            );
+                                            continue;
+                                        };
+                                        if seats
+                                            .mint_admitted(
+                                                *client_id,
+                                                claim,
+                                                server.is_closed(*client_id),
+                                            )
+                                            .is_none()
+                                        {
+                                            log::warn!(
+                                                "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
+                                            );
+                                            continue;
+                                        }
                                         log::info!(
                                             "[Net] client {client_id} admitted; awaiting content parity"
                                         );
@@ -5149,6 +5219,7 @@ impl App {
                                     pending_hit_declarations,
                                     weaponless_fire_logged,
                                     last_sent_tuning,
+                                    seat_table.as_deref_mut(),
                                     std::slice::from_ref(event),
                                 );
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
@@ -5162,6 +5233,18 @@ impl App {
                                 if !server.is_current_participation_entry(event) {
                                     continue;
                                 }
+                                let Some(seat) = seat_table
+                                    .as_deref()
+                                    .and_then(|seats| seats.seat_for_client(*client_id))
+                                else {
+                                    log::warn!(
+                                        "[Net] participating client {client_id} has no admitted seat; skipping pawn spawn"
+                                    );
+                                    continue;
+                                };
+                                let carried_health = seat_table
+                                    .as_deref()
+                                    .and_then(|seats| seats.carried_health(seat));
                                 replication.register_client(*client_id);
                                 state_slots.register_client(*client_id);
                                 let pawn = if host_spawn_points.is_empty() {
@@ -5189,9 +5272,13 @@ impl App {
                                         &host_spawn_points,
                                         &net_descriptors,
                                         host_agent_params,
+                                        carried_health,
                                     )
                                 };
                                 if let Some(pawn) = pawn {
+                                    if let Some(seats) = seat_table.as_deref_mut() {
+                                        seats.bind_pawn(seat, pawn);
+                                    }
                                     resolve_accepted_host_pawn_presentation(
                                         &mut registry,
                                         mesh_clip_tables,

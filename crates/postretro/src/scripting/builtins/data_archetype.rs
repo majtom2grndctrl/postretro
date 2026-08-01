@@ -809,6 +809,25 @@ pub(crate) fn spawn_from_player_starts(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> PlayerSpawnResult {
+    spawn_from_player_starts_with_carried_health(
+        spawn_points,
+        descriptors,
+        registry,
+        agent_params,
+        None,
+    )
+}
+
+/// Player-start materialization with an optional carried health value for the
+/// first local movement pawn. The caller owns seat lookup; this descriptor
+/// layer deliberately receives only the already-resolved scalar.
+pub(crate) fn spawn_from_player_starts_with_carried_health(
+    spawn_points: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    agent_params: Option<NavAgentParams>,
+    carried_health: Option<f32>,
+) -> PlayerSpawnResult {
     let mut spawned = 0usize;
 
     for entity in spawn_points {
@@ -841,13 +860,20 @@ pub(crate) fn spawn_from_player_starts(
             continue;
         };
 
-        if registry.local_player_pawn().is_none()
+        let is_first_local_pawn = registry.local_player_pawn().is_none()
             && matches!(
                 registry.has_component_kind(id, ComponentKind::PlayerMovement),
                 Ok(true)
-            )
-        {
+            );
+        if is_first_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
+            if let Some(carried_health) = carried_health {
+                postretro_entities::components::health::set_health_absolute(
+                    registry,
+                    id,
+                    carried_health,
+                );
+            }
         }
 
         // Forward the per-placement KVP bag (sans `entity_class`, which is a
@@ -879,6 +905,7 @@ mod tests {
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
         PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor,
     };
+    use std::collections::HashMap;
 
     // Shared descriptor/placement builders live in the sibling fixture module so
     // the netcode agreement test can reuse them without a private-helper reach
@@ -2103,6 +2130,58 @@ mod tests {
         e.origin = origin;
         e.angles = angles;
         e
+    }
+
+    #[test]
+    fn carried_health_restores_only_the_first_local_player_start() {
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let mut player = player_with_movement("player");
+        player.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+        let mut registry = EntityRegistry::new();
+        let starts = [
+            spawn_point(&[]),
+            spawn_point_at(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, &[]),
+        ];
+
+        spawn_from_player_starts_with_carried_health(
+            &starts,
+            &[player],
+            &mut registry,
+            None,
+            Some(36.0),
+        );
+
+        let local = registry
+            .local_player_pawn()
+            .expect("first movement pawn is local");
+        let local_health = registry
+            .get_component::<HealthComponent>(local)
+            .expect("descriptor materialized health")
+            .current;
+        assert!(
+            (local_health - 36.0).abs() <= 1.0e-6,
+            "expected carried health 36.0, got {local_health}"
+        );
+        let other_health: Vec<f32> = registry
+            .iter_with_kind(ComponentKind::Health)
+            .filter_map(|(id, _)| (id != local).then_some(id))
+            .map(|id| {
+                registry
+                    .get_component::<HealthComponent>(id)
+                    .unwrap()
+                    .current
+            })
+            .collect();
+        assert_eq!(other_health.len(), 1);
+        assert!(
+            (other_health[0] - 100.0).abs() <= 1.0e-6,
+            "the second player start must retain descriptor health"
+        );
     }
 
     fn live_count(reg: &EntityRegistry) -> usize {

@@ -187,6 +187,10 @@ pub(crate) struct Session {
     /// `crate::netcode` owns that seam. See: context/lib/networking.md.
     pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
 
+    /// Durable local/listen-host player seats. Connected clients intentionally
+    /// own no table: the host is the authority that mints session identities.
+    pub(crate) seat_table: Option<netcode::SeatTable>,
+
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
     /// See: context/lib/audio.md §1.
@@ -415,6 +419,13 @@ impl Session {
                 None
             }
         };
+        let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
+            None
+        } else {
+            Some(netcode::SeatTable::new().map_err(|err| {
+                anyhow::anyhow!("failed to mint this run's session identity: {err}")
+            })?)
+        };
         scripting
             .spawn_context
             .set_runtime_spawn_authority(!matches!(
@@ -457,6 +468,7 @@ impl Session {
             // frontend until then.
             frontend: None,
             net_endpoint,
+            seat_table,
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
             // available, reset on suspend. See the field doc.

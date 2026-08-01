@@ -171,12 +171,21 @@ impl App {
                 .data_registry
                 .borrow_mut()
                 .clear();
+            {
+                let registry = session.scripting.script_ctx.registry.borrow();
+                if let Some(seats) = session.seat_table.as_mut() {
+                    seats.harvest_bound_pawns(&registry);
+                }
+            }
             session
                 .scripting
                 .script_ctx
                 .registry
                 .borrow_mut()
                 .clear_for_level_unload();
+            if let Some(seats) = session.seat_table.as_mut() {
+                seats.clear_pawn_bindings_for_level_unload();
+            }
             session.presentation_cells.clear();
             session
                 .modal_stack

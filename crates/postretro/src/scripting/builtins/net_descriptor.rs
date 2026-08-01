@@ -45,6 +45,19 @@ pub(crate) fn spawn_net_slot_pawn(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
+    spawn_net_slot_pawn_with_carried_health(placement, descriptors, registry, agent_params, None)
+}
+
+/// Network-slot materialization with an already-resolved carried health value.
+/// Seat ownership remains with the host lifecycle; this helper knows only the
+/// optional scalar to restore after descriptor health materialization.
+pub(crate) fn spawn_net_slot_pawn_with_carried_health(
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    agent_params: Option<NavAgentParams>,
+    carried_health: Option<f32>,
+) -> Option<EntityId> {
     let entity_class = placement
         .key_values
         .get("entity_class")
@@ -76,6 +89,10 @@ pub(crate) fn spawn_net_slot_pawn(
         );
         return None;
     };
+
+    if let Some(carried_health) = carried_health {
+        postretro_entities::components::health::set_health_absolute(registry, id, carried_health);
+    }
 
     // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
     // `getEntityProperty` works uniformly for net-slot pawns, matching the
@@ -772,6 +789,38 @@ mod tests {
         e.origin = origin;
         e.angles = angles;
         e
+    }
+
+    #[test]
+    fn net_slot_pawn_restores_optional_carried_health_after_descriptor_spawn() {
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let mut player = player_with_movement("player");
+        player.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+        let mut registry = EntityRegistry::new();
+
+        let pawn = spawn_net_slot_pawn_with_carried_health(
+            &spawn_point(&[]),
+            &[player],
+            &mut registry,
+            None,
+            Some(29.0),
+        )
+        .expect("descriptor-backed net slot pawn spawns");
+
+        let health = registry
+            .get_component::<HealthComponent>(pawn)
+            .expect("descriptor materialized health")
+            .current;
+        assert!(
+            (health - 29.0).abs() <= 1.0e-6,
+            "expected carried health 29.0, got {health}"
+        );
     }
 
     fn tuning_for_slot(

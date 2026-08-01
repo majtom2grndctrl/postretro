@@ -1,7 +1,7 @@
 // Session-lifetime player seats and their carried cross-level state.
 // See: context/lib/networking.md §Slot lifecycle
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use postretro_entities::components::health::HealthComponent;
@@ -10,7 +10,7 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::Seat;
-use postretro_net::wire::{ConnectClaim, SessionId};
+use postretro_net::wire::{ConnectClaim, RosterEntry, SessionId};
 
 /// State retained by a session seat when its current pawn leaves a level.
 ///
@@ -85,7 +85,6 @@ pub(crate) struct HoldDeadline(pub(crate) Duration);
 /// may disappear and later be replaced.
 #[derive(Debug)]
 pub(crate) struct SeatTable {
-    #[allow(dead_code)] // Task 2 mints it; session-control publication follows in a later task.
     session_id: SessionId,
     next_seat: u32,
     carried: HashMap<Seat, Option<CarriedState>>,
@@ -94,8 +93,10 @@ pub(crate) struct SeatTable {
     connect_claims: HashMap<Seat, ConnectClaim>,
     #[allow(dead_code)] // The deadline map is structural only until rejoin holds ship.
     hold_deadlines: HashMap<Seat, HoldDeadline>,
-    #[allow(dead_code)] // Placement carry lands with the roster work, not this health slice.
     next_placement_cursor: usize,
+    /// Coalesces all roster-affecting mutations in one transport poll into one
+    /// publication after its lifecycle batch completes.
+    roster_dirty: bool,
 }
 
 impl SeatTable {
@@ -119,13 +120,31 @@ impl SeatTable {
             connect_claims: HashMap::new(),
             hold_deadlines: HashMap::new(),
             next_placement_cursor: 0,
+            roster_dirty: true,
         }
     }
 
     #[must_use]
-    #[allow(dead_code)] // Read by the future session-control publication seam.
     pub(crate) fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    /// Record the host player's durable assertion on seat zero when one is
+    /// available. Hosts without a persistable player id remain anonymous.
+    pub(crate) fn set_local_claim(&mut self, claim: Option<ConnectClaim>) {
+        let previous = self.connect_claims.get(&Seat(0));
+        if previous == claim.as_ref() {
+            return;
+        }
+        match claim {
+            Some(claim) => {
+                self.connect_claims.insert(Seat(0), claim);
+            }
+            None => {
+                self.connect_claims.remove(&Seat(0));
+            }
+        }
+        self.roster_dirty = true;
     }
 
     /// Mint a non-reusable remote seat at the admission edge.
@@ -151,6 +170,7 @@ impl SeatTable {
         if let Some(claim) = claim {
             self.connect_claims.insert(seat, claim);
         }
+        self.roster_dirty = true;
         Some(seat)
     }
 
@@ -173,7 +193,36 @@ impl SeatTable {
     pub(crate) fn unbind_client(&mut self, client_id: u64) -> Option<Seat> {
         let seat = self.seat_for_client(client_id)?;
         self.client_bindings.remove(&seat);
+        self.roster_dirty = true;
         Some(seat)
+    }
+
+    /// Whether this poll needs one consolidated roster publication.
+    pub(crate) fn take_roster_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.roster_dirty)
+    }
+
+    /// Build a deterministic seat-keyed roster snapshot from the table's own
+    /// lifecycle bindings and immutable claims. Seat contents never leave this
+    /// table: only the id and the current connection fact are projected.
+    #[must_use]
+    pub(crate) fn roster_entries(&self) -> Vec<RosterEntry> {
+        let mut seats: Vec<Seat> = self.carried.keys().copied().collect();
+        seats.sort_unstable_by_key(|seat| seat.0);
+        seats
+            .into_iter()
+            .map(|seat| {
+                let claim = self.connect_claims.get(&seat);
+                RosterEntry {
+                    seat: seat.0,
+                    player_id: claim.map(|claim| claim.player_id),
+                    display_name: claim
+                        .map(|claim| claim.display_name.clone())
+                        .unwrap_or_default(),
+                    connected: seat == Seat(0) || self.client_bindings.contains_key(&seat),
+                }
+            })
+            .collect()
     }
 
     /// Associate a newly spawned pawn with its durable seat.
@@ -307,6 +356,76 @@ impl SeatTable {
             }
         }
         self.pawn_bindings.clear();
+    }
+
+    /// Clear the only level-scoped carried member while preserving the allocation
+    /// cursor. A later level's first join must not reset to placement zero.
+    pub(crate) fn clear_placements_for_level_unload(&mut self) {
+        for carried in self.carried.values_mut().flatten() {
+            carried.placement = None;
+        }
+    }
+
+    /// Assign or recall a placement for `seat` without allowing a held seat or a
+    /// currently-live pawn to be overlapped whenever a free index exists.
+    ///
+    /// `live_placements` deliberately comes from the spawning path rather than
+    /// from seat bindings alone: map installation may leave live player pawns
+    /// that are not currently represented by a remote connection binding.
+    pub(crate) fn assign_placement(
+        &mut self,
+        seat: Seat,
+        placement_count: usize,
+        live_placements: impl IntoIterator<Item = usize>,
+    ) -> Option<usize> {
+        if placement_count == 0 || !self.carried.contains_key(&seat) {
+            return None;
+        }
+
+        if let Some(placement) = self
+            .carried
+            .get(&seat)
+            .and_then(Option::as_ref)
+            .and_then(|state| state.placement)
+            .filter(|placement| *placement < placement_count)
+        {
+            return Some(placement);
+        }
+
+        let mut occupied: HashSet<usize> = live_placements
+            .into_iter()
+            .filter(|placement| *placement < placement_count)
+            .collect();
+        occupied.extend(
+            self.carried
+                .iter()
+                .filter(|(other, _)| **other != seat && !self.client_bindings.contains_key(other))
+                .filter_map(|(_, carried)| {
+                    carried
+                        .as_ref()
+                        .and_then(|state| state.placement)
+                        .filter(|placement| *placement < placement_count)
+                }),
+        );
+
+        let fallback = self.next_placement_cursor % placement_count;
+        let placement = (0..placement_count)
+            .map(|offset| (self.next_placement_cursor + offset) % placement_count)
+            .find(|candidate| !occupied.contains(candidate))
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "[Net] every player_spawn placement is occupied; reusing index {fallback}"
+                );
+                fallback
+            });
+        self.next_placement_cursor = placement.wrapping_add(1);
+        let state = self
+            .carried
+            .get_mut(&seat)
+            .expect("seat presence checked before placement assignment")
+            .get_or_insert_with(CarriedState::default);
+        state.placement = Some(placement);
+        Some(placement)
     }
 
     #[cfg(test)]
@@ -576,5 +695,90 @@ mod tests {
         assert_eq!(seat, None);
         assert_eq!(seats.seat_for_client(23), None);
         assert_eq!(seats.carried_state_for_test(Seat(1)), None);
+    }
+
+    #[test]
+    fn roster_tracks_claims_and_connection_lifecycle_by_seat() {
+        let mut seats = SeatTable::from_test_session_id([6; 16]);
+        seats.set_local_claim(Some(ConnectClaim {
+            player_id: postretro_net::wire::PlayerClaimId([0x10; 16]),
+            display_name: "Host".to_owned(),
+        }));
+        let remote = seats
+            .mint_admitted(
+                44,
+                Some(ConnectClaim {
+                    player_id: postretro_net::wire::PlayerClaimId([0x20; 16]),
+                    display_name: "Runner".to_owned(),
+                }),
+                false,
+            )
+            .expect("seat namespace has room");
+
+        assert!(seats.take_roster_dirty());
+        assert!(!seats.take_roster_dirty(), "a poll publishes at most once");
+        assert_eq!(
+            seats.roster_entries(),
+            vec![
+                RosterEntry {
+                    seat: 0,
+                    player_id: Some(postretro_net::wire::PlayerClaimId([0x10; 16])),
+                    display_name: "Host".to_owned(),
+                    connected: true,
+                },
+                RosterEntry {
+                    seat: remote.0,
+                    player_id: Some(postretro_net::wire::PlayerClaimId([0x20; 16])),
+                    display_name: "Runner".to_owned(),
+                    connected: true,
+                },
+            ]
+        );
+
+        assert_eq!(seats.unbind_client(44), Some(remote));
+        assert!(seats.take_roster_dirty());
+        assert!(
+            !seats.roster_entries()[1].connected,
+            "a dropped seat remains rostered but is no longer connected"
+        );
+    }
+
+    #[test]
+    fn placement_assignment_persists_by_seat_and_skips_live_and_held_occupants() {
+        let mut seats = SeatTable::from_test_session_id([12; 16]);
+        let first = seats
+            .mint_admitted(41, None, false)
+            .expect("first remote seat");
+        let second = seats
+            .mint_admitted(42, None, false)
+            .expect("second remote seat");
+        let third = seats
+            .mint_admitted(43, None, false)
+            .expect("third remote seat");
+
+        assert_eq!(seats.assign_placement(first, 3, []), Some(0));
+        assert_eq!(
+            seats.assign_placement(second, 3, [0]),
+            Some(1),
+            "a live pawn at index zero keeps a new seat away from it"
+        );
+        assert_eq!(seats.unbind_client(first), Some(first));
+        assert_eq!(
+            seats.assign_placement(third, 3, [1]),
+            Some(2),
+            "a held seat reserves its old placement even with no live pawn"
+        );
+        assert_eq!(
+            seats.assign_placement(first, 3, []),
+            Some(0),
+            "a fresh connection can recover the placement through its durable seat"
+        );
+
+        seats.clear_placements_for_level_unload();
+        assert_eq!(
+            seats.assign_placement(first, 3, [0, 1]),
+            Some(2),
+            "level unload clears assignments but preserves the cursor and scans occupancy"
+        );
     }
 }

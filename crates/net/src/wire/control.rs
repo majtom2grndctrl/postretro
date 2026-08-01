@@ -322,6 +322,43 @@ pub enum ServerControlMessage {
     /// The host accepted a client switch declaration. Explicit acknowledgements
     /// bound the client's rollback chain even when every declaration succeeds.
     SwitchAccepted(ServerSwitchAccepted),
+    /// Session-lifetime player roster. This stays deliberately registry-blind:
+    /// seats are bare wire integers and carried seat contents remain host-local.
+    ///
+    /// New variants must be appended. bitcode encodes enum tags positionally, so
+    /// inserting this before an existing variant would renumber shipped messages.
+    SessionRoster(SessionRosterMessage),
+}
+
+/// One seat's session-visible identity and connection state.
+///
+/// `player_id` is absent for an anonymous seat. `display_name` is client-asserted
+/// claim data, never a lookup key. `connected` is a current lifecycle fact; it
+/// does not imply participation, since admitted peers receive the roster too.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RosterEntry {
+    /// Host-minted seat, carried on the wire as its bare `u16` value.
+    pub seat: u16,
+    /// Client-asserted durable identity, if the connection supplied one.
+    pub player_id: Option<PlayerClaimId>,
+    /// Client-asserted display label. It is not an identity or protocol key.
+    pub display_name: String,
+    /// Whether the host currently has a live connection bound to this seat.
+    pub connected: bool,
+}
+
+/// Per-recipient session roster publication.
+///
+/// The session id accompanies every publication so an arriving client can
+/// distinguish a new hosted run from an update to the prior run. `your_seat` is
+/// encoded separately for each recipient; reusing one encoded frame would leak a
+/// different recipient's own-seat identity.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SessionRosterMessage {
+    pub session_id: SessionId,
+    /// `None` means this admitted recipient could not be assigned a seat.
+    pub your_seat: Option<u16>,
+    pub entries: Vec<RosterEntry>,
 }
 
 /// Reliable host -> client acknowledgement for one accepted inventory slot.

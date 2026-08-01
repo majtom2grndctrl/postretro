@@ -6,7 +6,11 @@ use crate::wire::{ProtocolVersion, WireError};
 pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
 /// E15's tagged-control vocabulary.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C35; // "PRL5"
+///
+/// `SessionRoster` extends the server Control message vocabulary, so this app
+/// protocol id changes even though its appended enum tag leaves the measured
+/// bitcode layout of the five shipped variants intact.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C36; // "PRL6"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E16 switching deliberately keeps this value: its added input field and Control
 /// variants have no deployed-peer compatibility obligation, and the Task 5 tuning
@@ -52,6 +56,20 @@ pub fn malformed_version(_err: &WireError) -> ProtocolVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcode::{Decode, Encode};
+
+    /// The five shipped variants before [`ServerControlMessage::SessionRoster`]
+    /// was appended. Keeping this local historical mirror lets the test measure
+    /// bitcode's enum-tag layout rather than assuming that a sixth variant leaves
+    /// it unchanged.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreRosterServerControlMessage {
+        Divergence(DivergenceReason),
+        Tuning(Vec<u8>),
+        Relevel(String),
+        SwitchRefused(crate::wire::ServerSwitchRefused),
+        SwitchAccepted(crate::wire::ServerSwitchAccepted),
+    }
 
     #[test]
     fn validate_handshake_accepts_only_matching_protocol_constants() {
@@ -60,30 +78,109 @@ mod tests {
     }
 
     #[test]
-    fn participation_epoch_wire_version_refuses_previous_peer_on_both_gates() {
-        const PRE_PARTICIPATION_EPOCH_PROTOCOL_ID: u32 = 0x_5052_4C35;
-        const PRE_PARTICIPATION_EPOCH_WIRE_VERSION: u32 = 14;
+    fn session_roster_app_protocol_refuses_previous_control_vocabulary() {
+        const PRE_SESSION_ROSTER_PROTOCOL_ID: u32 = 0x_5052_4C35;
+        const PRE_SESSION_ROSTER_WIRE_VERSION: u32 = 15;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C35,
-            "tagged E15 control requires PRL5"
+            PROTOCOL_ID, 0x_5052_4C36,
+            "session roster requires application protocol PRL6"
         );
         assert_eq!(
             WIRE_VERSION, 15,
-            "participation-framed traffic requires wire version 15"
+            "the measured appended control tag preserves wire version 15"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PRE_PARTICIPATION_EPOCH_PROTOCOL_ID as u64) << 32)
-                | u64::from(PRE_PARTICIPATION_EPOCH_WIRE_VERSION),
+            ((PRE_SESSION_ROSTER_PROTOCOL_ID as u64) << 32)
+                | u64::from(PRE_SESSION_ROSTER_WIRE_VERSION),
             "gate 1 rejects the previous layout before app decode"
         );
         let previous = ProtocolVersion {
-            app_protocol_id: PRE_PARTICIPATION_EPOCH_PROTOCOL_ID,
-            wire_version: PRE_PARTICIPATION_EPOCH_WIRE_VERSION,
+            app_protocol_id: PRE_SESSION_ROSTER_PROTOCOL_ID,
+            wire_version: PRE_SESSION_ROSTER_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),
             Err(ClosingCause::Protocol { .. })
         ));
+    }
+
+    #[test]
+    fn session_roster_append_preserves_shipped_control_encodings() {
+        use crate::wire::{ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused};
+
+        let divergence = DivergenceReason::Closing(ClosingCause::Protocol {
+            expected: ProtocolVersion {
+                app_protocol_id: 0x5052_4c35,
+                wire_version: 15,
+            },
+            received: ProtocolVersion {
+                app_protocol_id: 0x5052_4c34,
+                wire_version: 14,
+            },
+        });
+        let cases = [
+            (
+                PreRosterServerControlMessage::Divergence(divergence.clone()),
+                ServerControlMessage::Divergence(divergence),
+            ),
+            (
+                PreRosterServerControlMessage::Tuning(vec![0, 1, 2, 3]),
+                ServerControlMessage::Tuning(vec![0, 1, 2, 3]),
+            ),
+            (
+                PreRosterServerControlMessage::Relevel("campaign-test".to_owned()),
+                ServerControlMessage::Relevel("campaign-test".to_owned()),
+            ),
+            (
+                PreRosterServerControlMessage::SwitchRefused(ServerSwitchRefused {
+                    declaration_id: 17,
+                    slot: 3,
+                }),
+                ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+                    declaration_id: 17,
+                    slot: 3,
+                }),
+            ),
+            (
+                PreRosterServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
+                    declaration_id: 18,
+                    slot: 4,
+                }),
+                ServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
+                    declaration_id: 18,
+                    slot: 4,
+                }),
+            ),
+        ];
+
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending SessionRoster changed a shipped control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    #[test]
+    fn roster_entry_fields_stay_rebuildable_from_claim_data() {
+        let entry = crate::wire::RosterEntry {
+            seat: 4,
+            player_id: Some(crate::wire::PlayerClaimId([0x4d; 16])),
+            display_name: "Neon Runner".to_owned(),
+            connected: true,
+        };
+
+        // Exhaustive destructuring is the drift guard for AC-ROSTER-2. A future
+        // field cannot silently become an irrecoverable host-minted roster fact.
+        let crate::wire::RosterEntry {
+            seat,
+            player_id,
+            display_name,
+            connected,
+        } = entry;
+        let _host_rederived = (seat, connected);
+        let _client_asserted = (player_id, display_name);
     }
 }

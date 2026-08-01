@@ -148,9 +148,13 @@ Identity is declared, not proven — tamper resistance is a non-goal, and neithe
 
 ## Session-state ledger
 
-State that survives a level change, enumerated rather than accreted. One entry today: **the connection** — its id, its lifecycle stage, and its last parity declaration.
+State that survives a level change, enumerated rather than accreted:
 
-The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch. Later specs add the seat and the roster to this list rather than discovering one.
+- **The connection** — its id, lifecycle stage, and last parity declaration.
+- **The seat** — the host-minted durable player key, its asserted claim when one exists, its carried state, and its level-independent placement-assignment cursor. A seat sits above participation and is never released by a level transition.
+- **The roster** — the host's seat-keyed projection of asserted player id/display name and current connection state. It is rebuilt from seat claims and lifecycle bindings; carried seat contents never cross the wire.
+
+The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch.
 
 Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind.
 

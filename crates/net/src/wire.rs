@@ -30,8 +30,9 @@ mod control;
 pub use control::{
     ClientControlMessage, ClientSwitchDeclaration, ClosingCause, ConnectClaim,
     DISPLAY_NAME_MAX_BYTES, DivergenceReason, HoldingCause, NETCODE_USER_DATA_BYTES,
-    ParityDeclaration, PlayerClaimId, ProtocolVersion, ServerControlMessage, ServerSwitchAccepted,
-    ServerSwitchRefused, SessionId, decode_connect_claim, encode_connect_claim,
+    ParityDeclaration, PlayerClaimId, ProtocolVersion, RosterEntry, ServerControlMessage,
+    ServerSwitchAccepted, ServerSwitchRefused, SessionId, SessionRosterMessage,
+    decode_connect_claim, encode_connect_claim,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 
@@ -1527,6 +1528,18 @@ mod tests {
             ServerSwitchAccepted {
                 declaration_id: 8,
                 slot: 4,
+            }
+        )));
+        assert!(round_trips(&ServerControlMessage::SessionRoster(
+            SessionRosterMessage {
+                session_id: SessionId([0x21; 16]),
+                your_seat: Some(3),
+                entries: vec![RosterEntry {
+                    seat: 3,
+                    player_id: Some(PlayerClaimId([0x42; 16])),
+                    display_name: "Neon Runner".to_owned(),
+                    connected: true,
+                }],
             }
         )));
     }

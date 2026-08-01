@@ -395,12 +395,11 @@ impl Session {
                 netcode::NetRole::SinglePlayer
             }
         };
-        let client_user_data = player_options.player_id.map(|player_id| {
-            encode_connect_claim(&ConnectClaim {
-                player_id: PlayerClaimId(player_id),
-                display_name: String::new(),
-            })
+        let local_claim = player_options.player_id.map(|player_id| ConnectClaim {
+            player_id: PlayerClaimId(player_id),
+            display_name: String::new(),
         });
+        let client_user_data = local_claim.as_ref().map(encode_connect_claim);
         let net_endpoint = match netcode::NetEndpoint::from_role(&net_role, client_user_data) {
             Ok(endpoint) => {
                 match &net_role {
@@ -422,9 +421,11 @@ impl Session {
         let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
             None
         } else {
-            Some(netcode::SeatTable::new().map_err(|err| {
+            let mut seats = netcode::SeatTable::new().map_err(|err| {
                 anyhow::anyhow!("failed to mint this run's session identity: {err}")
-            })?)
+            })?;
+            seats.set_local_claim(local_claim);
+            Some(seats)
         };
         scripting
             .spawn_context

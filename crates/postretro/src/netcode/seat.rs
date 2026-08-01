@@ -583,6 +583,9 @@ pub(crate) fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) {
 }
 
 #[cfg(test)]
+mod roster_harness_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};

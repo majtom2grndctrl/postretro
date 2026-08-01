@@ -35,6 +35,7 @@ use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_state_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
     RATE_MIN, resolve_pending_animation_stamps,
@@ -126,6 +127,8 @@ impl RecordedCommand {
                 active: self.fire_active,
             },
             reload: false,
+            firing_slot: 0,
+            select_slot: None,
             use_pressed: false,
         }
     }
@@ -277,7 +280,15 @@ impl SimHarness {
                 role_ids.push((role, id));
             }
             let enemy = spawn_enemy(&mut registry, Vec3::new(-1.0, 1.0, 0.0));
-            (spawn_weapon(&mut registry), enemy)
+            let weapon = spawn_weapon(&mut registry);
+            let alpha = role_ids
+                .iter()
+                .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
+                .expect("alpha role is always spawned");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry.set_component(alpha, inventory).unwrap();
+            (weapon, enemy)
         };
         let selected_player = role_ids
             .iter()
@@ -945,10 +956,29 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             }),
         )
         .expect("weapon component should attach");
     id
+}
+
+/// Install the local ownership relationship the weapon stage resolves at runtime.
+/// `simulate_tick` no longer uses its retired legacy wieldable argument.
+fn spawn_local_active_weapon(registry: &mut EntityRegistry) -> EntityId {
+    let pawn = spawn_player(registry, Vec3::ZERO);
+    registry
+        .mark_local_player_pawn(pawn)
+        .expect("test pawn can be marked local");
+    let weapon = spawn_weapon(registry);
+    let mut inventory = Inventory::default();
+    inventory.wieldables[0] = Some(weapon);
+    registry
+        .set_component(pawn, inventory)
+        .expect("test pawn inventory should attach");
+    weapon
 }
 
 fn player_descriptor() -> PlayerMovementDescriptor {
@@ -1178,6 +1208,8 @@ fn run_driven_agent_sim_tick(
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     };
     let _ = simulate_tick(
@@ -3122,7 +3154,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
         (
-            spawn_weapon(&mut registry),
+            spawn_local_active_weapon(&mut registry),
             spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0)),
         )
     };
@@ -3147,6 +3179,8 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     };
 
@@ -3194,7 +3228,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
         (
-            spawn_weapon(&mut registry),
+            spawn_local_active_weapon(&mut registry),
             spawn_target(&mut registry, Vec3::new(0.0, 2.0, -45.0)),
         )
     };
@@ -3219,6 +3253,8 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             active: true,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     };
 
@@ -3266,7 +3302,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
-        let weapon = spawn_weapon(&mut registry);
+        let weapon = spawn_local_active_weapon(&mut registry);
         let mut component = registry
             .get_component::<WeaponComponent>(weapon)
             .expect("weapon keeps component")
@@ -3297,6 +3333,8 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             active: true,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     };
 
@@ -3355,7 +3393,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let (weapon, target) = {
         let mut registry = registry.borrow_mut();
         (
-            spawn_weapon(&mut registry),
+            spawn_local_active_weapon(&mut registry),
             spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0)),
         )
     };
@@ -3380,6 +3418,8 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             active: true,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     };
 

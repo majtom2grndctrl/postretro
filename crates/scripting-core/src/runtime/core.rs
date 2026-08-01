@@ -618,7 +618,8 @@ mod tests {
 
     use super::*;
     use crate::data_descriptors::{
-        EntityTypeDescriptor, FireMode, MeshDescriptor, ResolutionMode, WeaponDescriptor,
+        EntityTypeDescriptor, FireMode, InventoryDescriptor, MeshDescriptor, ResolutionMode,
+        WeaponDescriptor,
     };
     use crate::staged_manifest::{StagedManifestBuildConfig, build_staged_manifest};
 
@@ -663,17 +664,22 @@ mod tests {
             third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         }
     }
 
     fn descriptor(
         name: &str,
         mesh: Option<MeshDescriptor>,
-        default_weapon: Option<&str>,
+        inventory_weapon: Option<&str>,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: default_weapon.map(str::to_string),
+            inventory: inventory_weapon.map(|name| InventoryDescriptor {
+                loadout: vec![name.to_string()],
+            }),
             light: None,
             emitter: None,
             movement: None,
@@ -733,8 +739,11 @@ mod tests {
             "the active-level descriptor snapshot keeps its uploaded attachment model"
         );
         assert_eq!(
-            next[0].default_weapon.as_deref(),
-            Some("new_weapon"),
+            next[0]
+                .inventory
+                .as_ref()
+                .map(|inventory| &inventory.loadout),
+            Some(&vec!["new_weapon".to_string()]),
             "unrelated descriptor refreshes remain available"
         );
         let active_weapon = next[0].weapon.as_ref().unwrap();

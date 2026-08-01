@@ -34,6 +34,25 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("SwitchingDescriptor")
+        .doc("Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.")
+        .field(
+            "commitOnDirectSelect",
+            "bool",
+            "Whether a direct slot-select action emits a commit immediately. Input-layer policy only.",
+        )
+        .field(
+            "cycleCommitDwellMs",
+            "f32",
+            "Cycle-selection dwell in milliseconds. Must be finite and >= 0. Input-layer policy only.",
+        )
+        .field(
+            "blockDuringReload",
+            "bool",
+            "Whether a weapon without its own override must finish reload activity before a switch can begin.",
+        )
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
@@ -51,6 +70,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "render?",
             "RenderProfile",
             "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.",
+        )
+        .field(
+            "switching?",
+            "SwitchingDescriptor",
+            "Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.",
         )
         .field(
             "entities?",
@@ -119,7 +143,9 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
 mod tests {
     use super::*;
     use postretro_entities::slot_table::StoreDeclarationSet;
-    use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
+    use postretro_scripting_core::data_descriptors::{
+        ModFontAssets, ModThemeTokens, SwitchingDescriptor,
+    };
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{ModManifestResult, ModRenderProfile};
 
@@ -144,6 +170,7 @@ mod tests {
             id: String::new(),
             version: String::new(),
             render: ModRenderProfile::default(),
+            switching: SwitchingDescriptor::default(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
             theme: ModThemeTokens::default(),
@@ -162,6 +189,7 @@ mod tests {
             "id",
             "version",
             "render",
+            "switching",
             "entities",
             "uiTrees",
             "theme",

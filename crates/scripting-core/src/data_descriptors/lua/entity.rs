@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -36,24 +36,7 @@ pub fn entity_descriptor_from_lua(
     } else {
         None
     };
-    let default_weapon = if table.contains_key("defaultWeapon").map_err(lua_err)? {
-        let raw: LuaValue = table.get("defaultWeapon").map_err(lua_err)?;
-        match raw {
-            LuaValue::Nil => None,
-            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
-            other => {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "'defaultWeapon' must be a string, got {}",
-                        other.type_name()
-                    ),
-                });
-            }
-        }
-    } else {
-        None
-    };
-
+    let mut inventory = None;
     let mut light = None;
     let mut emitter = None;
     let mut movement = None;
@@ -73,6 +56,20 @@ pub fn entity_descriptor_from_lua(
                     });
                 }
             };
+            if components_table
+                .contains_key("inventory")
+                .map_err(lua_err)?
+            {
+                let raw: LuaValue = components_table.get("inventory").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = conv::lua_to_json(raw).map_err(lua_err)?;
+                    inventory = Some(serde_json::from_value(json).map_err(|e| {
+                        DescriptorError::InvalidShape {
+                            reason: format!("`components.inventory` invalid: {e}"),
+                        }
+                    })?);
+                }
+            }
             if components_table.contains_key("mesh").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("mesh").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -194,7 +191,7 @@ pub fn entity_descriptor_from_lua(
 
     let descriptor = EntityTypeDescriptor {
         canonical_name,
-        default_weapon,
+        inventory,
         light,
         emitter,
         movement,

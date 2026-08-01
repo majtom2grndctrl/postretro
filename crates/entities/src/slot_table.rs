@@ -538,6 +538,33 @@ mod tests {
         );
         assert!(table.get("player.ammo").is_some());
         assert!(table.get("player.ammoReserve").is_some());
+        for (name, slot_type, default) in [
+            (
+                "player.weapon.current",
+                SlotType::String,
+                SlotValue::String(String::new()),
+            ),
+            (
+                "player.weapon.pending",
+                SlotType::String,
+                SlotValue::String(String::new()),
+            ),
+            (
+                "player.weapon.switching",
+                SlotType::Boolean,
+                SlotValue::Boolean(false),
+            ),
+        ] {
+            let slot = table
+                .get(name)
+                .expect("local weapon display slot should exist");
+            assert_eq!(slot.schema.slot_type, slot_type);
+            assert_eq!(slot.schema.default, Some(default.clone()));
+            assert_eq!(slot.value, Some(default));
+            assert_eq!(slot.schema.network, ReplicationScope::None);
+            assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+            assert!(slot.schema.readonly);
+        }
     }
 
     #[test]

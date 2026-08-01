@@ -60,7 +60,7 @@ mod enemy_replication_harness_test;
 pub(crate) use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub(crate) use command_queue::{
     HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
-    host_resolve_remote_commands,
+    active_wieldable_for_pawn, host_resolve_remote_commands,
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
@@ -83,7 +83,7 @@ pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
-pub(crate) use tuning_payload::{DefaultWeaponFirePayload, TuningPayload};
+pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -97,6 +97,8 @@ use glam::{Quat, Vec3};
 use parry3d::math::{Point, Vector};
 
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
@@ -109,9 +111,10 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
-    self, ComponentPayload, DivergenceReason, EntityRecord, NetworkId, RawSnapshotMessage,
-    ServerControlMessage, SnapshotMessage, ValidationError, WireError, WireKinematicMoverState,
-    WireMovementState, WirePlayerMovementState, WireTransform,
+    self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord, NetworkId,
+    RawSnapshotMessage, ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused,
+    SnapshotMessage, ValidationError, WireError, WireKinematicMoverState, WireMovementState,
+    WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};
@@ -121,10 +124,10 @@ use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
 use tuning_payload::decode_tuning_payload;
 
-/// Synchronize the host's active-weapon table into third-person presentation
-/// attachments immediately before snapshot production. The table remains the
-/// authority source; this only mirrors its canonical descriptor identity onto the
-/// pawn mesh so the host body and outgoing snapshot describe the same weapon.
+/// Synchronize dirty pawn inventory changes into third-person presentation
+/// attachments immediately before snapshot production. `WeaponOwners` is only the
+/// dirty attachment queue; each drain resolves the active instance from live pawn
+/// inventory before mirroring its descriptor identity onto the pawn mesh.
 pub(crate) fn synchronize_weapon_owner_attachments(
     registry: &mut EntityRegistry,
     weapon_owners: &mut WeaponOwners,
@@ -132,7 +135,7 @@ pub(crate) fn synchronize_weapon_owner_attachments(
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
 ) -> Vec<EntityId> {
     weapon_owners
-        .take_attachment_changes()
+        .take_attachment_changes(registry)
         .into_iter()
         .filter_map(|(pawn, weapon)| {
             let active_weapon_archetype = weapon.and_then(|weapon| {
@@ -153,17 +156,16 @@ pub(crate) fn synchronize_weapon_owner_attachments(
         .collect()
 }
 
-/// Synchronize one local pawn's third-person attachment from its active weapon.
-/// Single-player has no [`WeaponOwners`] table, and the listen host installs its
-/// own pawn before the regular pre-snapshot synchronization can run.
+/// Synchronize one local pawn's third-person attachment from its active inventory
+/// weapon. Single-player has no dirty attachment queue, and the listen host installs
+/// its own pawn before the regular pre-snapshot synchronization can run.
 pub(crate) fn synchronize_weapon_attachment_for_pawn(
     registry: &mut EntityRegistry,
     pawn: EntityId,
-    active_weapon: Option<EntityId>,
     descriptors: &[EntityTypeDescriptor],
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
 ) -> bool {
-    let active_weapon_archetype = active_weapon.and_then(|weapon| {
+    let active_weapon_archetype = active_wieldable_for_pawn(registry, pawn).and_then(|weapon| {
         registry
             .get_component::<DescriptorProvenance>(weapon)
             .ok()
@@ -306,6 +308,10 @@ fn parse_port(value: &str) -> Result<u16, NetArgError> {
 /// Construction can fail (socket bind, transport init); failures are logged at
 /// the call site and degrade to single-player (the field stays `None`) so a
 /// netcode setup error never blocks boot.
+// The host endpoint necessarily retains several live replication maps. Boxing
+// those individually would add indirection to its hot lifecycle paths without
+// reducing the singleton's meaningful footprint.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum NetEndpoint {
     /// Listen server plus the host-side `EntityId -> NetworkId` allocator. The
     /// `NetServer` is boxed: it is by far the largest endpoint payload (the renet
@@ -346,10 +352,9 @@ pub(crate) enum NetEndpoint {
         /// Stamps `owner_client_id` + the resolved cursor onto each owned pawn's
         /// snapshot so the net crate can derive per-recipient `local_player`.
         owners: MovementOwners,
-        /// E16 host active-weapon owner map: remote pawn `EntityId -> active weapon
-        /// EntityId`. Host-authoritative fire, the owner-private cooldown projection,
-        /// and hit-declaration ingest resolve a client's pawn to its weapon here;
-        /// weaponless pawns have no entry.
+        /// E16 host dirty attachment queue. Fire, owner-private projections, snapshot
+        /// archetypes, and hit-declaration ingest resolve a pawn's active weapon from
+        /// its `Inventory`; this queue only schedules mesh attachment refreshes.
         weapon_owners: WeaponOwners,
         /// E16 host-authorized shots that are still open for a future client HIT
         /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
@@ -439,9 +444,44 @@ pub(crate) enum NetEndpoint {
         /// Host-resolved values the client predicts with. The generation lets the
         /// movement materializer rebuild after a staged host retune without relying
         /// on Control/Snapshot ordering.
-        tuning: Option<TuningPayload>,
+        tuning: Option<Box<TuningPayload>>,
         tuning_generation: u64,
         applied_movement_tuning_generation: u64,
+        next_switch_declaration_id: u32,
+        pending_switch_declarations: VecDeque<PendingSwitchDeclaration>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingSwitchDeclaration {
+    declaration_id: u32,
+    target_slot: u8,
+    /// Slot the client actually presented as active when this local switch chain
+    /// began. Older host outcomes may move the authoritative rollback point, but
+    /// must not turn an unpresented intermediate target into last-weapon history.
+    held_origin_slot: usize,
+    /// Host-authoritative active slot restored if this declaration is refused.
+    /// Ordered predecessor outcomes rebase this without changing local history.
+    rollback_slot: usize,
+    rollback_last_weapon_slot: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchOutcome {
+    Accepted(ServerSwitchAccepted),
+    Refused(ServerSwitchRefused),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentSwitchResolution {
+    None,
+    Accepted {
+        last_weapon_slot: Option<usize>,
+    },
+    Refused {
+        target_slot: usize,
+        rollback_slot: usize,
+        last_weapon_slot: Option<usize>,
     },
 }
 
@@ -449,7 +489,8 @@ pub(crate) enum NetEndpoint {
 pub(crate) struct ClientApplyFrameOutcome {
     pub(crate) materialized_remote_entity_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
-    pub(crate) owner_private_weapon_cooldown_fresh: bool,
+    /// Host slot identity carried with the latest fresh owner-private cooldown.
+    pub(crate) owner_private_weapon_cooldown_slot: Option<usize>,
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub(crate) mover_corrections: Vec<client::MoverCorrection>,
@@ -551,6 +592,26 @@ pub(crate) enum WorldLessPoll {
 pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
+            ServerControlMessage::SwitchAccepted(accepted) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution = endpoint.take_switch_outcome(SwitchOutcome::Accepted(accepted));
+                apply_client_switch_resolution(session, resolution);
+            }
+            ServerControlMessage::SwitchRefused(refusal) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution = endpoint.take_switch_outcome(SwitchOutcome::Refused(refusal));
+                apply_client_switch_resolution(session, resolution);
+            }
             ServerControlMessage::Relevel(catalog_id) => {
                 app.follow_relevel_catalog(catalog_id);
             }
@@ -569,7 +630,11 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                 {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
                     endpoint.demote_client_state(&mut registry);
+                    drop(registry);
+                    session.gameplay_input_latch.clear();
                 }
+                app.client_fire_resolutions.clear();
+                app.client_predicted_shots.clear();
             }
             ServerControlMessage::Tuning(bytes) => {
                 let script_ctx = app
@@ -591,7 +656,87 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
     }
 }
 
+fn apply_client_switch_resolution(
+    session: &mut crate::session::Session,
+    resolution: CurrentSwitchResolution,
+) {
+    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
+        CurrentSwitchResolution::None => return,
+        CurrentSwitchResolution::Accepted { last_weapon_slot } => {
+            session
+                .gameplay_input_latch
+                .wieldable_selection_mut()
+                .confirm_latest_declaration(last_weapon_slot);
+            return;
+        }
+        CurrentSwitchResolution::Refused {
+            target_slot,
+            rollback_slot,
+            last_weapon_slot,
+        } => (target_slot, rollback_slot, last_weapon_slot),
+    };
+    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return;
+    };
+    let applied =
+        crate::sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot);
+    if !applied {
+        return;
+    }
+    let active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.active_slot);
+    drop(registry);
+    let selection = session.gameplay_input_latch.wieldable_selection_mut();
+    selection.reset_to_active_with_last(active_slot, last_weapon_slot);
+}
+
 impl NetEndpoint {
+    /// Send a client-local switch declaration over reliable Control. The client
+    /// transport refuses to queue it before participation, so an old level cannot
+    /// leak a selection into a newly promoted pawn.
+    pub(crate) fn send_client_switch_declaration(
+        &mut self,
+        slot: u8,
+        rollback_slot: usize,
+        rollback_last_weapon_slot: Option<usize>,
+    ) {
+        if let Self::Client {
+            client,
+            next_switch_declaration_id,
+            pending_switch_declarations,
+            ..
+        } = self
+        {
+            let declaration_id = *next_switch_declaration_id;
+            *next_switch_declaration_id = (*next_switch_declaration_id).wrapping_add(1);
+            pending_switch_declarations.push_back(PendingSwitchDeclaration {
+                declaration_id,
+                target_slot: slot,
+                held_origin_slot: rollback_slot,
+                rollback_slot,
+                rollback_last_weapon_slot,
+            });
+            client.send_switch_declaration(ClientSwitchDeclaration {
+                declaration_id,
+                slot,
+            });
+        }
+    }
+
+    fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
+        let Self::Client {
+            pending_switch_declarations,
+            ..
+        } = self
+        else {
+            return CurrentSwitchResolution::None;
+        };
+        resolve_switch_outcome(pending_switch_declarations, outcome)
+    }
+
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
     /// The netcode clock origin is `SystemTime::now()` since the unix epoch
@@ -652,6 +797,8 @@ impl NetEndpoint {
                     tuning: None,
                     tuning_generation: 0,
                     applied_movement_tuning_generation: 0,
+                    next_switch_declaration_id: 0,
+                    pending_switch_declarations: VecDeque::new(),
                 }))
             }
         }
@@ -752,6 +899,7 @@ impl NetEndpoint {
             interpolation_delay,
             prediction,
             state_slots,
+            pending_switch_declarations,
             ..
         } = self
         else {
@@ -765,6 +913,7 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
+        pending_switch_declarations.clear();
     }
 
     /// Clear state whose entity ids belong to the old host level. This is separate
@@ -832,6 +981,7 @@ impl NetEndpoint {
             prediction,
             tuning,
             applied_movement_tuning_generation,
+            pending_switch_declarations,
             ..
         } = self
         else {
@@ -843,6 +993,7 @@ impl NetEndpoint {
         interpolation_delay.reset_for_level_unload();
         *tuning = None;
         *applied_movement_tuning_generation = 0;
+        pending_switch_declarations.clear();
     }
 
     fn install_tuning_payload(
@@ -865,14 +1016,14 @@ impl NetEndpoint {
         if let Some(armed) = replication.armed_local_pawn() {
             apply_installed_movement_tuning_to_armed_pawn(
                 &armed,
-                tuning.as_ref(),
+                tuning.as_deref(),
                 *tuning_generation,
                 applied_movement_tuning_generation,
                 descriptors,
                 registry,
             );
         } else if tuning
-            .as_ref()
+            .as_deref()
             .and_then(|payload| payload.movement.as_ref())
             .is_none()
         {
@@ -882,15 +1033,55 @@ impl NetEndpoint {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }
     }
+}
 
-    pub(crate) fn client_tuning(&self) -> Option<(&TuningPayload, u64)> {
-        match self {
-            Self::Client {
-                tuning: Some(tuning),
-                tuning_generation,
-                ..
-            } => Some((tuning, *tuning_generation)),
-            _ => None,
+fn resolve_switch_outcome(
+    pending: &mut VecDeque<PendingSwitchDeclaration>,
+    outcome: SwitchOutcome,
+) -> CurrentSwitchResolution {
+    let (declaration_id, target_slot, accepted) = match outcome {
+        SwitchOutcome::Accepted(accepted) => (accepted.declaration_id, accepted.slot, true),
+        SwitchOutcome::Refused(refused) => (refused.declaration_id, refused.slot, false),
+    };
+    let Some(front) = pending.front().copied() else {
+        return CurrentSwitchResolution::None;
+    };
+    // Both directions use reliable-ordered Control. Refuse an out-of-order or
+    // stale outcome rather than letting it skip an unresolved predecessor.
+    if front.declaration_id != declaration_id || front.target_slot != target_slot {
+        return CurrentSwitchResolution::None;
+    }
+    let settled = pending
+        .pop_front()
+        .expect("the non-empty declaration chain was checked");
+    let (settled_active, settled_last_weapon) = if accepted {
+        (
+            usize::from(settled.target_slot),
+            Some(settled.held_origin_slot),
+        )
+    } else {
+        (settled.rollback_slot, settled.rollback_last_weapon_slot)
+    };
+
+    if let Some(next) = pending.front_mut() {
+        // An older outcome changes where a refusal of the next declaration must
+        // return host authority. It does not change which slot the client had
+        // actually held before the superseding local switch, nor should it touch
+        // the newest in-flight presentation or last-weapon memory.
+        next.rollback_slot = settled_active;
+        next.rollback_last_weapon_slot = settled_last_weapon;
+        return CurrentSwitchResolution::None;
+    }
+
+    if accepted {
+        CurrentSwitchResolution::Accepted {
+            last_weapon_slot: settled_last_weapon,
+        }
+    } else {
+        CurrentSwitchResolution::Refused {
+            target_slot: usize::from(settled.target_slot),
+            rollback_slot: settled_active,
+            last_weapon_slot: settled_last_weapon,
         }
     }
 }
@@ -908,6 +1099,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
         descriptors,
         registry,
         tuning.and_then(|payload| payload.movement.as_ref()),
+        tuning,
         true,
     );
     *applied_generation = tuning_generation;
@@ -918,15 +1110,17 @@ fn discard_world_less_snapshots(client: &mut NetClient) {
 }
 
 fn replace_client_tuning(
-    tuning: &mut Option<TuningPayload>,
+    tuning: &mut Option<Box<TuningPayload>>,
     tuning_generation: &mut u64,
     bytes: &[u8],
 ) -> Result<(), tuning_payload::TuningPayloadError> {
     // Invalidate first. A bad replacement must never leave the last accepted
-    // descriptor-derived prediction state live.
+    // descriptor-derived prediction state live. This reaches only the queued
+    // tuning value: live Inventory instances are intentionally untouched, so an
+    // in-flight equip keeps its already-latched duration and state.
     *tuning = None;
     *tuning_generation = tuning_generation.wrapping_add(1);
-    *tuning = Some(decode_tuning_payload(bytes)?);
+    *tuning = Some(Box::new(decode_tuning_payload(bytes)?));
     Ok(())
 }
 
@@ -1206,6 +1400,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Spawner => 16,
         ComponentKind::EntityState => 17,
         ComponentKind::DeferredEffect => 18,
+        ComponentKind::Inventory => 19,
     }
 }
 
@@ -1335,6 +1530,7 @@ pub(crate) fn client_receive_and_apply(
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
     host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    host_tuning: Option<&TuningPayload>,
     rebuild_movement_tuning: bool,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
@@ -1391,10 +1587,10 @@ pub(crate) fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
-            frame_outcome.owner_private_weapon_cooldown_fresh |= state_outcome
-                .fresh_slots
-                .iter()
-                .any(|name| name == "player.weaponCooldownMs");
+            if state_outcome.fresh_weapon_cooldown_slot.is_some() {
+                frame_outcome.owner_private_weapon_cooldown_slot =
+                    state_outcome.fresh_weapon_cooldown_slot;
+            }
             if let Some(ack) = outcome.ack.as_mut() {
                 ack.slot_baselines = state_outcome.slot_baselines;
             }
@@ -1417,6 +1613,7 @@ pub(crate) fn client_receive_and_apply(
                     descriptors,
                     registry,
                     host_movement_tuning,
+                    host_tuning,
                     rebuild_movement_tuning,
                 );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
@@ -1950,7 +2147,6 @@ pub(crate) fn host_replicate(
         replicable,
         allocator,
         owners,
-        weapon_owners,
         command_queues,
         host_aim,
     );
@@ -2101,7 +2297,7 @@ pub(crate) fn host_handle_accept_descriptor(
         },
     );
 
-    if let Some((pawn, _net_id, active_weapon)) = spawned {
+    if let Some((pawn, _net_id)) = spawned {
         let entity_class = placement
             .key_values
             .get("entity_class")
@@ -2117,9 +2313,7 @@ pub(crate) fn host_handle_accept_descriptor(
         // `owner_client_id` and the resolved cursor. The client's command queue is
         // created lazily on its first ingested command.
         owners.set(pawn, client_id);
-        if let Some(weapon) = active_weapon {
-            weapon_owners.set(pawn, weapon);
-        }
+        weapon_owners.mark_attachment_dirty(pawn);
         let _ = command_queues;
         return Some(pawn);
     }
@@ -2139,8 +2333,9 @@ pub(crate) fn host_handle_accept_descriptor(
 /// Idempotent and reload-safe: registering the same pawn twice is a no-op (the set and
 /// the allocator are both stable per `EntityId`). On a level reload the freshly-spawned
 /// pawn is a distinct `EntityId`, so the previously-tracked host pawn (if any) is
-/// unregistered and removed from `WeaponOwners` first. The new active weapon binding
-/// is recorded here so ownership and host-pawn identity change atomically.
+/// unregistered and marked for attachment removal first. The new pawn is marked for
+/// inventory-derived attachment resolution here so ownership and presentation change
+/// atomically.
 ///
 /// Game-logic-owned: it reads the registry through the borrow the caller threads in and
 /// only touches host bookkeeping; it never reaches into `App`.
@@ -2150,7 +2345,6 @@ pub(crate) fn host_register_own_pawn(
     host_pawn: &mut Option<EntityId>,
     weapon_owners: &mut WeaponOwners,
     pawn: EntityId,
-    active_weapon: Option<EntityId>,
 ) {
     // A level reload spawns a fresh host pawn (distinct EntityId). Drop the stale
     // registration before registering the new one so the replicable set never names a
@@ -2168,11 +2362,7 @@ pub(crate) fn host_register_own_pawn(
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
     *host_pawn = Some(pawn);
-    if let Some(weapon) = active_weapon {
-        weapon_owners.set(pawn, weapon);
-    } else {
-        weapon_owners.remove_pawn(pawn);
-    }
+    weapon_owners.mark_attachment_dirty(pawn);
     log::info!("[Net] host registered own pawn {pawn:?} as {net_id:?} (outbound replication only)");
 }
 
@@ -2253,6 +2443,7 @@ pub(crate) fn host_handle_lifecycle(
                         weaponless_fire_logged,
                         *client_id,
                         pawn,
+                        &[],
                     );
                 } else if let Some(pawn) = previous_pawn {
                     cleanup_remote_pawn_owned_state(
@@ -2266,6 +2457,7 @@ pub(crate) fn host_handle_lifecycle(
                         weaponless_fire_logged,
                         *client_id,
                         pawn,
+                        &[],
                     );
                 }
             }
@@ -2278,8 +2470,10 @@ pub(crate) fn host_handle_lifecycle(
 }
 
 /// Resolve the host-authoritative prediction values for one spawned slot pawn.
-/// Descriptor lookup remains engine-side; the net crate carries the resulting JSON
-/// bytes without learning this vocabulary.
+/// The wieldable rows come from its live inventory, not the authored loadout: a
+/// descriptor refresh retunes existing instances, while loadout changes wait for
+/// the next pawn install. The net crate carries the resulting JSON bytes without
+/// learning this vocabulary.
 pub(crate) fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -2294,21 +2488,139 @@ pub(crate) fn tuning_payload_for_pawn(
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(class));
     let movement = descriptor.and_then(|descriptor| descriptor.movement.clone());
-    let default_weapon = descriptor
-        .and_then(|descriptor| descriptor.default_weapon.as_deref())
-        .and_then(|name| {
-            descriptors
-                .iter()
-                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name))
+    let wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY] = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| {
+            std::array::from_fn(|slot| {
+                let weapon_id = inventory.wieldables[slot]?;
+                let canonical_name = registry
+                    .get_component::<DescriptorProvenance>(weapon_id)
+                    .ok()?
+                    .canonical_name
+                    .clone();
+                let weapon = registry.get_component::<WeaponComponent>(weapon_id).ok()?;
+                Some(WieldableTuningPayload {
+                    canonical_name,
+                    range: weapon.range,
+                    cooldown_ms: weapon.cooldown_ms,
+                    fire_mode: weapon.fire_mode,
+                    resolution: weapon.resolution,
+                    lower_ms: weapon.lower_ms,
+                    raise_ms: weapon.raise_ms,
+                })
+            })
         })
-        .and_then(|descriptor| descriptor.weapon.as_ref())
-        .map(|weapon| tuning_payload::DefaultWeaponFirePayload {
-            range: weapon.range,
-            cooldown_ms: weapon.cooldown_ms,
-            fire_mode: weapon.fire_mode,
-            resolution: weapon.resolution,
+        .unwrap_or_else(|| std::array::from_fn(|_| None));
+    TuningPayload::new(movement, wieldables)
+}
+
+/// Validate one client-declared switch against the host's live pawn inventory.
+/// The client owns its equip presentation, while the host owns the committed slot
+/// used by snapshots and server-side systems. A refusal is owner-private reliable
+/// Control because a snapshot cannot recover a stationary client with no later
+/// baseline change to compare against.
+#[allow(clippy::too_many_arguments)] // keeps the wire declaration handler a flat leaf entry point.
+pub(crate) fn host_handle_switch_declaration(
+    registry: &mut EntityRegistry,
+    server: &mut NetServer,
+    slot_pawns: &SlotPawns,
+    weapon_owners: &mut WeaponOwners,
+    client_id: u64,
+    declaration_id: u32,
+    slot: u8,
+    mod_block_during_reload: bool,
+) {
+    let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+        return;
+    };
+    if apply_host_switch_declaration(
+        registry,
+        pawn,
+        weapon_owners,
+        usize::from(slot),
+        mod_block_during_reload,
+    ) == HostSwitchDecision::Accepted
+    {
+        send_switch_accepted(server, client_id, declaration_id, slot);
+    } else {
+        send_switch_refusal(server, client_id, declaration_id, slot);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostSwitchDecision {
+    Accepted,
+    Refused,
+}
+
+fn apply_host_switch_declaration(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    weapon_owners: &mut WeaponOwners,
+    target_slot: usize,
+    mod_block_during_reload: bool,
+) -> HostSwitchDecision {
+    let Some((mut inventory, active_changed)) =
+        crate::sim::normalize_wieldable_inventory(registry, pawn)
+    else {
+        return HostSwitchDecision::Refused;
+    };
+    if active_changed {
+        weapon_owners.mark_attachment_dirty(pawn);
+    }
+    let Some(_target) = inventory.wieldables.get(target_slot).copied().flatten() else {
+        return HostSwitchDecision::Refused;
+    };
+    if target_slot == inventory.active_slot {
+        return HostSwitchDecision::Accepted;
+    }
+
+    let reload_blocks_switch = inventory
+        .active_wieldable()
+        .and_then(|active| {
+            registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(active)
+                .ok()
+        })
+        .is_some_and(|weapon| {
+            weapon
+                .block_during_reload
+                .unwrap_or(mod_block_during_reload)
+                && weapon.state.is_reload_activity()
         });
-    TuningPayload::new(movement, default_weapon)
+    if reload_blocks_switch {
+        return HostSwitchDecision::Refused;
+    }
+
+    inventory.active_slot = target_slot;
+    inventory.switch_target = None;
+    inventory.switch_origin = None;
+    let _ = registry.set_component(pawn, inventory);
+    weapon_owners.mark_attachment_dirty(pawn);
+    HostSwitchDecision::Accepted
+}
+
+fn send_switch_accepted(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+    server.send_control(
+        client_id,
+        wire::encode(&ServerControlMessage::SwitchAccepted(
+            ServerSwitchAccepted {
+                declaration_id,
+                slot,
+            },
+        )),
+    );
+}
+
+fn send_switch_refusal(server: &mut NetServer, client_id: u64, declaration_id: u32, slot: u8) {
+    server.send_control(
+        client_id,
+        wire::encode(&ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+            declaration_id,
+            slot,
+        })),
+    );
 }
 
 pub(crate) fn host_send_tuning_if_changed(
@@ -2350,7 +2662,9 @@ fn cleanup_stale_slot_replacement(
         return;
     }
 
-    let _ = slot_pawns.remove_client(client_id);
+    let Some((_removed_pawn, wieldables)) = slot_pawns.remove_client(client_id) else {
+        return;
+    };
     command_queues.remove_client(client_id);
     cleanup_remote_pawn_owned_state(
         registry,
@@ -2363,6 +2677,7 @@ fn cleanup_stale_slot_replacement(
         weaponless_fire_logged,
         client_id,
         pawn,
+        &wieldables,
     );
 }
 
@@ -2378,11 +2693,11 @@ fn cleanup_remote_pawn_owned_state(
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     client_id: u64,
     pawn: EntityId,
+    wieldables: &[EntityId],
 ) {
     // Pawn and sibling weapon are one runtime ownership unit. Despawning both
     // prevents a non-cancellable reload from surviving without the reserve-owning
     // pawn that must finish its transfer.
-    let weapon = weapon_owners.weapon_of(pawn);
     pending_hit_declarations.remove_client(client_id);
     open_shots.remove_client(client_id);
     open_shots.remove_pawn(pawn);
@@ -2391,10 +2706,10 @@ fn cleanup_remote_pawn_owned_state(
     weapon_owners.remove_pawn(pawn);
     replicable.unregister(pawn);
     allocator.forget(pawn);
-    if let Some(weapon) = weapon {
-        replicable.unregister(weapon);
-        allocator.forget(weapon);
-        let _ = registry.despawn(weapon);
+    for &wieldable in wieldables {
+        replicable.unregister(wieldable);
+        allocator.forget(wieldable);
+        let _ = registry.despawn(wieldable);
     }
     let _ = registry.despawn(pawn);
 }
@@ -2900,6 +3215,217 @@ mod tests {
     // approximate comparison for computed/converted floats).
     const EPSILON: f32 = 1e-6;
 
+    #[test]
+    fn delayed_double_refusal_rebases_newer_declaration_to_authoritative_origin() {
+        // Regression: A->B D1 completed locally, then B->C D2 completed. When the
+        // host refused both, retaining only D2 rolled the client back to B, not A.
+        let mut pending = VecDeque::from([
+            PendingSwitchDeclaration {
+                declaration_id: 11,
+                target_slot: 1,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(9),
+            },
+            PendingSwitchDeclaration {
+                declaration_id: 12,
+                target_slot: 2,
+                held_origin_slot: 1,
+                rollback_slot: 1,
+                rollback_last_weapon_slot: Some(0),
+            },
+        ]);
+
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 11,
+                    slot: 1,
+                }),
+            ),
+            CurrentSwitchResolution::None
+        );
+        assert_eq!(pending.front().unwrap().rollback_slot, 0);
+        assert_eq!(pending.front().unwrap().rollback_last_weapon_slot, Some(9));
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 12,
+                    slot: 2,
+                }),
+            ),
+            CurrentSwitchResolution::Refused {
+                target_slot: 2,
+                rollback_slot: 0,
+                last_weapon_slot: Some(9),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn o29_ordered_accept_accept_retains_the_slot_the_client_actually_held() {
+        // Regression: A->B and A->C were both emitted before the client repointed;
+        // accepting B first must not make the unpresented B become last-weapon.
+        let mut pending = VecDeque::from([
+            PendingSwitchDeclaration {
+                declaration_id: 21,
+                target_slot: 1,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(9),
+            },
+            PendingSwitchDeclaration {
+                declaration_id: 22,
+                target_slot: 2,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(0),
+            },
+        ]);
+
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Accepted(ServerSwitchAccepted {
+                    declaration_id: 21,
+                    slot: 1,
+                }),
+            ),
+            CurrentSwitchResolution::None,
+            "the superseded predecessor never mutates the newest local presentation"
+        );
+        assert_eq!(pending.front().unwrap().rollback_slot, 1);
+        assert_eq!(pending.front().unwrap().held_origin_slot, 0);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Accepted(ServerSwitchAccepted {
+                    declaration_id: 22,
+                    slot: 2,
+                }),
+            ),
+            CurrentSwitchResolution::Accepted {
+                last_weapon_slot: Some(0),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn o29_ordered_accept_refuse_rolls_back_to_host_slot_with_local_history() {
+        let mut pending = VecDeque::from([
+            PendingSwitchDeclaration {
+                declaration_id: 31,
+                target_slot: 1,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(9),
+            },
+            PendingSwitchDeclaration {
+                declaration_id: 32,
+                target_slot: 2,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(0),
+            },
+        ]);
+
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Accepted(ServerSwitchAccepted {
+                    declaration_id: 31,
+                    slot: 1,
+                }),
+            ),
+            CurrentSwitchResolution::None
+        );
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 32,
+                    slot: 2,
+                }),
+            ),
+            CurrentSwitchResolution::Refused {
+                target_slot: 2,
+                rollback_slot: 1,
+                last_weapon_slot: Some(0),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn host_liveness_repoint_marks_attachment_dirty_before_already_active_acceptance() {
+        // Regression: declaration-time liveness repair repointed the active slot,
+        // then the already-active early return skipped third-person attachment work.
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let stale = registry.spawn(Transform::default());
+        let live = registry.spawn(Transform::default());
+        registry
+            .set_component(stale, test_weapon(1.0, 10.0))
+            .unwrap();
+        registry
+            .set_component(live, test_weapon(1.0, 10.0))
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(stale);
+        inventory.wieldables[1] = Some(live);
+        registry.set_component(pawn, inventory).unwrap();
+        registry.despawn(stale).unwrap();
+        let mut weapon_owners = WeaponOwners::new();
+
+        assert_eq!(
+            apply_host_switch_declaration(&mut registry, pawn, &mut weapon_owners, 1, false),
+            HostSwitchDecision::Accepted
+        );
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            1
+        );
+        assert!(weapon_owners.has_attachment_changes());
+    }
+
+    #[test]
+    fn o28_duplicate_declaration_for_already_active_slot_is_an_idempotent_accept() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let slot_a = registry.spawn(Transform::default());
+        let slot_b = registry.spawn(Transform::default());
+        registry
+            .set_component(slot_a, test_weapon(1.0, 10.0))
+            .unwrap();
+        registry
+            .set_component(slot_b, test_weapon(1.0, 10.0))
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(slot_a);
+        inventory.wieldables[1] = Some(slot_b);
+        registry.set_component(pawn, inventory).unwrap();
+        let mut weapon_owners = WeaponOwners::new();
+
+        assert_eq!(
+            apply_host_switch_declaration(&mut registry, pawn, &mut weapon_owners, 1, false),
+            HostSwitchDecision::Accepted
+        );
+        let first = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        assert_eq!(
+            apply_host_switch_declaration(&mut registry, pawn, &mut weapon_owners, 1, false),
+            HostSwitchDecision::Accepted
+        );
+        assert_eq!(registry.get_component::<Inventory>(pawn).unwrap(), &first);
+        assert_eq!(first.active_slot, 1);
+    }
+
     fn sample_transform() -> Transform {
         Transform {
             position: Vec3::new(1.5, -2.0, 3.25),
@@ -2918,28 +3444,180 @@ mod tests {
         }
     }
 
-    fn install_test_tuning(tuning: &mut Option<TuningPayload>, generation: &mut u64) -> Vec<u8> {
+    fn install_test_tuning(
+        tuning: &mut Option<Box<TuningPayload>>,
+        generation: &mut u64,
+    ) -> Vec<u8> {
+        let mut wieldables = std::array::from_fn(|_| None);
+        wieldables[0] = Some(WieldableTuningPayload {
+            canonical_name: "reference_pistol".to_string(),
+            range: 12.0,
+            cooldown_ms: 90.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            lower_ms: 25,
+            raise_ms: 35,
+        });
         let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
             host_player_descriptor().movement,
-            Some(DefaultWeaponFirePayload {
-                range: 12.0,
-                cooldown_ms: 90.0,
-                fire_mode: FireMode::Semi,
-                resolution: ResolutionMode::Hitscan,
-            }),
+            wieldables,
         ));
         replace_client_tuning(tuning, generation, &encoded).expect("valid tuning installs");
         encoded
     }
 
+    #[test]
+    fn o44_tuning_payload_reads_live_inventory_not_changed_authored_loadout() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        let mut weapon = test_weapon(10.0, 96.0);
+        weapon.cooldown_ms = 180.0;
+        weapon.fire_mode = FireMode::Auto;
+        weapon.lower_ms = 45;
+        weapon.raise_ms = 70;
+        registry.set_component(weapon_id, weapon).unwrap();
+        registry
+            .set_component(
+                weapon_id,
+                DescriptorProvenance {
+                    canonical_name: "live_ion_rifle".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[3] = Some(weapon_id);
+        inventory.active_slot = 3;
+        registry.set_component(pawn, inventory).unwrap();
+
+        let mut changed_player = host_player_descriptor();
+        changed_player.inventory = Some(
+            postretro_entities::data_descriptors::types::entity::InventoryDescriptor {
+                loadout: vec!["new_slot_a".to_string(), "new_slot_b".to_string()],
+            },
+        );
+        let payload = tuning_payload_for_pawn(&registry, pawn, &[changed_player]);
+
+        assert!(payload.movement.is_some());
+        assert!(
+            payload.wieldables[0].is_none() && payload.wieldables[1].is_none(),
+            "mid-level authored loadout additions do not enter the live payload"
+        );
+        let slot = payload.wieldables[3].as_ref().unwrap();
+        assert_eq!(slot.canonical_name, "live_ion_rifle");
+        assert_eq!(slot.range, 96.0);
+        assert_eq!(slot.cooldown_ms, 180.0);
+        assert_eq!(slot.fire_mode, FireMode::Auto);
+        assert_eq!(slot.lower_ms, 45);
+        assert_eq!(slot.raise_ms, 70);
+    }
+
+    // Regression: staged descriptor refresh updated the live host component but the
+    // connected client kept its old equip durations because change detection never
+    // observed a rebuilt payload.
+    #[test]
+    fn o43_live_retune_changes_durations_without_restarting_inflight_timer() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        let mut weapon = test_weapon(10.0, 96.0);
+        weapon.lower_ms = 20;
+        weapon.raise_ms = 30;
+        weapon.cooldown_remaining_ms = 77.0;
+        weapon.state = postretro_entities::components::wieldable_state::WieldableState::Lowering;
+        weapon.state_total_ms = 30;
+        weapon.state_remaining_ms = 12;
+        registry.set_component(weapon_id, weapon).unwrap();
+        registry
+            .set_component(
+                weapon_id,
+                DescriptorProvenance {
+                    canonical_name: "live_ion_rifle".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        inventory.switch_origin = Some(0);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+
+        let before = tuning_payload_for_pawn(&registry, pawn, &[]);
+        let mut last_sent = HashMap::from([(41_u64, before.clone())]);
+        let refreshed = WeaponDescriptor {
+            damage: 14.0,
+            range: 140.0,
+            cooldown_ms: 180.0,
+            fire_mode: FireMode::Auto,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: Some("weapon.test.retuned".to_string()),
+            third_person_model: None,
+            viewmodel: None,
+            resource: None,
+            lower_ms: 45,
+            raise_ms: 70,
+            block_during_reload: None,
+        };
+        let mut live = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        live.refresh_from_descriptor(&refreshed);
+        registry.set_component(weapon_id, live).unwrap();
+
+        let after = tuning_payload_for_pawn(&registry, pawn, &[]);
+
+        assert_ne!(last_sent.get(&41), Some(&after));
+        last_sent.insert(41, after.clone());
+        assert_eq!(last_sent.get(&41), Some(&after));
+        assert_eq!(after.wieldables[0].as_ref().unwrap().lower_ms, 45);
+        assert_eq!(after.wieldables[0].as_ref().unwrap().raise_ms, 70);
+        assert_eq!(
+            registry.get_component::<Inventory>(pawn).unwrap(),
+            &inventory,
+            "tuning refresh must not recompose live loadout or switch state"
+        );
+        let live = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(live.cooldown_remaining_ms, 77.0);
+        assert_eq!(live.state_remaining_ms, 12);
+        assert_eq!(
+            live.state_total_ms, 30,
+            "the in-flight lower keeps its old total"
+        );
+        assert_eq!(
+            live.lower_ms, 45,
+            "the next switch uses the refreshed lower"
+        );
+    }
+
     // Regression: a malformed replacement retained the previously accepted
     // payload and generation, leaving descriptor-derived prediction live.
     #[test]
-    fn malformed_tuning_replacement_invalidates_previous_install() {
+    fn o42_malformed_tuning_replacement_invalidates_previous_install() {
         let mut tuning = None;
         let mut generation = 0;
         install_test_tuning(&mut tuning, &mut generation);
         let accepted_generation = generation;
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        let mut weapon = test_weapon(10.0, 96.0);
+        weapon.state = postretro_entities::components::wieldable_state::WieldableState::Lowering;
+        weapon.state_total_ms = 30;
+        weapon.state_remaining_ms = 12;
+        registry.set_component(weapon_id, weapon).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        inventory.switch_target = Some(1);
+        inventory.switch_origin = Some(0);
+        registry.set_component(pawn, inventory.clone()).unwrap();
 
         let result = replace_client_tuning(&mut tuning, &mut generation, b"not json");
 
@@ -2949,6 +3627,15 @@ mod tests {
         ));
         assert!(tuning.is_none());
         assert_ne!(generation, accepted_generation);
+        assert_eq!(
+            registry.get_component::<Inventory>(pawn).unwrap(),
+            &inventory
+        );
+        let latched = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(latched.state_remaining_ms, 12);
+        assert_eq!(latched.state_total_ms, 30);
     }
 
     // Regression: an unknown-epoch replacement retained the previously
@@ -2998,7 +3685,7 @@ mod tests {
         let mut host_movement = local_descriptor.movement.unwrap();
         host_movement.ground.speed.run = 29.0;
         host_movement.view_feel = None;
-        let first = TuningPayload::new(Some(host_movement.clone()), None);
+        let first = TuningPayload::new(Some(host_movement.clone()), std::array::from_fn(|_| None));
         apply_installed_movement_tuning_to_armed_pawn(
             &armed,
             Some(&first),
@@ -3020,7 +3707,7 @@ mod tests {
         assert_eq!(applied_generation, 1);
 
         host_movement.ground.speed.run = 37.0;
-        let retuned = TuningPayload::new(Some(host_movement), None);
+        let retuned = TuningPayload::new(Some(host_movement), std::array::from_fn(|_| None));
         apply_installed_movement_tuning_to_armed_pawn(
             &armed,
             Some(&retuned),
@@ -3063,7 +3750,16 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         })
+    }
+
+    fn set_active_inventory(registry: &mut EntityRegistry, pawn: EntityId, weapon: EntityId) {
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
     }
 
     #[test]
@@ -3217,8 +3913,8 @@ mod tests {
         replicable.register(pawn);
         let mut owners = MovementOwners::new();
         owners.set(pawn, CLIENT_ID);
-        let mut weapon_owners = WeaponOwners::new();
-        weapon_owners.set(pawn, weapon_id);
+        let weapon_owners = WeaponOwners::new();
+        set_active_inventory(&mut registry, pawn, weapon_id);
         let command_queues = HostCommandQueues::new();
         let slot_table = SlotTable::new();
         let mut replication = ServerReplication::new();
@@ -3444,7 +4140,7 @@ mod tests {
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("reference_pistol".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -3458,13 +4154,17 @@ mod tests {
                 third_person_model: Some("models/pistol/model.gltf".to_string()),
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             }),
             mesh: None,
             health: None,
             behavior: None,
         }];
         let mut weapon_owners = WeaponOwners::new();
-        weapon_owners.set(pawn, weapon);
+        set_active_inventory(&mut registry, pawn, weapon);
+        weapon_owners.mark_attachment_dirty(pawn);
 
         let changed = synchronize_weapon_owner_attachments(
             &mut registry,
@@ -3474,9 +4174,9 @@ mod tests {
         );
         assert_eq!(changed, vec![pawn]);
         assert_eq!(
-            weapon_owners.weapon_of(pawn),
+            active_wieldable_for_pawn(&registry, pawn),
             Some(weapon),
-            "draining presentation changes preserves snapshot/combat provenance"
+            "draining presentation changes preserves inventory provenance"
         );
         assert!(
             registry
@@ -3583,7 +4283,6 @@ mod tests {
         registry: EntityRegistry,
         allocator: NetworkIdAllocator,
         owners: MovementOwners,
-        weapon_owners: WeaponOwners,
         open_shots: OpenAuthorizedShots,
         collision_world: CollisionWorld,
         pawn: EntityId,
@@ -3632,8 +4331,7 @@ mod tests {
             let shot_id = ShotId::from_parts(pawn_net, 11);
             let mut owners = MovementOwners::new();
             owners.set(pawn, 7);
-            let mut weapon_owners = WeaponOwners::new();
-            weapon_owners.set(pawn, weapon);
+            set_active_inventory(&mut registry, pawn, weapon);
             let mut open_shots = OpenAuthorizedShots::new();
             open_shots.record(
                 authorized_test_shot(shot_id, pawn, weapon, 99, 10.0, 10.0),
@@ -3644,7 +4342,6 @@ mod tests {
                 registry,
                 allocator,
                 owners,
-                weapon_owners,
                 open_shots,
                 collision_world,
                 pawn,
@@ -3979,7 +4676,7 @@ mod tests {
             .registry
             .set_component(switched_weapon, test_weapon(90.0, 100.0))
             .unwrap();
-        fixture.weapon_owners.set(fixture.pawn, switched_weapon);
+        set_active_inventory(&mut fixture.registry, fixture.pawn, switched_weapon);
         fixture
             .registry
             .despawn(original_weapon)
@@ -4230,7 +4927,8 @@ mod tests {
                 ComponentKind::AmmoReserve => Some(ComponentKind::Spawner),
                 ComponentKind::Spawner => Some(ComponentKind::EntityState),
                 ComponentKind::EntityState => Some(ComponentKind::DeferredEffect),
-                ComponentKind::DeferredEffect => None,
+                ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
+                ComponentKind::Inventory => None,
             }
         }
 
@@ -4655,7 +5353,7 @@ mod tests {
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some("player".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
@@ -4807,7 +5505,6 @@ mod tests {
             &mut host_pawn,
             &mut weapon_owners,
             pawn,
-            None,
         );
 
         // It is in the replicable set, tracked, and carries an allocated NetworkId.
@@ -4950,16 +5647,19 @@ mod tests {
         // First install.
         let first = spawn_host_boot_pawn(&mut registry);
         let first_weapon = registry.spawn(Transform::default());
+        set_active_inventory(&mut registry, first, first_weapon);
         host_register_own_pawn(
             &mut allocator,
             &mut replicable,
             &mut host_pawn,
             &mut weapon_owners,
             first,
-            Some(first_weapon),
         );
         assert!(replicable.contains(first));
-        assert_eq!(weapon_owners.weapon_of(first), Some(first_weapon));
+        assert_eq!(
+            active_wieldable_for_pawn(&registry, first),
+            Some(first_weapon)
+        );
 
         // Re-registering the SAME pawn (idempotent install) keeps exactly one entry.
         host_register_own_pawn(
@@ -4968,7 +5668,6 @@ mod tests {
             &mut host_pawn,
             &mut weapon_owners,
             first,
-            Some(first_weapon),
         );
         let count_after_idempotent = replicable.iter().count();
         assert_eq!(
@@ -4988,7 +5687,6 @@ mod tests {
             &mut host_pawn,
             &mut weapon_owners,
             second,
-            None,
         );
         assert_eq!(host_pawn, Some(second), "tracks the fresh host pawn");
         assert!(
@@ -5000,26 +5698,24 @@ mod tests {
             "the fresh host pawn is registered"
         );
         assert_eq!(
-            weapon_owners.weapon_of(first),
-            None,
-            "reload removes the old local pawn's weapon ownership"
-        );
-        assert_eq!(
             replicable.iter().count(),
             1,
             "exactly one host pawn is registered after reload"
         );
 
         let second_weapon = registry.spawn(Transform::default());
+        set_active_inventory(&mut registry, second, second_weapon);
         host_register_own_pawn(
             &mut allocator,
             &mut replicable,
             &mut host_pawn,
             &mut weapon_owners,
             second,
-            Some(second_weapon),
         );
-        assert_eq!(weapon_owners.weapon_of(second), Some(second_weapon));
+        assert_eq!(
+            active_wieldable_for_pawn(&registry, second),
+            Some(second_weapon)
+        );
         assert_eq!(
             host_unregister_own_pawn(
                 &mut allocator,
@@ -5031,7 +5727,6 @@ mod tests {
             "a replacement map without a player spawn unregisters the old host pawn"
         );
         assert_eq!(host_pawn, None);
-        assert_eq!(weapon_owners.weapon_of(second), None);
         assert!(!replicable.contains(second));
     }
 

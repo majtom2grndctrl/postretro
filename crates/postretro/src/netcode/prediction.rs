@@ -559,6 +559,7 @@ mod tests {
                 facing_yaw: 0.0,
                 use_pressed: false,
                 aim_pitch: 0.0,
+                firing_slot: 0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,

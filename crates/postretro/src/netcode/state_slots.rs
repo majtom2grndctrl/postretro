@@ -13,7 +13,7 @@ use postretro_entities::{
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
 /// stream's *shape* changes (a new field, a reordered tag) so an old client's
 /// fingerprint can never accidentally match a new server's.
-const FINGERPRINT_STREAM_VERSION: u8 = 1;
+const FINGERPRINT_STREAM_VERSION: u8 = 2;
 
 /// Canonical type tags written into the fingerprint stream. Distinct from the wire
 /// `VALUE_KIND_*` discriminants by design: this tags the *declared slot type*, not a
@@ -28,6 +28,37 @@ const TYPE_TAG_ARRAY: u8 = 5;
 const SCOPE_TAG_SHARED_GLOBAL: u8 = 1;
 const SCOPE_TAG_OWNER_PRIVATE: u8 = 2;
 
+const WIRE_SHAPE_PLAIN: u8 = 0;
+const WIRE_SHAPE_WIELDABLE_SLOT_NUMBER: u8 = 1;
+const WEAPON_COOLDOWN_SLOT: &str = "player.weaponCooldownMs";
+
+/// Some engine slots need source identity to make their value meaningful. The
+/// script-facing slot keeps its ordinary type; only its replicated wire sample is
+/// widened. The schema fingerprint prevents a stale peer from interpreting the
+/// correlated sample as an ordinary number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplicatedWireShape {
+    Plain,
+    WieldableSlotNumber,
+}
+
+impl ReplicatedWireShape {
+    fn for_name(name: &str) -> Self {
+        if name == WEAPON_COOLDOWN_SLOT {
+            Self::WieldableSlotNumber
+        } else {
+            Self::Plain
+        }
+    }
+
+    fn fingerprint_tag(self) -> u8 {
+        match self {
+            Self::Plain => WIRE_SHAPE_PLAIN,
+            Self::WieldableSlotNumber => WIRE_SHAPE_WIELDABLE_SLOT_NUMBER,
+        }
+    }
+}
+
 /// One replicated slot in the deterministic schema: its dotted name, assigned wire
 /// id, declared type, validation shape, and replication scope. The engine keeps the
 /// dotted `name` for the apply path (mapping a `StateSlotId` back to a slot table
@@ -39,6 +70,7 @@ pub(crate) struct ReplicatedSlotSchemaEntry {
     pub(crate) slot_type: SlotType,
     pub(crate) range: Option<NumericRange>,
     pub(crate) scope: ReplicationScope,
+    wire_shape: ReplicatedWireShape,
 }
 
 /// The deterministic replicated-slot schema, built from a `SlotTable`. Holds the
@@ -83,6 +115,7 @@ impl ReplicatedSlotSchema {
                     slot_type: slot_type.clone(),
                     range,
                     scope,
+                    wire_shape: ReplicatedWireShape::for_name(name),
                 },
             )
             .collect();
@@ -102,17 +135,11 @@ impl ReplicatedSlotSchema {
         &self.fingerprint
     }
 
-    /// The dotted slot name for a wire id, or `None` if the id is not in this
-    /// schema. The apply path uses this to map an incoming record to a slot write.
-    pub(crate) fn name_for(&self, slot_id: StateSlotId) -> Option<&str> {
-        self.entries
-            .iter()
-            .find(|entry| entry.slot_id == slot_id)
-            .map(|entry| entry.name.as_str())
+    fn entry_for(&self, slot_id: StateSlotId) -> Option<&ReplicatedSlotSchemaEntry> {
+        self.entries.iter().find(|entry| entry.slot_id == slot_id)
     }
 
     /// The wire id for a dotted slot name, or `None` if the slot is not replicated.
-    /// Test-only inverse of [`name_for`](Self::name_for).
     #[cfg(test)]
     pub(crate) fn id_for(&self, name: &str) -> Option<StateSlotId> {
         self.entries
@@ -138,8 +165,14 @@ impl ReplicatedSlotSchemaEntry {
     fn to_net_descriptor(&self) -> StateSlotDescriptor {
         StateSlotDescriptor {
             slot_id: self.slot_id,
-            value_type: slot_type_to_wire(&self.slot_type),
-            range: self.range.map(numeric_range_to_wire),
+            value_type: match self.wire_shape {
+                ReplicatedWireShape::Plain => slot_type_to_wire(&self.slot_type),
+                ReplicatedWireShape::WieldableSlotNumber => SlotValueType::Array,
+            },
+            range: match self.wire_shape {
+                ReplicatedWireShape::Plain => self.range.map(numeric_range_to_wire),
+                ReplicatedWireShape::WieldableSlotNumber => None,
+            },
             scope: scope_to_wire(self.scope),
         }
     }
@@ -210,6 +243,7 @@ fn compute_fingerprint(entries: &[ReplicatedSlotSchemaEntry]) -> [u8; 32] {
             }
             SlotType::Array => hasher.update(&[TYPE_TAG_ARRAY]),
         };
+        hasher.update(&[entry.wire_shape.fingerprint_tag()]);
 
         // Range: an explicit "has range" flag, then per-edge finite flag and the
         // stable LE numeric bytes (always written so a finite-flag flip alone still
@@ -258,6 +292,7 @@ use postretro_net::state_slots::{RawStateSlotRecord, WireSlotValue};
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
 use postretro_entities::EntityId;
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
 
 /// Host-side replicated-state production: owns the deterministic replicated-slot
@@ -435,7 +470,7 @@ impl HostStateReplication {
                 (
                     pawn,
                     client_id,
-                    AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners),
+                    AmmoSlotProjection::for_pawn(registry, pawn),
                 )
             })
             .collect();
@@ -496,7 +531,7 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 /// The per-owner source value for an owner-private slot. Descriptor-fed player slots
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
 /// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, and
-/// reload state resolve through `WeaponOwners` to the sibling `WeaponComponent`;
+/// reload state resolve through its `Inventory` to the sibling `WeaponComponent`;
 /// ammo reserve reads the owning pawn's `AmmoReserve`. Any other owner-private
 /// slot falls back to the slot table's current value keyed to this owner (a
 /// single global value replicated privately). `None` when no source value exists.
@@ -505,14 +540,14 @@ fn owner_private_source_value(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-    weapon_owners: &WeaponOwners,
+    _weapon_owners: &WeaponOwners,
     ammo_projection: &AmmoSlotProjection,
 ) -> Option<WireSlotValue> {
     if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
         return slot_value_to_wire(&value);
     }
-    if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn, weapon_owners) {
-        return slot_value_to_wire(&value);
+    if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn) {
+        return Some(value);
     }
     if let Some(value) = ammo_projection.slot_value(name) {
         return value.as_ref().and_then(slot_value_to_wire);
@@ -531,9 +566,9 @@ fn descriptor_ammo_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-    weapon_owners: &WeaponOwners,
+    _weapon_owners: &WeaponOwners,
 ) -> Option<Option<SlotValue>> {
-    AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners).slot_value(name)
+    AmmoSlotProjection::for_pawn(registry, pawn).slot_value(name)
 }
 
 struct AmmoSlotProjection {
@@ -545,9 +580,9 @@ struct AmmoSlotProjection {
 }
 
 impl AmmoSlotProjection {
-    fn for_pawn(registry: &EntityRegistry, pawn: EntityId, weapon_owners: &WeaponOwners) -> Self {
+    fn for_pawn(registry: &EntityRegistry, pawn: EntityId) -> Self {
         let weapon = if registry.exists(pawn) {
-            weapon_owners.weapon_of(pawn)
+            super::active_wieldable_for_pawn(registry, pawn)
         } else {
             None
         }
@@ -623,20 +658,22 @@ enum HealthField {
 }
 
 /// Read the owner-private active weapon cooldown for `pawn`. The value is not on
-/// the pawn: net-slot pawn materialization creates a sibling weapon entity, and
-/// E16's host-only [`WeaponOwners`] map ties them together.
+/// the pawn: its inventory identifies the active sibling weapon entity.
 fn descriptor_weapon_cooldown_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-    weapon_owners: &WeaponOwners,
-) -> Option<SlotValue> {
-    if name != "player.weaponCooldownMs" {
+) -> Option<WireSlotValue> {
+    if name != WEAPON_COOLDOWN_SLOT {
         return None;
     }
-    let weapon = weapon_owners.weapon_of(pawn)?;
+    let inventory = registry.get_component::<Inventory>(pawn).ok()?;
+    let weapon = inventory.active_wieldable()?;
     let component = registry.get_component::<WeaponComponent>(weapon).ok()?;
-    Some(SlotValue::Number(component.cooldown_remaining_ms))
+    Some(WireSlotValue::Array(vec![
+        inventory.active_slot as f32,
+        component.cooldown_remaining_ms,
+    ]))
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +700,14 @@ pub(crate) struct StateApplyOutcome {
     pub(crate) slot_baselines: Vec<(u16, u32)>,
     pub(crate) refresh_requests: Vec<StateBaselineRefreshRequest>,
     pub(crate) fresh_slots: Vec<String>,
+    /// Source slot carried atomically with a fresh owner-private cooldown sample.
+    pub(crate) fresh_weapon_cooldown_slot: Option<usize>,
+}
+
+struct PendingSlotWrite {
+    name: String,
+    value: SlotValue,
+    wieldable_slot: Option<usize>,
 }
 
 /// Client-side replicated-state apply: owns the deterministic schema (built lazily
@@ -765,7 +810,7 @@ impl ClientStateApply {
 
         // Partition the validated records: applicable (full baseline, or a delta whose
         // ref the client holds) vs refresh-needed (delta against a missing baseline).
-        let mut writes: Vec<(String, SlotValue)> = Vec::new();
+        let mut writes: Vec<PendingSlotWrite> = Vec::new();
         let mut pending_baselines: Vec<(StateSlotId, u32)> = Vec::new();
         let mut outcome = StateApplyOutcome::default();
 
@@ -776,8 +821,15 @@ impl ClientStateApply {
                     baseline_id,
                     value,
                 } => {
-                    if let Some(write) = self.write_for(slot_table, *slot_id, value) {
-                        writes.push(write);
+                    match self.write_for(slot_table, *slot_id, value) {
+                        Ok(Some(write)) => writes.push(write),
+                        Ok(None) => {}
+                        Err(reason) => {
+                            log::warn!(
+                                "[Net] replicated state batch rejected before apply: {reason}"
+                            );
+                            return StateApplyOutcome::default();
+                        }
                     }
                     pending_baselines.push((*slot_id, *baseline_id));
                 }
@@ -788,8 +840,15 @@ impl ClientStateApply {
                     value,
                 } => {
                     if self.held_baselines.get(slot_id).copied() == Some(*baseline_ref) {
-                        if let Some(write) = self.write_for(slot_table, *slot_id, value) {
-                            writes.push(write);
+                        match self.write_for(slot_table, *slot_id, value) {
+                            Ok(Some(write)) => writes.push(write),
+                            Ok(None) => {}
+                            Err(reason) => {
+                                log::warn!(
+                                    "[Net] replicated state batch rejected before apply: {reason}"
+                                );
+                                return StateApplyOutcome::default();
+                            }
                         }
                         pending_baselines.push((*slot_id, *new_baseline_id));
                     } else {
@@ -810,7 +869,11 @@ impl ClientStateApply {
         // rejection (type/range/enum/finite) leaves every slot unchanged AND advances
         // no baseline — the batch is rejected whole.
         if !writes.is_empty() {
-            if let Err(err) = apply_store_slot_batch(slot_table, &writes) {
+            let store_writes = writes
+                .iter()
+                .map(|write| (write.name.clone(), write.value.clone()))
+                .collect::<Vec<_>>();
+            if let Err(err) = apply_store_slot_batch(slot_table, &store_writes) {
                 log::warn!(
                     "[Net] replicated state batch rejected by store validation; slots unchanged: {err}"
                 );
@@ -818,7 +881,9 @@ impl ClientStateApply {
             }
             outcome
                 .fresh_slots
-                .extend(writes.iter().map(|(name, _)| name.clone()));
+                .extend(writes.iter().map(|write| write.name.clone()));
+            outcome.fresh_weapon_cooldown_slot =
+                writes.iter().rev().find_map(|write| write.wieldable_slot);
         }
 
         // Applied: advance held baselines and ack them.
@@ -838,10 +903,45 @@ impl ClientStateApply {
         slot_table: &SlotTable,
         slot_id: StateSlotId,
         value: &WireSlotValue,
-    ) -> Option<(String, SlotValue)> {
-        let name = self.schema(slot_table).name_for(slot_id)?.to_string();
-        let value = wire_value_to_slot(value)?;
-        Some((name, value))
+    ) -> Result<Option<PendingSlotWrite>, String> {
+        let Some(entry) = self.schema(slot_table).entry_for(slot_id).cloned() else {
+            return Ok(None);
+        };
+        match entry.wire_shape {
+            ReplicatedWireShape::Plain => {
+                Ok(wire_value_to_slot(value).map(|value| PendingSlotWrite {
+                    name: entry.name,
+                    value,
+                    wieldable_slot: None,
+                }))
+            }
+            ReplicatedWireShape::WieldableSlotNumber => {
+                let WireSlotValue::Array(sample) = value else {
+                    return Err(format!(
+                        "correlated cooldown slot {} did not carry an array",
+                        slot_id.0
+                    ));
+                };
+                let [slot, cooldown_ms] = sample.as_slice() else {
+                    return Err(format!(
+                        "correlated cooldown slot {} carried {} fields instead of 2",
+                        slot_id.0,
+                        sample.len()
+                    ));
+                };
+                if slot.fract() != 0.0 || *slot < 0.0 || *slot >= WIELDABLE_SLOT_CAPACITY as f32 {
+                    return Err(format!(
+                        "correlated cooldown slot {} carried invalid wieldable slot {slot}",
+                        slot_id.0
+                    ));
+                }
+                Ok(Some(PendingSlotWrite {
+                    name: entry.name,
+                    value: SlotValue::Number(*cooldown_ms),
+                    wieldable_slot: Some(*slot as usize),
+                }))
+            }
+        }
     }
 }
 
@@ -969,19 +1069,6 @@ mod tests {
         );
         assert_eq!(schema.entries()[0].slot_id, StateSlotId(0));
         assert_eq!(schema.entries()[1].slot_id, StateSlotId(1));
-    }
-
-    #[test]
-    fn id_and_name_round_trip() {
-        let table = table_with_replicated();
-        let schema = ReplicatedSlotSchema::build(&table);
-        let id = schema.id_for("net.alpha").expect("alpha is replicated");
-        assert_eq!(schema.name_for(id), Some("net.alpha"));
-        // Built-in owner-private slots carry stable schema ids like mod slots.
-        let health_id = schema
-            .id_for("player.health")
-            .expect("player.health is owner-private replicated");
-        assert_eq!(schema.name_for(health_id), Some("player.health"));
     }
 
     #[test]
@@ -1189,6 +1276,9 @@ mod tests {
                     damage: 10.0,
                     range: 100.0,
                     cooldown_ms: 250.0,
+                    lower_ms: 0,
+                    raise_ms: 0,
+                    block_during_reload: None,
                     fire_mode: postretro_entities::data_descriptors::FireMode::Semi,
                     resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
                     cooldown_remaining_ms,
@@ -1208,8 +1298,10 @@ mod tests {
             .unwrap();
         let mut owners = MovementOwners::new();
         owners.set(pawn, client_id);
-        let mut weapon_owners = WeaponOwners::new();
-        weapon_owners.set(pawn, weapon);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
+        let weapon_owners = WeaponOwners::new();
         (registry, owners, weapon_owners, pawn, weapon)
     }
 
@@ -1225,7 +1317,7 @@ mod tests {
     fn add_owned_ammo_pawn(
         registry: &mut EntityRegistry,
         owners: &mut MovementOwners,
-        weapon_owners: &mut WeaponOwners,
+        _weapon_owners: &mut WeaponOwners,
         spec: OwnedAmmoPawnSpec<'_>,
     ) -> (EntityId, EntityId) {
         let pawn = registry.spawn(Transform::default());
@@ -1237,6 +1329,9 @@ mod tests {
                     damage: 10.0,
                     range: 100.0,
                     cooldown_ms: 250.0,
+                    lower_ms: 0,
+                    raise_ms: 0,
+                    block_during_reload: None,
                     fire_mode: postretro_entities::data_descriptors::FireMode::Semi,
                     resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
                     cooldown_remaining_ms: 0.0,
@@ -1270,7 +1365,9 @@ mod tests {
             registry.set_component(pawn, ammo_reserve).unwrap();
         }
         owners.set(pawn, spec.client);
-        weapon_owners.set(pawn, weapon);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         (pawn, weapon)
     }
 
@@ -1492,7 +1589,7 @@ mod tests {
         component.publish_reload_feedback(ReloadFeedback::Started, tick);
         registry.set_component(weapon, component).unwrap();
 
-        weapon_owners.remove_pawn(pawn);
+        registry.set_component(pawn, Inventory::default()).unwrap();
         let mut host = HostStateReplication::new();
         let sampled = host.ingest_frame_and_collect_sampled_weapons(
             &table,
@@ -1503,7 +1600,9 @@ mod tests {
         assert!(sampled.is_empty());
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
 
-        weapon_owners.set(pawn, weapon);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
             Some(Some(SlotValue::Number(0.0)))
@@ -1743,7 +1842,7 @@ mod tests {
     #[test]
     fn weapon_cooldown_projects_through_owned_weapon_map() {
         let host_table = owner_private_player_table();
-        let (registry, owners, weapon_owners, _pawn, _weapon) =
+        let (mut registry, owners, weapon_owners, pawn, weapon) =
             registry_with_owned_weapon_cooldown(CLIENT_A, 123.0);
 
         let mut host = HostStateReplication::new();
@@ -1778,6 +1877,35 @@ mod tests {
             Some(SlotValue::Number(123.0)),
             "mapped sibling weapon cooldown reached the owner-private slot"
         );
+        assert_eq!(outcome.fresh_weapon_cooldown_slot, Some(0));
+
+        host.apply_ack(CLIENT_A, 0, &outcome.slot_baselines);
+        let weapon_b = registry.spawn(postretro_entities::Transform::default());
+        let weapon_b_component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        registry
+            .set_component(weapon_b, weapon_b_component)
+            .unwrap();
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        inventory.wieldables[1] = Some(weapon_b);
+        inventory.active_slot = 1;
+        registry.set_component(pawn, inventory).unwrap();
+
+        host.ingest_frame(&host_table, &registry, &owners, &weapon_owners);
+        let switched_records = host.produce_for_client(CLIENT_A, 1).unwrap();
+        let cooldown_record = switched_records
+            .iter()
+            .find(|record| record.slot_id == cooldown_id.0)
+            .expect("slot identity changes the sample even when cooldown is equal");
+        assert_eq!(
+            cooldown_record.value,
+            WireSlotValue::Array(vec![1.0, 123.0])
+        );
+        let switched =
+            client.apply_snapshot_state(&mut client_table, 1, &fingerprint, &switched_records);
+        assert_eq!(switched.fresh_weapon_cooldown_slot, Some(1));
     }
 
     // Client apply validates ALL records before mutating any slot: a fingerprint

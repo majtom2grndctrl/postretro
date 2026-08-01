@@ -32,6 +32,52 @@ pub fn default_keyboard_mouse_bindings() -> Vec<Binding> {
             Action::AltFire,
         ),
         Binding::new(PhysicalInput::Key(KeyCode::KeyR), Action::Reload),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit1),
+            Action::SelectWieldable1,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit2),
+            Action::SelectWieldable2,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit3),
+            Action::SelectWieldable3,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit4),
+            Action::SelectWieldable4,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit5),
+            Action::SelectWieldable5,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit6),
+            Action::SelectWieldable6,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit7),
+            Action::SelectWieldable7,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit8),
+            Action::SelectWieldable8,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit9),
+            Action::SelectWieldable9,
+        ),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::Digit0),
+            Action::SelectWieldable10,
+        ),
+        Binding::new(PhysicalInput::MouseWheelDown, Action::CycleWieldableNext),
+        Binding::new(PhysicalInput::MouseWheelUp, Action::CycleWieldablePrevious),
+        Binding::new(
+            PhysicalInput::Key(KeyCode::KeyX),
+            Action::ToggleLastWieldable,
+        ),
     ]
 }
 
@@ -100,6 +146,18 @@ pub fn default_gamepad_bindings() -> Vec<Binding> {
             PhysicalInput::GamepadButton(GilrsButton::North),
             Action::Reload,
         ),
+        Binding::new(
+            PhysicalInput::GamepadButton(GilrsButton::DPadRight),
+            Action::CycleWieldableNext,
+        ),
+        Binding::new(
+            PhysicalInput::GamepadButton(GilrsButton::DPadLeft),
+            Action::CycleWieldablePrevious,
+        ),
+        Binding::new(
+            PhysicalInput::GamepadButton(GilrsButton::LeftTrigger),
+            Action::ToggleLastWieldable,
+        ),
     ]
 }
 
@@ -116,7 +174,7 @@ mod tests {
     use std::collections::HashSet;
 
     /// All Action variants, for exhaustive coverage checks.
-    fn all_actions() -> Vec<Action> {
+    fn common_actions() -> Vec<Action> {
         vec![
             Action::MoveForward,
             Action::MoveRight,
@@ -131,6 +189,9 @@ mod tests {
             Action::Shoot,
             Action::AltFire,
             Action::Reload,
+            Action::CycleWieldableNext,
+            Action::CycleWieldablePrevious,
+            Action::ToggleLastWieldable,
         ]
     }
 
@@ -138,7 +199,20 @@ mod tests {
     fn keyboard_mouse_bindings_cover_all_actions() {
         let bindings = default_keyboard_mouse_bindings();
         let bound_actions: HashSet<Action> = bindings.iter().map(|b| b.action).collect();
-        for action in all_actions() {
+        let mut actions = common_actions();
+        actions.extend([
+            Action::SelectWieldable1,
+            Action::SelectWieldable2,
+            Action::SelectWieldable3,
+            Action::SelectWieldable4,
+            Action::SelectWieldable5,
+            Action::SelectWieldable6,
+            Action::SelectWieldable7,
+            Action::SelectWieldable8,
+            Action::SelectWieldable9,
+            Action::SelectWieldable10,
+        ]);
+        for action in actions {
             assert!(
                 bound_actions.contains(&action),
                 "Action {:?} has no keyboard/mouse binding",
@@ -151,7 +225,7 @@ mod tests {
     fn gamepad_bindings_cover_all_actions() {
         let bindings = default_gamepad_bindings();
         let bound_actions: HashSet<Action> = bindings.iter().map(|b| b.action).collect();
-        for action in all_actions() {
+        for action in common_actions() {
             assert!(
                 bound_actions.contains(&action),
                 "Action {:?} has no gamepad binding",

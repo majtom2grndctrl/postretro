@@ -145,6 +145,7 @@ pub(super) fn materialize_armed_local_pawn(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     host_movement: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    host_tuning: Option<&super::TuningPayload>,
     rebuild_movement: bool,
 ) -> bool {
     let entity_class = armed.entity_class.as_deref().unwrap_or("player");
@@ -173,6 +174,13 @@ pub(super) fn materialize_armed_local_pawn(
         }
         log::warn!("[Net] local pawn has no host movement tuning; movement prediction stays inert");
     }
+    let _ = crate::scripting::builtins::net_descriptor::materialize_net_local_wieldable_inventory_from_tuning(
+        entity_class,
+        descriptors,
+        registry,
+        armed.entity_id,
+        host_tuning,
+    );
     crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
         entity_class,
         descriptors,
@@ -286,7 +294,7 @@ mod tests {
         );
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -359,6 +367,9 @@ mod tests {
             third_person_model: Some(model.to_string()),
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         });
         descriptor
     }
@@ -699,6 +710,7 @@ mod tests {
             &descriptors,
             &mut reg,
             descriptors[0].movement.as_ref(),
+            None,
             false,
         );
 
@@ -727,6 +739,7 @@ mod tests {
             &descriptors,
             &mut reg,
             descriptors[0].movement.as_ref(),
+            None,
             false,
         );
         assert!(
@@ -734,7 +747,7 @@ mod tests {
                 .unwrap()
         );
 
-        materialize_armed_local_pawn(&armed, &descriptors, &mut reg, None, true);
+        materialize_armed_local_pawn(&armed, &descriptors, &mut reg, None, None, true);
 
         assert_eq!(
             reg.has_component_kind(id, ComponentKind::PlayerMovement),

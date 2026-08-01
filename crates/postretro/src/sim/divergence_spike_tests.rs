@@ -15,6 +15,7 @@ use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{
@@ -73,6 +74,8 @@ impl RecordedCommand {
                 active: self.fire_active,
             },
             reload: false,
+            firing_slot: 0,
+            select_slot: None,
             use_pressed: false,
         }
     }
@@ -147,6 +150,14 @@ impl SimHarness {
                 .map(|role| (role, spawn_player(&mut registry, role.start_position())))
                 .collect::<Vec<_>>();
             let active_wieldable = spawn_weapon(&mut registry);
+            let alpha = role_ids
+                .iter()
+                .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
+                .expect("alpha role is always spawned");
+            registry.mark_local_player_pawn(alpha).unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(active_wieldable);
+            registry.set_component(alpha, inventory).unwrap();
             (role_ids, active_wieldable)
         };
 
@@ -255,6 +266,9 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             }),
         )
         .expect("weapon component should attach");

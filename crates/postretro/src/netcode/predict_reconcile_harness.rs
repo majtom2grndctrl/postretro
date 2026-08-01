@@ -15,8 +15,11 @@
 
 use glam::{Vec2, Vec3};
 
-use postretro_net::harness::LinkConfig;
-use postretro_net::wire::ClientMessage;
+use postretro_net::harness::{LinkConfig, PacketConditioner};
+use postretro_net::wire::{
+    ClientControlMessage, ClientMessage, ClientSwitchDeclaration, ServerControlMessage,
+    ServerSwitchAccepted, ServerSwitchRefused,
+};
 
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
@@ -27,11 +30,20 @@ use super::reconcile::reconcile_local_pawn;
 use crate::kinematic_mover::apply_mover_command;
 use crate::movement::MovementInput;
 use crate::netcode::host_handle_client_message;
+use crate::netcode::{
+    CurrentSwitchResolution, HostSwitchDecision, PendingSwitchDeclaration, SwitchOutcome,
+    apply_host_switch_declaration, resolve_switch_outcome,
+};
 use crate::sim::SimCommand;
 use postretro_entities::{
     KinematicMoverComponent, MoverCommand, Transform, TriggerVolumeComponent,
+    components::inventory::Inventory, components::weapon::WeaponComponent,
+    components::wieldable_state::WieldableState,
 };
-use postretro_foundation::{GroundRef, PlayerMovementComponent};
+use postretro_foundation::{
+    FireMode, GroundRef, PlayerMovementComponent, ResolutionMode, WeaponDescriptor,
+};
+use std::collections::VecDeque;
 
 /// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
 /// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),
@@ -74,6 +86,171 @@ fn loopback_link() -> LinkConfig {
 // ---------------------------------------------------------------------------
 // Section A — Integrated scenario tests (drive the real seams end to end)
 // ---------------------------------------------------------------------------
+
+fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<CurrentSwitchResolution>) {
+    let mut host_registry = postretro_entities::EntityRegistry::new();
+    let host_pawn = host_registry.spawn(Transform::default());
+    let slot_a = host_registry.spawn(Transform::default());
+    let slot_b = host_registry.spawn(Transform::default());
+    let slot_c = host_registry.spawn(Transform::default());
+    let test_weapon = || {
+        WeaponComponent::from_descriptor(&WeaponDescriptor {
+            damage: 10.0,
+            range: 64.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
+            resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: Some(true),
+        })
+    };
+    let mut slot_b_weapon = test_weapon();
+    if refuse_final_for_reload {
+        let reloading = &mut slot_b_weapon;
+        reloading.state = WieldableState::Reloading;
+        reloading.state_total_ms = 100;
+        reloading.state_remaining_ms = 50;
+    }
+    host_registry.set_component(slot_a, test_weapon()).unwrap();
+    host_registry.set_component(slot_b, slot_b_weapon).unwrap();
+    host_registry.set_component(slot_c, test_weapon()).unwrap();
+    let mut inventory = Inventory::default();
+    inventory.wieldables[0] = Some(slot_a);
+    inventory.wieldables[1] = Some(slot_b);
+    inventory.wieldables[2] = Some(slot_c);
+    host_registry.set_component(host_pawn, inventory).unwrap();
+    let mut weapon_owners = crate::netcode::WeaponOwners::new();
+
+    let link = LinkConfig {
+        delay: 32,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0xe16,
+    };
+    let mut to_host = PacketConditioner::new(link);
+    let mut to_client = PacketConditioner::new(link);
+    for declaration in [
+        ClientSwitchDeclaration {
+            declaration_id: 41,
+            slot: 1,
+        },
+        ClientSwitchDeclaration {
+            declaration_id: 42,
+            slot: 2,
+        },
+    ] {
+        to_host.enqueue(postretro_net::wire::encode(
+            &ClientControlMessage::SwitchDeclaration(declaration),
+        ));
+    }
+
+    to_host.advance(32);
+    for packet in to_host.take_ready() {
+        let ClientControlMessage::SwitchDeclaration(declaration) =
+            postretro_net::wire::decode(&packet).expect("decode conditioned declaration")
+        else {
+            panic!("switch harness carries declarations only");
+        };
+        let outcome = match apply_host_switch_declaration(
+            &mut host_registry,
+            host_pawn,
+            &mut weapon_owners,
+            usize::from(declaration.slot),
+            false,
+        ) {
+            HostSwitchDecision::Accepted => {
+                ServerControlMessage::SwitchAccepted(ServerSwitchAccepted {
+                    declaration_id: declaration.declaration_id,
+                    slot: declaration.slot,
+                })
+            }
+            HostSwitchDecision::Refused => {
+                ServerControlMessage::SwitchRefused(ServerSwitchRefused {
+                    declaration_id: declaration.declaration_id,
+                    slot: declaration.slot,
+                })
+            }
+        };
+        to_client.enqueue(postretro_net::wire::encode(&outcome));
+    }
+
+    let mut pending = VecDeque::from([
+        PendingSwitchDeclaration {
+            declaration_id: 41,
+            target_slot: 1,
+            held_origin_slot: 0,
+            rollback_slot: 0,
+            rollback_last_weapon_slot: Some(9),
+        },
+        PendingSwitchDeclaration {
+            declaration_id: 42,
+            target_slot: 2,
+            held_origin_slot: 0,
+            rollback_slot: 0,
+            rollback_last_weapon_slot: Some(0),
+        },
+    ]);
+    to_client.advance(32);
+    let resolutions = to_client
+        .take_ready()
+        .into_iter()
+        .map(|packet| {
+            let control: ServerControlMessage =
+                postretro_net::wire::decode(&packet).expect("decode conditioned outcome");
+            let outcome = match control {
+                ServerControlMessage::SwitchAccepted(accepted) => SwitchOutcome::Accepted(accepted),
+                ServerControlMessage::SwitchRefused(refused) => SwitchOutcome::Refused(refused),
+                _ => panic!("switch harness carries switch outcomes only"),
+            };
+            resolve_switch_outcome(&mut pending, outcome)
+        })
+        .collect::<Vec<_>>();
+    assert!(pending.is_empty(), "both reliable outcomes settle in order");
+    let active_slot = host_registry
+        .get_component::<Inventory>(host_pawn)
+        .unwrap()
+        .active_slot;
+    (active_slot, resolutions)
+}
+
+#[test]
+fn o29_two_peer_accept_accept_keeps_actual_held_slot_as_last_weapon() {
+    // Regression: ordered A->B then A->C declarations made unpresented B become
+    // the client's last weapon when both host validations accepted.
+    let (host_active, resolutions) = run_ordered_switch_pair(false);
+    assert_eq!(host_active, 2);
+    assert_eq!(
+        resolutions,
+        vec![
+            CurrentSwitchResolution::None,
+            CurrentSwitchResolution::Accepted {
+                last_weapon_slot: Some(0),
+            },
+        ]
+    );
+}
+
+#[test]
+fn o25_o29_two_peer_accept_refuse_restores_host_slot_without_inventing_history() {
+    let (host_active, resolutions) = run_ordered_switch_pair(true);
+    assert_eq!(host_active, 1);
+    assert_eq!(
+        resolutions,
+        vec![
+            CurrentSwitchResolution::None,
+            CurrentSwitchResolution::Refused {
+                target_slot: 2,
+                rollback_slot: 1,
+                last_weapon_slot: Some(0),
+            },
+        ]
+    );
+}
 
 // --- Ordered input: a steady forward-walk command stream converges; the client
 // reconciled pawn tracks the host authority, with the local pawn driven by
@@ -1266,6 +1443,8 @@ fn scripted_command(tick: u32) -> SimCommand {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     }
 }

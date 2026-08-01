@@ -251,6 +251,9 @@ impl App {
         let mut committed_render_profile: Option<
             postretro_scripting_core::runtime::ModRenderProfile,
         > = None;
+        // Switching is App-owned input policy, so lift it out of the runtime
+        // manifest before the registry drain mutably borrows the session.
+        let mut committed_switching: Option<postretro_foundation::SwitchingDescriptor> = None;
         {
             let session = self
                 .session
@@ -275,6 +278,14 @@ impl App {
                         .script_runtime
                         .mod_manifest()
                         .map(|manifest| manifest.render)
+                        .unwrap_or_default(),
+                );
+                committed_switching = Some(
+                    session
+                        .scripting
+                        .script_runtime
+                        .mod_manifest()
+                        .map(|manifest| manifest.switching)
                         .unwrap_or_default(),
                 );
                 // Drain the manifest's engine-global `DataRegistry` registrations
@@ -354,6 +365,9 @@ impl App {
         }
         if let Some(render_profile) = committed_render_profile {
             self.apply_mod_bloom_render_profile(render_profile);
+        }
+        if let Some(switching) = committed_switching {
+            self.switching = switching;
         }
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.

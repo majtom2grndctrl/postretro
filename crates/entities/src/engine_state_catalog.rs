@@ -434,9 +434,42 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         }),
         persist: false,
         capability: EngineStateCapability::Readonly,
-        // E16 Task 3: owner-private authoritative weapon cooldown for the
-        // client's own pawn, projected via the host pawn -> weapon map.
+        // Owner-private cooldown projects the active Inventory sibling's
+        // WeaponComponent.
         network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.weapon.current",
+        sdk_path: &["player", "weapon", "current"],
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // The locally-owned inventory is authoritative for switching on every role.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.weapon.pending",
+        sdk_path: &["player", "weapon", "pending"],
+        value_type: EngineStateValueType::String,
+        // Task 7 supplies the input-cursor producer. Keep the display value empty
+        // until that local producer is attached.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.weapon.switching",
+        sdk_path: &["player", "weapon", "switching"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.flash",
@@ -664,6 +697,9 @@ mod tests {
                 "player.maxHealth",
                 "player.reloadActive",
                 "player.reloadProgress",
+                "player.weapon.current",
+                "player.weapon.pending",
+                "player.weapon.switching",
                 "player.weaponCooldownMs",
                 "screen.flash",
                 "screen.shake",
@@ -742,10 +778,40 @@ mod tests {
             })
         );
         assert_eq!(weapon_cooldown.capability, EngineStateCapability::Readonly);
+
+        for (wire_name, path, value_type, default) in [
+            (
+                "player.weapon.current",
+                &["player", "weapon", "current"][..],
+                EngineStateValueType::String,
+                EngineStateDefault::String(""),
+            ),
+            (
+                "player.weapon.pending",
+                &["player", "weapon", "pending"][..],
+                EngineStateValueType::String,
+                EngineStateDefault::String(""),
+            ),
+            (
+                "player.weapon.switching",
+                &["player", "weapon", "switching"][..],
+                EngineStateValueType::Boolean,
+                EngineStateDefault::Boolean(false),
+            ),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(entry.sdk_path, path);
+            assert_eq!(entry.value_type, value_type);
+            assert_eq!(entry.default, default);
+            assert_eq!(entry.network, ReplicationScope::None);
+        }
     }
 
     #[test]
-    fn player_owner_private_slots_are_replicated() {
+    fn player_owner_private_slots_are_replicated_except_local_weapon_display_slots() {
         // Server-authoritative player facts replicate owner-private (server sends
         // each only to the owning client); every other built-in slot stays
         // local-only (`None`).
@@ -769,6 +835,22 @@ mod tests {
                 entry.network,
                 ReplicationScope::OwnerPrivatePlayer,
                 "{wire_name} must be owner-private replicated"
+            );
+        }
+
+        for wire_name in [
+            "player.weapon.current",
+            "player.weapon.pending",
+            "player.weapon.switching",
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(
+                entry.network,
+                ReplicationScope::None,
+                "{wire_name} is locally owned display state, never an owner-private projection"
             );
         }
 

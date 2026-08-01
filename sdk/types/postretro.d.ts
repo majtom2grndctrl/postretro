@@ -74,11 +74,9 @@ declare module "postretro" {
 
   /** Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
   export type EntityTypeDescriptor = {
-    /** Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name. */
+    /** Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name. */
     canonicalName?: string;
-    /** The `canonicalName` of a registered weapon archetype to instantiate and equip when this descriptor is selected by a `player_spawn` marker. Other spawn paths ignore this key. */
-    defaultWeapon?: string;
-    /** Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` does the same and may also equip `defaultWeapon`; weapon presets materialize on the separate wieldable entity created by that route. */
+    /** Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` also composes its inventory loadout into separate wieldable instances. */
     components?: EntityTypeComponents;
   };
 
@@ -213,7 +211,9 @@ declare module "postretro" {
     emitter?: BillboardEmitterComponent | null;
     /** Player movement, collision capsule, and first-person view-feel preset. */
     movement?: PlayerMovementDescriptor | null;
-    /** Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`. */
+    /** Pawn-owned ordered wieldable loadout. Input cursor and dwell state are never stored here. */
+    inventory?: InventoryDescriptor | null;
+    /** Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`. */
     weapon?: WeaponDescriptor | null;
     /** Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName. */
     mesh?: MeshDescriptor | null;
@@ -221,6 +221,12 @@ declare module "postretro" {
     health?: HealthDescriptor | null;
     /** Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards. */
     behavior?: BehaviorGraphDescriptor | null;
+  };
+
+  /** Ordered weapon descriptor references composed beside a player pawn at spawn. The SDK lowers them to canonical wieldable archetype names before the manifest crosses FFI. The ten-slot engine capacity truncates longer authored lists. */
+  export type InventoryDescriptor = {
+    /** Ordered references returned by `defineEntity` for descriptors declaring a weapon block. Omission is an empty loadout. */
+    loadout?: ReadonlyArray<WeaponEntityDescriptor>;
   };
 
   /** Valid values: `semi`, `auto`. */
@@ -283,6 +289,12 @@ declare module "postretro" {
     viewmodel?: string;
     /** Optional weapon resource tuning. Omit to preserve unlimited-fire behavior. */
     resource?: WeaponResource;
+    /** Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick. */
+    lowerMs?: number;
+    /** Raising duration in milliseconds. Optional; defaults to 0. */
+    raiseMs?: number;
+    /** Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin. */
+    blockDuringReload?: boolean;
   };
 
   /** One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position. */
@@ -608,6 +620,16 @@ declare module "postretro" {
     bloom?: BloomRenderProfile;
   };
 
+  /** Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption. */
+  export type SwitchingDescriptor = {
+    /** Whether a direct slot-select action emits a commit immediately. Input-layer policy only. */
+    commitOnDirectSelect: boolean;
+    /** Cycle-selection dwell in milliseconds. Must be finite and >= 0. Input-layer policy only. */
+    cycleCommitDwellMs: number;
+    /** Whether a weapon without its own override must finish reload activity before a switch can begin. */
+    blockDuringReload: boolean;
+  };
+
   /** Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds. */
   export type ModManifest = {
     /** Human-readable mod name used for diagnostics and UI. Required. */
@@ -618,6 +640,8 @@ declare module "postretro" {
     version: string;
     /** Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom. */
     render?: RenderProfile;
+    /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
+    switching?: SwitchingDescriptor;
     /** Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
     /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
@@ -775,6 +799,11 @@ declare module "postretro" {
       readonly maxHealth: ReadonlyStateRef<number>;
       readonly reloadActive: ReadonlyStateRef<boolean>;
       readonly reloadProgress: ReadonlyStateRef<number>;
+      readonly weapon: {
+        readonly current: ReadonlyStateRef<string>;
+        readonly pending: ReadonlyStateRef<string>;
+        readonly switching: ReadonlyStateRef<boolean>;
+      };
       readonly weaponCooldownMs: ReadonlyStateRef<number>;
     };
     readonly screen: {
@@ -1317,8 +1346,10 @@ declare module "postretro" {
     accessibleName?: string;
     role?: WidgetRole;
   };
-  /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
-  export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
+  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
+  export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
+  /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
+  export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */

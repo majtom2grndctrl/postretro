@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::mesh::{AnimationState, InterruptPolicy};
 use crate::data_descriptors::{
@@ -296,9 +298,8 @@ impl MeshDescriptor {
 /// `canonical_name` cannot be matched against a `MapEntity.classname` by the
 /// data-archetype dispatch.
 ///
-/// `default_weapon` is the canonical name of the wieldable archetype spawned
-/// alongside this entity when routed through `player_spawn`. The descriptor
-/// keeps the string; runtime state stores the resolved `EntityId`.
+/// `inventory` declares the canonical wieldable archetypes spawned beside a
+/// player pawn. Runtime state stores the resolved instance ids, one per slot.
 ///
 /// Optional `light` / `emitter` / `movement` / `weapon` carry per-entity-type
 /// component presets. The level-load spawn path materializes these into a
@@ -308,7 +309,7 @@ impl MeshDescriptor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityTypeDescriptor {
     pub canonical_name: Option<String>,
-    pub default_weapon: Option<String>,
+    pub inventory: Option<InventoryDescriptor>,
     pub light: Option<LightDescriptor>,
     pub emitter: Option<BillboardEmitterComponent>,
     pub movement: Option<PlayerMovementDescriptor>,
@@ -316,4 +317,14 @@ pub struct EntityTypeDescriptor {
     pub mesh: Option<MeshDescriptor>,
     pub health: Option<HealthDescriptor>,
     pub behavior: Option<BehaviorGraphDescriptor>,
+}
+
+/// Author-side player inventory composition. SDK builders validate typed
+/// descriptor references, then lower them to canonical archetype names for
+/// this runtime descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryDescriptor {
+    #[serde(default)]
+    pub loadout: Vec<String>,
 }

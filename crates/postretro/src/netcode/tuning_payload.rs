@@ -3,39 +3,48 @@
 //! The net crate carries these bytes opaquely. Keeping the descriptor types here
 //! avoids a wire mirror that would make the transport registry-aware.
 
+use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
 use postretro_foundation::{FireMode, PlayerMovementDescriptor, ResolutionMode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Bump whenever the semantic JSON payload shape changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 1;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 2;
 
-/// The four default-weapon values a client predicts locally.
+/// Host-resolved values for one occupied wieldable slot.
+///
+/// The archetype is part of the payload because a connected client owns local
+/// wieldable instances. It needs the canonical identity to materialize each
+/// slot and select its presentation without consulting a host-only entity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct DefaultWeaponFirePayload {
+pub(crate) struct WieldableTuningPayload {
+    pub(crate) canonical_name: String,
     pub(crate) range: f32,
     pub(crate) cooldown_ms: f32,
     pub(crate) fire_mode: FireMode,
     pub(crate) resolution: ResolutionMode,
+    pub(crate) lower_ms: u32,
+    pub(crate) raise_ms: u32,
 }
 
 /// Host-resolved tuning for one participating pawn.
 ///
-/// Both halves are optional: a pawn class may have no movement descriptor or
-/// no resolvable default weapon. `movement.view_feel` is always cleared because
-/// view feel is local presentation rather than predicted simulation tuning.
+/// Movement is optional for pawn classes without a movement descriptor. The
+/// wieldable array is capacity-sized so a slot's identity survives empty
+/// positions. `movement.view_feel` is always cleared because view feel is local
+/// presentation rather than predicted simulation tuning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TuningPayload {
     epoch: u32,
     pub(crate) movement: Option<PlayerMovementDescriptor>,
-    pub(crate) default_weapon: Option<DefaultWeaponFirePayload>,
+    pub(crate) wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
 }
 
 impl TuningPayload {
     pub(crate) fn new(
         mut movement: Option<PlayerMovementDescriptor>,
-        default_weapon: Option<DefaultWeaponFirePayload>,
+        wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
     ) -> Self {
         if let Some(descriptor) = movement.as_mut() {
             descriptor.view_feel = None;
@@ -43,7 +52,7 @@ impl TuningPayload {
         Self {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
-            default_weapon,
+            wieldables,
         }
     }
 }
@@ -61,28 +70,41 @@ pub(crate) enum TuningPayloadError {
     EpochMismatch { expected: u32, received: u32 },
 }
 
+#[derive(Deserialize)]
+struct PayloadEpoch {
+    epoch: u32,
+}
+
+fn payload_json_error(source: serde_json::Error) -> TuningPayloadError {
+    if source.is_eof() {
+        TuningPayloadError::Truncated
+    } else {
+        TuningPayloadError::Malformed { source }
+    }
+}
+
 /// Serialize a payload in its canonical JSON form.
 pub(crate) fn encode_tuning_payload(payload: &TuningPayload) -> Vec<u8> {
-    let canonical = TuningPayload::new(payload.movement.clone(), payload.default_weapon.clone());
+    let canonical = TuningPayload::new(payload.movement.clone(), payload.wieldables.clone());
     serde_json::to_vec(&canonical)
         .expect("tuning payload only contains validated descriptor values")
 }
 
 /// Decode and validate an opaque tuning payload received over Control.
 pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, TuningPayloadError> {
-    let mut payload: TuningPayload = serde_json::from_slice(data).map_err(|source| {
-        if source.is_eof() {
-            TuningPayloadError::Truncated
-        } else {
-            TuningPayloadError::Malformed { source }
-        }
-    })?;
-    if payload.epoch != TUNING_PAYLOAD_EPOCH {
+    // Read the epoch before the full shape. A valid legacy payload has no
+    // `wieldables` field, but it should explain its stale epoch rather than
+    // degrade into an unhelpful missing-field diagnostic.
+    let received = serde_json::from_slice::<PayloadEpoch>(data)
+        .map_err(payload_json_error)?
+        .epoch;
+    if received != TUNING_PAYLOAD_EPOCH {
         return Err(TuningPayloadError::EpochMismatch {
             expected: TUNING_PAYLOAD_EPOCH,
-            received: payload.epoch,
+            received,
         });
     }
+    let mut payload: TuningPayload = serde_json::from_slice(data).map_err(payload_json_error)?;
     if let Some(descriptor) = payload.movement.as_mut() {
         descriptor.view_feel = None;
     }
@@ -167,17 +189,31 @@ mod tests {
         }
     }
 
-    fn default_weapon() -> DefaultWeaponFirePayload {
-        DefaultWeaponFirePayload {
+    fn weapon_slots() -> [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY] {
+        let mut slots = std::array::from_fn(|_| None);
+        slots[0] = Some(WieldableTuningPayload {
+            canonical_name: "reference_pistol".to_string(),
             range: 128.0,
             cooldown_ms: 125.0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
-        }
+            lower_ms: 40,
+            raise_ms: 60,
+        });
+        slots[2] = Some(WieldableTuningPayload {
+            canonical_name: "ion_rifle".to_string(),
+            range: 256.0,
+            cooldown_ms: 240.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            lower_ms: 75,
+            raise_ms: 90,
+        });
+        slots
     }
 
     fn full_payload() -> TuningPayload {
-        TuningPayload::new(Some(movement_descriptor()), Some(default_weapon()))
+        TuningPayload::new(Some(movement_descriptor()), weapon_slots())
     }
 
     #[test]
@@ -187,17 +223,22 @@ mod tests {
         let payload = TuningPayload {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement: Some(descriptor),
-            default_weapon: Some(default_weapon()),
+            wieldables: weapon_slots(),
         };
 
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(json["movement"]["view_feel"].is_null());
+        let wieldables = json["wieldables"].as_array().unwrap();
+        assert_eq!(wieldables.len(), WIELDABLE_SLOT_CAPACITY);
+        assert_eq!(wieldables[0]["canonical_name"], "reference_pistol");
+        assert!(wieldables[1].is_null());
+        assert_eq!(wieldables[2]["lower_ms"], 75);
 
         let decoded = decode_tuning_payload(&encoded).unwrap();
         assert_eq!(
             decoded,
-            TuningPayload::new(payload.movement, payload.default_weapon)
+            TuningPayload::new(payload.movement, payload.wieldables)
         );
         let dash = decoded.movement.unwrap().dash.unwrap();
         assert_eq!(dash.boost_speed, NumberOrIr::Literal(18.0));
@@ -206,7 +247,7 @@ mod tests {
 
     #[test]
     fn payload_round_trips_absent_halves() {
-        let payload = TuningPayload::new(None, None);
+        let payload = TuningPayload::new(None, std::array::from_fn(|_| None));
         let decoded = decode_tuning_payload(&encode_tuning_payload(&payload)).unwrap();
         assert_eq!(decoded, payload);
     }
@@ -229,6 +270,15 @@ mod tests {
                 received
             }) if received == TUNING_PAYLOAD_EPOCH + 1
         ));
+
+        let stale_shape = br#"{"epoch":1,"movement":null,"default_weapon":null}"#;
+        assert!(matches!(
+            decode_tuning_payload(stale_shape),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 1,
+            })
+        ));
     }
 
     #[test]
@@ -242,8 +292,8 @@ mod tests {
 
         assert_eq!(
             actual,
-            include_str!("tests/fixtures/tuning_payload.expected.json"),
-            "tuning payload JSON changed; bump TUNING_PAYLOAD_EPOCH and the wire version for a semantic payload change, or re-bless with {BLESS_ENV}=1 for a non-semantic rendering change"
+            include_str!("tests/fixtures/tuning_payload.expected.json").trim_end_matches('\n'),
+            "tuning payload JSON changed; bump TUNING_PAYLOAD_EPOCH for a semantic payload change, or re-bless with {BLESS_ENV}=1 for a non-semantic rendering change"
         );
     }
 }

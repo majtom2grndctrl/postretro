@@ -128,7 +128,7 @@ impl App {
 
     /// Re-resolve participating pawns after a committed manifest changes. The
     /// retained payload map makes this cheap on reloads that did not alter movement
-    /// or default-weapon fire values.
+    /// or live wieldable tuning.
     fn refresh_host_tuning(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;
@@ -203,6 +203,14 @@ impl App {
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
+            // The selection holder shares the gameplay input latch's clear path.
+            // Surface-level teardown includes level unload, so no cursor, dwell,
+            // last-slot memory, or unconsumed declaration can reach the next level.
+            session.gameplay_input_latch.clear();
+            session
+                .scripting
+                .player_hud_state
+                .set_pending_weapon_slot(None);
         }
         self.collision_world.clear();
         self.kinematic_mover_colliders.clear();
@@ -211,9 +219,6 @@ impl App {
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
-        self.active_wieldable = None;
-        self.active_wieldable_descriptor = None;
-        self.client_weapon_state = None;
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
     }
@@ -806,8 +811,6 @@ impl App {
         // Reset the input-mode tracker so a mid-transition mode never bleeds
         // across levels.
         session.scripting.input_mode_tracker.reset();
-        self.active_wieldable = None;
-        self.active_wieldable_descriptor = None;
 
         // Derive material properties from texture names so the renderer can
         // populate per-material uniforms (shininess) without re-parsing.
@@ -1016,8 +1019,6 @@ impl App {
         // path (M15 Phase 3 Task 4): the host materializes each accepted client's
         // descriptor pawn from them later.
         self.host_spawn_points = products.spawn_points;
-        self.active_wieldable = products.active_wieldable;
-        self.active_wieldable_descriptor = products.active_wieldable_descriptor;
 
         // The boot pawn exists before the regular host snapshot cadence (and in
         // single-player there is no `WeaponOwners` table at all), so establish its
@@ -1035,7 +1036,6 @@ impl App {
             if crate::netcode::synchronize_weapon_attachment_for_pawn(
                 &mut registry,
                 pawn,
-                self.active_wieldable,
                 &descriptors,
                 &session.hit_zone_store,
             ) {
@@ -1444,10 +1444,6 @@ pub(crate) struct WorldInstallProducts {
     /// field is dead only in a build without that feature.
     #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) mover_tick_states: crate::kinematic_mover::MoverTickStateTable,
-    /// The spawned player pawn's active weapon instance and its descriptor name,
-    /// if a boot pawn spawned.
-    pub(crate) active_wieldable: Option<postretro_entities::EntityId>,
-    pub(crate) active_wieldable_descriptor: Option<String>,
     /// First `player_spawn` origin + engine-convention YXZ angles (x=pitch,
     /// y=yaw), for the windowed camera teleport. `None` when the map has none.
     pub(crate) first_spawn: Option<(Vec3, Vec3)>,
@@ -1743,7 +1739,7 @@ pub(crate) fn install_world_cpu(
     // declared third- and first-person model so attachment/viewmodel changes never
     // trigger runtime model loads or leave a transient placeholder.
     let weapon_presentation_models = weapon_presentation_models(&descriptors);
-    let (active_wieldable, active_wieldable_descriptor, first_spawn) = {
+    let first_spawn = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
         if suppress_ai_enemies {
@@ -1783,19 +1779,16 @@ pub(crate) fn install_world_cpu(
         // A connected client must NOT spawn a boot pawn (its authoritative pawn
         // arrives as a host-replicated baseline); single-player and the listen host
         // keep spawning theirs.
-        let (active_wieldable, active_wieldable_descriptor) = if suppress_boot_pawn {
+        if suppress_boot_pawn {
             log::info!("[Loader] connected client: deferring player spawn to host baseline");
-            (None, None)
         } else if !spawn_points.is_empty() {
-            let result =
+            let _ =
                 spawn_from_player_starts(&spawn_points, &descriptors, &mut registry, agent_params);
-            (result.active_wieldable, result.active_wieldable_descriptor)
         } else {
             log::info!("[Loader] no player_spawn in map; skipping player spawn");
-            (None, None)
-        };
+        }
 
-        (active_wieldable, active_wieldable_descriptor, first_spawn)
+        first_spawn
     };
     let spawner_diagnostics = {
         let mut registry = script_ctx.registry.borrow_mut();
@@ -1918,8 +1911,6 @@ pub(crate) fn install_world_cpu(
         trigger_bindings,
         trigger_pool_report,
         mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
-        active_wieldable,
-        active_wieldable_descriptor,
         first_spawn,
         spawn_points,
     }
@@ -2211,6 +2202,7 @@ mod tests {
             title_buffer: String::new(),
             last_title_update: Instant::now(),
             mod_theme_override: Default::default(),
+            switching: Default::default(),
             pending_mode_signal: None,
             pending_menu_toggle: false,
             pending_exit_to_desktop: false,
@@ -2223,9 +2215,6 @@ mod tests {
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
-            active_wieldable: None,
-            active_wieldable_descriptor: None,
-            client_weapon_state: None,
             client_fire_resolutions: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             boot_state: BootState::Running,
@@ -2287,7 +2276,7 @@ mod tests {
     fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -3328,6 +3317,7 @@ mod tests {
                 id: "replacement".to_string(),
                 version: "1".to_string(),
                 render: Default::default(),
+                switching: Default::default(),
                 entities: Vec::new(),
                 maps: Vec::new(),
                 reactions: Vec::new(),

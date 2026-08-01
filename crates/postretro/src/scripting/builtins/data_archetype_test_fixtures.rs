@@ -70,7 +70,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
 
     EntityTypeDescriptor {
         canonical_name: Some(classname.to_string()),
-        default_weapon: None,
+        inventory: None,
         light: None,
         emitter: None,
         movement: None,

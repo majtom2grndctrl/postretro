@@ -226,6 +226,8 @@ fn idle_command() -> SimCommand {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     }
 }
@@ -759,6 +761,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 -20.0,
                 1.0 / 60.0,
                 Duration::from_secs_f32(frame_dt),
+                None,
                 None,
                 None,
                 false,

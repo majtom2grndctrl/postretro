@@ -37,7 +37,8 @@ use postretro_net::wire::InputCommand;
 use crate::netcode::prediction::client_tick_le;
 use crate::netcode::wire_convert::{input_command_to_sim, sanitize_input_command};
 use crate::sim::SimCommand;
-use postretro_entities::EntityId;
+use postretro_entities::components::inventory::Inventory;
+use postretro_entities::{EntityId, EntityRegistry};
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's
@@ -75,12 +76,13 @@ impl MovementOwners {
     }
 }
 
-/// Host-side active-weapon owner map: `pawn EntityId -> active weapon EntityId`.
-/// Remote client pawns own their active weapon through this host-only table; enemy
-/// health and weapon state remain registry-owned and host-authoritative.
+/// Explicitly-marked work queue for third-person weapon attachment updates.
+///
+/// Active wieldable identity is pawn-owned state. This tracker deliberately keeps
+/// only the presentation dirties; draining it resolves the current active instance
+/// from the pawn's [`Inventory`] rather than retaining a second pawn-to-weapon map.
 #[derive(Debug, Default)]
 pub(crate) struct WeaponOwners {
-    weapons: HashMap<EntityId, EntityId>,
     attachment_dirty: HashSet<EntityId>,
 }
 
@@ -89,39 +91,47 @@ impl WeaponOwners {
         Self::default()
     }
 
-    /// Record `weapon` as the active weapon for `pawn`.
-    pub(crate) fn set(&mut self, pawn: EntityId, weapon: EntityId) {
-        if self.weapons.insert(pawn, weapon) != Some(weapon) {
-            self.attachment_dirty.insert(pawn);
-        }
+    /// Mark `pawn` for an attachment refresh. Call this after inventory
+    /// materialization, repoint, and pawn removal; the queue intentionally does no
+    /// implicit change detection because the inventory is the sole active source.
+    pub(crate) fn mark_attachment_dirty(&mut self, pawn: EntityId) {
+        self.attachment_dirty.insert(pawn);
     }
 
-    /// The active weapon for `pawn`, if one was materialized.
-    pub(crate) fn weapon_of(&self, pawn: EntityId) -> Option<EntityId> {
-        self.weapons.get(&pawn).copied()
-    }
-
-    /// Forget a pawn's active weapon (on slot close / despawn). Idempotent.
+    /// Mark a pawn's attachment as removed. The pawn may already be gone by the
+    /// time the queue drains, which resolves naturally to no active wieldable.
     pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
-        if self.weapons.remove(&pawn).is_some() {
-            self.attachment_dirty.insert(pawn);
-        }
+        self.mark_attachment_dirty(pawn);
     }
 
-    /// Drain pawn bindings whose authoritative weapon assignment changed. The
-    /// relationship map remains intact for snapshot provenance and combat lookup;
-    /// only the presentation work queue is consumed.
-    pub(crate) fn take_attachment_changes(&mut self) -> Vec<(EntityId, Option<EntityId>)> {
+    /// Drain pawn attachment changes, resolving each active wieldable at the moment
+    /// of consumption from live pawn inventory.
+    pub(crate) fn take_attachment_changes(
+        &mut self,
+        registry: &EntityRegistry,
+    ) -> Vec<(EntityId, Option<EntityId>)> {
         let dirty: Vec<EntityId> = self.attachment_dirty.drain().collect();
         dirty
             .into_iter()
-            .map(|pawn| (pawn, self.weapons.get(&pawn).copied()))
+            .map(|pawn| (pawn, active_wieldable_for_pawn(registry, pawn)))
             .collect()
     }
 
     pub(crate) fn has_attachment_changes(&self) -> bool {
         !self.attachment_dirty.is_empty()
     }
+}
+
+/// Resolve the active inventory instance for a live pawn. This is the one shared
+/// lookup for fire, replication, HUD projections, and presentation plumbing.
+pub(crate) fn active_wieldable_for_pawn(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+) -> Option<EntityId> {
+    registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .and_then(Inventory::active_wieldable)
 }
 
 /// Hold the last resolved command for at most this many missing ticks before
@@ -535,6 +545,8 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
     }
 }
@@ -578,6 +590,7 @@ mod tests {
                 facing_yaw: 0.5,
                 use_pressed: false,
                 aim_pitch: 0.0,
+                firing_slot: 0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,

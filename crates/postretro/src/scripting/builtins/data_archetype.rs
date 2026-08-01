@@ -22,6 +22,7 @@ use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
@@ -50,7 +51,7 @@ pub(crate) const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
     max_slope_deg: 45.0,
 };
 
-pub(super) fn seed_weapon_reserve(
+fn seed_weapon_reserve(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     weapon_descriptor: &EntityTypeDescriptor,
@@ -69,6 +70,130 @@ pub(super) fn seed_weapon_reserve(
         .unwrap_or_default();
     reserve.credit(&ammo.ammo_type, ammo.reserve);
     let _ = registry.set_component(pawn, reserve);
+}
+
+/// Materialize one independent wieldable instance for each authored loadout
+/// entry and attach their ordered ownership to the pawn. This is the only
+/// composition path: descriptors hold names, while the inventory holds live
+/// entity ids and no input-selection state.
+pub(super) fn compose_wieldable_inventory(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    pawn_descriptor: &EntityTypeDescriptor,
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+) -> Option<EntityId> {
+    let inventory = Inventory::default();
+    let Some(loadout) = pawn_descriptor
+        .inventory
+        .as_ref()
+        .map(|inventory| &inventory.loadout)
+    else {
+        let _ = registry.set_component(pawn, inventory);
+        return None;
+    };
+
+    compose_wieldable_inventory_slots(
+        registry,
+        pawn,
+        placement,
+        descriptors,
+        loadout
+            .iter()
+            .take(WIELDABLE_SLOT_CAPACITY)
+            .enumerate()
+            .map(|(slot, canonical_name)| (slot, Some(canonical_name.as_str()))),
+    )
+}
+
+/// Compose a local inventory from explicit slot identities. The connected-client
+/// tuning path uses this only when Control arrives before its pawn baseline: the
+/// host has already resolved the slot layout, including interior empty slots.
+pub(crate) fn compose_wieldable_inventory_from_slots(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    slots: &[Option<String>; WIELDABLE_SLOT_CAPACITY],
+) -> Option<EntityId> {
+    compose_wieldable_inventory_slots(
+        registry,
+        pawn,
+        placement,
+        descriptors,
+        slots
+            .iter()
+            .enumerate()
+            .map(|(slot, canonical_name)| (slot, canonical_name.as_deref())),
+    )
+}
+
+fn compose_wieldable_inventory_slots<'a>(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    slots: impl IntoIterator<Item = (usize, Option<&'a str>)>,
+) -> Option<EntityId> {
+    let mut inventory = Inventory::default();
+    let mut seeded_ammo_types = HashSet::new();
+
+    for (slot, canonical_name) in slots {
+        let Some(canonical_name) = canonical_name else {
+            continue;
+        };
+        let Some(weapon_descriptor) = find_descriptor(descriptors, canonical_name) else {
+            log::warn!(
+                "[Loader] {}: inventory loadout `{canonical_name}` not registered; slot {slot} stays empty",
+                placement.diagnostic_origin(),
+            );
+            continue;
+        };
+        let Some(weapon) = weapon_descriptor.weapon.as_ref() else {
+            log::warn!(
+                "[Loader] {}: inventory loadout `{canonical_name}` has no weapon component; slot {slot} stays empty",
+                placement.diagnostic_origin(),
+            );
+            continue;
+        };
+        let weapon_entity = MapEntity {
+            classname: canonical_name.to_string(),
+            origin: placement.origin,
+            angles: placement.angles,
+            key_values: Default::default(),
+            tags: vec![],
+        };
+        let Some(weapon_id) = spawn_descriptor_instance(
+            registry,
+            weapon_descriptor,
+            &weapon_entity,
+            true,
+            DescriptorSpawnPath::DefaultWeapon,
+            None,
+        ) else {
+            log::warn!(
+                "[Loader] {}: entity registry exhausted; dropping inventory loadout `{canonical_name}`",
+                placement.diagnostic_origin(),
+            );
+            continue;
+        };
+        let _ = registry.set_map_kvps(weapon_id, Default::default());
+        inventory.wieldables[slot] = Some(weapon_id);
+
+        if let Some(WeaponResource::Ammo(ammo)) = weapon.resource.as_ref()
+            && seeded_ammo_types.insert(ammo.ammo_type.clone())
+        {
+            seed_weapon_reserve(registry, pawn, weapon_descriptor);
+        }
+    }
+
+    let active = inventory.wieldables.iter().position(Option::is_some);
+    if let Some(active_slot) = active {
+        inventory.active_slot = active_slot;
+    }
+    let active_weapon = inventory.active_wieldable();
+    let _ = registry.set_component(pawn, inventory);
+    active_weapon
 }
 
 /// Apply the `initial_<field>` KVP override convention to the descriptor's
@@ -808,16 +933,14 @@ pub(crate) const PLAYER_START_CLASSNAME: &str = "player_spawn";
 /// Spawn one entity per `player_spawn` placement, using each placement's
 /// `entity_class` KVP (default `"player"`) to look up an
 /// [`EntityTypeDescriptor`]. Component attachment uses the same descriptor
-/// materialization helper as the data-archetype sweep, while `defaultWeapon`
-/// spawns a sibling weapon instance only when the target descriptor declares a
-/// weapon component. The per-placement KVP bag is forwarded with
+/// materialization helper as the data-archetype sweep, while
+/// `components.inventory.loadout` spawns sibling wieldable instances only when
+/// the target descriptors declare weapon components. The per-placement KVP bag is forwarded with
 /// `entity_class` stripped so it is not confused with an `initial_*` override.
 /// Tags from the `player_spawn` placement are passed directly to `try_spawn`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PlayerSpawnResult {
     pub(crate) spawned: usize,
-    pub(crate) active_wieldable: Option<EntityId>,
-    pub(crate) active_wieldable_descriptor: Option<String>,
 }
 
 pub(crate) fn spawn_from_player_starts(
@@ -827,8 +950,6 @@ pub(crate) fn spawn_from_player_starts(
     agent_params: Option<NavAgentParams>,
 ) -> PlayerSpawnResult {
     let mut spawned = 0usize;
-    let mut active_wieldable = None;
-    let mut active_wieldable_descriptor = None;
 
     for entity in spawn_points {
         let entity_class = entity
@@ -876,56 +997,7 @@ pub(crate) fn spawn_from_player_starts(
         kvps.remove("entity_class");
         let _ = registry.set_map_kvps(id, kvps);
 
-        if let Some(default_weapon) = descriptor.default_weapon.as_deref() {
-            let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
-                log::warn!(
-                    "[Loader] {origin}: defaultWeapon `{default_weapon}` not registered; player spawned unarmed",
-                    origin = entity.diagnostic_origin(),
-                );
-                spawned += 1;
-                continue;
-            };
-            if weapon_descriptor.weapon.is_none() {
-                log::warn!(
-                    "[Loader] {origin}: defaultWeapon `{default_weapon}` has no weapon component; player spawned unarmed",
-                    origin = entity.diagnostic_origin(),
-                );
-                spawned += 1;
-                continue;
-            }
-
-            let weapon_entity = MapEntity {
-                classname: default_weapon.to_string(),
-                origin: entity.origin,
-                angles: entity.angles,
-                key_values: Default::default(),
-                tags: vec![],
-            };
-            match spawn_descriptor_instance(
-                registry,
-                weapon_descriptor,
-                &weapon_entity,
-                true,
-                DescriptorSpawnPath::DefaultWeapon,
-                // A wieldable instance never carries an `ai` block, so no agent.
-                None,
-            ) {
-                Some(weapon_id) => {
-                    let _ = registry.set_map_kvps(weapon_id, Default::default());
-                    seed_weapon_reserve(registry, id, weapon_descriptor);
-                    if active_wieldable.is_none() {
-                        active_wieldable = Some(weapon_id);
-                        active_wieldable_descriptor = Some(default_weapon.to_string());
-                    }
-                }
-                None => {
-                    log::warn!(
-                        "[Loader] {origin}: entity registry exhausted; dropping defaultWeapon `{default_weapon}`",
-                        origin = entity.diagnostic_origin(),
-                    );
-                }
-            }
-        }
+        let _ = compose_wieldable_inventory(registry, id, descriptor, entity, descriptors);
 
         spawned += 1;
     }
@@ -937,11 +1009,7 @@ pub(crate) fn spawn_from_player_starts(
         );
     }
 
-    PlayerSpawnResult {
-        spawned,
-        active_wieldable,
-        active_wieldable_descriptor,
-    }
+    PlayerSpawnResult { spawned }
 }
 
 #[cfg(test)]
@@ -962,7 +1030,7 @@ mod tests {
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [0.5, 0.5, 0.5],
                 intensity: 1.0,
@@ -1182,7 +1250,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("target_dummy".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -1568,7 +1636,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1612,7 +1680,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1653,7 +1721,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1691,7 +1759,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("burstfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 0.0,
@@ -1731,7 +1799,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("smolder".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1790,7 +1858,7 @@ mod tests {
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("billboard_emitter".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [1.0, 0.0, 0.0],
                 intensity: 5.0,
@@ -1857,7 +1925,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: None,
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [1.0, 1.0, 1.0],
                 intensity: 1.0,
@@ -1934,13 +2002,13 @@ mod tests {
         ];
         let points = vec![spawn_point(&[])];
 
-        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+        let _result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let player_id = reg
-            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| Some(*id) != result.active_wieldable)
-            .expect("player entity should spawn");
+            .expect("player entity should spawn with inventory");
         let player_provenance = reg
             .get_component::<DescriptorProvenance>(player_id)
             .expect("player provenance should be recorded");
@@ -1950,8 +2018,10 @@ mod tests {
         );
         assert_eq!(player_provenance.canonical_name, "player");
 
-        let weapon_id = result
-            .active_wieldable
+        let weapon_id = reg
+            .get_component::<Inventory>(player_id)
+            .unwrap()
+            .active_wieldable()
             .expect("default weapon should spawn as active wieldable");
         let weapon_provenance = reg
             .get_component::<DescriptorProvenance>(weapon_id)
@@ -1971,7 +2041,7 @@ mod tests {
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -1985,7 +2055,7 @@ mod tests {
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -1999,6 +2069,9 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             }),
             mesh: None,
             health: None,
@@ -2020,9 +2093,15 @@ mod tests {
     }
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
+        player_with_loadout(classname, &[default_weapon])
+    }
+
+    fn player_with_loadout(classname: &str, loadout: &[&str]) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: Some(default_weapon.to_string()),
+            inventory: Some(postretro_entities::InventoryDescriptor {
+                loadout: loadout.iter().map(|name| (*name).to_string()).collect(),
+            }),
             light: None,
             emitter: None,
             movement: None,
@@ -2031,6 +2110,76 @@ mod tests {
             health: None,
             behavior: None,
         }
+    }
+
+    #[test]
+    fn player_inventory_loadout_spawns_ordered_wieldables_up_to_capacity() {
+        let names = (0..(WIELDABLE_SLOT_CAPACITY + 1))
+            .map(|index| format!("weapon_{index}"))
+            .collect::<Vec<_>>();
+        let loadout = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut descriptors = vec![player_with_loadout("player", &loadout)];
+        descriptors.extend(names.iter().map(|name| weapon_descriptor(name)));
+        let mut reg = EntityRegistry::new();
+
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("player inventory should be attached");
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert!(inventory.wieldables.iter().all(Option::is_some));
+        assert_eq!(
+            reg.iter_with_kind(ComponentKind::Weapon).count(),
+            WIELDABLE_SLOT_CAPACITY
+        );
+        assert_eq!(live_count(&reg), WIELDABLE_SLOT_CAPACITY + 1);
+    }
+
+    #[test]
+    fn o37_duplicate_descriptor_loadout_creates_independent_instances_and_one_shared_reserve() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_loadout("player", &["reference_pistol", "reference_pistol"]),
+            ammo_weapon_descriptor("reference_pistol"),
+        ];
+
+        let _ = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("spawned pawn owns an inventory");
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        let first = inventory.wieldables[0].expect("first duplicate slot materializes");
+        let second = inventory.wieldables[1].expect("second duplicate slot materializes");
+        assert_ne!(
+            first, second,
+            "duplicate descriptor entries are distinct instances"
+        );
+
+        let mut first_component = reg.get_component::<WeaponComponent>(first).unwrap().clone();
+        first_component.magazine = 3;
+        reg.set_component(first, first_component).unwrap();
+        assert_eq!(
+            reg.get_component::<WeaponComponent>(second)
+                .unwrap()
+                .magazine,
+            12,
+            "changing one duplicate's magazine does not mutate its sibling"
+        );
+        assert_eq!(
+            reg.get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48,
+            "two slots sharing one ammo type seed its pawn reserve once"
+        );
     }
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
@@ -2074,7 +2223,7 @@ mod tests {
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(movement_descriptor()),
@@ -2258,11 +2407,16 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
-        let weapon_id = result.active_wieldable.expect("active wieldable");
-        assert_eq!(
-            result.active_wieldable_descriptor.as_deref(),
-            Some("reference_pistol")
-        );
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("player inventory");
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("active wieldable");
         let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
         assert_eq!(weapon.damage, 12.0);
         assert_eq!(weapon.effective().credit_source, "reference_pistol");
@@ -2277,13 +2431,17 @@ mod tests {
             ammo_weapon_descriptor("reference_pistol"),
         ];
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
-        let weapon_id = result.active_wieldable.expect("active wieldable");
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
         let pawn = reg
-            .iter_with_kind(ComponentKind::Transform)
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| *id != weapon_id)
             .expect("spawned pawn");
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("active wieldable");
 
         assert_eq!(
             reg.get_component::<AmmoReserve>(pawn)
@@ -2307,12 +2465,16 @@ mod tests {
             weapon_descriptor("reference_pistol"),
         ];
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
-        let weapon_id = result.active_wieldable.unwrap();
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
         let pawn = reg
-            .iter_with_kind(ComponentKind::Transform)
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| *id != weapon_id)
+            .unwrap();
+        let _weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
             .unwrap();
 
         assert!(reg.get_component::<AmmoReserve>(pawn).is_err());
@@ -2330,8 +2492,17 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
-        assert!(result.active_wieldable.is_none());
-        assert!(result.active_wieldable_descriptor.is_none());
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("pawn receives empty inventory");
+        assert!(
+            reg.get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_wieldable()
+                .is_none()
+        );
         assert_eq!(
             live_count(&reg),
             1,
@@ -2341,7 +2512,7 @@ mod tests {
             reg.iter_with_kind(postretro_entities::registry::ComponentKind::Weapon)
                 .next()
                 .is_none(),
-            "non-weapon defaultWeapon target must not produce an active no-op entity",
+            "non-weapon inventory target must not produce an active no-op entity",
         );
     }
 

@@ -16,6 +16,7 @@ use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
+use crate::components::inventory::Inventory;
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
@@ -133,6 +134,8 @@ pub enum ComponentKind {
     /// Every entity receives an empty component at spawn so effects do not
     /// depend on an AI brain being present.
     DeferredEffect = 18,
+    /// Pawn-owned ordered wieldable instances and in-flight switch target.
+    Inventory = 19,
 }
 
 impl ComponentKind {
@@ -161,6 +164,7 @@ impl ComponentKind {
             ComponentKind::Spawner,
             ComponentKind::EntityState,
             ComponentKind::DeferredEffect,
+            ComponentKind::Inventory,
         ];
         VARIANTS.len()
     };
@@ -225,6 +229,7 @@ pub enum ComponentValue {
     Spawner(SpawnerComponent),
     EntityState(EntityStateComponent),
     DeferredEffect(DeferredEffectComponent),
+    Inventory(Inventory),
 }
 
 impl ComponentValue {
@@ -249,6 +254,7 @@ impl ComponentValue {
             ComponentValue::Spawner(_) => ComponentKind::Spawner,
             ComponentValue::EntityState(_) => ComponentKind::EntityState,
             ComponentValue::DeferredEffect(_) => ComponentKind::DeferredEffect,
+            ComponentValue::Inventory(_) => ComponentKind::Inventory,
         }
     }
 }
@@ -602,6 +608,21 @@ impl Component for DeferredEffectComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::DeferredEffect(self)
+    }
+}
+
+impl Component for Inventory {
+    const KIND: ComponentKind = ComponentKind::Inventory;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Inventory(inventory) => Some(inventory),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Inventory(self)
     }
 }
 

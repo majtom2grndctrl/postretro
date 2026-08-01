@@ -177,6 +177,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Spawner => "spawner",
         ComponentKind::EntityState => "entity_state",
         ComponentKind::DeferredEffect => "deferred_effect",
+        ComponentKind::Inventory => "inventory",
     }
 }
 
@@ -366,6 +367,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "DeferredEffect component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Inventory(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Inventory component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -520,6 +525,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::DeferredEffect(_) => Err(mlua::Error::RuntimeError(
                 "DeferredEffect component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Inventory(_) => Err(mlua::Error::RuntimeError(
+                "Inventory component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

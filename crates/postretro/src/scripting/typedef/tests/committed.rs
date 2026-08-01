@@ -369,6 +369,12 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && ts.contains("frontend?: Frontend;")
             && ts.contains("reactions?: ReadonlyArray<NamedReactionDescriptor>;")
             && ts.contains("crossings?: ReadonlyArray<CrossingDescriptor>;")
+            && ts.contains("export type SwitchingDescriptor = {")
+            && ts.contains("commitOnDirectSelect: boolean;")
+            && ts.contains("cycleCommitDwellMs: number;")
+            && ts.contains("blockDuringReload: boolean;")
+            && ts.contains("switching?: SwitchingDescriptor;")
+            && ts.contains("blockDuringReload?: boolean;")
             && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
             && ts.contains(
                 "export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];"
@@ -388,6 +394,12 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && luau.contains("frontend: Frontend?")
             && luau.contains("reactions: {NamedReactionDescriptor}?")
             && luau.contains("crossings: {CrossingDescriptor}?")
+            && luau.contains("export type SwitchingDescriptor = {")
+            && luau.contains("commitOnDirectSelect: boolean,")
+            && luau.contains("cycleCommitDwellMs: number,")
+            && luau.contains("blockDuringReload: boolean,")
+            && luau.contains("switching: SwitchingDescriptor?")
+            && luau.contains("blockDuringReload: boolean?")
             && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
             && luau.contains(
                 "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"

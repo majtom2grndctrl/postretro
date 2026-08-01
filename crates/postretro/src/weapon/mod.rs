@@ -5,8 +5,6 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
-#[cfg(test)]
-use postretro_entities::EntityTypeDescriptor;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ResolutionMode};
@@ -56,104 +54,6 @@ pub(crate) struct WeaponFireCommand {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ClientWeaponState {
-    pub(crate) pawn: EntityId,
-    pub(crate) cooldown_remaining_ms: f32,
-    pub(crate) cooldown_ms: f32,
-    pub(crate) cooldown_authority_generation: u64,
-    pub(crate) fire_mode: FireMode,
-    pub(crate) resolution: ResolutionMode,
-    pub(crate) range: f32,
-    pub(crate) shoot_press_consumed: bool,
-}
-
-impl ClientWeaponState {
-    /// Build client prediction state from the host-resolved payload. Connected
-    /// clients must not consult their local registry for these values: doing so
-    /// would make the divergent peer predict with precisely the data replication
-    /// was introduced to replace.
-    pub(crate) fn from_host_tuning(
-        pawn: EntityId,
-        tuning: &crate::netcode::DefaultWeaponFirePayload,
-    ) -> Self {
-        Self {
-            pawn,
-            cooldown_remaining_ms: 0.0,
-            cooldown_ms: tuning.cooldown_ms,
-            cooldown_authority_generation: 0,
-            fire_mode: tuning.fire_mode,
-            resolution: tuning.resolution,
-            range: tuning.range,
-            shoot_press_consumed: false,
-        }
-    }
-
-    /// Synchronize the descriptor-derived client prediction carrier with the
-    /// latest host payload. Returns whether prediction history still belongs to
-    /// the same active pawn and may be retained.
-    pub(crate) fn sync_from_host_tuning(
-        state: &mut Option<Self>,
-        pawn: Option<EntityId>,
-        tuning: Option<&crate::netcode::DefaultWeaponFirePayload>,
-    ) -> bool {
-        let (Some(pawn), Some(tuning)) = (pawn, tuning) else {
-            *state = None;
-            return false;
-        };
-        if let Some(state) = state.as_mut().filter(|state| state.pawn == pawn) {
-            state.cooldown_ms = tuning.cooldown_ms;
-            state.fire_mode = tuning.fire_mode;
-            state.resolution = tuning.resolution;
-            state.range = tuning.range;
-            return true;
-        }
-        *state = Some(Self::from_host_tuning(pawn, tuning));
-        false
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_local_pawn_descriptor(
-        pawn: EntityId,
-        entity_class: &str,
-        descriptors: &[EntityTypeDescriptor],
-    ) -> Option<Self> {
-        let Some(pawn_descriptor) = find_descriptor(descriptors, entity_class) else {
-            log::warn!(
-                "[Net] local pawn entity_class `{entity_class}` not registered; client weapon \
-                 prediction stays inert for this pawn"
-            );
-            return None;
-        };
-        let default_weapon = pawn_descriptor.default_weapon.as_deref()?;
-        let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
-            log::warn!(
-                "[Net] local pawn defaultWeapon `{default_weapon}` not registered; client weapon \
-                 prediction stays inert for this pawn"
-            );
-            return None;
-        };
-        let Some(weapon) = weapon_descriptor.weapon.as_ref() else {
-            log::warn!(
-                "[Net] local pawn defaultWeapon `{default_weapon}` has no weapon component; \
-                 client weapon prediction stays inert for this pawn"
-            );
-            return None;
-        };
-
-        Some(Self {
-            pawn,
-            cooldown_remaining_ms: 0.0,
-            cooldown_ms: weapon.cooldown_ms,
-            cooldown_authority_generation: 0,
-            fire_mode: weapon.fire_mode,
-            resolution: weapon.resolution,
-            range: weapon.range,
-            shoot_press_consumed: false,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LocalHitRecord {
     pub(crate) target: EntityId,
     pub(crate) point: Vec3,
@@ -177,6 +77,7 @@ pub(crate) enum PredictedShotStatus {
 pub(crate) struct PredictedShotRecord {
     pub(crate) shot_id: u64,
     pub(crate) client_tick: u32,
+    pub(crate) weapon: EntityId,
     pub(crate) cooldown_before_ms: f32,
     pub(crate) cooldown_after_ms: f32,
     pub(crate) cooldown_authority_generation: u64,
@@ -188,6 +89,7 @@ pub(crate) struct PredictedShotRecord {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct ClientPredictedShots {
     shots: HashMap<u64, PredictedShotRecord>,
+    cooldown_authority_generation: HashMap<EntityId, u64>,
 }
 
 impl ClientPredictedShots {
@@ -197,24 +99,30 @@ impl ClientPredictedShots {
 
     pub(crate) fn clear(&mut self) {
         self.shots.clear();
+        self.cooldown_authority_generation.clear();
     }
 
     pub(crate) fn predict(
         &mut self,
         shot_id: u64,
+        weapon: EntityId,
         resolution: &ClientFireResolution,
         cooldown_before_ms: f32,
         cooldown_after_ms: f32,
-        cooldown_authority_generation: u64,
     ) {
         self.shots.insert(
             shot_id,
             PredictedShotRecord {
                 shot_id,
                 client_tick: resolution.client_tick,
+                weapon,
                 cooldown_before_ms,
                 cooldown_after_ms,
-                cooldown_authority_generation,
+                cooldown_authority_generation: self
+                    .cooldown_authority_generation
+                    .get(&weapon)
+                    .copied()
+                    .unwrap_or_default(),
                 muzzle_fx_visible: true,
                 hitmarker_visible: !resolution.hits.is_empty(),
                 status: PredictedShotStatus::Pending,
@@ -223,19 +131,24 @@ impl ClientPredictedShots {
     }
 
     pub(crate) fn reconcile_cooldown(
-        state: &mut ClientWeaponState,
+        &mut self,
+        weapon_id: EntityId,
+        weapon: &mut WeaponComponent,
         authoritative_cooldown_ms: f32,
     ) {
         if authoritative_cooldown_ms.is_finite() {
-            state.cooldown_remaining_ms = authoritative_cooldown_ms.max(0.0);
-            state.cooldown_authority_generation =
-                state.cooldown_authority_generation.wrapping_add(1);
+            weapon.cooldown_remaining_ms = authoritative_cooldown_ms.max(0.0);
+            let generation = self
+                .cooldown_authority_generation
+                .entry(weapon_id)
+                .or_default();
+            *generation = generation.wrapping_add(1);
         }
     }
 
     pub(crate) fn apply_verdict(
         &mut self,
-        state: &mut ClientWeaponState,
+        registry: &mut EntityRegistry,
         shot_id: u64,
         fire_accepted: bool,
         hit_accepted: bool,
@@ -250,8 +163,18 @@ impl ClientPredictedShots {
             record.status = PredictedShotStatus::Accepted;
             record.hitmarker_visible &= hit_accepted;
         } else {
-            if state.cooldown_authority_generation == record.cooldown_authority_generation {
-                state.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
+            if self
+                .cooldown_authority_generation
+                .get(&record.weapon)
+                .copied()
+                .unwrap_or_default()
+                == record.cooldown_authority_generation
+                && let Ok(mut weapon) = registry
+                    .get_component::<WeaponComponent>(record.weapon)
+                    .cloned()
+            {
+                weapon.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
+                let _ = registry.set_component(record.weapon, weapon);
             }
             record.muzzle_fx_visible = false;
             record.hitmarker_visible = false;
@@ -471,7 +394,7 @@ fn fire_hitscan(
 
 #[allow(clippy::too_many_arguments)] // mirrors the host/single-player hitscan inputs.
 pub(crate) fn resolve_client_fire(
-    state: &mut ClientWeaponState,
+    weapon: &mut WeaponComponent,
     button: FireButtonState,
     aim_origin: Vec3,
     aim_direction: Vec3,
@@ -482,11 +405,15 @@ pub(crate) fn resolve_client_fire(
     anim_time: f64,
     frame_dt: f32,
 ) -> Option<ClientFireResolution> {
-    if !advance_client_fire_state(state, button, frame_dt) {
+    if !advance_client_fire_state(weapon, button, frame_dt) {
         return None;
     }
 
-    state.cooldown_remaining_ms = state.cooldown_ms;
+    let (cooldown_ms, range, resolution) = {
+        let stats = weapon.effective();
+        (stats.cooldown_ms, stats.range, stats.resolution)
+    };
+    weapon.cooldown_remaining_ms = cooldown_ms;
     let hits = resolve_client_hitscan(
         aim_origin,
         aim_direction,
@@ -494,31 +421,32 @@ pub(crate) fn resolve_client_fire(
         registry,
         hit_zone_store,
         anim_time,
-        state.range,
-        state.resolution,
+        range,
+        resolution,
     );
     Some(ClientFireResolution { client_tick, hits })
 }
 
 pub(crate) fn advance_client_fire_state(
-    state: &mut ClientWeaponState,
+    weapon: &mut WeaponComponent,
     button: FireButtonState,
     frame_dt: f32,
 ) -> bool {
     let dt_ms = (frame_dt.max(0.0)) * 1000.0;
-    state.cooldown_remaining_ms = (state.cooldown_remaining_ms - dt_ms).max(0.0);
+    weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
-    let wants_fire = match state.fire_mode {
-        FireMode::Semi => button.pressed && !state.shoot_press_consumed,
+    let fire_mode = weapon.effective().fire_mode;
+    let wants_fire = match fire_mode {
+        FireMode::Semi => button.pressed && !weapon.shoot_press_consumed,
         FireMode::Auto => button.active,
     };
-    if state.fire_mode == FireMode::Semi && button.pressed {
-        state.shoot_press_consumed = true;
+    if fire_mode == FireMode::Semi && button.pressed {
+        weapon.shoot_press_consumed = true;
     } else if !button.active {
-        state.shoot_press_consumed = false;
+        weapon.shoot_press_consumed = false;
     }
 
-    if !wants_fire || state.cooldown_remaining_ms > 0.0 {
+    if !weapon.state.allows_fire() || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
         return false;
     }
     true
@@ -559,16 +487,6 @@ fn local_hit_record(entity: EntityRayHit) -> LocalHitRecord {
         point: entity.point,
         zone: entity.zone,
     }
-}
-
-#[cfg(test)]
-fn find_descriptor<'a>(
-    descriptors: &'a [EntityTypeDescriptor],
-    name: &str,
-) -> Option<&'a EntityTypeDescriptor> {
-    descriptors
-        .iter()
-        .find(|desc| desc.canonical_name.as_deref() == Some(name))
 }
 
 /// A resolved world-geometry point along the fire ray. `toi` is the ray
@@ -655,7 +573,6 @@ pub(crate) mod tests {
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::registry::{ComponentKind, Transform};
-    use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
     use postretro_foundation::{AmmoResource, ReloadStyle, WeaponDescriptor, WeaponResource};
     use winit::event::MouseButton;
 
@@ -691,6 +608,9 @@ pub(crate) mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         })
     }
 
@@ -723,34 +643,10 @@ pub(crate) mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         }
-    }
-
-    fn descriptor_table(default_weapon: Option<&str>) -> Vec<EntityTypeDescriptor> {
-        vec![
-            EntityTypeDescriptor {
-                canonical_name: Some("player".to_string()),
-                default_weapon: default_weapon.map(str::to_string),
-                light: None,
-                emitter: None,
-                movement: None,
-                weapon: None,
-                mesh: None,
-                health: None,
-                behavior: None,
-            },
-            EntityTypeDescriptor {
-                canonical_name: Some("pistol".to_string()),
-                default_weapon: None,
-                light: None,
-                emitter: None,
-                movement: None,
-                weapon: Some(weapon_descriptor(FireMode::Semi, 100.0)),
-                mesh: None::<MeshDescriptor>,
-                health: None,
-                behavior: None,
-            },
-        ]
     }
 
     /// Run a weapon `tick` with an EMPTY hit-zone store and a zero animation
@@ -850,57 +746,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn client_weapon_state_seeds_from_local_pawn_default_weapon() {
-        let mut registry = EntityRegistry::new();
-        let pawn = registry.spawn(Transform::default());
-        let state = ClientWeaponState::from_local_pawn_descriptor(
-            pawn,
-            "player",
-            &descriptor_table(Some("pistol")),
-        )
-        .expect("player default weapon resolves");
-
-        assert_eq!(state.pawn, pawn);
-        assert_eq!(state.cooldown_remaining_ms, 0.0);
-        assert_eq!(state.cooldown_ms, 100.0);
-        assert_eq!(state.fire_mode, FireMode::Semi);
-        assert_eq!(state.resolution, ResolutionMode::Hitscan);
-        assert_eq!(state.range, 10.0);
-    }
-
-    #[test]
-    fn client_weapon_state_none_for_weaponless_pawn() {
-        let mut registry = EntityRegistry::new();
-        let pawn = registry.spawn(Transform::default());
-
-        assert!(
-            ClientWeaponState::from_local_pawn_descriptor(pawn, "player", &descriptor_table(None))
-                .is_none()
-        );
-    }
-
-    // Regression: a host retune from default_weapon Some to None left the
-    // previously seeded client weapon prediction carrier active.
-    #[test]
-    fn client_weapon_state_clears_stale_state_when_host_tuning_is_none() {
-        let mut registry = EntityRegistry::new();
-        let pawn = registry.spawn(Transform::default());
-        let tuning = crate::netcode::DefaultWeaponFirePayload {
-            range: 10.0,
-            cooldown_ms: 100.0,
-            fire_mode: FireMode::Semi,
-            resolution: ResolutionMode::Hitscan,
-        };
-        let mut state = Some(ClientWeaponState::from_host_tuning(pawn, &tuning));
-
-        let preserve_prediction_history =
-            ClientWeaponState::sync_from_host_tuning(&mut state, Some(pawn), None);
-
-        assert!(state.is_none());
-        assert!(!preserve_prediction_history);
-    }
-
-    #[test]
     fn client_fire_path_gates_held_trigger_while_cooling() {
         let mut registry = EntityRegistry::new();
         let target = spawn_hitbox_entity(
@@ -909,17 +754,7 @@ pub(crate) mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        let pawn = registry.spawn(Transform::default());
-        let mut state = ClientWeaponState {
-            pawn,
-            cooldown_remaining_ms: 0.0,
-            cooldown_ms: 100.0,
-            cooldown_authority_generation: 0,
-            fire_mode: FireMode::Auto,
-            resolution: ResolutionMode::Hitscan,
-            range: 10.0,
-            shoot_press_consumed: false,
-        };
+        let mut state = weapon_component(FireMode::Auto, 100.0);
         let world = CollisionWorld::new();
         let store = HitZoneStore::new();
         let button = FireButtonState {
@@ -1348,17 +1183,7 @@ pub(crate) mod tests {
         let mut registry = EntityRegistry::new();
         let store = head_zone_store("mob", 0.5);
         let target = spawn_mesh_only_zone_entity(&mut registry, "mob", Vec3::new(5.0, 0.0, -4.0));
-        let pawn = registry.spawn(Transform::default());
-        let mut state = ClientWeaponState {
-            pawn,
-            cooldown_remaining_ms: 0.0,
-            cooldown_ms: 100.0,
-            cooldown_authority_generation: 0,
-            fire_mode: FireMode::Semi,
-            resolution: ResolutionMode::Hitscan,
-            range: 10.0,
-            shoot_press_consumed: false,
-        };
+        let mut state = weapon_component(FireMode::Semi, 100.0);
 
         // Remote interpolation has already sampled the network buffer and written the
         // rendered pose into the registry before the client fire path runs. The host's
@@ -1517,17 +1342,26 @@ pub(crate) mod tests {
         assert_eq!(direct.target, target);
     }
 
-    fn client_weapon_state() -> ClientWeaponState {
-        ClientWeaponState {
-            pawn: EntityId::from_raw(1),
-            cooldown_remaining_ms: 0.0,
-            cooldown_ms: 100.0,
-            cooldown_authority_generation: 0,
-            fire_mode: FireMode::Semi,
-            resolution: ResolutionMode::Hitscan,
-            range: 10.0,
-            shoot_press_consumed: false,
-        }
+    fn client_weapon_registry() -> (EntityRegistry, EntityId) {
+        let mut registry = EntityRegistry::new();
+        let weapon = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        (registry, weapon)
+    }
+
+    fn set_client_cooldown(registry: &mut EntityRegistry, weapon: EntityId, value: f32) {
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.cooldown_remaining_ms = value;
+        registry.set_component(weapon, component).unwrap();
+    }
+
+    fn client_cooldown(registry: &EntityRegistry, weapon: EntityId) -> f32 {
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .cooldown_remaining_ms
     }
 
     #[test]
@@ -1543,7 +1377,7 @@ pub(crate) mod tests {
         };
         let mut predicted = ClientPredictedShots::new();
 
-        predicted.predict(0xA, &resolution, 0.0, 100.0, 0);
+        predicted.predict(0xA, EntityId::from_raw(1), &resolution, 0.0, 100.0);
 
         let record = predicted.get(0xA).expect("shot should be recorded");
         assert_eq!(record.client_tick, 9);
@@ -1562,25 +1396,19 @@ pub(crate) mod tests {
                 zone: None,
             }],
         };
-        let mut state = client_weapon_state();
-        state.cooldown_remaining_ms = 100.0;
+        let (mut registry, weapon) = client_weapon_registry();
+        set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(
-            0xA,
-            &resolution,
-            0.0,
-            100.0,
-            state.cooldown_authority_generation,
-        );
+        predicted.predict(0xA, weapon, &resolution, 0.0, 100.0);
 
         let record = predicted
-            .apply_verdict(&mut state, 0xA, true, true)
+            .apply_verdict(&mut registry, 0xA, true, true)
             .expect("verdict should match a predicted shot");
 
         assert!(record.muzzle_fx_visible);
         assert!(record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Accepted);
-        assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+        assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
         assert!(
             predicted.get(0xA).is_none(),
             "a terminal verdict prunes the record"
@@ -1597,25 +1425,19 @@ pub(crate) mod tests {
                 zone: None,
             }],
         };
-        let mut state = client_weapon_state();
-        state.cooldown_remaining_ms = 100.0;
+        let (mut registry, weapon) = client_weapon_registry();
+        set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(
-            0xA,
-            &resolution,
-            25.0,
-            100.0,
-            state.cooldown_authority_generation,
-        );
+        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
 
         let record = predicted
-            .apply_verdict(&mut state, 0xA, true, false)
+            .apply_verdict(&mut registry, 0xA, true, false)
             .expect("verdict should match a predicted shot");
 
         assert!(record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Accepted);
-        assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+        assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
         assert!(
             predicted.get(0xA).is_none(),
             "a terminal verdict prunes the record"
@@ -1632,25 +1454,19 @@ pub(crate) mod tests {
                 zone: None,
             }],
         };
-        let mut state = client_weapon_state();
-        state.cooldown_remaining_ms = 100.0;
+        let (mut registry, weapon) = client_weapon_registry();
+        set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(
-            0xA,
-            &resolution,
-            25.0,
-            100.0,
-            state.cooldown_authority_generation,
-        );
+        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
 
         let record = predicted
-            .apply_verdict(&mut state, 0xA, false, false)
+            .apply_verdict(&mut registry, 0xA, false, false)
             .expect("verdict should match a predicted shot");
 
         assert!(!record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Rejected);
-        assert!(approx_eq(state.cooldown_remaining_ms, 25.0));
+        assert!(approx_eq(client_cooldown(&registry, weapon), 25.0));
         assert!(
             predicted.get(0xA).is_none(),
             "a terminal verdict prunes the record"
@@ -1667,19 +1483,13 @@ pub(crate) mod tests {
                 zone: None,
             }],
         };
-        let mut state = client_weapon_state();
-        state.cooldown_remaining_ms = 100.0;
+        let (mut registry, weapon) = client_weapon_registry();
+        set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(
-            0xA,
-            &resolution,
-            25.0,
-            100.0,
-            state.cooldown_authority_generation,
-        );
+        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
 
         let accepted = predicted
-            .apply_verdict(&mut state, 0xA, true, true)
+            .apply_verdict(&mut registry, 0xA, true, true)
             .expect("accept should match");
         assert_eq!(accepted.status, PredictedShotStatus::Accepted);
         assert!(accepted.muzzle_fx_visible);
@@ -1689,11 +1499,11 @@ pub(crate) mod tests {
         // and cannot undo the accepted shot's cooldown or presentation.
         assert!(
             predicted
-                .apply_verdict(&mut state, 0xA, false, false)
+                .apply_verdict(&mut registry, 0xA, false, false)
                 .is_none()
         );
         assert!(predicted.get(0xA).is_none());
-        assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+        assert!(approx_eq(client_cooldown(&registry, weapon), 100.0));
     }
 
     #[test]
@@ -1706,27 +1516,26 @@ pub(crate) mod tests {
                 zone: None,
             }],
         };
-        let mut state = client_weapon_state();
-        state.cooldown_remaining_ms = 100.0;
+        let (mut registry, weapon) = client_weapon_registry();
+        set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(
-            0xA,
-            &resolution,
-            25.0,
-            100.0,
-            state.cooldown_authority_generation,
-        );
+        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
 
-        ClientPredictedShots::reconcile_cooldown(&mut state, 12.0);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        predicted.reconcile_cooldown(weapon, &mut component, 12.0);
+        registry.set_component(weapon, component).unwrap();
         let record = predicted
-            .apply_verdict(&mut state, 0xA, false, false)
+            .apply_verdict(&mut registry, 0xA, false, false)
             .expect("reject should match");
 
         assert_eq!(record.status, PredictedShotStatus::Rejected);
         assert!(!record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert!(
-            approx_eq(state.cooldown_remaining_ms, 12.0),
+            approx_eq(client_cooldown(&registry, weapon), 12.0),
             "fresh owner-private cooldown must win over stale rollback"
         );
         assert!(
@@ -1736,13 +1545,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn owner_private_cooldown_reconciles_client_weapon_state() {
-        let mut state = client_weapon_state();
-        state.cooldown_remaining_ms = 100.0;
+    fn owner_private_cooldown_reconciles_live_client_weapon() {
+        let (mut registry, weapon) = client_weapon_registry();
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.cooldown_remaining_ms = 100.0;
+        let mut predicted = ClientPredictedShots::new();
 
-        ClientPredictedShots::reconcile_cooldown(&mut state, 42.0);
+        predicted.reconcile_cooldown(weapon, &mut component, 42.0);
+        registry.set_component(weapon, component).unwrap();
 
-        assert!(approx_eq(state.cooldown_remaining_ms, 42.0));
-        assert_eq!(state.cooldown_authority_generation, 1);
+        assert!(approx_eq(client_cooldown(&registry, weapon), 42.0));
+        assert_eq!(
+            predicted
+                .cooldown_authority_generation
+                .get(&weapon)
+                .copied(),
+            Some(1)
+        );
     }
 }

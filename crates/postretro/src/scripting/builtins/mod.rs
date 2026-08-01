@@ -11,6 +11,7 @@ pub(crate) mod data_archetype;
 pub(crate) mod entity_spawner;
 pub(crate) mod net_descriptor;
 pub(crate) mod prop_mesh;
+pub(crate) mod wieldable_inventory;
 
 // Shared descriptor/placement builders used by both `data_archetype`'s own
 // `mod tests` and the netcode-side agreement test. See testing_guide.md §4.

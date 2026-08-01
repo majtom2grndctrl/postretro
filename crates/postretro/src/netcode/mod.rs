@@ -4055,7 +4055,7 @@ mod tests {
         let spawn_points = [host_player_spawn_placement()];
         const CLIENT_ID: u64 = 77;
 
-        host_handle_accept_descriptor(
+        host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -4068,6 +4068,7 @@ mod tests {
             &mut weaponless_logged,
             CLIENT_ID,
             &spawn_points,
+            0,
             &descriptors,
             None,
             None,

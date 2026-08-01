@@ -724,7 +724,7 @@ mod tests {
         ];
         let spawn_points = [synthetic_placement()];
 
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -737,6 +737,7 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
             None,
             None,
@@ -904,7 +905,7 @@ mod tests {
             "slot close clears weaponless-fire latch"
         );
 
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -917,6 +918,7 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
             None,
             None,
@@ -1015,7 +1017,7 @@ mod tests {
         ];
         let spawn_points = [synthetic_placement()];
 
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -1028,6 +1030,7 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
             None,
             None,
@@ -1075,7 +1078,7 @@ mod tests {
         registry
             .despawn(old_pawn)
             .expect("test simulates stale externally-despawned slot pawn");
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -1088,6 +1091,7 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
             None,
             None,

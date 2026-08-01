@@ -213,56 +213,6 @@ pub(crate) fn host_handle_accept(
     );
 }
 
-/// Production participation seam for a movement session: spawn the descriptor-backed
-/// remote `PlayerMovement` pawn for a participating client. Deterministically assigns the
-/// slot a `player_spawn` placement (auditable, stable across reconnect), records the
-/// owner mapping, then materializes the pawn through [`on_slot_accepted`]'s descriptor
-/// path. Falls back to nothing (logged) if there are no spawn points or the descriptor
-/// spawn fails — the caller keeps the slot for a later retry.
-///
-/// `spawn_points` are the level's `player_spawn` placements; `descriptors` the
-/// registered entity descriptors; `agent_params` the navmesh capsule (or `None`).
-/// Game-logic-owned: the spawn flows through `EntityRegistry::spawn`; the caller
-/// threads in the mutable registry borrow. Returns the materialized pawn so the
-/// caller can resolve presentation bindings against the level-installed tables.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn host_handle_accept_descriptor(
-    registry: &mut EntityRegistry,
-    allocator: &mut NetworkIdAllocator,
-    replicable: &mut ReplicableSet,
-    slot_pawns: &mut SlotPawns,
-    command_queues: &mut HostCommandQueues,
-    owners: &mut MovementOwners,
-    weapon_owners: &mut WeaponOwners,
-    open_shots: &mut OpenAuthorizedShots,
-    pending_hit_declarations: &mut PendingHitDeclarations,
-    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
-    client_id: u64,
-    spawn_points: &[crate::scripting::map_entity::MapEntity],
-    descriptors: &[EntityTypeDescriptor],
-    agent_params: Option<NavAgentParams>,
-    carried_loadout: Option<&super::CarriedState>,
-) -> Option<EntityId> {
-    host_handle_accept_descriptor_at_placement(
-        registry,
-        allocator,
-        replicable,
-        slot_pawns,
-        command_queues,
-        owners,
-        weapon_owners,
-        open_shots,
-        pending_hit_declarations,
-        weaponless_fire_logged,
-        client_id,
-        spawn_points,
-        0,
-        descriptors,
-        agent_params,
-        carried_loadout,
-    )
-}
-
 /// Descriptor-backed remote spawn at a placement selected by the durable-seat
 /// layer. The carried-loadout parameter remains entirely Task 5-owned; this
 /// helper receives only the already-chosen map placement index.

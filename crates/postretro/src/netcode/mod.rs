@@ -71,7 +71,7 @@ pub(crate) use endpoint::{
 };
 pub(crate) use host::{
     DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, host_drive_demo_mover,
-    host_handle_accept, host_handle_accept_descriptor, host_handle_accept_descriptor_at_placement,
+    host_handle_accept, host_handle_accept_descriptor_at_placement,
     host_handle_lifecycle, host_register_own_pawn, host_replicate, host_unregister_own_pawn,
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed

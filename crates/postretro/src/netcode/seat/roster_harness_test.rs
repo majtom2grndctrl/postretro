@@ -102,6 +102,7 @@ fn drain_rosters(
             ServerControlMessage::SessionRoster(roster) => Some(roster),
             ServerControlMessage::Divergence(_)
             | ServerControlMessage::Relevel(_)
+            | ServerControlMessage::Tuning(_)
             | ServerControlMessage::SwitchAccepted(_)
             | ServerControlMessage::SwitchRefused(_) => None,
         })
@@ -282,7 +283,10 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
         ],
         "hold expiry removes the stale seat from the published status roster"
     );
-    assert_eq!(expired_view.open_seats, initial_alpha.open_seats);
+    assert_eq!(
+        expired_view.open_seats, bravo_rejoin_view.open_seats,
+        "expiring a hold frees its roster row but never reuses a previously minted seat"
+    );
 }
 
 #[test]

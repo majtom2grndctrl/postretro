@@ -62,6 +62,10 @@ pub(crate) struct SimCommand {
     /// the full command alongside fire/reload; `MovementInput` mirrors it for the
     /// client-prediction input boundary.
     pub(crate) use_pressed: bool,
+    /// Drop rising edge routed to the host-authoritative touch stage. Kept on
+    /// the full command alongside `use_pressed`; `MovementInput` mirrors it for
+    /// the client-prediction input boundary.
+    pub(crate) drop_pressed: bool,
 }
 
 pub(crate) struct PostMovementCommand {
@@ -1506,6 +1510,7 @@ mod tests {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 
@@ -1520,6 +1525,7 @@ mod tests {
             firing_slot: 0,
             select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 

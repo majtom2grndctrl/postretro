@@ -18,6 +18,7 @@ pub enum Action {
     Dash,
     Crouch,
     Use,
+    Drop,
     Shoot,
     AltFire,
     Reload,
@@ -228,6 +229,7 @@ mod tests {
         assert!(!Action::Dash.is_axis());
         assert!(!Action::Crouch.is_axis());
         assert!(!Action::Use.is_axis());
+        assert!(!Action::Drop.is_axis());
         assert!(!Action::Shoot.is_axis());
         assert!(!Action::AltFire.is_axis());
         assert!(!Action::Reload.is_axis());

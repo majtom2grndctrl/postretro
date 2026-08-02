@@ -32,6 +32,7 @@ pub(crate) fn sim_command_to_input(
             crouch_intent: cmd.movement.crouch_intent,
             facing_yaw: cmd.movement.facing_yaw,
             use_pressed: cmd.use_pressed,
+            drop_pressed: cmd.drop_pressed,
             aim_pitch,
             firing_slot: cmd.firing_slot,
         },
@@ -62,6 +63,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
             crouch_intent: input.movement.crouch_intent,
             facing_yaw: input.movement.facing_yaw,
             use_pressed: input.movement.use_pressed,
+            drop_pressed: input.movement.drop_pressed,
         },
         fire_button: FireButtonState {
             pressed: input.fire_button.pressed,
@@ -71,6 +73,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
         firing_slot: input.movement.firing_slot,
         select_slot: None,
         use_pressed: input.movement.use_pressed,
+        drop_pressed: input.movement.drop_pressed,
     }
 }
 
@@ -125,6 +128,7 @@ mod tests {
                 crouch_intent: true,
                 facing_yaw: 1.234_5,
                 use_pressed: true,
+                drop_pressed: true,
             },
             fire_button: FireButtonState {
                 pressed: true,
@@ -134,6 +138,7 @@ mod tests {
             firing_slot: 4,
             select_slot: None,
             use_pressed: true,
+            drop_pressed: true,
         }
     }
 
@@ -146,11 +151,13 @@ mod tests {
         assert_eq!(a.movement.crouch_intent, b.movement.crouch_intent);
         assert!((a.movement.facing_yaw - b.movement.facing_yaw).abs() < EPSILON);
         assert_eq!(a.movement.use_pressed, b.movement.use_pressed);
+        assert_eq!(a.movement.drop_pressed, b.movement.drop_pressed);
         assert_eq!(a.fire_button.pressed, b.fire_button.pressed);
         assert_eq!(a.fire_button.active, b.fire_button.active);
         assert_eq!(a.reload, b.reload);
         assert_eq!(a.firing_slot, b.firing_slot);
         assert_eq!(a.use_pressed, b.use_pressed);
+        assert_eq!(a.drop_pressed, b.drop_pressed);
     }
 
     #[test]

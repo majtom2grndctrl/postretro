@@ -68,6 +68,7 @@ impl RecordedCommand {
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
                 use_pressed: false,
+                drop_pressed: false,
             },
             fire_button: FireButtonState {
                 pressed: self.fire_pressed,
@@ -77,6 +78,7 @@ impl RecordedCommand {
             firing_slot: 0,
             select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 

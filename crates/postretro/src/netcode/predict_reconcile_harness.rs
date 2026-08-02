@@ -1437,6 +1437,7 @@ fn scripted_command(tick: u32) -> SimCommand {
             crouch_intent: false,
             facing_yaw,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -1446,6 +1447,7 @@ fn scripted_command(tick: u32) -> SimCommand {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 

@@ -539,6 +539,7 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
             crouch_intent: false,
             facing_yaw,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -548,15 +549,17 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 
-/// Build a held-gap command from the previous resolved command, clearing FIRE but
-/// carrying movement and `reload` forward unchanged. The two fields diverge on
-/// purpose: `fire_button` authorizes cooldown and ammo consumption whenever it resolves
-/// `active`, so a held command must not re-authorize FIRE. `reload` is a level bit;
-/// weapon-owned `reload_press_consumed` deduplicates it while held. Carrying that bit
-/// preserves reload intent across a packet gap without synthesizing another press.
+/// Build a held-gap command from the previous resolved command, clearing FIRE and
+/// one-tick use/drop edges but carrying movement and `reload` forward unchanged.
+/// The two level fields diverge on purpose: `fire_button` authorizes cooldown and
+/// ammo consumption whenever it resolves `active`, so a held command must not
+/// re-authorize FIRE. `reload` is a level bit; weapon-owned `reload_press_consumed`
+/// deduplicates it while held. Carrying that bit preserves reload intent across a
+/// packet gap without synthesizing another press.
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);
     sim.fire_button = crate::weapon::FireButtonState {
@@ -565,6 +568,8 @@ fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     };
     sim.movement.use_pressed = false;
     sim.use_pressed = false;
+    sim.movement.drop_pressed = false;
+    sim.drop_pressed = false;
     sim
 }
 
@@ -589,6 +594,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.5,
                 use_pressed: false,
+                drop_pressed: false,
                 aim_pitch: 0.0,
                 firing_slot: 0,
             },
@@ -825,6 +831,39 @@ mod tests {
             !held.command.fire_button.pressed && !held.command.fire_button.active,
             "gap-filled movement hold must not synthesize remote FIRE"
         );
+    }
+
+    #[test]
+    fn drop_edge_clears_during_held_gap_and_neutral_fallback() {
+        let mut queues = HostCommandQueues::new();
+        let mut cmd = command(0, 1.0);
+        cmd.movement.drop_pressed = true;
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
+        assert!(real.command.drop_pressed);
+        assert!(real.command.movement.drop_pressed);
+
+        let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+        assert_eq!(held.source, ResolutionSource::Held);
+        assert!(!held.command.drop_pressed);
+        assert!(!held.command.movement.drop_pressed);
+
+        for _ in 1..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues
+                    .resolve_tick(CLIENT)
+                    .expect("held command resolves")
+                    .source,
+                ResolutionSource::Held
+            );
+        }
+        let neutral = queues
+            .resolve_tick(CLIENT)
+            .expect("neutral fallback resolves");
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert!(!neutral.command.drop_pressed);
+        assert!(!neutral.command.movement.drop_pressed);
     }
 
     #[test]

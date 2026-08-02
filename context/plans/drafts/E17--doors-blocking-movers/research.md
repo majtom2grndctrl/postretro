@@ -217,3 +217,33 @@ of phase (breaks A's prediction model). Hence host-authoritative + reconciled.
 `block_policy` and the auto-return timer are host-only state and stay off the
 wire — clients never evaluate the policy or the timer, only observe the
 replicated effects (`blocked`, `direction_sign`, HP, despawn).
+
+## Resolutions from review (validate-plan + review-draft-spec)
+
+Settled decisions the spec encodes, kept here so the two docs do not drift:
+
+- **Reverse is a directional intent, not `reanchor_direction`'s blind flip.**
+  A blind flip cancels with a same-tick auto-close reverse and buzzes a slow
+  reverse door. Reversals set direction *away from contact* / *toward closed*,
+  idempotent, edge-gated to approach; block-decision resolves last.
+- **Crush cadence is per victim** (host-only side-table, damage on first pinned
+  tick then every `crush_interval_ms`), not one per-mover countdown — a single
+  countdown starves a staggered second victim. Mutating per-tick timers live in
+  the side-table, never on the replicated component (no wire delta).
+- **`blocked` is host-derived each tick:** forced false on no-contact, cleared
+  on completion and restart commands, checked before the `completed`
+  early-return, and freezes spin as well as linear advance.
+- **`moverSetBlockPolicy` is host-only, not consequential.** It writes an
+  off-wire field; the one applier arm that breaks the "phase-only" contract is
+  documented; it is trigger-bindable (`trigger_bindings.rs`) but absent from
+  both consequential allowlists.
+- **Mover audio is host-local this slice.** No world sound is networked today
+  and doing it well is gated on deferred spatialization; peer audibility is a
+  new roadmap item (Epic 12). The `blocked` wire field is for reconciliation,
+  not audio — no replicated crush edge is added.
+- **Detection is one tick stale by construction** (mover moves at order 1, pass
+  decides at 6b, driver honors next tick). Swept-face inflation ≥ one tick of
+  travel keeps the detection-tick over-penetration sub-capsule.
+- Enemy sweep uses the Agent **capsule** (reuses `deepest_mover_push_penetration`,
+  no new AABB query). New KVPs seed onto `LoadedKinematicMover` /
+  `KinematicMoverRecord`, not `KinematicGeometry`.

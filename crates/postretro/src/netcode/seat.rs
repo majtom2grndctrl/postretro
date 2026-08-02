@@ -260,6 +260,17 @@ impl SeatTable {
             .find_map(|(seat, bound)| (*bound == pawn).then_some(*seat))
     }
 
+    /// Resolve the durable pawn binding while its connection is still live.
+    ///
+    /// Level-parity teardown can retire the endpoint's level-scoped slot map
+    /// before a transport disconnect is observed. The seat binding survives
+    /// long enough to provide the final harvest and despawn route.
+    #[must_use]
+    pub(crate) fn pawn_for_client(&self, client_id: u64) -> Option<EntityId> {
+        let seat = self.seat_for_client(client_id)?;
+        self.pawn_bindings.get(&seat).copied()
+    }
+
     /// Start a reclaim hold after the transport reports a slot disconnect.
     ///
     /// This deliberately does not harvest: lifecycle cleanup owns pawn
@@ -414,8 +425,8 @@ impl SeatTable {
                         *carried_active_slot = inventory.active_slot;
                     }
                 }
-                // Task 6 owns placement assignment. It is intentionally listed
-                // here so the carry shape cannot grow around the ledger.
+                // Placement is assigned separately; listing it here keeps the
+                // carried-state ledger exhaustive.
                 CarriedField::Placement(_) => {}
             }
         }

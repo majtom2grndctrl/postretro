@@ -150,7 +150,55 @@ pub(crate) enum NetEndpoint {
         applied_movement_tuning_generation: u64,
         next_switch_declaration_id: u32,
         pending_switch_declarations: VecDeque<PendingSwitchDeclaration>,
+        /// Latest status-only roster received from the host. This survives level
+        /// changes with the endpoint and feeds the client-local UI projection.
+        session_status: ClientSessionStatus,
     },
+}
+
+/// Client-owned view of the latest status-only session roster.
+///
+/// The wire shape deliberately contains no player claims or display names. The
+/// client retains it as one value so `session_id`, own seat, open-seat count, and
+/// seat connectivity cannot drift across separate presentation fields.
+#[derive(Debug, Default)]
+pub(crate) struct ClientSessionStatus {
+    roster: Option<SessionRosterMessage>,
+}
+
+impl ClientSessionStatus {
+    /// Replace the retained publication. Returns whether its observable status
+    /// changed, allowing presentation diagnostics to avoid duplicate lines.
+    pub(crate) fn retain(&mut self, roster: SessionRosterMessage) -> bool {
+        let changed = self.roster.as_ref() != Some(&roster);
+        self.roster = Some(roster);
+        changed
+    }
+
+    #[must_use]
+    pub(crate) fn open_seats(&self) -> Option<u32> {
+        self.roster.as_ref().map(|roster| roster.open_seats)
+    }
+}
+
+const SESSION_OPEN_SEATS_SLOT: &str = "session.openSeats";
+
+fn apply_client_session_roster(
+    session_status: &mut ClientSessionStatus,
+    slot_table: &mut SlotTable,
+    roster: SessionRosterMessage,
+) -> (bool, u32) {
+    let changed = session_status.retain(roster);
+    let open_seats = session_status
+        .open_seats()
+        .expect("retaining a roster publishes its open-seat count");
+    slot_table
+        .get_mut(SESSION_OPEN_SEATS_SLOT)
+        .expect("engine state catalog declares session.openSeats")
+        .write_value(Some(postretro_entities::SlotValue::Number(
+            open_seats as f32,
+        )));
+    (changed, open_seats)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,9 +401,24 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                     endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
                 }
             }
-            // The session roster carries seat/status only. UI and client-side
-            // presentation ownership are intentionally out of scope.
-            ServerControlMessage::SessionRoster(_) => {}
+            ServerControlMessage::SessionRoster(roster) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(NetEndpoint::Client { session_status, .. }) =
+                    session.net_endpoint.as_mut()
+                else {
+                    continue;
+                };
+                let (changed, open_seats) = apply_client_session_roster(
+                    session_status,
+                    &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                    roster,
+                );
+                if changed {
+                    log::info!("[Net] {open_seats} session seats remain open");
+                }
+            }
         }
     }
 }
@@ -507,6 +570,7 @@ impl NetEndpoint {
                     applied_movement_tuning_generation: 0,
                     next_switch_declaration_id: 0,
                     pending_switch_declarations: VecDeque::new(),
+                    session_status: ClientSessionStatus::default(),
                 }))
             }
         }
@@ -746,6 +810,39 @@ impl NetEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_roster_retains_and_projects_open_seats_to_ui_state() {
+        let mut session_status = ClientSessionStatus::default();
+        let mut slot_table = SlotTable::new();
+        let roster = SessionRosterMessage {
+            session_id: postretro_net::wire::SessionId([0x52; 16]),
+            your_seat: Some(3),
+            open_seats: 9,
+            entries: vec![postretro_net::wire::RosterEntry {
+                seat: 3,
+                connected: true,
+            }],
+        };
+
+        let (changed, open_seats) =
+            apply_client_session_roster(&mut session_status, &mut slot_table, roster.clone());
+
+        assert!(changed);
+        assert_eq!(open_seats, 9);
+        assert_eq!(session_status.open_seats(), Some(9));
+        assert_eq!(
+            slot_table
+                .get(SESSION_OPEN_SEATS_SLOT)
+                .and_then(|record| record.value.as_ref()),
+            Some(&postretro_entities::SlotValue::Number(9.0)),
+            "the UI snapshot source retains the admitted host's open-seat count"
+        );
+        assert!(
+            !apply_client_session_roster(&mut session_status, &mut slot_table, roster).0,
+            "an identical reliable roster does not create a second presentation change"
+        );
+    }
 
     #[test]
     fn world_less_poll_advances_both_roles_without_touching_registry_state() {

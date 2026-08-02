@@ -12,6 +12,7 @@ use postretro_net::wire::{
 };
 
 use super::{HOLD_WINDOW, SeatTable, finish_host_poll};
+use crate::netcode::endpoint::ClientSessionStatus;
 
 const FRAME_DT: Duration = Duration::from_millis(16);
 const MOD_ID: &str = "test.session-roster";
@@ -169,9 +170,43 @@ fn pending_peer_receives_no_roster_before_admission() {
     );
     finish_host_poll(&mut server, &mut seats);
 
+    let mut client_status = ClientSessionStatus::default();
+    let rosters = drain_rosters(&mut server, &mut client, PENDING_CLIENT);
+    for roster in rosters.iter().cloned() {
+        client_status.retain(roster);
+    }
     assert!(
-        drain_rosters(&mut server, &mut client, PENDING_CLIENT).is_empty(),
+        rosters.is_empty(),
         "a peer below admission receives no session roster, including an empty seat count"
+    );
+    assert_eq!(
+        client_status.open_seats(),
+        None,
+        "a pending peer cannot populate the client-owned open-seat presentation"
+    );
+}
+
+#[test]
+fn admitted_peer_retains_open_seat_count_for_presentation() {
+    const ADMITTED_CLIENT: u64 = 42;
+    let (mut server, address) = server();
+    let mut client = client(address, ADMITTED_CLIENT);
+    let mut seats = SeatTable::from_test_session_id([0x42; 16]);
+    let mut client_status = ClientSessionStatus::default();
+
+    server.add_relay_connection(
+        ADMITTED_CLIENT,
+        Some(wire::encode_connect_claim(&claim(0x42, "Admitted Runner"))),
+    );
+    admit(&mut server, &mut seats, &mut client, ADMITTED_CLIENT);
+    let roster = only_roster(&mut server, &mut client, ADMITTED_CLIENT);
+    let expected_open_seats = roster.open_seats;
+
+    assert!(client_status.retain(roster));
+    assert_eq!(
+        client_status.open_seats(),
+        Some(expected_open_seats),
+        "an admitted peer retains the host's open-seat count for client presentation"
     );
 }
 
@@ -290,7 +325,7 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
 }
 
 #[test]
-fn expired_claim_cycles_bound_claim_stash_and_seat_rows() {
+fn expired_seat_cycles_bound_host_local_seat_rows() {
     const CYCLES: u64 = 32;
     let mut seats = SeatTable::from_test_session_id([0x60; 16]);
 

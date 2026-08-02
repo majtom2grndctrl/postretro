@@ -166,29 +166,33 @@ pub(crate) fn on_slot_accepted(
     Some((pawn, net_id))
 }
 
-/// React to a slot closing (clean disconnect OR timeout — the single Phase 2 cleanup
-/// path for both): despawn the slot-owned pawn through the game-logic-owned apply,
-/// remove it from the replicable set, and drop the slot mapping. The `ServerReplication`
-/// client state is also dropped so the closed client stops being replicated to.
+/// Close a slot and clean up its pawn, replication state, and slot mapping.
 ///
-/// Returns the despawned pawn's `EntityId`, or `None` if the slot owned no pawn
-/// (e.g. a slot that closed before it was ever accepted). After this returns, the
-/// pawn is absent from the next `produce_owned_snapshots`, so the net tracker emits a
-/// resending despawn tombstone to the remaining clients.
-pub(crate) fn on_slot_closed(
+/// Returns the despawned pawn's `EntityId`, or `None` when the slot never owned
+/// a pawn. The pawn leaves the next snapshot, which emits a despawn tombstone.
+///
+/// Suspend demotes peers before the next transport poll. The durable seat map
+/// outlives that reset and can still name the old pawn, so disconnect cleanup
+/// supplies it here as a fallback rather than leaving an orphan in the registry.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn on_slot_closed_with_fallback(
     registry: &mut EntityRegistry,
     slot_pawns: &mut SlotPawns,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     replication: &mut ServerReplication,
     client_id: u64,
+    fallback_pawn: Option<EntityId>,
 ) -> Option<EntityId> {
     // Drop the closed client's per-client replication state regardless of whether it
     // owned a pawn: it will never ack again.
     replication.remove_client(client_id);
 
-    let pawn = slot_pawns.pawns.remove(&client_id)?;
-    let retained_wieldables = slot_pawns.wieldables.remove(&client_id).unwrap_or_default();
+    let mapped_pawn = slot_pawns.pawns.remove(&client_id);
+    let pawn = mapped_pawn.or(fallback_pawn)?;
+    let retained_wieldables = mapped_pawn
+        .and_then(|_| slot_pawns.wieldables.remove(&client_id))
+        .unwrap_or_default();
     // Inventory owns every sibling wieldable. Snapshot their ids before the pawn
     // dies, then despawn every instance before clearing the owner; after pawn
     // despawn its component column is inaccessible by design.
@@ -305,7 +309,7 @@ mod tests {
     // is distinguished in the net slot model but Phase 2 cleanup is one path).
     #[test]
     fn timeout_runs_same_cleanup_path_as_disconnect() {
-        // The lifecycle glue is cause-agnostic: on_slot_closed takes no cause. The
+        // The lifecycle glue is cause-agnostic: cleanup takes no cause. The
         // transport classifies disconnect vs timeout (slots.rs tests); both funnel
         // here. This test asserts the cleanup is identical by running the same body.
         disconnect_runs_cleanup_and_replicates();
@@ -364,13 +368,14 @@ mod tests {
         replication.apply_ack(CLIENT_B, 0, &[(net_a.0, baseline_a)], &[]);
 
         // Close client A: the single cleanup path.
-        let despawned = on_slot_closed(
+        let despawned = on_slot_closed_with_fallback(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
+            None,
         );
         assert_eq!(despawned, Some(pawn_a));
         assert!(!registry.exists(pawn_a), "pawn A despawned");
@@ -425,13 +430,14 @@ mod tests {
         )
         .expect("transform fixture accept always spawns");
         // Close it.
-        on_slot_closed(
+        on_slot_closed_with_fallback(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
+            None,
         );
 
         // A later connection reuses the same ClientId (slot reuse). It must get a
@@ -465,13 +471,14 @@ mod tests {
         let mut replicable = ReplicableSet::new();
         let mut replication = ServerReplication::new();
 
-        let despawned = on_slot_closed(
+        let despawned = on_slot_closed_with_fallback(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
+            None,
         );
         assert_eq!(despawned, None, "no pawn to clean up");
     }
@@ -983,13 +990,14 @@ mod tests {
             .expect("fixture reproduces pawn-before-slot cleanup ordering");
 
         assert_eq!(
-            on_slot_closed(
+            on_slot_closed_with_fallback(
                 &mut registry,
                 &mut slot_pawns,
                 &mut allocator,
                 &mut replicable,
                 &mut replication,
                 CLIENT_A,
+                None,
             ),
             Some(pawn)
         );

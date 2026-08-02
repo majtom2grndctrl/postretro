@@ -384,65 +384,90 @@ pub(crate) fn host_handle_lifecycle(
     for event in lifecycle {
         match event {
             SlotEvent::Closed { client_id, .. } | SlotEvent::Demoted { client_id, .. } => {
-                let previous_pawn = slot_pawns.pawn_for(*client_id);
-                if let (Some(seats), Some(pawn)) = (seat_table.as_deref_mut(), previous_pawn) {
-                    seats.harvest_pawn(registry, pawn);
-                }
-                if let Some(pawn) = previous_pawn {
-                    pending_hit_declarations.remove_pawn_shots(allocator, pawn);
-                }
-                let despawned = on_slot_closed(
+                host_handle_transport_disconnect(
                     registry,
-                    slot_pawns,
                     allocator,
                     replicable,
                     replication,
+                    state_slots,
+                    slot_pawns,
+                    command_queues,
+                    owners,
+                    weapon_owners,
+                    open_shots,
+                    pending_hit_declarations,
+                    weaponless_fire_logged,
+                    last_sent_tuning,
+                    seat_table.as_deref_mut(),
                     *client_id,
+                    None,
                 );
-                // M15 Phase 3: drop the closed client's command queue and the pawn's
-                // owner mapping so its stale authority metadata never rides a later
-                // snapshot. The slot's placement assignment is intentionally retained
-                // (a reconnecting client lands on its prior spawn — auditable source).
-                command_queues.remove_client(*client_id);
-                // M15 Phase 3.5: drop the closed client's replicated-state baselines and
-                // its owner-private slot values so none leak past the connection.
-                state_slots.remove_client(*client_id);
-                last_sent_tuning.remove(client_id);
-                if let Some(pawn) = despawned {
-                    cleanup_remote_pawn_owned_state(
-                        registry,
-                        allocator,
-                        replicable,
-                        owners,
-                        weapon_owners,
-                        open_shots,
-                        pending_hit_declarations,
-                        weaponless_fire_logged,
-                        *client_id,
-                        pawn,
-                        &[],
-                    );
-                } else if let Some(pawn) = previous_pawn {
-                    cleanup_remote_pawn_owned_state(
-                        registry,
-                        allocator,
-                        replicable,
-                        owners,
-                        weapon_owners,
-                        open_shots,
-                        pending_hit_declarations,
-                        weaponless_fire_logged,
-                        *client_id,
-                        pawn,
-                        &[],
-                    );
-                }
             }
             // Entry is handled by the App's participation seam, which registers
             // replication and spawns the pawn. Kept exhaustive so a new slot event
             // is a compile error here as well.
             SlotEvent::Participating { .. } => {}
         }
+    }
+}
+
+/// Tear down one disconnected client's pawn and authority bookkeeping.
+///
+/// `durable_pawn` is the seat-owned fallback used when suspend has already
+/// cleared the endpoint's level-scoped `SlotPawns` map. Repeated calls are safe:
+/// a poll can carry both the transport disconnect and a lifecycle exit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn host_handle_transport_disconnect(
+    registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
+    slot_pawns: &mut SlotPawns,
+    command_queues: &mut HostCommandQueues,
+    owners: &mut MovementOwners,
+    weapon_owners: &mut WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
+    seat_table: Option<&mut SeatTable>,
+    client_id: u64,
+    durable_pawn: Option<EntityId>,
+) {
+    let previous_pawn = slot_pawns.pawn_for(client_id).or(durable_pawn);
+    if let (Some(seats), Some(pawn)) = (seat_table, previous_pawn) {
+        seats.harvest_pawn(registry, pawn);
+    }
+    if let Some(pawn) = previous_pawn {
+        pending_hit_declarations.remove_pawn_shots(allocator, pawn);
+    }
+    let despawned = on_slot_closed_with_fallback(
+        registry,
+        slot_pawns,
+        allocator,
+        replicable,
+        replication,
+        client_id,
+        durable_pawn,
+    );
+    command_queues.remove_client(client_id);
+    state_slots.remove_client(client_id);
+    last_sent_tuning.remove(&client_id);
+    if let Some(pawn) = despawned.or(previous_pawn) {
+        cleanup_remote_pawn_owned_state(
+            registry,
+            allocator,
+            replicable,
+            owners,
+            weapon_owners,
+            open_shots,
+            pending_hit_declarations,
+            weaponless_fire_logged,
+            client_id,
+            pawn,
+            &[],
+        );
     }
 }
 
@@ -662,5 +687,98 @@ mod tests {
             Seat(0),
             "remote admission never aliases the local seat"
         );
+    }
+
+    // Regression: suspend reset the level-scoped slot map before a disconnect,
+    // leaving the old pawn alive when the held seat was later reclaimed.
+    #[test]
+    fn suspend_disconnect_reclaim_despawns_durable_pawn_before_respawn() {
+        use postretro_net::wire::{ConnectClaim, PlayerClaimId};
+
+        const ORIGINAL_CLIENT: u64 = 71;
+        const REJOINED_CLIENT: u64 = 72;
+        let claim = ConnectClaim {
+            player_id: PlayerClaimId([0x71; 16]),
+            display_name: "Suspend Runner".to_owned(),
+        };
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        let mut state_slots = state_slots::HostStateReplication::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut command_queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let mut last_sent_tuning = HashMap::new();
+        let mut seats = SeatTable::from_test_session_id([0x71; 16]);
+        let seat = seats
+            .admit_or_reclaim(ORIGINAL_CLIENT, Some(claim.clone()), false)
+            .expect("seat namespace has room");
+
+        host_handle_accept(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            ORIGINAL_CLIENT,
+        );
+        let old_pawn = slot_pawns
+            .pawn_for(ORIGINAL_CLIENT)
+            .expect("participating client owns a pawn");
+        seats.bind_pawn(seat, old_pawn);
+
+        // Suspend demotes the connection and resets level-scoped endpoint maps
+        // before the resumed transport poll can report its disconnect.
+        allocator.reset_for_level_unload();
+        replicable = ReplicableSet::new();
+        slot_pawns = SlotPawns::new();
+        let durable_pawn = seats.pawn_for_client(ORIGINAL_CLIENT);
+        host_handle_transport_disconnect(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &mut state_slots,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            &mut last_sent_tuning,
+            Some(&mut seats),
+            ORIGINAL_CLIENT,
+            durable_pawn,
+        );
+        assert_eq!(seats.hold_disconnected_client(ORIGINAL_CLIENT), Some(seat));
+        assert!(
+            !registry.exists(old_pawn),
+            "disconnect cleanup reaches the pawn through its durable seat binding"
+        );
+
+        assert_eq!(
+            seats.admit_or_reclaim(REJOINED_CLIENT, Some(claim), false),
+            Some(seat)
+        );
+        host_handle_accept(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            REJOINED_CLIENT,
+        );
+        let new_pawn = slot_pawns
+            .pawn_for(REJOINED_CLIENT)
+            .expect("reclaimed seat materializes one replacement pawn");
+        seats.bind_pawn(seat, new_pawn);
+
+        assert_ne!(new_pawn, old_pawn);
+        assert!(registry.exists(new_pawn));
+        assert_eq!(slot_pawns.len(), 1, "reclaim registers exactly one pawn");
     }
 }

@@ -68,7 +68,7 @@ Widgets bind authoritative store slots by state reference at the SDK layer and b
 - `styleRanges` (continuous value→style) evaluate the value the widget renders — the display value mid-tween; state crossings (`onStateCrossing`) watch the **authoritative** slot, engine-side, after game-logic writes. The two may diverge mid-tween by design.
 - Diagnostics fire at tree build, never per frame. Unknown tokens (§2) and malformed binds (orphan `{local}`, unknown slot) warn once when the tree is built; the per-frame resolve path stays log- and allocation-free.
 
-Engine-owned UI slots: `screen.flash` (RGBA, engine-decayed flash surface; the screen-effects resolve pass in `render/screen_effects.rs` consumes it), `screen.vignette` (RGBA — rgb tint, a = strength; mod-readonly), `screen.shake` ([dx, dy] offset; mod-readonly), `input.mode` (`pointer` / `focus`, app-written in the input phase), `ui.textEntry` (writable string — the text-entry target). Writability, not ownership, gates event-time writes: readonly slots warn and no-op; engine-owned writable slots are valid targets.
+Engine-owned UI slots: `screen.flash` (RGBA, engine-decayed flash surface; the screen-effects resolve pass in `render/screen_effects.rs` consumes it), `screen.vignette` (RGBA — rgb tint, a = strength; mod-readonly), `screen.shake` ([dx, dy] offset; mod-readonly), `input.mode` (`pointer` / `focus`, app-written in the input phase), `session.openSeats` (readonly client-local number, absent until an admitted peer receives a status roster), `ui.textEntry` (writable string — the text-entry target). Writability, not ownership, gates event-time writes: readonly slots warn and no-op; engine-owned writable slots are valid targets.
 
 ## 4. Interaction
 

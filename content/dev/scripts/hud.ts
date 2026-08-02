@@ -41,7 +41,7 @@ export const hudTheme = defineTheme({
   },
 });
 
-const { player } = getGameState();
+const { player, session } = getGameState();
 const { color, font, spacing } = getDesignTokens(hudTheme);
 
 const status = Text({
@@ -66,6 +66,14 @@ const ammoReserve = Text({
   font: font.hud.status,
   fontSize: 24.0,
   bind: bindState(player.ammoReserve, { format: "/ {}" }),
+});
+
+const openSeats = Text({
+  content: "",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 18.0,
+  bind: bindState(session.openSeats, { format: "OPEN SEATS {}" }),
 });
 
 const bar = Bar({
@@ -103,6 +111,7 @@ export const hud = defineUiTree({
       [
         HStack({ gap: spacing.hud.gap, align: "center" }, [status, ammo, ammoReserve]),
         bar,
+        openSeats,
       ],
     ),
   ),

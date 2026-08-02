@@ -19,6 +19,16 @@ impl AmmoReserve {
         self.amounts.get(ammo_type).copied().unwrap_or(0)
     }
 
+    /// Visit every stored ammo type and its exact balance.
+    ///
+    /// Cross-level carry uses this read-only view to restore balances through
+    /// [`Self::set_exact`] without exposing the backing map for mutation.
+    pub fn balances(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.amounts
+            .iter()
+            .map(|(ammo_type, amount)| (ammo_type.as_str(), *amount))
+    }
+
     /// Credit a reserve balance, saturating instead of wrapping when repeated
     /// credits exceed `u32::MAX`.
     pub fn credit(&mut self, ammo_type: &str, amount: u32) {
@@ -90,6 +100,18 @@ mod tests {
 
         assert_eq!(reserve.available("shells"), 7);
         assert_eq!(reserve.available("cells"), 60);
+    }
+
+    #[test]
+    fn balances_exposes_positive_and_zero_entries_read_only() {
+        let mut reserve = AmmoReserve::new();
+        reserve.set_exact("shells", 7);
+        reserve.set_exact("rockets", 0);
+
+        let mut balances = reserve.balances().collect::<Vec<_>>();
+        balances.sort_unstable();
+
+        assert_eq!(balances, vec![("rockets", 0), ("shells", 7)]);
     }
 
     #[test]

@@ -3948,6 +3948,27 @@ impl App {
             };
             let mut registry = script_ctx.registry.borrow_mut();
             for client_id in &host_poll.disconnects {
+                let durable_pawn = seat_table
+                    .as_deref()
+                    .and_then(|seats| seats.pawn_for_client(*client_id));
+                netcode::host_handle_transport_disconnect(
+                    &mut registry,
+                    allocator,
+                    replicable,
+                    replication,
+                    state_slots,
+                    slot_pawns,
+                    command_queues,
+                    owners,
+                    weapon_owners,
+                    open_shots,
+                    pending_hit_declarations,
+                    weaponless_fire_logged,
+                    last_sent_tuning,
+                    seat_table.as_deref_mut(),
+                    *client_id,
+                    durable_pawn,
+                );
                 if let Some(seats) = seat_table.as_deref_mut() {
                     seats.hold_disconnected_client(*client_id);
                 }
@@ -5185,6 +5206,27 @@ impl App {
                             // considered. A closed admitted slot therefore cannot mint
                             // a durable seat from historical control traffic.
                             for client_id in &poll.disconnects {
+                                let durable_pawn = seat_table
+                                    .as_deref()
+                                    .and_then(|seats| seats.pawn_for_client(*client_id));
+                                netcode::host_handle_transport_disconnect(
+                                    &mut registry,
+                                    allocator,
+                                    replicable,
+                                    replication,
+                                    state_slots,
+                                    slot_pawns,
+                                    command_queues,
+                                    owners,
+                                    weapon_owners,
+                                    open_shots,
+                                    pending_hit_declarations,
+                                    weaponless_fire_logged,
+                                    last_sent_tuning,
+                                    seat_table.as_deref_mut(),
+                                    *client_id,
+                                    durable_pawn,
+                                );
                                 if let Some(seats) = seat_table.as_deref_mut() {
                                     seats.hold_disconnected_client(*client_id);
                                 }

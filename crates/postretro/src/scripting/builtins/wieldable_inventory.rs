@@ -1,3 +1,6 @@
+// Wieldable inventory composition and carried-loadout restore.
+// See: context/lib/scripting.md
+
 use std::collections::HashSet;
 
 use super::MapEntity;
@@ -15,7 +18,6 @@ fn seed_weapon_reserve(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     weapon_descriptor: &EntityTypeDescriptor,
-    carried_reserve: Option<&AmmoReserve>,
 ) {
     let Some(WeaponResource::Ammo(ammo)) = weapon_descriptor
         .weapon
@@ -29,12 +31,23 @@ fn seed_weapon_reserve(
         .get_component::<AmmoReserve>(pawn)
         .cloned()
         .unwrap_or_default();
-    if let Some(carried_reserve) = carried_reserve {
-        reserve.set_exact(&ammo.ammo_type, carried_reserve.available(&ammo.ammo_type));
-    } else {
-        reserve.credit(&ammo.ammo_type, ammo.reserve);
-    }
+    reserve.credit(&ammo.ammo_type, ammo.reserve);
     let _ = registry.set_component(pawn, reserve);
+}
+
+fn restore_carried_reserve(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    carried_reserve: &AmmoReserve,
+) {
+    let mut restored = registry
+        .get_component::<AmmoReserve>(pawn)
+        .cloned()
+        .unwrap_or_default();
+    for (ammo_type, amount) in carried_reserve.balances() {
+        restored.set_exact(ammo_type, amount);
+    }
+    let _ = registry.set_component(pawn, restored);
 }
 
 /// Materialize one independent wieldable instance for each authored loadout
@@ -125,7 +138,7 @@ fn compose_wieldable_inventory_slots<'a>(
     let mut seeded_ammo_types = HashSet::new();
 
     if let Some(carried_loadout) = carried_loadout {
-        let _ = registry.set_component(pawn, carried_loadout.reserve.clone());
+        restore_carried_reserve(registry, pawn, &carried_loadout.reserve);
     }
 
     for (slot, canonical_name) in slots {
@@ -170,15 +183,11 @@ fn compose_wieldable_inventory_slots<'a>(
         let _ = registry.set_map_kvps(weapon_id, Default::default());
         inventory.wieldables[slot] = Some(weapon_id);
 
-        if let Some(WeaponResource::Ammo(ammo)) = weapon.resource.as_ref()
+        if carried_loadout.is_none()
+            && let Some(WeaponResource::Ammo(ammo)) = weapon.resource.as_ref()
             && seeded_ammo_types.insert(ammo.ammo_type.clone())
         {
-            seed_weapon_reserve(
-                registry,
-                pawn,
-                weapon_descriptor,
-                carried_loadout.map(|loadout| &loadout.reserve),
-            );
+            seed_weapon_reserve(registry, pawn, weapon_descriptor);
         }
     }
 
@@ -237,9 +246,14 @@ mod tests {
         }
     }
 
-    fn weapon_descriptor() -> EntityTypeDescriptor {
+    fn weapon_descriptor(
+        canonical_name: &str,
+        ammo_type: &str,
+        magazine: u32,
+        reserve: u32,
+    ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
-            canonical_name: Some("pistol".to_string()),
+            canonical_name: Some(canonical_name.to_string()),
             inventory: None,
             light: None,
             emitter: None,
@@ -254,10 +268,10 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: Some(WeaponResource::Ammo(AmmoResource {
-                    ammo_type: "shells".to_string(),
-                    magazine: 8,
+                    ammo_type: ammo_type.to_string(),
+                    magazine,
                     cost_per_shot: 1,
-                    reserve: 50,
+                    reserve,
                     reload_ms: 1000,
                     reload_style: ReloadStyle::Magazine,
                 })),
@@ -284,18 +298,24 @@ mod tests {
     #[test]
     fn carried_loadout_overrides_defaults_and_restores_exact_weapon_state() {
         let pawn_descriptor = pawn_descriptor();
-        let weapon_descriptor = weapon_descriptor();
-        let descriptors = [pawn_descriptor.clone(), weapon_descriptor];
+        let descriptors = [
+            pawn_descriptor.clone(),
+            weapon_descriptor("pistol", "shells", 8, 50),
+            weapon_descriptor("launcher", "rockets", 4, 12),
+        ];
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let mut carried = CarriedState {
             active_slot: 2,
             ..Default::default()
         };
-        carried.wieldables[2] = Some("pistol".to_string());
+        carried.wieldables[1] = Some("pistol".to_string());
+        carried.wieldables[2] = Some("launcher".to_string());
+        carried.magazines[1] = Some(3);
         carried.magazines[2] = Some(3);
         carried.reserve.set_exact("shells", 11);
         carried.reserve.set_exact("rockets", 0);
+        carried.reserve.set_exact("cells", 23);
 
         let active = compose_wieldable_inventory(
             &mut registry,
@@ -310,12 +330,20 @@ mod tests {
             .get_component::<Inventory>(pawn)
             .expect("carried loadout materializes an inventory");
         assert_eq!(inventory.active_slot, 2);
-        let weapon = inventory.wieldables[2].expect("carried slot materializes pistol");
-        assert_eq!(active, Some(weapon));
+        let pistol = inventory.wieldables[1].expect("carried slot materializes pistol");
+        let launcher = inventory.wieldables[2].expect("carried slot materializes launcher");
+        assert_eq!(active, Some(launcher));
         assert_eq!(
             registry
-                .get_component::<WeaponComponent>(weapon)
-                .expect("weapon component materialized")
+                .get_component::<WeaponComponent>(pistol)
+                .expect("pistol component materialized")
+                .magazine,
+            3
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(launcher)
+                .expect("launcher component materialized")
                 .magazine,
             3
         );
@@ -324,5 +352,12 @@ mod tests {
             .expect("carried reserve materialized");
         assert_eq!(reserve.available("shells"), 11);
         assert_eq!(reserve.available("rockets"), 0);
+        assert_eq!(reserve.available("cells"), 23);
+        assert!(
+            reserve
+                .balances()
+                .any(|(ammo_type, amount)| ammo_type == "rockets" && amount == 0),
+            "zero carried balances remain explicitly represented"
+        );
     }
 }

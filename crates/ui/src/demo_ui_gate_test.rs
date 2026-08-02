@@ -11,6 +11,7 @@ use postretro_entities::SlotValue;
 
 const FALLBACK_MARKER: &str = "FALLBACK HUD HP --";
 const FALLBACK_HEALTH: &str = "FALLBACK HUD HP 42";
+const FALLBACK_OPEN_SEATS: &str = "OPEN SEATS 6";
 
 fn font_system() -> cosmic_text::FontSystem {
     crate::text::build_font_system()
@@ -27,7 +28,18 @@ fn no_cells() -> super::tree::CellValues {
 fn health_slots(health: f32) -> HashMap<String, SlotValue> {
     let mut slots = HashMap::new();
     slots.insert("player.health".to_string(), SlotValue::Number(health));
+    slots.insert("session.openSeats".to_string(), SlotValue::Number(6.0));
     slots
+}
+
+#[test]
+fn fallback_hud_resolves_open_seat_count_through_retained_path() {
+    let data = render_fallback(42.0);
+    let contents: Vec<&str> = data.texts.iter().map(|t| t.content.as_str()).collect();
+    assert!(
+        contents.contains(&FALLBACK_OPEN_SEATS),
+        "client-owned open-seat state resolves through retained draw data, got {contents:?}",
+    );
 }
 
 fn render_fallback(health: f32) -> UiDrawData {

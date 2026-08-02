@@ -597,6 +597,12 @@ impl NetServer {
         self.connect_claims.get(&client_id)
     }
 
+    /// Number of transport-scoped claims retained by live slots.
+    #[cfg(test)]
+    fn connect_claim_count(&self) -> usize {
+        self.connect_claims.len()
+    }
+
     /// Snapshots and Input are both participation-gated; held peers are drained
     /// so their reliable channel cannot overflow and disconnect them indirectly.
     pub fn send_snapshot(&mut self, client_id: ClientId, snapshot: Vec<u8>) -> bool {
@@ -1844,6 +1850,54 @@ mod tests {
         );
 
         assert_eq!(server.connect_claim(RELAY_CLIENT_ID), Some(&claim));
+    }
+
+    #[test]
+    fn repeated_pending_and_participating_closes_bound_connect_claim_stash() {
+        const CYCLES: u64 = 32;
+        let (mut server, _client) = relay_pair();
+        let _ = server.close_relay_connection(RELAY_CLIENT_ID, CloseCause::Disconnect);
+        let _ = server.poll_handshakes();
+
+        for cycle in 0..CYCLES {
+            let pending_id = 100 + cycle * 2;
+            let participating_id = pending_id + 1;
+            let pending_claim = ConnectClaim {
+                player_id: crate::wire::PlayerClaimId([cycle as u8; 16]),
+                display_name: "Pending Runner".to_owned(),
+            };
+            server.add_relay_connection(
+                pending_id,
+                Some(crate::wire::encode_connect_claim(&pending_claim)),
+            );
+            assert_eq!(server.connect_claim_count(), 1);
+            let _ = server.close_relay_connection(pending_id, CloseCause::Disconnect);
+            assert_eq!(
+                server.connect_claim_count(),
+                0,
+                "closing a pending transport slot removes its asserted claim"
+            );
+            let _ = server.poll_handshakes();
+
+            let participating_claim = ConnectClaim {
+                player_id: crate::wire::PlayerClaimId([0x80 | cycle as u8; 16]),
+                display_name: "Participating Runner".to_owned(),
+            };
+            server.add_relay_connection(
+                participating_id,
+                Some(crate::wire::encode_connect_claim(&participating_claim)),
+            );
+            let _ = server.slots.admit(participating_id);
+            let _ = server.slots.participate(participating_id);
+            assert_eq!(server.connect_claim_count(), 1);
+            let _ = server.close_relay_connection(participating_id, CloseCause::Disconnect);
+            assert_eq!(
+                server.connect_claim_count(),
+                0,
+                "closing a participating transport slot removes its asserted claim"
+            );
+            let _ = server.poll_handshakes();
+        }
     }
 
     #[derive(Debug, Clone)]

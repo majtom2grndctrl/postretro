@@ -472,6 +472,23 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "session.openSeats",
+        sdk_path: &["session", "openSeats"],
+        value_type: EngineStateValueType::Number,
+        // Absence keeps the presentation hidden until an admitted client receives
+        // its first status-only roster publication.
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: u16::MAX as f32 + 1.0,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Control-message intake owns this client-local projection. Replicating it
+        // as a state slot would create a second roster transport path.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "screen.flash",
         sdk_path: &["screen", "flash"],
         value_type: EngineStateValueType::Array,
@@ -704,6 +721,7 @@ mod tests {
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",
+                "session.openSeats",
                 "ui.textEntry",
             ]
         );
@@ -733,6 +751,19 @@ mod tests {
             player_max_health.capability,
             EngineStateCapability::Readonly
         );
+
+        let session_open_seats = entries
+            .iter()
+            .find(|entry| entry.wire_name == "session.openSeats")
+            .unwrap();
+        assert_eq!(session_open_seats.sdk_path, &["session", "openSeats"]);
+        assert_eq!(session_open_seats.value_type, EngineStateValueType::Number);
+        assert_eq!(session_open_seats.default, EngineStateDefault::None);
+        assert_eq!(
+            session_open_seats.capability,
+            EngineStateCapability::Readonly
+        );
+        assert_eq!(session_open_seats.network, ReplicationScope::None);
 
         let reload_active = entries
             .iter()

@@ -72,12 +72,15 @@ pub(crate) use endpoint::{
 pub(crate) use host::{
     DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, host_drive_demo_mover,
     host_handle_accept, host_handle_accept_descriptor_at_placement, host_handle_lifecycle,
-    host_register_own_pawn, host_replicate, host_unregister_own_pawn,
+    host_handle_transport_disconnect, host_register_own_pawn, host_replicate,
+    host_unregister_own_pawn,
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, MAX_DELAY_MICROS};
-pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
+pub(crate) use lifecycle::{
+    SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
+};
 pub(crate) use prediction::ClientPrediction;
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
@@ -126,8 +129,9 @@ use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
     self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord,
     NETCODE_USER_DATA_BYTES, NetworkId, RawSnapshotMessage, ServerControlMessage,
-    ServerSwitchAccepted, ServerSwitchRefused, SnapshotMessage, ValidationError, WireError,
-    WireKinematicMoverState, WireMovementState, WirePlayerMovementState, WireTransform,
+    ServerSwitchAccepted, ServerSwitchRefused, SessionRosterMessage, SnapshotMessage,
+    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
+    WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};

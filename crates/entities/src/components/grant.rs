@@ -267,24 +267,46 @@ mod tests {
     }
 
     #[test]
-    fn ammo_reserve_credit_has_only_grant_and_spawn_seed_non_test_call_sites() {
+    fn ammo_reserve_writes_have_only_grant_seed_and_carry_restore_non_test_call_sites() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let crates_dir = workspace_root.join("crates");
-        let mut call_sites = Vec::new();
-        collect_credit_call_sites(&crates_dir, &crates_dir, &mut call_sites);
-        call_sites.sort();
+        let mut credit_call_sites = Vec::new();
+        collect_method_call_sites(&crates_dir, &crates_dir, "credit", &mut credit_call_sites);
+        credit_call_sites.sort();
 
         assert_eq!(
-            call_sites,
+            credit_call_sites,
             vec![
                 PathBuf::from("entities/src/components/grant.rs"),
-                PathBuf::from("postretro/src/scripting/builtins/data_archetype.rs"),
+                PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
             ],
             "post-spawn reserve writes must route through grant_ammo; descriptor spawn seeding is the sole exception"
         );
+
+        let mut exact_write_call_sites = Vec::new();
+        collect_method_call_sites(
+            &crates_dir,
+            &crates_dir,
+            "set_exact",
+            &mut exact_write_call_sites,
+        );
+        exact_write_call_sites.sort();
+
+        assert_eq!(
+            exact_write_call_sites,
+            vec![PathBuf::from(
+                "postretro/src/scripting/builtins/wieldable_inventory.rs"
+            )],
+            "exact reserve writes are reserved for carried-state restoration"
+        );
     }
 
-    fn collect_credit_call_sites(root: &Path, path: &Path, call_sites: &mut Vec<PathBuf>) {
+    fn collect_method_call_sites(
+        root: &Path,
+        path: &Path,
+        method: &str,
+        call_sites: &mut Vec<PathBuf>,
+    ) {
         let Ok(entries) = fs::read_dir(path) else {
             return;
         };
@@ -292,27 +314,47 @@ mod tests {
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_dir() {
-                collect_credit_call_sites(root, &path, call_sites);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                collect_method_call_sites(root, &path, method, call_sites);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && !is_test_source_file(root, &path)
+            {
                 let Ok(source) = fs::read_to_string(&path) else {
                     continue;
                 };
                 let production_source = mask_test_only_blocks(&source);
                 let relative_path = path.strip_prefix(root).map(PathBuf::from).unwrap_or(path);
-                for _ in credit_call_count(&production_source) {
+                for _ in 0..method_call_count(&production_source, method) {
                     call_sites.push(relative_path.clone());
                 }
             }
         }
     }
 
-    fn credit_call_count(source: &str) -> impl Iterator<Item = usize> + '_ {
-        source.match_indices(".credit").filter_map(|(offset, _)| {
-            source[offset + ".credit".len()..]
-                .trim_start()
-                .starts_with('(')
-                .then_some(offset)
-        })
+    fn is_test_source_file(root: &Path, path: &Path) -> bool {
+        let Ok(relative_path) = path.strip_prefix(root) else {
+            return false;
+        };
+        let is_in_integration_tests = relative_path
+            .components()
+            .any(|component| component.as_os_str() == "tests");
+        let is_test_harness = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.ends_with("_test") || stem.ends_with("_test_fixtures"));
+
+        is_in_integration_tests || is_test_harness
+    }
+
+    fn method_call_count(source: &str, method: &str) -> usize {
+        let needle = format!(".{method}");
+        source
+            .match_indices(&needle)
+            .filter(|(offset, _)| {
+                source[*offset + needle.len()..]
+                    .trim_start()
+                    .starts_with('(')
+            })
+            .count()
     }
 
     fn mask_test_only_blocks(source: &str) -> String {

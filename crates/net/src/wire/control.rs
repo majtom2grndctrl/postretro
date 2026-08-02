@@ -1,3 +1,6 @@
+// Handshake, admission, and host-control wire declarations.
+// See: context/lib/networking.md
+
 use bitcode::{Decode, Encode};
 
 /// The fixed size of renetcode's client-authentication user-data field.

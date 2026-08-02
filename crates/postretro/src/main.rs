@@ -5465,6 +5465,25 @@ impl App {
                         }
                     }
                 }
+                // Inventory changes have no separate dirty protocol. Rebuild every
+                // participating pawn's small fixed tuning payload each host poll;
+                // `host_send_tuning_if_changed` remains the final wire dedupe.
+                {
+                    let registry = script_ctx.registry.borrow();
+                    for client_id in server.participating_clients() {
+                        let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+                            continue;
+                        };
+                        let payload =
+                            netcode::tuning_payload_for_pawn(&registry, pawn, &net_descriptors);
+                        netcode::host_send_tuning_if_changed(
+                            server,
+                            last_sent_tuning,
+                            client_id,
+                            payload,
+                        );
+                    }
+                }
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
                 // and echo time-sync probes with the current server tick. The echo

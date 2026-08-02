@@ -8,9 +8,9 @@ use postretro_foundation::{FireMode, PlayerMovementDescriptor, ResolutionMode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Bump whenever the semantic JSON payload shape changes. This is independent
+/// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 2;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 3;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -277,6 +277,22 @@ mod tests {
             Err(TuningPayloadError::EpochMismatch {
                 expected: TUNING_PAYLOAD_EPOCH,
                 received: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn payload_rejects_previous_merge_semantics_epoch() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        json["epoch"] = serde_json::json!(2);
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: 3,
+                received: 2,
             })
         ));
     }

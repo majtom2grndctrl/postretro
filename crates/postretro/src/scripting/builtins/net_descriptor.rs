@@ -6,6 +6,7 @@ use super::data_archetype::{
     compose_wieldable_inventory, compose_wieldable_inventory_from_slots, descriptor_mesh_component,
     find_descriptor, spawn_descriptor_instance,
 };
+use super::wieldable_inventory::{acquire_wieldable_at, release_wieldable};
 use postretro_entities::components::inventory::Inventory;
 #[cfg(test)]
 use postretro_entities::components::mesh::MeshComponent;
@@ -251,30 +252,73 @@ pub(crate) fn materialize_net_local_wieldable_inventory_from_tuning(
         }
     }
 
-    let Ok(inventory) = registry.get_component::<Inventory>(id).cloned() else {
+    if registry.get_component::<Inventory>(id).is_err() {
         return false;
-    };
+    }
     let Some(tuning) = tuning else {
         return true;
     };
 
     for (slot, tuning) in tuning.wieldables.iter().enumerate() {
-        let (Some(weapon_id), Some(tuning)) = (inventory.wieldables[slot], tuning) else {
-            continue;
+        let weapon_id = registry
+            .get_component::<Inventory>(id)
+            .ok()
+            .and_then(|inventory| inventory.wieldables[slot]);
+        match (weapon_id, tuning) {
+            (None, Some(tuning)) => {
+                let Some(descriptor) = find_descriptor(descriptors, &tuning.canonical_name) else {
+                    log::warn!(
+                        "[Net] local pawn tuning names unknown wieldable `{}`; slot {slot} stays empty",
+                        tuning.canonical_name
+                    );
+                    continue;
+                };
+                let weapon_entity = MapEntity {
+                    classname: tuning.canonical_name.clone(),
+                    origin: registry
+                        .get_component::<Transform>(id)
+                        .map_or(glam::Vec3::ZERO, |transform| transform.position),
+                    angles: glam::Vec3::ZERO,
+                    key_values: Default::default(),
+                    tags: vec![],
+                };
+                let Some(weapon_id) = spawn_descriptor_instance(
+                    registry,
+                    descriptor,
+                    &weapon_entity,
+                    true,
+                    DescriptorSpawnPath::DefaultWeapon,
+                    None,
+                ) else {
+                    continue;
+                };
+                let _ = registry.set_map_kvps(weapon_id, Default::default());
+                if !acquire_wieldable_at(registry, id, slot, weapon_id) {
+                    let _ = registry.despawn(weapon_id);
+                }
+            }
+            (Some(weapon_id), None) => {
+                if let Some(released) = release_wieldable(registry, id, slot) {
+                    let _ = registry.despawn(released);
+                }
+            }
+            (Some(weapon_id), Some(tuning)) => {
+                let Ok(mut weapon) = registry
+                    .get_component::<WeaponComponent>(weapon_id)
+                    .cloned()
+                else {
+                    continue;
+                };
+                weapon.range = tuning.range;
+                weapon.cooldown_ms = tuning.cooldown_ms;
+                weapon.fire_mode = tuning.fire_mode;
+                weapon.resolution = tuning.resolution;
+                weapon.lower_ms = tuning.lower_ms;
+                weapon.raise_ms = tuning.raise_ms;
+                let _ = registry.set_component(weapon_id, weapon);
+            }
+            (None, None) => {}
         };
-        let Ok(mut weapon) = registry
-            .get_component::<WeaponComponent>(weapon_id)
-            .cloned()
-        else {
-            continue;
-        };
-        weapon.range = tuning.range;
-        weapon.cooldown_ms = tuning.cooldown_ms;
-        weapon.fire_mode = tuning.fire_mode;
-        weapon.resolution = tuning.resolution;
-        weapon.lower_ms = tuning.lower_ms;
-        weapon.raise_ms = tuning.raise_ms;
-        let _ = registry.set_component(weapon_id, weapon);
     }
 
     true
@@ -904,6 +948,143 @@ mod tests {
             inventory.wieldables.len(),
             WIELDABLE_SLOT_CAPACITY,
             "the payload preserves the engine's fixed slot capacity"
+        );
+    }
+
+    #[test]
+    fn tuning_merge_grows_an_existing_inventory_at_the_host_named_slot() {
+        let mut reg = EntityRegistry::new();
+        let pawn = reg.spawn(Transform::default());
+        let descriptors = vec![
+            player_with_default_weapon("player", "local_pistol"),
+            weapon_descriptor("local_pistol"),
+            weapon_descriptor("host_ion_rifle"),
+        ];
+
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            None,
+        ));
+        let original = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
+            .expect("descriptor inventory materializes its default wieldable");
+
+        let tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            Some(&tuning),
+        ));
+
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[0], Some(original));
+        let grown = inventory.wieldables[2].expect("host-named slot is filled");
+        assert_eq!(
+            reg.get_component::<DescriptorProvenance>(grown)
+                .unwrap()
+                .canonical_name,
+            "host_ion_rifle"
+        );
+    }
+
+    #[test]
+    fn tuning_merge_releases_absent_slot_and_despawns_local_instance() {
+        let mut reg = EntityRegistry::new();
+        let pawn = reg.spawn(Transform::default());
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            None,
+        ));
+        let weapon_id = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
+            .expect("descriptor inventory materializes its default wieldable");
+
+        let empty_tuning = TuningPayload::new(None, std::array::from_fn(|_| None));
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            Some(&empty_tuning),
+        ));
+
+        assert!(
+            reg.get_component::<Inventory>(pawn).unwrap().wieldables[0].is_none(),
+            "the host's empty slot releases the local inventory entry"
+        );
+        assert!(
+            !reg.exists(weapon_id),
+            "the released client-owned instance must not leak for the level"
+        );
+    }
+
+    #[test]
+    fn tuning_merge_same_named_slot_preserves_the_existing_instance() {
+        let mut reg = EntityRegistry::new();
+        let pawn = reg.spawn(Transform::default());
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            None,
+        ));
+        let weapon_id = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
+            .expect("descriptor inventory materializes its default wieldable");
+        let mut live_weapon = reg
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        live_weapon.magazine = 3;
+        let tuning_weapon = live_weapon.clone();
+        reg.set_component(weapon_id, live_weapon).unwrap();
+
+        let mut wieldables = std::array::from_fn(|_| None);
+        wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
+            canonical_name: "reference_pistol".to_string(),
+            range: tuning_weapon.range,
+            cooldown_ms: tuning_weapon.cooldown_ms,
+            fire_mode: tuning_weapon.fire_mode,
+            resolution: tuning_weapon.resolution,
+            lower_ms: tuning_weapon.lower_ms,
+            raise_ms: tuning_weapon.raise_ms,
+        });
+        let tuning = TuningPayload::new(None, wieldables);
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut reg,
+            pawn,
+            Some(&tuning),
+        ));
+
+        assert_eq!(
+            reg.get_component::<Inventory>(pawn).unwrap().wieldables[0],
+            Some(weapon_id),
+            "matching descriptor identity retunes in place instead of transferring an instance"
+        );
+        assert_eq!(
+            reg.get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            3,
+            "the tuning merge never transfers host instance state"
         );
     }
 

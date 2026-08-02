@@ -1899,6 +1899,182 @@ mod tests {
         );
     }
 
+    #[test]
+    fn use_edge_activates_trigger_and_press_item_in_the_same_fixed_tick() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, item, trigger) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+
+            let item = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    item,
+                    TouchableComponent {
+                        mode: postretro_entities::TouchMode::Press,
+                        radius: 1.0,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, weapon_component("weapon.press"))
+                .unwrap();
+            registry
+                .set_component(
+                    item,
+                    DescriptorProvenance {
+                        canonical_name: "weapon.press".to_string(),
+                        owned_components: std::collections::BTreeSet::from([
+                            DescriptorComponentKind::Weapon,
+                            DescriptorComponentKind::Touchable,
+                        ]),
+                        map_overrides: std::collections::BTreeSet::<DescriptorMapOverride>::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, MeshComponent::stateless("weapon.glb".to_string()))
+                .unwrap();
+
+            let trigger = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    trigger,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Use,
+                        String::new(),
+                        "use_target".to_string(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .unwrap();
+            (pawn, item, trigger)
+        };
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = TouchSystem::default();
+        let mut trigger_system = TriggerSystem::default();
+        let mut bridge = TriggerVolumeBridge::new();
+        bridge.insert_for_test(trigger, Vec3::splat(-1.0), Vec3::splat(1.0));
+        let bindings = TriggerBindingTable::default();
+        let slot_table = Rc::new(RefCell::new(SlotTable::new()));
+        let use_edges = HashMap::from([(PlayerId::Local(pawn), true)]);
+
+        let events = simulate_tick_with_presentation_aim(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            &mut ai_runtime,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            &mut touch_system,
+            &[],
+            &use_edges,
+            &HashMap::new(),
+            Some(TriggerTickContext {
+                system: &mut trigger_system,
+                bridge: &bridge,
+                bindings: &bindings,
+                slot_table,
+                script_ctx: None,
+                use_edges: &use_edges,
+            }),
+            |_| {},
+        );
+
+        assert_eq!(
+            events.trigger_fires.len(),
+            1,
+            "the trigger stage consumes the shared Use edge first"
+        );
+        assert_eq!(events.trigger_fires[0].fire.trigger, trigger);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "the later touch stage reads the same Use edge instead of a consumed one"
+        );
+    }
+
+    #[test]
+    fn unowned_world_weapon_keeps_all_live_state_after_many_fixed_ticks() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let weapon = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+
+            let weapon = registry.spawn(Transform {
+                position: Vec3::new(10.0, 0.0, 0.0),
+                ..Transform::default()
+            });
+            let mut component = weapon_component("weapon.unowned");
+            component.state =
+                postretro_entities::components::wieldable_state::WieldableState::Reloading;
+            component.state_remaining_ms = 800;
+            component.state_total_ms = 1_000;
+            component.state_elapsed_sub_ms = 0.5;
+            component.reload_credited = 1;
+            component.cooldown_remaining_ms = 75.0;
+            component.shoot_press_consumed = true;
+            component.reload_press_consumed = true;
+            registry.set_component(weapon, component).unwrap();
+            weapon
+        };
+        let before = registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+
+        for _ in 0..5 {
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &sim_command(false, false),
+                1.0 / 60.0,
+            );
+        }
+
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap(),
+            &before,
+            "an unowned world weapon is never advanced by the weapon stage"
+        );
+    }
+
     pub(super) fn run_local_only_tick(
         registry: Rc<RefCell<EntityRegistry>>,
         weapon: EntityId,

@@ -834,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn drop_edge_clears_during_held_gap_and_neutral_fallback() {
+    fn one_drop_press_crossing_a_packet_gap_resolves_exactly_once() {
         let mut queues = HostCommandQueues::new();
         let mut cmd = command(0, 1.0);
         cmd.movement.drop_pressed = true;
@@ -843,20 +843,18 @@ mod tests {
         let real = queues.resolve_tick(CLIENT).expect("real command resolves");
         assert!(real.command.drop_pressed);
         assert!(real.command.movement.drop_pressed);
+        let mut resolved_drop_edges = usize::from(real.command.drop_pressed);
 
         let held = queues.resolve_tick(CLIENT).expect("held command resolves");
         assert_eq!(held.source, ResolutionSource::Held);
         assert!(!held.command.drop_pressed);
         assert!(!held.command.movement.drop_pressed);
+        resolved_drop_edges += usize::from(held.command.drop_pressed);
 
         for _ in 1..INPUT_HOLD_TICKS {
-            assert_eq!(
-                queues
-                    .resolve_tick(CLIENT)
-                    .expect("held command resolves")
-                    .source,
-                ResolutionSource::Held
-            );
+            let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+            assert_eq!(held.source, ResolutionSource::Held);
+            resolved_drop_edges += usize::from(held.command.drop_pressed);
         }
         let neutral = queues
             .resolve_tick(CLIENT)
@@ -864,6 +862,11 @@ mod tests {
         assert_eq!(neutral.source, ResolutionSource::Neutral);
         assert!(!neutral.command.drop_pressed);
         assert!(!neutral.command.movement.drop_pressed);
+        resolved_drop_edges += usize::from(neutral.command.drop_pressed);
+        assert_eq!(
+            resolved_drop_edges, 1,
+            "a held packet gap cannot replay the one-tick drop action"
+        );
     }
 
     #[test]

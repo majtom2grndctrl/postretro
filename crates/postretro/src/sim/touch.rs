@@ -625,6 +625,7 @@ mod tests {
     use parry3d::math::Point;
     use parry3d::shape::TriMesh;
     use postretro_entities::ComponentKind;
+    use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_entities::components::weapon::ReloadFeedback;
     use postretro_entities::components::wieldable_state::WieldableState;
@@ -634,12 +635,15 @@ mod tests {
     };
     use postretro_foundation::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementComponent, PlayerMovementDescriptor, ReloadStyle, ResolutionMode,
+        PlayerMovementComponent, PlayerMovementDescriptor, ReloadStyle, ResolutionMode, Seat,
         SpeedParams, TouchableDescriptor, WeaponDescriptor, WeaponResource,
     };
     use postretro_test_log_capture::LogCapture;
 
     use super::*;
+    use crate::netcode::SeatTable;
+    use crate::scripting::builtins::wieldable_inventory::compose_wieldable_inventory_from_slots;
+    use crate::scripting::map_entity::MapEntity;
 
     fn movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
@@ -903,34 +907,73 @@ mod tests {
     }
 
     #[test]
-    fn simultaneous_auto_contest_has_one_stable_winner() {
+    fn simultaneous_auto_contest_prefers_nearest_then_lower_player_id_deterministically() {
         let mut registry = EntityRegistry::new();
-        let first = spawn_player(&mut registry, Vec3::new(-0.25, 0.0, 0.0));
-        let second = spawn_player(&mut registry, Vec3::new(0.25, 0.0, 0.0));
+        let farther = spawn_player(&mut registry, Vec3::new(-0.6, 0.0, 0.0));
+        let nearer = spawn_player(&mut registry, Vec3::new(0.1, 0.0, 0.0));
         let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
         let mut system = TouchSystem::default();
-        let players = players(&[
-            (PlayerId::Remote(7), second),
-            (PlayerId::Local(first), first),
-        ]);
 
-        tick(&mut system, &mut registry, &players, &[]);
+        tick(
+            &mut system,
+            &mut registry,
+            &players(&[
+                (PlayerId::Remote(3), farther),
+                (PlayerId::Remote(7), nearer),
+            ]),
+            &[],
+        );
 
         assert_eq!(
             registry
-                .get_component::<Inventory>(first)
+                .get_component::<Inventory>(nearer)
                 .unwrap()
                 .wieldables[0],
-            Some(item)
+            Some(item),
+            "the nearest contestant wins even when it has the higher PlayerId"
         );
         assert!(
             registry
-                .get_component::<Inventory>(second)
+                .get_component::<Inventory>(farther)
                 .unwrap()
                 .wieldables
                 .iter()
                 .all(Option::is_none)
         );
+
+        for player_order_is_reversed in [false, true] {
+            let mut registry = EntityRegistry::new();
+            let lower_id = spawn_player(&mut registry, Vec3::new(-0.25, 0.0, 0.0));
+            let higher_id = spawn_player(&mut registry, Vec3::new(0.25, 0.0, 0.0));
+            let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
+            let mut system = TouchSystem::default();
+            let mut players = players(&[
+                (PlayerId::Remote(3), lower_id),
+                (PlayerId::Remote(7), higher_id),
+            ]);
+            if player_order_is_reversed {
+                players.reverse();
+            }
+
+            tick(&mut system, &mut registry, &players, &[]);
+
+            assert_eq!(
+                registry
+                    .get_component::<Inventory>(lower_id)
+                    .unwrap()
+                    .wieldables[0],
+                Some(item),
+                "an equal-distance contest resolves to the lower PlayerId regardless of input order"
+            );
+            assert!(
+                registry
+                    .get_component::<Inventory>(higher_id)
+                    .unwrap()
+                    .wieldables
+                    .iter()
+                    .all(Option::is_none)
+            );
+        }
     }
 
     #[test]
@@ -1023,6 +1066,11 @@ mod tests {
         vec![TouchEffect::Acquire]
     }
 
+    fn record_and_apply_default(facts: &TouchFacts) -> Vec<TouchEffect> {
+        observed_facts().lock().unwrap().push(*facts);
+        default_touch_policy(facts)
+    }
+
     #[test]
     fn policy_seam_receives_world_facts_and_can_acquire_duplicate() {
         let _guard = facts_test_guard().lock().unwrap();
@@ -1076,6 +1124,65 @@ mod tests {
     }
 
     #[test]
+    fn auto_items_resolve_in_entity_id_order_and_later_items_see_the_filled_slot() {
+        let _guard = facts_test_guard().lock().unwrap();
+        observed_facts().lock().unwrap().clear();
+
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::ZERO);
+        let filler = spawn_item(
+            &mut registry,
+            "filler",
+            Vec3::new(10.0, 0.0, 0.0),
+            TouchMode::Auto,
+            1,
+        );
+        let lower_id_item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
+        let higher_id_item = spawn_item(&mut registry, "plasma", Vec3::ZERO, TouchMode::Auto, 4);
+        let mut inventory = Inventory::default();
+        for slot in &mut inventory.wieldables[..WIELDABLE_SLOT_CAPACITY - 1] {
+            *slot = Some(filler);
+        }
+        registry.set_component(pawn, inventory).unwrap();
+        let mut system = TouchSystem {
+            policy: record_and_apply_default,
+            ..TouchSystem::default()
+        };
+
+        tick(
+            &mut system,
+            &mut registry,
+            &players(&[(PlayerId::Local(pawn), pawn)]),
+            &[],
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[WIELDABLE_SLOT_CAPACITY - 1],
+            Some(lower_id_item),
+            "the lower EntityId consumes the final free slot"
+        );
+        assert!(
+            registry
+                .has_component_kind(higher_id_item, ComponentKind::Touchable)
+                .unwrap(),
+            "the later item remains a world item after its policy declines the full inventory"
+        );
+        assert_eq!(
+            observed_facts()
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|facts| facts.free_slots)
+                .collect::<Vec<_>>(),
+            vec![1, 0],
+            "the second policy evaluation observes the mutation from the lower EntityId item"
+        );
+    }
+
+    #[test]
     fn press_prompts_until_claim_and_only_claimed_item_is_acquired() {
         let mut registry = EntityRegistry::new();
         let pawn = spawn_player(&mut registry, Vec3::ZERO);
@@ -1118,6 +1225,128 @@ mod tests {
         assert_eq!(system.prompts, vec![(PlayerId::Local(pawn), far)]);
     }
 
+    #[test]
+    fn press_claim_tie_prefers_the_lower_item_entity_id() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::ZERO);
+        let lower_id_item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(-0.25, 0.0, 0.0),
+            TouchMode::Press,
+            7,
+        );
+        let higher_id_item = spawn_item(
+            &mut registry,
+            "plasma",
+            Vec3::new(0.25, 0.0, 0.0),
+            TouchMode::Press,
+            7,
+        );
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        tick(
+            &mut system,
+            &mut registry,
+            &players,
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(lower_id_item),
+            "one press claims only the lower EntityId of equal-distance items"
+        );
+        assert!(
+            registry
+                .has_component_kind(higher_id_item, ComponentKind::Touchable)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn zero_tick_frame_latches_press_and_preserves_prompt_until_the_next_touch_tick() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::ZERO);
+        let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Press, 7);
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        tick(&mut system, &mut registry, &players, &[]);
+        assert_eq!(system.prompts, vec![(PlayerId::Local(pawn), item)]);
+
+        let mut latch = crate::input::GameplayInputLatch::new();
+        let use_press = crate::input::ActionSnapshot::with_button_state(
+            crate::input::Action::Use,
+            crate::input::ButtonState::Pressed,
+        );
+        assert!(latch.snapshot_for_ticks(&use_press, 0).is_none());
+        assert_eq!(
+            system.prompts,
+            vec![(PlayerId::Local(pawn), item)],
+            "the zero-tick render frame leaves the published prompt intact"
+        );
+
+        let latched = latch
+            .snapshot_for_ticks(&crate::input::ActionSnapshot::neutral(), 2)
+            .expect("the later two-tick frame receives the pending press");
+        assert_eq!(
+            latched.button(crate::input::Action::Use),
+            crate::input::ButtonState::Pressed
+        );
+        tick(
+            &mut system,
+            &mut registry,
+            &players,
+            &[(PlayerId::Local(pawn), true)],
+        );
+        tick(&mut system, &mut registry, &players, &[]);
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "the pending Use edge claims the prompt on the first tick of the later frame"
+        );
+    }
+
+    #[test]
+    fn auto_enter_applies_once_across_two_fixed_ticks_in_one_frame() {
+        let _guard = facts_test_guard().lock().unwrap();
+        observed_facts().lock().unwrap().clear();
+
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::ZERO);
+        let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem {
+            policy: record_and_acquire,
+            ..TouchSystem::default()
+        };
+
+        tick(&mut system, &mut registry, &players, &[]);
+        tick(&mut system, &mut registry, &players, &[]);
+
+        assert_eq!(
+            observed_facts().lock().unwrap().len(),
+            1,
+            "the second fixed tick sees sustained overlap, not a fresh auto touch"
+        );
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item)
+        );
+    }
+
     fn record_no_effect(facts: &TouchFacts) -> Vec<TouchEffect> {
         observed_facts().lock().unwrap().push(*facts);
         Vec::new()
@@ -1153,6 +1382,55 @@ mod tests {
                 .wieldables
                 .iter()
                 .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn acquisition_purges_queued_despawn_but_the_held_weapon_admits_later_deferred_effects() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::ZERO);
+        let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
+        crate::impact_effects::despawn(&mut registry, item, Some(0.0));
+        assert_eq!(
+            registry
+                .get_component::<DeferredEffectComponent>(item)
+                .unwrap()
+                .pending
+                .len(),
+            1,
+            "the script-side deferred despawn is queued before pickup"
+        );
+        let mut system = TouchSystem::default();
+
+        tick(
+            &mut system,
+            &mut registry,
+            &players(&[(PlayerId::Local(pawn), pawn)]),
+            &[],
+        );
+
+        assert!(
+            registry.exists(item),
+            "pickup preserves the weapon instance"
+        );
+        assert!(registry.get_component::<WeaponComponent>(item).is_ok());
+        let effects = registry
+            .get_component::<DeferredEffectComponent>(item)
+            .unwrap();
+        assert!(
+            effects.pending.is_empty(),
+            "pickup purges the queued despawn"
+        );
+        assert!(
+            !effects.inert,
+            "pickup is not a terminal lifecycle transition"
+        );
+
+        crate::impact_effects::despawn(&mut registry, item, Some(0.0));
+        crate::impact_effects::tick_deferred_effects(&mut registry, 1.0 / 60.0);
+        assert!(
+            registry.is_marked_for_end_of_frame_removal(item).unwrap(),
+            "a later deferred despawn is admitted and runs against the held weapon"
         );
     }
 
@@ -1337,6 +1615,229 @@ mod tests {
     }
 
     #[test]
+    fn auto_drop_reacquires_only_after_the_dropper_leaves_and_reenters() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+        registry
+            .set_component(
+                pawn,
+                Transform {
+                    position: Vec3::new(10.0, 2.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[],
+        );
+        registry
+            .set_component(
+                pawn,
+                Transform {
+                    position: Vec3::new(0.0, 2.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[],
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "leaving clears the drop inhibit; the later enter edge acquires the item"
+        );
+    }
+
+    #[test]
+    fn adjacent_simultaneous_drops_seed_both_players_and_do_not_swap_weapons() {
+        let mut registry = EntityRegistry::new();
+        let first = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let second = spawn_player(&mut registry, Vec3::new(0.1, 2.0, 0.0));
+        let first_item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        let second_item = spawn_item(
+            &mut registry,
+            "plasma",
+            Vec3::new(11.0, 2.0, 0.0),
+            TouchMode::Auto,
+            4,
+        );
+        held_item(&mut registry, first, first_item);
+        held_item(&mut registry, second, second_item);
+        let descriptors = [
+            drop_descriptor("ion", TouchMode::Auto, 1.0),
+            drop_descriptor("plasma", TouchMode::Auto, 1.0),
+        ];
+        let players = players(&[
+            (PlayerId::Local(first), first),
+            (PlayerId::Remote(7), second),
+        ]);
+        let mut system = TouchSystem::default();
+
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(first), true), (PlayerId::Remote(7), true)],
+        );
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[],
+        );
+
+        for pawn in [first, second] {
+            assert!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables
+                    .iter()
+                    .all(Option::is_none),
+                "occupancy seeding prevents an adjacent dropper from taking either item"
+            );
+        }
+        for item in [first_item, second_item] {
+            assert!(
+                system.occupants.get(&item).is_some_and(|occupants| {
+                    occupants.contains(&PlayerId::Local(first))
+                        && occupants.contains(&PlayerId::Remote(7))
+                }),
+                "each dropped item is seeded with every capsule already at its final point"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_hp_player_remains_a_touch_occupant_and_can_drop() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        registry
+            .set_component(
+                pawn,
+                HealthComponent {
+                    max: 100.0,
+                    current: 0.0,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        let death = crate::scripting_systems::health::sweep_deaths(&mut registry);
+        assert!(
+            death.player_died,
+            "the player death latches before the touch pass"
+        );
+        assert!(
+            registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .is_ok(),
+            "the death sweep retains the pawn capsule as the toucher"
+        );
+
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[],
+        );
+
+        assert!(
+            system
+                .occupants
+                .get(&item)
+                .is_some_and(|occupants| occupants.contains(&PlayerId::Local(pawn))),
+            "the corpse is seeded into the dropped item's occupancy"
+        );
+        assert!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables
+                .iter()
+                .all(Option::is_none),
+            "a still corpse produces no new auto enter edge"
+        );
+    }
+
+    #[test]
     fn drop_seed_suppresses_auto_but_allows_a_deliberate_press_reacquire() {
         let mut registry = EntityRegistry::new();
         let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
@@ -1358,8 +1859,26 @@ mod tests {
             &CollisionWorld::default(),
             &descriptors,
             &players,
+            &[],
             &[(PlayerId::Local(pawn), true)],
+        );
+        assert!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables
+                .iter()
+                .all(Option::is_none),
+            "standing still after the drop does not create a fresh auto acquisition"
+        );
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
             &[(PlayerId::Local(pawn), true)],
+            &[],
         );
 
         assert_eq!(
@@ -1368,13 +1887,138 @@ mod tests {
                 .unwrap()
                 .wieldables[0],
             Some(item),
-            "a fresh press defeats only the automatic re-acquisition inhibit"
+            "a deliberate press on a later tick defeats only the automatic re-acquisition inhibit"
         );
         assert!(
             !registry
                 .has_component_kind(item, ComponentKind::Touchable)
                 .unwrap(),
-            "same-tick deliberate re-acquisition returns the item to held state"
+            "deliberate re-acquisition returns the item to held state"
+        );
+    }
+
+    #[test]
+    fn pickup_and_drop_preserve_every_reserve_balance_including_explicit_zeroes() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
+        let mut reserve = AmmoReserve::default();
+        reserve.credit("cells", 11);
+        reserve.set_exact("rockets", 0);
+        registry.set_component(pawn, reserve).unwrap();
+        let reserve_before = registry
+            .get_component::<AmmoReserve>(pawn)
+            .unwrap()
+            .balances()
+            .map(|(ammo_type, amount)| (ammo_type.to_owned(), amount))
+            .collect::<Vec<_>>();
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+        let mut system = TouchSystem::default();
+
+        tick(&mut system, &mut registry, &players, &[]);
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "the reserve assertion covers a genuine pickup before the drop"
+        );
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .balances()
+                .map(|(ammo_type, amount)| (ammo_type.to_owned(), amount))
+                .collect::<Vec<_>>(),
+            reserve_before,
+            "acquiring then dropping moves only the wieldable instance, never pawn-owned reserves"
+        );
+    }
+
+    #[test]
+    fn acquired_wieldable_carries_its_provenance_and_magazine_across_level_unload() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::ZERO);
+        let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 5);
+        let mut touch_system = TouchSystem::default();
+
+        tick(
+            &mut touch_system,
+            &mut registry,
+            &players(&[(PlayerId::Local(pawn), pawn)]),
+            &[],
+        );
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "the later carry harvest reads the instance acquired by the touch pass"
+        );
+        let mut seats = SeatTable::from_test_session_id([0x16; 16]);
+        seats.bind_pawn(Seat(0), pawn);
+        seats.harvest_pawn(&registry, pawn);
+        let carried = seats
+            .carried_state(Seat(0))
+            .expect("the level-transition ledger harvests the acquired inventory")
+            .clone();
+
+        assert_eq!(carried.wieldables[0].as_deref(), Some("ion"));
+        assert_eq!(carried.magazines[0], Some(5));
+        registry.clear_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload();
+
+        let mut next_level = EntityRegistry::new();
+        let next_pawn = next_level.spawn(Transform::default());
+        let placement = MapEntity {
+            classname: "player_spawn".to_string(),
+            origin: Vec3::ZERO,
+            angles: Vec3::ZERO,
+            key_values: Default::default(),
+            tags: Vec::new(),
+        };
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+        compose_wieldable_inventory_from_slots(
+            &mut next_level,
+            next_pawn,
+            &placement,
+            &descriptors,
+            &carried.wieldables,
+            Some(&carried),
+        );
+
+        let restored = next_level
+            .get_component::<Inventory>(next_pawn)
+            .unwrap()
+            .wieldables[0]
+            .expect("the carried slot materializes on the next level");
+        assert_eq!(
+            next_level
+                .get_component::<DescriptorProvenance>(restored)
+                .unwrap()
+                .canonical_name,
+            "ion"
+        );
+        assert_eq!(
+            next_level
+                .get_component::<WeaponComponent>(restored)
+                .unwrap()
+                .magazine,
+            5,
+            "the carried instance's live magazine survives the descriptor respawn"
         );
     }
 

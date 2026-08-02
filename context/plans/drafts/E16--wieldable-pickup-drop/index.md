@@ -70,15 +70,20 @@ Overlap, evaluation, and touch are three separate steps.
 |---|---|---|
 | **Overlap** | Geometric state, recomputed every tick | Maintains the per-item occupancy set; produces enter and exit edges |
 | **Evaluation** | Every tick, for every overlapping `(player, item)` pair | Builds `TouchFacts` and runs the policy. Result drives prompt-eligibility only |
-| **Touch** | Enter edge in `auto`; `use_pressed` edge while overlapping in `press` | **Applies** that tick's evaluation result |
+| **Touch** | Enter edge in `auto`; `use_pressed` edge while overlapping in `press` | Marks the player a **contestant** for that item; the item's nearest contestant wins and its effects **apply** |
 
 The touch step reuses the evaluation's effect list rather than re-running the policy, so the policy runs
-exactly once per overlapping pair per tick. Pairs are processed strictly sequentially, and each pair's
-evaluation is immediately followed by its application — so a later pair in the same tick evaluates against
-the world the earlier pair's effects already mutated. This apply-immediately order governs `auto` enter
-edges and cross-player ordering. In `press` mode a player's press-eligible overlapping items are reduced
-to the single nearest (squared centre distance, ties on the lower `EntityId`) before application, so one
-un-consumed `use_pressed` edge cannot fire on two items in one tick.
+exactly once per overlapping pair per tick.
+
+Each item is resolved once per tick. The players whose touch wants it this tick — an enter edge in `auto`,
+a `use_pressed` edge while overlapping in `press` — are its **contestants**. One wins: the nearest by
+squared centre distance, ties on the lower `PlayerId`; the losers' touches find the item already taken. One
+winner per item is what bounds acquisition to a single player, so no separate liveness re-check is needed.
+
+Items resolve in ascending `EntityId` order, and each winner's acquisition applies before the next item. A
+player who fills their last slot on one item evaluates the next with `free_slots = 0`. A `press` also
+resolves per player to a single claim — the nearest item that player contests, ties on the lower
+`EntityId` — so one un-consumed `use_pressed` edge takes exactly one item however many it overlaps.
 
 A `press` pair is prompt-eligible when its evaluation returns a non-empty effect list and no effects were
 applied for it this tick. **Applied** means an effect that *succeeded*, not merely one the policy returned:
@@ -152,7 +157,7 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| An item is acquired by at most one player, ever | Task 3 (each pair re-checks the item is a live world item before applying its effects, so an item acquired earlier in the same pass is treated as already taken) | Two players' enter edges on one tick; a player entering after another's empty effect list | AC 5 |
+| An item is acquired by at most one player, ever | Task 3 (each item's contesting touches reduce to one winner, so at most one acquisition per item per tick) | A reducer returning more than one winner; an item resolved in more than one reduction per tick | AC 5 |
 | Effects apply only on a touch; evaluation alone never mutates | Task 3 (evaluation and application are separate steps) | A later effect arm applied from the eligibility path | AC 7, AC 10 |
 | A touch fires on an edge, never on sustained overlap | Task 3 (per-item occupancy set, enter transition in `auto`; press edge in `press`) | Drop seeds the drop point's occupants (Task 6); an empty effect list must not clear occupancy, or the next tick re-fires | AC 4, AC 10, AC 19 |
 | Facts are computed at every evaluation, whatever the policy reads | Task 3 (`TouchFacts` built before the policy runs) | A later short-circuit that skips fact computation when the default ignores a field | AC 7 |
@@ -169,7 +174,8 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 
 | Scenario | Ordering | Expected outcome |
 |---|---|---|
-| Two players enter one item's radius on the same tick | Both enter edges evaluated in one pass | The player earlier in the stable `PlayerId` order acquires; the second player's application re-checks liveness, finds the item no longer carries a `TouchableComponent`, and does not acquire. Deterministic, not first-mover-by-float-distance. Flagging the item non-world while retaining its occupancy entry was considered; dropping the entry outright is simpler and the per-application liveness re-check already covers the same-pass second player. |
+| Two players enter one item's radius on the same tick | Both are contestants; the item reduces to one winner | The nearest by squared centre distance acquires, ties on the lower `PlayerId`; the other's touch finds the item already taken. One acquisition, stable across runs with identical inputs. |
+| Two players contest one item, one already holding its canonical name | The owner's evaluation returns no effects, so it never contests | The non-owner acquires regardless of distance — `ownedCount` removes the owner before the nearest-winner reduction runs. |
 | A press player overlaps two press items and presses once, two free slots | Press-eligible items reduced to the nearest before application | Exactly one taken — nearest by squared centre distance, ties on the lower `EntityId`. The un-taken item stays a world item and stays prompt-eligible next tick. |
 | One player, two `auto` items entered on one tick, one free slot | Items iterated in ascending `EntityId` order | The lower `EntityId` is acquired; the second evaluates with `freeSlots = 0` and returns no effects. `EntityId` packs generation above index, so ascending order is deterministic but is not spawn order; the guarantee is stability across runs with identical inputs, matching the `trigger_ids` sort in `run_authoritative_tick_with_dispatch`. |
 | Player drops an item and stands still | Drop seeds every player overlapping the drop point into the item's occupancy | No enter edge, so no touch in `auto`. A `press` player pressing again re-acquires — a deliberate press defeats the inhibit. |
@@ -251,6 +257,15 @@ The default policy is the whole of this spec's behavior: acquire when `ownedCoun
 `freeSlots` is positive, otherwise do nothing. Later specs add arms to the effect set and read the same
 facts — `ownedCount > 0 → grantAmmo, despawn` is Doom, `freeSlots == 0 → drop active, acquire` is Halo,
 `ownedCount > 0 → slot.add(materials), despawn` is dismantle-for-crafting.
+
+The policy decides whether a player *wants* an item; a second reducer decides which of several wanters
+gets it. This spec ships the simple default — nearest by squared centre distance, ties on the lower
+`PlayerId` — but the reducer is the seam a fairness rule plugs into. It bites once an effect arm lets an
+owner contest: `grantAmmo` makes a player already holding the weapon want the item for its ammo, so an
+owner and a non-owner contest one pickup, and *the weapon to the player without it, the ammo to the player
+holding less* becomes a real choice over the contestants' facts. The general form — rank N contestants
+under slot capacity — is a scan over a player collection, the shape `scripting.md` §11 forbids a mod
+policy, so the reducer stays engine-owned until that substrate lands.
 
 **Prior commitments.** `context/research/weapon-model.md` invariant 6 pins held and dropped wieldables as the same
 instance kind, reachable by one spawn path; §6 describes pickup as "the *same* instance, but placed in
@@ -550,20 +565,24 @@ rule that treats a `PlayerId` absent from the returned map as exited, so `occupa
 stale keys for despawned or vanished items. The pass needs no radius guard: `TouchableDescriptor::validate`
 rejects a non-positive radius at descriptor load, so no zero-radius item ever spawns.
 
-Pairs are processed strictly sequentially, and each pair's evaluation is immediately followed by its
-application. A second pair on the same tick therefore evaluates against the world the first pair's effects
-already mutated — one player entering two `auto` items with one free slot sees `free_slots = 0` on the
-second. This apply-immediately order governs `auto` enter edges and cross-player ordering; the `press`
-reduction below narrows a player's press-eligible items to one before any of them can fire. Before applying
-a pair's effects the pass re-checks the item is still a live world item — still carrying its
-`TouchableComponent`, not marked for end-of-frame removal, and not acquired earlier this same pass — and
-treats an acquired-away item as already taken, skipping its remaining pairs.
+Resolve each item once per tick. Its **contestants** are the players whose touch this tick returns a
+non-empty effect list — an enter edge in `auto`, a `use_pressed` edge while overlapping in `press`. Reduce
+them to one winner: the default reducer picks the nearest by squared centre distance, ties on the lower
+`PlayerId`, and a charted arbitration seam (see Direction) replaces it when a later spec ranks contestants
+by need. Apply the winner's effects; the losers take nothing. One winner per item bounds acquisition to a
+single player, so the pass needs no separate re-check that an item is still unclaimed.
 
-Three steps run per overlapping pair, and only the third mutates. **Overlap** is geometric state,
-recomputed every tick, maintaining the occupancy set and producing enter and exit edges. **Evaluation**
-runs every tick for every overlapping pair: build `TouchFacts { owned_count, free_slots, magazine,
-reserve, pressed }` and run the policy once. **Touch** applies that evaluation's result, and fires on an
-enter edge in `Auto` or a `use_pressed` edge while overlapping in `Press`.
+Items resolve in ascending `EntityId` order, and each winner's acquisition applies before the next item. A
+player filling their last slot on one item therefore evaluates the next with `free_slots = 0`. A `press`
+reduces per player as well: it claims the single nearest item that player contests, ties on the lower
+`EntityId`, so one un-consumed `use_pressed` edge takes exactly one item.
+
+Three steps run each tick; only the third mutates. **Overlap** is geometric state, recomputed every tick,
+maintaining the occupancy set and producing enter and exit edges. **Evaluation** runs every tick for every
+overlapping pair: build `TouchFacts { owned_count, free_slots, magazine, reserve, pressed }` and run the
+policy once. **Touch** reduces each item's contestants to one winner and applies that winner's effects; a
+contestant is a player whose enter edge in `Auto`, or `use_pressed` edge while overlapping in `Press`,
+returned effects.
 
 `owned_count` counts occupied slots whose wieldable's `DescriptorProvenance.canonical_name` matches the
 item's. `reserve` reads the pawn's `AmmoReserve` balance for the item's ammo type, zero when the weapon
@@ -586,10 +605,6 @@ test can substitute one — AC 7 requires that seam. Apply the returned effects 
 not re-fire. A `press` pair is prompt-eligible when its evaluation returned a non-empty list and no
 effects were applied for it this tick; `auto` pairs are never prompt-eligible. Filter on mode, never on
 which effect the policy returned.
-
-A player's press-eligible overlapping items are reduced to the single nearest by squared centre distance
-(ties on the lower `EntityId`) before the press fires, so a press takes exactly one item however many it
-overlaps. Process players in `PlayerId` order so two simultaneous enter edges resolve deterministically.
 
 On a successful acquisition the item stops being a world item, which is one rule with three parts. Remove
 its `TouchableComponent` — Task 5's sweep reads that presence, and Task 6 rebuilds it from the descriptor
@@ -793,8 +808,8 @@ client's local `Inventory` writes through Task 2's chokepoint so the source-scan
 Build the ordering and edge-case coverage. Each scenario below states its expected outcome; assert that
 outcome.
 
-- Two players enter one item's radius on one tick. Exactly one acquisition. The player earlier in the
-  stable `PlayerId` order wins, and the winner is the same across runs with identical inputs.
+- Two players enter one item's radius on one tick. Exactly one acquisition. The nearest by squared centre
+  distance wins, ties on the lower `PlayerId`, and the winner is the same across runs with identical inputs.
 - One player enters two `auto` items on one tick with one free slot. The lower `EntityId` is acquired; the
   second evaluates with `free_slots = 0` and returns no effects.
 - A frame renders zero fixed ticks. No evaluation and no prompt refresh; the last published prompt set
@@ -864,6 +879,10 @@ The list return is load-bearing. Every policy past the first emits more than one
 ammo *and* despawns, Halo drops *and* acquires — so an `Option<TouchEffect>` would change shape at the
 second consumer.
 
+A second engine-owned reducer picks one winner among an item's contestants — nearest by squared centre
+distance today, a fairness ranking later. It is a separate seam from the policy: the policy answers whether
+a player wants the item, the reducer answers which wanter gets it.
+
 Duplicate detection compares `DescriptorProvenance.canonical_name` between the item and each occupied
 slot's wieldable. That field is what cross-level carry already harvests, so the two agree by construction
 on what "the same weapon" means.
@@ -917,3 +936,9 @@ useful for testing. The engine requires no visual; that is the author's call.
   and read once per frame. In a two-fixed-tick frame a `press` item eligible on tick 1 but taken or
   despawned on tick 2 is never observed as eligible by presentation. Flag whether losing that eligibility
   window is acceptable, or whether prompts must accumulate across a frame's ticks.
+- **How a contested pickup should choose among several players wanting it.** The default reducer picks the
+  nearest, ties on the lower `PlayerId`. A fairer rule — the weapon to a player who lacks it, a granted
+  resource to the player holding less — must rank the contestants, a scan over a player collection the IR
+  substrate forbids a mod to author (`scripting.md` §11). The reducer stays engine-owned and the ranking is
+  charted, not built, until the effect arm that makes owners contest (`grantAmmo`) and the collection-fact
+  substrate both land.

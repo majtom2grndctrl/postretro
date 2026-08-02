@@ -511,9 +511,8 @@ mod tests {
             vec![
                 PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
                 PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
-                PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
             ],
-            "live inventory slot fills must route through composition or an acquisition chokepoint"
+            "live inventory slot fills must route through composition or acquire_wieldable_at"
         );
     }
 

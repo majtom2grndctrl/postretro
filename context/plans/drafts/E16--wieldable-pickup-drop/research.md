@@ -70,12 +70,37 @@ Held weapons are not replicated in production — the only `replicable.register(
 on the pawn record and from the tuning payload. So a world item is a genuinely new replicated
 category, not an existing one being reused.
 
-## Why a touch fires on an enter edge
+## Why a touch fires on an edge, and evaluation does not
 
 Sustained-overlap dispatch makes drop unimplementable: the dropping player stands inside the item's
-radius and re-acquires on the next tick. Seeding the item's occupancy with the dropping player at drop
-time, and firing only on the enter transition, resolves it with the structure `TriggerSystem.occupants`
-already uses.
+radius and re-acquires on the next tick. Seeding the item's occupancy at drop time, and firing only on
+the enter transition, resolves it with the structure `TriggerSystem.occupants` already uses.
+
+Prompt-eligibility cannot ride the same edge. A `press` item reports eligibility on every overlapping
+tick, but its touch fires only on a press — so eligibility computed from a touch would never appear.
+Evaluation therefore runs every tick per overlapping pair and drives eligibility; effects apply only on
+a touch. The `pressed` fact carries the player's live state at each evaluation rather than a synthesized
+value, so a policy gating on it reports eligibility exactly on the ticks a press would produce something.
+
+The drop seed covers every player overlapping the drop point, not only the dropper. Seeding the dropper
+alone leaves a second player already standing there free to take the item on the drop tick, and lets two
+adjacent players dropping on one tick swap weapons on the next.
+
+## Sphere-vs-capsule uses the point-vs-range helper
+
+`capsule_overlaps_aabb` decomposes into `range_distance` (point vs range) on X and Z and
+`segment_range_distance` (segment vs range) on Y, because both shapes have extent. A pickup sphere is a
+point plus a radius, so its vertical term is point-vs-range against the capsule's Y extent —
+`range_distance`, not `segment_range_distance`.
+
+## Why `drop_pressed` is cleared on a gap-hold
+
+`held_gap_sim_command` clears `use_pressed` and the fire button while carrying movement and `reload`
+forward; `neutral_sim_command` synthesizes both false. The split is deliberate and documented at the
+function: `reload` is a level bit that weapon-owned `reload_press_consumed` deduplicates, while fire
+authorizes consumption on every resolution and must not re-authorize. `drop_pressed` is an edge in the
+fire class, not the reload class — held across a 3-tick gap it would drop four weapons from one press,
+each from a freshly repointed active slot.
 
 ## Policies the fact set covers
 
@@ -105,16 +130,21 @@ declaration and the per-seat storage, which `drafts/E16--per-player-currency` ow
 ```mermaid
 stateDiagram-v2
     [*] --> InWorld: map sweep (touchable block present)
-    InWorld --> InWorld: sustained overlap, no touch
-    InWorld --> Touched: enter edge (auto), or use press while overlapping (press)
-    Touched --> Held: policy returned Acquire
-    Touched --> PromptEligible: policy returned effects, none applied this tick
-    Touched --> InWorld: policy returned no effects
-    PromptEligible --> InWorld: exit edge
-    Held --> InWorld: drop (occupancy seeded with dropper)
+    InWorld --> Overlapped: enter edge
+    Overlapped --> InWorld: exit edge, or player vanishes
+    Overlapped --> Overlapped: evaluated every tick
+    Overlapped --> PromptEligible: policy returned effects, none applied
+    PromptEligible --> Overlapped: policy returns no effects
+    Overlapped --> Held: touch fires, policy returned Acquire
+    PromptEligible --> Held: use press (press mode)
+    Held --> Overlapped: drop (occupancy seeded with all occupants)
     Held --> [*]: pawn teardown despawns slot siblings
     InWorld --> [*]: level unload / scripted despawn
 ```
+
+A touch fires on the `Overlapped → Held` transition in `auto` (the enter edge itself) and on the
+`PromptEligible → Held` transition in `press`. Evaluation runs on every tick spent in `Overlapped` or
+`PromptEligible`.
 
 ## Frame placement
 

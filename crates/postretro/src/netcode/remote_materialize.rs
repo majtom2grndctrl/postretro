@@ -299,6 +299,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: Some(MeshDescriptor {
                 model: "decraniated".to_string(),
                 shadow_only: false,

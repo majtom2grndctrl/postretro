@@ -684,6 +684,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh,
             health: None,
             behavior: None,

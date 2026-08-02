@@ -139,7 +139,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "components?",
             "EntityTypeComponents",
-            "Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` also composes its inventory loadout into separate wieldable instances.",
+            "Optional component presets. Direct map placement materializes light, emitter, movement, mesh, health, and touchable presets; `player_spawn` also composes its inventory loadout into separate wieldable instances.",
         )
         .finish();
     registry
@@ -270,6 +270,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
         .field("inventory?", "Option<InventoryDescriptor>", "Pawn-owned ordered wieldable loadout. Input cursor and dwell state are never stored here.")
         .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`.")
+        .field("touchable?", "Option<TouchableDescriptor>", "Host-authoritative touch interaction tuning. Its presence makes a descriptor directly map-placeable and permits its weapon component to attach to that world instance.")
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards.")
@@ -283,6 +284,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_enum("FireMode")
         .variant("semi", "One shot per press.")
         .variant("auto", "Continuous fire while held.")
+        .finish();
+    registry
+        .register_enum("TouchMode")
+        .variant("auto", "Take automatically when the touch policy accepts an overlap entry.")
+        .variant("press", "Require an explicit use press while overlapping before touch policy can take the item.")
         .finish();
     registry
         .register_enum("ResolutionMode")
@@ -327,6 +333,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("lowerMs?", "u32", "Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.")
         .field("raiseMs?", "u32", "Raising duration in milliseconds. Optional; defaults to 0.")
         .field("blockDuringReload?", "bool", "Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin.")
+        .finish();
+    registry
+        .register_type("TouchableDescriptor")
+        .doc("Host-authoritative touch interaction preset for a world-placeable descriptor. Maps choose the placement; this descriptor owns mode and radius tuning.")
+        .field("mode?", "TouchMode", "Touch activation mode. Optional; defaults to `auto`.")
+        .field("radius?", "f32", "Touch sphere radius in world units. Optional; defaults to 40. Must be finite and > 0.")
         .finish();
     registry
         .register_type("HitboxDescriptor")

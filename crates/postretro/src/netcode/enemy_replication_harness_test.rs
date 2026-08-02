@@ -269,6 +269,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         emitter: None,
         movement: None,
         weapon: None,
+        touchable: None,
         mesh: Some(MeshDescriptor {
             model: "decraniated".to_string(),
             shadow_only: false,
@@ -367,6 +368,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         emitter: None,
         movement: None,
         weapon: None,
+        touchable: None,
         mesh: Some(MeshDescriptor {
             model: "crate_mesh".to_string(),
             shadow_only: false,

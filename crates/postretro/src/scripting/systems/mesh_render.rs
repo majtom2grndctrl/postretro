@@ -2209,6 +2209,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: Some(MeshDescriptor {
                 model: "remote-holder-model".to_string(),
                 shadow_only: false,

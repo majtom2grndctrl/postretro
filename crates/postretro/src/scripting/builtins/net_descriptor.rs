@@ -397,6 +397,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: Some(MeshDescriptor {
                 model: "decraniated".to_string(),
                 shadow_only: false,
@@ -651,6 +652,7 @@ mod tests {
     #[test]
     fn remote_enemy_presentation_meshless_descriptor_leaves_transform_only() {
         let descriptors = vec![EntityTypeDescriptor {
+            touchable: None,
             mesh: None,
             ..enemy_mesh_descriptor("meshless_enemy", false)
         }];
@@ -721,6 +723,7 @@ mod tests {
             emitter: None,
             movement: Some(movement_descriptor()),
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -737,6 +740,7 @@ mod tests {
             emitter: None,
             movement: Some(movement_descriptor()),
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -764,6 +768,7 @@ mod tests {
                 raise_ms: 0,
                 block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,

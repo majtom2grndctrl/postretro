@@ -685,6 +685,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::EntityState => 17,
         ComponentKind::DeferredEffect => 18,
         ComponentKind::Inventory => 19,
+        ComponentKind::Touchable => 20,
     }
 }
 
@@ -2893,6 +2894,7 @@ mod tests {
                 raise_ms: 0,
                 block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -3663,7 +3665,8 @@ mod tests {
                 ComponentKind::Spawner => Some(ComponentKind::EntityState),
                 ComponentKind::EntityState => Some(ComponentKind::DeferredEffect),
                 ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
-                ComponentKind::Inventory => None,
+                ComponentKind::Inventory => Some(ComponentKind::Touchable),
+                ComponentKind::Touchable => None,
             }
         }
 
@@ -3997,6 +4000,7 @@ mod tests {
                 view_feel: None,
             }),
             weapon: None,
+            touchable: None,
             mesh: Some(MeshDescriptor {
                 model: "models/exo_red/model.gltf".to_string(),
                 shadow_only: true,

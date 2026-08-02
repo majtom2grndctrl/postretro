@@ -30,6 +30,7 @@ use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::touchable::TouchableComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
@@ -247,6 +248,7 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.movement.is_some()
         || descriptor.mesh.is_some()
         || descriptor.health.is_some()
+        || descriptor.touchable.is_some()
 }
 
 pub(crate) fn ai_capsule_center_from_feet_offset(
@@ -514,6 +516,11 @@ pub(crate) fn attach_descriptor_components(
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
+    if let Some(touchable_desc) = descriptor.touchable.as_ref() {
+        let _ = registry.set_component(id, TouchableComponent::from_descriptor(touchable_desc));
+        owned_components.insert(DescriptorComponentKind::Touchable);
+    }
+
     // A behavior graph materializes the engine-owned brain AND a movable
     // navigation agent (the tick drives the agent each tick).
     //
@@ -761,7 +768,7 @@ pub(crate) fn apply_data_archetype_dispatch(
             registry,
             descriptor,
             entity,
-            false,
+            descriptor.touchable.is_some(),
             DescriptorSpawnPath::MapPlacement,
             agent_params,
         ) else {
@@ -904,7 +911,8 @@ mod tests {
     use super::*;
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor,
+        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
+        TouchableDescriptor, WeaponDescriptor,
     };
     use std::collections::HashMap;
 
@@ -928,6 +936,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1143,6 +1152,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: Some(HealthDescriptor {
                 max: 75.0,
@@ -1311,6 +1321,50 @@ mod tests {
         let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
         assert!(provenance.owns(DescriptorComponentKind::Light));
         assert!(!provenance.owns(DescriptorComponentKind::Weapon));
+    }
+
+    #[test]
+    fn map_sweep_spawns_weapon_and_touchable_for_touchable_wieldable() {
+        let mut reg = EntityRegistry::new();
+        let mut descriptor = weapon_descriptor("reference_pistol");
+        descriptor.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Press,
+            radius: 32.0,
+        });
+        let placements = vec![placement("reference_pistol", &[])];
+
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &[descriptor],
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
+
+        assert_eq!(handled.len(), 1);
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Touchable)
+            .next()
+            .expect("touchable wieldable should spawn");
+        let position = reg
+            .get_component::<Transform>(id)
+            .expect("world item transform should attach")
+            .position;
+        assert!(
+            (position - Vec3::new(1.0, 2.0, 3.0)).length_squared() <= f32::EPSILON,
+            "map placement should retain its authored position"
+        );
+        assert!(reg.get_component::<WeaponComponent>(id).is_ok());
+        let touchable = reg
+            .get_component::<TouchableComponent>(id)
+            .expect("touchable component should attach");
+        assert_eq!(touchable.mode, TouchMode::Press);
+        assert!((touchable.radius - 32.0).abs() <= f32::EPSILON);
+        let provenance = reg
+            .get_component::<DescriptorProvenance>(id)
+            .expect("descriptor provenance should attach");
+        assert!(provenance.owns(DescriptorComponentKind::Weapon));
+        assert!(provenance.owns(DescriptorComponentKind::Touchable));
     }
 
     #[test]
@@ -1543,6 +1597,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1587,6 +1642,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1628,6 +1684,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1666,6 +1723,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1706,6 +1764,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1756,6 +1815,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1823,6 +1883,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1934,6 +1995,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1961,6 +2023,7 @@ mod tests {
                 raise_ms: 0,
                 block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1994,6 +2057,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -2116,6 +2180,7 @@ mod tests {
             emitter: None,
             movement: Some(movement_descriptor()),
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,

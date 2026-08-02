@@ -7190,6 +7190,7 @@ mod tests {
                 raise_ms: 0,
                 block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -9904,6 +9905,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: Some(MeshDescriptor {
                 model: "models/remote_enemy/scene.gltf".to_string(),
                 shadow_only: false,

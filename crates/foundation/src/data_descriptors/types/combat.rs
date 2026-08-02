@@ -159,6 +159,47 @@ impl WeaponDescriptor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TouchMode {
+    Auto,
+    Press,
+}
+
+const fn default_touch_mode() -> TouchMode {
+    TouchMode::Auto
+}
+
+const fn default_touch_radius() -> f32 {
+    40.0
+}
+
+/// Authored touch interaction preset for a world-placeable descriptor.
+/// Both fields are descriptor-owned gameplay tuning; maps provide placement,
+/// never interaction tuning.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TouchableDescriptor {
+    #[serde(default = "default_touch_mode")]
+    pub mode: TouchMode,
+    #[serde(default = "default_touch_radius")]
+    pub radius: f32,
+}
+
+impl TouchableDescriptor {
+    pub fn validate(self) -> Result<Self, DescriptorError> {
+        if !self.radius.is_finite() || self.radius <= 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.touchable.radius` must be a finite value > 0.0, got {}",
+                    self.radius
+                ),
+            });
+        }
+        Ok(self)
+    }
+}
+
 fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
     validate_ascii_identifier("components.weapon.creditSource", value)
 }
@@ -451,6 +492,28 @@ mod tests {
             serde_json::json!({"kind": "ammo", "type": "cells", "magazine": "8", "reserve": 32}),
         ] {
             assert!(serde_json::from_value::<WeaponResource>(resource).is_err());
+        }
+    }
+
+    #[test]
+    fn touchable_descriptor_defaults_and_rejects_nonpositive_or_nonfinite_radius() {
+        let defaults: TouchableDescriptor = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(defaults.mode, TouchMode::Auto);
+        assert!((defaults.radius - 40.0).abs() <= f32::EPSILON);
+
+        let press_only: TouchableDescriptor =
+            serde_json::from_value(serde_json::json!({ "mode": "press" })).unwrap();
+        assert_eq!(press_only.mode, TouchMode::Press);
+        assert!((press_only.radius - 40.0).abs() <= f32::EPSILON);
+
+        for radius in [0.0, -1.0, f32::INFINITY, f32::NAN] {
+            let error = TouchableDescriptor {
+                mode: TouchMode::Auto,
+                radius,
+            }
+            .validate()
+            .expect_err("non-positive and non-finite touch radii must reject");
+            assert!(error.to_string().contains("components.touchable.radius"));
         }
     }
 }

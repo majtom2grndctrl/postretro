@@ -24,6 +24,7 @@ use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
+use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
@@ -136,6 +137,8 @@ pub enum ComponentKind {
     DeferredEffect = 18,
     /// Pawn-owned ordered wieldable instances and in-flight switch target.
     Inventory = 19,
+    /// Host-local interaction tuning for a world touchable entity.
+    Touchable = 20,
 }
 
 impl ComponentKind {
@@ -165,6 +168,7 @@ impl ComponentKind {
             ComponentKind::EntityState,
             ComponentKind::DeferredEffect,
             ComponentKind::Inventory,
+            ComponentKind::Touchable,
         ];
         VARIANTS.len()
     };
@@ -230,6 +234,7 @@ pub enum ComponentValue {
     EntityState(EntityStateComponent),
     DeferredEffect(DeferredEffectComponent),
     Inventory(Inventory),
+    Touchable(TouchableComponent),
 }
 
 impl ComponentValue {
@@ -255,6 +260,7 @@ impl ComponentValue {
             ComponentValue::EntityState(_) => ComponentKind::EntityState,
             ComponentValue::DeferredEffect(_) => ComponentKind::DeferredEffect,
             ComponentValue::Inventory(_) => ComponentKind::Inventory,
+            ComponentValue::Touchable(_) => ComponentKind::Touchable,
         }
     }
 }
@@ -623,6 +629,21 @@ impl Component for Inventory {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Inventory(self)
+    }
+}
+
+impl Component for TouchableComponent {
+    const KIND: ComponentKind = ComponentKind::Touchable;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Touchable(touchable) => Some(touchable),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Touchable(self)
     }
 }
 

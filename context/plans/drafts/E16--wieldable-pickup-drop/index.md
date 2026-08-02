@@ -62,8 +62,7 @@ policy — take it if you can — and charts the seam a later authoring surface 
 
 ## Evaluation model
 
-Three distinct things happen per overlapping pair, and conflating them is the defect this section exists
-to prevent.
+Overlap, evaluation, and touch are three separate steps.
 
 | Step | When | Effect |
 |---|---|---|
@@ -72,16 +71,13 @@ to prevent.
 | **Touch** | Enter edge in `auto`; `use_pressed` edge while overlapping in `press` | Re-evaluates, then **applies** the returned effects |
 
 A pair is prompt-eligible when its evaluation returns a non-empty effect list and no effects were applied
-for it this tick. So an `auto` item is never left prompt-eligible: if its policy returns effects, the
-enter edge already applied them.
+for it this tick. An `auto` item is therefore never prompt-eligible — its enter edge already applied
+whatever the policy returned.
 
-Facts are built at evaluation, not only at touch. That is what lets a `press` item report eligibility
-before any press occurs, and it is why the policy is required to be pure — it runs on ticks where nothing
-is applied.
+The policy runs on ticks where nothing is applied. It must be pure.
 
-`pressed` carries the player's real `use_pressed` state at each evaluation, never a synthesized value. A
-policy gating on it therefore reports eligibility only on the tick the player is actually pressing, which
-is correct: such a policy is describing an effect that only a press produces.
+`pressed` carries the player's live `use_pressed` state at every evaluation, never a synthesized value.
+A policy gating on it reports eligibility only while the player is pressing.
 
 ## Boundary inventory
 
@@ -364,8 +360,8 @@ Add the first live-inventory read-modify-write to
 sentence is the doc comment on `compose_wieldable_inventory`, not the module doc — update that function's
 doc in the same change rather than leaving it false.
 
-Three functions, all pure effects that hold no eligibility rule: whether an acquisition *should* happen is
-decided in Task 3 and is not this layer's concern.
+Three functions, all pure effects. Whether an acquisition *should* happen is Task 3's decision, not this
+layer's.
 
 `acquire_wieldable_at(registry, pawn, slot, item) -> bool` is the primitive. It writes the item id into
 the named slot and returns whether it did, returning `false` when the slot is occupied, out of range, or
@@ -519,11 +515,9 @@ or mid-raise must land in the world idle, because nothing will tick it. Add the 
 `TouchReport.dropped` so the caller registers it for replication.
 
 Seed the item's occupancy entry with **every player whose capsule overlaps the drop point**, not only the
-dropper. Seeding the dropper alone leaves two holes: a second player already standing there gets an enter
-edge on the drop tick and steals the item, and two adjacent players dropping on the same tick each get an
-enter edge on the other's item next tick and swap weapons. Seeding all current occupants closes both with
-one rule. The seed suppresses enter edges only, so a `press`-mode item can still be re-acquired by a
-deliberate press — that is intended.
+dropper. A second player already standing there would otherwise take the item on the drop tick, and two
+adjacent players dropping together would each get an enter edge on the other's item and swap weapons. The
+seed suppresses enter edges only — a `press` item can still be taken by a deliberate press.
 
 The existing `normalize_inventory_liveness` in `crates/postretro/src/sim/weapon_stage/commands.rs`
 handles the pawn side of a vanished slot; releasing is not a vanish, so drop must leave the inventory

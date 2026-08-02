@@ -80,7 +80,7 @@ Prompt-eligibility cannot ride the same edge. A `press` item reports eligibility
 tick, but its touch fires only on a press — so eligibility computed from a touch would never appear.
 Evaluation therefore runs every tick per overlapping pair and drives eligibility; effects apply only on
 a touch. The `pressed` fact carries the player's live state at each evaluation rather than a synthesized
-value, so a policy gating on it reports eligibility exactly on the ticks a press would produce something.
+value, so a policy gating on it prompts only on the ticks a press would actually produce an effect.
 
 The drop seed covers every player overlapping the drop point, not only the dropper. Seeding the dropper
 alone leaves a second player already standing there free to take the item on the drop tick, and lets two
@@ -88,9 +88,11 @@ adjacent players dropping on one tick swap weapons on the next.
 
 ## Sphere-vs-capsule uses the point-vs-range helper
 
-`capsule_overlaps_aabb` decomposes into `range_distance` (point vs range) on X and Z and
-`segment_range_distance` (segment vs range) on Y, because both shapes have extent. A pickup sphere is a
-point plus a radius, so its vertical term is point-vs-range against the capsule's Y extent —
+`capsule_overlaps_aabb` uses `range_distance` (point vs range) on X and Z, where the capsule is a point,
+and `segment_range_distance` (segment vs range) on Y, where the capsule and the box both have extent.
+
+Sphere-vs-capsule differs on both axes. In XZ the sphere center against the capsule axis is a plain
+horizontal distance — neither helper. On Y it is point-vs-range against the capsule's extent:
 `range_distance`, not `segment_range_distance`.
 
 ## Why `drop_pressed` is cleared on a gap-hold

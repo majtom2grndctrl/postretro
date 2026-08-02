@@ -17,9 +17,9 @@ it wholesale.
 - An entity-vs-player overlap pass: sphere volume per item against each player capsule, enter/exit edges.
 - Two acquisition modes: `auto` (taken on the enter edge) and `press` (taken on a `use` press while
   overlapping).
-- Prompt-eligible pairs reported out of the pickup pass as an in-memory per-tick result. Not a published
-  script or UI surface — the intended reader is the unbuilt combat presentation substrate, so the shape
-  stays internal until that spec names what it needs.
+- Prompt-eligible pairs, returned from the pickup pass as an in-memory per-tick value. Not a published
+  script or UI surface: the reader is the unbuilt combat presentation substrate, which will name the
+  shape it wants.
 - Dropping the active wieldable back into the world, including the inhibit that stops the dropper from
   immediately re-acquiring it.
 - One inventory-growth chokepoint, with a source-scan test restricting its call sites.
@@ -30,12 +30,11 @@ it wholesale.
 
 - **Authored acquisition policy.** A player who already owns a wieldable of the same canonical name, or
   whose inventory is full, cannot take the item. Swapping the held wieldable for the world one, and
-  replacing the lowest-stat wieldable drawing the same ammo type, are both out: expressing either needs
-  inventory state as IR-readable facts plus a policy vocabulary word, and the ranking arm needs iteration
-  the IR substrate forbids (`scripting.md` §11). A later spec owns them. That argument does **not** reach
-  the duplicate case: granting the item's authored reserve instead of refusing needs neither IR facts nor
-  iteration, only the item's own descriptor and the shipped `grant_ammo` chokepoint. It is out of scope
-  here by owner decision, not by cost — recorded in Open questions so the price is not misread later.
+  replacing the lowest-stat wieldable drawing the same ammo type, are both out. Either needs inventory
+  state as IR-readable facts plus a policy vocabulary word, and the ranking arm needs iteration the IR
+  substrate forbids (`scripting.md` §11). A later spec owns them.
+- **Granting a duplicate's reserve instead of refusing it.** Owner decision, not a cost one — this case
+  needs no IR facts and no iteration. Open questions carries the price.
 - **Rendering pickup prompts.** Roadmap `E16 › Combat Feedback & Economy › combat presentation substrate`
   owns floating text and pickup prompts. This spec publishes the facts and stops.
 - **Authored carry policy.** Carry across a level transition is unconditional and inherited from the
@@ -67,13 +66,13 @@ it wholesale.
 | map placement | existing `classname` == descriptor `canonicalName` | — | — | — | author's own `@PointClass` in their FGD |
 
 `WeaponDescriptor` carries `#[serde(rename_all = "camelCase")]`; `PickupDescriptor` follows it. Both new
-field names are single words, so the two casings coincide — this is not a reason to skip the rename
-attribute, which the sibling convention requires and which a later multi-word field will need.
+field names are single words, so the two casings coincide. The attribute still goes on — the sibling
+convention requires it, and the first multi-word field will need it.
 
 The FGD is hand-authored and committed (`sdk/TrenchBroom/postretro.fgd`), not generated from the
 descriptor registry. A modder placing a pickup adds a `@PointClass` whose classname literal equals the
-descriptor's `canonicalName`, exactly as they do for any other placeable archetype. This spec adds no
-FGD keys — the acquisition mode and radius are gameplay tuning and are descriptor-owned.
+descriptor's `canonicalName`, as for any other placeable archetype. This spec adds no FGD keys: mode and
+radius are gameplay tuning, and tuning is descriptor-owned.
 
 ## Wire format
 
@@ -117,7 +116,7 @@ so it inherits the existing gap policy rather than defining one.
 | Two players enter one item's radius on the same tick | Both enter edges evaluated in one pass | The player earlier in the stable `PlayerId` order acquires; the second finds the item already taken and does not acquire. Deterministic, not first-mover-by-float-distance. |
 | Player drops an item and stands still | Drop seeds the dropper into the item's occupancy set; next tick sees sustained overlap | No re-acquisition, in either mode |
 | Player drops, walks out of radius, walks back (auto) | Exit edge clears occupancy; later enter edge fires | Re-acquired |
-| Player overlaps two press-mode items and presses once | One pass, one `use_pressed` edge, two overlapping items | The nearer item by squared centre distance is acquired; the other is untouched. Ties break on the lower `EntityId`. |
+| Player overlaps two press-mode items and presses once | One pass, one `use_pressed` edge, two overlapping items | The nearer item by squared center distance is acquired; the other is untouched. Ties break on the lower `EntityId`. |
 | Player overlaps a press-mode item and never presses | Enter edge, then sustained overlap | Prompt-eligible every tick while overlapping; no acquisition |
 | Player overlaps an item they already own (either mode) | Enter edge, refusal | No acquisition, and **not** prompt-eligible — a prompt that cannot succeed is worse than none |
 | Inventory full | Enter edge, refusal | Same as duplicate: no acquisition, not prompt-eligible |
@@ -138,47 +137,46 @@ so it inherits the existing gap policy rather than defining one.
 component — pinned by two tests — so there is nothing to pick up, and no code path anywhere grows a live
 inventory: every composition site builds a fresh `Inventory` and replaces the component wholesale.
 
-Pickup is roadmap-demanded. **Drop is not**, and its demand is co-op: a shared session where one player
-can hand a weapon to another is the reason to build the inverse now rather than later. It also pays for
-itself structurally — designing acquisition as an enter edge over per-item occupancy, rather than a
-sustained-overlap test, is only forced by drop, and it is the better design either way. Stating this
-matters because drop is what rules out the cheaper alternative below.
+Pickup is roadmap-demanded. **Drop is not.** Its demand is co-op: one player handing a weapon to another
+in a shared session. Drop also shapes the design — acquisition is an enter edge over per-item occupancy
+rather than a sustained-overlap test, and only drop forces that. It is the better shape either way, and
+it is what rules out the cheaper alternative below.
 
-**Prior commitments.** `weapon-model.md` invariant 6 pins that held and dropped wieldables are the same
-instance kind reachable by one spawn path, and §6 describes pickup as "the *same* instance, but placed
-in the world with a transform and a trigger." §6 also pins that inventory does not own the ammunition
+**Prior commitments.** `weapon-model.md` invariant 6 pins held and dropped wieldables as the same
+instance kind, reachable by one spawn path; §6 describes pickup as "the *same* instance, but placed in
+the world with a transform and a trigger." §6 also pins that inventory does not own the ammunition
 reserve — reserves pool on the pawn — so a wieldable leaving the inventory never takes its reserve with
 it. This spec follows both: the item is the instance, and neither pickup nor drop touches `AmmoReserve`.
+
 `entity_model.md` §7 already specifies the overlap machinery this needs — bounding sphere for pickups,
 direct geometric checks, no spatial partitioning, a separate pass after entity updates — and §9 makes
-spatial partitioning for entity-entity queries a non-goal. `entity_model.md` §4 pins that gameplay
-tuning is descriptor-owned and never an FGD KVP, which is why the radius and mode are authored in the
-data script even though the item's position is authored in the map.
+spatial partitioning for entity-entity queries a non-goal. §4 pins gameplay tuning as descriptor-owned
+and never an FGD KVP. That is why radius and mode are authored in the data script while the item's
+position is authored in the map.
 
-Two deliberate divergences. First, the overlap pass runs after the trigger stage rather than after *all*
-entity updates as §7 states, because the only entities whose motion opens or closes a pickup overlap are
-player pawns and items, and items do not move — running before the AI tick keeps the acquisition edge in
-the same tick as the movement that produced it. Second, `entity_model.md` §7 says volume size is fixed
-per entity *type*; the radius here is per descriptor, which is the same statement in this codebase's
-vocabulary since a descriptor is the type.
+Two deliberate divergences, both from `entity_model.md` §7, and Task 3 amends the doc for both. First,
+the overlap pass runs after the trigger stage rather than after *all* entity updates. Only player pawns
+and items can open or close a pickup overlap, and items do not move; running before the AI tick keeps the
+acquisition edge in the tick that produced it. Second, §7 fixes volume size per entity *type*. The radius
+here is per descriptor — the same rule in this codebase's vocabulary, since a descriptor is the type.
 
-**Alternatives rejected.** *A pickup proxy that spawns a fresh instance on acquisition.* A separate
-lightweight world entity naming an archetype, materializing a new wieldable when taken. It avoids a live
-`WeaponComponent` sitting unowned in the world and keeps map placement away from the weapon column. It
-was rejected because it makes drop a second mechanism rather than the inverse of pickup — a dropped
-instance carries per-instance state (magazine, and later augments and charge) that a name-only proxy
-cannot represent, so drop would either lose that state or need its own instance-bearing world entity,
-which is the instance model arriving anyway through a worse door. It also contradicts `weapon-model.md`
-invariant 6 directly. The instance model's real cost is that an unowned `WeaponComponent` exists in the
-world; that cost is bounded because no weapon-stage entry point reaches weapons except through an owner,
-and this spec pins that as an invariant rather than leaving it as an accident.
+**Alternatives rejected.** *A pickup proxy that spawns a fresh instance on acquisition.* A lightweight
+world entity naming an archetype, materializing a new wieldable when taken. It keeps map placement away
+from the weapon column and leaves no live `WeaponComponent` unowned in the world.
 
-*Reusing brush trigger volumes.* Author a `trigger_volume` around each item and fire a reaction. It needs
-no new overlap code. Rejected because brush volumes are level-load-only — the sole AABB registration site
-populates from the PRL trigger-volume section — so a dropped item could never have one, and drop is in
-scope. This is a divergence from the roadmap's own wording, which describes pickup as the instance
-"placed in the world **with a trigger**," and it is deliberate: the roadmap line predates drop being in
-scope, and a per-item sphere is what serves both. Naming it so the divergence is not read as an oversight.
+Rejected because it makes drop a second mechanism rather than the inverse of pickup. A dropped instance
+carries per-instance state — magazine now, augments and charge later — that a name-only proxy cannot
+represent. Drop would either lose that state or grow its own instance-bearing world entity, which is the
+instance model arriving through a worse door. It also contradicts `weapon-model.md` invariant 6 directly.
+The instance model's cost is the unowned `WeaponComponent`, and that cost is bounded: no weapon-stage
+entry point reaches a weapon except through its owner, pinned here as an invariant.
+
+*Reusing brush trigger volumes.* Author a `trigger_volume` around each item and fire a reaction. No new
+overlap code. Rejected because brush volumes are level-load-only — the sole AABB registration site
+populates from the PRL trigger-volume section — so a dropped item can never have one.
+
+This diverges from the roadmap, which describes pickup as the instance "placed in the world **with a
+trigger**." That line predates drop entering scope; a per-item sphere serves both.
 
 **Foreclosures and one-way doors.** The `pickup` descriptor block is append-only surface; adding fields
 later is cheap. The acquisition chokepoint is the one-way door: once Task 3, Task 6, and the client path
@@ -269,8 +267,7 @@ not rewrite the item's `DescriptorProvenance` — cross-level carry reads the ca
 and re-picks `active_slot` as the lowest occupied slot (or leaves it at zero when the inventory is now
 empty), clearing `switch_target` and `switch_origin` if either referenced the released slot. It returns
 `None` and warns once per descriptor when the released wieldable's descriptor authors no pickup block,
-leaving the inventory untouched. `RefusalReason` is a named enum, not a boolean, so a later policy spec
-adds variants rather than changing the signature. Add a source-scanning test in the same shape as
+leaving the inventory untouched. Add a source-scanning test in the same shape as
 `ammo_reserve_writes_have_only_grant_seed_and_carry_restore_non_test_call_sites` in
 `crates/entities/src/components/grant.rs`: it walks `crates/`, masks `#[cfg(test)]` blocks and test
 files, counts writes to `Inventory::wieldables` outside them, and asserts the allowlist is exactly the
@@ -290,7 +287,7 @@ stage's `run_authoritative_tick_with_dispatch` call and before the AI tick, thre
 capsules with the existing `canonical_player_capsules` helper in
 `crates/postretro/src/trigger_system.rs`, which returns `(pawn, position, radius, half_height)` per
 `PlayerId` — make it `pub(crate)` if it is not already. Overlap is sphere-vs-capsule: the item's
-`Transform.position` against the capsule segment, true when the centre-to-segment distance is at most the
+`Transform.position` against the capsule segment, true when the center-to-segment distance is at most the
 sum of the pickup radius and the capsule radius; `segment_range_distance` beside `capsule_overlaps_aabb`
 is the existing distance helper to reuse or mirror. Iterate items via
 `registry.iter_with_kind(ComponentKind::Pickup)`, skipping any entity already marked for end-of-frame
@@ -298,17 +295,16 @@ removal. For each item, compute the current overlapping set, diff against `occup
 exit edges, then act only on enter edges: in `Auto` mode call `acquire_wieldable` immediately; in `Press`
 mode acquire only when that player's `use_pressed` entry is true, and otherwise report the pair as
 prompt-eligible. A player pressing while overlapping several eligible items acquires only the nearest by
-squared centre distance, breaking ties on the lower `EntityId`. A refusal must leave the occupancy entry
+squared center distance, breaking ties on the lower `EntityId`. A refusal must leave the occupancy entry
 in place so the next tick does not re-fire, and must not report the pair prompt-eligible. On a successful
 acquisition, remove the item's `PickupComponent`, drop its occupancy entry, and hand the item to the
 netcode unregistration path from Task 5. Process players in `PlayerId` order so two simultaneous enter
-edges resolve deterministically. The prompt report is an in-memory per-tick value, not a published
-script or UI surface; return it and let the caller hold it. Finally, amend `context/lib/entity_model.md`
-§7 in this task: Collision Timing currently states entity-entity overlap runs after all entity updates
-complete, and this pass runs between the trigger and AI stages, so record the narrower placement and the
-reason. In the same pass, §7 says a volume's size is fixed per entity type — restate it as per
-descriptor, which is that sentence in this codebase's vocabulary. Leaving both unamended makes §7 false
-after ship and misroutes the next entity-overlap spec.
+edges resolve deterministically. Return the prompt report as a plain per-tick value and let the caller
+hold it; it is not a published script or UI surface. Amend `context/lib/entity_model.md` §7 in this task,
+in two places. Collision Timing states that entity-entity overlap runs after all entity updates complete;
+this pass runs between the trigger and AI stages, so record the narrower placement and why it is
+sufficient. §7 also fixes volume size per entity type; restate it as per descriptor. Both sentences are
+false once this ships, and the next entity-overlap spec reads them.
 
 ### Task 4: Drop action and command plumbing
 
@@ -354,11 +350,10 @@ success: write the freed item's `Transform.position` to a point in front of the 
 pawn's transform and capsule, at ground level, and clamped back to the pawn's own position when the
 target point is not reachable through the collision world, so an item is never dropped inside geometry.
 Attach a `PickupComponent` built from the descriptor's pickup block. Seed the item's occupancy entry in
-`PickupSystem` with the dropping player, which is what stops the dropper from re-acquiring on the next
-tick while standing on it; this is the reason acquisition is an enter edge rather than an overlap test.
-Register the item for replication through Task 5's path. Force the released wieldable out of any timed
-state — a weapon dropped mid-reload or mid-raise must land in the world idle, since nothing will tick it
-— and reset the state timer fields alongside the state itself. The existing
+`PickupSystem` with the dropping player: without it, the dropper re-acquires next tick while standing on
+the item. Register the item for replication through Task 5's path. Force the released wieldable out of
+any timed state and reset the state timer fields alongside the state — a weapon dropped mid-reload or
+mid-raise must land in the world idle, because nothing will tick it. The existing
 `normalize_inventory_liveness` in `crates/postretro/src/sim/weapon_stage/commands.rs` handles the pawn
 side of a vanished slot; releasing is not a vanish, so drop must leave the inventory consistent itself
 rather than relying on that reconciliation.
@@ -376,12 +371,11 @@ it. Increment `TUNING_PAYLOAD_EPOCH` in `crates/postretro/src/netcode/tuning_pay
 the layout is unchanged but the merge semantics are not, and the epoch gate is what stops a peer from
 applying the old reading. Add a send trigger so the host publishes a fresh tuning payload when a pawn's
 inventory changes; today publication fires on slot-accept and manifest refresh only, neither of which a
-mid-level acquisition touches. That trigger is an escalation worth naming: it turns a
-config-push-at-transition channel into an event-driven state channel with no delta and no ack, so a
-dropped payload means a stale client inventory until the next publication. Accept it for this spec — the
-payload is small, fixed-size, and reliable-ordered — and keep the constraint `E15` established, that the
-payload stays opaque to `crates/net`. Route the client's local `Inventory` writes through Task 2's
-chokepoint so the source-scan test stays satisfied.
+mid-level acquisition touches. That trigger escalates the channel: a config push at transitions becomes
+an event-driven state channel with no delta and no ack, so a dropped payload leaves a stale client
+inventory until the next publication. Accept it here — the payload is small, fixed-size, and
+reliable-ordered — and hold the constraint `E15` set, that it stays opaque to `crates/net`. Route the
+client's local `Inventory` writes through Task 2's chokepoint so the source-scan test stays satisfied.
 
 ### Task 8: Ordering and edge coverage
 
@@ -392,10 +386,11 @@ frame rendering two; a `use` press landing on the same tick as a trigger-volume 
 firing and neither consuming the press; a script despawn racing an acquisition on one tick; a press-mode
 player overlapping two eligible items; drop followed by standing still, then by leaving and returning; a
 weapon instance sitting unowned in the world across many ticks advancing no cooldown, reload, or state
-timer; and a picked-up weapon surviving a level transition with its magazine. The unowned-inertness test
-is the one that pins an invariant currently held only by two call sites choosing not to scan the weapon
-column, so write it against observable component state after N ticks rather than against those call
-sites. Host-and-client cases belong in the existing netcode harness style rather than a new fixture.
+timer; and a picked-up weapon surviving a level transition with its magazine. Write the unowned-inertness
+test against observable component state after N ticks, never against the call sites — the invariant it
+pins is currently held only by two call sites choosing not to scan the weapon column, and a test naming
+them would move with them. Host-and-client cases belong in the existing netcode harness style rather than
+a new fixture.
 
 ## Sequencing
 
@@ -457,9 +452,8 @@ export const rocketLauncher: EntityTypeDescriptor = defineEntity({
 });
 ```
 
-A descriptor authoring `pickup` without `mesh` spawns an invisible but acquirable item. That is legal and
-useful for testing, and it is an authoring concern rather than an engine rule — the engine does not
-require a visual.
+A descriptor authoring `pickup` without `mesh` spawns an invisible but acquirable item. Legal, and useful
+for testing. The engine requires no visual; that is the author's call.
 
 ## Open questions
 

@@ -262,13 +262,16 @@ facts — `ownedCount > 0 → grantAmmo, despawn` is Doom, `freeSlots == 0 → d
 `ownedCount > 0 → slot.add(materials), despawn` is dismantle-for-crafting.
 
 The policy decides whether a player *wants* an item; a second reducer decides which of several wanters
-gets it. This spec ships the simple default — nearest by squared centre distance, ties on the lower
-`PlayerId` — but the reducer is the seam a fairness rule plugs into. It bites once an effect arm lets an
-owner contest: `grantAmmo` makes a player already holding the weapon want the item for its ammo, so an
-owner and a non-owner contest one pickup, and *the weapon to the player without it, the ammo to the player
-holding less* becomes a real choice over the contestants' facts. The general form — rank N contestants
-under slot capacity — is a scan over a player collection, the shape `scripting.md` §11 forbids a mod
-policy, so the reducer stays engine-owned until that substrate lands.
+gets it. This spec ships the positional default — the contestant deepest into the pickup volume, which
+for a fixed-radius sphere is the one nearest its centre, ties on the lower `PlayerId`. For weapon contests
+that default is complete, not a placeholder: `ownedCount` removes an owner before the reducer runs, so
+every contestant lacks the weapon equally and position is the only distinguishing fact. The reducer is
+still the seam a fairness rule plugs into, and it bites only once an effect arm lets an owner contest:
+`grantAmmo` makes a player already holding the weapon want the item for its ammo, so an owner and a
+non-owner contest one pickup, and *the ammo to the player holding less* becomes a real choice over the
+contestants' facts — a fact position cannot carry. The general form — rank N contestants under slot
+capacity — is a scan over a player collection, the shape `scripting.md` §11 forbids a mod policy, so the
+reducer stays engine-owned until that substrate lands.
 
 **Prior commitments.** `context/research/weapon-model.md` invariant 6 pins held and dropped wieldables as the same
 instance kind, reachable by one spawn path; §6 describes pickup as "the *same* instance, but placed in
@@ -583,9 +586,9 @@ it — a player with an `auto` enter edge on it, or the player whose claim it is
 its player's claim is evaluated for prompts but never contests, so one `use_pressed` edge acquires at most
 one item.
 
-Reduce an item's contestants to one winner: the default reducer picks the nearest by squared centre
-distance, ties on the lower `PlayerId`; a later spec that ranks contestants by need replaces this default
-reducer. Apply the winner's effects; the losers acquire nothing. One winner
+Reduce an item's contestants to one winner: the default reducer picks the contestant deepest into the
+pickup — for a fixed-radius sphere, the nearest by squared centre distance — ties on the lower `PlayerId`;
+a later spec that ranks contestants by need replaces this default reducer. Apply the winner's effects; the losers acquire nothing. One winner
 per item bounds acquisition to a single player, so the pass needs no separate re-check that an item is
 still unclaimed. When one free slot is contested by both an `auto` and a `press` item, the lower-`EntityId`
 item resolves first and takes it; the other takes nothing.
@@ -891,9 +894,10 @@ The list return is load-bearing. Every policy past the first emits more than one
 ammo *and* despawns, Halo drops *and* acquires — so an `Option<TouchEffect>` would change shape at the
 second consumer.
 
-A second engine-owned reducer picks one winner among an item's contestants — nearest by squared centre
-distance today, a fairness ranking later. It is a separate seam from the policy: the policy answers whether
-a player wants the item, the reducer answers which wanter gets it.
+A second engine-owned reducer picks one winner among an item's contestants — the contestant deepest into
+the pickup (nearest by squared centre distance) today, a resource-aware ranking later. It is a separate
+seam from the policy: the policy answers whether a player wants the item, the reducer answers which wanter
+gets it.
 
 Duplicate detection compares `DescriptorProvenance.canonical_name` between the item and each occupied
 slot's wieldable. That field is what cross-level carry already harvests, so the two agree by construction
@@ -948,14 +952,9 @@ useful for testing. The engine requires no visual; that is the author's call.
   and read once per frame. In a two-fixed-tick frame a `press` item eligible on tick 1 but taken or
   despawned on tick 2 is never observed as eligible by presentation. Flag whether losing that eligibility
   window is acceptable, or whether prompts must accumulate across a frame's ticks.
-- **How a contested pickup should choose among several players wanting it.** The default reducer picks the
-  nearest, ties on the lower `PlayerId`. A fairer rule — the weapon to a player who lacks it, a granted
-  resource to the player holding less — must rank the contestants, a scan over a player collection the IR
-  substrate forbids a mod to author (`scripting.md` §11). The reducer stays engine-owned and the ranking is
-  charted, not built, until the effect arm that makes owners contest (`grantAmmo`) and the collection-fact
-  substrate both land.
-- **Whether a deliberate press should beat an incidental walk-over for a shared last slot.** When a player
-  presses a `press` item and steps onto an `auto` item on one tick with one free slot, the lower-`EntityId`
-  item wins and the other takes nothing — deterministic but arbitrary. Reserving the slot for the press
-  (deliberate action over incidental) is the alternative; it adds a pre-`auto` reservation step and is left
-  out until playtest shows the `EntityId`-order outcome feels wrong.
+- **Whether a resource grant should rank contestants by who holds less.** Only relevant once `grantAmmo`
+  lets an owner contest a pickup for its ammo. The positional reducer this spec ships is complete for
+  weapon contests — `ownedCount` removes the owner first, so every contestant lacks the weapon equally and
+  position is the only distinguishing fact. A resource grant is where *the ammo to the player holding less*
+  becomes a real choice position cannot express; that ranking is charted in Direction, gated on the
+  collection-fact substrate, not decided here.

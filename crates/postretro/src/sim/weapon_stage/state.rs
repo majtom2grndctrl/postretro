@@ -315,7 +315,7 @@ fn restart_timed_step(
     false
 }
 
-fn transition_to_idle(component: &mut WeaponComponent) {
+pub(crate) fn transition_to_idle(component: &mut WeaponComponent) {
     component.state = WieldableState::Idle;
     component.state_remaining_ms = 0;
     component.state_total_ms = 0;

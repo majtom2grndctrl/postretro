@@ -4,6 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use glam::Vec3;
+use parry3d::math::{Isometry, Vector};
+use parry3d::query::{ShapeCastOptions, cast_shapes, intersection_test};
+use parry3d::shape::Ball;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::touchable::TouchableComponent;
@@ -14,7 +17,9 @@ use postretro_entities::{
 };
 
 use crate::collision::CollisionWorld;
-use crate::scripting::builtins::wieldable_inventory::acquire_wieldable;
+use crate::scripting::builtins::data_archetype::{descriptor_mesh_component, find_descriptor};
+use crate::scripting::builtins::wieldable_inventory::{acquire_wieldable, release_wieldable};
+use crate::sim::weapon_stage::transition_to_idle;
 use crate::trigger_system::{
     AuthoritativePlayer, PlayerId, canonical_player_capsules, range_distance,
 };
@@ -59,6 +64,13 @@ struct TouchEvaluation {
     effects: Vec<TouchEffect>,
 }
 
+/// Observable touch-side changes produced by one authoritative fixed tick.
+#[derive(Debug, Default)]
+pub(crate) struct TouchTickEvents {
+    pub(crate) repointed_pawns: Vec<EntityId>,
+    pub(crate) dropped_item_meshes: Vec<EntityId>,
+}
+
 /// Per-level state for deterministic item touch, touch edges, and prompts.
 ///
 /// Sorted occupancy keys make edge emission stable across equivalent input
@@ -68,6 +80,7 @@ struct TouchEvaluation {
 pub(crate) struct TouchSystem {
     occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>,
     warned_duplicate_players: HashSet<PlayerId>,
+    warned_non_touchable_descriptors: HashSet<String>,
     policy: fn(&TouchFacts) -> Vec<TouchEffect>,
     pub(crate) prompts: Vec<(PlayerId, EntityId)>,
 }
@@ -77,6 +90,7 @@ impl Default for TouchSystem {
         Self {
             occupants: BTreeMap::new(),
             warned_duplicate_players: HashSet::new(),
+            warned_non_touchable_descriptors: HashSet::new(),
             policy: default_touch_policy,
             prompts: Vec::new(),
         }
@@ -87,6 +101,7 @@ impl TouchSystem {
     pub(crate) fn clear(&mut self) {
         self.occupants.clear();
         self.warned_duplicate_players.clear();
+        self.warned_non_touchable_descriptors.clear();
         self.prompts.clear();
     }
 
@@ -98,16 +113,23 @@ impl TouchSystem {
     pub(crate) fn run_authoritative_tick(
         &mut self,
         registry: &mut EntityRegistry,
-        _collision_world: &CollisionWorld,
-        _descriptors: &[EntityTypeDescriptor],
+        collision_world: &CollisionWorld,
+        descriptors: &[EntityTypeDescriptor],
         players: &[AuthoritativePlayer],
         use_pressed: &HashMap<PlayerId, bool>,
-        _drop_pressed: &HashMap<PlayerId, bool>,
-    ) -> Vec<EntityId> {
+        drop_pressed: &HashMap<PlayerId, bool>,
+    ) -> TouchTickEvents {
         self.prompts.clear();
 
         let player_capsules =
             canonical_player_capsules(registry, players, &mut self.warned_duplicate_players);
+        let mut tick_events = self.drop_wieldables(
+            registry,
+            collision_world,
+            descriptors,
+            &player_capsules,
+            drop_pressed,
+        );
         let mut item_ids: Vec<EntityId> = registry
             .iter_with_kind(ComponentKind::Touchable)
             .map(|(id, _)| id)
@@ -231,8 +253,180 @@ impl TouchSystem {
             }
         }
 
-        repointed.into_iter().collect()
+        tick_events.repointed_pawns.extend(repointed);
+        tick_events.repointed_pawns.sort_unstable();
+        tick_events.repointed_pawns.dedup();
+        tick_events.dropped_item_meshes.sort_unstable();
+        tick_events.dropped_item_meshes.dedup();
+        tick_events
     }
+
+    fn drop_wieldables(
+        &mut self,
+        registry: &mut EntityRegistry,
+        collision_world: &CollisionWorld,
+        descriptors: &[EntityTypeDescriptor],
+        player_capsules: &BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)>,
+        drop_pressed: &HashMap<PlayerId, bool>,
+    ) -> TouchTickEvents {
+        let mut events = TouchTickEvents::default();
+
+        for (&player, &(pawn, center, capsule_radius, capsule_half_height)) in player_capsules {
+            if !drop_pressed.get(&player).copied().unwrap_or(false) {
+                continue;
+            }
+            let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
+                continue;
+            };
+            let active_slot = inventory.active_slot;
+            let Some(item) = inventory.active_wieldable() else {
+                continue;
+            };
+            let Ok(provenance) = registry.get_component::<DescriptorProvenance>(item) else {
+                continue;
+            };
+            let canonical_name = provenance.canonical_name.clone();
+            let Some(descriptor) = find_descriptor(descriptors, &canonical_name) else {
+                continue;
+            };
+            let Some(touchable) = descriptor.touchable.as_ref() else {
+                if self
+                    .warned_non_touchable_descriptors
+                    .insert(canonical_name.clone())
+                {
+                    log::warn!(
+                        "[Touch] refuses dropping wieldable `{canonical_name}`: descriptor has no touchable block"
+                    );
+                }
+                continue;
+            };
+            let Ok(pawn_transform) = registry.get_component::<Transform>(pawn) else {
+                continue;
+            };
+            if registry.get_component::<Transform>(item).is_err() {
+                continue;
+            }
+            let Some(drop_position) = resolve_drop_position(
+                collision_world,
+                pawn_transform,
+                center,
+                capsule_radius,
+                capsule_half_height,
+                touchable.radius,
+            ) else {
+                continue;
+            };
+
+            if release_wieldable(registry, pawn, active_slot) != Some(item) {
+                continue;
+            }
+
+            let mut item_transform = registry
+                .get_component::<Transform>(item)
+                .expect("checked live wieldables retain their transform")
+                .clone();
+            item_transform.position = drop_position;
+            let _ = registry.set_component(item, item_transform);
+            let _ = registry.set_component(item, TouchableComponent::from_descriptor(touchable));
+
+            let _ = registry.remove_component::<MeshComponent>(item);
+            if let Some(mesh) = descriptor_mesh_component(descriptor, None) {
+                let _ = registry.set_component(item, mesh);
+                events.dropped_item_meshes.push(item);
+            }
+
+            if let Ok(mut weapon) = registry.get_component::<WeaponComponent>(item).cloned() {
+                // A dropped weapon must match a fresh component in every
+                // live-state field while preserving its descriptor tuning and
+                // magazine. Add future live state here with the same rule.
+                transition_to_idle(&mut weapon);
+                weapon.cooldown_remaining_ms = 0.0;
+                weapon.shoot_press_consumed = false;
+                weapon.reload_press_consumed = false;
+                weapon.reload_feedback = Default::default();
+                let _ = registry.set_component(item, weapon);
+            }
+
+            let occupants = self.occupants.entry(item).or_default();
+            occupants.clear();
+            for (&occupant, &(_, occupant_center, occupant_radius, occupant_half_height)) in
+                player_capsules
+            {
+                if sphere_overlaps_capsule(
+                    drop_position,
+                    touchable.radius,
+                    occupant_center,
+                    occupant_radius,
+                    occupant_half_height,
+                ) {
+                    occupants.insert(occupant);
+                }
+            }
+            events.repointed_pawns.push(pawn);
+        }
+
+        events
+    }
+}
+
+fn resolve_drop_position(
+    collision_world: &CollisionWorld,
+    pawn_transform: &Transform,
+    capsule_center: Vec3,
+    capsule_radius: f32,
+    capsule_half_height: f32,
+    item_radius: f32,
+) -> Option<Vec3> {
+    let forward = (pawn_transform.rotation * Vec3::NEG_Z)
+        .with_y(0.0)
+        .normalize_or_zero();
+    let forward = if forward == Vec3::ZERO {
+        Vec3::NEG_Z
+    } else {
+        forward
+    };
+    let front = capsule_center - Vec3::Y * capsule_half_height + forward * capsule_radius;
+    if sphere_fits_world(collision_world, front, item_radius) {
+        return Some(front);
+    }
+
+    sphere_fits_world(collision_world, pawn_transform.position, item_radius)
+        .then_some(pawn_transform.position)
+}
+
+/// A zero-length sphere cast treats contact and penetration as an obstruction;
+/// the intersection fallback keeps an unsupported shape pair fail-closed.
+fn sphere_fits_world(collision_world: &CollisionWorld, position: Vec3, radius: f32) -> bool {
+    if !position.is_finite() || !radius.is_finite() || radius <= 0.0 {
+        return false;
+    }
+
+    let sphere = Ball::new(radius);
+    let sphere_isometry = Isometry::translation(position.x, position.y, position.z);
+    let options = ShapeCastOptions {
+        max_time_of_impact: 0.0,
+        target_distance: 0.0,
+        stop_at_penetration: true,
+        ..Default::default()
+    };
+    let cast_hits = cast_shapes(
+        &sphere_isometry,
+        &Vector::zeros(),
+        &sphere,
+        &collision_world.isometry,
+        &Vector::zeros(),
+        &collision_world.mesh,
+        options,
+    )
+    .is_ok_and(|hit| hit.is_some());
+    !cast_hits
+        && intersection_test(
+            &sphere_isometry,
+            &sphere,
+            &collision_world.isometry,
+            &collision_world.mesh,
+        )
+        .is_ok_and(|intersects| !intersects)
 }
 
 /// Squared distance from the sphere centre to the closest point of an upright
@@ -427,16 +621,23 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use glam::Quat;
+    use log::Level;
+    use parry3d::math::Point;
+    use parry3d::shape::TriMesh;
     use postretro_entities::ComponentKind;
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
+    use postretro_entities::components::weapon::ReloadFeedback;
+    use postretro_entities::components::wieldable_state::WieldableState;
+    use postretro_entities::data_descriptors::MeshDescriptor;
     use postretro_entities::provenance::{
         DescriptorComponentKind, DescriptorMapOverride, DescriptorSpawnPath,
     };
     use postretro_foundation::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
         PlayerMovementComponent, PlayerMovementDescriptor, ReloadStyle, ResolutionMode,
-        SpeedParams, WeaponDescriptor, WeaponResource,
+        SpeedParams, TouchableDescriptor, WeaponDescriptor, WeaponResource,
     };
+    use postretro_test_log_capture::LogCapture;
 
     use super::*;
 
@@ -569,14 +770,88 @@ mod tests {
         pressed: &[(PlayerId, bool)],
     ) -> Vec<EntityId> {
         let pressed = pressed.iter().copied().collect();
+        system
+            .run_authoritative_tick(
+                registry,
+                &CollisionWorld::default(),
+                &[],
+                players,
+                &pressed,
+                &HashMap::new(),
+            )
+            .repointed_pawns
+    }
+
+    fn tick_with_edges(
+        system: &mut TouchSystem,
+        registry: &mut EntityRegistry,
+        collision_world: &CollisionWorld,
+        descriptors: &[EntityTypeDescriptor],
+        players: &[AuthoritativePlayer],
+        use_pressed: &[(PlayerId, bool)],
+        drop_pressed: &[(PlayerId, bool)],
+    ) -> TouchTickEvents {
+        let use_pressed = use_pressed.iter().copied().collect();
+        let drop_pressed = drop_pressed.iter().copied().collect();
         system.run_authoritative_tick(
             registry,
-            &CollisionWorld::default(),
-            &[],
+            collision_world,
+            descriptors,
             players,
-            &pressed,
-            &HashMap::new(),
+            &use_pressed,
+            &drop_pressed,
         )
+    }
+
+    fn drop_descriptor(canonical_name: &str, mode: TouchMode, radius: f32) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(canonical_name.to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 10.0,
+                range: 100.0,
+                cooldown_ms: 100.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+                credit_source: Some(canonical_name.to_string()),
+                third_person_model: None,
+                viewmodel: None,
+                resource: Some(WeaponResource::Ammo(AmmoResource {
+                    ammo_type: "cells".to_string(),
+                    magazine: 7,
+                    cost_per_shot: 1,
+                    reserve: 0,
+                    reload_ms: 1000,
+                    reload_style: ReloadStyle::Magazine,
+                })),
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
+            }),
+            touchable: Some(TouchableDescriptor { mode, radius }),
+            mesh: Some(MeshDescriptor {
+                model: "dropped-item.glb".to_string(),
+                shadow_only: false,
+                attachments: Default::default(),
+                shadow_bias_scale: 1.0,
+                animations: Default::default(),
+                default_state: None,
+                locomotion: None,
+            }),
+            health: None,
+            behavior: None,
+        }
+    }
+
+    fn held_item(registry: &mut EntityRegistry, pawn: EntityId, item: EntityId) {
+        let _ = registry.remove_component::<TouchableComponent>(item);
+        let _ = registry.remove_component::<MeshComponent>(item);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(item);
+        registry.set_component(pawn, inventory).unwrap();
     }
 
     #[test]
@@ -910,6 +1185,331 @@ mod tests {
                 .wieldables
                 .iter()
                 .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn drop_resets_live_weapon_state_preserves_reserve_and_seeds_auto_occupancy() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let standing_player = spawn_player(&mut registry, Vec3::new(0.0, 2.0, -0.4));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            3,
+        );
+        held_item(&mut registry, pawn, item);
+        let mut reserve = AmmoReserve::default();
+        reserve.credit("cells", 11);
+        registry.set_component(pawn, reserve).unwrap();
+        let mut weapon = registry
+            .get_component::<WeaponComponent>(item)
+            .unwrap()
+            .clone();
+        weapon.state = WieldableState::Reloading;
+        weapon.state_remaining_ms = 800;
+        weapon.state_total_ms = 1000;
+        weapon.state_elapsed_sub_ms = 0.5;
+        weapon.reload_credited = 2;
+        weapon.cooldown_remaining_ms = 90.0;
+        weapon.shoot_press_consumed = true;
+        weapon.reload_press_consumed = true;
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
+        registry.set_component(item, weapon).unwrap();
+        let deferred = registry.deferred_effect_mut(item).unwrap();
+        deferred.pending.push(postretro_entities::PendingEffect {
+            kind: postretro_entities::DeferredEffectKind::SetHealth,
+            remaining_us: 100,
+            value: Some(1.0),
+        });
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+        let players = players(&[
+            (PlayerId::Local(pawn), pawn),
+            (PlayerId::Remote(7), standing_player),
+        ]);
+        let mut system = TouchSystem::default();
+
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(events.repointed_pawns, vec![pawn]);
+        assert_eq!(events.dropped_item_meshes, vec![item]);
+        assert!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables
+                .iter()
+                .all(Option::is_none),
+            "release_wieldable repairs the inventory immediately"
+        );
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("cells"),
+            11,
+            "dropping must not alter the pawn's ammo-reserve balance"
+        );
+        assert!(
+            registry
+                .has_component_kind(item, ComponentKind::Touchable)
+                .unwrap()
+        );
+        assert_eq!(
+            registry.get_component::<MeshComponent>(item).unwrap().model,
+            "dropped-item.glb"
+        );
+        assert!(
+            registry
+                .get_component::<Transform>(item)
+                .unwrap()
+                .position
+                .distance(Vec3::new(0.0, 1.2, -0.4))
+                < 1.0e-5,
+            "drop is one capsule radius forward from the lower capsule-axis endpoint"
+        );
+        let weapon = registry.get_component::<WeaponComponent>(item).unwrap();
+        assert_eq!(weapon.magazine, 3, "drop preserves the live magazine");
+        assert_eq!(weapon.state, WieldableState::Idle);
+        assert_eq!(weapon.state_remaining_ms, 0);
+        assert_eq!(weapon.state_total_ms, 0);
+        assert_eq!(weapon.state_elapsed_sub_ms, 0.0);
+        assert_eq!(weapon.reload_credited, 0);
+        assert_eq!(weapon.cooldown_remaining_ms, 0.0);
+        assert!(!weapon.shoot_press_consumed);
+        assert!(!weapon.reload_press_consumed);
+        assert_eq!(weapon.reload_feedback, Default::default());
+        assert_eq!(
+            registry
+                .get_component::<DeferredEffectComponent>(item)
+                .unwrap()
+                .pending
+                .len(),
+            1,
+            "drop does not purge deferred effects; only acquisition does"
+        );
+        assert!(
+            system.occupants.get(&item).is_some_and(|occupants| {
+                occupants.contains(&PlayerId::Local(pawn))
+                    && occupants.contains(&PlayerId::Remote(7))
+            }),
+            "every player already overlapping the drop point is seeded"
+        );
+
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[],
+        );
+        assert!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables
+                .iter()
+                .all(Option::is_none),
+            "a seeded auto item is not immediately re-acquired while the player stands still"
+        );
+        assert!(
+            registry
+                .get_component::<Inventory>(standing_player)
+                .unwrap()
+                .wieldables
+                .iter()
+                .all(Option::is_none),
+            "another player already at the drop point receives no fresh auto enter edge"
+        );
+    }
+
+    #[test]
+    fn drop_seed_suppresses_auto_but_allows_a_deliberate_press_reacquire() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Press,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        let descriptors = [drop_descriptor("ion", TouchMode::Press, 1.0)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[(PlayerId::Local(pawn), true)],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "a fresh press defeats only the automatic re-acquisition inhibit"
+        );
+        assert!(
+            !registry
+                .has_component_kind(item, ComponentKind::Touchable)
+                .unwrap(),
+            "same-tick deliberate re-acquisition returns the item to held state"
+        );
+    }
+
+    #[test]
+    fn drop_refuses_non_touchable_descriptor_without_releasing_and_warns_once() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "sealed",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        let mut descriptor = drop_descriptor("sealed", TouchMode::Auto, 1.0);
+        descriptor.touchable = None;
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+        let capture = LogCapture::start();
+
+        for _ in 0..2 {
+            tick_with_edges(
+                &mut system,
+                &mut registry,
+                &CollisionWorld::default(),
+                &[descriptor.clone()],
+                &players,
+                &[],
+                &[(PlayerId::Local(pawn), true)],
+            );
+        }
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item)
+        );
+        capture.assert_logged_once(Level::Warn, "descriptor has no touchable block");
+    }
+
+    #[test]
+    fn drop_with_empty_inventory_is_a_silent_noop() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &[],
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert!(events.repointed_pawns.is_empty());
+        assert!(events.dropped_item_meshes.is_empty());
+        assert_eq!(
+            registry.get_component::<Inventory>(pawn).unwrap(),
+            &Inventory::default()
+        );
+    }
+
+    #[test]
+    fn drop_uses_collision_fallback_and_seeds_occupancy_at_the_final_position() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        let world = CollisionWorld {
+            mesh: TriMesh::new(
+                vec![
+                    Point::new(-2.0, 0.0, -0.4),
+                    Point::new(2.0, 0.0, -0.4),
+                    Point::new(0.0, 4.0, -0.4),
+                ],
+                vec![[0, 1, 2]],
+            ),
+            isometry: Isometry::identity(),
+        };
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &world,
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        let position = registry.get_component::<Transform>(item).unwrap().position;
+        assert!(
+            position.distance(Vec3::new(0.0, 2.0, 0.0)) < 1.0e-5,
+            "front placement intersects the wall, so the verified capsule-center fallback wins"
+        );
+        assert!(sphere_fits_world(&world, position, 0.1));
+        assert!(
+            system
+                .occupants
+                .get(&item)
+                .is_some_and(|occupants| occupants.contains(&PlayerId::Local(pawn))),
+            "the dropper overlaps only the fallback point and must be seeded there"
+        );
+        tick_with_edges(
+            &mut system,
+            &mut registry,
+            &world,
+            &descriptors,
+            &players,
+            &[],
+            &[],
+        );
+        assert!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables
+                .iter()
+                .all(Option::is_none),
+            "final-position occupancy inhibits the auto edge on the following tick too"
         );
     }
 

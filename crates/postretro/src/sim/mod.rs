@@ -507,7 +507,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             );
         }
     }
-    let touch_repointed = {
+    let touch_events = {
         let mut registry = registry.borrow_mut();
         touch_system.run_authoritative_tick(
             &mut registry,
@@ -579,7 +579,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry);
 
-    let mut repointed_pawns = touch_repointed;
+    let mut repointed_pawns = touch_events.repointed_pawns;
     if let Some(pawn) = repointed_pawn {
         repointed_pawns.push(pawn);
     }
@@ -594,7 +594,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         authorized_shots,
         reload_deliveries,
         repointed_pawns,
-        dropped_item_meshes: Vec::new(),
+        dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,
         #[cfg(test)]
         trigger_fires,

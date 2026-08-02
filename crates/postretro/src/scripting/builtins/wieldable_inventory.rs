@@ -626,6 +626,7 @@ mod tests {
         let mut in_string = false;
         let mut string_escape = false;
         let mut raw_string_hashes: Option<usize> = None;
+        let mut character_literal_closing_offset: Option<usize> = None;
 
         while let Some((index, ch)) = chars.next() {
             let next = chars.peek().map(|(_, next)| *next);
@@ -674,6 +675,13 @@ mod tests {
                 }
                 continue;
             }
+            if let Some(end) = character_literal_closing_offset {
+                push_masked_char(&mut masked, ch);
+                if index == end {
+                    character_literal_closing_offset = None;
+                }
+                continue;
+            }
             if in_string {
                 if ch == '\n' {
                     masked.push('\n');
@@ -716,6 +724,11 @@ mod tests {
                 in_string = true;
                 string_escape = false;
                 push_masked_char(&mut masked, ch);
+            } else if ch == '\''
+                && let Some(end) = character_literal_end(source, index)
+            {
+                character_literal_closing_offset = Some(end);
+                push_masked_char(&mut masked, ch);
             } else {
                 masked.push(ch);
             }
@@ -751,6 +764,28 @@ mod tests {
             return false;
         };
         rest.starts_with('"') && rest[1..].starts_with(&"#".repeat(hash_count))
+    }
+
+    fn character_literal_end(source: &str, index: usize) -> Option<usize> {
+        let rest = source.get(index..)?;
+        let mut chars = rest.char_indices();
+        if chars.next()?.1 != '\'' {
+            return None;
+        }
+        let (_, first) = chars.next()?;
+        if first == '\\' {
+            for (offset, ch) in chars {
+                if ch == '\'' {
+                    return Some(index + offset);
+                }
+                if ch == '\n' {
+                    return None;
+                }
+            }
+            return None;
+        }
+        let (offset, closing) = chars.next()?;
+        (closing == '\'').then_some(index + offset)
     }
 
     #[test]

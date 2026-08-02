@@ -3,8 +3,9 @@
 // (script context + runtime, registries, and every system that captures a
 // `ScriptCtx` clone or a registry reference), the player options + settings path,
 // the committed frontend declaration, the net endpoint, the audio subsystem, and
-// (dev-tools) the debug-UI state. `Session::build` is the sole session construction
-// site; `App` holds only boot-lifetime fields plus `session: Option<Session>`.
+// (dev-tools) the debug-UI state, and host-local seat/session-roster state.
+// `Session::build` is the sole session construction site; `App` holds only
+// boot-lifetime fields plus `session: Option<Session>`.
 // Building the script tranche here moves the heaviest startup init
 // (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new`) behind first pixels.
 // See: context/lib/boot_sequence.md §1 (Deferred-session boundary and single commit)
@@ -53,7 +54,8 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 /// field; none can be named while `App.session` is `None` (boot phase).
 /// `Session::build` is the sole session construction site — there is no transient
 /// pre-window construction bundle. `App` holds only boot-lifetime fields plus
-/// `session: Option<Session>`.
+/// `session: Option<Session>`. Also owns host-local seat/session-roster state;
+/// connected clients receive its status-only projection from the endpoint.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
@@ -400,7 +402,7 @@ impl Session {
             display_name: String::new(),
         });
         let client_user_data = local_claim.as_ref().map(encode_connect_claim);
-        let net_endpoint = match netcode::NetEndpoint::from_role(&net_role, client_user_data) {
+        let mut net_endpoint = match netcode::NetEndpoint::from_role(&net_role, client_user_data) {
             Ok(endpoint) => {
                 match &net_role {
                     netcode::NetRole::SinglePlayer => {}
@@ -421,9 +423,13 @@ impl Session {
         let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
             None
         } else {
-            let seats = netcode::SeatTable::new().map_err(|err| {
-                anyhow::anyhow!("failed to mint this run's session identity: {err}")
-            })?;
+            let (seats, identity_error) =
+                authority_seat_table_or_local_only(&mut net_endpoint, netcode::SeatTable::new());
+            if let Some(err) = identity_error {
+                log::error!(
+                    "[Net] session identity setup failed ({err}); disabling networking for this session"
+                );
+            }
             Some(seats)
         };
         scripting
@@ -529,6 +535,22 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
     player_options
 }
 
+/// Preserve the local seat/carry ledger when session identity entropy fails.
+/// The returned error tells the caller to disable networking before this
+/// table's sentinel identity could reach a peer.
+fn authority_seat_table_or_local_only<T, E>(
+    net_endpoint: &mut Option<T>,
+    result: std::result::Result<netcode::SeatTable, E>,
+) -> (netcode::SeatTable, Option<E>) {
+    match result {
+        Ok(seats) => (seats, None),
+        Err(err) => {
+            *net_endpoint = None;
+            (netcode::SeatTable::local_only(), Some(err))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +603,28 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).expect("read malformed settings"),
             malformed
+        );
+    }
+
+    // Regression: session-id entropy failure used to abort engine boot.
+    #[test]
+    fn session_identity_failure_keeps_local_carry_ledger_but_is_not_network_safe() {
+        let mut net_endpoint = Some(());
+        let (seats, identity_error) = authority_seat_table_or_local_only(
+            &mut net_endpoint,
+            std::result::Result::<netcode::SeatTable, _>::Err("entropy unavailable"),
+        );
+
+        assert_eq!(identity_error, Some("entropy unavailable"));
+        assert_eq!(net_endpoint, None, "failed identity disables the endpoint");
+        assert_eq!(seats.session_id(), postretro_net::wire::SessionId([0; 16]));
+        assert_eq!(
+            seats.roster_entries(),
+            vec![postretro_net::wire::RosterEntry {
+                seat: 0,
+                connected: true,
+            }],
+            "single-player carry still owns local seat zero"
         );
     }
 }

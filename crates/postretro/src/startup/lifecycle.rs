@@ -835,14 +835,19 @@ impl App {
         // has already built both CPU tables; resolve only this changed pawn through
         // the standard socket-binding path.
         let local_pawn = script_ctx.registry.borrow().local_player_pawn();
-        if let Some(pawn) = local_pawn {
-            if let Some(seats) = self
-                .session
-                .as_mut()
-                .expect("session installed before local seat binding")
-                .seat_table
-                .as_mut()
-            {
+        if let Some(seats) = self
+            .session
+            .as_mut()
+            .expect("session installed before local seat binding")
+            .seat_table
+            .as_mut()
+        {
+            crate::capture_player_spawn_placements(
+                &script_ctx.registry.borrow(),
+                &self.host_spawn_points,
+                seats,
+            );
+            if let Some(pawn) = local_pawn {
                 seats.bind_pawn(postretro_foundation::Seat(0), pawn);
             }
         }

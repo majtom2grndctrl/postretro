@@ -1496,6 +1496,8 @@ impl ApplicationHandler for App {
         if let Some(session) = self.session.as_mut() {
             let registry = session.scripting.script_ctx.registry.borrow();
             if let Some(seats) = session.seat_table.as_mut() {
+                // Harvest state but retain bindings until lifecycle events drain
+                // after resume; their durable fallback resolves the old pawn.
                 seats.harvest_bound_pawns(&registry);
             }
         }
@@ -3922,6 +3924,14 @@ impl App {
         if let netcode::WorldLessPoll::Client(controls) = &poll {
             netcode::client_drain_control(self, controls.clone());
         }
+        if matches!(poll, netcode::WorldLessPoll::Failed)
+            && let Some(session) = self.session.as_mut()
+            && let (Some(netcode::NetEndpoint::Host { server, .. }), Some(seats)) =
+                (session.net_endpoint.as_mut(), session.seat_table.as_mut())
+        {
+            // Hold expiry is session-clock work, not successful socket-I/O work.
+            netcode::finish_host_poll(server, seats);
+        }
         if let netcode::WorldLessPoll::Host(host_poll) = &poll {
             let Some(session) = self.session.as_mut() else {
                 return Some(poll);
@@ -3986,10 +3996,7 @@ impl App {
                     log::warn!("[Net] admitted client {client_id} has no host seat table");
                     continue;
                 };
-                if seats
-                    .admit_or_reclaim(*client_id, claim, server.is_closed(*client_id))
-                    .is_none()
-                {
+                if seats.admit_or_reclaim(*client_id, claim, false).is_none() {
                     log::warn!(
                         "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
                     );
@@ -5245,11 +5252,7 @@ impl App {
                                             continue;
                                         };
                                         if seats
-                                            .admit_or_reclaim(
-                                                *client_id,
-                                                claim,
-                                                server.is_closed(*client_id),
-                                            )
+                                            .admit_or_reclaim(*client_id, claim, false)
                                             .is_none()
                                         {
                                             log::warn!(
@@ -5308,16 +5311,14 @@ impl App {
                                     .and_then(|seats| seats.seat_for_client(*client_id))
                                 else {
                                     log::warn!(
-                                        "[Net] participating client {client_id} has no admitted seat; skipping pawn spawn"
+                                        "[Net] participating client {client_id} has no admitted seat; closing inconsistent slot"
+                                    );
+                                    let _ = server.close_relay_connection(
+                                        *client_id,
+                                        postretro_net::slots::CloseCause::Disconnect,
                                     );
                                     continue;
                                 };
-                                let carried_loadout = seat_table
-                                    .as_deref()
-                                    .and_then(|seats| seats.carried_state(seat))
-                                    .cloned();
-                                replication.register_client(*client_id);
-                                state_slots.register_client(*client_id);
                                 let pawn = if host_spawn_points.is_empty() {
                                     netcode::host_handle_accept(
                                         &mut registry,
@@ -5328,10 +5329,15 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
-                                    let live_placements = occupied_player_spawn_placements(
-                                        &registry,
-                                        &host_spawn_points,
-                                    );
+                                    let live_placements = seat_table
+                                        .as_deref()
+                                        .map(|seats| {
+                                            seats.occupied_live_placements(
+                                                &registry,
+                                                host_spawn_points.len(),
+                                            )
+                                        })
+                                        .unwrap_or_default();
                                     let Some(placement_index) =
                                         seat_table.as_deref_mut().and_then(|seats| {
                                             seats.assign_placement(
@@ -5342,10 +5348,18 @@ impl App {
                                         })
                                     else {
                                         log::warn!(
-                                            "[Net] participating client {client_id} could not receive a player_spawn placement"
+                                            "[Net] participating client {client_id} could not receive a player_spawn placement; closing inconsistent slot"
+                                        );
+                                        let _ = server.close_relay_connection(
+                                            *client_id,
+                                            postretro_net::slots::CloseCause::Disconnect,
                                         );
                                         continue;
                                     };
+                                    let carried_loadout = seat_table
+                                        .as_deref()
+                                        .and_then(|seats| seats.carried_state(seat))
+                                        .cloned();
                                     netcode::host_handle_accept_descriptor_at_placement(
                                         &mut registry,
                                         allocator,
@@ -5365,28 +5379,38 @@ impl App {
                                         carried_loadout.as_ref(),
                                     )
                                 };
-                                if let Some(pawn) = pawn {
-                                    if let Some(seats) = seat_table.as_deref_mut() {
-                                        seats.bind_pawn(seat, pawn);
-                                    }
-                                    resolve_accepted_host_pawn_presentation(
-                                        &mut registry,
-                                        mesh_clip_tables,
-                                        hit_zone_store,
-                                        pawn,
+                                let Some(pawn) = pawn else {
+                                    log::warn!(
+                                        "[Net] participating client {client_id} could not materialize a pawn; closing inconsistent slot"
                                     );
-                                    let payload = netcode::tuning_payload_for_pawn(
-                                        &registry,
-                                        pawn,
-                                        &net_descriptors,
-                                    );
-                                    netcode::host_send_tuning_if_changed(
-                                        server,
-                                        last_sent_tuning,
+                                    let _ = server.close_relay_connection(
                                         *client_id,
-                                        payload,
+                                        postretro_net::slots::CloseCause::Disconnect,
                                     );
+                                    continue;
+                                };
+                                replication.register_client(*client_id);
+                                state_slots.register_client(*client_id);
+                                if let Some(seats) = seat_table.as_deref_mut() {
+                                    seats.bind_pawn(seat, pawn);
                                 }
+                                resolve_accepted_host_pawn_presentation(
+                                    &mut registry,
+                                    mesh_clip_tables,
+                                    hit_zone_store,
+                                    pawn,
+                                );
+                                let payload = netcode::tuning_payload_for_pawn(
+                                    &registry,
+                                    pawn,
+                                    &net_descriptors,
+                                );
+                                netcode::host_send_tuning_if_changed(
+                                    server,
+                                    last_sent_tuning,
+                                    *client_id,
+                                    payload,
+                                );
                             }
                             for &(client_id, declaration) in &poll.switch_declarations {
                                 netcode::host_handle_switch_declaration(
@@ -5405,7 +5429,14 @@ impl App {
                             netcode::finish_host_poll(server, seats);
                         }
                     }
-                    Err(err) => log::error!("[Net] host update failed: {err}"),
+                    Err(err) => {
+                        log::error!("[Net] host update failed: {err}");
+                        if let Some(seats) = seat_table {
+                            // A persistently failing socket must not freeze
+                            // session-clock hold expiry or its roster update.
+                            netcode::finish_host_poll(server, seats);
+                        }
+                    }
                 }
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
@@ -6664,28 +6695,26 @@ impl App {
     }
 }
 
-/// Return every `player_spawn` index currently occupied by a live movement pawn.
-/// This intentionally derives occupancy from the registry rather than from seat
-/// assignments: level installation can materialize player pawns that have no
-/// remote seat binding, and those must block a joining peer's placement too.
-fn occupied_player_spawn_placements(
+/// Capture placement provenance while newly materialized pawns still have their
+/// authored transforms. Later occupancy reads this durable association after
+/// movement changes those transforms.
+fn capture_player_spawn_placements(
     registry: &postretro_entities::EntityRegistry,
     spawn_points: &[crate::scripting::map_entity::MapEntity],
-) -> Vec<usize> {
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .filter_map(|(pawn, _)| {
-            registry
-                .get_component::<Transform>(pawn)
-                .ok()
-                .map(|transform| transform.position)
-        })
-        .filter_map(|position| {
-            spawn_points
-                .iter()
-                .position(|placement| placement.origin == position)
-        })
-        .collect()
+    seats: &mut netcode::SeatTable,
+) {
+    for (pawn, _) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
+        let Ok(transform) = registry.get_component::<Transform>(pawn) else {
+            continue;
+        };
+        let Some(placement) = spawn_points
+            .iter()
+            .position(|placement| placement.origin == transform.position)
+        else {
+            continue;
+        };
+        seats.bind_level_spawn_placement(pawn, placement);
+    }
 }
 
 #[cfg(feature = "dev-tools")]

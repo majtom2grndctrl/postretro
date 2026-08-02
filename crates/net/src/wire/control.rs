@@ -4,8 +4,11 @@
 use bitcode::{Decode, Encode};
 
 /// The fixed size of renetcode's client-authentication user-data field.
-pub const NETCODE_USER_DATA_BYTES: usize = 256;
+pub use renet_netcode::NETCODE_USER_DATA_BYTES;
 const CONNECT_CLAIM_MAGIC: &[u8; 4] = b"PRSC";
+/// Bump when the claim envelope or its bitcode payload changes. This is separate
+/// from `PROTOCOL_ID`/`WIRE_VERSION`: an unrecognized claim safely admits as
+/// anonymous rather than changing the connection's wire compatibility contract.
 const CONNECT_CLAIM_VERSION: u8 = 1;
 const CONNECT_CLAIM_HEADER_BYTES: usize = 7;
 /// The largest UTF-8 display name accepted in a connection claim.
@@ -39,14 +42,20 @@ pub fn encode_connect_claim(claim: &ConnectClaim) -> [u8; NETCODE_USER_DATA_BYTE
         player_id: claim.player_id,
         display_name,
     });
-    debug_assert!(payload.len() <= NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES);
+    encode_connect_claim_payload(&payload)
+}
+
+fn encode_connect_claim_payload(payload: &[u8]) -> [u8; NETCODE_USER_DATA_BYTES] {
+    if payload.len() > NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES {
+        return [0; NETCODE_USER_DATA_BYTES];
+    }
 
     let mut user_data = [0; NETCODE_USER_DATA_BYTES];
     user_data[..CONNECT_CLAIM_MAGIC.len()].copy_from_slice(CONNECT_CLAIM_MAGIC);
     user_data[4] = CONNECT_CLAIM_VERSION;
     user_data[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&(payload.len() as u16).to_le_bytes());
     user_data[CONNECT_CLAIM_HEADER_BYTES..CONNECT_CLAIM_HEADER_BYTES + payload.len()]
-        .copy_from_slice(&payload);
+        .copy_from_slice(payload);
     user_data
 }
 
@@ -77,102 +86,6 @@ fn truncate_display_name(display_name: &str) -> String {
         end -= 1;
     }
     display_name[..end].to_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn claim(display_name: &str) -> ConnectClaim {
-        ConnectClaim {
-            player_id: PlayerClaimId([0x5a; 16]),
-            display_name: display_name.to_owned(),
-        }
-    }
-
-    #[test]
-    fn connect_claim_envelope_roundtrips_and_zero_fills() {
-        let encoded = encode_connect_claim(&claim("Neon Runner"));
-
-        assert_eq!(encoded.len(), NETCODE_USER_DATA_BYTES);
-        assert_eq!(&encoded[..4], CONNECT_CLAIM_MAGIC);
-        assert_eq!(encoded[4], CONNECT_CLAIM_VERSION);
-        let payload_len = usize::from(u16::from_le_bytes([encoded[5], encoded[6]]));
-        assert!(
-            encoded[CONNECT_CLAIM_HEADER_BYTES + payload_len..]
-                .iter()
-                .all(|byte| *byte == 0)
-        );
-        assert_eq!(decode_connect_claim(&encoded), Some(claim("Neon Runner")));
-    }
-
-    #[test]
-    fn connect_claim_envelope_truncates_display_name_on_utf8_boundary() {
-        let name = format!("{}é", "a".repeat(DISPLAY_NAME_MAX_BYTES - 1));
-        let decoded = decode_connect_claim(&encode_connect_claim(&claim(&name)))
-            .expect("encoded claim decodes");
-
-        assert_eq!(decoded.display_name, "a".repeat(DISPLAY_NAME_MAX_BYTES - 1));
-        assert!(
-            decoded
-                .display_name
-                .is_char_boundary(decoded.display_name.len())
-        );
-    }
-
-    #[test]
-    fn connect_claim_envelope_rejects_magic_mismatch() {
-        let mut wrong_magic = encode_connect_claim(&claim("Neon Runner"));
-        wrong_magic[0] = b'X';
-        assert_eq!(decode_connect_claim(&wrong_magic), None);
-    }
-
-    #[test]
-    fn connect_claim_envelope_rejects_version_mismatch() {
-        let mut wrong_version = encode_connect_claim(&claim("Neon Runner"));
-        wrong_version[4] = CONNECT_CLAIM_VERSION + 1;
-        assert_eq!(decode_connect_claim(&wrong_version), None);
-    }
-
-    #[test]
-    fn connect_claim_envelope_rejects_overlong_payload_length() {
-        let mut overlong_length = encode_connect_claim(&claim("Neon Runner"));
-        let too_long = (NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES + 1) as u16;
-        overlong_length[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&too_long.to_le_bytes());
-        assert_eq!(decode_connect_claim(&overlong_length), None);
-    }
-
-    #[test]
-    fn connect_claim_envelope_rejects_bitcode_failure() {
-        let mut malformed_payload = encode_connect_claim(&claim("Neon Runner"));
-        malformed_payload[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&1_u16.to_le_bytes());
-        malformed_payload[CONNECT_CLAIM_HEADER_BYTES] = 0xff;
-        assert_eq!(decode_connect_claim(&malformed_payload), None);
-    }
-
-    #[test]
-    fn connect_claim_envelope_rejects_fixed_random_user_data() {
-        let random_user_data = [0xa5; NETCODE_USER_DATA_BYTES];
-
-        assert_eq!(decode_connect_claim(&random_user_data), None);
-    }
-
-    #[test]
-    fn connect_claim_envelope_rejects_overlong_decoded_display_name() {
-        let claim = claim(&"a".repeat(DISPLAY_NAME_MAX_BYTES + 1));
-        let payload = bitcode::encode(&claim);
-        assert!(payload.len() <= NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES);
-
-        let mut user_data = [0; NETCODE_USER_DATA_BYTES];
-        user_data[..CONNECT_CLAIM_MAGIC.len()].copy_from_slice(CONNECT_CLAIM_MAGIC);
-        user_data[4] = CONNECT_CLAIM_VERSION;
-        user_data[5..CONNECT_CLAIM_HEADER_BYTES]
-            .copy_from_slice(&(payload.len() as u16).to_le_bytes());
-        user_data[CONNECT_CLAIM_HEADER_BYTES..CONNECT_CLAIM_HEADER_BYTES + payload.len()]
-            .copy_from_slice(&payload);
-
-        assert_eq!(decode_connect_claim(&user_data), None);
-    }
 }
 
 /// Build constants carried by the immutable admission declaration.
@@ -355,6 +268,7 @@ pub struct RosterEntry {
     /// Host-minted seat, carried on the wire as its bare `u16` value.
     pub seat: u16,
     /// Whether the host currently has a live connection bound to this seat.
+    /// The local host seat (`0`) is always reported as connected.
     pub connected: bool,
 }
 
@@ -363,15 +277,14 @@ pub struct RosterEntry {
 /// The session id accompanies every publication so an arriving client can
 /// distinguish a new hosted run from an update to the prior run. `your_seat` is
 /// encoded separately for each recipient; reusing one encoded frame would leak a
-/// different recipient's own-seat identity. `open_seats` is the remaining
-/// monotonic seat namespace, letting peers distinguish a full session from a
-/// roster with merely disconnected held seats.
+/// different recipient's own-seat identity. `open_seats` is current join
+/// capacity: connected and held seats both reserve a place.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SessionRosterMessage {
     pub session_id: SessionId,
     /// `None` means this admitted recipient could not be assigned a seat.
     pub your_seat: Option<u16>,
-    /// Number of fresh seats that can still be minted during this session.
+    /// Number of remote peers that can currently join this hosted session.
     pub open_seats: u32,
     pub entries: Vec<RosterEntry>,
 }
@@ -408,4 +321,201 @@ pub(crate) struct ServerControlFrame {
 pub(crate) struct ParticipationFrame {
     pub participation_epoch: u64,
     pub payload: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claim(display_name: &str) -> ConnectClaim {
+        ConnectClaim {
+            player_id: PlayerClaimId([0x5a; 16]),
+            display_name: display_name.to_owned(),
+        }
+    }
+
+    fn round_trips<T>(value: &T) -> bool
+    where
+        T: Encode + for<'de> Decode<'de> + PartialEq,
+    {
+        let bytes = bitcode::encode(value);
+        let decoded: T = bitcode::decode(&bytes).expect("valid buffer must decode");
+        &decoded == value
+    }
+
+    #[test]
+    fn connect_claim_envelope_roundtrips_and_zero_fills() {
+        let encoded = encode_connect_claim(&claim("Neon Runner"));
+
+        assert_eq!(encoded.len(), NETCODE_USER_DATA_BYTES);
+        assert_eq!(&encoded[..4], CONNECT_CLAIM_MAGIC);
+        assert_eq!(encoded[4], CONNECT_CLAIM_VERSION);
+        let payload_len = usize::from(u16::from_le_bytes([encoded[5], encoded[6]]));
+        assert!(
+            encoded[CONNECT_CLAIM_HEADER_BYTES + payload_len..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert_eq!(decode_connect_claim(&encoded), Some(claim("Neon Runner")));
+    }
+
+    #[test]
+    fn oversized_claim_payload_degrades_to_anonymous_user_data() {
+        let encoded = encode_connect_claim_payload(&vec![0xff; NETCODE_USER_DATA_BYTES]);
+
+        assert_eq!(encoded, [0; NETCODE_USER_DATA_BYTES]);
+        assert_eq!(decode_connect_claim(&encoded), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_truncates_display_name_on_utf8_boundary() {
+        let name = format!("{}é", "a".repeat(DISPLAY_NAME_MAX_BYTES - 1));
+        let decoded = decode_connect_claim(&encode_connect_claim(&claim(&name)))
+            .expect("encoded claim decodes");
+
+        assert_eq!(decoded.display_name, "a".repeat(DISPLAY_NAME_MAX_BYTES - 1));
+        assert!(
+            decoded
+                .display_name
+                .is_char_boundary(decoded.display_name.len())
+        );
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_magic_mismatch() {
+        let mut wrong_magic = encode_connect_claim(&claim("Neon Runner"));
+        wrong_magic[0] = b'X';
+        assert_eq!(decode_connect_claim(&wrong_magic), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_version_mismatch() {
+        let mut wrong_version = encode_connect_claim(&claim("Neon Runner"));
+        wrong_version[4] = CONNECT_CLAIM_VERSION + 1;
+        assert_eq!(decode_connect_claim(&wrong_version), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_overlong_payload_length() {
+        let mut overlong_length = encode_connect_claim(&claim("Neon Runner"));
+        let too_long = (NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES + 1) as u16;
+        overlong_length[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&too_long.to_le_bytes());
+        assert_eq!(decode_connect_claim(&overlong_length), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_bitcode_failure() {
+        let mut malformed_payload = encode_connect_claim(&claim("Neon Runner"));
+        malformed_payload[5..CONNECT_CLAIM_HEADER_BYTES].copy_from_slice(&1_u16.to_le_bytes());
+        malformed_payload[CONNECT_CLAIM_HEADER_BYTES] = 0xff;
+        assert_eq!(decode_connect_claim(&malformed_payload), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_fixed_random_user_data() {
+        let random_user_data = [0xa5; NETCODE_USER_DATA_BYTES];
+
+        assert_eq!(decode_connect_claim(&random_user_data), None);
+    }
+
+    #[test]
+    fn connect_claim_envelope_rejects_overlong_decoded_display_name() {
+        let claim = claim(&"a".repeat(DISPLAY_NAME_MAX_BYTES + 1));
+        let payload = bitcode::encode(&claim);
+        assert!(payload.len() <= NETCODE_USER_DATA_BYTES - CONNECT_CLAIM_HEADER_BYTES);
+
+        let mut user_data = [0; NETCODE_USER_DATA_BYTES];
+        user_data[..CONNECT_CLAIM_MAGIC.len()].copy_from_slice(CONNECT_CLAIM_MAGIC);
+        user_data[4] = CONNECT_CLAIM_VERSION;
+        user_data[5..CONNECT_CLAIM_HEADER_BYTES]
+            .copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        user_data[CONNECT_CLAIM_HEADER_BYTES..CONNECT_CLAIM_HEADER_BYTES + payload.len()]
+            .copy_from_slice(&payload);
+
+        assert_eq!(decode_connect_claim(&user_data), None);
+    }
+
+    #[test]
+    fn control_envelopes_round_trip() {
+        assert!(round_trips(&ProtocolVersion {
+            app_protocol_id: 0xCAFE_BABE,
+            wire_version: 1,
+        }));
+        let admission = ClientControlMessage::Admission {
+            protocol: ProtocolVersion {
+                app_protocol_id: 7,
+                wire_version: 9,
+            },
+            mod_id: "postretro.test".to_string(),
+            mod_version: "1.2.3".to_string(),
+        };
+        assert!(round_trips(&admission));
+        assert!(round_trips(&ClientControlMessage::Parity(
+            ParityDeclaration {
+                mod_digest: [0x5a; 32],
+                level: Some(("map-a".to_string(), [0xa5; 32])),
+            }
+        )));
+        assert!(round_trips(&ClientControlMessage::SwitchDeclaration(
+            ClientSwitchDeclaration {
+                declaration_id: 7,
+                slot: 3,
+            }
+        )));
+        assert!(round_trips(&ServerControlMessage::Divergence(
+            DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
+        )));
+        assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
+        assert!(round_trips(&ServerControlMessage::Relevel(
+            "e1m1".to_string()
+        )));
+        assert!(round_trips(&ServerControlMessage::SwitchRefused(
+            ServerSwitchRefused {
+                declaration_id: 7,
+                slot: 3,
+            }
+        )));
+        assert!(round_trips(&ServerControlMessage::SwitchAccepted(
+            ServerSwitchAccepted {
+                declaration_id: 8,
+                slot: 4,
+            }
+        )));
+        assert!(round_trips(&ServerControlMessage::SessionRoster(
+            SessionRosterMessage {
+                session_id: SessionId([0x21; 16]),
+                your_seat: Some(3),
+                open_seats: 65_532,
+                entries: vec![RosterEntry {
+                    seat: 3,
+                    connected: true,
+                }],
+            }
+        )));
+    }
+
+    #[test]
+    fn session_roster_fields_stay_claim_free() {
+        let roster = SessionRosterMessage {
+            session_id: SessionId([0x21; 16]),
+            your_seat: Some(4),
+            open_seats: 65_531,
+            entries: vec![RosterEntry {
+                seat: 4,
+                connected: true,
+            }],
+        };
+
+        // Exhaustive destructuring guards the whole host-to-client roster
+        // boundary. Any future direct message or entry field must be explicitly
+        // classified before it can cross the roster wire.
+        let SessionRosterMessage {
+            session_id,
+            your_seat,
+            open_seats,
+            entries,
+        } = roster;
+        let RosterEntry { seat, connected } = entries.into_iter().next().expect("one entry");
+        let _host_minted_or_observed = (session_id, your_seat, open_seats, seat, connected);
+    }
 }

@@ -319,8 +319,9 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
         "hold expiry removes the stale seat from the published status roster"
     );
     assert_eq!(
-        expired_view.open_seats, bravo_rejoin_view.open_seats,
-        "expiring a hold frees its roster row but never reuses a previously minted seat"
+        expired_view.open_seats,
+        bravo_rejoin_view.open_seats + 1,
+        "expiring a hold frees its reserved join capacity without reusing its seat number"
     );
 }
 

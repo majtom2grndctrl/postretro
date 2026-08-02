@@ -94,9 +94,9 @@ pub enum HandshakeOutcome {
 #[derive(Debug, Default)]
 #[must_use = "a poll carries gate verdicts and slot lifecycle transitions"]
 pub struct ServerPoll {
-    /// Client slots that closed during this poll. This edge includes admitted and
-    /// pending connections, unlike lifecycle events which only report a former
-    /// participating slot.
+    /// Client slots closed since the preceding poll. This edge includes admitted
+    /// and pending connections, unlike lifecycle events which only report a
+    /// former participating slot.
     pub disconnects: Vec<ClientId>,
     pub handshakes: Vec<HandshakeOutcome>,
     pub lifecycle: Vec<SlotEvent>,
@@ -113,7 +113,11 @@ pub struct NetServer {
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
     connect_claims: HashMap<ClientId, ConnectClaim>,
     pending_lifecycle: Vec<SlotEvent>,
+    /// Live slots that closed since the previous poll. Reported to the engine
+    /// so it can retire slot-bound game state.
     pending_slot_disconnects: Vec<ClientId>,
+    /// Slots awaiting transport teardown after a reliable closing cause was
+    /// sent. They are not reported as new disconnects a second time.
     pending_disconnects: Vec<ClientId>,
     holding_diagnostics: HashMap<ClientId, HoldingCause>,
     next_participation_epoch: u64,
@@ -518,6 +522,8 @@ impl NetServer {
     }
 
     fn close_slot(&mut self, client_id: ClientId, cause: CloseCause) -> Option<SlotEvent> {
+        // `close` records a tombstone for unknown/already-closed ids, so read
+        // the prior state first to report only a live transport disconnect.
         let was_live = matches!(self.slots.state(client_id), Some(state) if !matches!(state, SlotState::Closed { .. }));
         self.parity_declarations.remove(&client_id);
         self.connect_claims.remove(&client_id);

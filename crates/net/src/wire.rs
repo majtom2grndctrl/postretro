@@ -1,4 +1,4 @@
-// Wire codec: bitcode-serialized message types and the protocol/version handshake.
+// Wire codec: bitcode-serialized snapshot and replication message types.
 // See: context/lib/networking.md
 //
 // Every type that crosses the wire derives native `bitcode::Encode`/`Decode`.
@@ -23,6 +23,8 @@
 // typed model (`SnapshotMessage`, `EntityRecord`, `ComponentPayload`) is produced
 // only after that validation, so a typed record is always well-formed by
 // construction.
+//
+// Handshake, admission, and host-control declarations live in `wire/control.rs`.
 
 use bitcode::{Decode, Encode};
 
@@ -1477,70 +1479,6 @@ mod tests {
             ],
         });
         assert!(round_trips(&verdicts));
-    }
-
-    #[test]
-    fn handshake_round_trips() {
-        let handshake = ProtocolVersion {
-            app_protocol_id: 0xCAFE_BABE,
-            wire_version: 1,
-        };
-        assert!(round_trips(&handshake));
-    }
-
-    #[test]
-    fn control_envelopes_round_trip_without_untyped_decode() {
-        let admission = ClientControlMessage::Admission {
-            protocol: ProtocolVersion {
-                app_protocol_id: 7,
-                wire_version: 9,
-            },
-            mod_id: "postretro.test".to_string(),
-            mod_version: "1.2.3".to_string(),
-        };
-        assert!(round_trips(&admission));
-        assert!(round_trips(&ClientControlMessage::Parity(
-            ParityDeclaration {
-                mod_digest: [0x5a; 32],
-                level: Some(("map-a".to_string(), [0xa5; 32])),
-            }
-        )));
-        assert!(round_trips(&ClientControlMessage::SwitchDeclaration(
-            ClientSwitchDeclaration {
-                declaration_id: 7,
-                slot: 3,
-            }
-        )));
-        assert!(round_trips(&ServerControlMessage::Divergence(
-            DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
-        )));
-        assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
-        assert!(round_trips(&ServerControlMessage::Relevel(
-            "e1m1".to_string()
-        )));
-        assert!(round_trips(&ServerControlMessage::SwitchRefused(
-            ServerSwitchRefused {
-                declaration_id: 7,
-                slot: 3,
-            }
-        )));
-        assert!(round_trips(&ServerControlMessage::SwitchAccepted(
-            ServerSwitchAccepted {
-                declaration_id: 8,
-                slot: 4,
-            }
-        )));
-        assert!(round_trips(&ServerControlMessage::SessionRoster(
-            SessionRosterMessage {
-                session_id: SessionId([0x21; 16]),
-                your_seat: Some(3),
-                open_seats: 65_532,
-                entries: vec![RosterEntry {
-                    seat: 3,
-                    connected: true,
-                }],
-            }
-        )));
     }
 
     #[test]

@@ -98,7 +98,7 @@ pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
-pub(crate) use seat::{CarriedState, SeatTable, finish_host_poll};
+pub(crate) use seat::{CarriedState, SeatTable, finish_host_poll, restore_carried_health};
 pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 

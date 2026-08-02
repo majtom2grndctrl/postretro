@@ -1,5 +1,5 @@
 // Session-lifetime player seats and their carried cross-level state.
-// See: context/lib/networking.md §Slot lifecycle
+// See: context/lib/networking.md §Session-state ledger
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -34,7 +34,6 @@ pub(crate) struct CarriedState {
     pub(crate) wieldables: [Option<String>; WIELDABLE_SLOT_CAPACITY],
     pub(crate) magazines: [Option<u32>; WIELDABLE_SLOT_CAPACITY],
     pub(crate) active_slot: usize,
-    pub(crate) placement: Option<usize>,
 }
 
 impl Default for CarriedState {
@@ -45,7 +44,6 @@ impl Default for CarriedState {
             wieldables: std::array::from_fn(|_| None),
             magazines: [None; WIELDABLE_SLOT_CAPACITY],
             active_slot: 0,
-            placement: None,
         }
     }
 }
@@ -61,17 +59,15 @@ enum CarriedField<'a> {
     Wieldables(&'a mut [Option<String>; WIELDABLE_SLOT_CAPACITY]),
     Magazines(&'a mut [Option<u32>; WIELDABLE_SLOT_CAPACITY]),
     ActiveSlot(&'a mut usize),
-    Placement(&'a mut Option<usize>),
 }
 
-fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
+fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 5] {
     let CarriedState {
         health_current,
         reserve,
         wieldables,
         magazines,
         active_slot,
-        placement,
     } = state;
     [
         CarriedField::HealthCurrent(health_current),
@@ -79,8 +75,25 @@ fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
         CarriedField::Wieldables(wieldables),
         CarriedField::Magazines(magazines),
         CarriedField::ActiveSlot(active_slot),
-        CarriedField::Placement(placement),
     ]
+}
+
+/// Restore carried health after descriptor materialization.
+///
+/// Missing and nonpositive values keep the descriptor default so a fresh or
+/// dead seat never materializes a dead pawn.
+pub(crate) fn restore_carried_health(
+    carried: Option<&CarriedState>,
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+) {
+    let Some(health_current) = carried
+        .and_then(|state| state.health_current)
+        .filter(|health| *health > 0.0)
+    else {
+        return;
+    };
+    postretro_entities::components::health::set_health_absolute(registry, pawn, health_current);
 }
 
 /// Future rejoin-hold expiry measured against the session's accumulated clock.
@@ -99,6 +112,12 @@ pub(crate) struct SeatTable {
     carried: HashMap<Seat, Option<CarriedState>>,
     client_bindings: HashMap<Seat, u64>,
     pawn_bindings: HashMap<Seat, EntityId>,
+    /// Level-scoped seat placement. Kept separate from carried state so merely
+    /// assigning a spawn cannot make an empty carry record authoritative.
+    placement_assignments: HashMap<Seat, usize>,
+    /// Placement provenance captured while level-spawned pawns are still at
+    /// their authored origins. It remains valid after movement changes transforms.
+    level_spawn_placements: HashMap<EntityId, usize>,
     connect_claims: HashMap<Seat, ConnectClaim>,
     hold_deadlines: HashMap<Seat, HoldDeadline>,
     /// Monotonic ordering is separate from the deadline: two disconnects can
@@ -122,6 +141,13 @@ impl SeatTable {
         Ok(Self::with_session_id(SessionId(session_id)))
     }
 
+    /// Create the local carry ledger used when session identity entropy is
+    /// unavailable. Its sentinel id must never be published; the caller keeps
+    /// networking disabled for this session.
+    pub(crate) fn local_only() -> Self {
+        Self::with_session_id(SessionId([0; 16]))
+    }
+
     fn with_session_id(session_id: SessionId) -> Self {
         let mut carried = HashMap::new();
         carried.insert(Seat(0), None);
@@ -131,6 +157,8 @@ impl SeatTable {
             carried,
             client_bindings: HashMap::new(),
             pawn_bindings: HashMap::new(),
+            placement_assignments: HashMap::new(),
+            level_spawn_placements: HashMap::new(),
             connect_claims: HashMap::new(),
             hold_deadlines: HashMap::new(),
             hold_order: HashMap::new(),
@@ -187,7 +215,10 @@ impl SeatTable {
                         .map(|_| {
                             (
                                 *seat,
-                                self.hold_order.get(seat).copied().unwrap_or_default(),
+                                *self
+                                    .hold_order
+                                    .get(seat)
+                                    .expect("every held seat has a matching reclaim-order entry"),
                             )
                         })
                 })
@@ -235,8 +266,18 @@ impl SeatTable {
     /// `None` means the u16 seat namespace is exhausted; the caller keeps the
     /// connection live, but it cannot acquire a durable player seat.
     fn mint_fresh_seat(&mut self, client_id: u64, claim: Option<ConnectClaim>) -> Option<Seat> {
-        let seat = Seat(u16::try_from(self.next_seat).ok()?);
-        self.next_seat = self.next_seat.checked_add(1)?;
+        let Some(seat_number) = u16::try_from(self.next_seat).ok() else {
+            // The admitted client still needs one status roster identifying
+            // `your_seat: None` even though no row can be allocated for it.
+            self.roster_dirty = true;
+            return None;
+        };
+        let seat = Seat(seat_number);
+        let Some(next_seat) = self.next_seat.checked_add(1) else {
+            self.roster_dirty = true;
+            return None;
+        };
+        self.next_seat = next_seat;
         self.carried.insert(seat, None);
         self.client_bindings.insert(seat, client_id);
         if let Some(claim) = claim {
@@ -279,6 +320,10 @@ impl SeatTable {
     pub(crate) fn hold_disconnected_client(&mut self, client_id: u64) -> Option<Seat> {
         let seat = self.seat_for_client(client_id)?;
         self.client_bindings.remove(&seat);
+        // The caller resolves and tears down this binding before starting the
+        // hold. Retaining it after that edge can only leave a stale pawn id;
+        // the carried record retains the durable rejoin state instead.
+        self.pawn_bindings.remove(&seat);
         let deadline = self.hold_clock.saturating_add(HOLD_WINDOW);
         self.hold_deadlines.insert(seat, HoldDeadline(deadline));
         let order = self.next_hold_order;
@@ -307,6 +352,7 @@ impl SeatTable {
         self.carried.remove(&seat);
         self.client_bindings.remove(&seat);
         self.pawn_bindings.remove(&seat);
+        self.placement_assignments.remove(&seat);
         self.connect_claims.remove(&seat);
         self.hold_deadlines.remove(&seat);
         self.hold_order.remove(&seat);
@@ -318,11 +364,17 @@ impl SeatTable {
         std::mem::take(&mut self.roster_dirty)
     }
 
-    /// The number of never-before-minted seats still available in this session.
-    /// Seat values are monotonic and never reused, including after later release.
+    /// Join capacity remaining after connected and held remote seats reserve
+    /// their places. The monotonic seat namespace is a separate hard limit.
     #[must_use]
     pub(crate) fn open_seat_count(&self) -> u32 {
-        SEAT_NAMESPACE_SIZE.saturating_sub(self.next_seat)
+        if self.next_seat >= SEAT_NAMESPACE_SIZE {
+            return 0;
+        }
+        let retained_remote_seats = self.carried.len().saturating_sub(1);
+        u32::try_from(super::MAX_CLIENTS)
+            .expect("configured client capacity fits wire count")
+            .saturating_sub(u32::try_from(retained_remote_seats).unwrap_or(u32::MAX))
     }
 
     /// Build a deterministic seat-keyed roster snapshot from the table's own
@@ -354,7 +406,16 @@ impl SeatTable {
     pub(crate) fn bind_pawn(&mut self, seat: Seat, pawn: EntityId) {
         if self.carried.contains_key(&seat) {
             self.pawn_bindings.insert(seat, pawn);
+            if let Some(placement) = self.level_spawn_placements.get(&pawn).copied() {
+                self.placement_assignments.insert(seat, placement);
+            }
         }
+    }
+
+    /// Capture one level-spawned pawn's authored placement before simulation
+    /// can move it away from that origin.
+    pub(crate) fn bind_level_spawn_placement(&mut self, pawn: EntityId, placement: usize) {
+        self.level_spawn_placements.insert(pawn, placement);
     }
 
     /// Preserve every carryable component currently present on this pawn.
@@ -371,6 +432,22 @@ impl SeatTable {
             .map(|health| health.current);
         let reserve = registry.get_component::<AmmoReserve>(pawn).ok().cloned();
         let inventory = registry.get_component::<Inventory>(pawn).ok().cloned();
+        let harvested_weapons: Option<[Option<(String, u32)>; WIELDABLE_SLOT_CAPACITY]> =
+            inventory.as_ref().map(|inventory| {
+                std::array::from_fn(|slot| {
+                    let weapon = inventory.wieldables[slot]?;
+                    let canonical_name = registry
+                        .get_component::<DescriptorProvenance>(weapon)
+                        .ok()?
+                        .canonical_name
+                        .clone();
+                    let magazine = registry
+                        .get_component::<WeaponComponent>(weapon)
+                        .ok()?
+                        .magazine;
+                    Some((canonical_name, magazine))
+                })
+            });
         if health_current.is_none() && reserve.is_none() && inventory.is_none() {
             return;
         }
@@ -393,30 +470,23 @@ impl SeatTable {
                     }
                 }
                 CarriedField::Wieldables(carried_wieldables) => {
-                    if let Some(inventory) = inventory.as_ref() {
-                        for (slot, weapon) in inventory.wieldables.iter().enumerate() {
-                            let Some(weapon) = weapon else {
-                                carried_wieldables[slot] = None;
-                                continue;
-                            };
-                            if let Ok(provenance) =
-                                registry.get_component::<DescriptorProvenance>(*weapon)
-                            {
-                                carried_wieldables[slot] = Some(provenance.canonical_name.clone());
-                            }
+                    if let Some(harvested_weapons) = harvested_weapons.as_ref() {
+                        for (slot, weapon) in harvested_weapons.iter().enumerate() {
+                            carried_wieldables[slot] = weapon
+                                .as_ref()
+                                .map(|(canonical_name, _)| canonical_name.clone());
                         }
                     }
                 }
                 CarriedField::Magazines(carried_magazines) => {
-                    if let Some(inventory) = inventory.as_ref() {
-                        for (slot, weapon) in inventory.wieldables.iter().enumerate() {
-                            let Some(weapon) = weapon else {
-                                carried_magazines[slot] = None;
-                                continue;
-                            };
-                            if let Ok(weapon) = registry.get_component::<WeaponComponent>(*weapon) {
-                                carried_magazines[slot] = Some(weapon.magazine);
-                            }
+                    if let Some(harvested_weapons) = harvested_weapons.as_ref() {
+                        for (slot, weapon) in harvested_weapons.iter().enumerate() {
+                            // A canonical descriptor name and its magazine are
+                            // one carried weapon record. A missing component
+                            // clears both rather than combining a stale name
+                            // with a freshly-read magazine.
+                            carried_magazines[slot] =
+                                weapon.as_ref().map(|(_, magazine)| *magazine);
                         }
                     }
                 }
@@ -425,9 +495,6 @@ impl SeatTable {
                         *carried_active_slot = inventory.active_slot;
                     }
                 }
-                // Placement is assigned separately; listing it here keeps the
-                // carried-state ledger exhaustive.
-                CarriedField::Placement(_) => {}
             }
         }
     }
@@ -441,24 +508,6 @@ impl SeatTable {
         }
     }
 
-    /// Restore a recorded health value after descriptor materialization.
-    ///
-    /// A fresh seat has `None`, so it keeps the descriptor default. The absolute
-    /// write preserves the component's health bounds and does not publish damage.
-    #[allow(dead_code)] // Unit-test seam; production restores in the descriptor spawn helpers.
-    pub(crate) fn restore_health(&self, seat: Seat, registry: &mut EntityRegistry, pawn: EntityId) {
-        let Some(Some(state)) = self.carried.get(&seat) else {
-            return;
-        };
-        let Some(health_current) = state.health_current else {
-            return;
-        };
-        if health_current <= 0.0 {
-            return;
-        }
-        postretro_entities::components::health::set_health_absolute(registry, pawn, health_current);
-    }
-
     #[must_use]
     pub(crate) fn carried_state(&self, seat: Seat) -> Option<&CarriedState> {
         self.carried.get(&seat).and_then(Option::as_ref)
@@ -468,19 +517,33 @@ impl SeatTable {
     /// unload. Suspension does not call this: its world and pawn bindings remain
     /// live on resume.
     pub(crate) fn clear_pawn_bindings_for_level_unload(&mut self) {
-        for state in self.carried.values_mut().flatten() {
-            for field in carried_fields(state) {
-                match field {
-                    CarriedField::HealthCurrent(_)
-                    | CarriedField::Reserve(_)
-                    | CarriedField::Wieldables(_)
-                    | CarriedField::Magazines(_)
-                    | CarriedField::ActiveSlot(_) => {}
-                    CarriedField::Placement(placement) => *placement = None,
-                }
+        self.pawn_bindings.clear();
+        self.placement_assignments.clear();
+        self.level_spawn_placements.clear();
+    }
+
+    /// Resolve live placement occupancy from durable pawn associations, not
+    /// from positions that movement changes on the first simulation tick.
+    pub(crate) fn occupied_live_placements(
+        &self,
+        registry: &EntityRegistry,
+        placement_count: usize,
+    ) -> HashSet<usize> {
+        let mut occupied = HashSet::new();
+        for (seat, pawn) in &self.pawn_bindings {
+            if registry.exists(*pawn)
+                && let Some(placement) = self.placement_assignments.get(seat)
+                && *placement < placement_count
+            {
+                occupied.insert(*placement);
             }
         }
-        self.pawn_bindings.clear();
+        for (pawn, placement) in &self.level_spawn_placements {
+            if registry.exists(*pawn) && *placement < placement_count {
+                occupied.insert(*placement);
+            }
+        }
+        occupied
     }
 
     /// Assign or recall a placement for `seat` without allowing a held seat or a
@@ -500,10 +563,9 @@ impl SeatTable {
         }
 
         if let Some(placement) = self
-            .carried
+            .placement_assignments
             .get(&seat)
-            .and_then(Option::as_ref)
-            .and_then(|state| state.placement)
+            .copied()
             .filter(|placement| *placement < placement_count)
         {
             return Some(placement);
@@ -514,15 +576,11 @@ impl SeatTable {
             .filter(|placement| *placement < placement_count)
             .collect();
         occupied.extend(
-            self.carried
+            self.placement_assignments
                 .iter()
                 .filter(|(other, _)| **other != seat && !self.client_bindings.contains_key(other))
-                .filter_map(|(_, carried)| {
-                    carried
-                        .as_ref()
-                        .and_then(|state| state.placement)
-                        .filter(|placement| *placement < placement_count)
-                }),
+                .map(|(_, placement)| *placement)
+                .filter(|placement| *placement < placement_count),
         );
 
         let fallback = self.next_placement_cursor % placement_count;
@@ -536,12 +594,7 @@ impl SeatTable {
                 fallback
             });
         self.next_placement_cursor = placement.wrapping_add(1);
-        let state = self
-            .carried
-            .get_mut(&seat)
-            .expect("seat presence checked before placement assignment")
-            .get_or_insert_with(CarriedState::default);
-        state.placement = Some(placement);
+        self.placement_assignments.insert(seat, placement);
         Some(placement)
     }
 
@@ -1048,7 +1101,7 @@ mod tests {
         new_registry
             .set_component(new_pawn, health(100.0, 100.0))
             .unwrap();
-        seats.restore_health(Seat(0), &mut new_registry, new_pawn);
+        restore_carried_health(seats.carried_state(Seat(0)), &mut new_registry, new_pawn);
         seats.bind_pawn(Seat(0), new_pawn);
 
         assert_health_eq(
@@ -1070,7 +1123,7 @@ mod tests {
         let pawn = registry.spawn(Transform::default());
         registry.set_component(pawn, health(100.0, 100.0)).unwrap();
 
-        seats.restore_health(seat, &mut registry, pawn);
+        restore_carried_health(seats.carried_state(seat), &mut registry, pawn);
 
         assert_health_eq(
             registry
@@ -1165,6 +1218,7 @@ mod tests {
         assert_eq!(carried.active_slot, 2);
     }
 
+    // Regression: duplicated spawn-path restores could seed a dead pawn.
     #[test]
     fn nonpositive_carried_health_keeps_descriptor_default() {
         let mut seats = SeatTable::from_test_session_id([11; 16]);
@@ -1181,7 +1235,7 @@ mod tests {
         new_registry
             .set_component(new_pawn, health(100.0, 100.0))
             .unwrap();
-        seats.restore_health(Seat(0), &mut new_registry, new_pawn);
+        restore_carried_health(seats.carried_state(Seat(0)), &mut new_registry, new_pawn);
 
         assert_health_eq(
             new_registry
@@ -1195,23 +1249,12 @@ mod tests {
     #[test]
     fn level_unload_clears_placement_even_without_a_live_pawn() {
         let mut seats = SeatTable::from_test_session_id([12; 16]);
-        seats.carried.insert(
-            Seat(0),
-            Some(CarriedState {
-                placement: Some(3),
-                ..Default::default()
-            }),
-        );
+        seats.placement_assignments.insert(Seat(0), 3);
 
         seats.clear_pawn_bindings_for_level_unload();
 
-        assert_eq!(
-            seats
-                .carried_state_for_test(Seat(0))
-                .expect("carried state remains")
-                .placement,
-            None
-        );
+        assert_eq!(seats.placement_assignments.get(&Seat(0)), None);
+        assert_eq!(seats.carried_state_for_test(Seat(0)), None);
     }
 
     #[test]
@@ -1270,7 +1313,7 @@ mod tests {
         let roster = seats.roster_message_for(44);
         assert_eq!(roster.session_id, SessionId([6; 16]));
         assert_eq!(roster.your_seat, Some(remote.0));
-        assert_eq!(roster.open_seats, SEAT_NAMESPACE_SIZE - 2);
+        assert_eq!(roster.open_seats, crate::netcode::MAX_CLIENTS as u32 - 1);
 
         assert_eq!(seats.hold_disconnected_client(44), Some(remote));
         assert!(seats.take_roster_dirty());
@@ -1475,6 +1518,11 @@ mod tests {
 
         assert_eq!(seats.assign_placement(first, 3, []), Some(0));
         assert_eq!(
+            seats.carried_state_for_test(first),
+            None,
+            "placement alone must not make an empty carried record authoritative"
+        );
+        assert_eq!(
             seats.assign_placement(second, 3, [0]),
             Some(1),
             "a live pawn at index zero keeps a new seat away from it"
@@ -1500,5 +1548,39 @@ mod tests {
             Some(2),
             "a post-level admission scans live pawn occupancy before assigning a spawn"
         );
+    }
+
+    // Regression: movement away from the authored origin made an occupied spawn look free.
+    #[test]
+    fn live_placement_occupancy_survives_pawn_movement() {
+        let mut seats = SeatTable::from_test_session_id([13; 16]);
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        seats.bind_level_spawn_placement(pawn, 0);
+        registry
+            .set_component(
+                pawn,
+                Transform {
+                    position: glam::Vec3::new(9.0, -2.0, 4.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            seats.occupied_live_placements(&registry, 2),
+            HashSet::from([0])
+        );
+    }
+
+    #[test]
+    fn namespace_exhaustion_marks_roster_dirty_for_seatless_recipient() {
+        let mut seats = SeatTable::from_test_session_id([14; 16]);
+        let _ = seats.take_roster_dirty();
+        seats.next_seat = SEAT_NAMESPACE_SIZE;
+
+        assert_eq!(seats.admit_or_reclaim(99, None, false), None);
+        assert!(seats.take_roster_dirty());
+        assert_eq!(seats.roster_message_for(99).your_seat, None);
     }
 }

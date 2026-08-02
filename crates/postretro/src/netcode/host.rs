@@ -384,6 +384,9 @@ pub(crate) fn host_handle_lifecycle(
     for event in lifecycle {
         match event {
             SlotEvent::Closed { client_id, .. } | SlotEvent::Demoted { client_id, .. } => {
+                let durable_pawn = seat_table
+                    .as_deref()
+                    .and_then(|seats| seats.pawn_for_client(*client_id));
                 host_handle_transport_disconnect(
                     registry,
                     allocator,
@@ -400,7 +403,7 @@ pub(crate) fn host_handle_lifecycle(
                     last_sent_tuning,
                     seat_table.as_deref_mut(),
                     *client_id,
-                    None,
+                    durable_pawn,
                 );
             }
             // Entry is handled by the App's participation seam, which registers
@@ -736,8 +739,7 @@ mod tests {
         allocator.reset_for_level_unload();
         replicable = ReplicableSet::new();
         slot_pawns = SlotPawns::new();
-        let durable_pawn = seats.pawn_for_client(ORIGINAL_CLIENT);
-        host_handle_transport_disconnect(
+        host_handle_lifecycle(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -752,8 +754,10 @@ mod tests {
             &mut weaponless_fire_logged,
             &mut last_sent_tuning,
             Some(&mut seats),
-            ORIGINAL_CLIENT,
-            durable_pawn,
+            &[postretro_net::slots::SlotEvent::Demoted {
+                client_id: ORIGINAL_CLIENT,
+                cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
+            }],
         );
         assert_eq!(seats.hold_disconnected_client(ORIGINAL_CLIENT), Some(seat));
         assert!(

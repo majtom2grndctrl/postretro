@@ -191,16 +191,17 @@ fn compose_wieldable_inventory_slots<'a>(
         }
     }
 
-    inventory.active_slot = carried_loadout.map_or_else(
-        || {
-            inventory
-                .wieldables
-                .iter()
-                .position(Option::is_some)
-                .unwrap_or(0)
-        },
-        |loadout| loadout.active_slot,
-    );
+    let first_populated_slot = || {
+        inventory
+            .wieldables
+            .iter()
+            .position(Option::is_some)
+            .unwrap_or(0)
+    };
+    inventory.active_slot = carried_loadout
+        .map(|loadout| loadout.active_slot)
+        .filter(|slot| inventory.wieldables.get(*slot).is_some_and(Option::is_some))
+        .unwrap_or_else(first_populated_slot);
 
     if let Some(carried_loadout) = carried_loadout {
         for (slot, weapon_id) in inventory.wieldables.iter().enumerate() {
@@ -359,5 +360,36 @@ mod tests {
                 .any(|(ammo_type, amount)| ammo_type == "rockets" && amount == 0),
             "zero carried balances remain explicitly represented"
         );
+    }
+
+    // Regression: an active index absent from the new loadout spawned empty-handed.
+    #[test]
+    fn carried_missing_active_slot_falls_back_to_first_materialized_weapon() {
+        let pawn_descriptor = pawn_descriptor();
+        let descriptors = [
+            pawn_descriptor.clone(),
+            weapon_descriptor("pistol", "shells", 8, 50),
+        ];
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut carried = CarriedState {
+            active_slot: 2,
+            ..Default::default()
+        };
+        carried.wieldables[1] = Some("pistol".to_string());
+        carried.wieldables[2] = Some("missing_weapon".to_string());
+
+        let active = compose_wieldable_inventory(
+            &mut registry,
+            pawn,
+            &pawn_descriptor,
+            &placement(),
+            &descriptors,
+            Some(&carried),
+        );
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 1);
+        assert_eq!(active, inventory.wieldables[1]);
     }
 }

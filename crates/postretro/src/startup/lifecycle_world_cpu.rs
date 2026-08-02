@@ -11,6 +11,15 @@ use crate::scripting::builtins::{
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
 
+/// Attach the descriptor-authored `player.health` validation range before either
+/// network role builds its replicated-state schema. The selected descriptor matches
+/// `spawn_from_player_starts`: placements are visited in map order, `entity_class`
+/// defaults to `"player"`, unknown/non-movement descriptors do not become the local
+/// movement pawn, and the first movement descriptor is authoritative.
+///
+/// This deliberately resolves from shared authoring data rather than the registry.
+/// Connected clients suppress their boot pawn until the host baseline arrives, but
+/// must still fingerprint the same range as the listen host.
 pub(crate) fn install_descriptor_player_health_range(
     slot_table: &mut postretro_entities::SlotTable,
     spawn_points: &[crate::scripting::map_entity::MapEntity],

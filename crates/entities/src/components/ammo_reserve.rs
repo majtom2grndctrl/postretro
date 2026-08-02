@@ -19,11 +19,29 @@ impl AmmoReserve {
         self.amounts.get(ammo_type).copied().unwrap_or(0)
     }
 
+    /// Visit every stored ammo type and its exact balance.
+    ///
+    /// Cross-level carry uses this read-only view to restore balances through
+    /// [`Self::set_exact`] without exposing the backing map for mutation.
+    pub fn balances(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.amounts
+            .iter()
+            .map(|(ammo_type, amount)| (ammo_type.as_str(), *amount))
+    }
+
     /// Credit a reserve balance, saturating instead of wrapping when repeated
     /// credits exceed `u32::MAX`.
     pub fn credit(&mut self, ammo_type: &str, amount: u32) {
         let balance = self.amounts.entry(ammo_type.to_string()).or_default();
         *balance = balance.saturating_add(amount);
+    }
+
+    /// Replace one ammo type's balance without affecting any other reserve.
+    ///
+    /// Cross-level carry restores the authored type's exact carried amount;
+    /// crediting would incorrectly add the descriptor's default on every spawn.
+    pub fn set_exact(&mut self, ammo_type: &str, amount: u32) {
+        self.amounts.insert(ammo_type.to_string(), amount);
     }
 
     /// Take up to `n` units and return the amount removed. Centralizing the
@@ -70,6 +88,30 @@ mod tests {
         reserve.credit("cells", u32::MAX);
         reserve.credit("cells", 1);
         assert_eq!(reserve.available("cells"), u32::MAX);
+    }
+
+    #[test]
+    fn set_exact_replaces_one_balance_without_touching_others() {
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("shells", 24);
+        reserve.credit("cells", 60);
+
+        reserve.set_exact("shells", 7);
+
+        assert_eq!(reserve.available("shells"), 7);
+        assert_eq!(reserve.available("cells"), 60);
+    }
+
+    #[test]
+    fn balances_exposes_positive_and_zero_entries_read_only() {
+        let mut reserve = AmmoReserve::new();
+        reserve.set_exact("shells", 7);
+        reserve.set_exact("rockets", 0);
+
+        let mut balances = reserve.balances().collect::<Vec<_>>();
+        balances.sort_unstable();
+
+        assert_eq!(balances, vec![("rockets", 0), ("shells", 7)]);
     }
 
     #[test]

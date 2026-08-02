@@ -811,6 +811,9 @@ declare module "postretro" {
       readonly shake: ReadonlyStateRef<ReadonlyArray<number>>;
       readonly vignette: ReadonlyStateRef<ReadonlyArray<number>>;
     };
+    readonly session: {
+      readonly openSeats: ReadonlyStateRef<number>;
+    };
     readonly ui: {
       readonly textEntry: WritableStateRef<string>;
     };

@@ -810,6 +810,9 @@ export type GameStateRefs = {
     shake: ReadonlyStateRef<{number}>,
     vignette: ReadonlyStateRef<{number}>,
   },
+  session: {
+    openSeats: ReadonlyStateRef<number>,
+  },
   ui: {
     textEntry: WritableStateRef<string>,
   },

@@ -137,8 +137,8 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 // tests. Test-only: the boot path calls it through `startup::session`.
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
-use postretro_entities::SystemReactionCommand;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::{ComponentKind, SystemReactionCommand, Transform};
 use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
@@ -1493,6 +1493,14 @@ impl ApplicationHandler for App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
+        if let Some(session) = self.session.as_mut() {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            if let Some(seats) = session.seat_table.as_mut() {
+                // Harvest state but retain bindings until lifecycle events drain
+                // after resume; their durable fallback resolves the old pawn.
+                seats.harvest_bound_pawns(&registry);
+            }
+        }
         self.clear_net_level_parity();
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
@@ -1891,6 +1899,13 @@ impl ApplicationHandler for App {
                 let tick_dt = self.frame_timing.tick_dt();
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
+
+                // Seat holds measure elapsed rendered time rather than fixed
+                // simulation time: Frontend and Loading keep polling a host even
+                // though neither runs the simulation loop. Advance exactly here,
+                // once per frame, because a Splash/install frame can drain the
+                // transport more than once.
+                self.advance_seat_hold_clock(frame_dt);
 
                 // Drain changed paths every frame so the watcher channel does
                 // not back up even when the summary is empty. ScriptRuntime
@@ -3866,6 +3881,24 @@ impl frame_order::ReplicatedStateFrame for App {
 }
 
 impl App {
+    /// Advance the host-local seat hold clock once for this rendered frame.
+    ///
+    /// Poll drains only evaluate expiry; they must not consume `frame_dt`, since
+    /// one frame can perform multiple drains while the boot state changes.
+    fn advance_seat_hold_clock(&mut self, frame_dt: f32) {
+        if !frame_dt.is_finite() || frame_dt <= 0.0 {
+            return;
+        }
+        let Some(seats) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.seat_table.as_mut())
+        else {
+            return;
+        };
+        seats.advance_hold_clock(std::time::Duration::from_secs_f32(frame_dt));
+    }
+
     /// Advance a session-owned endpoint on a frame with no installed world.
     ///
     /// The endpoint-presence predicate deliberately has no boot-state branch:
@@ -3891,11 +3924,21 @@ impl App {
         if let netcode::WorldLessPoll::Client(controls) = &poll {
             netcode::client_drain_control(self, controls.clone());
         }
+        if matches!(poll, netcode::WorldLessPoll::Failed)
+            && let Some(session) = self.session.as_mut()
+            && let (Some(netcode::NetEndpoint::Host { server, .. }), Some(seats)) =
+                (session.net_endpoint.as_mut(), session.seat_table.as_mut())
+        {
+            // Hold expiry is session-clock work, not successful socket-I/O work.
+            netcode::finish_host_poll(server, seats);
+        }
         if let netcode::WorldLessPoll::Host(host_poll) = &poll {
             let Some(session) = self.session.as_mut() else {
                 return Some(poll);
             };
+            let mut seat_table = session.seat_table.as_mut();
             let Some(netcode::NetEndpoint::Host {
+                server,
                 allocator,
                 replicable,
                 replication,
@@ -3914,6 +3957,51 @@ impl App {
                 return Some(poll);
             };
             let mut registry = script_ctx.registry.borrow_mut();
+            for client_id in &host_poll.disconnects {
+                let durable_pawn = seat_table
+                    .as_deref()
+                    .and_then(|seats| seats.pawn_for_client(*client_id));
+                netcode::host_handle_transport_disconnect(
+                    &mut registry,
+                    allocator,
+                    replicable,
+                    replication,
+                    state_slots,
+                    slot_pawns,
+                    command_queues,
+                    owners,
+                    weapon_owners,
+                    open_shots,
+                    pending_hit_declarations,
+                    weaponless_fire_logged,
+                    last_sent_tuning,
+                    seat_table.as_deref_mut(),
+                    *client_id,
+                    durable_pawn,
+                );
+                if let Some(seats) = seat_table.as_deref_mut() {
+                    seats.hold_disconnected_client(*client_id);
+                }
+            }
+            for outcome in &host_poll.handshakes {
+                let postretro_net::transport::HandshakeOutcome::Admitted { client_id } = outcome
+                else {
+                    continue;
+                };
+                if server.is_closed(*client_id) {
+                    continue;
+                }
+                let claim = server.connect_claim(*client_id).cloned();
+                let Some(seats) = seat_table.as_deref_mut() else {
+                    log::warn!("[Net] admitted client {client_id} has no host seat table");
+                    continue;
+                };
+                if seats.admit_or_reclaim(*client_id, claim, false).is_none() {
+                    log::warn!(
+                        "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
+                    );
+                }
+            }
             netcode::host_handle_lifecycle(
                 &mut registry,
                 allocator,
@@ -3928,8 +4016,12 @@ impl App {
                 pending_hit_declarations,
                 weaponless_fire_logged,
                 last_sent_tuning,
+                seat_table.as_deref_mut(),
                 &host_poll.lifecycle,
             );
+            if let Some(seats) = seat_table {
+                netcode::finish_host_poll(server, seats);
+            }
         }
         Some(poll)
     }
@@ -5074,6 +5166,7 @@ impl App {
         };
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
+        let mut seat_table = session.seat_table.as_mut();
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -5109,14 +5202,64 @@ impl App {
                         // participation state: entry registers/spawns, while either exit
                         // cleans up. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
-                        if !poll.handshakes.is_empty()
+                        if !poll.disconnects.is_empty()
+                            || !poll.handshakes.is_empty()
                             || !poll.lifecycle.is_empty()
                             || !poll.switch_declarations.is_empty()
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
+                            // A transport disconnect ends the short-lived client-id
+                            // binding before the same poll's admission outcomes are
+                            // considered. A closed admitted slot therefore cannot mint
+                            // a durable seat from historical control traffic.
+                            for client_id in &poll.disconnects {
+                                let durable_pawn = seat_table
+                                    .as_deref()
+                                    .and_then(|seats| seats.pawn_for_client(*client_id));
+                                netcode::host_handle_transport_disconnect(
+                                    &mut registry,
+                                    allocator,
+                                    replicable,
+                                    replication,
+                                    state_slots,
+                                    slot_pawns,
+                                    command_queues,
+                                    owners,
+                                    weapon_owners,
+                                    open_shots,
+                                    pending_hit_declarations,
+                                    weaponless_fire_logged,
+                                    last_sent_tuning,
+                                    seat_table.as_deref_mut(),
+                                    *client_id,
+                                    durable_pawn,
+                                );
+                                if let Some(seats) = seat_table.as_deref_mut() {
+                                    seats.hold_disconnected_client(*client_id);
+                                }
+                            }
                             for outcome in &poll.handshakes {
                                 match outcome {
                                     HandshakeOutcome::Admitted { client_id } => {
+                                        if server.is_closed(*client_id) {
+                                            continue;
+                                        }
+                                        let claim = server.connect_claim(*client_id).cloned();
+                                        let Some(seats) = seat_table.as_deref_mut() else {
+                                            log::warn!(
+                                                "[Net] admitted client {client_id} has no host seat table"
+                                            );
+                                            continue;
+                                        };
+                                        if seats
+                                            .admit_or_reclaim(*client_id, claim, false)
+                                            .is_none()
+                                        {
+                                            log::warn!(
+                                                "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
+                                            );
+                                            continue;
+                                        }
                                         log::info!(
                                             "[Net] client {client_id} admitted; awaiting content parity"
                                         );
@@ -5149,6 +5292,7 @@ impl App {
                                     pending_hit_declarations,
                                     weaponless_fire_logged,
                                     last_sent_tuning,
+                                    seat_table.as_deref_mut(),
                                     std::slice::from_ref(event),
                                 );
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
@@ -5162,8 +5306,19 @@ impl App {
                                 if !server.is_current_participation_entry(event) {
                                     continue;
                                 }
-                                replication.register_client(*client_id);
-                                state_slots.register_client(*client_id);
+                                let Some(seat) = seat_table
+                                    .as_deref()
+                                    .and_then(|seats| seats.seat_for_client(*client_id))
+                                else {
+                                    log::warn!(
+                                        "[Net] participating client {client_id} has no admitted seat; closing inconsistent slot"
+                                    );
+                                    let _ = server.close_relay_connection(
+                                        *client_id,
+                                        postretro_net::slots::CloseCause::Disconnect,
+                                    );
+                                    continue;
+                                };
                                 let pawn = if host_spawn_points.is_empty() {
                                     netcode::host_handle_accept(
                                         &mut registry,
@@ -5174,7 +5329,38 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
-                                    netcode::host_handle_accept_descriptor(
+                                    let live_placements = seat_table
+                                        .as_deref()
+                                        .map(|seats| {
+                                            seats.occupied_live_placements(
+                                                &registry,
+                                                host_spawn_points.len(),
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    let Some(placement_index) =
+                                        seat_table.as_deref_mut().and_then(|seats| {
+                                            seats.assign_placement(
+                                                seat,
+                                                host_spawn_points.len(),
+                                                live_placements,
+                                            )
+                                        })
+                                    else {
+                                        log::warn!(
+                                            "[Net] participating client {client_id} could not receive a player_spawn placement; closing inconsistent slot"
+                                        );
+                                        let _ = server.close_relay_connection(
+                                            *client_id,
+                                            postretro_net::slots::CloseCause::Disconnect,
+                                        );
+                                        continue;
+                                    };
+                                    let carried_loadout = seat_table
+                                        .as_deref()
+                                        .and_then(|seats| seats.carried_state(seat))
+                                        .cloned();
+                                    netcode::host_handle_accept_descriptor_at_placement(
                                         &mut registry,
                                         allocator,
                                         replicable,
@@ -5187,29 +5373,44 @@ impl App {
                                         weaponless_fire_logged,
                                         *client_id,
                                         &host_spawn_points,
+                                        placement_index,
                                         &net_descriptors,
                                         host_agent_params,
+                                        carried_loadout.as_ref(),
                                     )
                                 };
-                                if let Some(pawn) = pawn {
-                                    resolve_accepted_host_pawn_presentation(
-                                        &mut registry,
-                                        mesh_clip_tables,
-                                        hit_zone_store,
-                                        pawn,
+                                let Some(pawn) = pawn else {
+                                    log::warn!(
+                                        "[Net] participating client {client_id} could not materialize a pawn; closing inconsistent slot"
                                     );
-                                    let payload = netcode::tuning_payload_for_pawn(
-                                        &registry,
-                                        pawn,
-                                        &net_descriptors,
-                                    );
-                                    netcode::host_send_tuning_if_changed(
-                                        server,
-                                        last_sent_tuning,
+                                    let _ = server.close_relay_connection(
                                         *client_id,
-                                        payload,
+                                        postretro_net::slots::CloseCause::Disconnect,
                                     );
+                                    continue;
+                                };
+                                replication.register_client(*client_id);
+                                state_slots.register_client(*client_id);
+                                if let Some(seats) = seat_table.as_deref_mut() {
+                                    seats.bind_pawn(seat, pawn);
                                 }
+                                resolve_accepted_host_pawn_presentation(
+                                    &mut registry,
+                                    mesh_clip_tables,
+                                    hit_zone_store,
+                                    pawn,
+                                );
+                                let payload = netcode::tuning_payload_for_pawn(
+                                    &registry,
+                                    pawn,
+                                    &net_descriptors,
+                                );
+                                netcode::host_send_tuning_if_changed(
+                                    server,
+                                    last_sent_tuning,
+                                    *client_id,
+                                    payload,
+                                );
                             }
                             for &(client_id, declaration) in &poll.switch_declarations {
                                 netcode::host_handle_switch_declaration(
@@ -5224,8 +5425,18 @@ impl App {
                                 );
                             }
                         }
+                        if let Some(seats) = seat_table {
+                            netcode::finish_host_poll(server, seats);
+                        }
                     }
-                    Err(err) => log::error!("[Net] host update failed: {err}"),
+                    Err(err) => {
+                        log::error!("[Net] host update failed: {err}");
+                        if let Some(seats) = seat_table {
+                            // A persistently failing socket must not freeze
+                            // session-clock hold expiry or its roster update.
+                            netcode::finish_host_poll(server, seats);
+                        }
+                    }
                 }
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
@@ -6481,6 +6692,28 @@ impl App {
                 log::warn!("[dev-tools] chase agent attach failed: {err:?}");
             }
         }
+    }
+}
+
+/// Capture placement provenance while newly materialized pawns still have their
+/// authored transforms. Later occupancy reads this durable association after
+/// movement changes those transforms.
+fn capture_player_spawn_placements(
+    registry: &postretro_entities::EntityRegistry,
+    spawn_points: &[crate::scripting::map_entity::MapEntity],
+    seats: &mut netcode::SeatTable,
+) {
+    for (pawn, _) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
+        let Ok(transform) = registry.get_component::<Transform>(pawn) else {
+            continue;
+        };
+        let Some(placement) = spawn_points
+            .iter()
+            .position(|placement| placement.origin == transform.position)
+        else {
+            continue;
+        };
+        seats.bind_level_spawn_placement(pawn, placement);
     }
 }
 

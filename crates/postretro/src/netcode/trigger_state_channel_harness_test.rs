@@ -301,6 +301,7 @@ fn relay_pair() -> (NetServer, NetClient) {
         CLIENT_ID,
         origin,
         Some(static_fingerprint),
+        None,
     )
     .expect("fixture client transport constructs");
 
@@ -433,7 +434,7 @@ impl PersistentAtmosphereHarness {
     fn connect_client(&mut self) {
         assert!(!self.connected, "fixture client connects once");
         self.install_client_level_before_network_baseline();
-        self.server.add_relay_connection(CLIENT_ID);
+        self.server.add_relay_connection(CLIENT_ID, None);
         self.client.set_connected();
         for _ in 0..128 {
             self.relay_client_to_server();

@@ -59,6 +59,7 @@ mod tests {
 
     const FALLBACK_HUD_MARKER: &str = "FALLBACK HUD HP --";
     const FALLBACK_HUD_FORMAT: &str = "FALLBACK HUD HP {}";
+    const OPEN_SEATS_FORMAT: &str = "OPEN SEATS {}";
 
     /// The engine HUD asset is now a minimal fallback. The production HUD is
     /// registered by mod content; this marker must stay fallback-only so shadowing
@@ -69,9 +70,11 @@ mod tests {
         let Widget::VStack(col) = &tree.root else {
             panic!("fallback HUD root is a vstack column");
         };
-        assert_eq!(col.children.len(), 1, "fallback HUD has one health row");
+        let [health_row, open_seats_row] = col.children.as_slice() else {
+            panic!("fallback HUD has health and open-seat rows");
+        };
 
-        let Widget::Text(health) = &col.children[0] else {
+        let Widget::Text(health) = health_row else {
             panic!("fallback row is the health text");
         };
         assert_eq!(health.content, FALLBACK_HUD_MARKER);
@@ -83,10 +86,23 @@ mod tests {
             health.bind.as_ref().and_then(|b| b.format.as_deref()),
             Some(FALLBACK_HUD_FORMAT),
         );
+
+        let Widget::Text(open_seats) = open_seats_row else {
+            panic!("second fallback row is the open-seat status");
+        };
+        assert_eq!(
+            open_seats.bind.as_ref().and_then(|b| b.source.slot()),
+            Some("session.openSeats"),
+        );
+        assert_eq!(
+            open_seats.bind.as_ref().and_then(|b| b.format.as_deref()),
+            Some(OPEN_SEATS_FORMAT),
+        );
     }
 
     /// The fallback stays intentionally smaller than the production HUD: it only
-    /// carries the health text needed when no mod HUD is registered.
+    /// carries engine-owned health and open-seat status when no mod HUD is
+    /// registered.
     #[test]
     fn fallback_hud_descriptor_omits_demo_only_surfaces() {
         let tree = build_demo_descriptor();

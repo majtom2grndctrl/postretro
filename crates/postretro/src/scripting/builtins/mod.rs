@@ -11,6 +11,7 @@ pub(crate) mod data_archetype;
 pub(crate) mod entity_spawner;
 pub(crate) mod net_descriptor;
 pub(crate) mod prop_mesh;
+pub(crate) mod wieldable_inventory;
 
 // Shared descriptor/placement builders used by both `data_archetype`'s own
 // `mod tests` and the netcode-side agreement test. See testing_guide.md §4.
@@ -23,7 +24,9 @@ pub(crate) mod data_archetype_test_fixtures;
 #[allow(unused_imports)]
 pub(crate) use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
-pub(crate) use data_archetype::{PLAYER_START_CLASSNAME, spawn_from_player_starts};
+pub(crate) use data_archetype::{
+    PLAYER_START_CLASSNAME, spawn_from_player_starts, spawn_from_player_starts_with_carried_loadout,
+};
 // Connected-client AI-enemy spawn suppression (E10 Task 5). `gen-script-types`
 // pulls in the scripting tree but never installs a level, so the import is
 // unused there.

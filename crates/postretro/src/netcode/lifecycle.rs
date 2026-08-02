@@ -9,7 +9,7 @@ use postretro_foundation::NavAgentParams;
 use postretro_net::replication::ServerReplication;
 use postretro_net::wire::NetworkId;
 
-use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn;
+use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn_with_carried_loadout;
 use crate::scripting::map_entity::MapEntity;
 
 use super::{NetworkIdAllocator, ReplicableSet};
@@ -32,52 +32,11 @@ pub(crate) struct SlotPawns {
     /// Keeping the ids with the slot, rather than in `WeaponOwners`, preserves
     /// the latter as a presentation-only dirty attachment queue.
     wieldables: HashMap<u64, Vec<EntityId>>,
-    /// Deterministic slot → `player_spawn` placement-index assignment (M15 Phase 3).
-    /// Recorded BEFORE the descriptor spawn so a reused slot has an auditable source:
-    /// the same client id always resolves to the same placement for the session, and
-    /// the assignment is round-robin over the available placements by first-accept
-    /// order. Survives a close so a reconnecting client lands on its prior spawn.
-    placement_assignments: HashMap<u64, usize>,
-    /// Monotonic counter feeding the round-robin placement assignment. Never reset
-    /// within a session, so assignment order is a pure function of accept order.
-    next_assignment: usize,
 }
 
 impl SlotPawns {
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    /// Deterministically assign (or recall) the `player_spawn` placement index for a
-    /// slot, given the number of available placements. Idempotent per client id: the
-    /// first call records a round-robin assignment; later calls (including after a
-    /// reconnect) return the same index. Returns `None` when there are no placements
-    /// to assign from. The assignment is recorded before the spawn so a reused slot's
-    /// source is auditable.
-    pub(crate) fn assign_placement(
-        &mut self,
-        client_id: u64,
-        placement_count: usize,
-    ) -> Option<usize> {
-        if placement_count == 0 {
-            return None;
-        }
-        if let Some(&idx) = self.placement_assignments.get(&client_id) {
-            // Clamp defensively in case the placement set shrank between sessions.
-            return Some(idx.min(placement_count - 1));
-        }
-        let idx = self.next_assignment % placement_count;
-        self.next_assignment = self.next_assignment.wrapping_add(1);
-        self.placement_assignments.insert(client_id, idx);
-        Some(idx)
-    }
-
-    /// The recorded placement-index assignment for a slot, if any. Auditable source
-    /// for a reused slot — read by tests and operator diagnostics; staged until a
-    /// non-test caller (e.g. a `[Net]` audit log) reads it.
-    #[allow(dead_code)]
-    pub(crate) fn placement_assignment(&self, client_id: u64) -> Option<usize> {
-        self.placement_assignments.get(&client_id).copied()
     }
 
     /// The pawn entity for a slot, if one is registered. Used by lifecycle tests and
@@ -123,6 +82,7 @@ pub(crate) enum SlotPawnSource<'a> {
         placement: &'a MapEntity,
         descriptors: &'a [EntityTypeDescriptor],
         agent_params: Option<NavAgentParams>,
+        carried_loadout: Option<&'a super::CarriedState>,
     },
 }
 
@@ -174,9 +134,15 @@ pub(crate) fn on_slot_accepted(
             placement,
             descriptors,
             agent_params,
+            carried_loadout,
         } => {
-            let Some(id) = spawn_net_slot_pawn(placement, descriptors, registry, agent_params)
-            else {
+            let Some(id) = spawn_net_slot_pawn_with_carried_loadout(
+                placement,
+                descriptors,
+                registry,
+                agent_params,
+                carried_loadout,
+            ) else {
                 log::warn!(
                     "[Net] slot {client_id} accepted but descriptor spawn failed; slot left unmapped"
                 );
@@ -200,29 +166,33 @@ pub(crate) fn on_slot_accepted(
     Some((pawn, net_id))
 }
 
-/// React to a slot closing (clean disconnect OR timeout — the single Phase 2 cleanup
-/// path for both): despawn the slot-owned pawn through the game-logic-owned apply,
-/// remove it from the replicable set, and drop the slot mapping. The `ServerReplication`
-/// client state is also dropped so the closed client stops being replicated to.
+/// Close a slot and clean up its pawn, replication state, and slot mapping.
 ///
-/// Returns the despawned pawn's `EntityId`, or `None` if the slot owned no pawn
-/// (e.g. a slot that closed before it was ever accepted). After this returns, the
-/// pawn is absent from the next `produce_owned_snapshots`, so the net tracker emits a
-/// resending despawn tombstone to the remaining clients.
-pub(crate) fn on_slot_closed(
+/// Returns the despawned pawn's `EntityId`, or `None` when the slot never owned
+/// a pawn. The pawn leaves the next snapshot, which emits a despawn tombstone.
+///
+/// Suspend demotes peers before the next transport poll. The durable seat map
+/// outlives that reset and can still name the old pawn, so disconnect cleanup
+/// supplies it here as a fallback rather than leaving an orphan in the registry.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn on_slot_closed_with_fallback(
     registry: &mut EntityRegistry,
     slot_pawns: &mut SlotPawns,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     replication: &mut ServerReplication,
     client_id: u64,
+    fallback_pawn: Option<EntityId>,
 ) -> Option<EntityId> {
     // Drop the closed client's per-client replication state regardless of whether it
     // owned a pawn: it will never ack again.
     replication.remove_client(client_id);
 
-    let pawn = slot_pawns.pawns.remove(&client_id)?;
-    let retained_wieldables = slot_pawns.wieldables.remove(&client_id).unwrap_or_default();
+    let mapped_pawn = slot_pawns.pawns.remove(&client_id);
+    let pawn = mapped_pawn.or(fallback_pawn)?;
+    let retained_wieldables = mapped_pawn
+        .and_then(|_| slot_pawns.wieldables.remove(&client_id))
+        .unwrap_or_default();
     // Inventory owns every sibling wieldable. Snapshot their ids before the pawn
     // dies, then despawn every instance before clearing the owner; after pawn
     // despawn its component column is inaccessible by design.
@@ -339,7 +309,7 @@ mod tests {
     // is distinguished in the net slot model but Phase 2 cleanup is one path).
     #[test]
     fn timeout_runs_same_cleanup_path_as_disconnect() {
-        // The lifecycle glue is cause-agnostic: on_slot_closed takes no cause. The
+        // The lifecycle glue is cause-agnostic: cleanup takes no cause. The
         // transport classifies disconnect vs timeout (slots.rs tests); both funnel
         // here. This test asserts the cleanup is identical by running the same body.
         disconnect_runs_cleanup_and_replicates();
@@ -398,13 +368,14 @@ mod tests {
         replication.apply_ack(CLIENT_B, 0, &[(net_a.0, baseline_a)], &[]);
 
         // Close client A: the single cleanup path.
-        let despawned = on_slot_closed(
+        let despawned = on_slot_closed_with_fallback(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
+            None,
         );
         assert_eq!(despawned, Some(pawn_a));
         assert!(!registry.exists(pawn_a), "pawn A despawned");
@@ -459,13 +430,14 @@ mod tests {
         )
         .expect("transform fixture accept always spawns");
         // Close it.
-        on_slot_closed(
+        on_slot_closed_with_fallback(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
+            None,
         );
 
         // A later connection reuses the same ClientId (slot reuse). It must get a
@@ -499,13 +471,14 @@ mod tests {
         let mut replicable = ReplicableSet::new();
         let mut replication = ServerReplication::new();
 
-        let despawned = on_slot_closed(
+        let despawned = on_slot_closed_with_fallback(
             &mut registry,
             &mut slot_pawns,
             &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
+            None,
         );
         assert_eq!(despawned, None, "no pawn to clean up");
     }
@@ -674,6 +647,7 @@ mod tests {
                 placement: &placement,
                 descriptors: &descriptors,
                 agent_params: None,
+                carried_loadout: None,
             },
         )
         .expect("descriptor accept spawns a pawn from the synthetic placement");
@@ -757,7 +731,7 @@ mod tests {
         ];
         let spawn_points = [synthetic_placement()];
 
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -770,7 +744,9 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
+            None,
             None,
         );
 
@@ -901,6 +877,7 @@ mod tests {
             &mut pending_hit_declarations,
             &mut weaponless_fire_logged,
             &mut last_sent_tuning,
+            None,
             &[postretro_net::slots::SlotEvent::Demoted {
                 client_id: CLIENT_A,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
@@ -935,7 +912,7 @@ mod tests {
             "slot close clears weaponless-fire latch"
         );
 
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -948,7 +925,9 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
+            None,
             None,
         );
         let replacement = slot_pawns
@@ -993,6 +972,7 @@ mod tests {
                 placement: &synthetic_placement(),
                 descriptors: &descriptors,
                 agent_params: None,
+                carried_loadout: None,
             },
         )
         .expect("descriptor slot materializes");
@@ -1010,13 +990,14 @@ mod tests {
             .expect("fixture reproduces pawn-before-slot cleanup ordering");
 
         assert_eq!(
-            on_slot_closed(
+            on_slot_closed_with_fallback(
                 &mut registry,
                 &mut slot_pawns,
                 &mut allocator,
                 &mut replicable,
                 &mut replication,
                 CLIENT_A,
+                None,
             ),
             Some(pawn)
         );
@@ -1044,7 +1025,7 @@ mod tests {
         ];
         let spawn_points = [synthetic_placement()];
 
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -1057,7 +1038,9 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
+            None,
             None,
         );
         let old_pawn = slot_pawns.pawn_for(CLIENT_A).expect("first pawn");
@@ -1103,7 +1086,7 @@ mod tests {
         registry
             .despawn(old_pawn)
             .expect("test simulates stale externally-despawned slot pawn");
-        crate::netcode::host_handle_accept_descriptor(
+        crate::netcode::host_handle_accept_descriptor_at_placement(
             &mut registry,
             &mut allocator,
             &mut replicable,
@@ -1116,7 +1099,9 @@ mod tests {
             &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
+            0,
             &descriptors,
+            None,
             None,
         );
 
@@ -1139,23 +1124,5 @@ mod tests {
         assert_eq!(open_shots.len(), 0);
         assert_eq!(pending_hit_declarations.len(), 0);
         assert!(!weaponless_fire_logged.contains(&old_pawn));
-    }
-
-    // The deterministic slot->placement assignment is stable across reconnect: the
-    // same client id always resolves to the same placement index, and the assignment
-    // is recorded (auditable) before the spawn.
-    #[test]
-    fn placement_assignment_is_deterministic_and_survives_close() {
-        let mut slot_pawns = SlotPawns::new();
-        // Three placements; two clients accept in order -> indices 0 and 1.
-        assert_eq!(slot_pawns.assign_placement(CLIENT_A, 3), Some(0));
-        assert_eq!(slot_pawns.assign_placement(CLIENT_B, 3), Some(1));
-        // Re-asking is idempotent (auditable, stable).
-        assert_eq!(slot_pawns.assign_placement(CLIENT_A, 3), Some(0));
-        assert_eq!(slot_pawns.placement_assignment(CLIENT_A), Some(0));
-        assert_eq!(slot_pawns.placement_assignment(CLIENT_B), Some(1));
-        // No placements -> no assignment.
-        let mut empty = SlotPawns::new();
-        assert_eq!(empty.assign_placement(CLIENT_A, 0), None);
     }
 }

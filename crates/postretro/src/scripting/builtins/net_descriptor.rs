@@ -45,6 +45,19 @@ pub(crate) fn spawn_net_slot_pawn(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
+    spawn_net_slot_pawn_with_carried_loadout(placement, descriptors, registry, agent_params, None)
+}
+
+/// Network-slot materialization with an already-resolved carried record. Seat
+/// ownership remains with the host lifecycle; this helper receives no seat or
+/// seat table.
+pub(crate) fn spawn_net_slot_pawn_with_carried_loadout(
+    placement: &MapEntity,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    agent_params: Option<NavAgentParams>,
+    carried_loadout: Option<&crate::netcode::CarriedState>,
+) -> Option<EntityId> {
     let entity_class = placement
         .key_values
         .get("entity_class")
@@ -77,6 +90,8 @@ pub(crate) fn spawn_net_slot_pawn(
         return None;
     };
 
+    crate::netcode::restore_carried_health(carried_loadout, registry, id);
+
     // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
     // `getEntityProperty` works uniformly for net-slot pawns, matching the
     // player-start path. Deliberately NO `mark_local_player_pawn` here.
@@ -87,7 +102,14 @@ pub(crate) fn spawn_net_slot_pawn(
     // The host materializes every remote pawn's owned instances. Consumers resolve
     // the selected instance from the pawn inventory; no sibling id escapes this
     // spawn boundary.
-    let _ = compose_wieldable_inventory(registry, id, descriptor, placement, descriptors);
+    let _ = compose_wieldable_inventory(
+        registry,
+        id,
+        descriptor,
+        placement,
+        descriptors,
+        carried_loadout,
+    );
 
     Some(id)
 }
@@ -210,9 +232,17 @@ pub(crate) fn materialize_net_local_wieldable_inventory_from_tuning(
                 &placement,
                 descriptors,
                 &slots,
+                None,
             );
         } else if let Some(descriptor) = find_descriptor(descriptors, entity_class) {
-            let _ = compose_wieldable_inventory(registry, id, descriptor, &placement, descriptors);
+            let _ = compose_wieldable_inventory(
+                registry,
+                id,
+                descriptor,
+                &placement,
+                descriptors,
+                None,
+            );
         } else {
             log::warn!(
                 "[Net] local pawn entity_class `{entity_class}` not registered; wieldable inventory stays inert"
@@ -772,6 +802,42 @@ mod tests {
         e.origin = origin;
         e.angles = angles;
         e
+    }
+
+    #[test]
+    fn net_slot_pawn_restores_carried_health_after_descriptor_spawn() {
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let mut player = player_with_movement("player");
+        player.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+        let mut registry = EntityRegistry::new();
+
+        let carried = crate::netcode::CarriedState {
+            health_current: Some(29.0),
+            ..Default::default()
+        };
+        let pawn = spawn_net_slot_pawn_with_carried_loadout(
+            &spawn_point(&[]),
+            &[player],
+            &mut registry,
+            None,
+            Some(&carried),
+        )
+        .expect("descriptor-backed net slot pawn spawns");
+
+        let health = registry
+            .get_component::<HealthComponent>(pawn)
+            .expect("descriptor materialized health")
+            .current;
+        assert!(
+            (health - 29.0).abs() <= 1.0e-6,
+            "expected carried health 29.0, got {health}"
+        );
     }
 
     fn tuning_for_slot(

@@ -1008,6 +1008,107 @@ mod tests {
         );
     }
 
+    // Regression: a level replacement used to leave the continuing host session
+    // without the per-player trigger paths that distinguish local input from a
+    // remote `use_pressed` command.
+    #[test]
+    fn level_change_rebuilds_local_and_remote_touch_and_use_paths() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut system = TriggerSystem::default();
+
+        for level in 0..2 {
+            let mut registry = EntityRegistry::new();
+            let mut bridge = TriggerVolumeBridge::new();
+            let touch = spawn_trigger(
+                &mut registry,
+                &mut bridge,
+                TriggerActivation::Touch,
+                TriggerFireMode::Multiple,
+                0.0,
+                true,
+            );
+            let use_trigger = spawn_trigger(
+                &mut registry,
+                &mut bridge,
+                TriggerActivation::Use,
+                TriggerFireMode::Multiple,
+                0.0,
+                true,
+            );
+            set_event_names(&mut registry, touch, "touch", "");
+            set_event_names(&mut registry, use_trigger, "use", "");
+            let mover = spawn_mover(&mut registry);
+            let local = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+            let remote = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+            let local_id = PlayerId::Local(local);
+            let remote_id = PlayerId::Remote(7);
+            let players = [
+                AuthoritativePlayer {
+                    id: local_id,
+                    pawn: local,
+                },
+                AuthoritativePlayer {
+                    id: remote_id,
+                    pawn: remote,
+                },
+            ];
+
+            let report = tick(
+                &mut system,
+                &mut registry,
+                &bridge,
+                &players,
+                &[(local_id, true), (remote_id, true)],
+            );
+            assert_eq!(
+                report.enters(),
+                vec![
+                    TriggerEventFire {
+                        trigger: touch,
+                        player: local_id,
+                        event_name: "touch".into(),
+                    },
+                    TriggerEventFire {
+                        trigger: touch,
+                        player: remote_id,
+                        event_name: "touch".into(),
+                    },
+                    TriggerEventFire {
+                        trigger: use_trigger,
+                        player: local_id,
+                        event_name: "use".into(),
+                    },
+                    TriggerEventFire {
+                        trigger: use_trigger,
+                        player: remote_id,
+                        event_name: "use".into(),
+                    },
+                ],
+                "level {level} preserves both local Use and remote use_pressed activation"
+            );
+            assert_eq!(system.occupancy(touch), 2);
+            assert!(
+                registry
+                    .get_component::<KinematicMoverComponent>(mover)
+                    .expect("trigger target mover remains live")
+                    .started,
+                "touch and Use paths still reach the host-only mover command after level {level}"
+            );
+
+            // The session persists while its level-scoped registry and bridge are
+            // replaced. The fresh level must start without old occupancy, then admit
+            // both local and remote activators again.
+            system.clear();
+        }
+
+        assert_eq!(
+            recorded_gate_fires().len(),
+            8,
+            "two levels each run touch and Use through local and remote player identities"
+        );
+    }
+
     #[test]
     fn trigger_command_starts_targeted_mover_and_gate_is_sole_fire_path() {
         let _guard = gate_test_guard().lock().expect("gate test guard poisoned");

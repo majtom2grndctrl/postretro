@@ -25,7 +25,7 @@ policy — take it if you can — and charts the seam a later authoring surface 
 - One decision seam: facts in, an ordered list of effects out. The engine default policy is its only
   implementation here.
 - A closed touch-effect set, holding `Acquire` alone in this spec.
-- Prompt-eligible pairs, returned from the pass as an in-memory per-tick value.
+- Prompt-eligible pairs, held as in-memory per-tick state on the touch system.
 - Dropping the active wieldable back into the world, including the inhibit that stops the drop point's
   occupants from immediately acquiring it.
 - One inventory-growth chokepoint, with a source-scan test restricting its call sites.
@@ -50,7 +50,9 @@ policy — take it if you can — and charts the seam a later authoring surface 
   shipped seat substrate; `E15--seat-session-identity-roster` §Out-of-scope owns the per-level-reset and
   pistol-start knobs.
 - **Non-weapon touchables** — keys, currency, health and ammo items. `grantHealth`/`grantAmmo` on a
-  trigger volume already covers the resource case; per-player currency is `drafts/E16--per-player-currency`.
+  trigger volume covers the **map-authored** resource case and only that: brush volumes are
+  level-load-only (see *Alternatives rejected*), so no existing mechanism covers a resource item that
+  appears at runtime. Per-player currency is `drafts/E16--per-player-currency`.
 - **Item respawn.** A taken item is gone for the level.
 - **Client prediction of acquisition.** Acquisition is host-only; a client sees the item disappear after
   the round trip.
@@ -70,8 +72,10 @@ Overlap, evaluation, and touch are three separate steps.
 | **Evaluation** | Every tick, for every overlapping `(player, item)` pair | Builds `TouchFacts` and runs the policy. Result drives prompt-eligibility only |
 | **Touch** | Enter edge in `auto`; `use_pressed` edge while overlapping in `press` | **Applies** that tick's evaluation result |
 
-The touch step reuses the evaluation's effect list rather than re-running the policy. Facts cannot change
-within a tick for one pair, so the policy runs exactly once per overlapping pair per tick.
+The touch step reuses the evaluation's effect list rather than re-running the policy, so the policy runs
+exactly once per overlapping pair per tick. Pairs are processed strictly sequentially, and each pair's
+evaluation is immediately followed by its application — so a later pair in the same tick evaluates against
+the world the earlier pair's effects already mutated.
 
 A `press` pair is prompt-eligible when its evaluation returns a non-empty effect list and no effects were
 applied for it this tick. `auto` items are never prompt-eligible: their affordance is walking, so there is
@@ -131,8 +135,9 @@ on any non-despawn record carrying a finite `Transform` (`networking.md` §Snaps
 no metadata gate widens. No new `ComponentKind` reaches the wire: `TouchableComponent` is host-local, and
 a client needs no mode — it never runs the touch pass and attaches presentation only.
 
-**Per-tick input command.** `drop_pressed` joins `use_pressed` on the per-tick input levels. This widens
-the transport wire, whose version gate is independent of the tuning epoch above; bump it on its own.
+**Per-tick input command.** `drop_pressed` joins `use_pressed` on the per-tick input levels. `InputCommand`
+rides `ClientMessage` on the Input channel, so its layout is gated by `WIRE_VERSION`, not
+`SNAPSHOT_VERSION`. That gate is independent of the tuning epoch above; bump it on its own.
 `drop_pressed` is an **edge bit** and follows `use_pressed`'s treatment exactly: `held_gap_sim_command`
 clears it on every held tick and `neutral_sim_command` synthesizes it false, so a packet gap replays no
 drop. It is **not** carried forward like `reload`, which is a level bit deduplicated by weapon-owned
@@ -144,15 +149,15 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 |---|---|---|---|
 | An item is acquired by at most one player, ever | Task 3 (acquisition removes the item from the world in the same pass that decides it) | Two players' enter edges on one tick; a player entering after another's empty effect list | AC 5 |
 | Effects apply only on a touch; evaluation alone never mutates | Task 3 (evaluation and application are separate steps) | A later effect arm applied from the eligibility path | AC 7, AC 10 |
-| A touch fires on an edge, never on sustained overlap | Task 3 (per-item occupancy set, enter transition in `auto`; press edge in `press`) | Drop seeds the drop point's occupants (Task 6); an empty effect list must not clear occupancy, or the next tick re-fires | AC 4, AC 10 |
+| A touch fires on an edge, never on sustained overlap | Task 3 (per-item occupancy set, enter transition in `auto`; press edge in `press`) | Drop seeds the drop point's occupants (Task 6); an empty effect list must not clear occupancy, or the next tick re-fires | AC 4, AC 10, AC 19 |
 | Facts are computed at every evaluation, whatever the policy reads | Task 3 (`TouchFacts` built before the policy runs) | A later short-circuit that skips fact computation when the default ignores a field | AC 7 |
-| The policy decides; the chokepoint mutates | Task 2 (chokepoint holds no eligibility rule), Task 3 (policy holds no registry write) | Any refusal rule migrating back into the chokepoint | AC 6, AC 7 |
+| The policy decides; the chokepoint mutates | Task 2 (chokepoint holds no eligibility rule), Task 3 (policy holds no registry write) | Task 6's drop refusal, which belongs in the drop path and must not migrate into the chokepoint | AC 6, AC 7 |
 | Prompt-eligible means the policy returned effects that were not applied | Task 3 | A later effect arm filtered by an acquisition-specific check | AC 10 |
 | Pickup and drop never write `AmmoReserve` | Task 2 (the chokepoint takes no reserve argument) | The existing source-scan test allowlists exactly two non-test `credit` call sites and one non-test `set_exact` call site, across two assertions; a new one fails it | AC 9 |
-| Inventory slot **fill** happens in exactly one place | Task 2 (chokepoint + its own source-scan test) | Task 3, Task 6, and Task 7 all mutate inventories and must route through it | AC 8 |
+| Inventory slot **fill** happens in exactly one place | Task 2 (chokepoint + its own source-scan test) | Task 3 and Task 7 both fill slots and must route through it; Task 6 releases through the same module | AC 8 |
 | A world item is never ticked by the weapon stage | Already true — no weapon-stage path reaches a weapon except through its owner: `run_local_weapon_command` via `Inventory::active_wieldable`, `run_remote_weapon_commands` via `RemotePawnCommand.weapon`, and `normalize_all_inventory_liveness` via the `Inventory` column; no production code scans the weapon column | A future scan-based stage would break it silently | AC 11 |
 | A descriptor authoring no touchable block is not map-placeable by virtue of its weapon | Task 1 (the placeability predicate gains a `touchable` term and no `weapon` term) | Any later addition of a `weapon` term | AC 2 |
-| Acquisition and drop are host decisions | Task 5, Task 6 | A client must not predict either; its inventory changes only on host word | AC 13 |
+| Acquisition and drop are host decisions | Task 3 (the pass sits inside the tick a connected client never runs), Task 5, Task 6 | A client must not predict either; its inventory changes only on host word | AC 13 |
 | A picked-up wieldable carries across a level transition | Inherited — carry harvests each slot's `DescriptorProvenance.canonical_name`, which a map-placed item carries like any descriptor spawn | Task 2 must not clear or rewrite provenance when a slot is filled | AC 12 |
 
 ## Ordering matrix
@@ -170,14 +175,18 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 | Inventory full | Evaluation runs; facts carry `freeSlots = 0`; default policy returns no effects | Same as duplicate. Freeing a slot while standing on an `auto` item does not acquire it — there is no new enter edge — so the player steps off and back on. |
 | `use` press lands on the same tick as a trigger-volume Use activation | Trigger stage runs first, touch pass second, both read the same `use_pressed` map | Both fire. The press is not consumed by either. |
 | A script queues `despawn(item)` on the tick the item is acquired | The deferred effect rides the item's own queue and would execute next tick against a now-held weapon | Acquisition purges the acquired item's pending deferred effects. The weapon survives. |
-| An item already marked for end-of-frame removal | Removal pass runs at end of frame | The item generates no overlap and no evaluation |
+| A script queues a deferred effect against a weapon picked up and dropped earlier in the level | Acquisition cleared the queue but left `inert` false | The effect is admitted and runs normally. Only a terminal despawn sets `inert`, and acquisition is not one. |
+| Acquire and drop of one item on the same tick | Drop runs at the top of the pass, acquisition after, and the replication sweep runs once per fixed tick | The item still carries a `TouchableComponent` when the sweep runs and is already tracked, so its `NetworkId` is unchanged and clients see only a transform delta. Across two ticks the sweep unregisters and forgets, then re-stamps, so the item's `NetworkId` does rotate and the client sees a despawn followed by a fresh baseline. |
+| A dropped item's mesh reaches clip resolution | Task 6 sets the `MeshComponent` directly, which enqueues no spawn-context resolve | The pass reports the dropped item id out of the tick and `main.rs` runs the clip-binding resolve for it, as it does for runtime-spawned host enemies. Without it a dropped animated model renders unbound. |
+| An item already marked for end-of-frame removal | Removal pass runs at end of frame | The item generates no overlap and no evaluation. Its occupancy entry is dropped in the same pass, exactly as for a vanished item, so nothing stale survives the removal. |
+| A drop press edge lands on tick 0 while the overlap only begins on tick 1 | `pressed` is an edge true on exactly one tick | The `press` item is not taken: on tick 0 there is no overlapping pair, and on tick 1 the pair overlaps with `pressed = false`. The player presses again. |
 | Frame renders zero fixed ticks | Pass lives inside the tick loop | No evaluation, no prompt refresh; last published prompt state persists for that frame |
 | Frame renders two fixed ticks | Pass runs twice | The enter edge fires on the first; the second sees sustained overlap and applies nothing |
 | Radius authored zero or negative | `TouchableDescriptor::validate` rejects at descriptor load | The mod fails to load with a shape error. No entity spawns, so the capsule radius alone can never make a zero-radius item acquirable. |
 | Drop press followed by a packet gap | `held_gap_sim_command` clears the edge on every held tick | Exactly one drop |
 | Drop press inside a backlog that trips the catch-up trim | The trim discards the command carrying the edge | The drop is lost, matching `use`. Accepted; no edge-recovery lane. |
 | Drop with an empty inventory | No active wieldable | No-op, no warning — pressing drop with nothing held is ordinary input |
-| Drop of a wieldable whose descriptor has no touchable block | Drop refused at the chokepoint | Nothing leaves the inventory; warn once per descriptor. An item with no touchable block could never be recovered. |
+| Drop of a wieldable whose descriptor has no touchable block | Drop path refuses before it calls the chokepoint | Nothing leaves the inventory; warn once per descriptor. An item with no touchable block could never be recovered. |
 | Player disconnects while overlapping an item | The slot close despawns the pawn, so the capsule lookup fails next tick | Treated as an exit: occupancy and any drop inhibit for that `PlayerId` clear |
 | Player dies while overlapping an item | The death sweep latches but never despawns a player pawn, so the corpse keeps `Transform` and `PlayerMovement` and the capsule lookup still succeeds | The corpse keeps occupancy and stays a toucher. It generates no enter edge while it lies still, but a corpse-held drop edge still drops, and a corpse counts among the drop point's occupants. The engine holds no aliveness opinion — a mod that wants otherwise authors it once the dispatch source lands. |
 | Host acquires an item a client is standing on | Host decides, despawn tombstone replicates | The client's item disappears one round trip later; the client never predicts the acquisition |
@@ -330,6 +339,9 @@ Numbered; the Invariants table references these numbers.
     naming the offending entry, and no entity spawns for it.
 18. [ ] A single drop press produces exactly one drop across a packet gap that holds the command for
     several ticks.
+19. [ ] A player standing on an item whose policy returns no effects has that policy invoked exactly once
+    per tick, and the item is neither acquired nor re-evaluated as a fresh enter edge on any later tick of
+    the same unbroken overlap.
 
 ## Tasks
 
@@ -338,13 +350,14 @@ Numbered; the Invariants table references these numbers.
 Add a `TouchableDescriptor { mode: TouchMode, radius: f32 }` beside `WeaponDescriptor` in
 `crates/foundation/src/data_descriptors/types/combat.rs`, carrying `#[serde(rename_all = "camelCase")]`
 to match its sibling. `TouchMode` is `Auto | Press` with `rename_all = "camelCase"`, wire spellings
-`"auto"` and `"press"`; `mode` defaults to `Auto` and `radius` defaults to a finite positive value,
-following the `cost_per_shot` default precedent so a block authoring only `mode` loads. Add
-`touchable: Option<TouchableDescriptor>` to `EntityTypeDescriptor` in
+`"auto"` and `"press"`; `mode` defaults to `Auto` and `radius` defaults to `40.0`, each through a
+`#[serde(default = "…")]` free function as `cost_per_shot` does, so a block authoring only `mode` loads.
+Add `touchable: Option<TouchableDescriptor>` to `EntityTypeDescriptor` in
 `crates/entities/src/data_descriptors/types/entity.rs`. `EntityTypeDescriptor` derives no `Default` and is
-built by exhaustive struct literal at roughly 90 sites across 21 files, none using
-`..Default::default()`, so every one gains `touchable: None`; alternatively, add
-`impl Default for EntityTypeDescriptor` as part of this task. Read the `touchable` key under `components` in
+built by exhaustive struct literal at roughly 90 sites across 21 files, so every one gains
+`touchable: None`. Adding `impl Default for EntityTypeDescriptor` is no shortcut: no site uses
+`..Default::default()`, so the impl alone changes nothing, and converting the sites is a larger edit than
+the one it replaces. Read the `touchable` key under `components` in
 both FFI readers — `crates/scripting-core/src/data_descriptors/lua/entity.rs` and the JS mirror in the
 sibling `js/entity.rs` — following the shape the existing `weapon` arm uses in each. Register
 `TouchableDescriptor` and `TouchMode` in the typedef schema in
@@ -359,7 +372,7 @@ and the load error names the offending entry. Rejecting rather than clamping fol
 validator: descriptor tuning is authored data, and only FGD key-values warn and fall back.
 
 Add a runtime `TouchableComponent { mode, radius }` in `crates/entities/src/components/touchable.rs`. A
-new component kind touches five groups of sites. `Inventory` is the most recently added kind and is the
+new component kind touches six groups of sites. `Inventory` is the most recently added kind and is the
 template to follow at each:
 
 - `ComponentKind::Touchable` on the next free discriminant, plus the `VARIANTS` array behind
@@ -375,16 +388,19 @@ template to follow at each:
 - `component_kind_discriminant` in `crates/postretro/src/netcode/mod.rs` — an exhaustive match with no
   `_` arm, pinned numerically to `ComponentPayload::kind()` in `postretro-net`. `Touchable` takes the
   matching discriminant and adds no wire payload: `ComponentPayload` carries four variants against
-  twenty-one kinds once `Touchable` lands, so a payload-less kind is the norm.
+  twenty-one kinds once `Touchable` lands, so a payload-less kind is the norm. The drift guard
+  `discriminant_mapping_matches_enum_layout` in the same file holds a second `_`-less match, `next_kind`,
+  walking the variant chain in discriminant order; it compile-blocks until `Touchable` is spliced in
+  (`Inventory => Some(Touchable)`, `Touchable => None`).
 - Three further exhaustive matches over `DescriptorComponentKind` in
   `crates/scripting-core/src/refresh_plan.rs` — `descriptor_declares`, `live_component_exists`, and
   `plan_component_replace` — driven by the `DescriptorComponentKind::ALL` loop. A touchable block is
   pure tuning with no live state, so it hot-reloads by replacement, following `plan_health_replace`
   rather than the declined `Mesh` arm.
 
-Then add the `DescriptorComponentKind::Touchable` variant. Its `component_kind()` and `label()` are
-exhaustive matches and will not compile until extended; its `ALL: [Self; N]` const compiles fine while
-silently stale, so extend it by hand and widen its length.
+Then add the `DescriptorComponentKind::Touchable` variant in `crates/entities/src/provenance.rs`. Its
+`component_kind()` and `label()` are exhaustive matches and will not compile until extended; its
+`ALL: [Self; 6]` const compiles fine while silently stale, so extend it by hand and widen it to 7.
 
 Then make the placement change in `crates/postretro/src/scripting/builtins/data_archetype.rs`: add
 `|| descriptor.touchable.is_some()` to `is_directly_map_placeable`, and change the map-sweep call site's
@@ -413,22 +429,30 @@ lowest-index-free-slot wrapper over it, returning the filled slot. Task 7's clie
 slot-targeted form: the host names a slot index, and picking the client's own lowest free slot would
 desync the two inventories by index.
 
+Apply the one mesh rule at composition too: `compose_wieldable_inventory_slots` in the same file spawns
+each loadout wieldable through `spawn_descriptor_instance`, and `attach_descriptor_components` attaches a
+`MeshComponent` whenever the descriptor authors a mesh block, on every spawn path. Remove it after the
+spawn, so a spawn-composed wieldable matches an acquired one: a wieldable owned by an inventory carries no
+`MeshComponent`, and its visual is the pawn's `thirdPersonModel` attachment.
+
 Neither must modify `active_slot` unless the inventory held no wieldable at all, in which case
 `active_slot` becomes the filled slot. Neither must touch `AmmoReserve`, `switch_target`, or
 `switch_origin`, and neither must rewrite the item's `DescriptorProvenance` — cross-level carry reads the
 canonical name from it. Neither may reject a duplicate: a policy that wants a second shotgun in slot 4
 gets one.
 
-`release_wieldable(registry, pawn, slot, descriptors: &[EntityTypeDescriptor]) -> Option<EntityId>` clears the slot, returns the freed entity,
+`release_wieldable(registry, pawn, slot) -> Option<EntityId>` clears the slot, returns the freed entity,
 and re-picks `active_slot` as the lowest occupied slot (or leaves it at zero when the inventory is now
-empty), clearing `switch_target` and `switch_origin` if either referenced the released slot. It returns
-`None` and warns once per descriptor when the released wieldable's descriptor authors no touchable block,
-leaving the inventory untouched.
+empty), clearing `switch_target` and `switch_origin` if either referenced the released slot. It holds no
+eligibility rule and takes no descriptor slice: a host-side slot emptying is not always a drop, and Task
+7's client release path must reach it unconditionally.
 
 Add a source-scanning test in the same shape as
 `ammo_reserve_writes_have_only_grant_seed_and_carry_restore_non_test_call_sites` in
-`crates/entities/src/components/grant.rs`. The directory walk, `is_test_source_file`, and
-`mask_test_only_blocks` are reusable as-is; the matcher is not — that test's `method_call_count` counts
+`crates/entities/src/components/grant.rs`. Those helpers live inside that file's `#[cfg(test)] mod tests`
+in `postretro-entities`, a different crate, so they cannot be imported — **copy** the directory walk,
+`is_test_source_file`, and `mask_test_only_blocks`. The matcher does not carry over at all: that test's
+`method_call_count` counts
 literal `.credit` / `.set_exact` occurrences, and a slot fill is an assignment, not a method call. Walk
 `crates/`, mask `#[cfg(test)]` blocks and test files, and count **slot-fill** writes to
 `Inventory::wieldables` — assignments of `Some(...)` — outside them, taking care not to confuse the target
@@ -448,11 +472,27 @@ Its per-tick entry point takes `&mut EntityRegistry`, `&CollisionWorld` (Task 6'
 it), `descriptors: &[EntityTypeDescriptor]` (acquire and drop both rebuild components from the
 descriptor), the same `players: &[AuthoritativePlayer]` slice and `use_pressed: &HashMap<PlayerId, bool>`
 map that `TriggerTickInputs` already carries, and a `drop_pressed: &HashMap<PlayerId, bool>` map from
-Task 4. It returns a `TouchReport { prompts: Vec<(PlayerId, EntityId)>, repointed: Vec<EntityId> }`.
-`repointed` lists every pawn whose inventory or `active_slot` changed; `main.rs` extends its
-`repointed_pawns` vector with it before `update_repointed_weapon_attachments` runs after the tick loop, or an acquired weapon is never attached and
-renders at its world pickup position. The pass does no replication bookkeeping and needs none — Task 5's
-sweep derives membership from `TouchableComponent` presence.
+Task 4. `collision_world` is already a `simulate_tick_with_presentation_aim` parameter. `descriptors` is
+not — add it, sourced at the `main.rs` call site from `script_ctx.data_registry.borrow().entities`, which
+is how `update_repointed_weapon_attachments` already obtains the same slice.
+
+Two results leave the pass by two different routes.
+
+`repointed` lists every pawn whose inventory or `active_slot` changed. It merges into the existing
+`TickEvents.repointed_pawns` field the tick already returns; `main.rs` extends its `repointed_pawns`
+vector from that, and `update_repointed_weapon_attachments` runs after the tick loop. Without it the
+acquired weapon never gains the pawn's socket attachment, so the holder carries no visible weapon — the
+item's own mesh is already gone, so the failure is a missing attachment, not a stale world render. On a
+listen host that function marks the pawn attachment-dirty and returns; the attachment itself lands in
+`synchronize_weapon_owner_attachments` before snapshot production. Single-player takes the direct branch.
+
+`prompts` is a `Vec<(PlayerId, EntityId)>` field on `TouchSystem`, replaced wholesale by each tick's pass
+and readable off the session-owned system after the tick loop. It is not a return value: prompts are
+per-tick state a later presentation spec reads, and a frame rendering zero fixed ticks must leave the last
+published set standing rather than clearing it.
+
+The pass does no replication bookkeeping and needs none — Task 5's sweep derives membership from
+`TouchableComponent` presence.
 
 The call site needs a refactor the task owns. `run_authoritative_tick_with_dispatch` sits inside
 `if let Some(trigger_context)` in `crates/postretro/src/sim/mod.rs`, and both `players` and
@@ -466,10 +506,14 @@ beside its `trigger_system` field (`crates/postretro/src/session/mod.rs`), and
 `clear_surface_lifetime_level_state` in `crates/postretro/src/startup/lifecycle_net.rs` clears it beside
 the existing `session.trigger_system.clear()`.
 
+The pass needs no host gate of its own. A connected client's fixed-tick branch in `main.rs` `continue`s
+after its movement-only prediction and never reaches `simulate_tick_with_presentation_aim`, so the pass —
+and Task 6's drop with it — is host-and-single-player-only by placement. Preserve that: no client path
+calls into this module.
+
 Resolve player capsules with the existing `canonical_player_capsules` helper in
-`crates/postretro/src/trigger_system.rs` — make it `pub(crate)` if it is not already; `range_distance` in
-the same file is also a private bare `fn` and the touch module cannot call it either, so make it
-`pub(crate)` too. It takes a third
+`crates/postretro/src/trigger_system.rs`. It and `range_distance` in the same file are both private bare
+`fn`s the touch module cannot call, so make each `pub(crate)`. `canonical_player_capsules` takes a third
 argument, `warned_duplicate_players: &mut HashSet<PlayerId>`, which is why `TouchSystem` carries its own.
 It returns `(pawn, position, radius, half_height)` per `PlayerId`; a `PlayerId` absent from the returned
 map is treated as exited, clearing its occupancy entries, exactly as the trigger stage treats a vanished
@@ -478,11 +522,16 @@ player.
 Overlap is sphere-vs-capsule: horizontal distance from the item's `Transform.position` to the capsule
 axis, and `range_distance(item.y, capsule_min_y, capsule_max_y)` on the vertical — the point-vs-range
 helper beside `capsule_overlaps_aabb`, not `segment_range_distance`, which is segment-vs-range and the
-wrong shape here. Overlap holds when the squared sum is at most the squared sum of the touch radius and
-the capsule radius. Iterate items via `registry.iter_with_kind(ComponentKind::Touchable)` collected and
-sorted ascending by `EntityId`, skipping any entity marked for end-of-frame removal and any whose
-`TouchableComponent.radius` is zero — a zero-radius item must not be acquirable by the capsule radius
-alone.
+wrong shape here. Overlap holds when the sum of those two squared distances is at most
+`(touch_radius + capsule_radius)` squared. Iterate items via
+`registry.iter_with_kind(ComponentKind::Touchable)` collected and sorted ascending by `EntityId`, skipping
+any entity marked for end-of-frame removal. The pass needs no radius guard: `TouchableDescriptor::validate`
+rejects a non-positive radius at descriptor load, so no zero-radius item ever spawns.
+
+Pairs are processed strictly sequentially, and each pair's evaluation is immediately followed by its
+application. A second pair on the same tick therefore evaluates against the world the first pair's effects
+already mutated — one player entering two `auto` items with one free slot sees `free_slots = 0` on the
+second.
 
 Three steps run per overlapping pair, and only the third mutates. **Overlap** is geometric state,
 recomputed every tick, maintaining the occupancy set and producing enter and exit edges. **Evaluation**
@@ -513,12 +562,15 @@ resolve deterministically.
 
 On a successful acquisition the item stops being a world item, which is one rule with three parts. Remove
 its `TouchableComponent` — Task 5's sweep reads that presence, and Task 6 rebuilds it from the descriptor
-on drop. Remove its `MeshComponent` for the same reason: the mesh collector draws every `Mesh` plus
-`Transform` entity at its own transform, so a retained mesh renders the weapon at its stale pickup
-position forever, while a held wieldable's visual comes from `thirdPersonModel`/`viewmodel` on the weapon
-block through the attachment path. Both components rebuild from the descriptor, which is why the pass
-takes the descriptor slice. Then drop the occupancy entry, clear the item's pending `DeferredEffect` queue
-**and set its `inert` flag**, and add the holder to `TouchReport.repointed`.
+on drop. Remove its `MeshComponent`: the mesh collector draws every `Mesh` plus `Transform` entity at that
+entity's own transform, so the wieldable's own mesh is what renders it in the world. A held wieldable's
+visual is the `thirdPersonModel` attachment pushed onto the *pawn's* mesh, which is additive and
+suppresses nothing — a retained `MeshComponent` therefore keeps drawing the weapon at its stale pickup
+position. One rule governs both ends: **a wieldable owned by an inventory carries no `MeshComponent`.**
+Both components rebuild from the descriptor, which is why the pass takes the descriptor slice. Then drop
+the occupancy entry, clear the item's pending `DeferredEffect` queue and its `overflow_reported` flag —
+leaving `inert` false, so the weapon still admits later deferred effects — and add the holder to
+the tick's `repointed` list.
 
 Add `EntityRegistry::is_marked_for_end_of_frame_removal` in `crates/entities/src/registry.rs` — the
 registry exposes only `mark_for_end_of_frame_removal` and `take_end_of_frame_removals`, so the skip this
@@ -543,10 +595,10 @@ it; nothing else depends on the choice. Read `Action::Drop` from the latched gam
 `GameplayInputLatch::snapshot_for_ticks` in `crates/postretro/src/input/mod.rs`, not the raw frame
 snapshot: the latch accumulates `Pressed` actions across zero-tick frames into a set and drains them onto
 tick 0 of the next tick-bearing frame, so N drop presses across N consecutive zero-tick frames collapse to
-exactly one drop. A latched press is discarded by `gameplay_input_latch.clear()`, whose sites are focus
-loss and input-focus change in `main.rs`, `clear_surface_lifetime_level_state` in
-`crates/postretro/src/startup/lifecycle_net.rs`, and the endpoint teardown — so a press latched across a
-level unload is lost, and one latched across a focus change is too. Read it as a rising edge at tick index zero in
+exactly one drop. A latched press is discarded by `gameplay_input_latch.clear()`, whose three sites are window focus loss in
+`main.rs`, `clear_surface_lifetime_level_state` in `crates/postretro/src/startup/lifecycle_net.rs`, and
+the client's content-parity hold in `crates/postretro/src/netcode/endpoint.rs` — so a press latched across
+a level unload or a focus loss is lost. Read it as a rising edge at tick index zero in
 `crates/postretro/src/main.rs`, in the same block that builds `use_pressed` from `Action::Use`, producing
 a `HashMap<PlayerId, bool>` of drop edges for the local pawn, and thread it into the touch pass beside
 `use_pressed`.
@@ -566,10 +618,14 @@ weapon per held tick from a single press. A drop press discarded by the catch-up
 `use`; do not extend reload's pre-trim edge lane.
 
 Enumerate and update every struct-literal construction site — the field is not `Option`, so the compiler
-lists them. This widens the transport wire, so bump `SNAPSHOT_VERSION` in `crates/net/src/wire.rs` here,
-from 12 to 13, following that file's convention of adding a per-bump doc-comment paragraph. Do not fold it
-into Task 7's `TUNING_PAYLOAD_EPOCH` change: the two gates answer different questions and a peer can fail
-one while satisfying the other.
+lists them. This widens the transport wire, so bump `WIRE_VERSION` in `crates/net/src/handshake.rs` here,
+from 15 to 16, extending its doc comment with this bump's reason. `WIRE_VERSION` is the governing
+constant: `InputCommand` rides `ClientMessage` on the Input channel, and both its own doc comment ("the
+field order is part of the wire layout (`WIRE_VERSION`)") and `networking.md` §Version gates place it
+there, so `SNAPSHOT_VERSION` 9's doc-comment mention of `use_pressed` does not generalize —
+`SNAPSHOT_VERSION` bumps only for changes landing on the snapshot record. Do not fold the bump into Task
+7's `TUNING_PAYLOAD_EPOCH` change: the two gates answer different questions and a peer can fail one while
+satisfying the other.
 
 ### Task 5: World-item replication
 
@@ -578,7 +634,15 @@ Give world items the AI-enemy replication discipline. Add
 beside `descriptor_materializes_ai_enemy` in
 `crates/postretro/src/scripting/builtins/data_archetype.rs`, and add it to the client-side map-sweep
 filter that already suppresses AI enemies there, so a connected client does not spawn its own copy of a
-map-placed item. Add a host registration sweep beside `host_register_map_enemies` in
+map-placed item. `filter_out_client_ai_enemies` no longer describes what it filters; rename it and its
+callers in the same change.
+
+Filtering a placement out of the client sweep also removes its model from the registry-driven upload set,
+which is the exact regression `suppressed_ai_enemy_mesh_models` exists to prevent — see its doc comment.
+Extend that collection to cover suppressed world-item placements too, so a dropped or host-baselined item
+draws its real model rather than nothing.
+
+Add a host registration sweep beside `host_register_map_enemies` in
 `crates/postretro/src/netcode/replication.rs` that stamps a `NetworkId` and registers every entity
 carrying a `TouchableComponent`, with the same stale-id unregister-and-forget prologue so a level reload
 is idempotent.
@@ -602,25 +666,38 @@ further metadata; that combination is already valid on non-despawn records.
 
 Add the drop path to `crates/postretro/src/sim/touch.rs`, driven by the `drop_pressed` map Task 4
 produces and evaluated at the top of the same pass, before any overlap or touch edges, so a drop and an
-acquisition on one tick cannot interact. For each player with a drop edge, call `release_wieldable` from
-Task 2 for that pawn's active slot. On success:
+acquisition on one tick cannot interact. For each player with a drop edge, resolve the active slot's
+wieldable and its descriptor first. A wieldable whose descriptor authors no touchable block cannot be
+dropped — it could never be recovered — so refuse before releasing, warning once per descriptor and
+leaving the inventory untouched. This refusal lives here, not in the chokepoint: whether a slot emptying
+is a drop is the drop path's question. Otherwise call `release_wieldable` from Task 2 for that slot. On
+success:
 
 Write the freed item's `Transform.position` to a point one capsule radius in front of the pawn's facing,
 at the pawn's capsule base. Sphere-cast that point against the `&CollisionWorld` the pass takes, using
 the `parry3d` free functions `entity_model.md` §7 pins rather than a `QueryPipeline`; on a hit, fall back
-to the pawn's own position, which is by construction not inside geometry.
+to the pawn's `Transform.position` — the capsule centre, which the movement solver keeps clear of
+geometry by at least the capsule radius, so a sphere of that radius sitting there is clear too.
 
 Restore the two world-item components Task 3 removed, both rebuilt from the descriptor the pass now
 carries: a `TouchableComponent` from the touchable block, and the `MeshComponent` from the mesh block, so
 the item is visible where it lands. A descriptor with no mesh block drops an invisible but acquirable
-item, matching what it spawns as.
+item, matching what it spawns as. Setting the component directly enqueues no spawn-context clip resolve,
+so report the dropped item's `EntityId` out of the pass alongside `repointed`, and have `main.rs` run
+`resolve_mesh_entity_bindings_for_entities` for it after the tick loop — the same call it already makes
+for runtime-spawned host enemies.
 
-Force the released wieldable idle. `transition_to_idle` in `crates/postretro/src/sim/weapon_stage/state.rs`
-writes five fields — `state`, `state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and
-`reload_credited` — so reuse it and clear the four it leaves: `cooldown_remaining_ms`,
-`shoot_press_consumed`, `reload_press_consumed`, and `reload_feedback`. Nothing ticks a world item, so any residual timer
-or consumed-edge flag would survive until the weapon is picked up again. Add the holder to
-`TouchReport.repointed` so the attachment refresh detaches the dropped weapon in the same frame.
+Force the released wieldable idle. The rule: restore every live-state field on `WeaponComponent` to its
+spawn value, leaving descriptor tuning and the magazine intact. Nothing ticks a world item, so any
+residual timer or consumed-edge flag would survive until the weapon is picked up again. Today that is
+`transition_to_idle` in `crates/postretro/src/sim/weapon_stage/state.rs` — which writes `state`,
+`state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and `reload_credited` — plus
+`cooldown_remaining_ms`, `shoot_press_consumed`, `reload_press_consumed`, and `reload_feedback`. That
+enumeration is a convenience; the rule governs, and a field added to the component later joins it.
+`transition_to_idle` is a private `fn` in the private `weapon_stage::state` module, and `sim::touch` is a
+sibling, so make it `pub(crate)` and re-export it from `weapon_stage` beside the existing
+`pub(super) use commands::{…}` list. Add the holder to the tick's `repointed` list so the attachment
+refresh detaches the dropped weapon in the same frame.
 
 Seed the item's occupancy entry with **every player whose capsule overlaps the drop point**, not only the
 dropper. A second player already standing there would otherwise take the item on the drop tick, and two
@@ -647,18 +724,26 @@ at the index the host named, so the two inventories agree by index. Where a tuni
 slot is `None` and the client holds a wieldable, call `release_wieldable` and despawn the freed local
 instance; the client owns that entity outright, and leaving it unreferenced leaks it for the level.
 
+The merge reports no repoint. It runs inside the snapshot-apply stage, which `main.rs` drives before it
+constructs the frame's `repointed_pawns` vector, so that route is closed to it — and it is not needed. The
+client's third-person attachment already follows the host's replicated `active_weapon_archetype` on the
+pawn record through the existing `local_weapon_attachments` path in the same apply stage.
+
 Increment `TUNING_PAYLOAD_EPOCH` in `crates/postretro/src/netcode/tuning_payload.rs` from 2 to 3: the
 layout is unchanged but the merge semantics are not, and the epoch gate is what stops a peer from
 applying the old reading. This breaks the committed golden `payload_json_matches_committed_fixture` in
 the same file, whose fixture embeds the old epoch; re-bless it with
 `POSTRETRO_BLESS_COMPATIBILITY_FIXTURES=1`, the same way Task 1 names its typedef drift test.
 
-For the send trigger, `host_send_tuning_if_changed` already dedupes by payload equality and has two call
-sites. Call it once per host poll for each participating slot rather than adding a dirty-flag protocol —
-the equality check makes an unchanged inventory free to send, and an inventory change then publishes on
-the next poll with no new bookkeeping. Building the payload for the comparison is not free: constructing
-it is `tuning_payload_for_pawn`, which clones the pawn's `PlayerMovementDescriptor` and allocates up to ten
-canonical-name `String`s per call; accept that per-poll construction cost. That trigger still escalates the channel: a config push at transitions
+For the send trigger, `host_send_tuning_if_changed` already dedupes by payload equality. Add a third call
+site in `net_poll_and_apply` in `crates/postretro/src/main.rs`, iterating every participating slot's pawn
+once per host poll, rather than adding a dirty-flag protocol. The two existing call sites both stay: the
+accepted-client materialization in the same function, and the level-install publish in
+`crates/postretro/src/startup/lifecycle_net.rs`. The equality check makes an unchanged inventory free **on
+the wire** — nothing is sent — but each poll still pays one payload construction: `tuning_payload_for_pawn`
+clones the pawn's `PlayerMovementDescriptor` and allocates up to ten canonical-name `String`s per call.
+Accept that cost; an inventory change then publishes on the next poll with no new bookkeeping. That
+trigger still escalates the channel: a config push at transitions
 becomes an event-driven state channel with no delta and no ack, so a dropped payload leaves a stale
 client inventory until the next publication. Accept it here — the payload is small, fixed-size, and
 reliable-ordered — and hold the constraint `E15` set, that it stays opaque to `crates/net`. Route the
@@ -666,16 +751,39 @@ client's local `Inventory` writes through Task 2's chokepoint so the source-scan
 
 ### Task 8: Ordering and edge coverage
 
-Build the test coverage for the Ordering matrix rows in this plan that no single task above owns end to
-end, and cite the row rather than restating it. Specifically: two players entering one item's radius on
-one tick producing exactly one acquisition with a stable winner; one player entering two `auto` items on
-one tick with one free slot; a frame rendering zero fixed ticks and a frame rendering two; a `use` press
-landing on the same tick as a trigger-volume Use activation, with both firing and neither consuming the
-press; a scripted despawn queued on the acquisition tick; a `press` player overlapping two items; drop
-followed by standing still, by another player already at the drop point, by two adjacent players dropping
-together, and by leaving and returning; a player dying while overlapping; a drop press across a packet
-gap; a weapon instance sitting unowned in the world across many ticks advancing no cooldown, reload, or
-state timer; and a picked-up weapon surviving a level transition with its magazine.
+Build the ordering and edge-case coverage. Each scenario below states its expected outcome; assert that
+outcome.
+
+- Two players enter one item's radius on one tick. Exactly one acquisition. The player earlier in the
+  stable `PlayerId` order wins, and the winner is the same across runs with identical inputs.
+- One player enters two `auto` items on one tick with one free slot. The lower `EntityId` is acquired; the
+  second evaluates with `free_slots = 0` and returns no effects.
+- A frame renders zero fixed ticks. No evaluation and no prompt refresh; the last published prompt set
+  stands for that frame.
+- A frame renders two fixed ticks. The enter edge fires on the first; the second sees sustained overlap
+  and applies nothing.
+- A `use` press lands on the same tick as a trigger-volume Use activation. Both fire; neither consumes the
+  press.
+- A script queues `despawn(item)` on the tick the item is acquired. The weapon survives — acquisition
+  purged the item's pending deferred effects — and later deferred effects against it still run.
+- A `press` player overlaps two items and presses. Exactly one is taken: the nearest by squared centre
+  distance, ties broken on the lower `EntityId`.
+- A player drops and stands still. No enter edge, so no `auto` re-acquisition; a deliberate press on a
+  `press` item does re-acquire.
+- Another player already stands at the drop point. They get no enter edge on the drop tick and acquire
+  only after leaving and returning, or by pressing a `press` item.
+- Two adjacent players drop on the same tick. Each is seeded into both items' occupancy; neither gets an
+  enter edge and no weapons swap.
+- A player drops, walks out of radius, and walks back. Re-acquired on the new enter edge.
+- A player dies while overlapping. The corpse keeps occupancy and stays a toucher: no enter edge while it
+  lies still, but a corpse-held drop edge still drops and the corpse counts among a drop point's
+  occupants.
+- A drop press crosses a packet gap holding the command for several ticks. Exactly one drop.
+- A weapon instance sits unowned in the world across many ticks. No cooldown, reload, or state timer
+  advances.
+- A weapon picked up during a level survives a level transition, with its magazine preserved.
+- Picking up and dropping a weapon leaves every ammo-reserve balance on the pawn unchanged, including for
+  an ammo type the pawn has never carried (AC 9).
 
 Three tests carry more than their row. Write the unowned-inertness test against observable component
 state after N ticks, never against the call sites — the invariant it pins is currently held only by two
@@ -684,8 +792,8 @@ facts by substituting a policy that acquires unconditionally and asserting a dup
 free slot: it proves the facts are built independently of what the default reads, which no test of the
 default alone can show. Cover the no-re-fire threat by counting policy invocations against an item whose
 evaluation returns an empty list, since with the default policy a spurious re-fire is otherwise
-behaviorally invisible. Host-and-client cases belong in the existing netcode harness style rather than a
-new fixture.
+behaviorally invisible; that count is AC 19. Host-and-client cases belong in the existing netcode harness
+style rather than a new fixture.
 
 ## Sequencing
 

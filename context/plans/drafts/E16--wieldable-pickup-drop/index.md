@@ -75,12 +75,17 @@ Overlap, evaluation, and touch are three separate steps.
 The touch step reuses the evaluation's effect list rather than re-running the policy, so the policy runs
 exactly once per overlapping pair per tick. Pairs are processed strictly sequentially, and each pair's
 evaluation is immediately followed by its application — so a later pair in the same tick evaluates against
-the world the earlier pair's effects already mutated.
+the world the earlier pair's effects already mutated. This apply-immediately order governs `auto` enter
+edges and cross-player ordering. In `press` mode a player's press-eligible overlapping items are reduced
+to the single nearest (squared centre distance, ties on the lower `EntityId`) before application, so one
+un-consumed `use_pressed` edge cannot fire on two items in one tick.
 
 A `press` pair is prompt-eligible when its evaluation returns a non-empty effect list and no effects were
-applied for it this tick. `auto` items are never prompt-eligible: their affordance is walking, so there is
-nothing to prompt for. Eligibility filters on **mode**, which is the affordance, never on which effect the
-policy returned — an added effect arm must prompt without touching the pass.
+applied for it this tick. **Applied** means an effect that *succeeded*, not merely one the policy returned:
+an item whose `Acquire` the chokepoint refuses counts as nothing applied and stays prompt-eligible. `auto`
+items are never prompt-eligible: their affordance is walking, so there is nothing to prompt for.
+Eligibility filters on **mode**, which is the affordance, never on which effect the policy returned — an
+added effect arm must prompt without touching the pass.
 
 The policy runs on ticks where nothing is applied. It must be pure.
 
@@ -147,7 +152,7 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| An item is acquired by at most one player, ever | Task 3 (acquisition removes the item from the world in the same pass that decides it) | Two players' enter edges on one tick; a player entering after another's empty effect list | AC 5 |
+| An item is acquired by at most one player, ever | Task 3 (each pair re-checks the item is a live world item before applying its effects, so an item acquired earlier in the same pass is treated as already taken) | Two players' enter edges on one tick; a player entering after another's empty effect list | AC 5 |
 | Effects apply only on a touch; evaluation alone never mutates | Task 3 (evaluation and application are separate steps) | A later effect arm applied from the eligibility path | AC 7, AC 10 |
 | A touch fires on an edge, never on sustained overlap | Task 3 (per-item occupancy set, enter transition in `auto`; press edge in `press`) | Drop seeds the drop point's occupants (Task 6); an empty effect list must not clear occupancy, or the next tick re-fires | AC 4, AC 10, AC 19 |
 | Facts are computed at every evaluation, whatever the policy reads | Task 3 (`TouchFacts` built before the policy runs) | A later short-circuit that skips fact computation when the default ignores a field | AC 7 |
@@ -164,21 +169,24 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 
 | Scenario | Ordering | Expected outcome |
 |---|---|---|
-| Two players enter one item's radius on the same tick | Both enter edges evaluated in one pass | The player earlier in the stable `PlayerId` order acquires; the second finds the item already taken and does not acquire. Deterministic, not first-mover-by-float-distance. |
+| Two players enter one item's radius on the same tick | Both enter edges evaluated in one pass | The player earlier in the stable `PlayerId` order acquires; the second player's application re-checks liveness, finds the item no longer carries a `TouchableComponent`, and does not acquire. Deterministic, not first-mover-by-float-distance. Flagging the item non-world while retaining its occupancy entry was considered; dropping the entry outright is simpler and the per-application liveness re-check already covers the same-pass second player. |
+| A press player overlaps two press items and presses once, two free slots | Press-eligible items reduced to the nearest before application | Exactly one taken — nearest by squared centre distance, ties on the lower `EntityId`. The un-taken item stays a world item and stays prompt-eligible next tick. |
 | One player, two `auto` items entered on one tick, one free slot | Items iterated in ascending `EntityId` order | The lower `EntityId` is acquired; the second evaluates with `freeSlots = 0` and returns no effects. `EntityId` packs generation above index, so ascending order is deterministic but is not spawn order; the guarantee is stability across runs with identical inputs, matching the `trigger_ids` sort in `run_authoritative_tick_with_dispatch`. |
 | Player drops an item and stands still | Drop seeds every player overlapping the drop point into the item's occupancy | No enter edge, so no touch in `auto`. A `press` player pressing again re-acquires — a deliberate press defeats the inhibit. |
 | Player drops, walks out of radius, walks back (auto) | Exit edge clears occupancy; later enter edge fires | Re-acquired |
 | Player B already overlaps the point where A drops | Drop runs before touch edges; the seed covers B as well as A | B gets no enter edge on the drop tick. B acquires only after leaving and returning, or by pressing a `press` item. |
 | Two adjacent players drop on the same tick | Each drop seeds every player overlapping *that* item's point, so each is seeded into both | Neither gets an enter edge next tick; no mutual weapon swap |
+| Sphere-cast fallback relocates the drop point; a second player overlaps the resolved point but not the front point | Occupancy is seeded against the final resolved position, after the fallback | That player is seeded and gets no enter edge on the drop tick |
 | Player overlaps a `press` item and never presses | Enter edge, then sustained overlap; evaluation runs every tick | Prompt-eligible every tick while the policy returns effects; no touch fires |
 | Player overlaps an item they already own (either mode) | Evaluation runs; facts carry `ownedCount = 1`; default policy returns no effects | No acquisition, not prompt-eligible. A later policy reading the same facts returns effects here, which makes it prompt-eligible with no change to the pass. |
 | Inventory full | Evaluation runs; facts carry `freeSlots = 0`; default policy returns no effects | Same as duplicate. Freeing a slot while standing on an `auto` item does not acquire it — there is no new enter edge — so the player steps off and back on. |
 | `use` press lands on the same tick as a trigger-volume Use activation | Trigger stage runs first, touch pass second, both read the same `use_pressed` map | Both fire. The press is not consumed by either. |
 | A script queues `despawn(item)` on the tick the item is acquired | The deferred effect rides the item's own queue and would execute next tick against a now-held weapon | Acquisition purges the acquired item's pending deferred effects. The weapon survives. |
 | A script queues a deferred effect against a weapon picked up and dropped earlier in the level | Acquisition cleared the queue but left `inert` false | The effect is admitted and runs normally. Only a terminal despawn sets `inert`, and acquisition is not one. |
-| Acquire and drop of one item on the same tick | Drop runs at the top of the pass, acquisition after, and the replication sweep runs once per fixed tick | The item still carries a `TouchableComponent` when the sweep runs and is already tracked, so its `NetworkId` is unchanged and clients see only a transform delta. Across two ticks the sweep unregisters and forgets, then re-stamps, so the item's `NetworkId` does rotate and the client sees a despawn followed by a fresh baseline. |
-| A dropped item's mesh reaches clip resolution | Task 6 sets the `MeshComponent` directly, which enqueues no spawn-context resolve | The pass reports the dropped item id out of the tick and `main.rs` runs the clip-binding resolve for it, as it does for runtime-spawned host enemies. Without it a dropped animated model renders unbound. |
-| An item already marked for end-of-frame removal | Removal pass runs at end of frame | The item generates no overlap and no evaluation. Its occupancy entry is dropped in the same pass, exactly as for a vanished item, so nothing stale survives the removal. |
+| Drop and same-tick re-acquire of one item | Drop runs at the top of the pass; a deliberate press defeating the inhibit re-acquires after | The item ends the tick held, with no `TouchableComponent`. It was unregistered at tick start (held, not a tracked world item), so the end-of-tick sweep emits nothing and the client sees nothing — there is no transform delta and no `NetworkId` to hold unchanged. Across two ticks — acquire on one tick, drop on a later one — the sweep unregisters and forgets, then re-stamps, so the item's `NetworkId` does rotate and the client sees a despawn followed by a fresh baseline. |
+| A dropped item's mesh reaches clip resolution | Task 6 sets the `MeshComponent` directly, which enqueues no spawn-context resolve | The pass reports the dropped item id on a `TickEvents` vector; the per-tick clip-binding resolve `main.rs` already runs for runtime-spawned host enemies drains it in the same call. Resolving an id whose `MeshComponent` was removed later that frame is a harmless no-op. Without the report a dropped animated model renders unbound. |
+| An item already marked for end-of-frame removal | Removal pass runs at end of frame | The pass drops the item's occupancy entry, then skips it — no overlap, no evaluation. Dropping the entry before skipping mirrors the vanished-item rule, so nothing stale survives the removal. |
+| A deferred-despawn timer expires the same tick a player's enter edge would acquire | `tick_deferred_effects` runs at the top of the tick, before the pass | The effect marks the item for end-of-frame removal; the pass skips the now-marked item. Not acquired; removed at end of frame. |
 | A drop press edge lands on tick 0 while the overlap only begins on tick 1 | `pressed` is an edge true on exactly one tick | The `press` item is not taken: on tick 0 there is no overlapping pair, and on tick 1 the pair overlaps with `pressed = false`. The player presses again. |
 | Frame renders zero fixed ticks | Pass lives inside the tick loop | No evaluation, no prompt refresh; last published prompt state persists for that frame |
 | Frame renders two fixed ticks | Pass runs twice | The enter edge fires on the first; the second sees sustained overlap and applies nothing |
@@ -188,6 +196,7 @@ state. Carrying an edge bit across a gap would drop one weapon per held tick fro
 | Drop with an empty inventory | No active wieldable | No-op, no warning — pressing drop with nothing held is ordinary input |
 | Drop of a wieldable whose descriptor has no touchable block | Drop path refuses before it calls the chokepoint | Nothing leaves the inventory; warn once per descriptor. An item with no touchable block could never be recovered. |
 | Player disconnects while overlapping an item | The slot close despawns the pawn, so the capsule lookup fails next tick | Treated as an exit: occupancy and any drop inhibit for that `PlayerId` clear |
+| A drop edge arrives the tick the dropper's pawn despawns (disconnect) | Disconnect teardown vs the drop path both act this tick | Teardown wins: the drop is honored only if the pawn's inventory still resolves when the pass runs. A pawn already torn down by the slot close exposes no inventory, so the edge is a silent no-op — the item leaves with the departing inventory, not into the world. |
 | Player dies while overlapping an item | The death sweep latches but never despawns a player pawn, so the corpse keeps `Transform` and `PlayerMovement` and the capsule lookup still succeeds | The corpse keeps occupancy and stays a toucher. It generates no enter edge while it lies still, but a corpse-held drop edge still drops, and a corpse counts among the drop point's occupants. The engine holds no aliveness opinion — a mod that wants otherwise authors it once the dispatch source lands. |
 | Host acquires an item a client is standing on | Host decides, despawn tombstone replicates | The client's item disappears one round trip later; the client never predicts the acquisition |
 | Client receives tuning growth before the item's despawn tombstone | Control is reliable-ordered, Snapshot is unreliable; no cross-channel ordering exists | Accepted transient: the weapon is in the inventory while the item still stands in the world. Converges when the tombstone or the next baseline arrives. |
@@ -332,7 +341,8 @@ Numbered; the Invariants table references these numbers.
     payload carries no magazine and no instance id, so a same-canonical-name swap reaching the client as
     an equal payload is correct and sends nothing.
 15. [ ] A dropped weapon lands at a reachable point in front of the pawn, never inside world geometry,
-    and lands idle — a weapon dropped mid-reload or mid-raise shows no residual timed state.
+    and lands idle — a weapon dropped mid-reload or mid-raise shows no residual timed or consumed-edge
+    state.
 16. [ ] Pressing drop with an empty inventory, and dropping a wieldable whose descriptor authors no
     touchable block, both leave the inventory unchanged.
 17. [ ] A touch radius authored as zero or a negative number fails descriptor load with a shape error
@@ -342,6 +352,8 @@ Numbered; the Invariants table references these numbers.
 19. [ ] A player standing on an item whose policy returns no effects has that policy invoked exactly once
     per tick, and the item is neither acquired nor re-evaluated as a fresh enter edge on any later tick of
     the same unbroken overlap.
+20. [ ] In a host-plus-client session, a client-side world item draws its authored model rather than
+    nothing — both a map-baselined item and a host-dropped item.
 
 ## Tasks
 
@@ -476,7 +488,8 @@ Task 4. `collision_world` is already a `simulate_tick_with_presentation_aim` par
 not — add it, sourced at the `main.rs` call site from `script_ctx.data_registry.borrow().entities`, which
 is how `update_repointed_weapon_attachments` already obtains the same slice.
 
-Two results leave the pass by two different routes.
+Three results leave the pass. Two ride `TickEvents` vectors the tick already returns; the third is
+per-tick state on `TouchSystem`.
 
 `repointed` lists every pawn whose inventory or `active_slot` changed. It merges into the existing
 `TickEvents.repointed_pawns` field the tick already returns; `main.rs` extends its `repointed_pawns`
@@ -485,6 +498,11 @@ acquired weapon never gains the pawn's socket attachment, so the holder carries 
 item's own mesh is already gone, so the failure is a missing attachment, not a stale world render. On a
 listen host that function marks the pawn attachment-dirty and returns; the attachment itself lands in
 `synchronize_weapon_owner_attachments` before snapshot production. Single-player takes the direct branch.
+
+Dropped item ids needing clip resolution leave on a new `TickEvents.dropped_item_meshes` vector, a
+`Vec<EntityId>` following the `repointed_pawns` shape. Task 6's drop populates it; `main.rs` drains it per
+fixed tick into the clip-binding resolve it already runs for runtime-spawned host enemies. Acquisition
+populates neither this vector nor a resolve — it removes the item's mesh, it never adds one.
 
 `prompts` is a `Vec<(PlayerId, EntityId)>` field on `TouchSystem`, replaced wholesale by each tick's pass
 and readable off the session-owned system after the tick loop. It is not a return value: prompts are
@@ -524,14 +542,22 @@ axis, and `range_distance(item.y, capsule_min_y, capsule_max_y)` on the vertical
 helper beside `capsule_overlaps_aabb`, not `segment_range_distance`, which is segment-vs-range and the
 wrong shape here. Overlap holds when the sum of those two squared distances is at most
 `(touch_radius + capsule_radius)` squared. Iterate items via
-`registry.iter_with_kind(ComponentKind::Touchable)` collected and sorted ascending by `EntityId`, skipping
-any entity marked for end-of-frame removal. The pass needs no radius guard: `TouchableDescriptor::validate`
+`registry.iter_with_kind(ComponentKind::Touchable)` collected and sorted ascending by `EntityId`, dropping
+the occupancy entry of any entity marked for end-of-frame removal before skipping it — dropping before
+skipping leaves no stale key, exactly as for a vanished item. Prune the occupancy map to this tick's
+collected touchable set as well: an `EntityId` key absent from it is dropped, mirroring the player-exit
+rule that treats a `PlayerId` absent from the returned map as exited, so `occupants` never accumulates
+stale keys for despawned or vanished items. The pass needs no radius guard: `TouchableDescriptor::validate`
 rejects a non-positive radius at descriptor load, so no zero-radius item ever spawns.
 
 Pairs are processed strictly sequentially, and each pair's evaluation is immediately followed by its
 application. A second pair on the same tick therefore evaluates against the world the first pair's effects
 already mutated — one player entering two `auto` items with one free slot sees `free_slots = 0` on the
-second.
+second. This apply-immediately order governs `auto` enter edges and cross-player ordering; the `press`
+reduction below narrows a player's press-eligible items to one before any of them can fire. Before applying
+a pair's effects the pass re-checks the item is still a live world item — still carrying its
+`TouchableComponent`, not marked for end-of-frame removal, and not acquired earlier this same pass — and
+treats an acquired-away item as already taken, skipping its remaining pairs.
 
 Three steps run per overlapping pair, and only the third mutates. **Overlap** is geometric state,
 recomputed every tick, maintaining the occupancy set and producing enter and exit edges. **Evaluation**
@@ -541,7 +567,12 @@ enter edge in `Auto` or a `use_pressed` edge while overlapping in `Press`.
 
 `owned_count` counts occupied slots whose wieldable's `DescriptorProvenance.canonical_name` matches the
 item's. `reserve` reads the pawn's `AmmoReserve` balance for the item's ammo type, zero when the weapon
-authors no ammo resource. `pressed` is that player's `use_pressed` entry, which is an **edge**: the map is
+authors no ammo resource. `magazine` and `reserve` guard on `WeaponComponent` presence and read zero when
+it is absent — a touchable descriptor authoring no weapon block is out-of-scope authoring, but the pass
+tolerates it rather than reading a missing component. `acquire_wieldable_at` already refuses a weaponless
+item, so the default policy's `Acquire` never succeeds against one: nothing is applied, and a `press` item
+of that shape stays prompt-eligible rather than being silently taken. `pressed` is that player's
+`use_pressed` entry, which is an **edge**: the map is
 built as `tick_index == 0 && ButtonState::Pressed` and holds only `true` entries, so it is true on exactly
 one tick per press. Build the facts whether or not the acting policy reads them, and on ticks where
 nothing is applied.
@@ -556,9 +587,9 @@ not re-fire. A `press` pair is prompt-eligible when its evaluation returned a no
 effects were applied for it this tick; `auto` pairs are never prompt-eligible. Filter on mode, never on
 which effect the policy returned.
 
-A player pressing while overlapping several items acquires only the nearest by squared center distance,
-breaking ties on the lower `EntityId`. Process players in `PlayerId` order so two simultaneous enter edges
-resolve deterministically.
+A player's press-eligible overlapping items are reduced to the single nearest by squared centre distance
+(ties on the lower `EntityId`) before the press fires, so a press takes exactly one item however many it
+overlaps. Process players in `PlayerId` order so two simultaneous enter edges resolve deterministically.
 
 On a successful acquisition the item stops being a world item, which is one rule with three parts. Remove
 its `TouchableComponent` — Task 5's sweep reads that presence, and Task 6 rebuilds it from the descriptor
@@ -591,7 +622,9 @@ Add `Action::Drop` to `crates/postretro/src/input/types.rs` and bind it in
 inside that file's `#[cfg(test)]` module, following the three sites `Action::Use` occupies.
 `keyboard_mouse_bindings_cover_all_actions` and its gamepad sibling walk `common_actions()`, so the new
 action needs both a keyboard and a gamepad binding or those coverage tests fail. `G` is a provisional default and the owner may revise
-it; nothing else depends on the choice. Read `Action::Drop` from the latched gameplay snapshot produced by
+it; nothing else depends on the choice. `KeyCode::KeyG` currently also drives
+`DiagnosticAction::SpawnChaseAgent` in `crates/postretro/src/input/diagnostics.rs`, so the provisional
+gameplay binding shares the physical key with a dev-tools chord. Read `Action::Drop` from the latched gameplay snapshot produced by
 `GameplayInputLatch::snapshot_for_ticks` in `crates/postretro/src/input/mod.rs`, not the raw frame
 snapshot: the latch accumulates `Pressed` actions across zero-tick frames into a set and drains them onto
 tick 0 of the next tick-bearing frame, so N drop presses across N consecutive zero-tick frames collapse to
@@ -618,12 +651,13 @@ weapon per held tick from a single press. A drop press discarded by the catch-up
 `use`; do not extend reload's pre-trim edge lane.
 
 Enumerate and update every struct-literal construction site — the field is not `Option`, so the compiler
-lists them. This widens the transport wire, so bump `WIRE_VERSION` in `crates/net/src/handshake.rs` here,
+lists them, as the parallel `use_pressed` field already forces at every site. This widens the transport wire, so bump `WIRE_VERSION` in `crates/net/src/handshake.rs` here,
 from 15 to 16, extending its doc comment with this bump's reason. `WIRE_VERSION` is the governing
 constant: `InputCommand` rides `ClientMessage` on the Input channel, and both its own doc comment ("the
 field order is part of the wire layout (`WIRE_VERSION`)") and `networking.md` §Version gates place it
-there, so `SNAPSHOT_VERSION` 9's doc-comment mention of `use_pressed` does not generalize —
-`SNAPSHOT_VERSION` bumps only for changes landing on the snapshot record. Do not fold the bump into Task
+there, so the `SNAPSHOT_VERSION` bump-to-9 doc entry that mentions `use_pressed` does not generalize —
+that is a historical bump note, the current value is 12, and `SNAPSHOT_VERSION` bumps only for changes
+landing on the snapshot record. Do not fold the bump into Task
 7's `TUNING_PAYLOAD_EPOCH` change: the two gates answer different questions and a peer can fail one while
 satisfying the other.
 
@@ -676,27 +710,32 @@ success:
 Write the freed item's `Transform.position` to a point one capsule radius in front of the pawn's facing,
 at the pawn's capsule base. Sphere-cast that point against the `&CollisionWorld` the pass takes, using
 the `parry3d` free functions `entity_model.md` §7 pins rather than a `QueryPipeline`; on a hit, fall back
-to the pawn's `Transform.position` — the capsule centre, which the movement solver keeps clear of
-geometry by at least the capsule radius, so a sphere of that radius sitting there is clear too.
+to the pawn's `Transform.position` — the capsule centre — and sphere-cast that point too. The movement
+solver keeps only the capsule *surface* clear of geometry by `SKIN_DISTANCE`, not the centre clear by a
+full capsule radius, so the fallback point is re-tested rather than assumed clear: the pawn's own capsule
+occupies that point collision-free this tick, and the second cast confirms a sphere of the drop radius
+fits there. AC 15 forbids a placement inside geometry, so the landing point is verified, never asserted.
 
 Restore the two world-item components Task 3 removed, both rebuilt from the descriptor the pass now
 carries: a `TouchableComponent` from the touchable block, and the `MeshComponent` from the mesh block, so
 the item is visible where it lands. A descriptor with no mesh block drops an invisible but acquirable
 item, matching what it spawns as. Setting the component directly enqueues no spawn-context clip resolve,
-so report the dropped item's `EntityId` out of the pass alongside `repointed`, and have `main.rs` run
-`resolve_mesh_entity_bindings_for_entities` for it after the tick loop — the same call it already makes
-for runtime-spawned host enemies.
+so report the dropped item's `EntityId` on the pass's `TickEvents.dropped_item_meshes` vector alongside
+`repointed`. `main.rs` drains it per fixed tick at the existing runtime-spawned-host-enemy site, extending
+the `spawned_meshes` list it hands to `resolve_mesh_entity_bindings_for_entities` inside the tick loop —
+not after it. Resolving an id whose `MeshComponent` was removed later that frame is a harmless no-op.
 
 Force the released wieldable idle. The rule: restore every live-state field on `WeaponComponent` to its
 spawn value, leaving descriptor tuning and the magazine intact. Nothing ticks a world item, so any
 residual timer or consumed-edge flag would survive until the weapon is picked up again. Today that is
-`transition_to_idle` in `crates/postretro/src/sim/weapon_stage/state.rs` — which writes `state`,
-`state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and `reload_credited` — plus
-`cooldown_remaining_ms`, `shoot_press_consumed`, `reload_press_consumed`, and `reload_feedback`. That
-enumeration is a convenience; the rule governs, and a field added to the component later joins it.
-`transition_to_idle` is a private `fn` in the private `weapon_stage::state` module, and `sim::touch` is a
-sibling, so make it `pub(crate)` and re-export it from `weapon_stage` beside the existing
-`pub(super) use commands::{…}` list. Add the holder to the tick's `repointed` list so the attachment
+`transition_to_idle` in `crates/postretro/src/sim/weapon_stage/state.rs`, which writes `state`,
+`state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and `reload_credited` — and nothing else.
+It does not reset `cooldown_remaining_ms`, `shoot_press_consumed`, `reload_press_consumed`, or
+`reload_feedback`, so drop calls `transition_to_idle` and then separately resets those four to their spawn
+values. That two-part enumeration is a convenience; the rule governs, and a field added to the component
+later joins it. `transition_to_idle` is a private `fn` in the private `weapon_stage::state` module, and
+`sim::touch` is a sibling, so make it `pub(crate)` and re-export it from `weapon_stage` beside the existing
+`pub(super) use commands::{…}` list; the four extra resets live in `sim::touch` beside the call. Add the holder to the tick's `repointed` list so the attachment
 refresh detaches the dropped weapon in the same frame.
 
 Seed the item's occupancy entry with **every player whose capsule overlaps the drop point**, not only the
@@ -784,6 +823,8 @@ outcome.
 - A weapon picked up during a level survives a level transition, with its magazine preserved.
 - Picking up and dropping a weapon leaves every ammo-reserve balance on the pawn unchanged, including for
   an ammo type the pawn has never carried (AC 9).
+- A client-side world item draws its authored model — both a map-baselined item and a host-dropped one —
+  exercising Task 5's suppressed-mesh collection and Task 6's client-side clip resolve (AC 20).
 
 Three tests carry more than their row. Write the unowned-inertness test against observable component
 state after N ticks, never against the call sites — the invariant it pins is currently held only by two
@@ -868,3 +909,11 @@ useful for testing. The engine requires no visual; that is the author's call.
 - **Whether a dropped item should be reachable through the `world.query` component vocabulary.** Nothing
   in this spec needs it, and adding a component to that enum is a scripting-surface commitment. Left out;
   a mod wanting to script over world items would raise it as its own change.
+- **Whether a deferred effect queued against a weapon while held should survive a same-level drop.** After
+  a drop, `tick_deferred_effects` sees a world item and the queued effect fires against it. The
+  acquisition matrix row purges the queue on acquire but says nothing about a held-queued effect surviving
+  a later drop. Confirm this is intended, or purge the queue on drop the way acquisition does.
+- **Whether the per-frame prompt sampling loss is acceptable.** The `prompts` Vec is overwritten each tick
+  and read once per frame. In a two-fixed-tick frame a `press` item eligible on tick 1 but taken or
+  despawned on tick 2 is never observed as eligible by presentation. Flag whether losing that eligibility
+  window is acceptable, or whether prompts must accumulate across a frame's ticks.

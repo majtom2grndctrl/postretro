@@ -17,7 +17,9 @@ it wholesale.
 - An entity-vs-player overlap pass: sphere volume per item against each player capsule, enter/exit edges.
 - Two acquisition modes: `auto` (taken on the enter edge) and `press` (taken on a `use` press while
   overlapping).
-- Prompt-eligible state published as readonly facts, for a later presentation layer to render.
+- Prompt-eligible pairs reported out of the pickup pass as an in-memory per-tick result. Not a published
+  script or UI surface — the intended reader is the unbuilt combat presentation substrate, so the shape
+  stays internal until that spec names what it needs.
 - Dropping the active wieldable back into the world, including the inhibit that stops the dropper from
   immediately re-acquiring it.
 - One inventory-growth chokepoint, with a source-scan test restricting its call sites.
@@ -26,11 +28,14 @@ it wholesale.
 
 ### Out of scope
 
-- **Any acquisition policy beyond refusal.** A player who already owns a wieldable of the same canonical
-  name, or whose inventory is full, cannot take the item. No grant-ammo-instead, no swap, no
-  lowest-stat replacement. Expressing those needs inventory state as IR-readable facts plus a policy
-  vocabulary word, and the ranking arm needs iteration the IR substrate forbids (`scripting.md` §11).
-  A later spec owns it.
+- **Authored acquisition policy.** A player who already owns a wieldable of the same canonical name, or
+  whose inventory is full, cannot take the item. Swapping the held wieldable for the world one, and
+  replacing the lowest-stat wieldable drawing the same ammo type, are both out: expressing either needs
+  inventory state as IR-readable facts plus a policy vocabulary word, and the ranking arm needs iteration
+  the IR substrate forbids (`scripting.md` §11). A later spec owns them. That argument does **not** reach
+  the duplicate case: granting the item's authored reserve instead of refusing needs neither IR facts nor
+  iteration, only the item's own descriptor and the shipped `grant_ammo` chokepoint. It is out of scope
+  here by owner decision, not by cost — recorded in Open questions so the price is not misread later.
 - **Rendering pickup prompts.** Roadmap `E16 › Combat Feedback & Economy › combat presentation substrate`
   owns floating text and pickup prompts. This spec publishes the facts and stops.
 - **Authored carry policy.** Carry across a level transition is unconditional and inherited from the
@@ -72,7 +77,8 @@ FGD keys — the acquisition mode and radius are gameplay tuning and are descrip
 
 ## Wire format
 
-No new binary or PRL section. Two existing wire surfaces change.
+No new binary or PRL section. Three existing wire surfaces change, gated separately — the tuning-payload
+epoch and the transport wire version are different compatibility promises and must not be bumped as one.
 
 **Tuning payload.** `TuningPayload` carries `wieldables: [Option<WieldableTuningPayload>; 10]` at epoch 2.
 The layout does not change; its *merge semantics* do, so the epoch increments to 3 and peers at the old
@@ -85,6 +91,11 @@ records with a `Transform` payload and a `entity_class` descriptor name. `entity
 on any non-despawn record carrying a finite `Transform` (`networking.md` §Snapshot apply ordering), so
 no metadata gate widens. No new `ComponentKind` reaches the wire: `PickupComponent` is host-local, and
 the client re-derives an item's acquisition mode from the descriptor its `entity_class` names.
+
+**Per-tick input command.** `drop_pressed` joins `use_pressed` on the per-tick input levels. This widens
+the transport wire, whose version gate is independent of the tuning epoch above; bump it on its own. The
+field follows `use_pressed` exactly — gap-held, neutralized, and catch-up-trimmed by the command queue —
+so it inherits the existing gap policy rather than defining one.
 
 ## Invariants
 
@@ -127,6 +138,12 @@ the client re-derives an item's acquisition mode from the descriptor its `entity
 component — pinned by two tests — so there is nothing to pick up, and no code path anywhere grows a live
 inventory: every composition site builds a fresh `Inventory` and replaces the component wholesale.
 
+Pickup is roadmap-demanded. **Drop is not**, and its demand is co-op: a shared session where one player
+can hand a weapon to another is the reason to build the inverse now rather than later. It also pays for
+itself structurally — designing acquisition as an enter edge over per-item occupancy, rather than a
+sustained-overlap test, is only forced by drop, and it is the better design either way. Stating this
+matters because drop is what rules out the cheaper alternative below.
+
 **Prior commitments.** `weapon-model.md` invariant 6 pins that held and dropped wieldables are the same
 instance kind reachable by one spawn path, and §6 describes pickup as "the *same* instance, but placed
 in the world with a transform and a trigger." §6 also pins that inventory does not own the ammunition
@@ -159,7 +176,9 @@ and this spec pins that as an invariant rather than leaving it as an accident.
 *Reusing brush trigger volumes.* Author a `trigger_volume` around each item and fire a reaction. It needs
 no new overlap code. Rejected because brush volumes are level-load-only — the sole AABB registration site
 populates from the PRL trigger-volume section — so a dropped item could never have one, and drop is in
-scope.
+scope. This is a divergence from the roadmap's own wording, which describes pickup as the instance
+"placed in the world **with a trigger**," and it is deliberate: the roadmap line predates drop being in
+scope, and a per-item sphere is what serves both. Naming it so the divergence is not read as an oversight.
 
 **Foreclosures and one-way doors.** The `pickup` descriptor block is append-only surface; adding fields
 later is cheap. The acquisition chokepoint is the one-way door: once Task 3, Task 6, and the client path
@@ -283,7 +302,13 @@ squared centre distance, breaking ties on the lower `EntityId`. A refusal must l
 in place so the next tick does not re-fire, and must not report the pair prompt-eligible. On a successful
 acquisition, remove the item's `PickupComponent`, drop its occupancy entry, and hand the item to the
 netcode unregistration path from Task 5. Process players in `PlayerId` order so two simultaneous enter
-edges resolve deterministically.
+edges resolve deterministically. The prompt report is an in-memory per-tick value, not a published
+script or UI surface; return it and let the caller hold it. Finally, amend `context/lib/entity_model.md`
+§7 in this task: Collision Timing currently states entity-entity overlap runs after all entity updates
+complete, and this pass runs between the trigger and AI stages, so record the narrower placement and the
+reason. In the same pass, §7 says a volume's size is fixed per entity type — restate it as per
+descriptor, which is that sentence in this codebase's vocabulary. Leaving both unamended makes §7 false
+after ship and misroutes the next entity-overlap spec.
 
 ### Task 4: Drop action and command plumbing
 
@@ -297,8 +322,9 @@ network input command so remote players' drop presses reach the host, mirroring 
 today: it rides the per-tick input levels, is gap-held and neutralized by the command queue, and is
 merged into a `PlayerId::Remote` map in `main.rs` beside the existing remote use-edge construction.
 Enumerate and update every struct-literal construction site — the field is not `Option`, so the compiler
-lists them. Because this widens the per-tick input command, bump the wire epoch alongside Task 7's tuning
-change rather than separately.
+lists them. This widens the transport wire, so bump the transport's own version gate here. Do not fold it
+into Task 7's `TUNING_PAYLOAD_EPOCH` change: the two gates answer different questions and a peer can fail
+one while satisfying the other.
 
 ### Task 5: World-item replication
 
@@ -350,8 +376,12 @@ it. Increment `TUNING_PAYLOAD_EPOCH` in `crates/postretro/src/netcode/tuning_pay
 the layout is unchanged but the merge semantics are not, and the epoch gate is what stops a peer from
 applying the old reading. Add a send trigger so the host publishes a fresh tuning payload when a pawn's
 inventory changes; today publication fires on slot-accept and manifest refresh only, neither of which a
-mid-level acquisition touches. Route the client's local `Inventory` writes through Task 2's chokepoint so
-the source-scan test stays satisfied.
+mid-level acquisition touches. That trigger is an escalation worth naming: it turns a
+config-push-at-transition channel into an event-driven state channel with no delta and no ack, so a
+dropped payload means a stale client inventory until the next publication. Accept it for this spec — the
+payload is small, fixed-size, and reliable-ordered — and keep the constraint `E15` established, that the
+payload stays opaque to `crates/net`. Route the client's local `Inventory` writes through Task 2's
+chokepoint so the source-scan test stays satisfied.
 
 ### Task 8: Ordering and edge coverage
 
@@ -438,3 +468,11 @@ require a visual.
 - **Whether a dropped item should be reachable through the `world.query` component vocabulary.** Nothing
   in this spec needs it, and adding a component to that enum is a scripting-surface commitment. Left out;
   a mod wanting to script over world items would raise it as its own change.
+- **Whether the duplicate case should grant the item's reserve rather than refuse.** Out of scope by owner
+  decision. Recorded because the deferral is not a cost argument: the item's authored reserve is already
+  read by the spawn path's reserve seeding, `grant_ammo` is shipped and public, and
+  `E16--resource-grant-chokepoint` banked its reaction arm naming pickups as the case it serves. One
+  `pickup` field — `onDuplicate: "refuse" | "grantReserve"` — covers it with no IR facts and no iteration.
+  The cost of waiting is that AC 6 pins the null behavior as correct, so reversing it later means
+  re-litigating an acceptance criterion that has become a regression test and changing what
+  `RefusalReason::AlreadyOwned` means at three call sites.

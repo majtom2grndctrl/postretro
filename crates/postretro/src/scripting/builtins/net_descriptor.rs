@@ -297,7 +297,7 @@ pub(crate) fn materialize_net_local_wieldable_inventory_from_tuning(
                     let _ = registry.despawn(weapon_id);
                 }
             }
-            (Some(weapon_id), None) => {
+            (Some(_), None) => {
                 if let Some(released) = release_wieldable(registry, id, slot) {
                     let _ = registry.despawn(released);
                 }

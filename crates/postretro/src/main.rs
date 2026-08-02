@@ -1064,6 +1064,7 @@ fn local_wieldable_occupancy(
     (occupied, active)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,

@@ -2681,13 +2681,11 @@ impl ApplicationHandler for App {
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
                         self.host_advance_fixed_sim_tick(&mut host_snapshot_due);
-                        // Unconditional per-tick sweep, not gated on "did a spawn happen this
-                        // tick": it must catch enemies materialized by any runtime
-                        // spawnFromSpawner before the post-loop serialize below, and threading
-                        // a spawn-happened signal through from SpawnContext isn't worth it when
-                        // the sweep is host-gated, idempotent, and a cheap empty collect() in
-                        // the common no-spawn case.
+                        // Unconditional per-tick registration sweeps, not gated on "did a spawn
+                        // happen this tick": they catch runtime enemies and component-driven
+                        // world-item acquisition/drop changes before post-loop serialization.
                         self.host_register_map_enemies_after_fixed_sim_tick();
+                        self.host_register_world_items_after_fixed_sim_tick();
                     }
                 }
 
@@ -5213,6 +5211,7 @@ impl App {
                 last_emitted_snapshot_tick: _,
                 host_pawn: _,
                 map_enemies: _,
+                world_items: _,
                 loaded_movers: _,
                 demo_mover: _,
                 state_slots,
@@ -5805,6 +5804,7 @@ impl App {
             weaponless_fire_logged: _,
             host_pawn,
             map_enemies: _,
+            world_items: _,
             loaded_movers: _,
             demo_mover,
             state_slots,
@@ -6273,6 +6273,45 @@ impl App {
         };
         let registry = script_ctx.registry.borrow();
         netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
+    }
+
+    /// Register map-placed and dropped world items after level install. The item sweep
+    /// is host-gated and reload-safe; connected clients receive these entities solely
+    /// through host baselines.
+    fn host_register_world_items_after_install(&mut self) {
+        self.host_register_world_items();
+    }
+
+    /// Re-sweep after every host fixed tick so acquisition emits a despawn and a drop
+    /// receives a fresh baseline before the next outbound snapshot.
+    fn host_register_world_items_after_fixed_sim_tick(&mut self) {
+        self.host_register_world_items();
+    }
+
+    /// Shared host-gated delegation for install-time and post-tick world-item
+    /// registration. Membership derives solely from `TouchableComponent` presence.
+    fn host_register_world_items(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            world_items,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let registry = script_ctx.registry.borrow();
+        netcode::host_register_world_items(&registry, allocator, replicable, world_items);
     }
 
     /// Register PRL-loaded kinematic movers for outbound replication after level

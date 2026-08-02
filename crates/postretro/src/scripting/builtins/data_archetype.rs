@@ -288,20 +288,26 @@ pub(crate) fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor
     descriptor_carries_brain(descriptor)
 }
 
+/// Whether this descriptor materializes a host-authoritative world item. A world
+/// item is defined solely by its `touchable` block; the host derives outbound
+/// replication membership from the corresponding live component.
+pub(crate) fn descriptor_materializes_world_item(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor.touchable.is_some()
+}
+
 /// Partition map placements for a **connected client** install (E10 Task 5):
 /// returns only the placements that should still materialize locally, dropping
-/// any whose matched descriptor would materialize an authoritative AI enemy
-/// ([`descriptor_materializes_ai_enemy`]). Those enemies are host-authoritative
-/// and reach the client solely via host snapshots (a later task materializes the
-/// remote presentation); spawning a local authoritative copy here would be a
-/// second, never-replicated brain.
+/// any whose matched descriptor would materialize a host-authoritative AI enemy
+/// ([`descriptor_materializes_ai_enemy`]) or world item
+/// ([`descriptor_materializes_world_item`]). Those entities reach the client solely
+/// via host snapshots; spawning a local copy here would duplicate their
+/// host-authoritative state.
 ///
-/// Placements whose classname has no descriptor match are retained untouched —
-/// they are not AI enemies and the downstream dispatch handles their
-/// unknown-classname / built-in-collision diagnostics exactly as it would on a
-/// host. Single-player and listen-host installs never call this (they keep every
-/// placement); only the connected-client lifecycle path filters.
-pub(crate) fn filter_out_client_ai_enemies(
+/// Placements whose classname has no descriptor match are retained untouched so the
+/// downstream dispatch handles their unknown-classname / built-in-collision diagnostics
+/// exactly as it would on a host. Single-player and listen-host installs never call this
+/// (they keep every placement); only the connected-client lifecycle path filters.
+pub(crate) fn filter_out_client_host_replicated_placements(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
 ) -> Vec<MapEntity> {
@@ -309,9 +315,12 @@ pub(crate) fn filter_out_client_ai_enemies(
         .iter()
         .filter(
             |entity| match find_descriptor(descriptors, &entity.classname) {
-                Some(descriptor) => !descriptor_materializes_ai_enemy(descriptor),
-                // No descriptor match: not an AI enemy — retain for the normal
-                // unknown-classname diagnostics in dispatch.
+                Some(descriptor) => {
+                    !descriptor_materializes_ai_enemy(descriptor)
+                        && !descriptor_materializes_world_item(descriptor)
+                }
+                // No descriptor match: retain for the normal unknown-classname
+                // diagnostics in dispatch.
                 None => true,
             },
         )
@@ -320,19 +329,18 @@ pub(crate) fn filter_out_client_ai_enemies(
 }
 
 /// Collect the distinct, non-empty mesh model handles referenced by the
-/// AI-enemy map placements a connected client suppresses
-/// ([`filter_out_client_ai_enemies`]), preserving first-seen order. GPU-free:
+/// host-authoritative map placements a connected client suppresses
+/// ([`filter_out_client_host_replicated_placements`]), preserving first-seen order. GPU-free:
 /// this is the pure analogue of [`crate::distinct_mesh_models`] for placements
 /// that never spawn a local `MeshComponent` on a connected client, so the
 /// registry-driven sweep cannot see them.
 ///
 /// Scoped to the classes the **map actually references** (the placements passed
-/// in), not every AI descriptor in the data registry — only enemies the host
-/// can replicate into this level need their model on the GPU. A placement is
-/// included only when its matched descriptor both materializes an AI enemy
-/// ([`descriptor_materializes_ai_enemy`]) AND carries a `mesh` block with a
-/// non-empty `model`; non-AI placements and AI descriptors without a renderable
-/// mesh contribute nothing.
+/// in), not every descriptor in the data registry — only host-replicated map
+/// entities in this level need their model on the GPU. A placement is included only
+/// when its matched descriptor materializes either an AI enemy or world item and
+/// carries a `mesh` block with a non-empty `model`; ordinary placements and
+/// meshless descriptors contribute nothing.
 ///
 /// Regression (E10 AC #3): a connected client filtered out the AI-enemy
 /// placement before dispatch, so its model was never in the registry-driven
@@ -340,13 +348,13 @@ pub(crate) fn filter_out_client_ai_enemies(
 /// draw planner dropped it (no uploaded mesh in the model cache) and the real
 /// model never rendered — only a dev-tools debug capsule showed. The level-load
 /// sweep unions these handles with [`crate::distinct_mesh_models`] so the
-/// suppressed enemy's model is uploaded up front.
+/// suppressed entity's model is uploaded up front.
 ///
 /// Each returned string is the VERBATIM renderer cache key (the descriptor's
 /// holder `mesh.model` or attachment model), identical in shape to
 /// [`crate::distinct_mesh_models`] output, so the caller can dedup the two sets
 /// and upload each handle once.
-pub(crate) fn suppressed_ai_enemy_mesh_models(
+pub(crate) fn suppressed_client_host_replicated_mesh_models(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
 ) -> Vec<String> {
@@ -356,7 +364,9 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
         let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
             continue;
         };
-        if !descriptor_materializes_ai_enemy(descriptor) {
+        if !descriptor_materializes_ai_enemy(descriptor)
+            && !descriptor_materializes_world_item(descriptor)
+        {
             continue;
         }
         let Some(mesh) = descriptor.mesh.as_ref() else {
@@ -2626,7 +2636,7 @@ mod tests {
         assert_eq!(light.origin, [7.0, 0.0, 0.0]);
     }
 
-    // ---- E10 Task 5: connected-client AI-enemy spawn suppression ----
+    // ---- Connected-client host-authoritative placement suppression ----
 
     #[test]
     fn behavior_descriptor_materializes_ai_enemy() {
@@ -2644,69 +2654,101 @@ mod tests {
     }
 
     #[test]
-    fn client_filter_drops_ai_enemy_placements_keeps_props() {
-        // The connected-client pre-dispatch filter drops behavior-authored
-        // AI-enemy placements and keeps non-AI props in the same map.
+    fn descriptor_materializes_world_item_when_touchable() {
+        let mut item = weapon_descriptor("reference_pistol");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+
+        assert!(descriptor_materializes_world_item(&item));
+        assert!(!descriptor_materializes_world_item(&mesh_descriptor(
+            "crate", false
+        )));
+    }
+
+    #[test]
+    fn client_filter_drops_host_replicated_placements_keeps_props() {
+        // The connected-client pre-dispatch filter drops behavior-authored AI enemies
+        // and touchable world items, while keeping ordinary local props.
+        let mut item = weapon_descriptor("reference_pistol");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
         let descriptors = vec![
             behavior_enemy_descriptor("grunt"),
+            item,
             mesh_descriptor("crate", false),
         ];
         let placements = vec![
             placement("grunt", &[]),
+            placement("reference_pistol", &[]),
             placement("crate", &[]),
             placement("grunt", &[]),
         ];
 
-        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+        let kept = filter_out_client_host_replicated_placements(&placements, &descriptors);
 
-        assert_eq!(kept.len(), 1, "both grunt placements dropped, crate kept");
+        assert_eq!(
+            kept.len(),
+            1,
+            "host-replicated placements drop, crate stays"
+        );
         assert_eq!(kept[0].classname, "crate");
     }
 
     #[test]
-    fn suppressed_ai_enemy_mesh_models_collects_filtered_enemy_models_for_upload() {
-        // Regression (E10 AC #3): a connected client filters AI-enemy placements
-        // out before dispatch, so their model is absent from the registry-driven
-        // upload set; the host-replicated remote enemy then has no uploaded mesh
-        // and renders only a debug capsule. This pins the seam that feeds the
-        // suppressed enemies' models into the level-load upload union: the
-        // map-referenced AI enemy's model is collected; non-AI props and
-        // unknown classnames contribute nothing.
+    fn suppressed_host_replicated_mesh_models_collects_filtered_models_for_upload() {
+        // Regression: a connected client filters host-replicated placements out
+        // before dispatch, so their models are absent from the registry-driven upload
+        // set. This pins the level-load union for both AI enemies and world items.
         let mut grunt = behavior_enemy_descriptor("grunt");
         grunt.mesh.as_mut().unwrap().attachments =
             [("hand".to_string(), "models/grunt_prop.gltf".to_string())]
                 .into_iter()
                 .collect();
-        let descriptors = vec![grunt, mesh_descriptor("crate", false)];
+        let mut item = weapon_descriptor("reference_pistol");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+        item.mesh = mesh_descriptor("reference_pistol", false).mesh;
+        item.mesh.as_mut().expect("fixture mesh").model = "models/pistol_world.gltf".to_string();
+        let descriptors = vec![grunt, item, mesh_descriptor("crate", false)];
         let placements = vec![
             placement("grunt", &[]),
+            placement("reference_pistol", &[]),
             placement("crate", &[]),
             placement("grunt", &[]),
             placement("mystery", &[]),
         ];
 
-        let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
+        let models = suppressed_client_host_replicated_mesh_models(&placements, &descriptors);
 
-        // The AI enemy holder and its attachment model are both deduped across
-        // placements; the non-AI crate and unknown classname add nothing.
+        // Both host-replicated categories contribute their models, while the ordinary
+        // crate and unknown classname add nothing.
         assert_eq!(
             models,
             vec![
                 "decraniated".to_string(),
-                "models/grunt_prop.gltf".to_string()
+                "models/grunt_prop.gltf".to_string(),
+                "models/pistol_world.gltf".to_string(),
             ],
-            "the suppressed enemy's models must still preload"
+            "suppressed host-replicated models must preload"
         );
     }
 
     #[test]
-    fn suppressed_ai_enemy_mesh_models_empty_without_ai_placements() {
-        // No map-referenced AI enemy ⇒ nothing to pre-upload (the single-player /
-        // listen-host case where the registry sweep already covers every mesh).
+    fn suppressed_host_replicated_mesh_models_empty_without_suppressed_placements() {
+        // No map-referenced host-replicated placement means the ordinary registry
+        // sweep already covers every mesh.
         let descriptors = vec![mesh_descriptor("crate", false)];
         let placements = vec![placement("crate", &[]), placement("mystery", &[])];
 
-        assert!(suppressed_ai_enemy_mesh_models(&placements, &descriptors).is_empty());
+        assert!(
+            suppressed_client_host_replicated_mesh_models(&placements, &descriptors).is_empty()
+        );
     }
 
     #[test]
@@ -2777,12 +2819,12 @@ mod tests {
 
     #[test]
     fn client_filter_retains_unknown_classname_placements() {
-        // A placement with no descriptor match is not an AI enemy; the filter
+        // A placement with no descriptor match is not host-replicated; the filter
         // retains it so the dispatch's own unknown-classname diagnostics fire.
         let descriptors = vec![behavior_enemy_descriptor("grunt")];
         let placements = vec![placement("mystery", &[]), placement("grunt", &[])];
 
-        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+        let kept = filter_out_client_host_replicated_placements(&placements, &descriptors);
 
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].classname, "mystery");
@@ -2827,9 +2869,10 @@ mod tests {
             .count();
         assert_eq!(host_crates, 1, "host materializes the non-AI prop");
 
-        // Connected client: filter AI enemies before dispatch.
+        // Connected client: filter host-replicated placements before dispatch.
         let mut client_reg = EntityRegistry::new();
-        let client_placements = filter_out_client_ai_enemies(&placements, &descriptors);
+        let client_placements =
+            filter_out_client_host_replicated_placements(&placements, &descriptors);
         apply_data_archetype_dispatch(
             &client_placements,
             &descriptors,

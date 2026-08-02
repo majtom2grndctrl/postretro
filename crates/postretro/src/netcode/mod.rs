@@ -97,6 +97,7 @@ pub(crate) use reconcile::reconcile_local_pawn;
 pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
+    host_register_world_items,
 };
 pub(crate) use seat::{CarriedState, SeatTable, finish_host_poll, restore_carried_health};
 pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};

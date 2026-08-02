@@ -873,10 +873,11 @@ impl App {
             }
         }
 
-        // E10 Task 4 / M15 Phase 3: register this level's map-placed AI enemies and
-        // PRL-loaded movers for outbound replication. Host-gated (a no-op off a
-        // listen host) and reload-safe; each takes its own registry borrow.
+        // Register host-authoritative map entities and PRL-loaded movers for outbound
+        // replication. Host-gated (a no-op off a listen host) and reload-safe; each
+        // takes its own registry borrow.
         self.host_register_map_enemies_after_install();
+        self.host_register_world_items_after_install();
         self.host_register_loaded_movers_after_install();
 
         // Pick up any descriptor-spawned `LightComponent`s so they participate in
@@ -1322,9 +1323,9 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// Resolved separately for each install. A pinned seed repeats exactly;
     /// arm-all is the deterministic unpinned headless default.
     pub(crate) trigger_pool_policy: TriggerPoolSeedPolicy,
-    /// Connected-client suppression: skip local AI-enemy materialization / boot
-    /// pawn spawn. Both `false` off a connected client (single-player, listen
-    /// host, headless).
+    /// Connected-client setup flag: skip host-authoritative map-placement
+    /// materialization and boot-pawn spawn. Both `false` off a connected client
+    /// (single-player, listen host, headless).
     pub(crate) suppress_ai_enemies: bool,
     pub(crate) suppress_boot_pawn: bool,
     /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
@@ -3548,13 +3549,11 @@ mod tests {
         assert!(app.level_rx.is_some());
     }
 
-    // E10 Task 5: the install path keys AI-enemy spawn suppression off
-    // `is_connected_client()`. Prove the role gate that drives the
-    // `filter_out_client_ai_enemies` branch in `install_level_payload` resolves
-    // correctly for each role — single-player and listen host keep every
-    // placement (no suppression), only the connected client suppresses.
+    // The install path keys host-authoritative placement suppression off
+    // `is_connected_client()`. Prove the role gate resolves correctly for each role:
+    // only the connected client suppresses map placements.
     #[test]
-    fn ai_enemy_suppression_gate_is_connected_client_only() {
+    fn host_replicated_placement_suppression_gate_is_connected_client_only() {
         use std::net::{Ipv4Addr, SocketAddr};
 
         use crate::netcode::{NetEndpoint, NetRole};

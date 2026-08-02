@@ -338,11 +338,28 @@ sibling `js/entity.rs` — following the shape the existing `weapon` arm uses in
 Validate in `TouchableDescriptor::validate` that `radius` is finite and non-negative, warning once naming
 the descriptor and clamping to zero otherwise.
 
-Add a runtime `TouchableComponent { mode, radius }` in `crates/entities/src/components/touchable.rs` with
-a `ComponentKind::Touchable` column, and a `DescriptorComponentKind::Touchable` variant. That enum's
-`component_kind()` and `label()` are exhaustive matches and will not compile until extended; its
-`ALL: [Self; N]` const is a fixed-length array that compiles fine while silently stale, so extend it by
-hand and widen its length.
+Add a runtime `TouchableComponent { mode, radius }` in `crates/entities/src/components/touchable.rs`. A
+new component kind touches five groups of sites. `Inventory` is the most recently added kind and is the
+template to follow at each:
+
+- `ComponentKind::Touchable` on the next free discriminant, plus the `VARIANTS` array behind
+  `ComponentKind::COUNT`, both in `crates/entities/src/registry.rs`. That array is not compiler-enforced
+  and `COUNT` sizes the registry's component column storage, so a missed entry costs the component its
+  column.
+- `ComponentValue::Touchable`, its arm in the value-to-kind match, and the `Component` trait impl —
+  same file.
+- The kind-to-name arm and the two rejecting `ComponentValue` conversion arms in
+  `crates/entities/src/ffi.rs`, one per script runtime.
+- `ALL_KINDS`, the kind-to-name arm, and the kind-to-value arm in
+  `crates/postretro/src/observability/mod.rs`.
+- `component_kind_discriminant` in `crates/postretro/src/netcode/mod.rs` — an exhaustive match with no
+  `_` arm, pinned numerically to `ComponentPayload::kind()` in `postretro-net`. `Touchable` takes the
+  matching discriminant and adds no wire payload: `ComponentPayload` carries four variants against twenty
+  kinds, so a payload-less kind is the norm.
+
+Then add the `DescriptorComponentKind::Touchable` variant. Its `component_kind()` and `label()` are
+exhaustive matches and will not compile until extended; its `ALL: [Self; N]` const compiles fine while
+silently stale, so extend it by hand and widen its length.
 
 Then make the placement change in `crates/postretro/src/scripting/builtins/data_archetype.rs`: add
 `|| descriptor.touchable.is_some()` to `is_directly_map_placeable`, and change the map-sweep call site's

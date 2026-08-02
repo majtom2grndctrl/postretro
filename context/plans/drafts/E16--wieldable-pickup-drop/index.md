@@ -450,7 +450,7 @@ descriptor), the same `players: &[AuthoritativePlayer]` slice and `use_pressed: 
 map that `TriggerTickInputs` already carries, and a `drop_pressed: &HashMap<PlayerId, bool>` map from
 Task 4. It returns a `TouchReport { prompts: Vec<(PlayerId, EntityId)>, repointed: Vec<EntityId> }`.
 `repointed` lists every pawn whose inventory or `active_slot` changed; `main.rs` extends its
-`repointed_pawns` set with it before the attachment refresh, or an acquired weapon is never attached and
+`repointed_pawns` vector with it before `update_repointed_weapon_attachments` runs after the tick loop, or an acquired weapon is never attached and
 renders at its world pickup position. The pass does no replication bookkeeping and needs none — Task 5's
 sweep derives membership from `TouchableComponent` presence.
 
@@ -522,7 +522,7 @@ takes the descriptor slice. Then drop the occupancy entry, clear the item's pend
 
 Add `EntityRegistry::is_marked_for_end_of_frame_removal` in `crates/entities/src/registry.rs` — the
 registry exposes only `mark_for_end_of_frame_removal` and `take_end_of_frame_removals`, so the skip this
-task requires is not otherwise expressible. `tick_deferred_effects` runs at the top of the tick, before
+task requires is not otherwise expressible. `tick_deferred_effects` runs near the top of the tick, before
 this pass, so an effect that fires there has already marked the item and emptied its queue; without the
 predicate the pass would acquire a weapon the end-of-frame removal pass then deletes.
 
@@ -543,8 +543,10 @@ it; nothing else depends on the choice. Read `Action::Drop` from the latched gam
 `GameplayInputLatch::snapshot_for_ticks` in `crates/postretro/src/input/mod.rs`, not the raw frame
 snapshot: the latch accumulates `Pressed` actions across zero-tick frames into a set and drains them onto
 tick 0 of the next tick-bearing frame, so N drop presses across N consecutive zero-tick frames collapse to
-exactly one drop, and a press latched immediately before a level install is discarded by
-`gameplay_input_latch.clear()`. Read it as a rising edge at tick index zero in
+exactly one drop. A latched press is discarded by `gameplay_input_latch.clear()`, whose sites are focus
+loss and input-focus change in `main.rs`, `clear_surface_lifetime_level_state` in
+`crates/postretro/src/startup/lifecycle_net.rs`, and the endpoint teardown — so a press latched across a
+level unload is lost, and one latched across a focus change is too. Read it as a rising edge at tick index zero in
 `crates/postretro/src/main.rs`, in the same block that builds `use_pressed` from `Action::Use`, producing
 a `HashMap<PlayerId, bool>` of drop edges for the local pawn, and thread it into the touch pass beside
 `use_pressed`.
@@ -581,8 +583,10 @@ map-placed item. Add a host registration sweep beside `host_register_map_enemies
 carrying a `TouchableComponent`, with the same stale-id unregister-and-forget prologue so a level reload
 is idempotent.
 
-Call it from **both** sites its enemy counterpart uses in `crates/postretro/src/main.rs` — the
-level-install path and `host_register_map_enemies_after_fixed_sim_tick`. The per-tick call is what makes
+Call it from **both** sites its enemy counterpart uses: `host_register_map_enemies_after_install`, invoked
+from `crates/postretro/src/startup/lifecycle.rs`, and `host_register_map_enemies_after_fixed_sim_tick`,
+invoked from the fixed-tick loop in `crates/postretro/src/main.rs`. The two wrappers share one
+implementation in `main.rs`. The per-tick call is what makes
 acquisition and drop replicate with no delta protocol: acquisition removes the `TouchableComponent`, so
 the next sweep's stale-id prologue unregisters the item and forgets its mapping, sending the client a
 despawn tombstone; drop attaches the component, so the next sweep stamps and registers it, sending a
@@ -612,9 +616,9 @@ the item is visible where it lands. A descriptor with no mesh block drops an inv
 item, matching what it spawns as.
 
 Force the released wieldable idle. `transition_to_idle` in `crates/postretro/src/sim/weapon_stage/state.rs`
-writes `state`, `state_remaining_ms`, and `state_total_ms` only; drop must also clear
-`state_elapsed_sub_ms`, `cooldown_remaining_ms`, `reload_credited`, `shoot_press_consumed`, and
-`reload_press_consumed`, and reset `reload_feedback`. Nothing ticks a world item, so any residual timer
+writes five fields — `state`, `state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and
+`reload_credited` — so reuse it and clear the four it leaves: `cooldown_remaining_ms`,
+`shoot_press_consumed`, `reload_press_consumed`, and `reload_feedback`. Nothing ticks a world item, so any residual timer
 or consumed-edge flag would survive until the weapon is picked up again. Add the holder to
 `TouchReport.repointed` so the attachment refresh detaches the dropped weapon in the same frame.
 
@@ -717,7 +721,7 @@ on what "the same weapon" means.
 
 `trigger_system.rs` is 2400 lines but only ~625 are production code — the rest is its test module. It
 needs no split before this work, and this spec adds nothing to it beyond making one helper visible.
-`sim/weapon_stage.rs` is likewise a small facade over submodules — a ~27-line facade plus its test module.
+`sim/weapon_stage.rs` is likewise a facade over submodules — ~15 production lines plus its test module.
 Neither triggers the split-first rule.
 
 ## Script syntax examples

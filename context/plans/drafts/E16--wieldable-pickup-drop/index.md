@@ -481,13 +481,17 @@ Add a source-scanning test in the same shape as
 `ammo_reserve_writes_have_only_grant_seed_and_carry_restore_non_test_call_sites` in
 `crates/entities/src/components/grant.rs`. Those helpers live inside that file's `#[cfg(test)] mod tests`
 in `postretro-entities`, a different crate, so they cannot be imported — **copy** the directory walk,
-`is_test_source_file`, and `mask_test_only_blocks`. The matcher does not carry over at all: that test's
+`is_test_source_file`, and `mask_test_only_blocks` together with the two helpers it calls,
+`mask_comments_and_string_literals` and `matching_brace_end`. The matcher does not carry over at all: that test's
 `method_call_count` counts
 literal `.credit` / `.set_exact` occurrences, and a slot fill is an assignment, not a method call. Walk
 `crates/`, mask `#[cfg(test)]` blocks and test files, and count **slot-fill** writes to
-`Inventory::wieldables` — assignments of `Some(...)` — outside them, taking care not to confuse the target
-field with `CarriedState.wieldables` in `crates/postretro/src/netcode/seat.rs` or the `TuningPayload.wieldables`
-payload array. Scan fills only, not clears: `normalize_inventory_liveness` in
+`Inventory::wieldables` — `Some(...)` assignments into an inventory slot — outside them. Discriminate on the
+`Inventory` target, not the bare `.wieldables[` token: `CarriedState.wieldables` in
+`crates/postretro/src/netcode/seat.rs` and the `TuningPayload.wieldables` payload array share the field name.
+Both are distinguishable today — seat.rs assigns `carried_wieldables[slot] = weapon`, not a `Some(...)` into
+`.wieldables[` — so a matcher keyed on `.wieldables[..] = Some(` counts only inventory fills now; a future
+`Some(...)` write to either sibling field would trip the test and must be excluded then. Scan fills only, not clears: `normalize_inventory_liveness` in
 `crates/postretro/src/sim/weapon_stage/commands.rs` nulls slots in production and is not a growth path.
 The allowlist is exactly the composition site and the two acquire functions.
 
@@ -580,8 +584,8 @@ its player's claim is evaluated for prompts but never contests, so one `use_pres
 one item.
 
 Reduce an item's contestants to one winner: the default reducer picks the nearest by squared centre
-distance, ties on the lower `PlayerId`, and a charted arbitration seam (see Direction) replaces it when a
-later spec ranks contestants by need. Apply the winner's effects; the losers acquire nothing. One winner
+distance, ties on the lower `PlayerId`; a later spec that ranks contestants by need replaces this default
+reducer. Apply the winner's effects; the losers acquire nothing. One winner
 per item bounds acquisition to a single player, so the pass needs no separate re-check that an item is
 still unclaimed. When one free slot is contested by both an `auto` and a `press` item, the lower-`EntityId`
 item resolves first and takes it; the other takes nothing.

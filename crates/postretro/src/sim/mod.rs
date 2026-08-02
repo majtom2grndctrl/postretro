@@ -1,6 +1,8 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+pub(crate) mod touch;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,6 +25,7 @@ use crate::scripting_systems::hit_zones::{
     HitZoneStore, model_matrix, sample_world_pose_for_probe,
 };
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::sim::touch::TouchSystem;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
 use crate::trigger_commands::TriggerFireContext;
 #[cfg(test)]
@@ -41,7 +44,8 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, SlotTable,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
+    SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;
@@ -243,6 +247,9 @@ pub(crate) struct TickEvents {
     /// this after simulation so the hand socket follows committed ownership, never
     /// a pending selection.
     pub(crate) repointed_pawns: Vec<EntityId>,
+    /// World-item meshes restored by a drop need same-tick clip binding. Touch
+    /// acquisition never adds entries; Task 6 supplies the producer.
+    pub(crate) dropped_item_meshes: Vec<EntityId>,
     /// Bound trigger residuals drained app-side after every fixed tick this frame.
     pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
@@ -281,6 +288,8 @@ pub(crate) fn simulate_tick(
     trigger_context: Option<TriggerTickContext<'_>>,
     on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
+    let mut touch_system = TouchSystem::default();
+    let touch_edges = HashMap::new();
     simulate_tick_with_presentation_aim(
         registry,
         collision_world,
@@ -298,6 +307,10 @@ pub(crate) fn simulate_tick(
         command,
         post_movement,
         tick_dt,
+        &mut touch_system,
+        &[],
+        &touch_edges,
+        &touch_edges,
         trigger_context,
         on_impact,
     )
@@ -324,6 +337,10 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     command: &SimCommand,
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
+    touch_system: &mut TouchSystem,
+    descriptors: &[EntityTypeDescriptor],
+    use_pressed: &HashMap<PlayerId, bool>,
+    drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
@@ -376,27 +393,30 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         &command.movement,
         tick_dt,
     ));
+    let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
+        .iter()
+        .map(|remote| AuthoritativePlayer {
+            id: PlayerId::Remote(remote.owner_client_id),
+            pawn: remote.pawn,
+        })
+        .collect();
+    let local_player = {
+        let registry = registry.borrow();
+        registry.local_player_movement_pawn()
+    };
+    if let Some(pawn) = local_player {
+        players.push(AuthoritativePlayer {
+            id: PlayerId::Local(pawn),
+            pawn,
+        });
+    }
+
     let mut trigger_residuals = Vec::new();
     #[cfg(test)]
     let mut trigger_fires = Vec::new();
     #[cfg(test)]
     let mut trigger_command_fires = Vec::new();
     if let Some(trigger_context) = trigger_context {
-        let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
-            .iter()
-            .map(|remote| AuthoritativePlayer {
-                id: PlayerId::Remote(remote.owner_client_id),
-                pawn: remote.pawn,
-            })
-            .collect();
-        let local_player = {
-            let registry = registry.borrow();
-            registry.local_player_movement_pawn()
-        };
-        if let Some(pawn) = local_player {
-            let id = PlayerId::Local(pawn);
-            players.push(AuthoritativePlayer { id, pawn });
-        }
         let canonical_player_pawns = {
             let registry = registry.borrow();
             crate::trigger_system::canonical_player_pawns(&registry, &players)
@@ -487,6 +507,17 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             );
         }
     }
+    let touch_repointed = {
+        let mut registry = registry.borrow_mut();
+        touch_system.run_authoritative_tick(
+            &mut registry,
+            collision_world,
+            descriptors,
+            &players,
+            use_pressed,
+            drop_pressed,
+        )
+    };
     let ai = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
@@ -548,6 +579,13 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry);
 
+    let mut repointed_pawns = touch_repointed;
+    if let Some(pawn) = repointed_pawn {
+        repointed_pawns.push(pawn);
+    }
+    repointed_pawns.sort_unstable();
+    repointed_pawns.dedup();
+
     TickEvents {
         movement,
         ai,
@@ -555,7 +593,8 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         death,
         authorized_shots,
         reload_deliveries,
-        repointed_pawns: repointed_pawn.into_iter().collect(),
+        repointed_pawns,
+        dropped_item_meshes: Vec::new(),
         trigger_residuals,
         #[cfg(test)]
         trigger_fires,
@@ -1306,8 +1345,12 @@ mod tests {
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
     };
+    use postretro_entities::components::touchable::TouchableComponent;
     use postretro_entities::data_descriptors::{
         BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    };
+    use postretro_entities::{
+        DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
     };
 
     /// A direct-graph brain staged directly into its `alert` state.
@@ -1759,6 +1802,101 @@ mod tests {
             None,
             |_| {},
         )
+    }
+
+    #[test]
+    fn touch_runs_without_a_trigger_context_before_ai() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, item) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+
+            let item = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    item,
+                    TouchableComponent {
+                        mode: postretro_entities::TouchMode::Auto,
+                        radius: 1.0,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, weapon_component("weapon.touch"))
+                .unwrap();
+            registry
+                .set_component(
+                    item,
+                    DescriptorProvenance {
+                        canonical_name: "weapon.touch".to_string(),
+                        owned_components: std::collections::BTreeSet::from([
+                            DescriptorComponentKind::Weapon,
+                            DescriptorComponentKind::Touchable,
+                        ]),
+                        map_overrides: std::collections::BTreeSet::<DescriptorMapOverride>::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, MeshComponent::stateless("weapon.glb".to_string()))
+                .unwrap();
+            (pawn, item)
+        };
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = TouchSystem::default();
+        let edges = HashMap::new();
+
+        let events = simulate_tick_with_presentation_aim(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            &mut ai_runtime,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            &mut touch_system,
+            &[],
+            &edges,
+            &edges,
+            None,
+            |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item)
+        );
+        assert_eq!(events.repointed_pawns, vec![pawn]);
+        assert!(
+            registry
+                .borrow()
+                .get_component::<TouchableComponent>(item)
+                .is_err()
+        );
     }
 
     pub(super) fn run_local_only_tick(

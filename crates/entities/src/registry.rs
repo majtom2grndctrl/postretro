@@ -1046,6 +1046,15 @@ impl EntityRegistry {
         Ok(())
     }
 
+    /// Whether `id` is queued for the app-owned frame-end removal pass.
+    ///
+    /// Fixed-tick systems use this to avoid mutating an entity whose terminal
+    /// deferred effect already won earlier in the tick.
+    pub fn is_marked_for_end_of_frame_removal(&self, id: EntityId) -> Result<bool, RegistryError> {
+        let _ = self.validate(id)?;
+        Ok(self.end_of_frame_removals.contains(&id))
+    }
+
     /// Drain ids staged for the app-owned frame-end removal pass.
     pub fn take_end_of_frame_removals(&mut self) -> Vec<EntityId> {
         std::mem::take(&mut self.end_of_frame_removals)

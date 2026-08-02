@@ -2571,11 +2571,14 @@ impl ApplicationHandler for App {
                         // `camera` as disjoint field borrows; the post-movement
                         // closure captures these locals (not `self`) so it does not
                         // re-borrow `self.session`.
+                        let data_registry = script_ctx.data_registry.borrow();
+                        let descriptors = &data_registry.entities;
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
                         let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
                         let trigger_system = &mut session.trigger_system;
+                        let touch_system = &mut session.touch_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let trigger_bindings = &self.trigger_bindings;
                         let presentation_camera_aim = (self.camera.pitch, self.camera.yaw);
@@ -2620,6 +2623,10 @@ impl ApplicationHandler for App {
                                 build_post_movement_command(camera)
                             },
                             tick_dt,
+                            touch_system,
+                            descriptors,
+                            &trigger_use_edges,
+                            &touch_drop_edges,
                             Some(sim::TriggerTickContext {
                                 system: trigger_system,
                                 bridge: trigger_volume_bridge,
@@ -2635,10 +2642,11 @@ impl ApplicationHandler for App {
                         // Drain its one-shot queue now: its archetype model and
                         // clip table were preloaded from the map spawner, so this
                         // is solely an animation-index fill, never a GPU upload.
-                        let spawned_meshes = session
+                        let mut spawned_meshes = session
                             .scripting
                             .spawn_context
                             .take_pending_mesh_clip_resolves();
+                        spawned_meshes.extend(tick_events.dropped_item_meshes.iter().copied());
                         resolve_mesh_entity_bindings_for_entities(
                             &mut script_ctx.registry.borrow_mut(),
                             &session.mesh_clip_tables,

@@ -179,11 +179,11 @@ Entity-entity collision uses simple bounding volumes: axis-aligned bounding box 
 | AABB | Entities with box-like extents (player, enemies, doors) |
 | Sphere | Entities where orientation doesn't affect collision (projectiles, pickups) |
 
-Entity type determines which volume shape to use. Volume size is fixed per entity type, not per instance.
+Entity descriptor determines which volume shape to use. Volume size is fixed per descriptor, not per instance.
 
 ### Collision Timing
 
-World collision resolves inline during each entity's movement — the entity slides along or stops at world geometry within its update step. Entity-entity overlap tests run as a separate pass after all entity updates complete. This prevents update-order-dependent collision results: all entities move first, then overlaps are detected and resolved.
+World collision resolves inline during each entity's movement — the entity slides along or stops at world geometry within its update step. Trigger-volume overlap runs after player movement, and touchable-item sphere/capsule overlap runs immediately after that trigger stage and before AI: only player pawns and stationary world items participate, so this narrower placement observes every relevant movement without delaying the touch to the next tick. Other entity-entity overlap tests run as a separate pass after all relevant entity updates complete. This prevents update-order-dependent collision results: every participating entity moves first, then overlaps are detected and resolved.
 
 ---
 

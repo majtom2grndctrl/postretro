@@ -1591,6 +1591,7 @@ mod tests {
                 trigger_volume_bridge:
                     scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
                 trigger_system: crate::trigger_system::TriggerSystem::default(),
+                touch_system: crate::sim::touch::TouchSystem::default(),
                 emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
                 particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),

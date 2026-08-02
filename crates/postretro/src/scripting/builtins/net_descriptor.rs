@@ -971,7 +971,16 @@ mod tests {
         let original = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
             .expect("descriptor inventory materializes its default wieldable");
 
-        let tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
+        let mut tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
+        tuning.wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
+            canonical_name: "local_pistol".to_string(),
+            range: 64.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            lower_ms: 0,
+            raise_ms: 0,
+        });
         assert!(materialize_net_local_wieldable_inventory_from_tuning(
             "player",
             &descriptors,

@@ -12,10 +12,9 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// bitcode layout of the five shipped variants intact.
 pub const PROTOCOL_ID: u32 = 0x_5052_4C36; // "PRL6"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
-/// E16 switching deliberately keeps this value: its added input field and Control
-/// variants have no deployed-peer compatibility obligation, and the Task 5 tuning
-/// payload epoch rejects a stale client before it can run old weapon values.
-pub const WIRE_VERSION: u32 = 15;
+/// E16 adds `drop_pressed` to `WireMovementInput`, changing the per-tick Input
+/// channel layout. The independent tuning-payload epoch remains unchanged here.
+pub const WIRE_VERSION: u32 = 16;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -78,26 +77,24 @@ mod tests {
     }
 
     #[test]
-    fn session_roster_app_protocol_refuses_previous_control_vocabulary() {
-        const PRE_SESSION_ROSTER_PROTOCOL_ID: u32 = 0x_5052_4C35;
-        const PRE_SESSION_ROSTER_WIRE_VERSION: u32 = 15;
+    fn drop_pressed_input_layout_refuses_previous_wire_version() {
+        const PRE_DROP_PRESSED_WIRE_VERSION: u32 = 15;
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C36,
             "session roster requires application protocol PRL6"
         );
         assert_eq!(
-            WIRE_VERSION, 15,
-            "the measured appended control tag preserves wire version 15"
+            WIRE_VERSION, 16,
+            "drop_pressed changes the Input command bitcode layout"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PRE_SESSION_ROSTER_PROTOCOL_ID as u64) << 32)
-                | u64::from(PRE_SESSION_ROSTER_WIRE_VERSION),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_DROP_PRESSED_WIRE_VERSION),
             "gate 1 rejects the previous layout before app decode"
         );
         let previous = ProtocolVersion {
-            app_protocol_id: PRE_SESSION_ROSTER_PROTOCOL_ID,
-            wire_version: PRE_SESSION_ROSTER_WIRE_VERSION,
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_DROP_PRESSED_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),

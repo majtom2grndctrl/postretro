@@ -400,7 +400,8 @@ the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 1
 mover replay provenance advances it to 12. The static-kinematic handshake field
 uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, E15's tagged
 Control layout advances it to 14, and participation-framed traffic advances it to
-15. Earlier peers are refused by both handshake gates.
+15. E16's `drop_pressed` input edge advances it to 16. Earlier peers are refused
+by both handshake gates.
 
 ## Phase boundaries
 

@@ -367,7 +367,7 @@ impl TriggerSystem {
     }
 }
 
-fn canonical_player_capsules(
+pub(crate) fn canonical_player_capsules(
     registry: &EntityRegistry,
     players: &[AuthoritativePlayer],
     warned_duplicate_players: &mut HashSet<PlayerId>,
@@ -598,7 +598,7 @@ fn capsule_overlaps_aabb(
     dx * dx + dy * dy + dz * dz <= radius * radius
 }
 
-fn range_distance(value: f32, min: f32, max: f32) -> f32 {
+pub(crate) fn range_distance(value: f32, min: f32, max: f32) -> f32 {
     if value < min {
         min - value
     } else if value > max {

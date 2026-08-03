@@ -178,6 +178,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::EntityState => "entity_state",
         ComponentKind::DeferredEffect => "deferred_effect",
         ComponentKind::Inventory => "inventory",
+        ComponentKind::Touchable => "touchable",
     }
 }
 
@@ -248,6 +249,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "weapon" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "weapon is descriptor-owned; setComponent is not supported (update the weapon descriptor instead)",
+            )),
+            "touchable" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "touchable is descriptor-owned; setComponent is not supported (update the touchable descriptor instead)",
             )),
             "kinematic_mover" => Err(rquickjs::Exception::throw_type(
                 ctx,
@@ -371,6 +376,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Inventory component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Touchable(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Touchable component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -431,6 +440,9 @@ impl FromLua for ComponentValue {
             ),
             "weapon" => Err(mlua::Error::RuntimeError(
                 "weapon is descriptor-owned; setComponent is not supported (update the weapon descriptor instead)".to_string(),
+            )),
+            "touchable" => Err(mlua::Error::RuntimeError(
+                "touchable is descriptor-owned; setComponent is not supported (update the touchable descriptor instead)".to_string(),
             )),
             "kinematic_mover" => Err(mlua::Error::RuntimeError(
                 "KinematicMover component is engine-managed and not exposed to scripts"
@@ -528,6 +540,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Inventory(_) => Err(mlua::Error::RuntimeError(
                 "Inventory component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Touchable(_) => Err(mlua::Error::RuntimeError(
+                "Touchable component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

@@ -125,6 +125,44 @@ fn entity_descriptor_without_components_field_deserializes() {
     assert!(d.light.is_none());
     assert!(d.emitter.is_none());
     assert!(d.weapon.is_none());
+    assert!(d.touchable.is_none());
+}
+
+#[test]
+fn touchable_descriptor_has_js_luau_parity_for_defaults_and_radius_validation() {
+    let js = eval_js(
+        r#"({ components: { touchable: { mode: "press" } } })"#,
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { components = { touchable = { mode = "press" } } }"#,
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let js_touchable = js.touchable.expect("QuickJS touchable descriptor parses");
+    let lua_touchable = lua.touchable.expect("Luau touchable descriptor parses");
+    assert_eq!(js_touchable, lua_touchable);
+    assert_eq!(js_touchable.mode, TouchMode::Press);
+    assert!((js_touchable.radius - 40.0).abs() <= f32::EPSILON);
+
+    for (js_source, lua_source) in [
+        (
+            r#"({ components: { touchable: { radius: 0 } } })"#,
+            r#"return { components = { touchable = { radius = 0 } } }"#,
+        ),
+        (
+            r#"({ components: { touchable: { radius: -1 } } })"#,
+            r#"return { components = { touchable = { radius = -1 } } }"#,
+        ),
+    ] {
+        let js_error = eval_js(js_source, |ctx, value| {
+            entity_descriptor_from_js(ctx, value).unwrap_err()
+        });
+        let lua_error = eval_lua(lua_source, |value| {
+            entity_descriptor_from_lua(value).unwrap_err()
+        });
+        assert!(js_error.to_string().contains("components.touchable.radius"));
+        assert_eq!(js_error.to_string(), lua_error.to_string());
+    }
 }
 
 #[test]

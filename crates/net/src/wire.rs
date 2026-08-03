@@ -916,6 +916,7 @@ pub struct WireMovementInput {
     pub crouch_intent: bool,
     pub facing_yaw: f32,
     pub use_pressed: bool,
+    pub drop_pressed: bool,
     /// Camera pitch, appended after the E17 input layout. It is replicated for
     /// remote-avatar presentation and does not participate in movement simulation.
     pub aim_pitch: f32,
@@ -1302,6 +1303,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 1.234_5,
                 use_pressed: true,
+                drop_pressed: true,
                 aim_pitch: -0.45,
                 firing_slot: 3,
             },

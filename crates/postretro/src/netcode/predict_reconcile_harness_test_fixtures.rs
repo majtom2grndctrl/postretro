@@ -177,6 +177,7 @@ pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
         emitter: None,
         movement: Some(player_descriptor()),
         weapon: None,
+        touchable: None,
         mesh: None,
         health: None,
         behavior: None,
@@ -208,6 +209,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -217,6 +219,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 
@@ -230,6 +233,7 @@ pub(crate) fn idle_command() -> SimCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -239,6 +243,7 @@ pub(crate) fn idle_command() -> SimCommand {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 
@@ -266,6 +271,7 @@ pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
             aim_pitch: 0.0,
             firing_slot: 0,
         },

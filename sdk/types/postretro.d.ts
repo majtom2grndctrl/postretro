@@ -76,7 +76,7 @@ declare module "postretro" {
   export type EntityTypeDescriptor = {
     /** Stable archetype name used by map classname routing and inventory loadout references. Required for direct map placement and for weapon descriptors named by `components.inventory.loadout`; omit only for archetypes that are never addressed by name. */
     canonicalName?: string;
-    /** Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` also composes its inventory loadout into separate wieldable instances. */
+    /** Optional component presets. Direct map placement materializes light, emitter, movement, mesh, health, and touchable presets; `player_spawn` also composes its inventory loadout into separate wieldable instances. */
     components?: EntityTypeComponents;
   };
 
@@ -215,6 +215,8 @@ declare module "postretro" {
     inventory?: InventoryDescriptor | null;
     /** Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`. */
     weapon?: WeaponDescriptor | null;
+    /** Host-authoritative touch interaction tuning. Its presence makes a descriptor directly map-placeable and permits its weapon component to attach to that world instance. */
+    touchable?: TouchableDescriptor | null;
     /** Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName. */
     mesh?: MeshDescriptor | null;
     /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
@@ -235,6 +237,13 @@ declare module "postretro" {
     | "semi"
     /** Continuous fire while held. */
     | "auto";
+
+  /** Valid values: `auto`, `press`. */
+  export type TouchMode =
+    /** Take automatically when the touch policy accepts an overlap entry. */
+    | "auto"
+    /** Require an explicit use press while overlapping before touch policy can take the item. */
+    | "press";
 
   /** Valid values: `hitscan`. */
   export type ResolutionMode =
@@ -295,6 +304,14 @@ declare module "postretro" {
     raiseMs?: number;
     /** Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin. */
     blockDuringReload?: boolean;
+  };
+
+  /** Host-authoritative touch interaction preset for a world-placeable descriptor. Maps choose the placement; this descriptor owns mode and radius tuning. */
+  export type TouchableDescriptor = {
+    /** Touch activation mode. Optional; defaults to `auto`. */
+    mode?: TouchMode;
+    /** Touch sphere radius in world units. Optional; defaults to 40. Must be finite and > 0. */
+    radius?: number;
   };
 
   /** One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position. */

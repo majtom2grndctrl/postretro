@@ -43,6 +43,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. They are hitscan-targetable when they have an authored AABB hitbox or a zone-bearing skinned model (§7). |
 | KinematicMover | Engine-owned deterministic translating/spinning mover driver seeded from PRL `KinematicGeometry`; readable through `world.query({ component: "kinematic_mover" })`, whose SDK handle builds declarative mover-command reactions |
 | TriggerVolume | Engine-owned, serializable host-authoritative touch/use state for an invisible level-authored AABB. Named `on_fire` / `on_exit` reactions fan out effects; an exit fires only after that player's activation fired. Tracks occupancy; arming reopens Touch activation for already-standing players, while Use remains press-driven. |
+| Touchable | Host-authoritative touch mode and sphere radius for a world item. Presence identifies the entity as a touchable world item. |
 | Brain | Engine-internal enemy behavior: the entity's authored behavior state graph, the state it currently occupies, and its per-instance timers. Engine-owned evaluation, author-owned states and transitions (§7c). |
 | Agent | Engine-internal navmesh path-following state for a moving enemy: the collision capsule seeded at attach time from the baked agent parameters, live velocity and grounded flag, the followed path plus its cursor, and a destination. No script surface (the `PlayerMovement` precedent). |
 | Spawner | Map-authored enemy spawn point: the archetype name it materializes and how many enemies each firing creates. Stateless across firings; the resolved descriptor stays in the session spawn context rather than the serializable component. |
@@ -123,11 +124,12 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 1 | Kinematic mover tick | Advances deterministic mover transforms and tick deltas before player movement consumes mover collision/carry |
 | 2 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
 | 3 | Trigger tick | Host evaluates touch-entry and use-overlap triggers after player movement; commands mutate mover phase for the next mover tick |
-| 4 | AI brain tick | Selects targets, evaluates each enemy's behavior graph, and applies the selected state's motion and action after player movement settles (§7c) |
-| 5 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
-| 6 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
-| 7 | Weapon reload and fire tick | Advances reloads and transfers completed reloads from pawn reserves before consuming resolved fire and aim data; firing may spawn impact effects and apply damage |
-| 8 | Death sweep | Processes entities whose health reached zero after same-tick damage |
+| 4 | Touchable tick | Host evaluates player-item touch overlap after triggers and before AI |
+| 5 | AI brain tick | Selects targets, evaluates each enemy's behavior graph, and applies the selected state's motion and action after player movement settles (§7c) |
+| 6 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
+| 7 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
+| 8 | Weapon reload and fire tick | Advances reloads and transfers completed reloads from pawn reserves before consuming resolved fire and aim data; firing may spawn impact effects and apply damage |
+| 9 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 
 Scripting bridges run later, outside the core simulation seam. Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities.
 
@@ -172,18 +174,18 @@ Entities collide against static world geometry. At level load, PRL static geomet
 
 ### Entity-Entity Collision
 
-Entity-entity collision uses simple bounding volumes: axis-aligned bounding box (AABB) or bounding sphere per entity type. Overlap tests are direct geometric checks, not spatial partitioning.
+Entity-entity collision uses simple bounding volumes: axis-aligned bounding box (AABB) or bounding sphere. Overlap tests are direct geometric checks, not spatial partitioning.
 
 | Volume type | Use case |
 |-------------|----------|
 | AABB | Entities with box-like extents (player, enemies, doors) |
 | Sphere | Entities where orientation doesn't affect collision (projectiles, pickups) |
 
-Entity type determines which volume shape to use. Volume size is fixed per entity type, not per instance.
+Entity descriptors select the volume shape and fixed dimensions. Touchable items carry their descriptor-seeded sphere radius in `Touchable`; player-item overlap tests that sphere against the player capsule.
 
 ### Collision Timing
 
-World collision resolves inline during each entity's movement — the entity slides along or stops at world geometry within its update step. Entity-entity overlap tests run as a separate pass after all entity updates complete. This prevents update-order-dependent collision results: all entities move first, then overlaps are detected and resolved.
+World collision resolves inline during each entity's movement — the entity slides along or stops at world geometry within its update step. Trigger-volume overlap runs after player movement, and touchable-item sphere/capsule overlap runs immediately after that trigger stage and before AI: only player pawns and stationary world items participate, so this narrower placement observes every relevant movement without delaying the touch to the next tick. Other entity-entity overlap tests run as a separate pass after all relevant entity updates complete. This prevents update-order-dependent collision results: every participating entity moves first, then overlaps are detected and resolved.
 
 ---
 

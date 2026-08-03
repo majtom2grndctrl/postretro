@@ -220,6 +220,7 @@ fn idle_command() -> SimCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -229,6 +230,7 @@ fn idle_command() -> SimCommand {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 

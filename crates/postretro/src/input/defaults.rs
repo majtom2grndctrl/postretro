@@ -26,6 +26,7 @@ pub fn default_keyboard_mouse_bindings() -> Vec<Binding> {
         Binding::new(PhysicalInput::Key(KeyCode::KeyF), Action::Dash),
         Binding::new(PhysicalInput::Key(KeyCode::KeyC), Action::Crouch),
         Binding::new(PhysicalInput::Key(KeyCode::KeyE), Action::Use),
+        Binding::new(PhysicalInput::Key(KeyCode::KeyG), Action::Drop),
         Binding::new(PhysicalInput::MouseButton(MouseButton::Left), Action::Shoot),
         Binding::new(
             PhysicalInput::MouseButton(MouseButton::Right),
@@ -135,6 +136,10 @@ pub fn default_gamepad_bindings() -> Vec<Binding> {
         ),
         Binding::new(PhysicalInput::GamepadButton(GilrsButton::West), Action::Use),
         Binding::new(
+            PhysicalInput::GamepadButton(GilrsButton::Select),
+            Action::Drop,
+        ),
+        Binding::new(
             PhysicalInput::GamepadButton(GilrsButton::RightTrigger2),
             Action::Shoot,
         ),
@@ -186,6 +191,7 @@ mod tests {
             Action::Dash,
             Action::Crouch,
             Action::Use,
+            Action::Drop,
             Action::Shoot,
             Action::AltFire,
             Action::Reload,
@@ -240,6 +246,17 @@ mod tests {
         let kb = default_keyboard_mouse_bindings();
         let gp = default_gamepad_bindings();
         assert_eq!(combined.len(), kb.len() + gp.len());
+    }
+
+    #[test]
+    fn drop_defaults_bind_key_g_and_gamepad_select() {
+        assert!(default_keyboard_mouse_bindings().iter().any(|binding| {
+            binding.input == PhysicalInput::Key(KeyCode::KeyG) && binding.action == Action::Drop
+        }));
+        assert!(default_gamepad_bindings().iter().any(|binding| {
+            binding.input == PhysicalInput::GamepadButton(GilrsButton::Select)
+                && binding.action == Action::Drop
+        }));
     }
 
     #[test]

@@ -20,5 +20,9 @@ export const referenceShotgunEntity = defineEntity({
         reloadStyle: "perShell",
       },
     },
+    // A press-mode drop makes the fixture exercise deliberate re-acquisition
+    // as well as the pistol's automatic enter-edge path.
+    mesh: { model: "models/smg/model.gltf" },
+    touchable: { mode: "press", radius: 1.0 },
   },
 });

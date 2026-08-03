@@ -4,9 +4,9 @@ use super::*;
 
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    filter_out_client_ai_enemies, movement_descriptor_mesh_models,
-    spawn_from_player_starts_with_carried_loadout, suppressed_ai_enemy_mesh_models,
-    weapon_presentation_models,
+    filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
+    spawn_from_player_starts_with_carried_loadout, suppressed_client_host_replicated_mesh_models,
+    touchable_wieldable_world_models, weapon_presentation_models,
 };
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
@@ -225,11 +225,11 @@ pub(crate) fn install_world_cpu(
     // the agent then falls back to an engine-default capsule and cannot path.
     let agent_params: Option<postretro_foundation::NavAgentParams> =
         nav_graph.map(|g| g.agent_params());
-    // E10 AC #3: mesh models of AI-enemy placements a connected client suppresses.
+    // Mesh models of host-authoritative placements a connected client suppresses.
     // They never spawn a local `MeshComponent`, so the registry-driven model sweep
-    // cannot see them; unioned into the mesh model list below so the host-replicated
-    // remote enemy is drawable. Empty off a connected client.
-    let mut suppressed_enemy_models: Vec<String> = Vec::new();
+    // cannot see them; unioned into the mesh model list below so a host-replicated
+    // remote entity is drawable. Empty off a connected client.
+    let mut suppressed_host_replicated_models: Vec<String> = Vec::new();
     // Runtime net-slot materialization may select any movement descriptor on a
     // listen host, while a connected client receives the same set by snapshot.
     // Preload the whole category for every role; gameplay never uploads models.
@@ -247,20 +247,24 @@ pub(crate) fn install_world_cpu(
     // declared third- and first-person model so attachment/viewmodel changes never
     // trigger runtime model loads or leave a transient placeholder.
     let weapon_presentation_models = weapon_presentation_models(&descriptors);
+    // A loadout-only touchable wieldable loses its own MeshComponent when held,
+    // but drop restores that descriptor mesh during gameplay. Preload the world
+    // holder and attachments now; model upload remains renderer-owned.
+    let touchable_wieldable_world_models = touchable_wieldable_world_models(&descriptors);
     let first_spawn = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
         if suppress_ai_enemies {
-            // E10 Task 5: a connected client must NOT spawn local authoritative
-            // copies of map-placed AI enemies — they are host-authoritative and
-            // arrive via snapshots. Filter before dispatch using the descriptor's
-            // `ai` block (components do not exist pre-materialization).
-            suppressed_enemy_models = suppressed_ai_enemy_mesh_models(&map_entities, &descriptors);
-            let kept = filter_out_client_ai_enemies(&map_entities, &descriptors);
+            // A connected client must not spawn local copies of host-authoritative
+            // map entities. Filter before dispatch, while descriptor metadata is
+            // available but live components do not exist yet.
+            suppressed_host_replicated_models =
+                suppressed_client_host_replicated_mesh_models(&map_entities, &descriptors);
+            let kept = filter_out_client_host_replicated_placements(&map_entities, &descriptors);
             let dropped = map_entities.len() - kept.len();
             if dropped > 0 {
                 log::info!(
-                    "[Loader] connected client: suppressing {dropped} map-placed AI enemy \
+                    "[Loader] connected client: suppressing {dropped} host-replicated map \
                      placement(s); they arrive via host snapshots"
                 );
             }
@@ -351,7 +355,7 @@ pub(crate) fn install_world_cpu(
         let registry = script_ctx.registry.borrow();
         let mut models = crate::distinct_mesh_models(&registry);
         let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
-        for model in &suppressed_enemy_models {
+        for model in &suppressed_host_replicated_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }
@@ -362,6 +366,11 @@ pub(crate) fn install_world_cpu(
             }
         }
         for model in &weapon_presentation_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &touchable_wieldable_world_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

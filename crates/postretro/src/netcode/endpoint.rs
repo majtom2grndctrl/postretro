@@ -94,6 +94,10 @@ pub(crate) enum NetEndpoint {
         /// entity). Empty until the first level install registers enemies, and on a map
         /// with no AI enemies.
         map_enemies: std::collections::HashSet<EntityId>,
+        /// World-item entities registered for replication while they carry the
+        /// host-local `TouchableComponent`. The sweep removes stale entries on
+        /// acquisition and stamps a fresh `NetworkId` when a drop restores touchability.
+        world_items: std::collections::HashSet<EntityId>,
         /// PRL-loaded kinematic movers registered for outbound replication. Clients
         /// bind these by `mover_id` to their already-loaded local mover entities
         /// rather than spawning from the baseline.
@@ -541,6 +545,7 @@ impl NetEndpoint {
                     weaponless_fire_logged: std::collections::HashSet::new(),
                     host_pawn: None,
                     map_enemies: std::collections::HashSet::new(),
+                    world_items: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
@@ -705,6 +710,7 @@ impl NetEndpoint {
             weaponless_fire_logged,
             host_pawn,
             map_enemies,
+            world_items,
             loaded_movers,
             demo_mover,
             state_slots,
@@ -726,6 +732,7 @@ impl NetEndpoint {
         weaponless_fire_logged.clear();
         *host_pawn = None;
         map_enemies.clear();
+        world_items.clear();
         loaded_movers.clear();
         *demo_mover = DemoMoverState::from_env();
         state_slots.reset_schema();

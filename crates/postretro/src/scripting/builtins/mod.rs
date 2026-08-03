@@ -27,13 +27,14 @@ pub(crate) use data_archetype::apply_data_archetype_dispatch;
 pub(crate) use data_archetype::{
     PLAYER_START_CLASSNAME, spawn_from_player_starts, spawn_from_player_starts_with_carried_loadout,
 };
-// Connected-client AI-enemy spawn suppression (E10 Task 5). `gen-script-types`
-// pulls in the scripting tree but never installs a level, so the import is
-// unused there.
+// Connected-client host-authoritative map-placement suppression. `gen-script-types`
+// pulls in the scripting tree but never installs a level, so the import is unused there.
 #[allow(unused_imports)]
 pub(crate) use data_archetype::{
-    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
-    movement_descriptor_mesh_models, suppressed_ai_enemy_mesh_models, weapon_presentation_models,
+    descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
+    filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
+    suppressed_client_host_replicated_mesh_models, touchable_wieldable_world_models,
+    weapon_presentation_models,
 };
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep

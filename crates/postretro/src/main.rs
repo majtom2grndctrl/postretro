@@ -1064,6 +1064,7 @@ fn local_wieldable_occupancy(
     (occupied, active)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
@@ -1072,6 +1073,7 @@ fn build_sim_command(
     shoot_pressed: bool,
     select_pressed: bool,
     use_pressed: bool,
+    drop_pressed: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
     let sprint = snapshot.button(Action::Sprint).is_active();
@@ -1108,6 +1110,7 @@ fn build_sim_command(
             crouch_intent,
             facing_yaw: camera.yaw,
             use_pressed,
+            drop_pressed,
         },
         fire_button: weapon::FireButtonState {
             pressed: shoot_pressed,
@@ -1117,6 +1120,7 @@ fn build_sim_command(
         firing_slot: 0,
         select_slot,
         use_pressed,
+        drop_pressed,
     }
 }
 
@@ -2368,11 +2372,21 @@ impl ApplicationHandler for App {
                             && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
                         let use_pressed = tick_index == 0
                             && matches!(snapshot.button(Action::Use), ButtonState::Pressed);
+                        let drop_pressed = tick_index == 0
+                            && matches!(snapshot.button(Action::Drop), ButtonState::Pressed);
                         let mut trigger_use_edges = HashMap::new();
                         if use_pressed {
                             let registry = script_ctx.registry.borrow();
                             if let Some(pawn) = followed_player_pawn(&registry) {
                                 trigger_use_edges
+                                    .insert(trigger_system::PlayerId::Local(pawn), true);
+                            }
+                        }
+                        let mut touch_drop_edges = HashMap::new();
+                        if drop_pressed {
+                            let registry = script_ctx.registry.borrow();
+                            if let Some(pawn) = followed_player_pawn(&registry) {
+                                touch_drop_edges
                                     .insert(trigger_system::PlayerId::Local(pawn), true);
                             }
                         }
@@ -2407,6 +2421,7 @@ impl ApplicationHandler for App {
                             shoot_pressed,
                             false,
                             use_pressed,
+                            drop_pressed,
                         );
                         command.select_slot = select_slot;
 
@@ -2545,17 +2560,26 @@ impl ApplicationHandler for App {
                                 ))
                             },
                         ));
+                        touch_drop_edges.extend(remote_pawn_commands.iter().filter_map(|remote| {
+                            remote.command.drop_pressed.then_some((
+                                trigger_system::PlayerId::Remote(remote.owner_client_id),
+                                true,
+                            ))
+                        }));
 
                         // Borrow the two session-owned `simulate_tick` inputs
                         // (hit-zone store, progress tracker) and the boot-owned
                         // `camera` as disjoint field borrows; the post-movement
                         // closure captures these locals (not `self`) so it does not
                         // re-borrow `self.session`.
+                        let data_registry = script_ctx.data_registry.borrow();
+                        let descriptors = &data_registry.entities;
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
                         let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
                         let trigger_system = &mut session.trigger_system;
+                        let touch_system = &mut session.touch_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let trigger_bindings = &self.trigger_bindings;
                         let presentation_camera_aim = (self.camera.pitch, self.camera.yaw);
@@ -2600,6 +2624,10 @@ impl ApplicationHandler for App {
                                 build_post_movement_command(camera)
                             },
                             tick_dt,
+                            touch_system,
+                            descriptors,
+                            &trigger_use_edges,
+                            &touch_drop_edges,
                             Some(sim::TriggerTickContext {
                                 system: trigger_system,
                                 bridge: trigger_volume_bridge,
@@ -2615,10 +2643,11 @@ impl ApplicationHandler for App {
                         // Drain its one-shot queue now: its archetype model and
                         // clip table were preloaded from the map spawner, so this
                         // is solely an animation-index fill, never a GPU upload.
-                        let spawned_meshes = session
+                        let mut spawned_meshes = session
                             .scripting
                             .spawn_context
                             .take_pending_mesh_clip_resolves();
+                        spawned_meshes.extend(tick_events.dropped_item_meshes.iter().copied());
                         resolve_mesh_entity_bindings_for_entities(
                             &mut script_ctx.registry.borrow_mut(),
                             &session.mesh_clip_tables,
@@ -2653,13 +2682,11 @@ impl ApplicationHandler for App {
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
                         self.host_advance_fixed_sim_tick(&mut host_snapshot_due);
-                        // Unconditional per-tick sweep, not gated on "did a spawn happen this
-                        // tick": it must catch enemies materialized by any runtime
-                        // spawnFromSpawner before the post-loop serialize below, and threading
-                        // a spawn-happened signal through from SpawnContext isn't worth it when
-                        // the sweep is host-gated, idempotent, and a cheap empty collect() in
-                        // the common no-spawn case.
+                        // Unconditional per-tick registration sweeps, not gated on "did a spawn
+                        // happen this tick": they catch runtime enemies and component-driven
+                        // world-item acquisition/drop changes before post-loop serialization.
                         self.host_register_map_enemies_after_fixed_sim_tick();
+                        self.host_register_world_items_after_fixed_sim_tick();
                     }
                 }
 
@@ -5185,6 +5212,7 @@ impl App {
                 last_emitted_snapshot_tick: _,
                 host_pawn: _,
                 map_enemies: _,
+                world_items: _,
                 loaded_movers: _,
                 demo_mover: _,
                 state_slots,
@@ -5438,6 +5466,25 @@ impl App {
                         }
                     }
                 }
+                // Inventory changes have no separate dirty protocol. Rebuild every
+                // participating pawn's small fixed tuning payload each host poll;
+                // `host_send_tuning_if_changed` remains the final wire dedupe.
+                {
+                    let registry = script_ctx.registry.borrow();
+                    for client_id in server.participating_clients() {
+                        let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+                            continue;
+                        };
+                        let payload =
+                            netcode::tuning_payload_for_pawn(&registry, pawn, &net_descriptors);
+                        netcode::host_send_tuning_if_changed(
+                            server,
+                            last_sent_tuning,
+                            client_id,
+                            payload,
+                        );
+                    }
+                }
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
                 // and echo time-sync probes with the current server tick. The echo
@@ -5601,7 +5648,16 @@ impl App {
             zero_tick_snapshot
                 .filter(|_| button.pressed)
                 .map(|snapshot| {
-                    build_sim_command(snapshot, &self.camera, false, false, true, false, false)
+                    build_sim_command(
+                        snapshot,
+                        &self.camera,
+                        false,
+                        false,
+                        true,
+                        false,
+                        false,
+                        false,
+                    )
                 });
         let Some(session) = self.session.as_ref() else {
             return;
@@ -5768,6 +5824,7 @@ impl App {
             weaponless_fire_logged: _,
             host_pawn,
             map_enemies: _,
+            world_items: _,
             loaded_movers: _,
             demo_mover,
             state_slots,
@@ -6236,6 +6293,45 @@ impl App {
         };
         let registry = script_ctx.registry.borrow();
         netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
+    }
+
+    /// Register map-placed and dropped world items after level install. The item sweep
+    /// is host-gated and reload-safe; connected clients receive these entities solely
+    /// through host baselines.
+    fn host_register_world_items_after_install(&mut self) {
+        self.host_register_world_items();
+    }
+
+    /// Re-sweep after every host fixed tick so acquisition emits a despawn and a drop
+    /// receives a fresh baseline before the next outbound snapshot.
+    fn host_register_world_items_after_fixed_sim_tick(&mut self) {
+        self.host_register_world_items();
+    }
+
+    /// Shared host-gated delegation for install-time and post-tick world-item
+    /// registration. Membership derives solely from `TouchableComponent` presence.
+    fn host_register_world_items(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            world_items,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let registry = script_ctx.registry.borrow();
+        netcode::host_register_world_items(&registry, allocator, replicable, world_items);
     }
 
     /// Register PRL-loaded kinematic movers for outbound replication after level
@@ -7190,6 +7286,7 @@ mod tests {
                 raise_ms: 0,
                 block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -7897,6 +7994,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.0,
                 use_pressed: false,
+                drop_pressed: false,
             },
             fire_button: weapon::FireButtonState {
                 pressed: false,
@@ -7906,6 +8004,7 @@ mod tests {
             firing_slot: 0,
             select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         };
 
         let mut pushed_states = Vec::new();
@@ -8112,6 +8211,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                 )
             })
             .collect();
@@ -8143,7 +8243,16 @@ mod tests {
             .map(|tick_index| {
                 let dash_pressed = tick_index == 0
                     && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
-                build_sim_command(&snapshot, &camera, false, dash_pressed, false, false, false)
+                build_sim_command(
+                    &snapshot,
+                    &camera,
+                    false,
+                    dash_pressed,
+                    false,
+                    false,
+                    false,
+                    false,
+                )
             })
             .collect();
 
@@ -8177,6 +8286,7 @@ mod tests {
                     shoot_pressed,
                     false,
                     false,
+                    false,
                 )
             })
             .collect();
@@ -8205,12 +8315,50 @@ mod tests {
 
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
-            .map(|_| build_sim_command(&snapshot, &camera, false, false, false, false, false))
+            .map(|_| {
+                build_sim_command(&snapshot, &camera, false, false, false, false, false, false)
+            })
             .collect();
 
         assert!(
             commands.iter().all(|command| command.reload),
             "reload is a level signal and remains true across catch-up ticks while held"
+        );
+    }
+
+    #[test]
+    fn sim_command_strips_drop_edge_after_first_catchup_tick() {
+        let mut input_system = InputSystem::new(default_bindings());
+        input_system.set_physical_input(
+            input::PhysicalInput::Key(winit::keyboard::KeyCode::KeyG),
+            true,
+        );
+        let snapshot = input_system.snapshot();
+        assert_eq!(snapshot.button(Action::Drop), ButtonState::Pressed);
+
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let commands: Vec<sim::SimCommand> = (0..2)
+            .map(|tick_index| {
+                let drop_pressed = tick_index == 0
+                    && matches!(snapshot.button(Action::Drop), ButtonState::Pressed);
+                build_sim_command(
+                    &snapshot,
+                    &camera,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    drop_pressed,
+                )
+            })
+            .collect();
+
+        assert!(commands[0].drop_pressed);
+        assert!(commands[0].movement.drop_pressed);
+        assert!(
+            !commands[1].drop_pressed && !commands[1].movement.drop_pressed,
+            "one physical drop press must not replay as a new edge on every catch-up tick",
         );
     }
 
@@ -8236,6 +8384,7 @@ mod tests {
                     crouch_intent: false,
                     facing_yaw: 0.0,
                     use_pressed: false,
+                    drop_pressed: false,
                     aim_pitch: 0.0,
                     firing_slot: 0,
                 },
@@ -8316,6 +8465,7 @@ mod tests {
                     crouch_intent: false,
                     facing_yaw: 0.0,
                     use_pressed: false,
+                    drop_pressed: false,
                     aim_pitch: 0.0,
                     firing_slot: 1,
                 },
@@ -8388,6 +8538,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.0,
                 use_pressed: false,
+                drop_pressed: false,
             },
             fire_button: weapon::FireButtonState {
                 pressed: true,
@@ -8397,6 +8548,7 @@ mod tests {
             firing_slot: 0,
             select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         };
         let mut resolved_aim_origin = None;
 
@@ -9904,6 +10056,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: Some(MeshDescriptor {
                 model: "models/remote_enemy/scene.gltf".to_string(),
                 shadow_only: false,

@@ -20,8 +20,8 @@ use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 /// Contract notes for importers:
 /// - It reads the **live component columns**, NOT `DescriptorProvenance.owned_components`.
 ///   `owned_components` only tracks the modder-declarable `DescriptorComponentKind` set
-///   (weapon/movement/light/emitter/mesh/health) and never includes the AI components,
-///   so it cannot be used to detect an AI enemy.
+///   and never includes engine-owned AI components, so it cannot be used to detect an
+///   AI enemy.
 /// - It is registry-blind about role: it does not check host/client. Host registration
 ///   (this task) gates on the role separately; connected-client spawn suppression (Task 5)
 ///   imports the same predicate to decide which descriptor placements NOT to spawn locally.
@@ -49,7 +49,7 @@ pub(crate) fn is_networked_ai_enemy(registry: &EntityRegistry, id: EntityId) -> 
 }
 
 /// The descriptor class a replicable entity was materialized from, for the snapshot's
-/// `entity_class` (M15 Phase 3 Task 7 / E10 Task 4). The recipient uses it to materialize
+/// `entity_class` (M15 Phase 3 Task 7 / E16 Task 5). The recipient uses it to materialize
 /// the matching descriptor-backed presentation locally. `None` unless the entity is one of:
 ///
 /// - a **movement pawn** (carries a `PlayerMovementState` wire payload) spawned through
@@ -58,11 +58,13 @@ pub(crate) fn is_networked_ai_enemy(registry: &EntityRegistry, id: EntityId) -> 
 ///   `canonical_name` is the resolved `entity_class` (default `"player"`); or
 /// - a **networked AI enemy** ([`is_networked_ai_enemy`]) — its `canonical_name` is
 ///   the descriptor class the host registered it under.
+/// - a **world item** (carries `ComponentKind::Touchable`) — its canonical descriptor
+///   class lets the client materialize its mesh presentation from a Transform-only record.
 ///
 /// The wire allows `entity_class` on any non-despawn finite-`Transform` record (E10
-/// Task 3 relaxed it off the movement-only gate), so an enemy's class rides its
-/// Transform-only snapshot. A Transform-only fixture / demo mover / map-start pawn that
-/// is neither of the above returns `None`.
+/// Task 3 relaxed it off the movement-only gate), so AI enemies and world items ride
+/// Transform-only snapshots. A Transform-only fixture / demo mover / map-start pawn that
+/// is none of the above returns `None`.
 pub(super) fn descriptor_entity_class(
     registry: &EntityRegistry,
     id: EntityId,
@@ -85,10 +87,14 @@ pub(super) fn descriptor_entity_class(
         return Some(provenance.canonical_name.clone());
     }
 
-    // A map-placed or runtime-spawned AI enemy (Brain + Agent): stamp its descriptor
-    // class so the client materializes the remote-enemy presentation from a
-    // Transform-only record.
-    if is_networked_ai_enemy(registry, id) {
+    // A map-placed/runtime AI enemy or a live world item needs its descriptor class
+    // so the client can materialize mesh presentation from the Transform-only record.
+    // World-item membership deliberately keys only on the host-local touchable component.
+    if is_networked_ai_enemy(registry, id)
+        || registry
+            .has_component_kind(id, ComponentKind::Touchable)
+            .unwrap_or(false)
+    {
         return Some(provenance.canonical_name.clone());
     }
 

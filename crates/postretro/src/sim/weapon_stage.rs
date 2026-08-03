@@ -12,6 +12,7 @@ pub(super) use commands::{
     run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
+pub(crate) use state::transition_to_idle;
 
 #[cfg(test)]
 pub(super) fn deliver_reload_to_weapon(

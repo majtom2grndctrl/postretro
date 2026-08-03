@@ -45,6 +45,7 @@ pub(crate) struct PrototypeCommand {
     pub(crate) crouch_intent: bool,
     pub(crate) facing_yaw: f32,
     pub(crate) use_pressed: bool,
+    pub(crate) drop_pressed: bool,
 }
 
 impl PrototypeCommand {
@@ -58,6 +59,7 @@ impl PrototypeCommand {
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
                 use_pressed: self.use_pressed,
+                drop_pressed: self.drop_pressed,
             },
             fire_button: FireButtonState {
                 pressed: false,
@@ -67,6 +69,7 @@ impl PrototypeCommand {
             firing_slot: 0,
             select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 
@@ -499,6 +502,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: if tick < 80 { 0.0 } else { 0.3 },
                 use_pressed: false,
+                drop_pressed: false,
             })
             .collect()
     }

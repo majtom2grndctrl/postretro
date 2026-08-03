@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -41,6 +41,7 @@ pub fn entity_descriptor_from_lua(
     let mut emitter = None;
     let mut movement = None;
     let mut weapon = None;
+    let mut touchable = None;
     let mut mesh = None;
     let mut health = None;
     let mut behavior = None;
@@ -120,6 +121,22 @@ pub fn entity_descriptor_from_lua(
                     weapon = Some(descriptor.validate()?);
                 }
             }
+            if components_table
+                .contains_key("touchable")
+                .map_err(lua_err)?
+            {
+                let raw: LuaValue = components_table.get("touchable").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = conv::lua_to_json(raw).map_err(lua_err)?;
+                    let descriptor: TouchableDescriptor =
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.touchable` invalid: {e}"),
+                            }
+                        })?;
+                    touchable = Some(descriptor.validate()?);
+                }
+            }
             if components_table.contains_key("health").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("health").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -196,6 +213,7 @@ pub fn entity_descriptor_from_lua(
         emitter,
         movement,
         weapon,
+        touchable,
         mesh,
         health,
         behavior,

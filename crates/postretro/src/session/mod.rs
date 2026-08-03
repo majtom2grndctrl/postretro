@@ -136,6 +136,8 @@ pub(crate) struct Session {
     pub(crate) trigger_volume_bridge: scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
     /// Per-level rising-overlap state for host-authoritative trigger evaluation.
     pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
+    /// Per-level rising-overlap and prompt state for host-authoritative item touch.
+    pub(crate) touch_system: crate::sim::touch::TouchSystem,
 
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md.
@@ -463,6 +465,7 @@ impl Session {
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::default(),
+            touch_system: crate::sim::touch::TouchSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
             mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),

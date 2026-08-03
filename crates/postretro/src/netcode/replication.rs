@@ -23,9 +23,8 @@ use super::{
 
 /// The Phase 2 replicable set: entities `crate::netcode` has explicitly registered
 /// as authoritative networked gameplay objects — slot-owned movement pawns, the
-/// host's own pawn, and networked AI enemies (Brain + Agent from a `MapPlacement` or
-/// `RuntimeSpawn` descriptor spawn). This set is the registration mechanism the predicate
-/// consults.
+/// host's own pawn, networked AI enemies, and host world items. This set is the
+/// registration mechanism the predicate consults.
 ///
 /// Membership is by `EntityId`. The predicate ([`is_replicable`]) is the authority
 /// on what crosses the wire — this set is its allow-list, layered over the
@@ -42,9 +41,8 @@ impl ReplicableSet {
     }
 
     // The register/unregister/contains surface is the registration mechanism for
-    // authoritative networked entities: the lifecycle glue registers slot-owned
-    // movement pawns and the host's own pawn, and the enemy sweep registers
-    // networked AI enemies.
+    // authoritative networked entities: lifecycle glue registers slot-owned movement
+    // pawns and the host pawn, while registry sweeps register AI enemies and world items.
     /// Register an entity as an authoritative networked gameplay object. Idempotent.
     pub(crate) fn register(&mut self, id: EntityId) {
         self.registered.insert(id);
@@ -71,7 +69,7 @@ impl ReplicableSet {
 
 /// Phase 2 replicable-set predicate. An entity replicates iff it is explicitly
 /// registered in [`ReplicableSet`] (slot-owned movement pawns, the host's own pawn,
-/// and networked AI enemies — the authoritative networked gameplay objects
+/// networked AI enemies, and world items — the authoritative networked gameplay objects
 /// `crate::netcode` registers). The Phase 1 all-`Transform` walk is deliberately
 /// *not* reused.
 ///
@@ -149,7 +147,8 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
         // component locally. Read from the entity's own `DescriptorProvenance`: a net-slot
         // movement pawn stamps `canonical_name` (the resolved `entity_class`, default
         // `"player"`); a networked AI enemy stamps its descriptor class on any record
-        // carrying finite `Transform` data. A non-descriptor entity stays `None`.
+        // carrying finite `Transform` data. A world item follows the same descriptor
+        // class path. A non-descriptor entity stays `None`.
         let entity_class = descriptor_entity_class(registry, id, &components);
         let active_weapon_archetype = active_weapon_archetype(registry, id, &components);
         snapshots.push(EntitySnapshot {
@@ -377,6 +376,49 @@ pub(crate) fn host_register_loaded_movers(
     }
 }
 
+/// Register every host world item for outbound replication. World-item membership is
+/// defined exclusively by live `ComponentKind::Touchable` presence: acquisition
+/// removes that component, so the next sweep unregisters and forgets the item; a drop
+/// restores it, so the next sweep assigns a fresh session-monotonic `NetworkId`.
+///
+/// Reload-safe and idempotent. `tracked` owns the previously registered item ids; the
+/// stale-id prologue removes entries that no longer carry `TouchableComponent` before
+/// registering the current world-item set. Held wieldables have no touchable component
+/// and are therefore never registered by this path.
+pub(crate) fn host_register_world_items(
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+) {
+    let stale_ids: Vec<EntityId> = tracked
+        .iter()
+        .copied()
+        .filter(|&id| {
+            !registry
+                .has_component_kind(id, ComponentKind::Touchable)
+                .unwrap_or(false)
+        })
+        .collect();
+    for stale in stale_ids {
+        tracked.remove(&stale);
+        replicable.unregister(stale);
+        allocator.forget(stale);
+    }
+
+    let mut count = 0usize;
+    for (id, _) in registry.iter_with_kind(ComponentKind::Touchable) {
+        allocator.stamp(id);
+        replicable.register(id);
+        if tracked.insert(id) {
+            count += 1;
+        }
+    }
+    if count > 0 {
+        log::info!("[Net] host registered {count} world item/items for replication");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +431,7 @@ mod tests {
     use postretro_entities::components::mesh::{
         AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
     };
+    use postretro_entities::components::touchable::TouchableComponent;
     use postretro_entities::data_descriptors::{
         BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
     };
@@ -396,6 +439,7 @@ mod tests {
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
     use postretro_entities::{ComponentValue, Transform};
+    use postretro_foundation::data_descriptors::TouchMode;
 
     // A minimal valid graph brain — the predicate only needs the component
     // present, but a real `BrainComponent` keeps the fixture honest.
@@ -535,6 +579,22 @@ mod tests {
         id
     }
 
+    fn spawn_world_item(registry: &mut EntityRegistry, class: &str) -> EntityId {
+        let id = registry.spawn(Transform {
+            position: Vec3::new(9.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let _ = registry.set_component(
+            id,
+            TouchableComponent {
+                mode: TouchMode::Auto,
+                radius: 32.0,
+            },
+        );
+        let _ = registry.set_component(id, provenance(class, DescriptorSpawnPath::MapPlacement));
+        id
+    }
+
     // E10 Task 4: the host registers a map-placed AI enemy (Brain + Agent + MapPlacement)
     // in the ReplicableSet and stamps it a NetworkId; the id is tracked for reload cleanup.
     #[test]
@@ -602,6 +662,71 @@ mod tests {
             "a static descriptor prop without Brain+Agent stays off the wire"
         );
         assert!(tracked.is_empty(), "no static prop is tracked");
+    }
+
+    #[test]
+    fn host_world_item_sweep_registers_and_rotates_identity_after_acquire_then_drop() {
+        let mut registry = EntityRegistry::new();
+        let item = spawn_world_item(&mut registry, "reference_pistol");
+        let mut allocator = NetworkIdAllocator::new();
+        let mut set = ReplicableSet::new();
+        let mut tracked = HashSet::new();
+
+        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        let initial_network_id = allocator.stamp(item);
+        assert!(set.contains(item), "a touchable item is registered");
+        assert!(tracked.contains(&item), "the host tracks the world item");
+
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &set,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.network_id == initial_network_id.0)
+            .expect("registered item has a baseline source");
+        assert_eq!(snapshot.entity_class.as_deref(), Some("reference_pistol"));
+        assert!(
+            matches!(
+                snapshot.components.as_slice(),
+                [ComponentPayload::Transform(_)]
+            ),
+            "TouchableComponent remains host-local; Transform is enough for client materialization"
+        );
+
+        registry
+            .remove_component::<TouchableComponent>(item)
+            .expect("acquisition removes touchability");
+        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        assert!(!set.contains(item), "acquired item is unregistered");
+        assert!(
+            !tracked.contains(&item),
+            "acquired item is no longer tracked"
+        );
+        assert!(
+            !allocator.maps_entity(item),
+            "the stale mapping is forgotten before a future drop"
+        );
+
+        registry
+            .set_component(
+                item,
+                TouchableComponent {
+                    mode: TouchMode::Auto,
+                    radius: 32.0,
+                },
+            )
+            .expect("drop restores touchability");
+        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        let dropped_network_id = allocator.stamp(item);
+        assert!(set.contains(item), "dropped item is registered again");
+        assert!(
+            dropped_network_id.0 > initial_network_id.0,
+            "a dropped item receives a fresh session-monotonic NetworkId"
+        );
     }
 
     // E10 Task 4 reload safety: a simulated level reload (despawn the old enemies, spawn

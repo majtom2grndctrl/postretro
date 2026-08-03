@@ -9,7 +9,7 @@ use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::mesh::{AnimationState, InterruptPolicy};
 use crate::data_descriptors::{
     BehaviorGraphDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor,
-    WeaponDescriptor,
+    TouchableDescriptor, WeaponDescriptor,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 
@@ -301,7 +301,7 @@ impl MeshDescriptor {
 /// `inventory` declares the canonical wieldable archetypes spawned beside a
 /// player pawn. Runtime state stores the resolved instance ids, one per slot.
 ///
-/// Optional `light` / `emitter` / `movement` / `weapon` carry per-entity-type
+/// Optional `light` / `emitter` / `movement` / `weapon` / `touchable` carry per-entity-type
 /// component presets. The level-load spawn path materializes these into a
 /// fresh ECS entity per matching placement.
 ///
@@ -314,6 +314,7 @@ pub struct EntityTypeDescriptor {
     pub emitter: Option<BillboardEmitterComponent>,
     pub movement: Option<PlayerMovementDescriptor>,
     pub weapon: Option<WeaponDescriptor>,
+    pub touchable: Option<TouchableDescriptor>,
     pub mesh: Option<MeshDescriptor>,
     pub health: Option<HealthDescriptor>,
     pub behavior: Option<BehaviorGraphDescriptor>,

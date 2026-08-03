@@ -51,6 +51,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::EntityState,
     ComponentKind::DeferredEffect,
     ComponentKind::Inventory,
+    ComponentKind::Touchable,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -82,6 +83,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::EntityState => "entity_state",
         ComponentKind::DeferredEffect => "deferred_effect",
         ComponentKind::Inventory => "inventory",
+        ComponentKind::Touchable => "touchable",
     }
 }
 
@@ -372,6 +374,12 @@ mod tests {
             ),
             ComponentKind::Inventory => ComponentValue::Inventory(
                 postretro_entities::components::inventory::Inventory::default(),
+            ),
+            ComponentKind::Touchable => ComponentValue::Touchable(
+                postretro_entities::components::touchable::TouchableComponent {
+                    mode: postretro_foundation::data_descriptors::TouchMode::Auto,
+                    radius: 40.0,
+                },
             ),
         }
     }

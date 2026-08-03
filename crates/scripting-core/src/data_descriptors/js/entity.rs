@@ -5,7 +5,7 @@ use super::super::*;
 use rquickjs::object::Filter;
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -34,6 +34,7 @@ pub fn entity_descriptor_from_js<'js>(
     let mut emitter = None;
     let mut movement = None;
     let mut weapon = None;
+    let mut touchable = None;
     let mut mesh = None;
     let mut health = None;
     let mut behavior = None;
@@ -90,6 +91,19 @@ pub fn entity_descriptor_from_js<'js>(
                             }
                         })?;
                     weapon = Some(descriptor.validate()?);
+                }
+            }
+            if components_obj.contains_key("touchable").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("touchable").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let descriptor: TouchableDescriptor =
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.touchable` invalid: {e}"),
+                            }
+                        })?;
+                    touchable = Some(descriptor.validate()?);
                 }
             }
             if components_obj.contains_key("health").map_err(js_err)? {
@@ -165,6 +179,7 @@ pub fn entity_descriptor_from_js<'js>(
         emitter,
         movement,
         weapon,
+        touchable,
         mesh,
         health,
         behavior,

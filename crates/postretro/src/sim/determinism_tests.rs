@@ -121,6 +121,7 @@ impl RecordedCommand {
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
                 use_pressed: false,
+                drop_pressed: false,
             },
             fire_button: FireButtonState {
                 pressed: self.fire_pressed,
@@ -130,6 +131,7 @@ impl RecordedCommand {
             firing_slot: 0,
             select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 
@@ -1202,6 +1204,7 @@ fn run_driven_agent_sim_tick(
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -1211,6 +1214,7 @@ fn run_driven_agent_sim_tick(
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     };
     let _ = simulate_tick(
         registry,
@@ -2994,6 +2998,7 @@ fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
         crouch_intent: false,
         facing_yaw: 0.0,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
@@ -3058,6 +3063,7 @@ fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
         crouch_intent: false,
         facing_yaw: 0.0,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
@@ -3119,6 +3125,7 @@ fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
         crouch_intent: false,
         facing_yaw: 0.0,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
@@ -3173,6 +3180,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -3182,6 +3190,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = simulate_tick(
@@ -3247,6 +3256,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: true,
@@ -3256,6 +3266,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = simulate_tick(
@@ -3327,6 +3338,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: true,
@@ -3336,6 +3348,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = simulate_tick(
@@ -3412,6 +3425,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: true,
@@ -3421,6 +3435,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         firing_slot: 0,
         select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     };
 
     let events = simulate_tick(

@@ -1058,6 +1058,33 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_input_latch_coalesces_zero_tick_drop_presses_into_one_edge() {
+        let mut latch = GameplayInputLatch::new();
+        let drop_press = ActionSnapshot::with_button_state(Action::Drop, ButtonState::Pressed);
+
+        assert!(latch.snapshot_for_ticks(&drop_press, 0).is_none());
+        assert!(latch.snapshot_for_ticks(&drop_press, 0).is_none());
+
+        let gameplay_snapshot = latch
+            .snapshot_for_ticks(&ActionSnapshot::neutral(), 2)
+            .expect("fixed ticks should receive a gameplay snapshot");
+        assert_eq!(
+            gameplay_snapshot.button(Action::Drop),
+            ButtonState::Pressed,
+            "consecutive zero-tick presses collapse into one tick-zero drop edge"
+        );
+
+        let following_snapshot = latch
+            .snapshot_for_ticks(&ActionSnapshot::neutral(), 1)
+            .expect("later fixed ticks still receive a gameplay snapshot");
+        assert_eq!(
+            following_snapshot.button(Action::Drop),
+            ButtonState::Inactive,
+            "the latched drop edge drains onto the first tick-bearing frame only"
+        );
+    }
+
+    #[test]
     fn gameplay_input_latch_clear_discards_pending_wieldable_commit() {
         let mut latch = GameplayInputLatch::new();
         let occupied = [true, true];

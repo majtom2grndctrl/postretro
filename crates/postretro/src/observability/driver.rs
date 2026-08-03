@@ -243,6 +243,7 @@ fn run_headless_inner(
             select_slot: None,
             // No "use" verb in the runspec yet; headless drives no trigger stage.
             use_pressed: false,
+            drop_pressed: false,
         };
 
         // The post-movement closure returns the runspec's aim (origin + a
@@ -399,6 +400,7 @@ fn neutral_movement(facing_yaw: f32) -> MovementInput {
         running: false,
         crouch_intent: false,
         use_pressed: false,
+        drop_pressed: false,
         facing_yaw,
     }
 }

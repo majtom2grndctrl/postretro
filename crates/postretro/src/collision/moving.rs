@@ -58,6 +58,13 @@ pub(crate) struct MoverPose {
 
 pub(crate) trait MoverPoseSource {
     fn pose(&self, mover_id: u32) -> Option<MoverPose>;
+
+    /// Tick-local provenance for movers whose net pose delta is zero after
+    /// crossing one or more path termini. Ordinary pose sources need no
+    /// override; the fixed-tick mover table records these arrivals explicitly.
+    fn had_endpoint_arrival(&self, _mover_id: u32) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]

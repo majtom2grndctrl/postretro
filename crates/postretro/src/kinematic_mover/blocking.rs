@@ -49,6 +49,33 @@ pub(crate) struct MoverBlockingState {
     crush_elapsed_ms: HashMap<(EntityId, EntityId), f32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MoverPolicySnapshot {
+    entity: EntityId,
+    mover_id: u32,
+    policy: BlockPolicy,
+    blocked: bool,
+    crush_damage: f32,
+    crush_interval_ms: f32,
+    heading: Option<glam::Vec3>,
+}
+
+impl MoverBlockingState {
+    pub(crate) fn clear(&mut self) {
+        self.crush_elapsed_ms.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_test_cadence(&mut self, mover: EntityId, victim: EntityId) {
+        self.crush_elapsed_ms.insert((mover, victim), 75.0);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.crush_elapsed_ms.is_empty()
+    }
+}
+
 /// Apply the current player and enemy block-policy decisions after player
 /// movement and agent steering settle. The decision is deliberately outside
 /// prediction: a connected client only reconciles the resulting mover phase and
@@ -64,19 +91,66 @@ pub(crate) fn run_mover_blocking_pass(
     events: &mut Vec<(MoverEventKind, u32)>,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) {
-    let movers: Vec<(EntityId, KinematicMoverComponent)> = registry
+    let stale_blocked: Vec<EntityId> = registry
         .iter_with_kind(ComponentKind::KinematicMover)
         .filter_map(|(entity, value)| {
             let ComponentValue::KinematicMover(mover) = value else {
                 return None;
             };
-            Some((entity, mover.clone()))
+            let policy = effective_block_policy(mover);
+            (mover.blocked
+                && (policy != BlockPolicy::Stop
+                    || !policy_is_active_this_tick(mover, policy, mover_poses)))
+            .then_some(entity)
         })
         .collect();
-    if movers.is_empty() {
-        blocking_state.crush_elapsed_ms.clear();
+    for entity in stale_blocked {
+        if let Ok(ComponentValue::KinematicMover(mover)) =
+            registry.get_component_value_mut(entity, ComponentKind::KinematicMover)
+        {
+            mover.blocked = false;
+        }
+    }
+
+    // The common platform-map path is displace-only. Leave before building
+    // entity capsule snapshots or allocating contact sets; those movers use
+    // the existing displacement stage and need no host policy work.
+    let has_policy_work =
+        registry
+            .iter_with_kind(ComponentKind::KinematicMover)
+            .any(|(_, value)| {
+                let ComponentValue::KinematicMover(mover) = value else {
+                    return false;
+                };
+                let policy = effective_block_policy(mover);
+                policy != BlockPolicy::Displace
+                    && policy_is_active_this_tick(mover, policy, mover_poses)
+            });
+    if !has_policy_work {
+        blocking_state.clear();
         return;
     }
+
+    let movers: Vec<MoverPolicySnapshot> = registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .filter_map(|(entity, value)| {
+            let ComponentValue::KinematicMover(mover) = value else {
+                return None;
+            };
+            let policy = effective_block_policy(mover);
+            (policy != BlockPolicy::Displace
+                && policy_is_active_this_tick(mover, policy, mover_poses))
+            .then(|| MoverPolicySnapshot {
+                entity,
+                mover_id: mover.mover_id,
+                policy,
+                blocked: mover.blocked,
+                crush_damage: mover.crush_damage,
+                crush_interval_ms: mover.crush_interval_ms,
+                heading: mover_heading_at_tick_end(mover),
+            })
+        })
+        .collect();
 
     let player_capsules = player_capsules(registry);
     let agent_capsules = agent_capsules(registry);
@@ -84,11 +158,7 @@ pub(crate) fn run_mover_blocking_pass(
     let mut reverse_contacts: HashMap<EntityId, glam::Vec3> = HashMap::new();
     let mut pinned_crush_contacts = HashSet::new();
 
-    for (mover_entity, mover) in &movers {
-        let effective_policy = effective_block_policy(mover);
-        if effective_policy == BlockPolicy::Displace {
-            continue;
-        }
+    for mover in &movers {
         let Some(collider) = mover_colliders
             .iter()
             .find(|collider| collider.mover_id == mover.mover_id)
@@ -97,22 +167,16 @@ pub(crate) fn run_mover_blocking_pass(
         };
 
         for (player_entity, position, capsule) in &player_capsules {
-            let contact_capsule =
-                conservatively_inflated_contact_capsule(capsule, collider, mover_poses);
-            let Some(penetration) = deepest_mover_push_penetration(
-                std::slice::from_ref(collider),
-                mover_poses,
-                Point::new(position.x, position.y, position.z),
-                &contact_capsule,
-            ) else {
+            let Some(penetration) =
+                leading_mover_contact_penetration(collider, mover_poses, *position, capsule)
+            else {
                 continue;
             };
 
-            match effective_policy {
+            match mover.policy {
                 BlockPolicy::Stop | BlockPolicy::Reverse => note_reactive_contact(
-                    *mover_entity,
+                    mover.entity,
                     mover,
-                    effective_policy,
                     penetration.normal,
                     &mut contacted_stop_movers,
                     &mut reverse_contacts,
@@ -132,7 +196,7 @@ pub(crate) fn run_mover_blocking_pass(
                         capsule,
                         actual_penetration,
                     ) {
-                        pinned_crush_contacts.insert((*mover_entity, *player_entity));
+                        pinned_crush_contacts.insert((mover.entity, *player_entity));
                     }
                 }
                 BlockPolicy::Displace => unreachable!("displace movers do not enter the pass"),
@@ -140,22 +204,16 @@ pub(crate) fn run_mover_blocking_pass(
         }
 
         for (enemy_entity, position, capsule) in &agent_capsules {
-            let contact_capsule =
-                conservatively_inflated_contact_capsule(capsule, collider, mover_poses);
-            let Some(penetration) = deepest_mover_push_penetration(
-                std::slice::from_ref(collider),
-                mover_poses,
-                Point::new(position.x, position.y, position.z),
-                &contact_capsule,
-            ) else {
+            let Some(penetration) =
+                leading_mover_contact_penetration(collider, mover_poses, *position, capsule)
+            else {
                 continue;
             };
 
-            match effective_policy {
+            match mover.policy {
                 BlockPolicy::Stop | BlockPolicy::Reverse => note_reactive_contact(
-                    *mover_entity,
+                    mover.entity,
                     mover,
-                    effective_policy,
                     penetration.normal,
                     &mut contacted_stop_movers,
                     &mut reverse_contacts,
@@ -171,7 +229,7 @@ pub(crate) fn run_mover_blocking_pass(
                     )
                     .is_some()
                     {
-                        pinned_crush_contacts.insert((*mover_entity, *enemy_entity));
+                        pinned_crush_contacts.insert((mover.entity, *enemy_entity));
                     }
                 }
                 BlockPolicy::Displace => unreachable!("displace movers do not enter the pass"),
@@ -179,40 +237,42 @@ pub(crate) fn run_mover_blocking_pass(
         }
     }
 
-    for (entity, mover_snapshot) in movers {
-        let effective_policy = effective_block_policy(&mover_snapshot);
-        let stop_contact =
-            effective_policy == BlockPolicy::Stop && contacted_stop_movers.contains(&entity);
-        if stop_contact && !mover_snapshot.blocked {
-            events.push((MoverEventKind::Blocked, mover_snapshot.mover_id));
+    for snapshot in movers {
+        let stop_contact = snapshot.policy == BlockPolicy::Stop
+            && contacted_stop_movers.contains(&snapshot.entity);
+        if stop_contact && !snapshot.blocked {
+            events.push((MoverEventKind::Blocked, snapshot.mover_id));
         }
 
-        let mut mover = mover_snapshot.clone();
-        mover.blocked = stop_contact;
-
-        if effective_policy == BlockPolicy::Reverse
-            && let Some(contact_normal) = reverse_contacts.get(&entity)
-            && mover_heading_at_tick_end(&mover)
-                .is_some_and(|heading| heading.dot(*contact_normal) > 0.0)
+        if let Ok(ComponentValue::KinematicMover(mover)) =
+            registry.get_component_value_mut(snapshot.entity, ComponentKind::KinematicMover)
         {
-            let direction_away_from_contact = -mover.direction_sign;
-            super::reanchor_direction(&mut mover, direction_away_from_contact);
-            mover.target_segment = None;
-            mover.started = true;
-            mover.completed = false;
-            mover.wait_remaining_ms = 0.0;
-            events.push((MoverEventKind::Blocked, mover.mover_id));
+            mover.blocked = stop_contact;
+            if snapshot.policy == BlockPolicy::Reverse
+                && let Some(contact_normal) = reverse_contacts.get(&snapshot.entity)
+                && snapshot
+                    .heading
+                    .is_some_and(|heading| heading.dot(*contact_normal) > 0.0)
+            {
+                let direction_away_from_contact = -mover.direction_sign;
+                super::reanchor_direction(mover, direction_away_from_contact);
+                mover.target_segment = None;
+                mover.started = true;
+                mover.completed = false;
+                mover.wait_remaining_ms = 0.0;
+                events.push((MoverEventKind::Blocked, mover.mover_id));
+            }
         }
 
-        if effective_policy == BlockPolicy::Crush {
+        if snapshot.policy == BlockPolicy::Crush {
             for &(crush_mover, victim) in &pinned_crush_contacts {
-                if crush_mover != entity {
+                if crush_mover != snapshot.entity {
                     continue;
                 }
                 if !crush_hit_is_due(
                     blocking_state,
-                    (entity, victim),
-                    mover.crush_interval_ms,
+                    (snapshot.entity, victim),
+                    snapshot.crush_interval_ms,
                     tick_dt,
                 ) {
                     continue;
@@ -221,17 +281,13 @@ pub(crate) fn run_mover_blocking_pass(
                     registry,
                     victim,
                     &DamagePayload {
-                        amount: mover.crush_damage,
+                        amount: snapshot.crush_damage,
                     },
                     DamageContext::new("mover.crush", DamageProducer::InTick),
                 );
                 on_impact(registry);
-                events.push((MoverEventKind::Crushed, mover.mover_id));
+                events.push((MoverEventKind::Crushed, snapshot.mover_id));
             }
-        }
-
-        if mover != mover_snapshot {
-            let _ = registry.set_component(entity, mover);
         }
     }
 
@@ -248,13 +304,12 @@ pub(crate) fn run_mover_blocking_pass(
 
 fn note_reactive_contact(
     mover_entity: EntityId,
-    mover: &KinematicMoverComponent,
-    effective_policy: BlockPolicy,
+    mover: &MoverPolicySnapshot,
     contact_normal: glam::Vec3,
     contacted_stop_movers: &mut HashSet<EntityId>,
     reverse_contacts: &mut HashMap<EntityId, glam::Vec3>,
 ) {
-    match effective_policy {
+    match mover.policy {
         BlockPolicy::Stop => {
             contacted_stop_movers.insert(mover_entity);
         }
@@ -263,7 +318,8 @@ fn note_reactive_contact(
             // already run), so this heading is the live tick-end intent.
             // `tick_delta` would be stale at a corner or post-terminus
             // auto-reversal and can therefore reverse the wrong way.
-            if mover_heading_at_tick_end(mover)
+            if mover
+                .heading
                 .is_some_and(|heading| heading.dot(contact_normal) > 0.0)
             {
                 reverse_contacts
@@ -283,6 +339,31 @@ fn effective_block_policy(mover: &KinematicMoverComponent) -> BlockPolicy {
     (mover.block_policy == BlockPolicy::Reverse && mover.waypoints.len() < 2)
         .then_some(BlockPolicy::Stop)
         .unwrap_or(mover.block_policy)
+}
+
+fn policy_is_active_this_tick(
+    mover: &KinematicMoverComponent,
+    policy: BlockPolicy,
+    mover_poses: &dyn MoverPoseSource,
+) -> bool {
+    if policy == BlockPolicy::Stop && mover.blocked && mover.started && !mover.completed {
+        // A held stop mover must keep sampling contact so it can resume when
+        // clear even though its published motion is intentionally zero.
+        return true;
+    }
+    if mover_poses.had_endpoint_arrival(mover.mover_id) {
+        return true;
+    }
+    let Some(pose) = mover_poses.pose(mover.mover_id) else {
+        return false;
+    };
+    let translated = pose.tick_delta.is_finite()
+        && pose.tick_delta.length_squared() > f32::EPSILON * f32::EPSILON;
+    let rotation = pose.tick_rotation_delta.to_scaled_axis();
+    let rotated = rotation.is_finite() && rotation.length_squared() > f32::EPSILON * f32::EPSILON;
+    let spinning = pose.angular_velocity.is_finite()
+        && pose.angular_velocity.length_squared() > f32::EPSILON * f32::EPSILON;
+    translated || rotated || spinning
 }
 
 fn mover_heading_at_tick_end(mover: &KinematicMoverComponent) -> Option<glam::Vec3> {
@@ -368,25 +449,69 @@ fn is_blocking_victim(registry: &EntityRegistry, entity: EntityId) -> bool {
             .unwrap_or(false)
 }
 
-/// The pass runs after mover motion has already been applied, so extend the
-/// player-contact shape by one tick of the candidate mover's linear travel.
-/// This is conservative by design: producer-to-next-tick latency cannot allow a
-/// fast leading face to visibly sink into a capsule before the next driver pass.
-fn conservatively_inflated_contact_capsule(
-    capsule: &Capsule,
+/// Query contact made this tick, then extend only the mover's leading sweep by
+/// one more tick. Expanding capsule radius would also grow behind and beside
+/// the mover, producing policy reactions where no leading face can arrive.
+fn leading_mover_contact_penetration(
     collider: &MoverCollider,
     mover_poses: &dyn MoverPoseSource,
-) -> Capsule {
-    let leading_face_inflation = mover_poses
-        .pose(collider.mover_id)
-        .map(|pose| pose.tick_delta.length())
-        .filter(|distance| distance.is_finite())
-        .unwrap_or(0.0);
-    Capsule::new(
-        capsule.segment.a,
-        capsule.segment.b,
-        capsule.radius + leading_face_inflation,
+    position: glam::Vec3,
+    capsule: &Capsule,
+) -> Option<crate::collision::moving::MoverPenetration> {
+    let point = Point::new(position.x, position.y, position.z);
+    if let Some(contact) =
+        deepest_mover_push_penetration(std::slice::from_ref(collider), mover_poses, point, capsule)
+    {
+        return Some(contact);
+    }
+
+    let pose = mover_poses.pose(collider.mover_id)?;
+    let has_translation = pose.tick_delta.is_finite()
+        && pose.tick_delta.length_squared() > f32::EPSILON * f32::EPSILON;
+    let rotation_delta = pose.tick_rotation_delta.to_scaled_axis();
+    let has_rotation_delta =
+        rotation_delta.is_finite() && rotation_delta.length_squared() > f32::EPSILON * f32::EPSILON;
+    let angular_speed = pose.angular_velocity.length();
+    let has_authored_rotation = pose.angular_velocity.is_finite()
+        && angular_speed.is_finite()
+        && angular_speed > f32::EPSILON
+        && pose.tick_dt.is_finite()
+        && pose.tick_dt > 0.0;
+    if !has_translation && !has_rotation_delta && !has_authored_rotation {
+        return None;
+    }
+
+    let mut leading_pose = pose;
+    leading_pose.transform.position += pose.tick_delta;
+    leading_pose.transform.rotation = if has_authored_rotation {
+        glam::Quat::from_axis_angle(
+            pose.angular_velocity / angular_speed,
+            angular_speed * pose.tick_dt,
+        ) * pose.transform.rotation
+    } else {
+        pose.tick_rotation_delta * pose.transform.rotation
+    };
+    let leading_source = ProspectiveMoverPose {
+        mover_id: collider.mover_id,
+        pose: leading_pose,
+    };
+    deepest_mover_push_penetration(
+        std::slice::from_ref(collider),
+        &leading_source,
+        point,
+        capsule,
     )
+}
+
+struct ProspectiveMoverPose {
+    mover_id: u32,
+    pose: crate::collision::moving::MoverPose,
+}
+
+impl MoverPoseSource for ProspectiveMoverPose {
+    fn pose(&self, mover_id: u32) -> Option<crate::collision::moving::MoverPose> {
+        (mover_id == self.mover_id).then_some(self.pose)
+    }
 }
 
 #[cfg(test)]
@@ -475,6 +600,21 @@ mod tests {
                 },
                 linear_velocity: Vec3::new(20.0, 0.0, 0.0),
                 tick_delta: Vec3::new(2.0, 0.0, 0.0),
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: 0.1,
+            },
+        }
+    }
+
+    fn stationary_contact_pose(mover_id: u32) -> SingleMoverPose {
+        SingleMoverPose {
+            mover_id,
+            pose: crate::collision::moving::MoverPose {
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
                 angular_velocity: Vec3::ZERO,
                 tick_rotation_delta: Quat::IDENTITY,
                 carry_yaw: false,
@@ -664,6 +804,185 @@ mod tests {
                 .blocked
         );
         assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    // Regression: policy evaluation on an inactive pose could restart a
+    // stationary reverse mover merely because an entity overlapped it.
+    #[test]
+    fn inactive_reverse_contact_does_not_restart_the_mover() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Reverse;
+        mover.started = false;
+        registry.set_component(mover_entity, mover).unwrap();
+        add_player(&mut registry, None);
+
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &stationary_contact_pose(mover_id),
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap();
+        assert!(!mover.started);
+        assert_eq!(mover.direction_sign, 1);
+        assert!(events.is_empty());
+    }
+
+    // Regression: an idle crusher damaged overlapping victims without any
+    // mover motion to produce a crush contact.
+    #[test]
+    fn inactive_crush_contact_deals_no_damage() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.started = false;
+        mover.crush_damage = 10.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, Some(100.0));
+
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &stationary_contact_pose(mover_id),
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(player)
+                .unwrap()
+                .current,
+            100.0
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn completing_crusher_keeps_its_final_moving_contact_tick() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.completed = true;
+        mover.crush_damage = 10.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, Some(100.0));
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &moving_contact_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(player)
+                .unwrap()
+                .current,
+            90.0
+        );
+    }
+
+    // Regression: a completed auto-close hold could reassert `blocked` from a
+    // stationary overlap after the shared driver had cleared the stale flag.
+    #[test]
+    fn completed_stationary_stop_contact_does_not_reassert_blocked() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Stop;
+        mover.completed = true;
+        registry.set_component(mover_entity, mover).unwrap();
+        add_player(&mut registry, None);
+
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &stationary_contact_pose(mover_id),
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert!(events.is_empty());
+    }
+
+    // Regression: radius inflation reached behind and beside a mover even
+    // though its leading face could not contact those capsules next tick.
+    #[test]
+    fn prospective_contact_extends_only_along_the_leading_sweep() {
+        let mover_id = 42;
+        let collider = swept_wall(mover_id);
+        let poses = moving_contact_pose(mover_id);
+        let capsule = Capsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25);
+
+        assert!(
+            leading_mover_contact_penetration(
+                &collider,
+                &poses,
+                Vec3::new(2.5, 1.0, 0.0),
+                &capsule,
+            )
+            .is_some(),
+            "the next leading sweep remains conservative"
+        );
+        assert!(
+            leading_mover_contact_penetration(
+                &collider,
+                &poses,
+                Vec3::new(-2.0, 1.0, 0.0),
+                &capsule,
+            )
+            .is_none(),
+            "a capsule behind the sweep must not react"
+        );
+        assert!(
+            leading_mover_contact_penetration(
+                &collider,
+                &poses,
+                Vec3::new(1.0, 1.0, 2.5),
+                &capsule,
+            )
+            .is_none(),
+            "a capsule beside the sweep must not react"
+        );
     }
 
     #[test]

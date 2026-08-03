@@ -45,7 +45,7 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
-    KinematicMoverComponent, ScriptCtx, SlotTable,
+    ScriptCtx, SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;
@@ -364,24 +364,11 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     let auto_close_timers = trigger_context
         .as_ref()
         .and_then(|context| context.auto_close_timers.clone());
-    let mover_phase_before: Vec<(EntityId, KinematicMoverComponent)> = registry
-        .borrow()
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .filter_map(|(entity, value)| {
-            let ComponentValue::KinematicMover(mover) = value else {
-                return None;
-            };
-            Some((entity, mover.clone()))
-        })
-        .collect();
     {
         let mut registry = registry.borrow_mut();
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
     }
-    let mut mover_events = {
-        let registry = registry.borrow();
-        detect_mover_terminus_edges(&mover_phase_before, &registry)
-    };
+    let mut mover_events: Vec<_> = mover_tick_states.terminus_events().collect();
     if let Some(auto_close_timers) = auto_close_timers.as_ref() {
         auto_close_timers.arm_opened_termini(&mut registry.borrow_mut(), &mover_events);
     }
@@ -642,35 +629,6 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         #[cfg(test)]
         trigger_command_fires,
     }
-}
-
-/// Host-only edge detection around the shared mover driver. The deterministic
-/// driver intentionally emits no presentation events because clients rerun it
-/// during prediction and reconciliation.
-fn detect_mover_terminus_edges(
-    before: &[(EntityId, KinematicMoverComponent)],
-    registry: &EntityRegistry,
-) -> Vec<(kinematic_mover::MoverEventKind, u32)> {
-    let mut events = Vec::new();
-    for (entity, prior) in before {
-        if prior.waypoints.len() < 2 {
-            continue;
-        }
-        let Ok(current) = registry.get_component::<KinematicMoverComponent>(*entity) else {
-            continue;
-        };
-        let last = (current.waypoints.len() - 1) as u16;
-        let reached_new_open_terminus = current.segment_index == last
-            && (prior.segment_index != last || prior.segment_elapsed_ms > f32::EPSILON);
-        let reached_new_closed_terminus = current.segment_index == 0
-            && (prior.segment_index != 0 || prior.segment_elapsed_ms > f32::EPSILON);
-        if reached_new_open_terminus {
-            events.push((kinematic_mover::MoverEventKind::Opened, current.mover_id));
-        } else if reached_new_closed_terminus {
-            events.push((kinematic_mover::MoverEventKind::Closed, current.mover_id));
-        }
-    }
-    events
 }
 
 fn trigger_fire_context(

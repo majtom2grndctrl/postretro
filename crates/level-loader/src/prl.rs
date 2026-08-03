@@ -378,7 +378,7 @@ pub struct LoadedKinematicMover {
     pub block_policy: String,
     pub crush_damage: f32,
     pub crush_interval_ms: f32,
-    pub auto_close_ms: f32,
+    pub auto_close_ms: Option<f32>,
     pub open_event: Option<String>,
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,
@@ -4262,7 +4262,7 @@ mod tests {
                 block_policy: "displace".to_string(),
                 crush_damage: 0.0,
                 crush_interval_ms: 0.0,
-                auto_close_ms: 0.0,
+                auto_close_ms: None,
                 open_event: None,
                 close_event: None,
                 blocked_event: None,
@@ -4293,7 +4293,7 @@ mod tests {
         record.block_policy = "crush".to_string();
         record.crush_damage = 25.0;
         record.crush_interval_ms = 150.0;
-        record.auto_close_ms = 900.0;
+        record.auto_close_ms = Some(900.0);
         record.open_event = Some("opened".to_string());
         record.close_event = Some("closed".to_string());
         record.blocked_event = Some("blocked".to_string());
@@ -4308,7 +4308,7 @@ mod tests {
         assert_eq!(mover.block_policy, "crush");
         assert!((mover.crush_damage - 25.0).abs() <= 1.0e-6);
         assert!((mover.crush_interval_ms - 150.0).abs() <= 1.0e-6);
-        assert!((mover.auto_close_ms - 900.0).abs() <= 1.0e-6);
+        assert_eq!(mover.auto_close_ms, Some(900.0));
         assert_eq!(mover.open_event.as_deref(), Some("opened"));
         assert_eq!(mover.close_event.as_deref(), Some("closed"));
         assert_eq!(mover.blocked_event.as_deref(), Some("blocked"));

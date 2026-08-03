@@ -352,11 +352,7 @@ fn spawn_from_geometry_with_auto_close_default(
         component.block_policy = block_policy_from_loaded(mover)?;
         component.crush_damage = mover.crush_damage;
         component.crush_interval_ms = mover.crush_interval_ms;
-        component.auto_close_ms = if mover.auto_close_ms > 0.0 {
-            mover.auto_close_ms
-        } else {
-            mod_auto_close_ms
-        };
+        component.auto_close_ms = mover.auto_close_ms.unwrap_or(mod_auto_close_ms);
         if component.auto_close_ms > 0.0 && component.waypoints.len() < 2 {
             log::warn!(
                 "[Loader] kinematic mover {} (`{}`) ignores auto_close_ms because it has fewer than two waypoints",
@@ -610,7 +606,7 @@ mod tests {
             block_policy: "displace".to_string(),
             crush_damage: 0.0,
             crush_interval_ms: 0.0,
-            auto_close_ms: 0.0,
+            auto_close_ms: None,
             open_event: None,
             close_event: None,
             blocked_event: None,
@@ -866,7 +862,7 @@ mod tests {
         authored.block_policy = "crush".to_string();
         authored.crush_damage = 20.0;
         authored.crush_interval_ms = 125.0;
-        authored.auto_close_ms = 750.0;
+        authored.auto_close_ms = Some(750.0);
         authored.open_event = Some("door_open".to_string());
         authored.close_event = Some("door_close".to_string());
         authored.blocked_event = Some("door_blocked".to_string());
@@ -889,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_close_seed_uses_mod_default_then_positive_mover_override() {
+    fn auto_close_seed_distinguishes_inherit_explicit_zero_and_positive_override() {
         let mut geometry = geometry(1);
         let mut registry = EntityRegistry::new();
         let id = spawn_from_geometry_with_auto_close_default(&mut registry, &geometry, 300.0)
@@ -902,7 +898,19 @@ mod tests {
             300.0
         );
 
-        geometry.movers[0].auto_close_ms = 125.0;
+        geometry.movers[0].auto_close_ms = Some(0.0);
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry_with_auto_close_default(&mut registry, &geometry, 300.0)
+            .expect("explicit disable should seed a valid mover")[0];
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(id)
+                .expect("mover component attached")
+                .auto_close_ms,
+            0.0
+        );
+
+        geometry.movers[0].auto_close_ms = Some(125.0);
         let mut registry = EntityRegistry::new();
         let id = spawn_from_geometry_with_auto_close_default(&mut registry, &geometry, 300.0)
             .expect("authored override should seed a valid mover")[0];

@@ -95,7 +95,7 @@ struct PendingKinematicMover {
     block_policy: String,
     crush_damage: f32,
     crush_interval_ms: f32,
-    auto_close_ms: f32,
+    auto_close_ms: Option<f32>,
     open_event: Option<String>,
     close_event: Option<String>,
     blocked_event: Option<String>,
@@ -351,11 +351,22 @@ fn parse_kinematic_mover(
             "kinematic_mover `{name}` `crush_interval_ms` must be finite and non-negative, got {crush_interval_ms}"
         );
     }
-    let auto_close_ms =
-        parse_optional_finite_f32(props, "auto_close_ms", 0.0, "kinematic_mover", &name)?;
-    if auto_close_ms < 0.0 {
+    let auto_close_ms = props
+        .get("auto_close_ms")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<f32>().map_err(|_| {
+                anyhow::anyhow!(
+                    "kinematic_mover `{name}` `auto_close_ms` must be a finite number, got `{value}`"
+                )
+            })
+        })
+        .transpose()?;
+    if auto_close_ms.is_some_and(|value| !value.is_finite() || value < 0.0) {
         anyhow::bail!(
-            "kinematic_mover `{name}` `auto_close_ms` must be finite and non-negative, got {auto_close_ms}"
+            "kinematic_mover `{name}` `auto_close_ms` must be finite and non-negative, got {}",
+            auto_close_ms.expect("checked as present")
         );
     }
     let optional_event = |key: &str| {
@@ -3447,7 +3458,7 @@ mod tests {
             "block_policy(choices) : \"Host-authoritative response when this mover contacts an entity\" : \"displace\" =",
             "crush_damage(float) : \"Damage per crusher hit\" : \"0\"",
             "crush_interval_ms(float) : \"Milliseconds between crusher hits (0 hits every tick)\" : \"0\"",
-            "auto_close_ms(float) : \"Milliseconds to wait before a future automatic close (0 disables)\" : \"0\"",
+            "auto_close_ms(float) : \"Milliseconds before automatic close; blank inherits the mod default, 0 disables\" : \"\"",
             "open_event(string) : \"Named event when the mover reaches its open terminus\" : \"\"",
             "close_event(string) : \"Named event when the mover reaches its closed terminus\" : \"\"",
             "blocked_event(string) : \"Named event when a blocking mover reacts to contact\" : \"\"",
@@ -3899,7 +3910,7 @@ mod tests {
         assert_eq!(authored.block_policy, "stop");
         assert!((authored.crush_damage - 12.5).abs() < f32::EPSILON);
         assert!((authored.crush_interval_ms - 250.0).abs() < f32::EPSILON);
-        assert!((authored.auto_close_ms - 1750.0).abs() < f32::EPSILON);
+        assert_eq!(authored.auto_close_ms, Some(1750.0));
         assert_eq!(authored.open_event.as_deref(), Some("lift_open"));
         assert_eq!(authored.close_event.as_deref(), Some("lift_closed"));
         assert_eq!(authored.blocked_event.as_deref(), Some("lift_blocked"));
@@ -3917,11 +3928,35 @@ mod tests {
         assert_eq!(record.block_policy, "stop");
         assert!((record.crush_damage - 12.5).abs() < f32::EPSILON);
         assert!((record.crush_interval_ms - 250.0).abs() < f32::EPSILON);
-        assert!((record.auto_close_ms - 1750.0).abs() < f32::EPSILON);
+        assert_eq!(record.auto_close_ms, Some(1750.0));
         assert_eq!(record.open_event.as_deref(), Some("lift_open"));
         assert_eq!(record.close_event.as_deref(), Some("lift_closed"));
         assert_eq!(record.blocked_event.as_deref(), Some("lift_blocked"));
         assert_eq!(record.crush_event, None);
+    }
+
+    // Regression: collapsing both forms to zero made an authored disable
+    // unable to override a positive mod-wide default.
+    #[test]
+    fn kinematic_mover_auto_close_preserves_absent_blank_and_explicit_zero() {
+        let absent = parse_inline_map(&kinematic_test_map("wp_b")).unwrap();
+        assert_eq!(absent.kinematic_movers[0].auto_close_ms, None);
+
+        let blank_text = kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"auto_close_ms\" \"\"\n",
+            1,
+        );
+        let blank = parse_inline_map(&blank_text).unwrap();
+        assert_eq!(blank.kinematic_movers[0].auto_close_ms, None);
+
+        let zero_text = kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"auto_close_ms\" \"0\"\n",
+            1,
+        );
+        let zero = parse_inline_map(&zero_text).unwrap();
+        assert_eq!(zero.kinematic_movers[0].auto_close_ms, Some(0.0));
     }
 
     #[test]

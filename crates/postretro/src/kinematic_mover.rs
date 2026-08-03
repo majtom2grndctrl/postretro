@@ -39,15 +39,32 @@ pub(crate) struct MoverTickState {
     pub(crate) tick_dt: f32,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct MoverEndpointArrivals {
+    opened: bool,
+    closed: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MoverTickStateTable {
     states: HashMap<u32, MoverTickState>,
+    endpoint_arrivals: Vec<(u32, MoverEndpointArrivals)>,
     blocking_state: MoverBlockingState,
+    mover_entities: Vec<EntityId>,
 }
 
 impl MoverTickStateTable {
     pub(crate) fn clear(&mut self) {
         self.states.clear();
+        self.endpoint_arrivals.clear();
+        self.blocking_state.clear();
+        self.mover_entities.clear();
+    }
+
+    fn begin_tick(&mut self) {
+        self.states.clear();
+        self.endpoint_arrivals.clear();
+        self.mover_entities.clear();
     }
 
     pub(crate) fn publish(&mut self, mover_id: u32, state: MoverTickState) {
@@ -58,15 +75,33 @@ impl MoverTickStateTable {
         self.states.get(&mover_id)
     }
 
+    pub(crate) fn terminus_events(&self) -> impl Iterator<Item = (MoverEventKind, u32)> + '_ {
+        self.endpoint_arrivals
+            .iter()
+            .flat_map(|(mover_id, arrivals)| {
+                [
+                    arrivals
+                        .opened
+                        .then_some((MoverEventKind::Opened, *mover_id)),
+                    arrivals
+                        .closed
+                        .then_some((MoverEventKind::Closed, *mover_id)),
+                ]
+                .into_iter()
+                .flatten()
+            })
+    }
+
     /// Split the tick-local pose view from the host-only policy timers. The
-    /// collision pass needs both after motion is published, but the cadence
-    /// must survive `clear()` so a continuous crush can keep its own clock.
+    /// collision pass needs both after motion is published. Per-tick reset is
+    /// separate from `clear()`, which is the full level-lifetime reset.
     pub(crate) fn split_for_blocking(
         &mut self,
     ) -> (MoverTickPoseSource<'_>, &mut MoverBlockingState) {
         (
             MoverTickPoseSource {
                 states: &self.states,
+                endpoint_arrivals: &self.endpoint_arrivals,
             },
             &mut self.blocking_state,
         )
@@ -75,6 +110,7 @@ impl MoverTickStateTable {
 
 pub(crate) struct MoverTickPoseSource<'a> {
     states: &'a HashMap<u32, MoverTickState>,
+    endpoint_arrivals: &'a [(u32, MoverEndpointArrivals)],
 }
 
 impl MoverPoseSource for MoverTickPoseSource<'_> {
@@ -88,6 +124,10 @@ impl MoverPoseSource for MoverTickPoseSource<'_> {
             carry_yaw: state.carry_yaw,
             tick_dt: state.tick_dt,
         })
+    }
+
+    fn had_endpoint_arrival(&self, mover_id: u32) -> bool {
+        self.endpoint_arrivals.iter().any(|(id, _)| *id == mover_id)
     }
 }
 
@@ -103,6 +143,10 @@ impl MoverPoseSource for MoverTickStateTable {
             tick_dt: state.tick_dt,
         })
     }
+
+    fn had_endpoint_arrival(&self, mover_id: u32) -> bool {
+        self.endpoint_arrivals.iter().any(|(id, _)| *id == mover_id)
+    }
 }
 
 /// Run every active `KinematicMover` component once and republish the live
@@ -113,26 +157,32 @@ pub(crate) fn run_kinematic_mover_tick(
     side_table: &mut MoverTickStateTable,
     tick_dt: f32,
 ) {
-    side_table.clear();
+    side_table.begin_tick();
+    side_table.mover_entities.extend(
+        registry
+            .iter_with_kind(ComponentKind::KinematicMover)
+            .map(|(id, _)| id),
+    );
 
-    let snapshots: Vec<(EntityId, KinematicMoverComponent, Transform)> = registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .filter_map(|(id, value)| {
-            let ComponentValue::KinematicMover(mover) = value else {
-                return None;
+    for index in 0..side_table.mover_entities.len() {
+        let entity = side_table.mover_entities[index];
+        let Ok(mut transform) = registry.get_component::<Transform>(entity).copied() else {
+            continue;
+        };
+        let (mover_id, carry_yaw, pose, endpoint_arrivals) = {
+            let Ok(ComponentValue::KinematicMover(mover)) =
+                registry.get_component_value_mut(entity, ComponentKind::KinematicMover)
+            else {
+                continue;
             };
-            let transform = *registry.get_component::<Transform>(id).ok()?;
-            Some((id, mover.clone(), transform))
-        })
-        .collect();
+            let (pose, endpoint_arrivals) =
+                advance_mover_phase_one_tick_with_arrivals(mover, &mut transform, tick_dt);
+            (mover.mover_id, mover.carry_yaw, pose, endpoint_arrivals)
+        };
 
-    for (entity, mut mover, mut transform) in snapshots {
-        let pose = advance_mover_phase_one_tick(&mut mover, &mut transform, tick_dt);
-
-        let _ = registry.set_component(entity, mover.clone());
         let _ = registry.set_component(entity, transform);
         side_table.publish(
-            mover.mover_id,
+            mover_id,
             MoverTickState {
                 entity,
                 transform,
@@ -140,10 +190,15 @@ pub(crate) fn run_kinematic_mover_tick(
                 tick_delta: pose.tick_delta,
                 angular_velocity: pose.angular_velocity,
                 tick_rotation_delta: pose.tick_rotation_delta,
-                carry_yaw: pose.carry_yaw,
+                carry_yaw,
                 tick_dt: pose.tick_dt,
             },
         );
+        if endpoint_arrivals != MoverEndpointArrivals::default() {
+            side_table
+                .endpoint_arrivals
+                .push((mover_id, endpoint_arrivals));
+        }
     }
 }
 
@@ -182,18 +237,30 @@ pub(crate) fn advance_mover_phase_one_tick(
     transform: &mut Transform,
     tick_dt: f32,
 ) -> MoverPose {
+    advance_mover_phase_one_tick_with_arrivals(mover, transform, tick_dt).0
+}
+
+fn advance_mover_phase_one_tick_with_arrivals(
+    mover: &mut KinematicMoverComponent,
+    transform: &mut Transform,
+    tick_dt: f32,
+) -> (MoverPose, MoverEndpointArrivals) {
+    let mut endpoint_arrivals = MoverEndpointArrivals::default();
     // Completion and restart own stale-hold cleanup across every peer. A client
     // only reconciles the host's phase, so it must never retain a completed hold.
     if mover.completed {
         mover.blocked = false;
     }
     if mover.blocked {
-        return blocked_mover_pose(mover, transform, tick_dt);
+        return (
+            blocked_mover_pose(mover, transform, tick_dt),
+            endpoint_arrivals,
+        );
     }
     let (angular_velocity, tick_rotation_delta) = advance_spin_phase(mover, transform, tick_dt);
     let start_position = position_for_phase(mover);
     transform.position = start_position;
-    let end_position = advance_mover(mover, tick_dt);
+    let end_position = advance_mover(mover, tick_dt, &mut endpoint_arrivals);
     transform.position = end_position;
     if mover.completed {
         mover.blocked = false;
@@ -205,7 +272,7 @@ pub(crate) fn advance_mover_phase_one_tick(
         Vec3::ZERO
     };
     mover.current_linear_velocity = linear_velocity;
-    MoverPose {
+    let pose = MoverPose {
         transform: *transform,
         linear_velocity,
         tick_delta,
@@ -213,7 +280,8 @@ pub(crate) fn advance_mover_phase_one_tick(
         tick_rotation_delta,
         carry_yaw: mover.carry_yaw,
         tick_dt,
-    }
+    };
+    (pose, endpoint_arrivals)
 }
 
 /// Publish a zero-motion tick while a host-authoritative stop hold is active.
@@ -298,7 +366,11 @@ fn angular_kinematics_for_current_phase(mover: &KinematicMoverComponent) -> (Vec
     (angular_velocity, tick_rotation_delta)
 }
 
-fn advance_mover(mover: &mut KinematicMoverComponent, tick_dt: f32) -> Vec3 {
+fn advance_mover(
+    mover: &mut KinematicMoverComponent,
+    tick_dt: f32,
+    endpoint_arrivals: &mut MoverEndpointArrivals,
+) -> Vec3 {
     let mut position = position_for_phase(mover);
     let mut remaining_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
         tick_dt * 1000.0
@@ -364,6 +436,9 @@ fn advance_mover(mover: &mut KinematicMoverComponent, tick_dt: f32) -> Vec3 {
             mover.segment_elapsed_ms = 0.0;
             mover.segment_index = to_index as u16;
             position = to;
+            let last = mover.waypoints.len().saturating_sub(1);
+            endpoint_arrivals.opened |= mover.direction_sign > 0 && to_index == last;
+            endpoint_arrivals.closed |= mover.direction_sign < 0 && to_index == 0;
             handle_arrival_at_waypoint(mover);
             if mover.completed {
                 break;
@@ -1067,6 +1142,45 @@ mod tests {
         assert_eq!(mover.direction_sign, -1);
         assert_eq!(mover.segment_index, 1);
         assert!((transform.position - Vec3::new(1.5, 0.0, 0.0)).length() < EPS);
+    }
+
+    // Regression: a fast ping-pong mover could cross both termini and finish
+    // between them, so post-phase comparison lost the Opened edge entirely.
+    #[test]
+    fn high_speed_ping_pong_publishes_each_endpoint_arrival_once() {
+        let mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+
+        let (_, _, table) = tick_component(mover, transform_at(Vec3::ZERO), 4.5);
+        let events: Vec<_> = table.terminus_events().collect();
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(kind, _)| *kind == MoverEventKind::Opened)
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(kind, _)| *kind == MoverEventKind::Closed)
+                .count(),
+            1
+        );
+    }
+
+    // Regression: level unload cleared tick poses but retained crusher cadence
+    // under a reused mover/victim identity pair.
+    #[test]
+    fn level_clear_drops_blocking_cadence_as_well_as_tick_poses() {
+        let mut table = MoverTickStateTable::default();
+        let mover = EntityId::new(1, 0);
+        let victim = EntityId::new(2, 0);
+        table.blocking_state.seed_test_cadence(mover, victim);
+
+        table.clear();
+
+        assert!(table.blocking_state.is_empty());
     }
 
     #[test]

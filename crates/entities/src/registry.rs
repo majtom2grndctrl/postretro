@@ -1106,6 +1106,20 @@ impl EntityRegistry {
         T::from_value(value).ok_or(RegistryError::ComponentNotFound { id, kind: T::KIND })
     }
 
+    /// Mutably access one erased component cell without cloning its payload.
+    /// Fixed-tick systems use this when a component owns persistent vectors or
+    /// strings whose immutable configuration should not be copied each tick.
+    pub fn get_component_value_mut(
+        &mut self,
+        id: EntityId,
+        kind: ComponentKind,
+    ) -> Result<&mut ComponentValue, RegistryError> {
+        let index = self.validate(id)?;
+        self.components[kind as usize][index]
+            .as_mut()
+            .ok_or(RegistryError::ComponentNotFound { id, kind })
+    }
+
     pub fn set_component<T: Component>(
         &mut self,
         id: EntityId,

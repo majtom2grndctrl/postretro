@@ -354,7 +354,7 @@
     ]
     crush_damage(float) : "Damage per crusher hit" : "0"
     crush_interval_ms(float) : "Milliseconds between crusher hits (0 hits every tick)" : "0"
-    auto_close_ms(float) : "Milliseconds to wait before a future automatic close (0 disables)" : "0"
+    auto_close_ms(float) : "Milliseconds before automatic close; blank inherits the mod default, 0 disables" : ""
     open_event(string) : "Named event when the mover reaches its open terminus" : ""
     close_event(string) : "Named event when the mover reaches its closed terminus" : ""
     blocked_event(string) : "Named event when a blocking mover reacts to contact" : ""

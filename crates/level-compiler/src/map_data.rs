@@ -166,7 +166,7 @@ pub struct MapKinematicMover {
     pub block_policy: String,
     pub crush_damage: f32,
     pub crush_interval_ms: f32,
-    pub auto_close_ms: f32,
+    pub auto_close_ms: Option<f32>,
     pub open_event: Option<String>,
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,

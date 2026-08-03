@@ -160,13 +160,13 @@ so no other terminus-free mover exists.
 Reverse-on-contact fires `Blocked`, not a distinct event — the door reacting to
 an obstruction is one authored sound whether the reaction is hold or reverse.
 
-**All edge detection and emission is host-role-gated and lives *outside* the
-shared mover driver** (`run_kinematic_mover_tick` / `advance_mover_phase_one_tick`
-/ waypoint-arrival handling), which the client also runs for prediction and
-reconcile replay. Opened/Closed are detected by a host-only step that diffs the
-mover's pre/post phase around the order-1 tick; Blocked/Crushed are emitted inside
-the host-only blocking pass. A connected client's mover bucket therefore stays
-empty even through catch-up replay.
+**All event emission is host-role-gated and lives outside the shared mover
+driver**, which clients also run for prediction and reconcile replay. The driver
+publishes tick-local endpoint-arrival provenance beside each mover pose so a fast
+ping-pong mover cannot cross a terminus and hide the edge in its post-tick phase.
+Only host simulation converts that provenance to Opened/Closed events;
+Blocked/Crushed are emitted inside the host-only blocking pass. A connected
+client's mover bucket therefore stays empty even through catch-up replay.
 
 ## Acceptance criteria
 
@@ -241,11 +241,11 @@ Add a `BlockPolicy` enum (`Displace`, `Reverse`, `Stop`, `Crush`;
 `carry_yaw`/`speed_mps` are** (the exemplar to follow end to end) — one format
 bump; Tasks 2/5/6 read fields this task seeded and touch no format file. A map KVP
 traverses: (1) the level-format record `KinematicMoverRecord`
-(`crates/level-format/src/kinematic_geometry.rs`) — **bump
-`KINEMATIC_GEOMETRY_VERSION` 2→3** and add the legacy-V2 read path plus its
-round-trip test (the section is version-gated); the bump also updates the
-`rejects_unsupported_section_version` fixture, which today asserts "1 or 2" and
-that V3 rejects; (2) the KVP parse in
+(`crates/level-format/src/kinematic_geometry.rs`) — E17 first bumped
+`KINEMATIC_GEOMETRY_VERSION` 2→3 with a legacy-V2 read path. Cross-cutting review
+then bumped 3→4 so `auto_close_ms` carries presence separately from its numeric
+value: absent/blank inherits, explicit zero disables. Legacy V3 zero retains its
+historical absent/inherit meaning; (2) the KVP parse in
 `crates/level-compiler/src/parse.rs`; (3) the `From<KinematicMoverRecord>` in
 `crates/level-loader/src/prl.rs` onto `LoadedKinematicMover` (not onto
 `KinematicGeometry`, which holds only `{movers, waypoints}`); (4) the real seed
@@ -324,7 +324,7 @@ pinned-predicate extraction it absorbs is a pure refactor. Define the
 shared `MoverEventKind` enum and the mover `TickEvents` bucket; the bucket entry is
 `(MoverEventKind, mover_id)` (Task 1 pushes edges — Task 6 maps kind → that mover's
 authored `*_event` name → dispatch address). Add the host-only Opened/Closed
-detection step (per Event edges — outside the shared driver) and emit
+event step over the driver's tick-local arrival provenance and emit
 `Blocked`/`Opened` where this task produces those edges (drained by Task 6).
 Reconcile: a client re-runs the driver from the replicated `blocked` phase with no
 snap-back. Verifies AC1, AC4, AC7 (stop), AC12.
@@ -496,7 +496,7 @@ js/lua manifest parsers (`data_descriptors/js/manifest.rs`,
 `run_deferred_mod_init` (`startup/splash_lifecycle.rs`) into the mover default, and
 surfaced in the SDK `ModManifest` type (`sdk/types/postretro.d.ts`/`.d.luau`).
 Emit `Closed`/`Opened` at the close/open edges (per Event edges, via the host-only
-detection step). Timer state is transient — the side-table entry is cleared on
+event step). Timer state is transient — the side-table entry is cleared on
 level unload. Verifies AC9, AC10.
 
 ### Task 6: Mover sound events through the executing drain (host-local)
@@ -517,8 +517,8 @@ actually dispatches `SystemReactionCommand::PlaySound` into
 `App::dispatch_system_commands` → `Audio::play`.
 
 Sound is host-local this slice: emission and drain run host-side (single-player
-included); a connected client's mover bucket stays empty (edge detection is
-host-role-gated outside the shared driver, per Event edges) and it plays no mover
+included); a connected client's mover bucket stays empty (arrival provenance is
+shared, but event creation stays host-only outside the driver) and it plays no mover
 sound. Peer audibility is deferred (roadmap: Epic 12 *Networked peer audio*). Size
 note: `main.rs` is far past the soft threshold, but the drain addition is a
 localized insertion into the existing post-tick drain sequence — a `main.rs` split
@@ -558,7 +558,8 @@ through the executing path; touches the pass and driver after they settle.
   commands use.
 - `blocked` is the only new wire field, and it is `stop`-only. Reversals (block
   and auto-close) are idempotent directional intents, not blind sign flips.
-  Edge detection is host-only and lives outside the shared driver.
+  Endpoint-arrival provenance is shared; converting it to events is host-only
+  and lives outside the shared driver.
 - `MoverCommand::SetBlockPolicy` / `moverSetBlockPolicy` follow `SetSpinRate` /
   `moverSetSpinRate` wiring, minus the consequential allowlists.
 
@@ -589,9 +590,11 @@ pre-`blocked` peer is refused only via the `WIRE_VERSION` bump.
 
 Separately, the new authored per-mover KVPs (`block_policy`, `crush_damage`,
 `crush_interval_ms`, `auto_close_ms`, `*_event`) live in the PRL kinematic-geometry
-section, which is version-gated: bump `KINEMATIC_GEOMETRY_VERSION` 2→3 with a
-legacy-V2 read path (this is a compiled-map format version, independent of the
-SNAPSHOT/WIRE bumps). `block_policy`, the auto-return timer, per-victim crush
+section, which is version-gated. E17's blocking fields first bumped version 2→3;
+review then bumped version 3→4 to preserve auto-close authoring presence. V3 zero
+continues to decode as absent/inherit, while V4 distinguishes absent from explicit
+zero (this is a compiled-map format version, independent of the SNAPSHOT/WIRE
+bumps). `block_policy`, the auto-return timer, per-victim crush
 countdowns, and crush tuning are host-only and never serialized to the wire —
 component-resident statics follow `carry_yaw`, mutating timers live in a host-only
 side-table; neither reaches `WireKinematicMoverState`, so neither drives a wire
@@ -607,7 +610,7 @@ delta.
 | Crush damage flows only through `apply_damage_with_context` (no direct HP write); death paths unchanged; cadence continues past death and retires on un-pin/despawn; no engine overkill/gib concept | Task 2, Task 3 | Threatened by a bespoke HP mutation/death path, an engine overkill threshold, or retiring at the death latch (killing the overkill fact) | AC3, AC5, AC6 |
 | Reversals (block, auto-close) are idempotent directional intents judged on tick-end heading, block-decision-last | Task 2, Task 5 | Threatened by a blind sign-flip, a net-`tick_delta` misclassification, or a cancel/buzz | AC2, AC9 |
 | The `displace` default is byte-for-byte today's behavior on all peers | Task 1 | Threatened if the pass alters `displace_from_movers` | AC4 |
-| Mover sound edges are host-role-gated outside the shared driver and route through the executing `fire_named_event_with_sequences` | Task 1, Task 6 | Threatened by emitting inside the shared driver (client double-emits) or copying the non-executing weapon/movement drain | AC11 |
+| Mover sound events are host-role-gated outside the shared driver and route through the executing `fire_named_event_with_sequences`; the shared driver publishes provenance only | Task 1, Task 6 | Threatened by emitting inside the shared driver (client double-emits) or copying the non-executing weapon/movement drain | AC11 |
 
 ## Orderings
 
@@ -620,7 +623,7 @@ Spec text; the test tasks cite these rows.
 | Victim un-pins and re-pins within one interval | Per-victim entry dropped on unpin, re-created on re-pin | Re-pin damages on its first pinned tick; wiggling cannot indefinitely evade damage |
 | Crush keeps hitting a player pinned after death | Crush latches HP at 6b tick M; pawn persists (not despawned), still pinned tick M+1… | Damage and `Crushed` continue each cadence tick past death, each re-emitting the beyond-lethal overkill fact; a mod gib policy fires once (idempotent via per-entity-state); the engine adds no stop — the cadence ends only on un-pin |
 | Crush kills an enemy whose mod death/gib policy despawns it | Lethal latch at 6b; the mod's death (or future gib) impact policy despawns the body | Crush continues past death until the despawn un-pins the enemy; the side-table entry retires on despawn/un-pin, never at the death latch |
-| First tick of contact for a moving stop/reverse door | Mover moves at order 1; pass detects at 6b; driver honors next tick's order 1 | Mover completes one tick of motion into contact on the detection tick, then holds/reverses tick+1; swept-face inflation keeps over-penetration sub-capsule |
+| First tick of contact for a moving stop/reverse door | Mover moves at order 1; pass detects at 6b; driver honors next tick's order 1 | Mover completes one tick of motion into contact on the detection tick, then holds/reverses tick+1; a prospective leading sweep keeps over-penetration sub-capsule without expanding behind or beside the mover |
 | Stop door: contact clears | Pass detects clear at 6b tick M; driver resumes at order 1 tick M+1 | Resume lags exactly one tick; no earlier resume, no double-advance |
 | Reverse door whose one-tick motion cannot clear the capsule | Contact still present next tick while mover recedes (tick-end heading away) | Reverse fires once on approach; while separating, no re-flip and no `Blocked` re-emit — no per-tick buzz |
 | Reverse-policy ping-pong mover reaches its forward terminus and swept-crosses an entity the same tick | Mover auto-flips `direction` at order 1; pass judges on tick-end heading at 6b, not net `tick_delta` | Classified on post-flip heading; "away" at the terminus is a no-op — the mover is not forced back into the contact and does not oscillate |
@@ -630,7 +633,7 @@ Spec text; the test tasks cite these rows.
 | `auto_close` reverse and block reverse on the same mover, same tick | Auto-close and block resolved in the host pass, block last | Door ends moving away from the obstruction (block wins); direction changes once |
 | `blocked=true` rides a mover into completion / re-activation | `blocked` force-cleared at completion (shared driver) and on restart (shared applier) before the next driver tick | Client never holds on a stale `blocked` |
 | Rotating `stop`-policy mover contacts an entity | `blocked` freezes both linear and spin advance | A stopped rotating gate stops rotating; a `crush`-policy rotator keeps rotating and grinds (crush does not freeze) |
-| Co-op client predicts a loaded mover across its open terminus | Client runs the shared driver (predict + reconcile catch-up); edge detection is a separate host-only step | Client emits no Opened/Closed; its mover bucket stays empty across N catch-up ticks |
+| Co-op client predicts a loaded mover across its open terminus | Client runs the shared driver (predict + reconcile catch-up), which records arrival provenance; only host simulation turns it into events | Client emits no Opened/Closed; its mover bucket stays empty across N catch-up ticks |
 | `reverse`/auto-close on a `<2`-waypoint (pure-rotator) mover | No path/terminus to reverse toward | Reverse degrades to `stop` (sets `blocked`, freezing spin); `auto_close_ms` is ignored with a seed-time warning — entity not left in permanent no-op contact |
 | Auto-close timer expires the same tick a re-trigger arrives | Re-trigger observed before the expiry check | Timer resets; no close that tick |
 | Auto-close hold crosses a level unload | Side-table entry cleared on unload | No dangling reverse |

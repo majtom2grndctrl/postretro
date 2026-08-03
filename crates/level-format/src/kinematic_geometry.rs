@@ -8,9 +8,10 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 3;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = 4;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
+const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -54,7 +55,8 @@ pub struct KinematicMoverRecord {
     pub block_policy: String,
     pub crush_damage: f32,
     pub crush_interval_ms: f32,
-    pub auto_close_ms: f32,
+    /// `None` inherits the mod default; `Some(0.0)` explicitly disables it.
+    pub auto_close_ms: Option<f32>,
     pub open_event: Option<String>,
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,
@@ -92,10 +94,11 @@ impl KinematicGeometrySection {
             version,
             KINEMATIC_GEOMETRY_VERSION_V1
                 | KINEMATIC_GEOMETRY_VERSION_V2
+                | KINEMATIC_GEOMETRY_VERSION_V3
                 | KINEMATIC_GEOMETRY_VERSION
         ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1, 2, or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -198,11 +201,17 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
         buf.extend_from_slice(&mover.spin_accel_deg_s2.to_le_bytes());
         buf.push(if mover.carry_yaw { 1 } else { 0 });
     }
-    if version == KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V3 {
         write_string(buf, &mover.block_policy);
         buf.extend_from_slice(&mover.crush_damage.to_le_bytes());
         buf.extend_from_slice(&mover.crush_interval_ms.to_le_bytes());
-        buf.extend_from_slice(&mover.auto_close_ms.to_le_bytes());
+        if version == KINEMATIC_GEOMETRY_VERSION_V3 {
+            // V3 had no presence bit: zero meant inherit and could not encode
+            // an authored disable. Preserve that exact legacy layout.
+            buf.extend_from_slice(&mover.auto_close_ms.unwrap_or(0.0).to_le_bytes());
+        } else {
+            write_optional_f32(buf, mover.auto_close_ms);
+        }
         write_optional_string(buf, mover.open_event.as_deref());
         write_optional_string(buf, mover.close_event.as_deref());
         write_optional_string(buf, mover.blocked_event.as_deref());
@@ -317,16 +326,27 @@ fn read_mover(
         close_event,
         blocked_event,
         crush_event,
-    ) = if version == KINEMATIC_GEOMETRY_VERSION {
+    ) = if version >= KINEMATIC_GEOMETRY_VERSION_V3 {
+        let block_policy = read_string(data, offset, &format!("mover {mover_idx} block_policy"))?;
+        let crush_damage = read_f32(data, offset, &format!("mover {mover_idx} crush_damage"))?;
+        let crush_interval_ms = read_f32(
+            data,
+            offset,
+            &format!("mover {mover_idx} crush_interval_ms"),
+        )?;
+        let auto_close_ms = if version == KINEMATIC_GEOMETRY_VERSION_V3 {
+            let legacy = read_f32(data, offset, &format!("mover {mover_idx} auto_close_ms"))?;
+            // V3 runtime treated zero as absence/inherit. Decoding it as an
+            // explicit disable would silently change existing compiled maps.
+            (legacy != 0.0).then_some(legacy)
+        } else {
+            read_optional_f32(data, offset, &format!("mover {mover_idx} auto_close_ms"))?
+        };
         (
-            read_string(data, offset, &format!("mover {mover_idx} block_policy"))?,
-            read_f32(data, offset, &format!("mover {mover_idx} crush_damage"))?,
-            read_f32(
-                data,
-                offset,
-                &format!("mover {mover_idx} crush_interval_ms"),
-            )?,
-            read_f32(data, offset, &format!("mover {mover_idx} auto_close_ms"))?,
+            block_policy,
+            crush_damage,
+            crush_interval_ms,
+            auto_close_ms,
             read_optional_string(data, offset, &format!("mover {mover_idx} open_event"))?,
             read_optional_string(data, offset, &format!("mover {mover_idx} close_event"))?,
             read_optional_string(data, offset, &format!("mover {mover_idx} blocked_event"))?,
@@ -337,7 +357,7 @@ fn read_mover(
             "displace".to_string(),
             0.0,
             0.0,
-            0.0,
+            None,
             None,
             None,
             None,
@@ -504,10 +524,13 @@ fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> cr
         ));
     }
     for (field, value) in [
-        ("crush_damage", mover.crush_damage),
-        ("crush_interval_ms", mover.crush_interval_ms),
+        ("crush_damage", Some(mover.crush_damage)),
+        ("crush_interval_ms", Some(mover.crush_interval_ms)),
         ("auto_close_ms", mover.auto_close_ms),
     ] {
+        let Some(value) = value else {
+            continue;
+        };
         if !value.is_finite() || value < 0.0 {
             return invalid_data(format!(
                 "kinematic geometry: mover {mover_idx} {field} must be finite and non-negative, got {value}"
@@ -614,6 +637,16 @@ fn write_optional_string(buf: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+fn write_optional_f32(buf: &mut Vec<u8>, value: Option<f32>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
 fn read_count(data: &[u8], offset: &mut usize, ctx: &str) -> crate::Result<usize> {
     Ok(read_u32(data, offset, ctx)? as usize)
 }
@@ -635,6 +668,16 @@ fn read_optional_string(
     match read_u8(data, offset, &format!("{ctx} presence"))? {
         0 => Ok(None),
         1 => read_string(data, offset, ctx).map(Some),
+        value => invalid_data(format!(
+            "kinematic geometry: {ctx} has invalid presence byte {value}"
+        )),
+    }
+}
+
+fn read_optional_f32(data: &[u8], offset: &mut usize, ctx: &str) -> crate::Result<Option<f32>> {
+    match read_u8(data, offset, &format!("{ctx} presence"))? {
+        0 => Ok(None),
+        1 => read_f32(data, offset, ctx).map(Some),
         value => invalid_data(format!(
             "kinematic geometry: {ctx} has invalid presence byte {value}"
         )),
@@ -762,7 +805,7 @@ mod tests {
                 block_policy: "stop".to_string(),
                 crush_damage: 20.0,
                 crush_interval_ms: 250.0,
-                auto_close_ms: 3_000.0,
+                auto_close_ms: Some(3_000.0),
                 open_event: Some("open".to_string()),
                 close_event: Some("close".to_string()),
                 blocked_event: Some("blocked".to_string()),
@@ -784,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_round_trip_preserves_records() {
+    fn v4_round_trip_preserves_records() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
@@ -794,7 +837,7 @@ mod tests {
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -803,10 +846,47 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
-        assert!(error.to_string().contains("expected 1, 2, or 3"));
+        assert!(error.to_string().contains("expected 1, 2, 3, or 4"));
+    }
+
+    // Regression: V3 encoded zero as inherit; treating it as an authored
+    // disable would change old maps under a positive manifest default.
+    #[test]
+    fn v3_zero_retains_legacy_absent_semantics() {
+        let mut section = sample_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V3;
+        section.movers[0].auto_close_ms = Some(0.0);
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V3);
+        assert_eq!(restored.movers[0].auto_close_ms, None);
+    }
+
+    #[test]
+    fn v3_positive_auto_close_retains_legacy_authored_semantics() {
+        let mut section = sample_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V3;
+        section.movers[0].auto_close_ms = Some(750.0);
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored.movers[0].auto_close_ms, Some(750.0));
+    }
+
+    // Regression: the V3 scalar layout could not distinguish zero from
+    // absence, so V4 must preserve authored zero through a presence marker.
+    #[test]
+    fn v4_explicit_zero_round_trips_as_present() {
+        let mut section = sample_section();
+        section.movers[0].auto_close_ms = Some(0.0);
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored.movers[0].auto_close_ms, Some(0.0));
     }
 
     #[test]
@@ -825,7 +905,7 @@ mod tests {
         assert_eq!(restored.movers[0].block_policy, "displace");
         assert_eq!(restored.movers[0].crush_damage, 0.0);
         assert_eq!(restored.movers[0].crush_interval_ms, 0.0);
-        assert_eq!(restored.movers[0].auto_close_ms, 0.0);
+        assert_eq!(restored.movers[0].auto_close_ms, None);
         assert_eq!(restored.movers[0].open_event, None);
         assert_eq!(restored.movers[0].close_event, None);
         assert_eq!(restored.movers[0].blocked_event, None);
@@ -847,7 +927,7 @@ mod tests {
         v2.movers[0].block_policy = "displace".to_string();
         v2.movers[0].crush_damage = 0.0;
         v2.movers[0].crush_interval_ms = 0.0;
-        v2.movers[0].auto_close_ms = 0.0;
+        v2.movers[0].auto_close_ms = None;
         v2.movers[0].open_event = None;
         v2.movers[0].close_event = None;
         v2.movers[0].blocked_event = None;
@@ -1071,7 +1151,7 @@ mod tests {
                 block_policy: "crush".to_string(),
                 crush_damage: 10.0,
                 crush_interval_ms: 100.0,
-                auto_close_ms: 0.0,
+                auto_close_ms: None,
                 open_event: Some("open".to_string()),
                 close_event: Some("close".to_string()),
                 blocked_event: Some("blocked".to_string()),

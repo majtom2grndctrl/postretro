@@ -29,6 +29,18 @@ pub(crate) enum MoverEventKind {
     Crushed,
 }
 
+impl MoverEventKind {
+    /// Return this edge's authored named-reaction dispatch address, if any.
+    pub(crate) fn dispatch_address(self, mover: &KinematicMoverComponent) -> Option<&str> {
+        match self {
+            Self::Opened => mover.open_event.as_deref(),
+            Self::Closed => mover.close_event.as_deref(),
+            Self::Blocked => mover.blocked_event.as_deref(),
+            Self::Crushed => mover.crush_event.as_deref(),
+        }
+    }
+}
+
 /// Host-only crush clocks, keyed by the full generation-aware identities of
 /// both the mover and its victim. They are intentionally not component state:
 /// peers reconcile motion and health, never this decision cadence.
@@ -487,6 +499,35 @@ mod tests {
                 carry_yaw: false,
             },
         )
+    }
+
+    #[test]
+    fn mover_event_kinds_map_to_their_authored_dispatch_addresses() {
+        let mut mover = mover(7);
+        mover.open_event = Some("door.open".to_string());
+        mover.close_event = Some("door.close".to_string());
+        mover.blocked_event = Some("door.blocked".to_string());
+        mover.crush_event = Some("door.crush".to_string());
+
+        assert_eq!(
+            MoverEventKind::Opened.dispatch_address(&mover),
+            Some("door.open")
+        );
+        assert_eq!(
+            MoverEventKind::Closed.dispatch_address(&mover),
+            Some("door.close")
+        );
+        assert_eq!(
+            MoverEventKind::Blocked.dispatch_address(&mover),
+            Some("door.blocked")
+        );
+        assert_eq!(
+            MoverEventKind::Crushed.dispatch_address(&mover),
+            Some("door.crush")
+        );
+
+        mover.crush_event = None;
+        assert_eq!(MoverEventKind::Crushed.dispatch_address(&mover), None);
     }
 
     fn add_player(registry: &mut EntityRegistry, health: Option<f32>) -> EntityId {

@@ -918,6 +918,8 @@ export type MoverEntityHandle = {
   --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
   --- on the mover's authored map entity.
   setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
+  --- Sets the host-authoritative response when the mover contacts an entity.
+  setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 
 --- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
@@ -1142,6 +1144,13 @@ export type MoverSetSpinRateStep = {
   args: { rate: number },
 }
 
+--- Sequence step that sets a kinematic mover's host-authoritative block policy.
+export type MoverSetBlockPolicyStep = {
+  id: EntityId,
+  primitive: "moverSetBlockPolicy",
+  args: { policy: "displace" | "reverse" | "stop" | "crush" },
+}
+
 export type ArmTriggerStep = {
   id: EntityId | "@trigger",
   primitive: "armTrigger",
@@ -1156,7 +1165,7 @@ export type DisarmTriggerStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

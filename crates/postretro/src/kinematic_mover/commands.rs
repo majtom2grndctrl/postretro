@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use glam::Vec3;
-use postretro_entities::{EntityId, EntityRegistry, KinematicMoverComponent, MoverCommand};
+use postretro_entities::{
+    BlockPolicy, EntityId, EntityRegistry, KinematicMoverComponent, MoverCommand,
+};
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
 use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegistry};
 use serde::Deserialize;
@@ -42,10 +44,13 @@ impl MoverCommandDiagnostics {
     }
 }
 
-/// Apply a declarative command by mutating only deterministic mover phase.
+/// Apply a declarative command through the shared every-peer mover applier.
 ///
-/// This deliberately has no registry, clock, RNG, or host-role dependency so
-/// the same command produces the same next phase for every simulation peer.
+/// `SetBlockPolicy` is the sole exception: it writes a host-only, off-wire
+/// field. Clients still apply it through the shared applier, but never read the
+/// field, leaving their replicated phase identical to a client that did not.
+/// The applier otherwise has no registry, clock, RNG, or host-role dependency,
+/// so commands produce the same next phase for every simulation peer.
 pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
     match command {
         MoverCommand::Start => {
@@ -131,6 +136,9 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
                 return;
             }
             mover.spin_target_rate_rad_s = rate_deg_s.to_radians();
+        }
+        MoverCommand::SetBlockPolicy(policy) => {
+            mover.block_policy = *policy;
         }
     }
 }
@@ -232,6 +240,20 @@ pub(crate) fn register_mover_reaction_primitives(
         );
         Ok(())
     });
+    let set_block_policy_diagnostics = diagnostics.clone();
+    registry.register("moverSetBlockPolicy", move |registry, targets, args| {
+        let args: MoverSetBlockPolicyArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("moverSetBlockPolicy: failed to deserialize args: {e}"),
+            })?;
+        apply_mover_command_to_targets(
+            registry,
+            targets,
+            &MoverCommand::SetBlockPolicy(args.policy),
+            &set_block_policy_diagnostics,
+        );
+        Ok(())
+    });
 }
 
 /// Register the same command vocabulary on the per-entity sequence path.
@@ -279,16 +301,32 @@ pub(crate) fn register_sequenced_mover_primitives(
         );
         Ok(())
     });
+    let set_spin_rate_ctx = ctx.clone();
+    let set_spin_rate_diagnostics = diagnostics.clone();
     registry.register("moverSetSpinRate", move |id, args| {
         let args: MoverSetSpinRateArgs =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
                 reason: format!("moverSetSpinRate: failed to deserialize args: {e}"),
             })?;
-        let mut entities = ctx.registry.borrow_mut();
+        let mut entities = set_spin_rate_ctx.registry.borrow_mut();
         apply_mover_command_to_targets(
             &mut entities,
             &[id],
             &MoverCommand::SetSpinRate(args.rate),
+            &set_spin_rate_diagnostics,
+        );
+        Ok(())
+    });
+    registry.register("moverSetBlockPolicy", move |id, args| {
+        let args: MoverSetBlockPolicyArgs =
+            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
+                reason: format!("moverSetBlockPolicy: failed to deserialize args: {e}"),
+            })?;
+        let mut entities = ctx.registry.borrow_mut();
+        apply_mover_command_to_targets(
+            &mut entities,
+            &[id],
+            &MoverCommand::SetBlockPolicy(args.policy),
             &diagnostics,
         );
         Ok(())
@@ -317,6 +355,11 @@ struct MoverGoToPathNodeArgs {
 #[derive(Debug, Deserialize)]
 pub(crate) struct MoverSetSpinRateArgs {
     pub(crate) rate: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct MoverSetBlockPolicyArgs {
+    policy: BlockPolicy,
 }
 
 #[cfg(test)]
@@ -452,6 +495,26 @@ mod tests {
         expected.spin_target_rate_rad_s = 180.0_f32.to_radians();
 
         apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(180.0));
+
+        assert_eq!(mover, expected);
+    }
+
+    #[test]
+    fn set_block_policy_mutates_only_host_only_policy() {
+        let mut mover = sample_mover(KinematicMoverMode::PingPong, 250.0);
+        mover.direction_sign = -1;
+        mover.segment_elapsed_ms = 750.0;
+        mover.wait_remaining_ms = 100.0;
+        mover.current_linear_velocity = Vec3::X;
+        mover.blocked = true;
+
+        let mut expected = mover.clone();
+        expected.block_policy = BlockPolicy::Crush;
+
+        apply_mover_command(
+            &mut mover,
+            &MoverCommand::SetBlockPolicy(BlockPolicy::Crush),
+        );
 
         assert_eq!(mover, expected);
     }
@@ -730,5 +793,89 @@ mod tests {
             (-90.0_f32).to_radians(),
             "the shared applier owns degrees-to-radians conversion"
         );
+    }
+
+    #[test]
+    fn set_block_policy_reaction_and_sequence_routes_match_kvp_seeded_policy() {
+        let mut reaction_registry_entities = EntityRegistry::new();
+        let reaction_target = reaction_registry_entities.spawn(transform_at(Vec3::ZERO));
+        reaction_registry_entities
+            .set_component(
+                reaction_target,
+                sample_mover(KinematicMoverMode::PingPong, 0.0),
+            )
+            .unwrap();
+
+        let mut kvp_registry = EntityRegistry::new();
+        let kvp_target = kvp_registry.spawn(transform_at(Vec3::ZERO));
+        assert_eq!(reaction_target, kvp_target, "fixture registries must align");
+        let mut kvp_seeded_mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        kvp_seeded_mover.block_policy = BlockPolicy::Crush;
+        kvp_registry
+            .set_component(kvp_target, kvp_seeded_mover)
+            .unwrap();
+
+        let sequence_ctx = ScriptCtx::new();
+        let sequence_target = sequence_ctx
+            .registry
+            .borrow_mut()
+            .spawn(transform_at(Vec3::ZERO));
+        sequence_ctx
+            .registry
+            .borrow_mut()
+            .set_component(
+                sequence_target,
+                sample_mover(KinematicMoverMode::PingPong, 0.0),
+            )
+            .unwrap();
+
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_mover_reaction_primitives(&mut reactions, Default::default());
+        assert!(
+            reactions
+                .dispatch(
+                    "moverSetBlockPolicy",
+                    &mut reaction_registry_entities,
+                    &[reaction_target],
+                    &serde_json::json!({ "policy": "crush" }),
+                )
+                .unwrap()
+        );
+
+        let mut sequences = SequencedPrimitiveRegistry::new();
+        register_sequenced_mover_primitives(
+            &mut sequences,
+            sequence_ctx.clone(),
+            Default::default(),
+        );
+        sequences
+            .get("moverSetBlockPolicy")
+            .expect("set-block-policy sequence primitive should register")(
+            sequence_target,
+            &serde_json::json!({ "policy": "crush" }),
+        )
+        .unwrap();
+
+        let kvp_seeded_mover = kvp_registry
+            .get_component::<KinematicMoverComponent>(kvp_target)
+            .unwrap();
+        assert_eq!(
+            reaction_registry_entities
+                .get_component::<KinematicMoverComponent>(reaction_target)
+                .unwrap(),
+            kvp_seeded_mover,
+            "the reaction primitive must match the KVP-seeded policy"
+        );
+        let sequence_mover = sequence_ctx
+            .registry
+            .borrow()
+            .get_component::<KinematicMoverComponent>(sequence_target)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            sequence_mover, *kvp_seeded_mover,
+            "the sequence primitive must match the KVP-seeded policy"
+        );
+        assert_eq!(kvp_seeded_mover.block_policy, BlockPolicy::Crush);
     }
 }

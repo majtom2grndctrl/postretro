@@ -37,6 +37,8 @@ pub enum MoverCommand {
     GoToPathNode(String),
     /// Set the authored target spin rate in degrees per second.
     SetSpinRate(f32),
+    /// Set the host-authoritative response to entity contact.
+    SetBlockPolicy(BlockPolicy),
 }
 
 /// Live deterministic phase for one moving-world payload.
@@ -196,11 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn set_spin_rate_command_uses_snake_case_degrees_payload() {
-        let command = MoverCommand::SetSpinRate(-90.0);
+    fn mover_commands_use_snake_case_payloads() {
+        let spin_rate = MoverCommand::SetSpinRate(-90.0);
+        let block_policy = MoverCommand::SetBlockPolicy(BlockPolicy::Crush);
 
         assert_eq!(
-            serde_json::to_value(&command).unwrap(),
+            serde_json::to_value(&spin_rate).unwrap(),
             serde_json::json!({ "set_spin_rate": -90.0 })
         );
         assert_eq!(
@@ -209,6 +212,17 @@ mod tests {
             }))
             .unwrap(),
             MoverCommand::SetSpinRate(180.0)
+        );
+        assert_eq!(
+            serde_json::to_value(&block_policy).unwrap(),
+            serde_json::json!({ "set_block_policy": "crush" })
+        );
+        assert_eq!(
+            serde_json::from_value::<MoverCommand>(serde_json::json!({
+                "set_block_policy": "reverse"
+            }))
+            .unwrap(),
+            MoverCommand::SetBlockPolicy(BlockPolicy::Reverse)
         );
     }
 }

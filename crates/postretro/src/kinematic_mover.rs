@@ -427,11 +427,12 @@ fn advance_mover(
     translation_legs: &mut Vec<MoverTranslationLeg>,
 ) -> Vec3 {
     let mut position = position_for_phase(mover);
-    let mut remaining_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
+    let tick_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
         tick_dt * 1000.0
     } else {
         0.0
     };
+    let mut remaining_ms = tick_ms;
 
     if remaining_ms <= 0.0 || !mover.started || mover.completed || !path_can_move(mover) {
         return position;
@@ -481,12 +482,19 @@ fn advance_mover(
         let duration_ms = (length / mover.speed_mps) * 1000.0;
         let elapsed = mover.segment_elapsed_ms.clamp(0.0, duration_ms);
         let available_ms = (duration_ms - elapsed).max(0.0);
+        let leg_start_fraction = tick_fraction(tick_ms, remaining_ms);
         if remaining_ms < available_ms {
             let leg_start = position;
             mover.segment_elapsed_ms = elapsed + remaining_ms;
             let fraction = mover.segment_elapsed_ms / duration_ms;
             position = from.lerp(to, fraction);
-            record_translation_leg(translation_legs, leg_start, position);
+            record_translation_leg(
+                translation_legs,
+                leg_start,
+                position,
+                leg_start_fraction,
+                1.0,
+            );
             remaining_ms = 0.0;
         } else {
             let leg_start = position;
@@ -494,7 +502,13 @@ fn advance_mover(
             mover.segment_elapsed_ms = 0.0;
             mover.segment_index = to_index as u16;
             position = to;
-            record_translation_leg(translation_legs, leg_start, position);
+            record_translation_leg(
+                translation_legs,
+                leg_start,
+                position,
+                leg_start_fraction,
+                tick_fraction(tick_ms, remaining_ms),
+            );
             let last = mover.waypoints.len().saturating_sub(1);
             endpoint_arrivals.opened |= mover.direction_sign > 0 && to_index == last;
             endpoint_arrivals.closed |= mover.direction_sign < 0 && to_index == 0;
@@ -508,12 +522,30 @@ fn advance_mover(
     position
 }
 
-fn record_translation_leg(translation_legs: &mut Vec<MoverTranslationLeg>, start: Vec3, end: Vec3) {
+fn tick_fraction(tick_ms: f32, remaining_ms: f32) -> f32 {
+    if !tick_ms.is_finite() || tick_ms <= 0.0 {
+        return 0.0;
+    }
+    ((tick_ms - remaining_ms) / tick_ms).clamp(0.0, 1.0)
+}
+
+fn record_translation_leg(
+    translation_legs: &mut Vec<MoverTranslationLeg>,
+    start: Vec3,
+    end: Vec3,
+    start_tick_fraction: f32,
+    end_tick_fraction: f32,
+) {
     if start.is_finite()
         && end.is_finite()
         && (end - start).length_squared() > f32::EPSILON * f32::EPSILON
     {
-        translation_legs.push(MoverTranslationLeg { start, end });
+        translation_legs.push(MoverTranslationLeg {
+            start,
+            end,
+            start_tick_fraction,
+            end_tick_fraction,
+        });
     }
 }
 

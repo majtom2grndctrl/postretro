@@ -415,9 +415,9 @@ pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthCo
 }
 
 /// The damage chokepoint every producer routes through. Subtracts the payload's
-/// `amount` from the entity's current HP, flooring at zero. No-ops (returns
-/// without error) when the entity carries no `Health` component or no longer
-/// exists — damage to a non-health entity is simply ignored, never an error.
+/// `amount` from the entity's current HP, flooring at zero. Returns whether a
+/// positive finite impact landed and was published. Non-positive/non-finite
+/// payloads, stale entities, and entities without `Health` are no-ops.
 ///
 /// Damage arrives only as a [`DamagePayload`] (never a bare scalar); spatial
 /// info rides beside the payload, never inside it.
@@ -426,9 +426,12 @@ pub fn apply_damage_with_context(
     id: EntityId,
     payload: &DamagePayload,
     context: DamageContext,
-) {
+) -> bool {
+    if !payload.amount.is_finite() || payload.amount <= 0.0 {
+        return false;
+    }
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
-        return;
+        return false;
     };
     let mut updated = health.clone();
     let health_before = updated.current;
@@ -463,6 +466,7 @@ pub fn apply_damage_with_context(
         source: context.attacker,
         producer: context.producer,
     });
+    true
 }
 
 /// Absolute-health chokepoint for impact effects.
@@ -654,12 +658,12 @@ mod tests {
         reg.set_component(id, HealthComponent::from_descriptor(&descriptor(100.0)))
             .unwrap();
 
-        apply_damage_with_context(
+        assert!(apply_damage_with_context(
             &mut reg,
             id,
             &DamagePayload { amount: 25.0 },
             DamageContext::new("test.health", DamageProducer::InTick),
-        );
+        ));
 
         assert_eq!(
             reg.get_component::<HealthComponent>(id).unwrap().current,
@@ -943,15 +947,36 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(Transform::default());
 
-        // No Health component attached: must not error or panic.
-        apply_damage_with_context(
+        // No Health component attached: must not error, publish, or report a hit.
+        assert!(!apply_damage_with_context(
             &mut reg,
             id,
             &DamagePayload { amount: 25.0 },
             DamageContext::new("test.health", DamageProducer::InTick),
-        );
+        ));
 
         assert!(reg.get_component::<HealthComponent>(id).is_err());
+        assert!(reg.take_impact_dispatches().is_empty());
+    }
+
+    #[test]
+    fn apply_damage_reports_no_impact_for_zero_amount() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_component(id, HealthComponent::from_descriptor(&descriptor(100.0)))
+            .unwrap();
+
+        assert!(!apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 0.0 },
+            DamageContext::new("test.health", DamageProducer::InTick),
+        ));
+        assert_eq!(
+            reg.get_component::<HealthComponent>(id).unwrap().current,
+            100.0
+        );
+        assert!(reg.take_impact_dispatches().is_empty());
     }
 
     #[test]

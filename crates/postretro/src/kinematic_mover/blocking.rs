@@ -18,7 +18,7 @@ use postretro_foundation::{DamagePayload, PlayerMovementComponent};
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{
     MoverCollider, MoverPose, MoverPoseSource, deepest_mover_penetration,
-    deepest_mover_push_penetration,
+    deepest_mover_push_penetration, mover_pose_for_translation_leg,
 };
 use crate::movement::mover_push_is_blocked_by_static;
 
@@ -336,14 +336,16 @@ pub(crate) fn run_mover_blocking_pass(
                 ) {
                     continue;
                 }
-                apply_damage_with_context(
+                if !apply_damage_with_context(
                     registry,
                     victim,
                     &DamagePayload {
                         amount: snapshot.crush_damage,
                     },
                     DamageContext::new("mover.crush", DamageProducer::InTick),
-                );
+                ) {
+                    continue;
+                }
                 on_impact(registry);
                 events.push((MoverEventKind::Crushed, snapshot.mover_id));
             }
@@ -537,16 +539,7 @@ fn leading_mover_contact_penetration(
         let base_pose = mover_poses.pose(collider.mover_id)?;
         let mut latest_contact = None;
         for leg in legs {
-            let mut leg_pose = base_pose;
-            leg_pose.transform.position = leg.end;
-            leg_pose.linear_velocity = if base_pose.tick_dt.is_finite() && base_pose.tick_dt > 0.0 {
-                (leg.end - leg.start) / base_pose.tick_dt
-            } else {
-                glam::Vec3::ZERO
-            };
-            leg_pose.tick_delta = leg.end - leg.start;
-            leg_pose.angular_velocity = glam::Vec3::ZERO;
-            leg_pose.tick_rotation_delta = glam::Quat::IDENTITY;
+            let leg_pose = mover_pose_for_translation_leg(base_pose, *leg);
             let leg_source = ProspectiveMoverPose {
                 mover_id: collider.mover_id,
                 pose: leg_pose,
@@ -619,6 +612,25 @@ mod tests {
     impl MoverPoseSource for SingleMoverPose {
         fn pose(&self, mover_id: u32) -> Option<crate::collision::moving::MoverPose> {
             (mover_id == self.mover_id).then_some(self.pose)
+        }
+    }
+
+    struct LeggedMoverPose {
+        mover_id: u32,
+        pose: crate::collision::moving::MoverPose,
+        legs: Vec<crate::collision::moving::MoverTranslationLeg>,
+    }
+
+    impl MoverPoseSource for LeggedMoverPose {
+        fn pose(&self, mover_id: u32) -> Option<crate::collision::moving::MoverPose> {
+            (mover_id == self.mover_id).then_some(self.pose)
+        }
+
+        fn translation_legs(
+            &self,
+            mover_id: u32,
+        ) -> Option<&[crate::collision::moving::MoverTranslationLeg]> {
+            (mover_id == self.mover_id).then_some(self.legs.as_slice())
         }
     }
 
@@ -705,6 +717,31 @@ mod tests {
                 carry_yaw: false,
                 tick_dt: 0.1,
             },
+        }
+    }
+
+    fn translating_rotating_crossing_pose(mover_id: u32) -> LeggedMoverPose {
+        LeggedMoverPose {
+            mover_id,
+            pose: crate::collision::moving::MoverPose {
+                transform: Transform {
+                    position: Vec3::X,
+                    rotation: Quat::from_rotation_y(std::f32::consts::PI),
+                    scale: Vec3::ONE,
+                },
+                linear_velocity: Vec3::new(5.0, 0.0, 0.0),
+                tick_delta: Vec3::new(0.5, 0.0, 0.0),
+                angular_velocity: Vec3::Y * (std::f32::consts::PI / 0.1),
+                tick_rotation_delta: Quat::from_rotation_y(std::f32::consts::PI),
+                carry_yaw: false,
+                tick_dt: 0.1,
+            },
+            legs: vec![crate::collision::moving::MoverTranslationLeg {
+                start: Vec3::new(0.5, 0.0, 0.0),
+                end: Vec3::X,
+                start_tick_fraction: 0.0,
+                end_tick_fraction: 1.0,
+            }],
         }
     }
 
@@ -1253,6 +1290,108 @@ mod tests {
         );
     }
 
+    // Regression: translation-leg sweeps erased the coincident angular
+    // interval, missing a rotating blade that crossed and ended clear.
+    #[test]
+    fn translating_rotating_crossing_blocks_stop_policy() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Stop;
+        registry.set_component(mover_entity, mover).unwrap();
+        add_enemy(&mut registry, None);
+
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &translating_rotating_crossing_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    // Regression: the same erased angular interval bypassed reverse policy.
+    #[test]
+    fn translating_rotating_crossing_reverses_approaching_policy() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Reverse;
+        registry.set_component(mover_entity, mover).unwrap();
+        add_enemy(&mut registry, None);
+
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &translating_rotating_crossing_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .direction_sign,
+            -1
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    // Regression: the same erased angular interval bypassed crusher damage.
+    #[test]
+    fn translating_rotating_crossing_lands_crush_damage() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let enemy = add_enemy(&mut registry, Some(100.0));
+        let mut events = Vec::new();
+        let mut impact_evaluations = 0;
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &translating_rotating_crossing_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |_| impact_evaluations += 1,
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(enemy)
+                .unwrap()
+                .current,
+            90.0
+        );
+        assert_eq!(impact_evaluations, 1);
+        assert_eq!(events, vec![(MoverEventKind::Crushed, mover_id)]);
+    }
+
     // Regression: a prospective stop contact cleared on the following
     // zero-motion tick, allowing the mover to advance every other tick.
     #[test]
@@ -1496,6 +1635,71 @@ mod tests {
         );
         assert_eq!(impact_evaluations, 0);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn crush_policy_emits_no_impact_or_event_without_health() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        add_enemy(&mut registry, None);
+        let mut events = Vec::new();
+        let mut impact_evaluations = 0;
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &moving_contact_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |_| impact_evaluations += 1,
+        );
+
+        assert_eq!(impact_evaluations, 0);
+        assert!(events.is_empty());
+        assert!(registry.take_impact_dispatches().is_empty());
+    }
+
+    #[test]
+    fn zero_damage_crush_emits_no_impact_or_event() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 0.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let enemy = add_enemy(&mut registry, Some(100.0));
+        let mut events = Vec::new();
+        let mut impact_evaluations = 0;
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &moving_contact_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |_| impact_evaluations += 1,
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(enemy)
+                .unwrap()
+                .current,
+            100.0
+        );
+        assert_eq!(impact_evaluations, 0);
+        assert!(events.is_empty());
+        assert!(registry.take_impact_dispatches().is_empty());
     }
 
     #[test]

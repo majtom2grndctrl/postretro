@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use glam::Vec3;
-use parry3d::math::{Isometry, Vector};
+use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::{ShapeCastOptions, cast_shapes, intersection_test};
 use parry3d::shape::Ball;
 use postretro_entities::components::inventory::Inventory;
@@ -16,7 +16,7 @@ use postretro_entities::{
     EntityRegistry, EntityTypeDescriptor, TouchMode, Transform,
 };
 
-use crate::collision::CollisionWorld;
+use crate::collision::{COS_WALKABLE, CollisionWorld, SKIN_DISTANCE, cast_ray};
 use crate::scripting::builtins::data_archetype::{descriptor_mesh_component, find_descriptor};
 use crate::scripting::builtins::wieldable_inventory::{acquire_wieldable, release_wieldable};
 use crate::sim::weapon_stage::transition_to_idle;
@@ -375,6 +375,23 @@ fn resolve_drop_position(
     capsule_half_height: f32,
     item_radius: f32,
 ) -> Option<Vec3> {
+    // These are deliberately a small, fixed forward-only search rather than a
+    // radial search around the pawn. A drop should read as a gentle toss in the
+    // facing direction, and a wall behind the player must not affect it.
+    const FORWARD_DISTANCES: [f32; 3] = [1.0, 0.75, 1.25];
+    const MAX_FLOOR_BELOW_FEET: f32 = 1.0;
+
+    if !capsule_center.is_finite()
+        || !capsule_radius.is_finite()
+        || !capsule_half_height.is_finite()
+        || capsule_radius < 0.0
+        || capsule_half_height < 0.0
+        || !item_radius.is_finite()
+        || item_radius <= 0.0
+    {
+        return None;
+    }
+
     let forward = (pawn_transform.rotation * Vec3::NEG_Z)
         .with_y(0.0)
         .normalize_or_zero();
@@ -383,13 +400,37 @@ fn resolve_drop_position(
     } else {
         forward
     };
-    let front = capsule_center - Vec3::Y * capsule_half_height + forward * capsule_radius;
-    if sphere_fits_world(collision_world, front, item_radius) {
-        return Some(front);
+
+    let max_ground_distance = capsule_half_height + capsule_radius + MAX_FLOOR_BELOW_FEET;
+    for forward_distance in FORWARD_DISTANCES {
+        let probe_origin = capsule_center + forward * forward_distance;
+        let Some(floor) = cast_ray(
+            collision_world,
+            Point::new(probe_origin.x, probe_origin.y, probe_origin.z),
+            Vector::new(0.0, -1.0, 0.0),
+            max_ground_distance,
+        ) else {
+            continue;
+        };
+        if floor.normal.y < COS_WALKABLE {
+            continue;
+        }
+
+        // The touchable radius is the item's world-collision radius as well
+        // as its pickup volume. Rest it just above the walkable surface, then
+        // retain the existing fail-closed clearance query for walls and other
+        // static geometry surrounding the final point.
+        let position = Vec3::new(
+            probe_origin.x,
+            probe_origin.y - floor.time_of_impact + item_radius + SKIN_DISTANCE,
+            probe_origin.z,
+        );
+        if sphere_fits_world(collision_world, position, item_radius) {
+            return Some(position);
+        }
     }
 
-    sphere_fits_world(collision_world, pawn_transform.position, item_radius)
-        .then_some(pawn_transform.position)
+    None
 }
 
 /// A zero-length sphere cast treats contact and penetration as an obstruction;
@@ -681,6 +722,22 @@ mod tests {
         })
     }
 
+    /// Broad walkable floor for drop tests. Keeping it explicit makes the
+    /// drop contract physical: a drop only succeeds when a forward floor can
+    /// actually receive the touchable sphere.
+    fn floor_world() -> CollisionWorld {
+        let points = vec![
+            Point::new(-100.0, 0.0, -100.0),
+            Point::new(100.0, 0.0, -100.0),
+            Point::new(100.0, 0.0, 100.0),
+            Point::new(-100.0, 0.0, 100.0),
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
+            isometry: Isometry::identity(),
+        }
+    }
+
     fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         let pawn = registry.spawn(Transform {
             position,
@@ -775,7 +832,7 @@ mod tests {
         system
             .run_authoritative_tick(
                 registry,
-                &CollisionWorld::default(),
+                &floor_world(),
                 &[],
                 players,
                 &pressed,
@@ -1511,7 +1568,7 @@ mod tests {
         let events = tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1551,9 +1608,9 @@ mod tests {
                 .get_component::<Transform>(item)
                 .unwrap()
                 .position
-                .distance(Vec3::new(0.0, 1.2, -0.4))
+                .distance(Vec3::new(0.0, 1.0 + SKIN_DISTANCE, -1.0))
                 < 1.0e-5,
-            "drop is one capsule radius forward from the lower capsule-axis endpoint"
+            "drop rests on the walkable floor one metre ahead of the player"
         );
         let weapon = registry.get_component::<WeaponComponent>(item).unwrap();
         assert_eq!(weapon.magazine, 3, "drop preserves the live magazine");
@@ -1586,7 +1643,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1631,7 +1688,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1649,7 +1706,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1667,7 +1724,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1718,7 +1775,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1727,7 +1784,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1801,7 +1858,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1810,7 +1867,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1854,7 +1911,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -1872,7 +1929,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[(PlayerId::Local(pawn), true)],
@@ -1926,7 +1983,7 @@ mod tests {
         tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &descriptors,
             &players,
             &[],
@@ -2042,7 +2099,7 @@ mod tests {
             tick_with_edges(
                 &mut system,
                 &mut registry,
-                &CollisionWorld::default(),
+                &floor_world(),
                 &[descriptor.clone()],
                 &players,
                 &[],
@@ -2070,7 +2127,7 @@ mod tests {
         let events = tick_with_edges(
             &mut system,
             &mut registry,
-            &CollisionWorld::default(),
+            &floor_world(),
             &[],
             &players,
             &[],
@@ -2086,13 +2143,34 @@ mod tests {
     }
 
     #[test]
-    fn drop_uses_collision_fallback_and_seeds_occupancy_at_the_final_position() {
+    fn drop_lands_on_walkable_floor_one_metre_ahead() {
+        let pawn_transform = Transform {
+            position: Vec3::new(0.0, 1.2, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+
+        let position = resolve_drop_position(
+            &floor_world(),
+            &pawn_transform,
+            pawn_transform.position,
+            0.4,
+            0.8,
+            0.1,
+        )
+        .expect("a floor directly ahead receives the dropped item");
+
+        assert!(position.distance(Vec3::new(0.0, 0.1 + SKIN_DISTANCE, -1.0)) < 1.0e-5);
+    }
+
+    #[test]
+    fn drop_ignores_wall_behind_pawn_when_forward_floor_is_clear() {
         let mut registry = EntityRegistry::new();
-        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 1.2, 0.0));
         let item = spawn_item(
             &mut registry,
             "ion",
-            Vec3::new(10.0, 2.0, 0.0),
+            Vec3::new(10.0, 1.2, 0.0),
             TouchMode::Auto,
             7,
         );
@@ -2100,11 +2178,15 @@ mod tests {
         let world = CollisionWorld {
             mesh: TriMesh::new(
                 vec![
-                    Point::new(-2.0, 0.0, -0.4),
-                    Point::new(2.0, 0.0, -0.4),
-                    Point::new(0.0, 4.0, -0.4),
+                    Point::new(-100.0, 0.0, -100.0),
+                    Point::new(100.0, 0.0, -100.0),
+                    Point::new(100.0, 0.0, 100.0),
+                    Point::new(-100.0, 0.0, 100.0),
+                    Point::new(-2.0, 0.0, 0.25),
+                    Point::new(2.0, 0.0, 0.25),
+                    Point::new(0.0, 3.0, 0.25),
                 ],
-                vec![[0, 1, 2]],
+                vec![[0, 1, 2], [0, 2, 3], [4, 5, 6]],
             ),
             isometry: Isometry::identity(),
         };
@@ -2124,16 +2206,16 @@ mod tests {
 
         let position = registry.get_component::<Transform>(item).unwrap().position;
         assert!(
-            position.distance(Vec3::new(0.0, 2.0, 0.0)) < 1.0e-5,
-            "front placement intersects the wall, so the verified capsule-center fallback wins"
+            position.distance(Vec3::new(0.0, 0.1 + SKIN_DISTANCE, -1.0)) < 1.0e-5,
+            "a wall behind the pawn cannot reject the valid forward floor placement"
         );
         assert!(sphere_fits_world(&world, position, 0.1));
         assert!(
             system
                 .occupants
                 .get(&item)
-                .is_some_and(|occupants| occupants.contains(&PlayerId::Local(pawn))),
-            "the dropper overlaps only the fallback point and must be seeded there"
+                .is_some_and(|occupants| !occupants.contains(&PlayerId::Local(pawn))),
+            "the dropper is not seeded when the final forward pickup sphere does not overlap it"
         );
         tick_with_edges(
             &mut system,
@@ -2151,7 +2233,50 @@ mod tests {
                 .wieldables
                 .iter()
                 .all(Option::is_none),
-            "final-position occupancy inhibits the auto edge on the following tick too"
+            "the item remains in the world because the player is outside its final pickup sphere"
+        );
+    }
+
+    #[test]
+    fn drop_without_a_forward_walkable_floor_keeps_inventory_unchanged() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 1.2, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 1.2, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry,
+            &CollisionWorld::default(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(events.repointed_pawns, Vec::<EntityId>::new());
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "without a valid forward floor, release must not run"
+        );
+        assert!(
+            !registry
+                .has_component_kind(item, ComponentKind::Touchable)
+                .unwrap(),
+            "the held item stays out of world touch evaluation"
         );
     }
 

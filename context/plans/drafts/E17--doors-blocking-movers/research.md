@@ -230,6 +230,12 @@ Settled decisions the spec encodes, kept here so the two docs do not drift:
   tick then every `crush_interval_ms`), not one per-mover countdown — a single
   countdown starves a staggered second victim. Mutating per-tick timers live in
   the side-table, never on the replicated component (no wire delta).
+- **Crush continues past death (overkill).** Per E16 ("no engine concept of
+  death; overkill/gib are mod policy over impact facts"), crush keeps applying
+  damage while pinned past the death latch, re-emitting the beyond-lethal
+  `health_after` overkill fact each tick for a mod gib policy (assets deferred).
+  Crush is `InTick` so those policies evaluate. Retire the victim on un-pin or
+  despawn, never at the death latch. No engine overkill threshold or gib concept.
 - **`blocked` is host-derived each tick:** forced false on no-contact, cleared
   on completion and restart commands, checked before the `completed`
   early-return, and freezes spin as well as linear advance.

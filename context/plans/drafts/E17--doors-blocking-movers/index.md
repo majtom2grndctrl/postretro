@@ -23,7 +23,10 @@ entity class.
 - A host-only **mover blocking/crush pass** that detects contact and dispatches
   the policy. `reverse` sets travel direction away from the contact; `stop` holds
   and resumes when clear (new replicated `blocked` flag); `crush` keeps moving
-  and damages a pinned entity on a per-victim cadence through the E16 chokepoint.
+  and damages a pinned entity on a per-victim cadence through the E16 chokepoint,
+  continuing **past death** so the existing beyond-lethal *overkill* impact fact
+  keeps flowing to mod policies (gibbing is a mod-authored impact policy on that
+  fact, deferred by assets — the engine adds no overkill/gib concept).
 - **Players and enemies.** Enemy handling requires net-new mover-vs-enemy
   collision (movers collide only with the player today), against the enemy Agent
   capsule.
@@ -54,6 +57,11 @@ entity class.
   `audio.md` plays all sounds dry, so a remote source at full volume regardless
   of distance would be worse than silence. No world sound is networked today.
 - Spatialized crush/door audio (positional, reverb) — deferred with the above.
+- **An engine overkill threshold or gib mechanism.** Overkill is the existing
+  E16 impact fact (`health_after` beyond zero, `@impact.healthAfter`); gibbing is
+  a mod-authored impact policy on it, asset-gated. E17-E only keeps crush damage
+  flowing past death so that fact accumulates — it defines no death, overkill, or
+  gib behavior (`roadmap.md` E16: "no engine concept of death").
 - A typed `onMoverEvent` dispatch source (see Alternatives rejected).
 - Client-side crush prediction; per-voice volume/looping on the sound path.
 
@@ -99,6 +107,13 @@ under it is engine-owned correctness.
 - `audio.md`: audio is host-local presentation with no replication path, and
   spatialization is deferred. Mover audio hooks are therefore host-local this
   slice; peer audibility is its own roadmap item.
+- `roadmap.md` E16 (shipped): "the engine no longer treats 0 HP as death — kill,
+  **overkill**, stagger… are authored as policy over impact facts, with no engine
+  concept of death." Crush honors this: it keeps applying damage past the death
+  latch (using `producer: InTick`, the arm whose impact policies evaluate — the
+  app-drain producer is stubbed), so the beyond-lethal fact keeps reaching a
+  future mod gib policy. Crush adds no engine death/overkill/gib behavior; a
+  crushed enemy is removed by the mod's own death/gib despawn policy.
 - `scripting.md` §12: "a dispatch source is added only when a case blocks on
   it." Mover sound events publish no ephemeral per-fire inputs an author needs,
   so E adds no typed source; named events reuse the dispatch-address model.
@@ -163,15 +178,17 @@ empty even through catch-up replay.
   and does not re-flip while the mover is already receding.
 - [ ] **AC3 (crush, player).** `block_policy = crush` keeps moving and damages a
   player pinned between the mover and static geometry on the first pinned tick and
-  every `crush_interval_ms` thereafter while pinned, and stops damaging when the
-  player is no longer pinned or its HP has latched at zero. A player with room to
-  be pushed clear takes **no** crush damage.
+  every `crush_interval_ms` thereafter while pinned — **continuing past death**,
+  each hit emitting the beyond-lethal overkill impact fact — and stops only when
+  the player is no longer pinned. A player with room to be pushed clear takes
+  **no** crush damage.
 - [ ] **AC4 (default preserved).** No authored policy behaves exactly as today:
   the player is displaced out of overlap where possible, and the push no-ops
   (no damage, no mover reaction) when blocked.
 - [ ] **AC5 (death paths reused).** A crush kills a player through the existing
   HP-latch → `playerDied` path and an enemy through the existing despawn +
-  impact-animation path. No new death path is introduced.
+  impact-animation path. No new death path is introduced, and no engine
+  overkill/gib concept is added — overkill stays the existing `health_after` fact.
 - [ ] **AC6 (enemies).** A map-placed enemy is subject to reverse/stop/crush the
   same as a player: a `reverse`/`stop` door reacts to an enemy in the doorway,
   and a `crush` mover kills an enemy it pins.
@@ -181,6 +198,8 @@ empty even through catch-up replay.
   (via replicated `direction`), player crush HP loss (via the owner-private
   `player.health` projection), and enemy crush death (via the replicated
   despawn + impact-animation, since a remote enemy carries no client `Health`).
+  A restart command (`Start`/`Reverse`/`GoToPathNode`) issued during a block
+  clears the client's predicted `blocked` in lockstep, without a snapshot round-trip.
 - [ ] **AC8 (runtime setter parity).** `moverSetBlockPolicy(policy)` changes a
   mover's policy at runtime; the reaction, sequence, trigger-KVP-bound, and
   KVP-seeded routes converge on the same effect (a KVP-seeded mover behaves
@@ -210,16 +229,25 @@ reconciliation model, using `stop` for the player only.
 
 Add a `BlockPolicy` enum (`Displace`, `Reverse`, `Stop`, `Crush`;
 `#[serde(rename_all = "snake_case")]`) and a **host-only** `block_policy` field on
-`KinematicMoverComponent`, seeded from a new `block_policy` KVP. Per-mover static
-KVPs seed onto `LoadedKinematicMover` (from `KinematicMoverRecord` in
-`crates/level-loader/src/prl.rs`), where `speed_mps`/`move_mode`/`carry_yaw` seed
-— not onto `KinematicGeometry`, which holds only `{movers, waypoints}`. The field
-is held locally and **not** added to the wire mirror `WireKinematicMoverState`,
-following `carry_yaw`. `block_policy` is the first host-only field on this
-component; the warrant is that per-client deltas are diffed from
-`WireKinematicMoverState`, not from component `PartialEq`, so a host-only field
-drives no wire delta — the executor confirms the delta path against the wire
-mirror.
+`KinematicMoverComponent`, seeded from a new `block_policy` KVP.
+
+**Seed the new per-mover KVPs through the full compiled-map chain, exactly as
+`carry_yaw`/`speed_mps` are** (the exemplar to follow end to end). A map KVP
+traverses: (1) the level-format record `KinematicMoverRecord`
+(`crates/level-format/src/kinematic_geometry.rs`) — **bump
+`KINEMATIC_GEOMETRY_VERSION` 2→3** and add the legacy-V2 read path plus its
+round-trip test (the section is version-gated); (2) the KVP parse in
+`crates/level-compiler/src/parse.rs`; (3) the `From<KinematicMoverRecord>` in
+`crates/level-loader/src/prl.rs` onto `LoadedKinematicMover` (not onto
+`KinematicGeometry`, which holds only `{movers, waypoints}`); (4) the real seed
+into `KinematicMoverComponent` in `runtime_movers.rs` (`spawn_from_geometry`).
+This PRL-section version bump is distinct from the SNAPSHOT/WIRE bumps below;
+Tasks 2/5/6's KVPs ride the same chain. The `block_policy` field is held locally
+and **not** added to the wire mirror `WireKinematicMoverState`, following
+`carry_yaw`. `block_policy` is the first host-only field on this component; the
+warrant is that per-client deltas are diffed from `WireKinematicMoverState`, not
+from component `PartialEq`, so a host-only field drives no wire delta — the
+executor confirms the delta path against the wire mirror.
 
 Add a **replicated** `blocked: bool` phase field to `KinematicMoverComponent` and
 to `WireKinematicMoverState`, appended beside `started`/`completed`, bumping
@@ -262,12 +290,17 @@ sub-capsule and no visible dip results. The pass's position relative to the weap
 tick (order 7) is immaterial: crush and weapon damage both feed the order-8 death
 sweep through the same latch.
 
-Gate the pass host-only; `displace_from_movers` stays byte-for-byte unchanged on
-all peers. Define the shared `MoverEventKind` enum and the mover `TickEvents`
-bucket; add the host-only Opened/Closed detection step (per Event edges — outside
-the shared driver) and emit `Blocked`/`Opened` where this task produces those
-edges (bucket drained by Task 6). Reconcile: a client re-runs the driver from the
-replicated `blocked` phase with no snap-back. Verifies AC1, AC4, AC7 (stop), AC12.
+The pass is host-only **by construction**: it lives inside `simulate_tick`, which
+connected clients already skip (they run `run_kinematic_mover_tick` directly for
+prediction) — there is no host-role flag to thread; single-player and the host run
+it. `displace_from_movers` stays byte-for-byte unchanged on all peers. Define the
+shared `MoverEventKind` enum and the mover `TickEvents` bucket; the bucket entry is
+`(MoverEventKind, mover_id)` (Task 1 pushes edges — Task 6 maps kind → that mover's
+authored `*_event` name → dispatch address). Add the host-only Opened/Closed
+detection step (per Event edges — outside the shared driver) and emit
+`Blocked`/`Opened` where this task produces those edges (drained by Task 6).
+Reconcile: a client re-runs the driver from the replicated `blocked` phase with no
+snap-back. Verifies AC1, AC4, AC7 (stop), AC12.
 
 ### Task 2: Player reverse + crush policies
 
@@ -290,25 +323,31 @@ no path to reverse along; under `reverse` it degrades to `stop` (freeze). Emit
 while receding) — this is pass-owned and decoupled from the `blocked` flag, which
 stays `stop`-only.
 
-`Crush`: the mover keeps moving; while the player is **pinned** (the extracted
-blocked predicate from Task 1 reports no room to push clear), apply damage through
+`Crush`: the mover keeps moving; while the player is **pinned** (the shared pinned
+predicate from Task 1 reports no room to push clear), apply damage through
 `apply_damage_with_context` with `DamagePayload { amount }` and `DamageContext {
 source_id: "mover.crush", attacker: None, weapon: None, zone: None, producer:
-DamageProducer::InTick }`. Cadence is **per victim**: each pinned entity accrues
-its own countdown in a **host-only side-table** keyed by (mover, victim) where the
-victim is the full `EntityId` including generation (a despawn bumps the generation,
-so a reused slot cannot inherit a prior victim's countdown). Not a component field
-— mutating per-tick state stays off the replicated component. Damage lands on the
-first pinned tick and every `crush_interval_ms` of continuous pinning. Retire a
-victim's entry when it leaves contact **or** when its HP latches at zero (the
-death-sweep / `playerDied` latch), whichever first — a crushed player pawn is not
-despawned and stays geometrically pinned, so the latch, not un-pin, must stop the
-cadence and further `Crushed` emission. `crush_damage` and `crush_interval_ms` are
-seeded mover KVPs with engine defaults. A player with room to be pushed clear is
-not pinned and takes no damage. The lethal path is unchanged — HP latches at zero
-and the existing sweep fires `playerDied`; the firing client reconciles its HP via
-the owner-private `player.health` slot. Emit `Crushed` per victim on the tick
-damage lands. Verifies AC2, AC3, AC5 (player), AC7 (reverse, player crush).
+DamageProducer::InTick }` — `InTick` is the arm whose impact policies evaluate, so
+a future gib policy is reachable. Cadence is **per victim**: each pinned entity
+accrues its own countdown in a **host-only side-table** keyed by (mover, victim)
+where the victim is the full `EntityId` including generation (a despawn bumps the
+generation, so a reused slot cannot inherit a prior victim's countdown). Not a
+component field — mutating per-tick state stays off the replicated component.
+Damage lands on the first pinned tick and every `crush_interval_ms` of continuous
+pinning, **continuing past death**: each post-death hit re-emits the beyond-lethal
+overkill fact (`health_after`) at the E16 chokepoint, which a mod gib policy
+accumulates (per-entity-state) and acts on — the engine defines no overkill
+threshold or gib behavior. Retire a victim's entry only when it **leaves contact
+or is despawned**, not at the death latch. A crushed player pawn is not despawned
+(respawn model), so its overkill facts keep flowing while it stays pinned —
+harmless (a mod gib policy fires once, idempotent via per-entity-state); the
+cadence ends when the door reverses or the pawn is moved. `crush_damage` and
+`crush_interval_ms` are seeded mover KVPs (same authoring chain as Task 1) with
+engine defaults. A player with room to be pushed clear is not pinned and takes no
+damage. The lethal path is unchanged — HP latches at zero and the existing sweep
+fires `playerDied`; the firing client reconciles its HP via the owner-private
+`player.health` slot. Emit `Crushed` per victim on each tick damage lands. Verifies
+AC2, AC3, AC5 (player), AC7 (reverse, player crush).
 
 ### Task 3: Mover-vs-enemy collision + enemy policies
 
@@ -323,15 +362,16 @@ Apply the full policy matrix to enemies: `reverse` and `stop` react to an enemy 
 swept contact exactly as for the player (directional intent / `blocked` flag /
 `Blocked` emission); `crush` damages an overlapped enemy through the same
 `apply_damage_with_context` call (`source_id: "mover.crush"`) on the same
-per-victim cadence, emitting `Crushed` for enemy victims too. An enemy is "pinned"
-for crush purposes whenever the mover overlaps it — enemies are not mover-pushed,
-so there is no displace-clear escape, unlike the player (warrant:
-`displace_from_movers` is player-only). Retire the enemy's crush entry at its
-death latch, not on un-pin: a dying enemy persists through its authored death
-animation / despawn delay (`entity_model.md` §7c) while still overlapped, so the
-latch must stop the cadence. The enemy's lethal transition flows through the
-existing death sweep → authored impact policy → despawn/animation (remote enemies
-replicate as host despawn/animation; they carry no client `Health`). Under the
+per-victim cadence, continuing past death and emitting `Crushed` for enemy victims
+too. An enemy is "pinned" for crush purposes whenever the mover overlaps it —
+enemies are not mover-pushed, so there is no displace-clear escape, unlike the
+player (warrant: `displace_from_movers` is player-only). Retire the enemy's crush
+entry on **un-pin or despawn**, not at the death latch: the enemy's lethal
+transition flows through the existing death sweep → authored impact policy →
+despawn/animation, and it is that mod policy (kill, or a future gib) that despawns
+the body — which un-pins it and ends the cadence naturally (remote enemies
+replicate as host despawn/animation; they carry no client `Health`). Until then,
+crush keeps feeding the overkill fact, exactly as for the player. Under the
 `displace` default, enemies are ignored (no push, no reaction). Consumes Task 2's
 policy dispatch. Verifies AC5 (enemy), AC6, AC7 (enemy crush).
 
@@ -358,22 +398,30 @@ allowlists are the only sites to skip. Wire: the reaction registrar
 (`register_mover_reaction_primitives`) **and** the sequenced registrar
 (`register_sequenced_mover_primitives`), both with an args struct twin of
 `MoverSetSpinRateArgs` (AC8 and the parity/closed-vocab tests require both); the
-trigger-KVP build arm in `trigger_bindings.rs` (`"moverSetBlockPolicy" =>
-BoundTriggerCommand::Mover { command: MoverCommand::SetBlockPolicy(..) }`, plus its
-args import) so it is trigger-bindable; the SDK type templates (`sdk_lib.luau` /
-`sdk_lib.d.ts`) and the regenerated `expected.d.*` fixtures; the SDK handle method
-`setBlockPolicy(policy)` in `sdk/lib/entities/movers.{ts,luau}`; and the
-closed-vocabulary test in `scripting/reactions/registry.rs`. Add a parity test
-modeled on `set_spin_rate_reaction_and_sequence_routes_match_shared_kvp_command_path`
-that additionally asserts a **KVP-seeded** `block_policy` produces behavior
-identical to one set by command (seed→command equivalence, beyond the spin-rate
-test's reaction/sequence convergence). `commands.rs` is ~711 lines; extend in
-place. Verifies AC8.
+SDK type templates (`sdk_lib.luau` / `sdk_lib.d.ts`) and the regenerated
+`expected.d.*` fixtures; the SDK handle method `setBlockPolicy(policy)` in
+`sdk/lib/entities/movers.{ts,luau}`; and the closed-vocabulary test in
+`scripting/reactions/registry.rs`. **Do not add a `trigger_bindings.rs`
+`bind_command` arm** — `bind_command` runs only for primitives `classify()` marks
+`Consequential`, so an arm for a non-consequential setter is unreachable dead code
+(and "fixing" it by making the primitive consequential would break the
+replication-safety rationale). The setter is still trigger-authorable: a trigger's
+`on_fire` reaction that names `moverSetBlockPolicy` dispatches through the
+tag-targeted reaction registry at app-drain — the one-tick app-drain latency is
+harmless for a host-only field. AC8's "trigger-KVP-bound route" therefore means
+that reaction path, not a `BoundTriggerCommand`. Add a parity test modeled on
+`set_spin_rate_reaction_and_sequence_routes_match_shared_kvp_command_path` that
+additionally asserts a **KVP-seeded** `block_policy` produces behavior identical to
+one set by command (seed→command equivalence, beyond the spin-rate test's
+reaction/sequence convergence). `commands.rs` is ~711 lines; extend in place.
+Verifies AC8.
 
 ### Task 5: Auto-close timer + mod-descriptor default
 
 Add a host-only auto-close/auto-return timer. The mover carries a seeded
-`auto_close_ms` value (component field + KVP, off-wire like `block_policy`); when
+`auto_close_ms` value (component field + KVP through Task 1's authoring chain —
+level-format record + `KINEMATIC_GEOMETRY_VERSION` bump + compiler parse + prl
+`From` + `runtime_movers` construct — off-wire like `block_policy`); when
 a mover reaches its forward (open) terminus and `auto_close_ms > 0`, the host
 counts a **host-only side-table** countdown down and on expiry issues the close —
 a directional intent setting travel toward the closed terminus, mutating
@@ -400,11 +448,12 @@ level unload. Verifies AC9, AC10.
 
 Wire the mover `TickEvents` bucket (defined in Task 1) to author-wired
 `playSound`, host-local. The mover carries seeded per-transition event-name KVPs
-(`open_event`, `close_event`, `blocked_event`, `crush_event`) — each an optional
-string naming a reaction **dispatch address**, mapped per the Event-edge table
-(`Opened → open_event`, `Closed → close_event`, `Blocked → blocked_event`,
-`Crushed → crush_event`). When host-side edge detection produces an edge, the host
-resolves the authored name for that kind and pushes it into the mover bucket.
+(`open_event`, `close_event`, `blocked_event`, `crush_event`; seeded through Task
+1's authoring chain) — each an optional string naming a reaction **dispatch
+address**, mapped per the Event-edge table (`Opened → open_event`, `Closed →
+close_event`, `Blocked → blocked_event`, `Crushed → crush_event`). The bucket entry
+is `(MoverEventKind, mover_id)` (Task 1); Task 6 maps each entry's kind to that
+mover's authored `*_event` name and pushes the resolved dispatch address.
 Drain the bucket post-tick through the **executing**
 `fire_named_event_with_sequences` (`reaction_dispatch.rs`, the death-event
 precedent in `main.rs`) — **not** the non-executing `fire_named_event` the
@@ -460,7 +509,7 @@ through the executing path; touches the pass and driver after they settle.
 |---|---|---|---|---|---|
 | Block policy | `BlockPolicy` / `block_policy` field | host-only; command serde `set_block_policy` | `"displace"\|"reverse"\|"stop"\|"crush"` | same | `block_policy` on `kinematic_mover` |
 | Blocked hold | `blocked: bool` phase | new `WireKinematicMoverState` field | n/a | n/a | n/a |
-| Set-policy command | `MoverCommand::SetBlockPolicy` | `set_block_policy` | `setBlockPolicy(policy)` / `moverSetBlockPolicy` | same | trigger-bindable |
+| Set-policy command | `MoverCommand::SetBlockPolicy` | `set_block_policy` | `setBlockPolicy(policy)` / `moverSetBlockPolicy` | same | via `on_fire` reaction (not a command KVP) |
 | Auto-close | `auto_close_ms` field + `ModManifest` default | host-only | `movers.autoCloseMs` manifest field | same | `auto_close_ms` |
 | Crush tuning | `crush_damage`, `crush_interval_ms` | host-only | n/a | n/a | `crush_damage`, `crush_interval_ms` |
 | Sound events | `MoverEventKind` + `*_event` name fields | host-only | `defineReaction("<name>", …)` | same | `open_event`/`close_event`/`blocked_event`/`crush_event` |
@@ -471,12 +520,21 @@ One new field: `blocked: bool` appended to `WireKinematicMoverState`, beside
 `started`/`completed`. bitcode owns endianness and bit-packing — no manual layout.
 It is a deterministic input to client mover reconciliation, so it rides the
 existing mover phase payload (added after the current phase fields, consistent
-with `ComponentKind` numeric order for the payload). `SNAPSHOT_VERSION` 12→13,
-`WIRE_VERSION` 15→16; both drift-guard tests extend. `block_policy`, the
-auto-return timer, per-victim crush countdowns, and crush tuning are host-only and
-never serialized — component-resident statics follow `carry_yaw`, mutating timers
-live in a host-only side-table; neither reaches `WireKinematicMoverState`, so
-neither drives a wire delta.
+with `ComponentKind` numeric order for the payload). `SNAPSHOT_VERSION` 12→13 and
+`WIRE_VERSION` 15→16; both drift-guard tests extend. Bumping `WIRE_VERSION` for a
+snapshot-only field departs from the v11/v12 precedent, but AC12 requires it: the
+handshake gate compares only `WIRE_VERSION`, never `SNAPSHOT_VERSION`, so a
+pre-`blocked` peer is refused only via the `WIRE_VERSION` bump.
+
+Separately, the new authored per-mover KVPs (`block_policy`, `crush_damage`,
+`crush_interval_ms`, `auto_close_ms`, `*_event`) live in the PRL kinematic-geometry
+section, which is version-gated: bump `KINEMATIC_GEOMETRY_VERSION` 2→3 with a
+legacy-V2 read path (this is a compiled-map format version, independent of the
+SNAPSHOT/WIRE bumps). `block_policy`, the auto-return timer, per-victim crush
+countdowns, and crush tuning are host-only and never serialized to the wire —
+component-resident statics follow `carry_yaw`, mutating timers live in a host-only
+side-table; neither reaches `WireKinematicMoverState`, so neither drives a wire
+delta.
 
 ## Invariants
 
@@ -485,7 +543,7 @@ neither drives a wire delta.
 | The block decision is host-authoritative; no client path mutates mover phase on block | Task 1 (host-only pass) | Threatened if `displace_from_movers` or any client tick reacts to a block | AC7 |
 | `blocked` is the only new replicated block state; `block_policy`, timers, crush tuning stay host-only | Task 1, Task 2, Task 3, Task 5 | Threatened if a client reads `block_policy`/a timer, or any lands on the wire | AC7, AC12 |
 | `blocked` is `stop`-only, host-derived each tick; force-cleared on no-contact (host), completion (shared driver), and restart (shared applier) so the client converges | Task 1 | Threatened by a stale `blocked` riding completion/re-activation, or a client that cannot clear it in lockstep | AC1, AC7 |
-| Crush damage flows only through `apply_damage_with_context` (no direct HP write); death paths unchanged; cadence stops at the death latch | Task 2, Task 3 | Threatened by a bespoke HP mutation/death path, or damaging a latched corpse | AC3, AC5, AC6 |
+| Crush damage flows only through `apply_damage_with_context` (no direct HP write); death paths unchanged; cadence continues past death and retires on un-pin/despawn; no engine overkill/gib concept | Task 2, Task 3 | Threatened by a bespoke HP mutation/death path, an engine overkill threshold, or retiring at the death latch (killing the overkill fact) | AC3, AC5, AC6 |
 | Reversals (block, auto-close) are idempotent directional intents judged on tick-end heading, block-decision-last | Task 2, Task 5 | Threatened by a blind sign-flip, a net-`tick_delta` misclassification, or a cancel/buzz | AC2, AC9 |
 | The `displace` default is byte-for-byte today's behavior on all peers | Task 1 | Threatened if the pass alters `displace_from_movers` | AC4 |
 | Mover sound edges are host-role-gated outside the shared driver and route through the executing `fire_named_event_with_sequences` | Task 1, Task 6 | Threatened by emitting inside the shared driver (client double-emits) or copying the non-executing weapon/movement drain | AC11 |
@@ -499,8 +557,8 @@ Spec text; the test tasks cite these rows.
 | Two entities pinned by one crusher on the same tick | Both detected in one pass, each on its own per-victim countdown | Both take crush damage that tick (both on first-pinned tick); both swept the same tick if lethal |
 | Second entity pins mid-interval (staggered) | Per-victim countdowns are independent | The newcomer takes damage on its own first pinned tick, not gated by the first victim's cadence |
 | Victim un-pins and re-pins within one interval | Per-victim entry dropped on unpin, re-created on re-pin | Re-pin damages on its first pinned tick; wiggling cannot indefinitely evade damage |
-| Crush kills a player who stays geometrically pinned after death | Crush latches HP at 6b tick M; pawn persists (not despawned), still overlapped tick M+1… | Entry retired at the death latch; no further crush damage and no further `Crushed` after the lethal tick despite continued overlap |
-| Crush kills an enemy with an authored despawn delay, mover still overlapping the corpse | Lethal latch at 6b; corpse persists through the death-animation delay, still overlapped (no displace-clear for enemies) | Entry retired at the latch, not on un-pin; one `Crushed` on the lethal tick, none during the death-animation window |
+| Crush keeps hitting a player pinned after death | Crush latches HP at 6b tick M; pawn persists (not despawned), still pinned tick M+1… | Damage and `Crushed` continue each cadence tick past death, each re-emitting the beyond-lethal overkill fact; a mod gib policy fires once (idempotent via per-entity-state); the engine adds no stop — the cadence ends only on un-pin |
+| Crush kills an enemy whose mod death/gib policy despawns it | Lethal latch at 6b; the mod's death (or future gib) impact policy despawns the body | Crush continues past death until the despawn un-pins the enemy; the side-table entry retires on despawn/un-pin, never at the death latch |
 | First tick of contact for a moving stop/reverse door | Mover moves at order 1; pass detects at 6b; driver honors next tick's order 1 | Mover completes one tick of motion into contact on the detection tick, then holds/reverses tick+1; swept-face inflation keeps over-penetration sub-capsule |
 | Stop door: contact clears | Pass detects clear at 6b tick M; driver resumes at order 1 tick M+1 | Resume lags exactly one tick; no earlier resume, no double-advance |
 | Reverse door whose one-tick motion cannot clear the capsule | Contact still present next tick while mover recedes (tick-end heading away) | Reverse fires once on approach; while separating, no re-flip and no `Blocked` re-emit — no per-tick buzz |

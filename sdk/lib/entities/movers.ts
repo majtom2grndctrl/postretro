@@ -20,6 +20,8 @@ export interface MoverEntityHandle extends GeneratedMoverEntity {
    * A nonzero rate requires the mover to author a nonzero `spin_axis` in its map entity.
    */
   setSpinRate(rate: number): SequenceStep[];
+  /** Set the host-authoritative response when the mover contacts an entity. */
+  setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[];
 }
 
 export function wrapMoverEntity(snapshot: GeneratedMoverEntity): MoverEntityHandle {
@@ -40,6 +42,9 @@ export function wrapMoverEntity(snapshot: GeneratedMoverEntity): MoverEntityHand
     },
     setSpinRate(rate: number): SequenceStep[] {
       return [{ id, primitive: "moverSetSpinRate", args: { rate } }];
+    },
+    setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[] {
+      return [{ id, primitive: "moverSetBlockPolicy", args: { policy } }];
     },
   };
 }

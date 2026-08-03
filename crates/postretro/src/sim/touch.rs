@@ -234,7 +234,7 @@ impl TouchSystem {
                         .total_cmp(&right.distance_squared)
                         .then_with(|| left.player.cmp(&right.player))
                 });
-            let effects_applied = winner.map_or(false, |winner| {
+            let effects_applied = winner.is_some_and(|winner| {
                 let applied = apply_effects(registry, winner.pawn, item, &winner.effects);
                 if applied {
                     repointed.insert(winner.pawn);
@@ -321,10 +321,9 @@ impl TouchSystem {
                 continue;
             }
 
-            let mut item_transform = registry
+            let mut item_transform = *registry
                 .get_component::<Transform>(item)
-                .expect("checked live wieldables retain their transform")
-                .clone();
+                .expect("checked live wieldables retain their transform");
             item_transform.position = drop_position;
             let _ = registry.set_component(item, item_transform);
             let _ = registry.set_component(item, TouchableComponent::from_descriptor(touchable));

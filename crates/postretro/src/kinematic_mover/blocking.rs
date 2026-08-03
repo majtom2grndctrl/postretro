@@ -188,35 +188,41 @@ pub(crate) fn run_mover_blocking_pass(
         };
 
         for (player_entity, position, capsule) in &player_capsules {
-            let Some(penetration) =
-                leading_mover_contact_penetration(
-                    collider,
-                    mover_poses,
-                    mover.prospective_pose,
-                    *position,
-                    capsule,
-                )
-            else {
-                continue;
-            };
+            let contact = leading_mover_contact_penetration(
+                collider,
+                mover_poses,
+                mover.prospective_pose,
+                *position,
+                capsule,
+            );
 
             match mover.policy {
-                BlockPolicy::Stop | BlockPolicy::Reverse => note_reactive_contact(
-                    mover.entity,
-                    mover,
-                    penetration.normal,
-                    &mut contacted_stop_movers,
-                    &mut reverse_contacts,
-                ),
+                BlockPolicy::Stop | BlockPolicy::Reverse => {
+                    let Some(contact) = contact else {
+                        continue;
+                    };
+                    note_reactive_contact(
+                        mover.entity,
+                        mover,
+                        contact.normal,
+                        &mut contacted_stop_movers,
+                        &mut reverse_contacts,
+                    );
+                }
                 BlockPolicy::Crush => {
-                    if !mover.policy_active
-                        && !blocking_state.has_crush_cadence(mover.entity, *player_entity)
-                    {
+                    let maintains_cadence =
+                        blocking_state.has_crush_cadence(mover.entity, *player_entity);
+                    if contact.is_none() && !maintains_cadence {
+                        continue;
+                    }
+                    if !mover.policy_active && !maintains_cadence {
                         continue;
                     }
                     // Contact is conservative, but pinning must use the actual
                     // player capsule and the same static-push predicate as local
-                    // mover displacement. A player that can clear takes no hit.
+                    // mover displacement. A held cadence keeps sampling the
+                    // actual overlap: its stationary mesh contact has no swept
+                    // push direction to re-derive the original static block.
                     if let Some(actual_penetration) = deepest_mover_push_penetration(
                         std::slice::from_ref(collider),
                         mover_poses,
@@ -229,6 +235,16 @@ pub(crate) fn run_mover_blocking_pass(
                         actual_penetration,
                     ) {
                         pinned_crush_contacts.insert((mover.entity, *player_entity));
+                    } else if maintains_cadence
+                        && deepest_mover_penetration(
+                            std::slice::from_ref(collider),
+                            mover_poses,
+                            Point::new(position.x, position.y, position.z),
+                            capsule,
+                        )
+                        .is_some()
+                    {
+                        pinned_crush_contacts.insert((mover.entity, *player_entity));
                     }
                 }
                 BlockPolicy::Displace => unreachable!("displace movers do not enter the pass"),
@@ -236,32 +252,36 @@ pub(crate) fn run_mover_blocking_pass(
         }
 
         for (enemy_entity, position, capsule) in &agent_capsules {
-            let Some(penetration) =
-                leading_mover_contact_penetration(
-                    collider,
-                    mover_poses,
-                    mover.prospective_pose,
-                    *position,
-                    capsule,
-                )
-            else {
-                continue;
-            };
+            let contact = leading_mover_contact_penetration(
+                collider,
+                mover_poses,
+                mover.prospective_pose,
+                *position,
+                capsule,
+            );
 
             match mover.policy {
-                BlockPolicy::Stop | BlockPolicy::Reverse => note_reactive_contact(
-                    mover.entity,
-                    mover,
-                    penetration.normal,
-                    &mut contacted_stop_movers,
-                    &mut reverse_contacts,
-                ),
+                BlockPolicy::Stop | BlockPolicy::Reverse => {
+                    let Some(contact) = contact else {
+                        continue;
+                    };
+                    note_reactive_contact(
+                        mover.entity,
+                        mover,
+                        contact.normal,
+                        &mut contacted_stop_movers,
+                        &mut reverse_contacts,
+                    );
+                }
                 // Agents never take the player-only mover-displacement path, so
                 // an actual overlap is necessarily a pinned crusher contact.
                 BlockPolicy::Crush => {
-                    if !mover.policy_active
-                        && !blocking_state.has_crush_cadence(mover.entity, *enemy_entity)
-                    {
+                    let maintains_cadence =
+                        blocking_state.has_crush_cadence(mover.entity, *enemy_entity);
+                    if contact.is_none() && !maintains_cadence {
+                        continue;
+                    }
+                    if !mover.policy_active && !maintains_cadence {
                         continue;
                     }
                     if deepest_mover_push_penetration(
@@ -815,7 +835,7 @@ mod tests {
         let mut mover = mover(mover_id);
         mover.block_policy = BlockPolicy::Stop;
         registry.set_component(mover_entity, mover).unwrap();
-        add_player(&mut registry, None);
+        let player = add_player(&mut registry, None);
 
         let collider = swept_wall(mover_id);
         let static_world = CollisionWorld::new();
@@ -841,27 +861,14 @@ mod tests {
         );
         assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
 
-        let clear_poses = SingleMoverPose {
-            mover_id,
-            pose: crate::collision::moving::MoverPose {
-                transform: Transform {
-                    position: Vec3::new(10.0, 0.0, 0.0),
-                    rotation: Quat::IDENTITY,
-                    scale: Vec3::ONE,
-                },
-                linear_velocity: Vec3::ZERO,
-                tick_delta: Vec3::ZERO,
-                angular_velocity: Vec3::ZERO,
-                tick_rotation_delta: Quat::IDENTITY,
-                carry_yaw: false,
-                tick_dt: 0.1,
-            },
-        };
+        let mut player_transform = *registry.get_component::<Transform>(player).unwrap();
+        player_transform.position.x = 10.0;
+        registry.set_component(player, player_transform).unwrap();
         run_mover_blocking_pass(
             &mut registry,
             &static_world,
             std::slice::from_ref(&collider),
-            &clear_poses,
+            &stationary_contact_pose(mover_id),
             &mut blocking_state,
             0.1,
             &mut events,

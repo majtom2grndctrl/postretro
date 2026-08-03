@@ -1,9 +1,5 @@
-//! Host-only automatic return timers for kinematic movers.
-//!
-//! The mover phase remains the replicated source of truth. This side table only
-//! decides when to issue a closeward directional intent, so connected clients
-//! reconcile the resulting direction without ever observing or evaluating a
-//! countdown.
+// Host-only automatic return timers for kinematic movers.
+// See: context/lib/networking.md §Phase boundaries
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,11 +7,26 @@ use std::rc::Rc;
 
 use postretro_entities::{EntityId, EntityRegistry, KinematicMoverComponent, MoverCommand};
 
-use super::{MoverEventKind, travel_toward_closed_terminus};
+use super::{MoverEventKind, mover_is_at_open_terminus, travel_toward_closed_terminus};
+
+#[derive(Debug, Clone, Copy)]
+struct AutoCloseCountdown {
+    remaining_ms: f32,
+    skip_next_tick: bool,
+}
+
+impl AutoCloseCountdown {
+    fn armed(duration_ms: f32) -> Self {
+        Self {
+            remaining_ms: duration_ms,
+            skip_next_tick: true,
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct AutoCloseTimerState {
-    countdowns_ms: HashMap<EntityId, f32>,
+    countdowns: HashMap<EntityId, AutoCloseCountdown>,
     enabled: bool,
 }
 
@@ -35,13 +46,13 @@ impl MoverAutoCloseTimers {
         let mut state = self.state.borrow_mut();
         state.enabled = enabled;
         if !enabled {
-            state.countdowns_ms.clear();
+            state.countdowns.clear();
         }
     }
 
     /// Drop all transient level state without changing the session role.
     pub(crate) fn clear(&self) {
-        self.state.borrow_mut().countdowns_ms.clear();
+        self.state.borrow_mut().countdowns.clear();
     }
 
     /// Observe a command after the deterministic applier has run. A re-trigger
@@ -59,12 +70,14 @@ impl MoverAutoCloseTimers {
         }
         match command {
             MoverCommand::Start | MoverCommand::GoToPathNode(_) => {
-                if state.countdowns_ms.contains_key(&entity) {
-                    state.countdowns_ms.insert(entity, mover.auto_close_ms);
+                if state.countdowns.contains_key(&entity) {
+                    state
+                        .countdowns
+                        .insert(entity, AutoCloseCountdown::armed(mover.auto_close_ms));
                 }
             }
             MoverCommand::Stop => {
-                state.countdowns_ms.remove(&entity);
+                state.countdowns.remove(&entity);
             }
             MoverCommand::Reverse
             | MoverCommand::SetSpinRate(_)
@@ -109,10 +122,16 @@ impl MoverAutoCloseTimers {
             if mover.auto_close_ms <= 0.0 || !mover.auto_close_ms.is_finite() {
                 continue;
             }
+            // Arrival provenance may contain an earlier open crossing even
+            // when a fast ping-pong tick finishes back inside the path. Only
+            // terminal phase can be converted into a host hold coherently.
+            if !mover_is_at_open_terminus(&mover) {
+                continue;
+            }
             self.state
                 .borrow_mut()
-                .countdowns_ms
-                .insert(entity, mover.auto_close_ms);
+                .countdowns
+                .insert(entity, AutoCloseCountdown::armed(mover.auto_close_ms));
             if mover.mode == postretro_entities::KinematicMoverMode::PingPong {
                 mover.started = false;
                 // Reuse the command applier's completed-hold edge: a Start
@@ -141,9 +160,13 @@ impl MoverAutoCloseTimers {
                 return;
             }
             let mut expired = Vec::new();
-            state.countdowns_ms.retain(|entity, remaining_ms| {
-                *remaining_ms -= elapsed_ms;
-                let active = *remaining_ms > 0.0;
+            state.countdowns.retain(|entity, countdown| {
+                if countdown.skip_next_tick {
+                    countdown.skip_next_tick = false;
+                    return true;
+                }
+                countdown.remaining_ms -= elapsed_ms;
+                let active = countdown.remaining_ms > 0.0;
                 if !active {
                     expired.push(*entity);
                 }
@@ -169,7 +192,11 @@ impl MoverAutoCloseTimers {
 
     #[cfg(test)]
     pub(crate) fn remaining_ms(&self, entity: EntityId) -> Option<f32> {
-        self.state.borrow().countdowns_ms.get(&entity).copied()
+        self.state
+            .borrow()
+            .countdowns
+            .get(&entity)
+            .map(|countdown| countdown.remaining_ms)
     }
 }
 
@@ -212,6 +239,8 @@ mod tests {
 
         timers.arm_opened_termini(&mut registry, &[(MoverEventKind::Opened, 7)]);
         timers.tick(&mut registry, 0.075);
+        assert_eq!(timers.remaining_ms(entity), Some(100.0));
+        timers.tick(&mut registry, 0.075);
         assert!(timers.remaining_ms(entity).unwrap() < 30.0);
 
         let mover = registry
@@ -221,6 +250,8 @@ mod tests {
         timers.observe_command(entity, &mover, &MoverCommand::Start);
         assert_eq!(timers.remaining_ms(entity), Some(100.0));
 
+        timers.tick(&mut registry, 0.075);
+        assert_eq!(timers.remaining_ms(entity), Some(100.0));
         timers.tick(&mut registry, 0.075);
         assert!(
             registry
@@ -247,6 +278,13 @@ mod tests {
         timers.arm_opened_termini(&mut registry, &[(MoverEventKind::Opened, 7)]);
 
         timers.tick(&mut registry, 0.1);
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(entity)
+                .unwrap()
+                .completed
+        );
+        timers.tick(&mut registry, 0.1);
 
         let mover = registry
             .get_component::<KinematicMoverComponent>(entity)
@@ -255,5 +293,103 @@ mod tests {
         assert!(!mover.completed);
         assert_eq!(mover.direction_sign, -1);
         assert_eq!(mover.target_segment, Some(0));
+    }
+
+    // Regression: endpoint provenance from an earlier leg could snap an
+    // interior ping-pong pose back to the open terminus when arming the timer.
+    #[test]
+    fn opened_arrival_does_not_arm_after_the_tick_finishes_interior() {
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform {
+            position: Vec3::new(0.5, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let mut mover = sample_mover();
+        mover.mode = KinematicMoverMode::PingPong;
+        mover.completed = false;
+        mover.started = true;
+        mover.segment_index = 1;
+        mover.direction_sign = -1;
+        mover.segment_elapsed_ms = 500.0;
+        registry.set_component(entity, mover).unwrap();
+        let timers = MoverAutoCloseTimers::default();
+        timers.set_enabled(true);
+
+        timers.arm_opened_termini(&mut registry, &[(MoverEventKind::Opened, 7)]);
+
+        assert_eq!(timers.remaining_ms(entity), None);
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(entity)
+            .unwrap();
+        assert!(!mover.completed);
+        assert_eq!(mover.direction_sign, -1);
+        assert!((mover.segment_elapsed_ms - 500.0).abs() < f32::EPSILON);
+        assert_eq!(
+            registry.get_component::<Transform>(entity).unwrap().position,
+            Vec3::new(0.5, 0.0, 0.0)
+        );
+    }
+
+    // Regression: endpoint provenance must describe crossings without letting
+    // the timer rewrite a different final phase or pose.
+    #[test]
+    fn fast_ping_pong_arms_only_when_multi_endpoint_tick_finishes_open() {
+        let timers = MoverAutoCloseTimers::default();
+        timers.set_enabled(true);
+
+        let mut interior_registry = EntityRegistry::new();
+        let interior_entity = interior_registry.spawn(Transform::default());
+        let mut interior_mover = sample_mover();
+        interior_mover.mode = KinematicMoverMode::PingPong;
+        interior_mover.completed = false;
+        interior_mover.segment_index = 0;
+        interior_mover.direction_sign = 1;
+        interior_registry
+            .set_component(interior_entity, interior_mover)
+            .unwrap();
+        let mut interior_states = super::super::MoverTickStateTable::default();
+        super::super::run_kinematic_mover_tick(
+            &mut interior_registry,
+            &mut interior_states,
+            1.5,
+        );
+        let interior_events: Vec<_> = interior_states.terminus_events().collect();
+        timers.arm_opened_termini(&mut interior_registry, &interior_events);
+        assert_eq!(timers.remaining_ms(interior_entity), None);
+        assert_eq!(
+            interior_registry
+                .get_component::<Transform>(interior_entity)
+                .unwrap()
+                .position,
+            Vec3::new(0.5, 0.0, 0.0)
+        );
+
+        let mut open_registry = EntityRegistry::new();
+        let open_entity = open_registry.spawn(Transform::default());
+        let mut open_mover = sample_mover();
+        open_mover.mode = KinematicMoverMode::PingPong;
+        open_mover.completed = false;
+        open_mover.segment_index = 0;
+        open_mover.direction_sign = 1;
+        open_registry.set_component(open_entity, open_mover).unwrap();
+        let mut open_states = super::super::MoverTickStateTable::default();
+        super::super::run_kinematic_mover_tick(&mut open_registry, &mut open_states, 3.0);
+        let open_events: Vec<_> = open_states.terminus_events().collect();
+        timers.arm_opened_termini(&mut open_registry, &open_events);
+
+        assert_eq!(timers.remaining_ms(open_entity), Some(100.0));
+        assert!(
+            open_registry
+                .get_component::<KinematicMoverComponent>(open_entity)
+                .unwrap()
+                .completed
+        );
+        assert_eq!(
+            open_registry
+                .get_component::<Transform>(open_entity)
+                .unwrap()
+                .position,
+            Vec3::X
+        );
     }
 }

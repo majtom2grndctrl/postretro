@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::collision::moving::{MoverPose, MoverPoseSource};
+use crate::collision::moving::{MoverPose, MoverPoseSource, MoverTranslationLeg};
 use glam::{Quat, Vec3};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
@@ -48,6 +48,7 @@ struct MoverEndpointArrivals {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MoverTickStateTable {
     states: HashMap<u32, MoverTickState>,
+    translation_legs: HashMap<u32, Vec<MoverTranslationLeg>>,
     endpoint_arrivals: Vec<(u32, MoverEndpointArrivals)>,
     blocking_state: MoverBlockingState,
     mover_entities: Vec<EntityId>,
@@ -56,6 +57,7 @@ pub(crate) struct MoverTickStateTable {
 impl MoverTickStateTable {
     pub(crate) fn clear(&mut self) {
         self.states.clear();
+        self.translation_legs.clear();
         self.endpoint_arrivals.clear();
         self.blocking_state.clear();
         self.mover_entities.clear();
@@ -63,6 +65,7 @@ impl MoverTickStateTable {
 
     fn begin_tick(&mut self) {
         self.states.clear();
+        self.translation_legs.clear();
         self.endpoint_arrivals.clear();
         self.mover_entities.clear();
     }
@@ -101,6 +104,7 @@ impl MoverTickStateTable {
         (
             MoverTickPoseSource {
                 states: &self.states,
+                translation_legs: &self.translation_legs,
                 endpoint_arrivals: &self.endpoint_arrivals,
             },
             &mut self.blocking_state,
@@ -110,6 +114,7 @@ impl MoverTickStateTable {
 
 pub(crate) struct MoverTickPoseSource<'a> {
     states: &'a HashMap<u32, MoverTickState>,
+    translation_legs: &'a HashMap<u32, Vec<MoverTranslationLeg>>,
     endpoint_arrivals: &'a [(u32, MoverEndpointArrivals)],
 }
 
@@ -124,6 +129,10 @@ impl MoverPoseSource for MoverTickPoseSource<'_> {
             carry_yaw: state.carry_yaw,
             tick_dt: state.tick_dt,
         })
+    }
+
+    fn translation_legs(&self, mover_id: u32) -> Option<&[MoverTranslationLeg]> {
+        self.translation_legs.get(&mover_id).map(Vec::as_slice)
     }
 
     fn had_endpoint_arrival(&self, mover_id: u32) -> bool {
@@ -142,6 +151,10 @@ impl MoverPoseSource for MoverTickStateTable {
             carry_yaw: state.carry_yaw,
             tick_dt: state.tick_dt,
         })
+    }
+
+    fn translation_legs(&self, mover_id: u32) -> Option<&[MoverTranslationLeg]> {
+        self.translation_legs.get(&mover_id).map(Vec::as_slice)
     }
 
     fn had_endpoint_arrival(&self, mover_id: u32) -> bool {
@@ -169,15 +182,21 @@ pub(crate) fn run_kinematic_mover_tick(
         let Ok(mut transform) = registry.get_component::<Transform>(entity).copied() else {
             continue;
         };
-        let (mover_id, carry_yaw, pose, endpoint_arrivals) = {
+        let (mover_id, carry_yaw, pose, endpoint_arrivals, translation_legs) = {
             let Ok(ComponentValue::KinematicMover(mover)) =
                 registry.get_component_value_mut(entity, ComponentKind::KinematicMover)
             else {
                 continue;
             };
-            let (pose, endpoint_arrivals) =
+            let (pose, endpoint_arrivals, translation_legs) =
                 advance_mover_phase_one_tick_with_arrivals(mover, &mut transform, tick_dt);
-            (mover.mover_id, mover.carry_yaw, pose, endpoint_arrivals)
+            (
+                mover.mover_id,
+                mover.carry_yaw,
+                pose,
+                endpoint_arrivals,
+                translation_legs,
+            )
         };
 
         let _ = registry.set_component(entity, transform);
@@ -194,6 +213,11 @@ pub(crate) fn run_kinematic_mover_tick(
                 tick_dt: pose.tick_dt,
             },
         );
+        if !translation_legs.is_empty() {
+            side_table
+                .translation_legs
+                .insert(mover_id, translation_legs);
+        }
         if endpoint_arrivals != MoverEndpointArrivals::default() {
             side_table
                 .endpoint_arrivals
@@ -232,6 +256,29 @@ pub(crate) fn mover_pose_for_current_phase(
     }
 }
 
+/// Preview the next shared-driver pose without mutating replicated phase. Stop
+/// holds clear `blocked` only in the clone so host policy can ask whether the
+/// same leading sweep remains obstructed before allowing motion to resume.
+fn preview_next_mover_pose(
+    mover: &KinematicMoverComponent,
+    transform: Transform,
+    tick_dt: f32,
+    ignore_stop_hold: bool,
+) -> MoverPose {
+    let mut preview_mover = mover.clone();
+    if ignore_stop_hold {
+        preview_mover.blocked = false;
+    }
+    let mut preview_transform = transform;
+    advance_mover_phase_one_tick(&mut preview_mover, &mut preview_transform, tick_dt)
+}
+
+fn mover_is_at_open_terminus(mover: &KinematicMoverComponent) -> bool {
+    mover.waypoints.len() >= 2
+        && usize::from(mover.segment_index) == mover.waypoints.len() - 1
+        && mover.segment_elapsed_ms <= f32::EPSILON
+}
+
 pub(crate) fn advance_mover_phase_one_tick(
     mover: &mut KinematicMoverComponent,
     transform: &mut Transform,
@@ -244,8 +291,9 @@ fn advance_mover_phase_one_tick_with_arrivals(
     mover: &mut KinematicMoverComponent,
     transform: &mut Transform,
     tick_dt: f32,
-) -> (MoverPose, MoverEndpointArrivals) {
+) -> (MoverPose, MoverEndpointArrivals, Vec<MoverTranslationLeg>) {
     let mut endpoint_arrivals = MoverEndpointArrivals::default();
+    let mut translation_legs = Vec::new();
     // Completion and restart own stale-hold cleanup across every peer. A client
     // only reconciles the host's phase, so it must never retain a completed hold.
     if mover.completed {
@@ -255,12 +303,18 @@ fn advance_mover_phase_one_tick_with_arrivals(
         return (
             blocked_mover_pose(mover, transform, tick_dt),
             endpoint_arrivals,
+            translation_legs,
         );
     }
     let (angular_velocity, tick_rotation_delta) = advance_spin_phase(mover, transform, tick_dt);
     let start_position = position_for_phase(mover);
     transform.position = start_position;
-    let end_position = advance_mover(mover, tick_dt, &mut endpoint_arrivals);
+    let end_position = advance_mover(
+        mover,
+        tick_dt,
+        &mut endpoint_arrivals,
+        &mut translation_legs,
+    );
     transform.position = end_position;
     if mover.completed {
         mover.blocked = false;
@@ -281,7 +335,7 @@ fn advance_mover_phase_one_tick_with_arrivals(
         carry_yaw: mover.carry_yaw,
         tick_dt,
     };
-    (pose, endpoint_arrivals)
+    (pose, endpoint_arrivals, translation_legs)
 }
 
 /// Publish a zero-motion tick while a host-authoritative stop hold is active.
@@ -370,6 +424,7 @@ fn advance_mover(
     mover: &mut KinematicMoverComponent,
     tick_dt: f32,
     endpoint_arrivals: &mut MoverEndpointArrivals,
+    translation_legs: &mut Vec<MoverTranslationLeg>,
 ) -> Vec3 {
     let mut position = position_for_phase(mover);
     let mut remaining_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
@@ -427,15 +482,19 @@ fn advance_mover(
         let elapsed = mover.segment_elapsed_ms.clamp(0.0, duration_ms);
         let available_ms = (duration_ms - elapsed).max(0.0);
         if remaining_ms < available_ms {
+            let leg_start = position;
             mover.segment_elapsed_ms = elapsed + remaining_ms;
             let fraction = mover.segment_elapsed_ms / duration_ms;
             position = from.lerp(to, fraction);
+            record_translation_leg(translation_legs, leg_start, position);
             remaining_ms = 0.0;
         } else {
+            let leg_start = position;
             remaining_ms -= available_ms;
             mover.segment_elapsed_ms = 0.0;
             mover.segment_index = to_index as u16;
             position = to;
+            record_translation_leg(translation_legs, leg_start, position);
             let last = mover.waypoints.len().saturating_sub(1);
             endpoint_arrivals.opened |= mover.direction_sign > 0 && to_index == last;
             endpoint_arrivals.closed |= mover.direction_sign < 0 && to_index == 0;
@@ -447,6 +506,19 @@ fn advance_mover(
     }
 
     position
+}
+
+fn record_translation_leg(
+    translation_legs: &mut Vec<MoverTranslationLeg>,
+    start: Vec3,
+    end: Vec3,
+) {
+    if start.is_finite()
+        && end.is_finite()
+        && (end - start).length_squared() > f32::EPSILON * f32::EPSILON
+    {
+        translation_legs.push(MoverTranslationLeg { start, end });
+    }
 }
 
 fn path_can_move(mover: &KinematicMoverComponent) -> bool {

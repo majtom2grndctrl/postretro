@@ -16,7 +16,10 @@ use postretro_entities::{
 use postretro_foundation::{DamagePayload, PlayerMovementComponent};
 
 use crate::collision::CollisionWorld;
-use crate::collision::moving::{MoverCollider, MoverPoseSource, deepest_mover_push_penetration};
+use crate::collision::moving::{
+    MoverCollider, MoverPose, MoverPoseSource, deepest_mover_penetration,
+    deepest_mover_push_penetration,
+};
 use crate::movement::mover_push_is_blocked_by_static;
 
 /// Host-local mover transition kinds. Task 6 resolves each entry through the
@@ -58,11 +61,23 @@ struct MoverPolicySnapshot {
     crush_damage: f32,
     crush_interval_ms: f32,
     heading: Option<glam::Vec3>,
+    prospective_pose: Option<MoverPose>,
+    policy_active: bool,
 }
 
 impl MoverBlockingState {
     pub(crate) fn clear(&mut self) {
         self.crush_elapsed_ms.clear();
+    }
+
+    fn has_crush_cadence_for(&self, mover: EntityId) -> bool {
+        self.crush_elapsed_ms
+            .keys()
+            .any(|(cadence_mover, _)| *cadence_mover == mover)
+    }
+
+    fn has_crush_cadence(&self, mover: EntityId, victim: EntityId) -> bool {
+        self.crush_elapsed_ms.contains_key(&(mover, victim))
     }
 
     #[cfg(test)]
@@ -100,7 +115,7 @@ pub(crate) fn run_mover_blocking_pass(
             let policy = effective_block_policy(mover);
             (mover.blocked
                 && (policy != BlockPolicy::Stop
-                    || !policy_is_active_this_tick(mover, policy, mover_poses)))
+                    || !policy_is_active_this_tick(mover, policy, mover_poses, None)))
             .then_some(entity)
         })
         .collect();
@@ -112,25 +127,6 @@ pub(crate) fn run_mover_blocking_pass(
         }
     }
 
-    // The common platform-map path is displace-only. Leave before building
-    // entity capsule snapshots or allocating contact sets; those movers use
-    // the existing displacement stage and need no host policy work.
-    let has_policy_work =
-        registry
-            .iter_with_kind(ComponentKind::KinematicMover)
-            .any(|(_, value)| {
-                let ComponentValue::KinematicMover(mover) = value else {
-                    return false;
-                };
-                let policy = effective_block_policy(mover);
-                policy != BlockPolicy::Displace
-                    && policy_is_active_this_tick(mover, policy, mover_poses)
-            });
-    if !has_policy_work {
-        blocking_state.clear();
-        return;
-    }
-
     let movers: Vec<MoverPolicySnapshot> = registry
         .iter_with_kind(ComponentKind::KinematicMover)
         .filter_map(|(entity, value)| {
@@ -138,8 +134,27 @@ pub(crate) fn run_mover_blocking_pass(
                 return None;
             };
             let policy = effective_block_policy(mover);
+            let transform = registry.get_component::<Transform>(entity).ok().copied()?;
+            let prospective_pose = (mover.started && !mover.completed)
+                .then(|| {
+                    super::preview_next_mover_pose(
+                        mover,
+                        transform,
+                        tick_dt,
+                        policy == BlockPolicy::Stop && mover.blocked,
+                    )
+                })
+                .filter(|pose| pose_has_motion(*pose));
+            let policy_active = policy_is_active_this_tick(
+                mover,
+                policy,
+                mover_poses,
+                prospective_pose,
+            );
+            let maintains_crush_cadence = policy == BlockPolicy::Crush
+                && blocking_state.has_crush_cadence_for(entity);
             (policy != BlockPolicy::Displace
-                && policy_is_active_this_tick(mover, policy, mover_poses))
+                && (policy_active || maintains_crush_cadence))
             .then(|| MoverPolicySnapshot {
                 entity,
                 mover_id: mover.mover_id,
@@ -148,9 +163,15 @@ pub(crate) fn run_mover_blocking_pass(
                 crush_damage: mover.crush_damage,
                 crush_interval_ms: mover.crush_interval_ms,
                 heading: mover_heading_at_tick_end(mover),
+                prospective_pose,
+                policy_active,
             })
         })
         .collect();
+    if movers.is_empty() {
+        blocking_state.clear();
+        return;
+    }
 
     let player_capsules = player_capsules(registry);
     let agent_capsules = agent_capsules(registry);
@@ -168,7 +189,13 @@ pub(crate) fn run_mover_blocking_pass(
 
         for (player_entity, position, capsule) in &player_capsules {
             let Some(penetration) =
-                leading_mover_contact_penetration(collider, mover_poses, *position, capsule)
+                leading_mover_contact_penetration(
+                    collider,
+                    mover_poses,
+                    mover.prospective_pose,
+                    *position,
+                    capsule,
+                )
             else {
                 continue;
             };
@@ -182,6 +209,11 @@ pub(crate) fn run_mover_blocking_pass(
                     &mut reverse_contacts,
                 ),
                 BlockPolicy::Crush => {
+                    if !mover.policy_active
+                        && !blocking_state.has_crush_cadence(mover.entity, *player_entity)
+                    {
+                        continue;
+                    }
                     // Contact is conservative, but pinning must use the actual
                     // player capsule and the same static-push predicate as local
                     // mover displacement. A player that can clear takes no hit.
@@ -205,7 +237,13 @@ pub(crate) fn run_mover_blocking_pass(
 
         for (enemy_entity, position, capsule) in &agent_capsules {
             let Some(penetration) =
-                leading_mover_contact_penetration(collider, mover_poses, *position, capsule)
+                leading_mover_contact_penetration(
+                    collider,
+                    mover_poses,
+                    mover.prospective_pose,
+                    *position,
+                    capsule,
+                )
             else {
                 continue;
             };
@@ -221,6 +259,11 @@ pub(crate) fn run_mover_blocking_pass(
                 // Agents never take the player-only mover-displacement path, so
                 // an actual overlap is necessarily a pinned crusher contact.
                 BlockPolicy::Crush => {
+                    if !mover.policy_active
+                        && !blocking_state.has_crush_cadence(mover.entity, *enemy_entity)
+                    {
+                        continue;
+                    }
                     if deepest_mover_push_penetration(
                         std::slice::from_ref(collider),
                         mover_poses,
@@ -345,6 +388,7 @@ fn policy_is_active_this_tick(
     mover: &KinematicMoverComponent,
     policy: BlockPolicy,
     mover_poses: &dyn MoverPoseSource,
+    prospective_pose: Option<MoverPose>,
 ) -> bool {
     if policy == BlockPolicy::Stop && mover.blocked && mover.started && !mover.completed {
         // A held stop mover must keep sampling contact so it can resume when
@@ -354,9 +398,13 @@ fn policy_is_active_this_tick(
     if mover_poses.had_endpoint_arrival(mover.mover_id) {
         return true;
     }
-    let Some(pose) = mover_poses.pose(mover.mover_id) else {
-        return false;
-    };
+    mover_poses
+        .pose(mover.mover_id)
+        .is_some_and(pose_has_motion)
+        || prospective_pose.is_some_and(pose_has_motion)
+}
+
+fn pose_has_motion(pose: MoverPose) -> bool {
     let translated = pose.tick_delta.is_finite()
         && pose.tick_delta.length_squared() > f32::EPSILON * f32::EPSILON;
     let rotation = pose.tick_rotation_delta.to_scaled_axis();
@@ -455,49 +503,71 @@ fn is_blocking_victim(registry: &EntityRegistry, entity: EntityId) -> bool {
 fn leading_mover_contact_penetration(
     collider: &MoverCollider,
     mover_poses: &dyn MoverPoseSource,
+    prospective_pose: Option<MoverPose>,
     position: glam::Vec3,
     capsule: &Capsule,
 ) -> Option<crate::collision::moving::MoverPenetration> {
     let point = Point::new(position.x, position.y, position.z);
-    if let Some(contact) =
-        deepest_mover_push_penetration(std::slice::from_ref(collider), mover_poses, point, capsule)
+    if let Some(legs) = mover_poses.translation_legs(collider.mover_id)
+        && !legs.is_empty()
     {
-        return Some(contact);
-    }
-
-    let pose = mover_poses.pose(collider.mover_id)?;
-    let has_translation = pose.tick_delta.is_finite()
-        && pose.tick_delta.length_squared() > f32::EPSILON * f32::EPSILON;
-    let rotation_delta = pose.tick_rotation_delta.to_scaled_axis();
-    let has_rotation_delta =
-        rotation_delta.is_finite() && rotation_delta.length_squared() > f32::EPSILON * f32::EPSILON;
-    let angular_speed = pose.angular_velocity.length();
-    let has_authored_rotation = pose.angular_velocity.is_finite()
-        && angular_speed.is_finite()
-        && angular_speed > f32::EPSILON
-        && pose.tick_dt.is_finite()
-        && pose.tick_dt > 0.0;
-    if !has_translation && !has_rotation_delta && !has_authored_rotation {
-        return None;
-    }
-
-    let mut leading_pose = pose;
-    leading_pose.transform.position += pose.tick_delta;
-    leading_pose.transform.rotation = if has_authored_rotation {
-        glam::Quat::from_axis_angle(
-            pose.angular_velocity / angular_speed,
-            angular_speed * pose.tick_dt,
-        ) * pose.transform.rotation
+        if let Some(contact) = deepest_mover_penetration(
+            std::slice::from_ref(collider),
+            mover_poses,
+            point,
+            capsule,
+        ) {
+            return Some(contact);
+        }
+        let base_pose = mover_poses.pose(collider.mover_id)?;
+        let mut latest_contact = None;
+        for leg in legs {
+            let mut leg_pose = base_pose;
+            leg_pose.transform.position = leg.end;
+            leg_pose.linear_velocity = if base_pose.tick_dt.is_finite() && base_pose.tick_dt > 0.0 {
+                (leg.end - leg.start) / base_pose.tick_dt
+            } else {
+                glam::Vec3::ZERO
+            };
+            leg_pose.tick_delta = leg.end - leg.start;
+            leg_pose.angular_velocity = glam::Vec3::ZERO;
+            leg_pose.tick_rotation_delta = glam::Quat::IDENTITY;
+            let leg_source = ProspectiveMoverPose {
+                mover_id: collider.mover_id,
+                pose: leg_pose,
+            };
+            if let Some(contact) = deepest_mover_push_penetration(
+                std::slice::from_ref(collider),
+                &leg_source,
+                point,
+                capsule,
+            ) {
+                latest_contact = Some(contact);
+            }
+        }
+        if latest_contact.is_some() {
+            return latest_contact;
+        }
     } else {
-        pose.tick_rotation_delta * pose.transform.rotation
-    };
-    let leading_source = ProspectiveMoverPose {
+        let contact = deepest_mover_push_penetration(
+            std::slice::from_ref(collider),
+            mover_poses,
+            point,
+            capsule,
+        );
+        if contact.is_some() {
+            return contact;
+        }
+    }
+
+    let prospective_pose = prospective_pose.filter(|pose| pose_has_motion(*pose))?;
+    let prospective_source = ProspectiveMoverPose {
         mover_id: collider.mover_id,
-        pose: leading_pose,
+        pose: prospective_pose,
     };
     deepest_mover_push_penetration(
         std::slice::from_ref(collider),
-        &leading_source,
+        &prospective_source,
         point,
         capsule,
     )
@@ -909,6 +979,148 @@ mod tests {
         );
     }
 
+    // Regression: entering a completed hold cleared the cadence table, so a
+    // continuously pinned victim received an incorrect fresh first hit.
+    #[test]
+    fn completed_crusher_continues_existing_cadence_without_resetting() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        mover.crush_interval_ms = 100.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, Some(100.0));
+        let collider = swept_wall(mover_id);
+        let mut blocking_state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&collider),
+            &moving_contact_pose(mover_id),
+            &mut blocking_state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        let mut mover = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap()
+            .clone();
+        mover.completed = true;
+        registry.set_component(mover_entity, mover).unwrap();
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&collider),
+            &stationary_contact_pose(mover_id),
+            &mut blocking_state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(player)
+                .unwrap()
+                .current,
+            90.0,
+            "the stationary hold must not manufacture a fresh first hit"
+        );
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&collider),
+            &stationary_contact_pose(mover_id),
+            &mut blocking_state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(player)
+                .unwrap()
+                .current,
+            80.0
+        );
+    }
+
+    // Regression: timer expiry changed phase after the driver had published a
+    // zero pose, so the close command bypassed blocking for one tick.
+    #[test]
+    fn newly_expired_auto_close_uses_closeward_preview_for_blocking() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform {
+            position: Vec3::X,
+            ..Transform::default()
+        });
+        let mut mover = mover(mover_id);
+        mover.mode = KinematicMoverMode::Once;
+        mover.segment_index = 1;
+        mover.completed = true;
+        mover.block_policy = BlockPolicy::Stop;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        let mut player_transform = *registry.get_component::<Transform>(player).unwrap();
+        player_transform.position.x = 0.5;
+        registry.set_component(player, player_transform).unwrap();
+
+        let mut closing = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap()
+            .clone();
+        super::super::travel_toward_closed_terminus(&mut closing);
+        registry.set_component(mover_entity, closing).unwrap();
+        let published_zero_pose = SingleMoverPose {
+            mover_id,
+            pose: crate::collision::moving::MoverPose {
+                transform: Transform {
+                    position: Vec3::X,
+                    ..Transform::default()
+                },
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: 0.5,
+            },
+        };
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &published_zero_pose,
+            &mut MoverBlockingState::default(),
+            0.5,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert_eq!(
+            registry
+                .get_component::<Transform>(mover_entity)
+                .unwrap()
+                .position,
+            Vec3::X,
+            "policy preview must not move the authoritative transform"
+        );
+    }
+
     // Regression: a completed auto-close hold could reassert `blocked` from a
     // stationary overlap after the shared driver had cleared the stale flag.
     #[test]
@@ -951,12 +1163,15 @@ mod tests {
         let mover_id = 42;
         let collider = swept_wall(mover_id);
         let poses = moving_contact_pose(mover_id);
+        let mut prospective_pose = poses.pose;
+        prospective_pose.transform.position += prospective_pose.tick_delta;
         let capsule = Capsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25);
 
         assert!(
             leading_mover_contact_penetration(
                 &collider,
                 &poses,
+                Some(prospective_pose),
                 Vec3::new(2.5, 1.0, 0.0),
                 &capsule,
             )
@@ -967,6 +1182,7 @@ mod tests {
             leading_mover_contact_penetration(
                 &collider,
                 &poses,
+                Some(prospective_pose),
                 Vec3::new(-2.0, 1.0, 0.0),
                 &capsule,
             )
@@ -977,11 +1193,171 @@ mod tests {
             leading_mover_contact_penetration(
                 &collider,
                 &poses,
+                Some(prospective_pose),
                 Vec3::new(1.0, 1.0, 2.5),
                 &capsule,
             )
             .is_none(),
             "a capsule beside the sweep must not react"
+        );
+    }
+
+    // Regression: a ping-pong tick with zero net delta could cross a capsule
+    // on an intermediate leg without leaving any sweep in the published pose.
+    #[test]
+    fn multi_endpoint_tick_preserves_player_and_enemy_swept_contacts() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform {
+            position: Vec3::new(-2.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let mut mover = mover(mover_id);
+        mover.waypoints = vec![Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)];
+        mover.speed_mps = 20.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let mut poses = super::super::MoverTickStateTable::default();
+        super::super::run_kinematic_mover_tick(&mut registry, &mut poses, 0.4);
+        assert!(poses.pose(mover_id).unwrap().tick_delta.length() < f32::EPSILON);
+
+        let collider = swept_wall(mover_id);
+        let player_capsule = Capsule::new(
+            Point::new(0.0, -0.5, 0.0),
+            Point::new(0.0, 0.5, 0.0),
+            0.25,
+        );
+        let enemy_capsule = Capsule::new(
+            Point::new(0.0, -0.75, 0.0),
+            Point::new(0.0, 0.75, 0.0),
+            0.25,
+        );
+
+        assert!(
+            leading_mover_contact_penetration(
+                &collider,
+                &poses,
+                None,
+                Vec3::new(0.0, 1.0, 0.0),
+                &player_capsule,
+            )
+            .is_some()
+        );
+        assert!(
+            leading_mover_contact_penetration(
+                &collider,
+                &poses,
+                None,
+                Vec3::new(0.0, 1.0, 0.0),
+                &enemy_capsule,
+            )
+            .is_some()
+        );
+    }
+
+    // Regression: a prospective stop contact cleared on the following
+    // zero-motion tick, allowing the mover to advance every other tick.
+    #[test]
+    fn prospective_stop_hold_persists_until_the_leading_sweep_clears() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform {
+            position: Vec3::new(-1.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let mut mover = mover(mover_id);
+        mover.waypoints = vec![Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)];
+        mover.speed_mps = 20.0;
+        mover.block_policy = BlockPolicy::Stop;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        let collider = swept_wall(mover_id);
+        let mut poses = super::super::MoverTickStateTable::default();
+        let mut events = Vec::new();
+
+        super::super::run_kinematic_mover_tick(&mut registry, &mut poses, 0.025);
+        let held_position = registry
+            .get_component::<Transform>(mover_entity)
+            .unwrap()
+            .position;
+        {
+            let (pose_source, blocking_state) = poses.split_for_blocking();
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&collider),
+                &pose_source,
+                blocking_state,
+                0.025,
+                &mut events,
+                &mut |_| {},
+            );
+        }
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+
+        super::super::run_kinematic_mover_tick(&mut registry, &mut poses, 0.025);
+        assert_eq!(
+            registry
+                .get_component::<Transform>(mover_entity)
+                .unwrap()
+                .position,
+            held_position
+        );
+        {
+            let (pose_source, blocking_state) = poses.split_for_blocking();
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&collider),
+                &pose_source,
+                blocking_state,
+                0.025,
+                &mut events,
+                &mut |_| {},
+            );
+        }
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+
+        let mut player_transform = *registry.get_component::<Transform>(player).unwrap();
+        player_transform.position.x = 10.0;
+        registry.set_component(player, player_transform).unwrap();
+        {
+            let (pose_source, blocking_state) = poses.split_for_blocking();
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&collider),
+                &pose_source,
+                blocking_state,
+                0.025,
+                &mut events,
+                &mut |_| {},
+            );
+        }
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+
+        super::super::run_kinematic_mover_tick(&mut registry, &mut poses, 0.025);
+        assert!(
+            registry
+                .get_component::<Transform>(mover_entity)
+                .unwrap()
+                .position
+                .x
+                > held_position.x
         );
     }
 

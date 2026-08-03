@@ -56,8 +56,21 @@ pub(crate) struct MoverPose {
     pub(crate) tick_dt: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MoverTranslationLeg {
+    pub(crate) start: Vec3,
+    pub(crate) end: Vec3,
+}
+
 pub(crate) trait MoverPoseSource {
     fn pose(&self, mover_id: u32) -> Option<MoverPose>;
+
+    /// Ordered linear legs actually traversed during this tick. A mover can
+    /// cross multiple waypoints and finish with a small or zero net delta, so
+    /// policy collision must not infer the path from the final pose alone.
+    fn translation_legs(&self, _mover_id: u32) -> Option<&[MoverTranslationLeg]> {
+        None
+    }
 
     /// Tick-local provenance for movers whose net pose delta is zero after
     /// crossing one or more path termini. Ordinary pose sources need no

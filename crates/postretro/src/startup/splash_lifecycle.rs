@@ -254,6 +254,7 @@ impl App {
         // Switching is App-owned input policy, so lift it out of the runtime
         // manifest before the registry drain mutably borrows the session.
         let mut committed_switching: Option<postretro_foundation::SwitchingDescriptor> = None;
+        let mut committed_mover_auto_close_ms: Option<f32> = None;
         {
             let session = self
                 .session
@@ -287,6 +288,14 @@ impl App {
                         .mod_manifest()
                         .map(|manifest| manifest.switching)
                         .unwrap_or_default(),
+                );
+                committed_mover_auto_close_ms = Some(
+                    session
+                        .scripting
+                        .script_runtime
+                        .mod_manifest()
+                        .map(|manifest| manifest.movers.auto_close_ms)
+                        .unwrap_or(crate::runtime_movers::ENGINE_AUTO_CLOSE_MS),
                 );
                 // Drain the manifest's engine-global `DataRegistry` registrations
                 // (entity types, maps, global reactions/crossings) through the
@@ -368,6 +377,11 @@ impl App {
         }
         if let Some(switching) = committed_switching {
             self.switching = switching;
+        }
+        if let Some(mover_auto_close_ms) = committed_mover_auto_close_ms
+            && let Some(session) = self.session.as_mut()
+        {
+            session.scripting.mover_auto_close_ms = mover_auto_close_ms;
         }
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.

@@ -10,10 +10,11 @@ use crate::data_descriptors::{
     EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_render_profile_js, drain_render_profile_lua, drain_switching_js,
-    drain_switching_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
-    drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
-    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua, drain_render_profile_js,
+    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
+    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_descriptor_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -256,6 +257,17 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let movers = match drain_mover_defaults_js(&obj, "default mod manifest export") {
+            Ok(defaults) => defaults,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `movers` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let switching = match drain_switching_js(&obj, "default mod manifest export") {
             Ok(switching) => switching,
             Err(e) => {
@@ -352,6 +364,7 @@ pub(super) fn run_mod_init_quickjs(
             id,
             version,
             render,
+            movers,
             switching,
             entities,
             ui_trees,
@@ -516,6 +529,13 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let movers = drain_mover_defaults_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `movers` invalid: {e}"
+            ),
+        }
+    })?;
     let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -584,6 +604,7 @@ pub(super) fn run_mod_init_luau(
         id,
         version,
         render,
+        movers,
         switching,
         entities,
         ui_trees,
@@ -676,6 +697,44 @@ mod tests {
             assert_eq!(js, expected);
             assert_eq!(luau, expected);
         }
+    }
+
+    #[test]
+    fn mod_init_mover_defaults_match_in_both_runtimes_and_degrade_to_off() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Mover', id: 'mover', version: '1', movers: { autoCloseMs: 250 } };",
+            "mover.js",
+        )
+        .expect("QuickJS mover defaults should parse");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Mover', id = 'mover', version = '1', movers = { autoCloseMs = 250 } }",
+            "mover.luau",
+            Path::new("."),
+        )
+        .expect("Luau mover defaults should parse");
+        assert_eq!(js.movers.auto_close_ms, 250.0);
+        assert_eq!(luau.movers, js.movers);
+
+        let malformed_js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Mover', id: 'mover', version: '1', movers: { autoCloseMs: -1 } };",
+            "mover-malformed.js",
+        )
+        .expect("malformed optional QuickJS mover defaults should degrade");
+        let malformed_luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Mover', id = 'mover', version = '1', movers = { autoCloseMs = -1 } }",
+            "mover-malformed.luau",
+            Path::new("."),
+        )
+        .expect("malformed optional Luau mover defaults should degrade");
+        assert_eq!(malformed_js.movers.auto_close_ms, 0.0);
+        assert_eq!(malformed_luau.movers, malformed_js.movers);
     }
 
     #[test]

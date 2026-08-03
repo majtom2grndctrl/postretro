@@ -57,6 +57,12 @@ pub struct ModRenderProfile {
     pub bloom: ModBloomProfile,
 }
 
+/// Mod-global static defaults for authored kinematic movers.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModMoverDefaults {
+    pub auto_close_ms: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModManifestResult {
     pub name: String,
@@ -68,6 +74,9 @@ pub struct ModManifestResult {
     /// Static mod-owned render preferences parsed from `render`. Omission or
     /// malformed optional fields normalize to the current renderer defaults.
     pub render: ModRenderProfile,
+    /// Static defaults parsed from the optional `movers` manifest object.
+    /// Per-mover authored KVP values take precedence during level install.
+    pub movers: ModMoverDefaults,
     /// Mod-global weapon-switching rules. Omission resolves to the engine
     /// compatibility defaults before this manifest is committed.
     pub switching: SwitchingDescriptor,

@@ -51,6 +51,24 @@ pub(crate) fn staged_switching(
     }
 }
 
+/// Kinematic-mover default committed with a staged manifest snapshot. Static
+/// mover components read this only when their next level is installed.
+pub(crate) fn staged_mover_auto_close_ms(
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) -> Option<f32> {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return None;
+    }
+    match &result.status {
+        StagedManifestBuildStatus::Built(manifest) => Some(manifest.movers.auto_close_ms),
+        StagedManifestBuildStatus::NoStartScript => {
+            Some(crate::runtime_movers::ENGINE_AUTO_CLOSE_MS)
+        }
+        StagedManifestBuildStatus::Failed => None,
+    }
+}
+
 impl App {
     pub(crate) fn poll_staged_manifest_results(&mut self) {
         let staged = match self.session.as_mut() {
@@ -128,6 +146,11 @@ impl App {
             if let Some(switching) = staged_switching(&result, &outcome) {
                 self.switching = switching;
             }
+            if let Some(mover_auto_close_ms) = staged_mover_auto_close_ms(&result, &outcome)
+                && let Some(session) = self.session.as_mut()
+            {
+                session.scripting.mover_auto_close_ms = mover_auto_close_ms;
+            }
             self.commit_staged_ui_manifest(&result, &outcome);
             if committed {
                 self.install_network_mod_content();
@@ -170,6 +193,7 @@ mod tests {
                 id: "render-profile".to_string(),
                 version: "1".to_string(),
                 render,
+                movers: Default::default(),
                 switching,
                 entities: Vec::new(),
                 maps: Vec::new(),

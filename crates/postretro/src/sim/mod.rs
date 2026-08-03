@@ -230,6 +230,9 @@ pub(crate) struct TriggerTickContext<'a> {
     /// Present for production level installs and IR-aware harnesses. Literal
     /// fixtures may omit it and keep their direct table execution path.
     pub(crate) script_ctx: Option<ScriptCtx>,
+    /// Host-only auto-close timer side table. Omitted by lightweight fixtures
+    /// and never constructed for connected-client prediction.
+    pub(crate) auto_close_timers: Option<kinematic_mover::MoverAutoCloseTimers>,
     pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
 }
 
@@ -358,6 +361,9 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
     }
 
+    let auto_close_timers = trigger_context
+        .as_ref()
+        .and_then(|context| context.auto_close_timers.clone());
     let mover_phase_before: Vec<(EntityId, KinematicMoverComponent)> = registry
         .borrow()
         .iter_with_kind(ComponentKind::KinematicMover)
@@ -376,6 +382,9 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         let registry = registry.borrow();
         detect_mover_terminus_edges(&mover_phase_before, &registry)
     };
+    if let Some(auto_close_timers) = auto_close_timers.as_ref() {
+        auto_close_timers.arm_opened_termini(&mut registry.borrow_mut(), &mover_events);
+    }
 
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
         .iter()
@@ -570,6 +579,9 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 remote_network_ids: &HashMap::new(),
             },
         );
+        if let Some(auto_close_timers) = auto_close_timers.as_ref() {
+            auto_close_timers.tick(&mut registry, tick_dt);
+        }
         kinematic_mover::run_mover_blocking_pass(
             &mut registry,
             collision_world,
@@ -2055,6 +2067,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table,
                 script_ctx: None,
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2355,6 +2368,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
                 script_ctx: Some(script_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2475,6 +2489,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
                 script_ctx: Some(script_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2611,6 +2626,7 @@ mod tests {
                     bindings: &bindings,
                     slot_table: script_ctx.slot_table.clone(),
                     script_ctx: Some(script_ctx.clone()),
+                    auto_close_timers: None,
                     use_edges: &use_edges,
                 }),
                 |_| {},

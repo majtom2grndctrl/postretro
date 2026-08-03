@@ -106,9 +106,8 @@ impl TouchSystem {
     }
 
     /// Runs after trigger dispatch and before AI on every host/single-player
-    /// fixed tick. `collision_world` and `descriptors` are pass-owned now so
-    /// the drop half can use the same authoritative ordering without widening
-    /// this seam later.
+    /// fixed tick. Drop placement shares this pass so release, occupancy
+    /// seeding, and touch evaluation use one authoritative ordering.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_authoritative_tick(
         &mut self,

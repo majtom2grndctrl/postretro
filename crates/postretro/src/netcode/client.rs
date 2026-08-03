@@ -2208,6 +2208,7 @@ fn seed_kinematic_mover_phase(
     mover.wait_remaining_ms = wire.wait_remaining_ms;
     mover.started = wire.started;
     mover.completed = wire.completed;
+    mover.blocked = wire.blocked;
     mover.current_linear_velocity = Vec3::from_array(wire.velocity);
     mover.target_segment = wire.target_segment;
     mover.spin_angle_rad = wire.spin_angle_rad;
@@ -2356,6 +2357,7 @@ mod tests {
             wait_remaining_ms: 5.0,
             started: true,
             completed: false,
+            blocked: true,
             velocity: [0.5, 0.0, 0.0],
             target_segment: None,
             spin_angle_rad: 0.75,
@@ -2376,6 +2378,7 @@ mod tests {
             wait_remaining_ms: 0.0,
             started: true,
             completed: false,
+            blocked: false,
             velocity: [1.0, 0.0, 0.0],
             target_segment: None,
             spin_angle_rad: 0.25,
@@ -2602,6 +2605,10 @@ mod tests {
         assert_eq!(mover.segment_index, 1);
         assert_eq!(mover.direction_sign, -1);
         assert_eq!(mover.wait_remaining_ms, 5.0);
+        assert!(
+            mover.blocked,
+            "reconciliation must apply the host stop hold"
+        );
         assert!((mover.spin_angle_rad - 0.75).abs() < EPSILON);
         assert!((mover.spin_angle_before_tick_rad - 0.5).abs() < EPSILON);
         assert!(mover.was_active_this_tick);

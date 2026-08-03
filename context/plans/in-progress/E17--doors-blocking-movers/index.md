@@ -260,7 +260,8 @@ executor confirms the delta path against the wire mirror.
 
 Add a **replicated** `blocked: bool` phase field to `KinematicMoverComponent` and
 to `WireKinematicMoverState`, appended beside `started`/`completed`, bumping
-`SNAPSHOT_VERSION` 12→13 and `WIRE_VERSION` 15→16. Extend the engine↔wire
+`SNAPSHOT_VERSION` 12→13 and `WIRE_VERSION` 16→17 (E16 already consumed wire
+version 16 for `drop_pressed`). Extend the engine↔wire
 conversion in **both** directions: the component→wire copy
 (`kinematic_mover_state_to_wire`, `netcode/replication.rs`) **and** the wire→component
 reconcile apply (`seed_kinematic_mover_phase`, `netcode/client.rs`) — the field is
@@ -579,7 +580,8 @@ One new field: `blocked: bool` appended to `WireKinematicMoverState`, beside
 It is a deterministic input to client mover reconciliation, so it rides the
 existing mover phase payload (added after the current phase fields, consistent
 with `ComponentKind` numeric order for the payload). `SNAPSHOT_VERSION` 12→13 and
-`WIRE_VERSION` 15→16; both drift-guard tests extend. Bumping `WIRE_VERSION`
+`WIRE_VERSION` 16→17 (E16 already consumed version 16 for `drop_pressed`); both
+drift-guard tests extend. Bumping `WIRE_VERSION`
 alongside a snapshot field follows the replay-provenance precedent
 (`SNAPSHOT_VERSION` 12 / `WIRE_VERSION` 13), and AC12 requires it: the
 handshake gate compares only `WIRE_VERSION`, never `SNAPSHOT_VERSION`, so a

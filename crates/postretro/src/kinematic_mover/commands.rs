@@ -49,6 +49,7 @@ impl MoverCommandDiagnostics {
 pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
     match command {
         MoverCommand::Start => {
+            mover.blocked = false;
             if mover.completed || (mover.started && mover.wait_remaining_ms <= 0.0) {
                 return;
             }
@@ -62,6 +63,7 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
             mover.started = false;
         }
         MoverCommand::Reverse => {
+            mover.blocked = false;
             if mover.waypoints.len() < 2 {
                 return;
             }
@@ -91,6 +93,7 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
                 return;
             }
             let target = target as u16;
+            mover.blocked = false;
             if mover_is_at_waypoint(mover, target) {
                 return;
             }
@@ -410,6 +413,27 @@ mod tests {
         let completed = mover.clone();
         apply_mover_command(&mut mover, &MoverCommand::Start);
         assert_eq!(mover, completed);
+    }
+
+    #[test]
+    fn restart_commands_clear_a_reconciled_stop_hold() {
+        let mut start = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        start.blocked = true;
+        apply_mover_command(&mut start, &MoverCommand::Start);
+        assert!(!start.blocked);
+
+        let mut reverse = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        reverse.blocked = true;
+        apply_mover_command(&mut reverse, &MoverCommand::Reverse);
+        assert!(!reverse.blocked);
+
+        let mut go_to = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        go_to.blocked = true;
+        apply_mover_command(
+            &mut go_to,
+            &MoverCommand::GoToPathNode("finish".to_string()),
+        );
+        assert!(!go_to.blocked);
     }
 
     #[test]

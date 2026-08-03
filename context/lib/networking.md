@@ -397,11 +397,12 @@ already-shipped message — bumps the wire-version (layout) constant again, inde
 any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
 the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11;
-mover replay provenance advances it to 12. The static-kinematic handshake field
-uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, E15's tagged
-Control layout advances it to 14, and participation-framed traffic advances it to
-15. E16's `drop_pressed` input edge advances it to 16. Earlier peers are refused
-by both handshake gates.
+mover replay provenance advances it to 12, and E17's replicated mover `blocked`
+phase advances it to 13. The static-kinematic handshake field uses `WIRE_VERSION`
+12; mover replay provenance advances it to 13, E15's tagged Control layout advances
+it to 14, and participation-framed traffic advances it to 15. E16's `drop_pressed`
+input edge advances it to 16, and E17's `blocked` phase advances it to 17. Earlier
+peers are refused by both handshake gates.
 
 ## Phase boundaries
 

@@ -375,6 +375,14 @@ pub struct LoadedKinematicMover {
     pub spin_speed_deg_s: f32,
     pub spin_accel_deg_s2: f32,
     pub carry_yaw: bool,
+    pub block_policy: String,
+    pub crush_damage: f32,
+    pub crush_interval_ms: f32,
+    pub auto_close_ms: f32,
+    pub open_event: Option<String>,
+    pub close_event: Option<String>,
+    pub blocked_event: Option<String>,
+    pub crush_event: Option<String>,
 }
 
 #[cfg(feature = "load-prl")]
@@ -405,6 +413,14 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             spin_speed_deg_s: record.spin_speed_deg_s,
             spin_accel_deg_s2: record.spin_accel_deg_s2,
             carry_yaw: record.carry_yaw,
+            block_policy: record.block_policy,
+            crush_damage: record.crush_damage,
+            crush_interval_ms: record.crush_interval_ms,
+            auto_close_ms: record.auto_close_ms,
+            open_event: record.open_event,
+            close_event: record.close_event,
+            blocked_event: record.blocked_event,
+            crush_event: record.crush_event,
         }
     }
 }
@@ -4243,6 +4259,14 @@ mod tests {
                 spin_speed_deg_s: 0.0,
                 spin_accel_deg_s2: 0.0,
                 carry_yaw: false,
+                block_policy: "displace".to_string(),
+                crush_damage: 0.0,
+                crush_interval_ms: 0.0,
+                auto_close_ms: 0.0,
+                open_event: None,
+                close_event: None,
+                blocked_event: None,
+                crush_event: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -4266,6 +4290,14 @@ mod tests {
         record.spin_speed_deg_s = -90.0;
         record.spin_accel_deg_s2 = 180.0;
         record.carry_yaw = true;
+        record.block_policy = "crush".to_string();
+        record.crush_damage = 25.0;
+        record.crush_interval_ms = 150.0;
+        record.auto_close_ms = 900.0;
+        record.open_event = Some("opened".to_string());
+        record.close_event = Some("closed".to_string());
+        record.blocked_event = Some("blocked".to_string());
+        record.crush_event = Some("crushed".to_string());
 
         let mover = LoadedKinematicMover::from(record);
 
@@ -4273,6 +4305,14 @@ mod tests {
         assert!((mover.spin_speed_deg_s + 90.0).abs() <= 1.0e-6);
         assert!((mover.spin_accel_deg_s2 - 180.0).abs() <= 1.0e-6);
         assert!(mover.carry_yaw);
+        assert_eq!(mover.block_policy, "crush");
+        assert!((mover.crush_damage - 25.0).abs() <= 1.0e-6);
+        assert!((mover.crush_interval_ms - 150.0).abs() <= 1.0e-6);
+        assert!((mover.auto_close_ms - 900.0).abs() <= 1.0e-6);
+        assert_eq!(mover.open_event.as_deref(), Some("opened"));
+        assert_eq!(mover.close_event.as_deref(), Some("closed"));
+        assert_eq!(mover.blocked_event.as_deref(), Some("blocked"));
+        assert_eq!(mover.crush_event.as_deref(), Some("crushed"));
     }
 
     fn minimal_sections_with_kinematic(

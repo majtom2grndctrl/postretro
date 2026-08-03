@@ -8,7 +8,7 @@ use std::fmt;
 
 use glam::{Quat, Vec3};
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
+    BlockPolicy, ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
 };
 use postretro_level_loader::{
@@ -319,7 +319,7 @@ fn spawn_from_geometry(
                 mover.mover_id, mover.name
             )));
         };
-        let component = KinematicMoverComponent::new(
+        let mut component = KinematicMoverComponent::new(
             mover.mover_id,
             postretro_entities::KinematicMoverConfig {
                 waypoints,
@@ -334,6 +334,14 @@ fn spawn_from_geometry(
                 carry_yaw: mover.carry_yaw,
             },
         );
+        component.block_policy = block_policy_from_loaded(mover)?;
+        component.crush_damage = mover.crush_damage;
+        component.crush_interval_ms = mover.crush_interval_ms;
+        component.auto_close_ms = mover.auto_close_ms;
+        component.open_event = mover.open_event.clone();
+        component.close_event = mover.close_event.clone();
+        component.blocked_event = mover.blocked_event.clone();
+        component.crush_event = mover.crush_event.clone();
         log::info!("{}", kinematic_mover_load_summary(mover, &component));
         registry
             .set_component(entity, component)
@@ -342,6 +350,21 @@ fn spawn_from_geometry(
     }
 
     Ok(spawned)
+}
+
+fn block_policy_from_loaded(
+    mover: &LoadedKinematicMover,
+) -> Result<BlockPolicy, RuntimeMoverLoadError> {
+    match mover.block_policy.as_str() {
+        "displace" => Ok(BlockPolicy::Displace),
+        "reverse" => Ok(BlockPolicy::Reverse),
+        "stop" => Ok(BlockPolicy::Stop),
+        "crush" => Ok(BlockPolicy::Crush),
+        policy => Err(RuntimeMoverLoadError::new(format!(
+            "mover {} (`{}`) has unsupported block_policy `{policy}`",
+            mover.mover_id, mover.name
+        ))),
+    }
 }
 
 /// Author-readable static and seeded-phase diagnostics emitted during level
@@ -557,6 +580,14 @@ mod tests {
             spin_speed_deg_s: 0.0,
             spin_accel_deg_s2: 0.0,
             carry_yaw: false,
+            block_policy: "displace".to_string(),
+            crush_damage: 0.0,
+            crush_interval_ms: 0.0,
+            auto_close_ms: 0.0,
+            open_event: None,
+            close_event: None,
+            blocked_event: None,
+            crush_event: None,
         }
     }
 
@@ -799,6 +830,35 @@ mod tests {
             registry.has_component_kind(id, ComponentKind::KinematicMover),
             Ok(true)
         ));
+    }
+
+    #[test]
+    fn spawn_loaded_movers_seeds_host_only_blocking_authoring() {
+        let mut geometry = geometry(1);
+        let authored = &mut geometry.movers[0];
+        authored.block_policy = "crush".to_string();
+        authored.crush_damage = 20.0;
+        authored.crush_interval_ms = 125.0;
+        authored.auto_close_ms = 750.0;
+        authored.open_event = Some("door_open".to_string());
+        authored.close_event = Some("door_close".to_string());
+        authored.blocked_event = Some("door_blocked".to_string());
+        authored.crush_event = Some("door_crush".to_string());
+
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .expect("mover component must be seeded");
+
+        assert_eq!(mover.block_policy, BlockPolicy::Crush);
+        assert!((mover.crush_damage - 20.0).abs() < f32::EPSILON);
+        assert!((mover.crush_interval_ms - 125.0).abs() < f32::EPSILON);
+        assert!((mover.auto_close_ms - 750.0).abs() < f32::EPSILON);
+        assert_eq!(mover.open_event.as_deref(), Some("door_open"));
+        assert_eq!(mover.close_event.as_deref(), Some("door_close"));
+        assert_eq!(mover.blocked_event.as_deref(), Some("door_blocked"));
+        assert_eq!(mover.crush_event.as_deref(), Some("door_crush"));
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod scope;
 mod substrate;
 
 // Compatibility re-export for legacy in-crate movement scope paths.
+pub(crate) use mover_carry::mover_push_is_blocked_by_static;
 #[allow(unused_imports)]
 pub(crate) use postretro_foundation::MovementScope;
 

@@ -13,8 +13,10 @@ use postretro_entities::{
 };
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
+mod blocking;
 mod commands;
 
+pub(crate) use blocking::{MoverEventKind, run_mover_blocking_pass};
 #[cfg(test)]
 pub(crate) use commands::apply_mover_command;
 pub(crate) use commands::{
@@ -145,11 +147,22 @@ pub(crate) fn advance_mover_phase_one_tick(
     transform: &mut Transform,
     tick_dt: f32,
 ) -> MoverPose {
+    // Completion and restart own stale-hold cleanup across every peer. A client
+    // only reconciles the host's phase, so it must never retain a completed hold.
+    if mover.completed {
+        mover.blocked = false;
+    }
+    if mover.blocked {
+        return blocked_mover_pose(mover, transform, tick_dt);
+    }
     let (angular_velocity, tick_rotation_delta) = advance_spin_phase(mover, transform, tick_dt);
     let start_position = position_for_phase(mover);
     transform.position = start_position;
     let end_position = advance_mover(mover, tick_dt);
     transform.position = end_position;
+    if mover.completed {
+        mover.blocked = false;
+    }
     let tick_delta = end_position - start_position;
     let linear_velocity = if tick_dt.is_finite() && tick_dt > 0.0 {
         tick_delta / tick_dt
@@ -163,6 +176,32 @@ pub(crate) fn advance_mover_phase_one_tick(
         tick_delta,
         angular_velocity,
         tick_rotation_delta,
+        carry_yaw: mover.carry_yaw,
+        tick_dt,
+    }
+}
+
+/// Publish a zero-motion tick while a host-authoritative stop hold is active.
+/// The driver still refreshes provenance so carry and replay cannot reuse the
+/// prior tick's rotation or velocity.
+fn blocked_mover_pose(
+    mover: &mut KinematicMoverComponent,
+    transform: &mut Transform,
+    tick_dt: f32,
+) -> MoverPose {
+    mover.spin_angle_before_tick_rad = mover.spin_angle_rad;
+    mover.was_active_this_tick = false;
+    mover.current_linear_velocity = Vec3::ZERO;
+    transform.position = position_for_phase(mover);
+    if mover.spin_axis != Vec3::ZERO {
+        transform.rotation = Quat::from_axis_angle(mover.spin_axis, mover.spin_angle_rad);
+    }
+    MoverPose {
+        transform: *transform,
+        linear_velocity: Vec3::ZERO,
+        tick_delta: Vec3::ZERO,
+        angular_velocity: Vec3::ZERO,
+        tick_rotation_delta: Quat::IDENTITY,
         carry_yaw: mover.carry_yaw,
         tick_dt,
     }
@@ -551,6 +590,48 @@ mod tests {
             a = (next_a.0, next_a.1);
             b = (next_b.0, next_b.1);
         }
+    }
+
+    #[test]
+    fn blocked_mover_holds_phase_and_publishes_zero_motion_provenance() {
+        let mut mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        mover.segment_elapsed_ms = 500.0;
+        mover.current_linear_velocity = Vec3::X;
+        mover.spin_axis = Vec3::Y;
+        mover.spin_angle_rad = 0.75;
+        mover.spin_rate_rad_s = 2.0;
+        mover.spin_target_rate_rad_s = 2.0;
+        mover.was_active_this_tick = true;
+        mover.blocked = true;
+        let mut transform = transform_at(Vec3::ZERO);
+
+        let pose = advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
+
+        assert_vec3_approx(transform.position, Vec3::new(0.5, 0.0, 0.0));
+        assert_quat_approx(transform.rotation, Quat::from_rotation_y(0.75));
+        assert!(mover.blocked);
+        assert!((mover.segment_elapsed_ms - 500.0).abs() < EPS);
+        assert_eq!(mover.current_linear_velocity, Vec3::ZERO);
+        assert_eq!(mover.spin_angle_before_tick_rad, 0.75);
+        assert!(!mover.was_active_this_tick);
+        assert_eq!(pose.tick_delta, Vec3::ZERO);
+        assert_eq!(pose.linear_velocity, Vec3::ZERO);
+        assert_eq!(pose.angular_velocity, Vec3::ZERO);
+        assert_eq!(pose.tick_rotation_delta, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn completed_mover_clears_stale_block_before_its_noop_tick() {
+        let mut mover = sample_mover(KinematicMoverMode::Once, 0.0);
+        mover.completed = true;
+        mover.blocked = true;
+        let mut transform = transform_at(Vec3::ZERO);
+
+        let pose = advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
+
+        assert!(!mover.blocked);
+        assert_eq!(pose.tick_delta, Vec3::ZERO);
+        assert_eq!(pose.linear_velocity, Vec3::ZERO);
     }
 
     #[test]

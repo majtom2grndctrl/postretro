@@ -8,8 +8,9 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 2;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = 3;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
+const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -50,6 +51,14 @@ pub struct KinematicMoverRecord {
     pub spin_speed_deg_s: f32,
     pub spin_accel_deg_s2: f32,
     pub carry_yaw: bool,
+    pub block_policy: String,
+    pub crush_damage: f32,
+    pub crush_interval_ms: f32,
+    pub auto_close_ms: f32,
+    pub open_event: Option<String>,
+    pub close_event: Option<String>,
+    pub blocked_event: Option<String>,
+    pub crush_event: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,9 +88,14 @@ impl KinematicGeometrySection {
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut offset = 0usize;
         let version = read_u16(data, &mut offset, "version")?;
-        if version != KINEMATIC_GEOMETRY_VERSION_V1 && version != KINEMATIC_GEOMETRY_VERSION {
+        if !matches!(
+            version,
+            KINEMATIC_GEOMETRY_VERSION_V1
+                | KINEMATIC_GEOMETRY_VERSION_V2
+                | KINEMATIC_GEOMETRY_VERSION
+        ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1 or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -178,11 +192,21 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
         buf.extend_from_slice(&face.texture_index.to_le_bytes());
     }
 
-    if version == KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V2 {
         write_vec3(buf, mover.spin_axis);
         buf.extend_from_slice(&mover.spin_speed_deg_s.to_le_bytes());
         buf.extend_from_slice(&mover.spin_accel_deg_s2.to_le_bytes());
         buf.push(if mover.carry_yaw { 1 } else { 0 });
+    }
+    if version == KINEMATIC_GEOMETRY_VERSION {
+        write_string(buf, &mover.block_policy);
+        buf.extend_from_slice(&mover.crush_damage.to_le_bytes());
+        buf.extend_from_slice(&mover.crush_interval_ms.to_le_bytes());
+        buf.extend_from_slice(&mover.auto_close_ms.to_le_bytes());
+        write_optional_string(buf, mover.open_event.as_deref());
+        write_optional_string(buf, mover.close_event.as_deref());
+        write_optional_string(buf, mover.blocked_event.as_deref());
+        write_optional_string(buf, mover.crush_event.as_deref());
     }
 }
 
@@ -260,7 +284,7 @@ fn read_mover(
     }
 
     let (spin_axis, spin_speed_deg_s, spin_accel_deg_s2, carry_yaw) =
-        if version == KINEMATIC_GEOMETRY_VERSION {
+        if version >= KINEMATIC_GEOMETRY_VERSION_V2 {
             let spin_axis = read_vec3(data, offset, &format!("mover {mover_idx} spin_axis"))?;
             let spin_speed_deg_s =
                 read_f32(data, offset, &format!("mover {mover_idx} spin_speed_deg_s"))?;
@@ -284,6 +308,43 @@ fn read_mover(
             ([0.0; 3], 0.0, 0.0, false)
         };
 
+    let (
+        block_policy,
+        crush_damage,
+        crush_interval_ms,
+        auto_close_ms,
+        open_event,
+        close_event,
+        blocked_event,
+        crush_event,
+    ) = if version == KINEMATIC_GEOMETRY_VERSION {
+        (
+            read_string(data, offset, &format!("mover {mover_idx} block_policy"))?,
+            read_f32(data, offset, &format!("mover {mover_idx} crush_damage"))?,
+            read_f32(
+                data,
+                offset,
+                &format!("mover {mover_idx} crush_interval_ms"),
+            )?,
+            read_f32(data, offset, &format!("mover {mover_idx} auto_close_ms"))?,
+            read_optional_string(data, offset, &format!("mover {mover_idx} open_event"))?,
+            read_optional_string(data, offset, &format!("mover {mover_idx} close_event"))?,
+            read_optional_string(data, offset, &format!("mover {mover_idx} blocked_event"))?,
+            read_optional_string(data, offset, &format!("mover {mover_idx} crush_event"))?,
+        )
+    } else {
+        (
+            "displace".to_string(),
+            0.0,
+            0.0,
+            0.0,
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+
     let mover = KinematicMoverRecord {
         mover_id,
         name,
@@ -301,6 +362,14 @@ fn read_mover(
         spin_speed_deg_s,
         spin_accel_deg_s2,
         carry_yaw,
+        block_policy,
+        crush_damage,
+        crush_interval_ms,
+        auto_close_ms,
+        open_event,
+        close_event,
+        blocked_event,
+        crush_event,
     };
     validate_mover_geometry(mover_idx, &mover)?;
     Ok(mover)
@@ -425,6 +494,26 @@ fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> cr
             mover.wait_ms
         ));
     }
+    if !matches!(
+        mover.block_policy.as_str(),
+        "displace" | "reverse" | "stop" | "crush"
+    ) {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} has invalid block_policy `{}`",
+            mover.block_policy
+        ));
+    }
+    for (field, value) in [
+        ("crush_damage", mover.crush_damage),
+        ("crush_interval_ms", mover.crush_interval_ms),
+        ("auto_close_ms", mover.auto_close_ms),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return invalid_data(format!(
+                "kinematic geometry: mover {mover_idx} {field} must be finite and non-negative, got {value}"
+            ));
+        }
+    }
     if !mover
         .spin_axis
         .iter()
@@ -515,6 +604,16 @@ fn write_string(buf: &mut Vec<u8>, value: &str) {
     buf.extend_from_slice(bytes);
 }
 
+fn write_optional_string(buf: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            write_string(buf, value);
+        }
+        None => buf.push(0),
+    }
+}
+
 fn read_count(data: &[u8], offset: &mut usize, ctx: &str) -> crate::Result<usize> {
     Ok(read_u32(data, offset, ctx)? as usize)
 }
@@ -526,6 +625,20 @@ fn read_u8(data: &[u8], offset: &mut usize, ctx: &str) -> crate::Result<u8> {
     let value = data[*offset];
     *offset += 1;
     Ok(value)
+}
+
+fn read_optional_string(
+    data: &[u8],
+    offset: &mut usize,
+    ctx: &str,
+) -> crate::Result<Option<String>> {
+    match read_u8(data, offset, &format!("{ctx} presence"))? {
+        0 => Ok(None),
+        1 => read_string(data, offset, ctx).map(Some),
+        value => invalid_data(format!(
+            "kinematic geometry: {ctx} has invalid presence byte {value}"
+        )),
+    }
 }
 
 fn read_u16(data: &[u8], offset: &mut usize, ctx: &str) -> crate::Result<u16> {
@@ -646,6 +759,14 @@ mod tests {
                 spin_speed_deg_s: 90.0,
                 spin_accel_deg_s2: 45.0,
                 carry_yaw: true,
+                block_policy: "stop".to_string(),
+                crush_damage: 20.0,
+                crush_interval_ms: 250.0,
+                auto_close_ms: 3_000.0,
+                open_event: Some("open".to_string()),
+                close_event: Some("close".to_string()),
+                blocked_event: Some("blocked".to_string()),
+                crush_event: Some("crush".to_string()),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -663,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_round_trip_preserves_records() {
+    fn v3_round_trip_preserves_records() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
@@ -673,7 +794,7 @@ mod tests {
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -682,10 +803,10 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
-        assert!(error.to_string().contains("expected 1 or 2"));
+        assert!(error.to_string().contains("expected 1, 2, or 3"));
     }
 
     #[test]
@@ -701,20 +822,36 @@ mod tests {
         assert_eq!(restored.movers[0].spin_speed_deg_s, 0.0);
         assert_eq!(restored.movers[0].spin_accel_deg_s2, 0.0);
         assert!(!restored.movers[0].carry_yaw);
+        assert_eq!(restored.movers[0].block_policy, "displace");
+        assert_eq!(restored.movers[0].crush_damage, 0.0);
+        assert_eq!(restored.movers[0].crush_interval_ms, 0.0);
+        assert_eq!(restored.movers[0].auto_close_ms, 0.0);
+        assert_eq!(restored.movers[0].open_event, None);
+        assert_eq!(restored.movers[0].close_event, None);
+        assert_eq!(restored.movers[0].blocked_event, None);
+        assert_eq!(restored.movers[0].crush_event, None);
     }
 
     #[test]
-    fn v2_appends_spin_fields_after_legacy_mover_payload() {
+    fn v2_legacy_fixture_round_trips_with_default_blocking_fields() {
         let v1 = v1_fixture_section();
         let v1_bytes = v1.to_bytes();
         let mover_end = v1_bytes.len() - 4; // final v1 waypoint count
 
         let mut v2 = v1;
-        v2.version = KINEMATIC_GEOMETRY_VERSION;
+        v2.version = KINEMATIC_GEOMETRY_VERSION_V2;
         v2.movers[0].spin_axis = [1.0, 2.0, 3.0];
         v2.movers[0].spin_speed_deg_s = -90.0;
         v2.movers[0].spin_accel_deg_s2 = 12.5;
         v2.movers[0].carry_yaw = true;
+        v2.movers[0].block_policy = "displace".to_string();
+        v2.movers[0].crush_damage = 0.0;
+        v2.movers[0].crush_interval_ms = 0.0;
+        v2.movers[0].auto_close_ms = 0.0;
+        v2.movers[0].open_event = None;
+        v2.movers[0].close_event = None;
+        v2.movers[0].blocked_event = None;
+        v2.movers[0].crush_event = None;
         let v2_bytes = v2.to_bytes();
 
         let mut expected_append = Vec::new();
@@ -931,6 +1068,14 @@ mod tests {
                 spin_speed_deg_s: 90.0,
                 spin_accel_deg_s2: 10.0,
                 carry_yaw: true,
+                block_policy: "crush".to_string(),
+                crush_damage: 10.0,
+                crush_interval_ms: 100.0,
+                auto_close_ms: 0.0,
+                open_event: Some("open".to_string()),
+                close_event: Some("close".to_string()),
+                blocked_event: Some("blocked".to_string()),
+                crush_event: Some("crush".to_string()),
             }],
             waypoints: Vec::new(),
         }

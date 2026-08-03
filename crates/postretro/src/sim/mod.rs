@@ -44,8 +44,8 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
-    SlotTable,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
+    KinematicMoverComponent, ScriptCtx, SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;
@@ -240,6 +240,9 @@ pub(crate) struct TickEvents {
     /// entered graph state's authored `on_enter`, which is owned.
     pub(crate) ai: Vec<Cow<'static, str>>,
     pub(crate) weapon: Vec<&'static str>,
+    /// Host-local kinematic mover transition edges. A connected client never
+    /// runs the host simulation seam, so its bucket remains empty.
+    pub(crate) mover: Vec<(kinematic_mover::MoverEventKind, u32)>,
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
@@ -355,10 +358,24 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
     }
 
+    let mover_phase_before: Vec<(EntityId, KinematicMoverComponent)> = registry
+        .borrow()
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .filter_map(|(entity, value)| {
+            let ComponentValue::KinematicMover(mover) = value else {
+                return None;
+            };
+            Some((entity, mover.clone()))
+        })
+        .collect();
     {
         let mut registry = registry.borrow_mut();
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
     }
+    let mut mover_events = {
+        let registry = registry.borrow();
+        detect_mover_terminus_edges(&mover_phase_before, &registry)
+    };
 
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
         .iter()
@@ -553,6 +570,13 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 remote_network_ids: &HashMap::new(),
             },
         );
+        kinematic_mover::run_mover_blocking_pass(
+            &mut registry,
+            collision_world,
+            mover_colliders,
+            &*mover_tick_states,
+            &mut mover_events,
+        );
     }
 
     let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
@@ -590,6 +614,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         movement,
         ai,
         weapon,
+        mover: mover_events,
         death,
         authorized_shots,
         reload_deliveries,
@@ -601,6 +626,35 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         #[cfg(test)]
         trigger_command_fires,
     }
+}
+
+/// Host-only edge detection around the shared mover driver. The deterministic
+/// driver intentionally emits no presentation events because clients rerun it
+/// during prediction and reconciliation.
+fn detect_mover_terminus_edges(
+    before: &[(EntityId, KinematicMoverComponent)],
+    registry: &EntityRegistry,
+) -> Vec<(kinematic_mover::MoverEventKind, u32)> {
+    let mut events = Vec::new();
+    for (entity, prior) in before {
+        if prior.waypoints.len() < 2 {
+            continue;
+        }
+        let Ok(current) = registry.get_component::<KinematicMoverComponent>(*entity) else {
+            continue;
+        };
+        let last = (current.waypoints.len() - 1) as u16;
+        let reached_new_open_terminus = current.segment_index == last
+            && (prior.segment_index != last || prior.segment_elapsed_ms > f32::EPSILON);
+        let reached_new_closed_terminus = current.segment_index == 0
+            && (prior.segment_index != 0 || prior.segment_elapsed_ms > f32::EPSILON);
+        if reached_new_open_terminus {
+            events.push((kinematic_mover::MoverEventKind::Opened, current.mover_id));
+        } else if reached_new_closed_terminus {
+            events.push((kinematic_mover::MoverEventKind::Closed, current.mover_id));
+        }
+    }
+    events
 }
 
 fn trigger_fire_context(

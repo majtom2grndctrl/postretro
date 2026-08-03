@@ -570,12 +570,16 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 remote_network_ids: &HashMap::new(),
             },
         );
+        let (mover_poses, blocking_state) = mover_tick_states.split_for_blocking();
         kinematic_mover::run_mover_blocking_pass(
             &mut registry,
             collision_world,
             mover_colliders,
-            &*mover_tick_states,
+            &mover_poses,
+            blocking_state,
+            tick_dt,
             &mut mover_events,
+            &mut on_impact,
         );
     }
 

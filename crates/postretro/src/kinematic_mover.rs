@@ -16,7 +16,7 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 mod blocking;
 mod commands;
 
-pub(crate) use blocking::{MoverEventKind, run_mover_blocking_pass};
+pub(crate) use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
 #[cfg(test)]
 pub(crate) use commands::apply_mover_command;
 pub(crate) use commands::{
@@ -40,6 +40,7 @@ pub(crate) struct MoverTickState {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MoverTickStateTable {
     states: HashMap<u32, MoverTickState>,
+    blocking_state: MoverBlockingState,
 }
 
 impl MoverTickStateTable {
@@ -53,6 +54,38 @@ impl MoverTickStateTable {
 
     pub(crate) fn get(&self, mover_id: u32) -> Option<&MoverTickState> {
         self.states.get(&mover_id)
+    }
+
+    /// Split the tick-local pose view from the host-only policy timers. The
+    /// collision pass needs both after motion is published, but the cadence
+    /// must survive `clear()` so a continuous crush can keep its own clock.
+    pub(crate) fn split_for_blocking(
+        &mut self,
+    ) -> (MoverTickPoseSource<'_>, &mut MoverBlockingState) {
+        (
+            MoverTickPoseSource {
+                states: &self.states,
+            },
+            &mut self.blocking_state,
+        )
+    }
+}
+
+pub(crate) struct MoverTickPoseSource<'a> {
+    states: &'a HashMap<u32, MoverTickState>,
+}
+
+impl MoverPoseSource for MoverTickPoseSource<'_> {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        self.states.get(&mover_id).map(|state| MoverPose {
+            transform: state.transform,
+            linear_velocity: state.linear_velocity,
+            tick_delta: state.tick_delta,
+            angular_velocity: state.angular_velocity,
+            tick_rotation_delta: state.tick_rotation_delta,
+            carry_yaw: state.carry_yaw,
+            tick_dt: state.tick_dt,
+        })
     }
 }
 

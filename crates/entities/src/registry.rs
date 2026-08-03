@@ -1213,7 +1213,7 @@ impl EntityRegistry {
     /// Presentation-pose write: set the entity's visible transform to `pose` and
     /// stamp its previous-tick slot to the **same** pose, so the render-stage
     /// [`interpolated_transform`](Self::interpolated_transform) blend is a no-op at
-    /// any alpha and `pose` is shown verbatim. Two callers, one shape:
+    /// any alpha and `pose` is shown verbatim. Callers share one shape:
     ///
     /// - **Remote interpolation (M15 Phase 2):** the interpolation buffer already
     ///   resolved the final pose for this render frame at the correct server-time
@@ -1227,11 +1227,14 @@ impl EntityRegistry {
     ///   arc would smear the teleport into a visible slide. Stamping
     ///   `previous == current` collapses it, so the snapped pose renders cleanly the
     ///   frame the teleport lands.
+    /// - **Discrete visibility transitions:** when gameplay restores presentation
+    ///   after relocating an entity, its first visible frame must start at the new
+    ///   pose rather than blending from hidden, stale transform history.
     ///
     /// Time-base reasoning (why previous == current / alpha-agnostic): the render
     /// accessor's `alpha` is the *sim sub-tick* fraction (`accumulator /
     /// tick_duration`, see `crate::frame_timing`), unrelated to either the remote
-    /// buffer's server-time target or a one-shot local teleport. Blending toward the
+    /// buffer's server-time target or a one-shot discrete teleport. Blending toward the
     /// prior frame's pose by that sub-tick alpha would re-sample at a frame-varying
     /// offset (injecting jitter) or smear a teleport. No pop: no consumer reads
     /// these entities' previous transform for motion blur / trails, so collapsing it

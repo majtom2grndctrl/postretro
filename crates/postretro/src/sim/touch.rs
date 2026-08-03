@@ -324,7 +324,7 @@ impl TouchSystem {
                 .get_component::<Transform>(item)
                 .expect("checked live wieldables retain their transform");
             item_transform.position = drop_position;
-            let _ = registry.set_component(item, item_transform);
+            let _ = registry.set_presentation_transform(item, item_transform);
             let _ = registry.set_component(item, TouchableComponent::from_descriptor(touchable));
 
             let _ = registry.remove_component::<MeshComponent>(item);
@@ -377,7 +377,8 @@ fn resolve_drop_position(
 ) -> Option<Vec3> {
     // These are deliberately a small, fixed forward-only search rather than a
     // radial search around the pawn. A drop should read as a gentle toss in the
-    // facing direction, and a wall behind the player must not affect it.
+    // facing direction. Placement candidates are forward-only; final
+    // sphere-clearance still considers all nearby static geometry.
     const FORWARD_DISTANCES: [f32; 3] = [1.0, 0.75, 1.25];
     const MAX_FLOOR_BELOW_FEET: f32 = 1.0;
 
@@ -412,19 +413,25 @@ fn resolve_drop_position(
         ) else {
             continue;
         };
-        if floor.normal.y < COS_WALKABLE {
+        let floor_normal = Vec3::new(floor.normal.x, floor.normal.y, floor.normal.z);
+        let normal_length_squared = floor_normal.length_squared();
+        if !floor_normal.is_finite() || normal_length_squared <= f32::EPSILON {
+            continue;
+        }
+        let floor_normal = floor_normal / normal_length_squared.sqrt();
+        if floor_normal.y < COS_WALKABLE {
             continue;
         }
 
         // The touchable radius is the item's world-collision radius as well
-        // as its pickup volume. Rest it just above the walkable surface, then
-        // retain the existing fail-closed clearance query for walls and other
-        // static geometry surrounding the final point.
-        let position = Vec3::new(
+        // as its pickup volume. Separate it along the surface normal, then retain
+        // the existing fail-closed clearance query for surrounding geometry.
+        let hit_point = Vec3::new(
             probe_origin.x,
-            probe_origin.y - floor.time_of_impact + item_radius + SKIN_DISTANCE,
+            probe_origin.y - floor.time_of_impact,
             probe_origin.z,
         );
+        let position = hit_point + floor_normal * (item_radius + SKIN_DISTANCE);
         if sphere_fits_world(collision_world, position, item_radius) {
             return Some(position);
         }
@@ -1669,6 +1676,47 @@ mod tests {
         );
     }
 
+    // Regression: restoring a dropped mesh exposed stale held-item transform history.
+    #[test]
+    fn drop_snaps_restored_mesh_transform_history_to_resolved_position() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        held_item(&mut registry, pawn, item);
+        registry.snapshot_transforms();
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry,
+            &floor_world(),
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(events.dropped_item_meshes, vec![item]);
+        let resolved = registry.get_component::<Transform>(item).unwrap().position;
+        for alpha in [0.0, 0.5, 1.0] {
+            let presented = registry
+                .interpolated_transform(item, alpha)
+                .expect("the restored mesh retains transform history");
+            assert!(
+                presented.position.distance(resolved) < 1.0e-5,
+                "drop position must be alpha-invariant on its first visible frame"
+            );
+        }
+    }
+
     #[test]
     fn auto_drop_reacquires_only_after_the_dropper_leaves_and_reenters() {
         let mut registry = EntityRegistry::new();
@@ -2161,6 +2209,83 @@ mod tests {
         .expect("a floor directly ahead receives the dropped item");
 
         assert!(position.distance(Vec3::new(0.0, 0.1 + SKIN_DISTANCE, -1.0)) < 1.0e-5);
+    }
+
+    // Regression: vertical lift left dropped spheres intersecting inclined floors.
+    #[test]
+    fn drop_on_inclined_walkable_floor_offsets_along_normal_with_clearance() {
+        let slope = 0.3_f32;
+        let surface_y = |x: f32| slope * x;
+        let world = CollisionWorld {
+            mesh: TriMesh::new(
+                vec![
+                    Point::new(-100.0, surface_y(-100.0), -100.0),
+                    Point::new(100.0, surface_y(100.0), -100.0),
+                    Point::new(100.0, surface_y(100.0), 100.0),
+                    Point::new(-100.0, surface_y(-100.0), 100.0),
+                ],
+                vec![[0, 2, 1], [0, 3, 2]],
+            ),
+            isometry: Isometry::identity(),
+        };
+        let pawn_transform = Transform {
+            position: Vec3::new(0.0, 1.2, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let item_radius = 0.5;
+
+        let position = resolve_drop_position(
+            &world,
+            &pawn_transform,
+            pawn_transform.position,
+            0.4,
+            0.8,
+            item_radius,
+        )
+        .expect("a walkable inclined floor receives the dropped item");
+
+        let expected_normal = Vec3::new(-slope, 1.0, 0.0).normalize();
+        let expected = Vec3::new(0.0, 0.0, -1.0) + expected_normal * (item_radius + SKIN_DISTANCE);
+        assert!(position.distance(expected) < 1.0e-5);
+        assert!(sphere_fits_world(&world, position, item_radius));
+    }
+
+    #[test]
+    fn drop_uses_three_quarter_metre_fallback_when_one_metre_position_is_blocked() {
+        let pawn_transform = Transform {
+            position: Vec3::new(0.0, 1.2, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let world = CollisionWorld {
+            mesh: TriMesh::new(
+                vec![
+                    Point::new(-100.0, 0.0, -100.0),
+                    Point::new(100.0, 0.0, -100.0),
+                    Point::new(100.0, 0.0, 100.0),
+                    Point::new(-100.0, 0.0, 100.0),
+                    Point::new(-1.0, 0.0, -1.05),
+                    Point::new(1.0, 0.0, -1.05),
+                    Point::new(1.0, 2.0, -1.05),
+                    Point::new(-1.0, 2.0, -1.05),
+                ],
+                vec![[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+            ),
+            isometry: Isometry::identity(),
+        };
+
+        let position = resolve_drop_position(
+            &world,
+            &pawn_transform,
+            pawn_transform.position,
+            0.4,
+            0.8,
+            0.1,
+        )
+        .expect("the second forward candidate remains clear");
+
+        assert!(position.distance(Vec3::new(0.0, 0.1 + SKIN_DISTANCE, -0.75)) < 1.0e-5);
     }
 
     #[test]

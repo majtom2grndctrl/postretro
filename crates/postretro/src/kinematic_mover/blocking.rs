@@ -1,17 +1,18 @@
 //! Host-authoritative kinematic-mover blocking decisions.
-//!
-//! The shared mover driver consumes only the resulting `blocked` phase bit;
-//! this pass deliberately runs only from the authoritative simulation seam.
+//! See: context/lib/entity_model.md §5 · context/lib/networking.md
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use parry3d::math::Point;
 use parry3d::shape::Capsule;
+use postretro_entities::components::health::{
+    DamageContext, DamageProducer, apply_damage_with_context,
+};
 use postretro_entities::{
     BlockPolicy, ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     Transform,
 };
-use postretro_foundation::PlayerMovementComponent;
+use postretro_foundation::{DamagePayload, PlayerMovementComponent};
 
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{MoverCollider, MoverPoseSource, deepest_mover_push_penetration};
@@ -24,88 +25,226 @@ pub(crate) enum MoverEventKind {
     Opened,
     Closed,
     Blocked,
-    #[allow(dead_code)] // Task 2's crusher policy owns production emission.
     Crushed,
 }
 
-/// Apply the current stop-policy contact decisions after player movement and
+/// Host-only crush clocks, keyed by the full generation-aware identities of
+/// both the mover and its victim. They are intentionally not component state:
+/// peers reconcile motion and health, never this decision cadence.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MoverBlockingState {
+    crush_elapsed_ms: HashMap<(EntityId, EntityId), f32>,
+}
+
+/// Apply the current player block-policy decisions after player movement and
 /// agent steering settle. The decision is deliberately outside prediction: a
-/// connected client only reconciles the `blocked` phase it receives.
+/// connected client only reconciles the resulting mover phase and health.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_mover_blocking_pass(
     registry: &mut EntityRegistry,
     static_world: &CollisionWorld,
     mover_colliders: &[MoverCollider],
     mover_poses: &dyn MoverPoseSource,
+    blocking_state: &mut MoverBlockingState,
+    tick_dt: f32,
     events: &mut Vec<(MoverEventKind, u32)>,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) {
-    let movers: Vec<(EntityId, u32, BlockPolicy, bool)> = registry
+    let movers: Vec<(EntityId, KinematicMoverComponent)> = registry
         .iter_with_kind(ComponentKind::KinematicMover)
         .filter_map(|(entity, value)| {
             let ComponentValue::KinematicMover(mover) = value else {
                 return None;
             };
-            Some((entity, mover.mover_id, mover.block_policy, mover.blocked))
+            Some((entity, mover.clone()))
         })
         .collect();
     if movers.is_empty() {
+        blocking_state.crush_elapsed_ms.clear();
         return;
     }
 
-    let stop_mover_ids: HashSet<u32> = movers
-        .iter()
-        .filter_map(|(_, mover_id, policy, _)| (*policy == BlockPolicy::Stop).then_some(*mover_id))
-        .collect();
+    let player_capsules = player_capsules(registry);
     let mut contacted_stop_movers = HashSet::new();
-    if !stop_mover_ids.is_empty() {
-        for (position, capsule) in player_capsules(registry) {
-            for collider in mover_colliders {
-                if !stop_mover_ids.contains(&collider.mover_id) {
-                    continue;
+    let mut reverse_contacts: HashMap<EntityId, glam::Vec3> = HashMap::new();
+    let mut pinned_crush_contacts = HashSet::new();
+
+    for (mover_entity, mover) in &movers {
+        let effective_policy = effective_player_policy(mover);
+        if effective_policy == BlockPolicy::Displace {
+            continue;
+        }
+        let Some(collider) = mover_colliders
+            .iter()
+            .find(|collider| collider.mover_id == mover.mover_id)
+        else {
+            continue;
+        };
+
+        for (player_entity, position, capsule) in &player_capsules {
+            let contact_capsule =
+                conservatively_inflated_contact_capsule(capsule, collider, mover_poses);
+            let Some(penetration) = deepest_mover_push_penetration(
+                std::slice::from_ref(collider),
+                mover_poses,
+                Point::new(position.x, position.y, position.z),
+                &contact_capsule,
+            ) else {
+                continue;
+            };
+
+            match effective_policy {
+                BlockPolicy::Stop => {
+                    contacted_stop_movers.insert(*mover_entity);
                 }
-                let capsule =
-                    conservatively_inflated_contact_capsule(&capsule, collider, mover_poses);
-                if let Some(penetration) = deepest_mover_push_penetration(
-                    std::slice::from_ref(collider),
-                    mover_poses,
-                    Point::new(position.x, position.y, position.z),
-                    &capsule,
-                ) {
-                    // Stop reacts to every player contact, not only to a pinch.
-                    // Retain the shared static-push classification at this host
-                    // boundary so the reverse/crush policies can branch on the
-                    // same predicate without duplicating geometry semantics.
-                    let _pinched_against_static = mover_push_is_blocked_by_static(
+                BlockPolicy::Reverse => {
+                    // The driver has already advanced (and trigger commands have
+                    // already run), so this heading is the live tick-end intent.
+                    // `tick_delta` would be stale at a corner or post-terminus
+                    // auto-reversal and can therefore reverse the wrong way.
+                    if mover_heading_at_tick_end(mover)
+                        .is_some_and(|heading| heading.dot(penetration.normal) > 0.0)
+                    {
+                        reverse_contacts
+                            .entry(*mover_entity)
+                            .or_insert(penetration.normal);
+                    }
+                }
+                BlockPolicy::Crush => {
+                    // Contact is conservative, but pinning must use the actual
+                    // player capsule and the same static-push predicate as local
+                    // mover displacement. A player that can clear takes no hit.
+                    if let Some(actual_penetration) = deepest_mover_push_penetration(
+                        std::slice::from_ref(collider),
+                        mover_poses,
+                        Point::new(position.x, position.y, position.z),
+                        capsule,
+                    ) && mover_push_is_blocked_by_static(
                         static_world,
-                        position,
-                        &capsule,
-                        penetration,
-                    );
-                    contacted_stop_movers.insert(collider.mover_id);
+                        *position,
+                        capsule,
+                        actual_penetration,
+                    ) {
+                        pinned_crush_contacts.insert((*mover_entity, *player_entity));
+                    }
                 }
+                BlockPolicy::Displace => unreachable!("displace movers do not enter the pass"),
             }
         }
     }
 
-    for (entity, mover_id, policy, was_blocked) in movers {
-        let blocked = policy == BlockPolicy::Stop && contacted_stop_movers.contains(&mover_id);
-        if blocked && !was_blocked {
-            events.push((MoverEventKind::Blocked, mover_id));
+    for (entity, mover_snapshot) in movers {
+        let effective_policy = effective_player_policy(&mover_snapshot);
+        let stop_contact =
+            effective_policy == BlockPolicy::Stop && contacted_stop_movers.contains(&entity);
+        if stop_contact && !mover_snapshot.blocked {
+            events.push((MoverEventKind::Blocked, mover_snapshot.mover_id));
         }
-        if blocked == was_blocked {
-            continue;
+
+        let mut mover = mover_snapshot.clone();
+        mover.blocked = stop_contact;
+
+        if effective_policy == BlockPolicy::Reverse
+            && let Some(contact_normal) = reverse_contacts.get(&entity)
+            && mover_heading_at_tick_end(&mover)
+                .is_some_and(|heading| heading.dot(*contact_normal) > 0.0)
+        {
+            let direction_away_from_contact = -mover.direction_sign;
+            super::reanchor_direction(&mut mover, direction_away_from_contact);
+            mover.target_segment = None;
+            mover.started = true;
+            mover.completed = false;
+            mover.wait_remaining_ms = 0.0;
+            events.push((MoverEventKind::Blocked, mover.mover_id));
         }
-        let Ok(mut mover) = registry
-            .get_component::<KinematicMoverComponent>(entity)
-            .cloned()
-        else {
-            continue;
-        };
-        mover.blocked = blocked;
-        let _ = registry.set_component(entity, mover);
+
+        if effective_policy == BlockPolicy::Crush {
+            for &(crush_mover, victim) in &pinned_crush_contacts {
+                if crush_mover != entity {
+                    continue;
+                }
+                if !crush_hit_is_due(
+                    blocking_state,
+                    (entity, victim),
+                    mover.crush_interval_ms,
+                    tick_dt,
+                ) {
+                    continue;
+                }
+                apply_damage_with_context(
+                    registry,
+                    victim,
+                    &DamagePayload {
+                        amount: mover.crush_damage,
+                    },
+                    DamageContext::new("mover.crush", DamageProducer::InTick),
+                );
+                on_impact(registry);
+                events.push((MoverEventKind::Crushed, mover.mover_id));
+            }
+        }
+
+        if mover != mover_snapshot {
+            let _ = registry.set_component(entity, mover);
+        }
     }
+
+    blocking_state
+        .crush_elapsed_ms
+        .retain(|(mover, victim), _| {
+            pinned_crush_contacts.contains(&(*mover, *victim))
+                && registry
+                    .get_component::<KinematicMoverComponent>(*mover)
+                    .is_ok()
+                && registry
+                    .get_component::<PlayerMovementComponent>(*victim)
+                    .is_ok()
+        });
 }
 
-fn player_capsules(registry: &EntityRegistry) -> Vec<(glam::Vec3, Capsule)> {
+fn effective_player_policy(mover: &KinematicMoverComponent) -> BlockPolicy {
+    // A pathless mover cannot reverse; preserve the normal stop hold, including
+    // its replicated `blocked` phase, instead of manufacturing direction state.
+    (mover.block_policy == BlockPolicy::Reverse && mover.waypoints.len() < 2)
+        .then_some(BlockPolicy::Stop)
+        .unwrap_or(mover.block_policy)
+}
+
+fn mover_heading_at_tick_end(mover: &KinematicMoverComponent) -> Option<glam::Vec3> {
+    let from = usize::from(mover.segment_index);
+    let to = if mover.direction_sign >= 0 {
+        from.checked_add(1)?
+    } else {
+        from.checked_sub(1)?
+    };
+    let heading = (*mover.waypoints.get(to)? - *mover.waypoints.get(from)?).normalize_or_zero();
+    (heading.is_finite() && heading != glam::Vec3::ZERO).then_some(heading)
+}
+
+fn crush_hit_is_due(
+    blocking_state: &mut MoverBlockingState,
+    key: (EntityId, EntityId),
+    interval_ms: f32,
+    tick_dt: f32,
+) -> bool {
+    let tick_ms = (tick_dt * 1000.0).max(0.0);
+    if interval_ms <= tick_ms {
+        blocking_state.crush_elapsed_ms.insert(key, 0.0);
+        return true;
+    }
+    let Some(elapsed_ms) = blocking_state.crush_elapsed_ms.get_mut(&key) else {
+        blocking_state.crush_elapsed_ms.insert(key, 0.0);
+        return true;
+    };
+    *elapsed_ms += tick_ms;
+    if *elapsed_ms < interval_ms {
+        return false;
+    }
+    *elapsed_ms -= interval_ms;
+    true
+}
+
+fn player_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsule)> {
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .filter_map(|(entity, _)| {
@@ -114,6 +253,7 @@ fn player_capsules(registry: &EntityRegistry) -> Vec<(glam::Vec3, Capsule)> {
                 .ok()?;
             let transform = registry.get_component::<Transform>(entity).ok()?;
             Some((
+                entity,
                 transform.position,
                 Capsule::new(
                     Point::new(0.0, -movement.capsule.half_height, 0.0),
@@ -150,6 +290,8 @@ fn conservatively_inflated_contact_capsule(
 mod tests {
     use super::*;
     use glam::{Quat, Vec3};
+    use parry3d::{math::Isometry, shape::TriMesh};
+    use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{KinematicMoverConfig, KinematicMoverMode};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
@@ -218,37 +360,8 @@ mod tests {
         .expect("wall fixture is valid")
     }
 
-    #[test]
-    fn stop_policy_holds_on_swept_player_contact_and_clears_after_contact() {
-        let mover_id = 42;
-        let mut registry = EntityRegistry::new();
-        let mover_entity = registry.spawn(Transform::default());
-        let mut mover = KinematicMoverComponent::new(
-            mover_id,
-            KinematicMoverConfig {
-                waypoints: vec![Vec3::ZERO, Vec3::X],
-                waypoint_names: vec!["closed".to_string(), "open".to_string()],
-                speed_mps: 1.0,
-                wait_ms: 0.0,
-                mode: KinematicMoverMode::PingPong,
-                started: true,
-                spin_axis: Vec3::ZERO,
-                initial_spin_rate_rad_s: 0.0,
-                spin_accel_rad_s2: 0.0,
-                carry_yaw: false,
-            },
-        );
-        mover.block_policy = BlockPolicy::Stop;
-        registry.set_component(mover_entity, mover).unwrap();
-        let player = registry.spawn(Transform {
-            position: Vec3::new(0.0, 1.0, 0.0),
-            ..Transform::default()
-        });
-        registry.set_component(player, player_movement()).unwrap();
-
-        let collider = swept_wall(mover_id);
-        let static_world = CollisionWorld::new();
-        let contacting_poses = SingleMoverPose {
+    fn moving_contact_pose(mover_id: u32) -> SingleMoverPose {
+        SingleMoverPose {
             mover_id,
             pose: crate::collision::moving::MoverPose {
                 transform: Transform {
@@ -263,15 +376,92 @@ mod tests {
                 carry_yaw: false,
                 tick_dt: 0.1,
             },
-        };
+        }
+    }
+
+    fn mover(mover_id: u32) -> KinematicMoverComponent {
+        KinematicMoverComponent::new(
+            mover_id,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        )
+    }
+
+    fn add_player(registry: &mut EntityRegistry, health: Option<f32>) -> EntityId {
+        let player = registry.spawn(Transform {
+            position: Vec3::new(0.0, 1.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(player, player_movement())
+            .expect("player movement attaches");
+        if let Some(current) = health {
+            registry
+                .set_component(
+                    player,
+                    HealthComponent {
+                        max: 100.0,
+                        current,
+                        hitbox: None,
+                        death_handled: false,
+                        pending_kill_credit: None,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .expect("player health attaches");
+        }
+        player
+    }
+
+    fn blocking_static_wall() -> CollisionWorld {
+        let points = vec![
+            Point::new(0.1, 0.0, -1.0),
+            Point::new(0.1, 2.0, -1.0),
+            Point::new(0.1, 2.0, 1.0),
+            Point::new(0.1, 0.0, 1.0),
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    #[test]
+    fn stop_policy_holds_on_swept_player_contact_and_clears_after_contact() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Stop;
+        registry.set_component(mover_entity, mover).unwrap();
+        add_player(&mut registry, None);
+
+        let collider = swept_wall(mover_id);
+        let static_world = CollisionWorld::new();
+        let contacting_poses = moving_contact_pose(mover_id);
         let mut events = Vec::new();
+        let mut blocking_state = MoverBlockingState::default();
 
         run_mover_blocking_pass(
             &mut registry,
             &static_world,
             std::slice::from_ref(&collider),
             &contacting_poses,
+            &mut blocking_state,
+            0.1,
             &mut events,
+            &mut |_| {},
         );
         assert!(
             registry
@@ -302,7 +492,10 @@ mod tests {
             &static_world,
             std::slice::from_ref(&collider),
             &clear_poses,
+            &mut blocking_state,
+            0.1,
             &mut events,
+            &mut |_| {},
         );
         assert!(
             !registry
@@ -311,5 +504,224 @@ mod tests {
                 .blocked
         );
         assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    #[test]
+    fn reverse_policy_reverses_approaching_contact_once_and_ignores_receding() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Reverse;
+        mover.target_segment = Some(1);
+        registry
+            .set_component(mover_entity, mover)
+            .expect("mover attaches");
+        add_player(&mut registry, None);
+
+        let collider = swept_wall(mover_id);
+        let static_world = CollisionWorld::new();
+        let poses = moving_contact_pose(mover_id);
+        let mut blocking_state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &static_world,
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut blocking_state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+        let reversed = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .expect("mover remains live");
+        assert_eq!(reversed.direction_sign, -1);
+        assert_eq!(reversed.target_segment, None);
+        assert!(!reversed.blocked);
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &static_world,
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut blocking_state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+        let receding = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .expect("mover remains live");
+        assert_eq!(receding.direction_sign, -1);
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    #[test]
+    fn reverse_policy_without_a_path_degrades_to_the_replicated_stop_hold() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Reverse;
+        mover.waypoints.truncate(1);
+        mover.waypoint_names.truncate(1);
+        registry
+            .set_component(mover_entity, mover)
+            .expect("mover attaches");
+        add_player(&mut registry, None);
+
+        let collider = swept_wall(mover_id);
+        let static_world = CollisionWorld::new();
+        let poses = moving_contact_pose(mover_id);
+        let mut blocking_state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &static_world,
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut blocking_state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .expect("mover remains live")
+                .blocked
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    #[test]
+    fn crush_policy_skips_player_that_can_clear_the_push() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        registry
+            .set_component(mover_entity, mover)
+            .expect("mover attaches");
+        let player = add_player(&mut registry, Some(100.0));
+
+        let collider = swept_wall(mover_id);
+        let clear_world = CollisionWorld::new();
+        let poses = moving_contact_pose(mover_id);
+        let mut blocking_state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        let mut impact_evaluations = 0;
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &clear_world,
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut blocking_state,
+            0.1,
+            &mut events,
+            &mut |_| impact_evaluations += 1,
+        );
+
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(player)
+                .expect("player health remains attached")
+                .current
+                - 100.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert_eq!(impact_evaluations, 0);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn crush_policy_cadences_per_player_and_continues_after_zero_health() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        mover.crush_interval_ms = 100.0;
+        registry
+            .set_component(mover_entity, mover)
+            .expect("mover attaches");
+        let first_player = add_player(&mut registry, Some(15.0));
+
+        let collider = swept_wall(mover_id);
+        let static_world = blocking_static_wall();
+        let poses = moving_contact_pose(mover_id);
+        let mut blocking_state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        let mut impact_health_after = Vec::new();
+
+        let mut run_pass = |registry: &mut EntityRegistry| {
+            run_mover_blocking_pass(
+                registry,
+                &static_world,
+                std::slice::from_ref(&collider),
+                &poses,
+                &mut blocking_state,
+                0.05,
+                &mut events,
+                &mut |registry| {
+                    impact_health_after.extend(
+                        registry
+                            .take_impact_dispatches()
+                            .into_iter()
+                            .map(|dispatch| dispatch.health_after),
+                    );
+                },
+            );
+        };
+
+        run_pass(&mut registry); // First pinned player is hit immediately.
+        let second_player = add_player(&mut registry, Some(15.0));
+        run_pass(&mut registry); // The second player's first pinned tick is independent.
+        run_pass(&mut registry); // First player's 100 ms cadence is due.
+        run_pass(&mut registry); // Second player's 100 ms cadence is due.
+        run_pass(&mut registry); // First player is hit again despite being at zero HP.
+        drop(run_pass);
+
+        assert!(
+            registry
+                .get_component::<HealthComponent>(first_player)
+                .expect("first player remains attached")
+                .current
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            registry
+                .get_component::<HealthComponent>(second_player)
+                .expect("second player remains attached")
+                .current
+                .abs()
+                < f32::EPSILON
+        );
+        assert_eq!(impact_health_after.len(), 5);
+        assert!(
+            impact_health_after
+                .last()
+                .is_some_and(|health_after| *health_after < 0.0),
+            "the final hit must retain E16's raw overkill fact"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(kind, _)| *kind == MoverEventKind::Crushed)
+                .count(),
+            5
+        );
     }
 }

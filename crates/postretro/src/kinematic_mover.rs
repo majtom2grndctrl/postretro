@@ -1174,8 +1174,9 @@ mod tests {
     #[test]
     fn level_clear_drops_blocking_cadence_as_well_as_tick_poses() {
         let mut table = MoverTickStateTable::default();
-        let mover = EntityId::new(1, 0);
-        let victim = EntityId::new(2, 0);
+        let mut registry = EntityRegistry::new();
+        let mover = registry.spawn(Transform::default());
+        let victim = registry.spawn(Transform::default());
         table.blocking_state.seed_test_cadence(mover, victim);
 
         table.clear();

@@ -44,8 +44,8 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
-    ScriptCtx, SlotTable,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
+    SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;

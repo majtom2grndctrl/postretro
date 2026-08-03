@@ -145,27 +145,23 @@ pub(crate) fn run_mover_blocking_pass(
                     )
                 })
                 .filter(|pose| pose_has_motion(*pose));
-            let policy_active = policy_is_active_this_tick(
-                mover,
-                policy,
-                mover_poses,
-                prospective_pose,
-            );
-            let maintains_crush_cadence = policy == BlockPolicy::Crush
-                && blocking_state.has_crush_cadence_for(entity);
-            (policy != BlockPolicy::Displace
-                && (policy_active || maintains_crush_cadence))
-            .then(|| MoverPolicySnapshot {
-                entity,
-                mover_id: mover.mover_id,
-                policy,
-                blocked: mover.blocked,
-                crush_damage: mover.crush_damage,
-                crush_interval_ms: mover.crush_interval_ms,
-                heading: mover_heading_at_tick_end(mover),
-                prospective_pose,
-                policy_active,
-            })
+            let policy_active =
+                policy_is_active_this_tick(mover, policy, mover_poses, prospective_pose);
+            let maintains_crush_cadence =
+                policy == BlockPolicy::Crush && blocking_state.has_crush_cadence_for(entity);
+            (policy != BlockPolicy::Displace && (policy_active || maintains_crush_cadence)).then(
+                || MoverPolicySnapshot {
+                    entity,
+                    mover_id: mover.mover_id,
+                    policy,
+                    blocked: mover.blocked,
+                    crush_damage: mover.crush_damage,
+                    crush_interval_ms: mover.crush_interval_ms,
+                    heading: mover_heading_at_tick_end(mover),
+                    prospective_pose,
+                    policy_active,
+                },
+            )
         })
         .collect();
     if movers.is_empty() {
@@ -399,9 +395,11 @@ fn note_reactive_contact(
 fn effective_block_policy(mover: &KinematicMoverComponent) -> BlockPolicy {
     // A pathless mover cannot reverse; preserve the normal stop hold, including
     // its replicated `blocked` phase, instead of manufacturing direction state.
-    (mover.block_policy == BlockPolicy::Reverse && mover.waypoints.len() < 2)
-        .then_some(BlockPolicy::Stop)
-        .unwrap_or(mover.block_policy)
+    if mover.block_policy == BlockPolicy::Reverse && mover.waypoints.len() < 2 {
+        BlockPolicy::Stop
+    } else {
+        mover.block_policy
+    }
 }
 
 fn policy_is_active_this_tick(
@@ -531,12 +529,9 @@ fn leading_mover_contact_penetration(
     if let Some(legs) = mover_poses.translation_legs(collider.mover_id)
         && !legs.is_empty()
     {
-        if let Some(contact) = deepest_mover_penetration(
-            std::slice::from_ref(collider),
-            mover_poses,
-            point,
-            capsule,
-        ) {
+        if let Some(contact) =
+            deepest_mover_penetration(std::slice::from_ref(collider), mover_poses, point, capsule)
+        {
             return Some(contact);
         }
         let base_pose = mover_poses.pose(collider.mover_id)?;
@@ -1228,11 +1223,8 @@ mod tests {
         assert!(poses.pose(mover_id).unwrap().tick_delta.length() < f32::EPSILON);
 
         let collider = swept_wall(mover_id);
-        let player_capsule = Capsule::new(
-            Point::new(0.0, -0.5, 0.0),
-            Point::new(0.0, 0.5, 0.0),
-            0.25,
-        );
+        let player_capsule =
+            Capsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25);
         let enemy_capsule = Capsule::new(
             Point::new(0.0, -0.75, 0.0),
             Point::new(0.0, 0.75, 0.0),

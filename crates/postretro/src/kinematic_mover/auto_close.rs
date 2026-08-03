@@ -325,7 +325,10 @@ mod tests {
         assert_eq!(mover.direction_sign, -1);
         assert!((mover.segment_elapsed_ms - 500.0).abs() < f32::EPSILON);
         assert_eq!(
-            registry.get_component::<Transform>(entity).unwrap().position,
+            registry
+                .get_component::<Transform>(entity)
+                .unwrap()
+                .position,
             Vec3::new(0.5, 0.0, 0.0)
         );
     }
@@ -348,11 +351,7 @@ mod tests {
             .set_component(interior_entity, interior_mover)
             .unwrap();
         let mut interior_states = super::super::MoverTickStateTable::default();
-        super::super::run_kinematic_mover_tick(
-            &mut interior_registry,
-            &mut interior_states,
-            1.5,
-        );
+        super::super::run_kinematic_mover_tick(&mut interior_registry, &mut interior_states, 1.5);
         let interior_events: Vec<_> = interior_states.terminus_events().collect();
         timers.arm_opened_termini(&mut interior_registry, &interior_events);
         assert_eq!(timers.remaining_ms(interior_entity), None);
@@ -371,7 +370,9 @@ mod tests {
         open_mover.completed = false;
         open_mover.segment_index = 0;
         open_mover.direction_sign = 1;
-        open_registry.set_component(open_entity, open_mover).unwrap();
+        open_registry
+            .set_component(open_entity, open_mover)
+            .unwrap();
         let mut open_states = super::super::MoverTickStateTable::default();
         super::super::run_kinematic_mover_tick(&mut open_registry, &mut open_states, 3.0);
         let open_events: Vec<_> = open_states.terminus_events().collect();

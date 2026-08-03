@@ -277,6 +277,7 @@ impl MoverBoundsSource {
     }
 }
 
+#[cfg(test)]
 fn spawn_from_geometry(
     registry: &mut EntityRegistry,
     geometry: &KinematicGeometry,

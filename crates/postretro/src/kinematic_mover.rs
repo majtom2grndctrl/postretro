@@ -508,11 +508,7 @@ fn advance_mover(
     position
 }
 
-fn record_translation_leg(
-    translation_legs: &mut Vec<MoverTranslationLeg>,
-    start: Vec3,
-    end: Vec3,
-) {
+fn record_translation_leg(translation_legs: &mut Vec<MoverTranslationLeg>, start: Vec3, end: Vec3) {
     if start.is_finite()
         && end.is_finite()
         && (end - start).length_squared() > f32::EPSILON * f32::EPSILON

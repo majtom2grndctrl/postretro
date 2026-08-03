@@ -349,7 +349,7 @@ impl Session {
         //    `build_scripting_core` and shared verbatim with the headless
         //    observability path so the two paths cannot drift. Runs behind first
         //    pixels; records `script_runtime_ctor`. See: context/lib/scripting.md.
-        let (mut scripting, classname_dispatch) = build_scripting_core(boot_timings)?;
+        let (scripting, classname_dispatch) = build_scripting_core(boot_timings)?;
 
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);

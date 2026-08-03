@@ -1199,6 +1199,8 @@ mod tests {
             &[(crate::kinematic_mover::MoverEventKind::Opened, 1)],
         );
         timers.tick(&mut registry, DT);
+        assert_eq!(timers.remaining_ms(mover), Some(200.0));
+        timers.tick(&mut registry, DT);
         assert!(timers.remaining_ms(mover).unwrap() < 200.0);
 
         let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
@@ -1206,11 +1208,12 @@ mod tests {
         let players = [AuthoritativePlayer { id, pawn: player }];
         let mut system = TriggerSystem::with_mover_auto_close_timers(timers.clone());
         tick(&mut system, &mut registry, &bridge, &players, &[]);
+        timers.tick(&mut registry, DT);
 
         assert_eq!(
             timers.remaining_ms(mover),
             Some(200.0),
-            "the direct trigger-volume KVP command must reset the open hold even when Start is phase-idempotent"
+            "the direct trigger-volume KVP command must reset the open hold without consuming its same fixed tick, even when Start is phase-idempotent"
         );
     }
 

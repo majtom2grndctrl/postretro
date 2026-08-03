@@ -116,7 +116,7 @@ fn unblocked_mover_displacement(
     if blocked {
         #[cfg(debug_assertions)]
         log::warn!(
-            "[Movement] mover {} push was blocked by static geometry; pinch/crush resolution is deferred",
+            "[Movement] mover {} push was blocked by static geometry; local displacement recovery left position unchanged",
             penetration.mover_id
         );
         None

@@ -67,6 +67,9 @@ fn committed_sdk_types_contain_mod_bloom_render_profile() {
         assert!(output.contains("export type RenderProfile = {"));
         assert!(output.contains("bloom?: BloomRenderProfile;"));
         assert!(output.contains("render?: RenderProfile;"));
+        assert!(output.contains("export type MoverDefaults = {"));
+        assert!(output.contains("autoCloseMs?: number;"));
+        assert!(output.contains("movers?: MoverDefaults;"));
     }
     for output in [&generated_luau, &committed_luau] {
         assert!(output.contains("export type BloomResolution ="));
@@ -79,6 +82,9 @@ fn committed_sdk_types_contain_mod_bloom_render_profile() {
         assert!(output.contains("export type RenderProfile = {"));
         assert!(output.contains("bloom: BloomRenderProfile?,"));
         assert!(output.contains("render: RenderProfile?,"));
+        assert!(output.contains("export type MoverDefaults = {"));
+        assert!(output.contains("autoCloseMs: number?,"));
+        assert!(output.contains("movers: MoverDefaults?,"));
     }
 }
 

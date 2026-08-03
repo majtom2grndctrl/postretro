@@ -41,11 +41,18 @@ impl fmt::Display for RuntimeMoverLoadError {
 
 impl std::error::Error for RuntimeMoverLoadError {}
 
+pub(crate) const ENGINE_AUTO_CLOSE_MS: f32 = 0.0;
+
 pub(crate) fn spawn_loaded_kinematic_movers(
     registry: &mut EntityRegistry,
     world: &LevelWorld,
+    mod_auto_close_ms: f32,
 ) -> Result<Vec<EntityId>, RuntimeMoverLoadError> {
-    spawn_from_geometry(registry, &world.kinematic_geometry)
+    spawn_from_geometry_with_auto_close_default(
+        registry,
+        &world.kinematic_geometry,
+        mod_auto_close_ms,
+    )
 }
 
 pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverCollider> {
@@ -274,6 +281,14 @@ fn spawn_from_geometry(
     registry: &mut EntityRegistry,
     geometry: &KinematicGeometry,
 ) -> Result<Vec<EntityId>, RuntimeMoverLoadError> {
+    spawn_from_geometry_with_auto_close_default(registry, geometry, ENGINE_AUTO_CLOSE_MS)
+}
+
+fn spawn_from_geometry_with_auto_close_default(
+    registry: &mut EntityRegistry,
+    geometry: &KinematicGeometry,
+    mod_auto_close_ms: f32,
+) -> Result<Vec<EntityId>, RuntimeMoverLoadError> {
     let waypoint_indices = waypoint_index_map(&geometry.waypoints)?;
     let mut spawned = Vec::with_capacity(geometry.movers.len());
 
@@ -337,7 +352,19 @@ fn spawn_from_geometry(
         component.block_policy = block_policy_from_loaded(mover)?;
         component.crush_damage = mover.crush_damage;
         component.crush_interval_ms = mover.crush_interval_ms;
-        component.auto_close_ms = mover.auto_close_ms;
+        component.auto_close_ms = if mover.auto_close_ms > 0.0 {
+            mover.auto_close_ms
+        } else {
+            mod_auto_close_ms
+        };
+        if component.auto_close_ms > 0.0 && component.waypoints.len() < 2 {
+            log::warn!(
+                "[Loader] kinematic mover {} (`{}`) ignores auto_close_ms because it has fewer than two waypoints",
+                mover.mover_id,
+                mover.name
+            );
+            component.auto_close_ms = ENGINE_AUTO_CLOSE_MS;
+        }
         component.open_event = mover.open_event.clone();
         component.close_event = mover.close_event.clone();
         component.blocked_event = mover.blocked_event.clone();
@@ -859,6 +886,33 @@ mod tests {
         assert_eq!(mover.close_event.as_deref(), Some("door_close"));
         assert_eq!(mover.blocked_event.as_deref(), Some("door_blocked"));
         assert_eq!(mover.crush_event.as_deref(), Some("door_crush"));
+    }
+
+    #[test]
+    fn auto_close_seed_uses_mod_default_then_positive_mover_override() {
+        let mut geometry = geometry(1);
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry_with_auto_close_default(&mut registry, &geometry, 300.0)
+            .expect("mod default should seed a valid mover")[0];
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(id)
+                .expect("mover component attached")
+                .auto_close_ms,
+            300.0
+        );
+
+        geometry.movers[0].auto_close_ms = 125.0;
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry_with_auto_close_default(&mut registry, &geometry, 300.0)
+            .expect("authored override should seed a valid mover")[0];
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(id)
+                .expect("mover component attached")
+                .auto_close_ms,
+            125.0
+        );
     }
 
     #[test]

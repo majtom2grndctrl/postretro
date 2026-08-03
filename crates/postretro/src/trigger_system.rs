@@ -14,7 +14,9 @@ use postretro_foundation::PlayerMovementComponent;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
-use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_known_movers};
+use crate::kinematic_mover::{
+    MoverAutoCloseTimers, MoverCommandDiagnostics, apply_mover_command_to_known_movers,
+};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 
 /// Stable player identity for per-player trigger state and event ordering.
@@ -110,9 +112,17 @@ pub(crate) struct TriggerSystem {
     occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
+    mover_auto_close_timers: Option<MoverAutoCloseTimers>,
 }
 
 impl TriggerSystem {
+    pub(crate) fn with_mover_auto_close_timers(auto_close_timers: MoverAutoCloseTimers) -> Self {
+        Self {
+            mover_auto_close_timers: Some(auto_close_timers),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.occupants.clear();
         self.paired_enters.clear();
@@ -325,7 +335,12 @@ impl TriggerSystem {
                             .map(|(id, _)| id)
                             .collect();
                         targets.sort_unstable();
-                        apply_mover_command_to_known_movers(registry, &targets, &trigger.command);
+                        apply_mover_command_to_known_movers(
+                            registry,
+                            &targets,
+                            &trigger.command,
+                            self.mover_auto_close_timers.as_ref(),
+                        );
                         update_after_fire(&mut trigger);
                         let event_name = trigger.on_fire.clone();
                         let _ = registry.set_component(trigger_id, trigger);
@@ -1152,6 +1167,50 @@ mod tests {
                 .x
                 > 0.0,
             "the trigger command must produce observed mover motion on the next fixed tick"
+        );
+    }
+
+    #[test]
+    fn trigger_kvp_start_retriggers_an_opened_auto_close_hold() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Once,
+            0.0,
+            true,
+        );
+        let mover = spawn_mover(&mut registry);
+        let mut mover_phase = registry
+            .get_component::<KinematicMoverComponent>(mover)
+            .expect("mover component attached")
+            .clone();
+        mover_phase.auto_close_ms = 200.0;
+        mover_phase.segment_index = 1;
+        mover_phase.completed = true;
+        registry.set_component(mover, mover_phase).unwrap();
+
+        let timers = MoverAutoCloseTimers::default();
+        timers.set_enabled(true);
+        timers.arm_opened_termini(
+            &mut registry,
+            &[(crate::kinematic_mover::MoverEventKind::Opened, 1)],
+        );
+        timers.tick(&mut registry, DT);
+        assert!(timers.remaining_ms(mover).unwrap() < 200.0);
+
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer { id, pawn: player }];
+        let mut system = TriggerSystem::with_mover_auto_close_timers(timers.clone());
+        tick(&mut system, &mut registry, &bridge, &players, &[]);
+
+        assert_eq!(
+            timers.remaining_ms(mover),
+            Some(200.0),
+            "the direct trigger-volume KVP command must reset the open hold even when Start is phase-idempotent"
         );
     }
 

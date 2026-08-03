@@ -2634,6 +2634,9 @@ impl ApplicationHandler for App {
                                 bindings: trigger_bindings,
                                 slot_table: script_ctx.slot_table.clone(),
                                 script_ctx: Some(script_ctx.clone()),
+                                auto_close_timers: Some(
+                                    session.scripting.auto_close_timers.clone(),
+                                ),
                                 use_edges: &trigger_use_edges,
                             }),
                             |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
@@ -9257,6 +9260,7 @@ mod tests {
                     id: "ui-commit".to_string(),
                     version: "1".to_string(),
                     render: Default::default(),
+                    movers: Default::default(),
                     switching: Default::default(),
                     entities: Vec::new(),
                     maps: Vec::new(),

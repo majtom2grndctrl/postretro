@@ -521,6 +521,7 @@ impl PersistentAtmosphereHarness {
                 bindings: &self.host_bindings,
                 slot_table: self.host_ctx.slot_table.clone(),
                 script_ctx: Some(self.host_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},

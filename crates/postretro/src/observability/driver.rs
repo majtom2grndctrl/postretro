@@ -157,6 +157,7 @@ fn run_headless_inner(
             world: &world,
             script_ctx: &script_ctx,
             command_diagnostics: session.scripting.command_diagnostics.clone(),
+            mover_auto_close_ms: session.scripting.mover_auto_close_ms,
             spawn_context: session.scripting.spawn_context.clone(),
             content_root: content_root.as_path(),
             active_level_tags: &active_level_tags,

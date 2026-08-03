@@ -246,6 +246,7 @@ mod tests {
             id: "com.postretro.digest-fixture".to_string(),
             version: "1.0.0".to_string(),
             render: ModRenderProfile::default(),
+            movers: Default::default(),
             switching: Default::default(),
             entities: vec![entity_descriptor()],
             ui_trees: Vec::new(),

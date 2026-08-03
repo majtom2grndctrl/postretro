@@ -91,6 +91,7 @@ impl App {
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
             session.scripting.command_diagnostics.clear();
+            session.scripting.auto_close_timers.clear();
             session.scripting.spawn_context.clear();
             session.scripting.slot_accumulator_bindings.clear();
             session.scripting.impact_policy_runtime.clear_level_events();

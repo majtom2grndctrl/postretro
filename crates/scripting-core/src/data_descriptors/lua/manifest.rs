@@ -197,6 +197,44 @@ pub fn drain_render_profile_lua(
     })
 }
 
+/// Luau twin of the QuickJS mover-default drain.
+pub fn drain_mover_defaults_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<ModMoverDefaults, DescriptorError> {
+    let raw_movers: LuaValue = table.get("movers").map_err(lua_err)?;
+    let movers = match raw_movers {
+        LuaValue::Nil => return Ok(ModMoverDefaults::default()),
+        LuaValue::Table(movers) => movers,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `movers` must be a table; using default mover settings"
+            );
+            return Ok(ModMoverDefaults::default());
+        }
+    };
+    let value = match movers.get::<LuaValue>("autoCloseMs").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(ModMoverDefaults::default()),
+        LuaValue::Integer(value) => value as f64,
+        LuaValue::Number(value) => value,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `movers.autoCloseMs` must be a finite non-negative number; using 0"
+            );
+            return Ok(ModMoverDefaults::default());
+        }
+    };
+    if !value.is_finite() || value < 0.0 || !(value as f32).is_finite() {
+        log::warn!(
+            "[Scripting] {scope}: `movers.autoCloseMs` must be a finite non-negative number; using 0"
+        );
+        return Ok(ModMoverDefaults::default());
+    }
+    Ok(ModMoverDefaults {
+        auto_close_ms: value as f32,
+    })
+}
+
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. The event
 /// remains opaque policy data here; Task 5 owns validation, merging, and
 /// execution.

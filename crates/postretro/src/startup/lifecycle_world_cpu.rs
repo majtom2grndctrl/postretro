@@ -80,6 +80,7 @@ pub(crate) fn install_world_cpu(
         world,
         script_ctx,
         command_diagnostics,
+        mover_auto_close_ms,
         spawn_context,
         content_root,
         active_level_tags,
@@ -128,7 +129,11 @@ pub(crate) fn install_world_cpu(
     let mover_colliders = crate::runtime_movers::build_loaded_mover_colliders(world);
     if !world.kinematic_geometry.movers.is_empty() {
         let mut registry = script_ctx.registry.borrow_mut();
-        match crate::runtime_movers::spawn_loaded_kinematic_movers(&mut registry, world) {
+        match crate::runtime_movers::spawn_loaded_kinematic_movers(
+            &mut registry,
+            world,
+            mover_auto_close_ms,
+        ) {
             Ok(spawned) => {
                 log::info!(
                     "[Loader] spawned {} kinematic mover entity/entities",

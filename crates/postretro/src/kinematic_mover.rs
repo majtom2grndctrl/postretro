@@ -13,9 +13,11 @@ use postretro_entities::{
 };
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
+mod auto_close;
 mod blocking;
 mod commands;
 
+pub(crate) use auto_close::MoverAutoCloseTimers;
 pub(crate) use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
 #[cfg(test)]
 pub(crate) use commands::apply_mover_command;
@@ -502,6 +504,24 @@ fn reanchor_direction(mover: &mut KinematicMoverComponent, direction: i8) {
         mover.segment_index = high as u16;
         mover.segment_elapsed_ms = (1.0 - lower_fraction) * duration_ms;
     }
+}
+
+/// Host-only directional intent used when an automatic-return timer expires.
+///
+/// Automatic closing is not a blind reversal: every path, including a completed
+/// once mover and a held ping-pong mover, resolves to the closed endpoint at
+/// index zero. The resulting phase is replicated; the timer that chose it is
+/// deliberately not.
+fn travel_toward_closed_terminus(mover: &mut KinematicMoverComponent) {
+    if mover.waypoints.len() < 2 {
+        return;
+    }
+    reanchor_direction(mover, -1);
+    mover.target_segment = Some(0);
+    mover.started = true;
+    mover.completed = false;
+    mover.blocked = false;
+    mover.wait_remaining_ms = 0.0;
 }
 
 fn path_coordinate(mover: &KinematicMoverComponent) -> Option<f32> {

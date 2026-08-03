@@ -66,7 +66,9 @@ impl MoverAutoCloseTimers {
             MoverCommand::Stop => {
                 state.countdowns_ms.remove(&entity);
             }
-            MoverCommand::Reverse | MoverCommand::SetSpinRate(_) => {}
+            MoverCommand::Reverse
+            | MoverCommand::SetSpinRate(_)
+            | MoverCommand::SetBlockPolicy(_) => {}
         }
     }
 

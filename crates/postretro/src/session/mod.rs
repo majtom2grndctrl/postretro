@@ -452,6 +452,7 @@ impl Session {
             &net_endpoint,
             Some(netcode::NetEndpoint::Client { .. })
         ));
+        let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 
         Ok(Self {
@@ -477,7 +478,7 @@ impl Session {
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::with_mover_auto_close_timers(
-                scripting.auto_close_timers.clone(),
+                trigger_auto_close_timers,
             ),
             touch_system: crate::sim::touch::TouchSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),

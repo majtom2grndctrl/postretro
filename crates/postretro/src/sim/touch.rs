@@ -1624,9 +1624,15 @@ mod tests {
         assert_eq!(weapon.state, WieldableState::Idle);
         assert_eq!(weapon.state_remaining_ms, 0);
         assert_eq!(weapon.state_total_ms, 0);
-        assert_eq!(weapon.state_elapsed_sub_ms, 0.0);
+        assert!(
+            weapon.state_elapsed_sub_ms.abs() < 1.0e-6,
+            "drop resets fractional weapon-state progress"
+        );
         assert_eq!(weapon.reload_credited, 0);
-        assert_eq!(weapon.cooldown_remaining_ms, 0.0);
+        assert!(
+            weapon.cooldown_remaining_ms.abs() < 1.0e-6,
+            "drop resets weapon cooldown"
+        );
         assert!(!weapon.shoot_press_consumed);
         assert!(!weapon.reload_press_consumed);
         assert_eq!(weapon.reload_feedback, Default::default());
@@ -2396,6 +2402,67 @@ mod tests {
                 .wieldables[0],
             Some(item),
             "without a valid forward floor, release must not run"
+        );
+        assert!(
+            !registry
+                .has_component_kind(item, ComponentKind::Touchable)
+                .unwrap(),
+            "the held item stays out of world touch evaluation"
+        );
+    }
+
+    #[test]
+    fn drop_rejects_non_walkable_forward_floor_and_keeps_inventory_held() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 1.2, 0.0));
+        let item_position = Vec3::new(10.0, 1.2, 0.0);
+        let item = spawn_item(&mut registry, "ion", item_position, TouchMode::Auto, 7);
+        held_item(&mut registry, pawn, item);
+        let slope = 2.0_f32;
+        let surface_y = |x: f32| slope * x;
+        let world = CollisionWorld {
+            mesh: TriMesh::new(
+                vec![
+                    Point::new(-100.0, surface_y(-100.0), -100.0),
+                    Point::new(100.0, surface_y(100.0), -100.0),
+                    Point::new(100.0, surface_y(100.0), 100.0),
+                    Point::new(-100.0, surface_y(-100.0), 100.0),
+                ],
+                vec![[0, 2, 1], [0, 3, 2]],
+            ),
+            isometry: Isometry::identity(),
+        };
+        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+        let mut system = TouchSystem::default();
+
+        let events = tick_with_edges(
+            &mut system,
+            &mut registry,
+            &world,
+            &descriptors,
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert!(events.dropped_item_meshes.is_empty());
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "a non-walkable forward floor must not release the held item"
+        );
+        assert!(
+            registry
+                .get_component::<Transform>(item)
+                .unwrap()
+                .position
+                .distance(item_position)
+                < 1.0e-5,
+            "a rejected floor leaves the held item's transform unchanged"
         );
         assert!(
             !registry

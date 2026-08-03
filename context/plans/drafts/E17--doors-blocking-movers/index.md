@@ -184,9 +184,9 @@ empty even through catch-up replay.
   each hit emitting the beyond-lethal overkill impact fact — and stops only when
   the player is no longer pinned. A player with room to be pushed clear takes
   **no** crush damage.
-- [ ] **AC4 (default preserved).** No authored policy behaves exactly as today:
-  the player is displaced out of overlap where possible, and the push no-ops
-  (no damage, no mover reaction) when blocked.
+- [ ] **AC4 (default preserved).** The unauthored `displace` default behaves
+  byte-for-byte as today: the player is displaced out of overlap where possible,
+  and the push no-ops (no damage, no mover reaction) when blocked.
 - [ ] **AC5 (death paths reused).** A crush kills a player through the existing
   HP-latch → `playerDied` path and an enemy through the existing despawn +
   impact-animation path. No new death path is introduced, and no engine
@@ -208,7 +208,9 @@ empty even through catch-up replay.
   identically to one set by command).
 - [ ] **AC9 (auto behavior).** A mover with `auto_close_ms` reverses toward its
   closed terminus after the timer elapses; re-triggering during the hold resets
-  the timer; a `stop` command during the hold cancels the auto-return.
+  the timer; a `stop` command during the hold cancels the auto-return. The
+  re-trigger case is exercised through the **trigger-volume `command` route**
+  (not only a script command), since that is the route the observer must cover.
 - [ ] **AC10 (default cascade).** The engine auto-close default applies when
   neither the mover KVP nor the mod descriptor sets one; a `ModManifest`
   auto-close field overrides the engine default mod-wide; a per-mover KVP
@@ -241,7 +243,9 @@ bump; Tasks 2/5/6 read fields this task seeded and touch no format file. A map K
 traverses: (1) the level-format record `KinematicMoverRecord`
 (`crates/level-format/src/kinematic_geometry.rs`) — **bump
 `KINEMATIC_GEOMETRY_VERSION` 2→3** and add the legacy-V2 read path plus its
-round-trip test (the section is version-gated); (2) the KVP parse in
+round-trip test (the section is version-gated); the bump also updates the
+`rejects_unsupported_section_version` fixture, which today asserts "1 or 2" and
+that V3 rejects; (2) the KVP parse in
 `crates/level-compiler/src/parse.rs`; (3) the `From<KinematicMoverRecord>` in
 `crates/level-loader/src/prl.rs` onto `LoadedKinematicMover` (not onto
 `KinematicGeometry`, which holds only `{movers, waypoints}`); (4) the real seed
@@ -256,9 +260,16 @@ executor confirms the delta path against the wire mirror.
 
 Add a **replicated** `blocked: bool` phase field to `KinematicMoverComponent` and
 to `WireKinematicMoverState`, appended beside `started`/`completed`, bumping
-`SNAPSHOT_VERSION` 12→13 and `WIRE_VERSION` 15→16; extend the engine↔wire
-conversion in `crate::netcode` (`netcode/replication.rs`) and both drift-guard
-tests.
+`SNAPSHOT_VERSION` 12→13 and `WIRE_VERSION` 15→16. Extend the engine↔wire
+conversion in **both** directions: the component→wire copy
+(`kinematic_mover_state_to_wire`, `netcode/replication.rs`) **and** the wire→component
+reconcile apply (`seed_kinematic_mover_phase`, `netcode/client.rs`) — the field is
+compiler-checked at the wire-struct construction sites but the reconcile *read-back*
+is not, and if the client never applies `blocked` its driver never holds, so AC1's
+no-snap-back and AC7's stop-hold reconcile silently fail. Extend both drift-guard
+tests, and make the mover round-trip assertion exercise the reconcile apply, not only
+the to-wire copy (today's `kinematic_mover_wire_state_carries_rotating_phase_fields`
+is one-directional).
 
 Add a new host-only module (e.g. `kinematic_mover/blocking.rs`) with
 `run_mover_blocking_pass`, run from `sim/mod.rs` after agent steering
@@ -343,9 +354,10 @@ stays `stop`-only.
 
 `Crush`: the mover keeps moving; while the player is **pinned** (the shared pinned
 predicate from Task 1 reports no room to push clear), apply damage through
-`apply_damage_with_context` with `DamagePayload { amount }` and `DamageContext {
-source_id: "mover.crush", attacker: None, weapon: None, zone: None, producer:
-DamageProducer::InTick }` — `InTick` is the arm whose impact policies evaluate, so
+`apply_damage_with_context` with `DamagePayload { amount }` and
+`DamageContext::new("mover.crush", DamageProducer::InTick)` (the constructor
+already leaves attacker/weapon/zone `None`; `source_id` is an owned `String`) —
+`InTick` is the arm whose impact policies evaluate, so
 a future gib policy is reachable. Evaluation is caller-pumped, not automatic: the
 pass invokes the sim's impact hook (`simulate_tick`'s `on_impact` closure, which
 runs `ImpactPolicyRuntime::evaluate_pending_in_registry`) immediately after each
@@ -422,8 +434,12 @@ allowlists are the only sites to skip. Wire: the reaction registrar
 (`register_mover_reaction_primitives`) **and** the sequenced registrar
 (`register_sequenced_mover_primitives`), both with an args struct twin of
 `MoverSetSpinRateArgs` (AC8 and the parity/closed-vocab tests require both); the
-SDK type templates (`sdk_lib.luau` / `sdk_lib.d.ts`) and the regenerated
-`expected.d.*` fixtures; the SDK handle method `setBlockPolicy(policy)` in
+SDK type templates (`sdk_lib.luau` / `sdk_lib.d.ts` in
+`scripting-core/src/typedef/templates/`) and the golden `expected.d.*` fixtures (a
+different crate, `postretro/src/scripting/typedef/tests/fixtures/`) — these are
+snapshots asserted by the `*_snapshot_matches_full_registry` tests in
+`typedef/tests/snapshots.rs`, updated by hand from the failing assert's printed
+output; the SDK handle method `setBlockPolicy(policy)` in
 `sdk/lib/entities/movers.{ts,luau}`; and the closed-vocabulary test in
 `scripting/reactions/registry.rs`. **Do not add a `trigger_bindings.rs`
 `bind_command` arm** — `bind_command` runs only for primitives `classify()` marks
@@ -454,11 +470,16 @@ resets the countdown; a `stop` command (interruption) during the hold cancels th
 pending return. Neither is observable from phase — a `Start` re-fired at a
 completed held door no-ops entirely in the shared applier — and the
 dependency-free applier cannot reach a host-only table, so the reset/cancel
-observation lives on the host's command-application path: the funnel
-`apply_mover_command_to_targets` already threads level-scoped context
-(`MoverCommandDiagnostics`) and shows the shape — an optional host-only observer
-records `Start`/`GoToPathNode` (reset) and `Stop` (cancel) per mover; clients
-thread none. Auto-close and a same-tick block reaction resolve in the host pass
+observation lives on the host's command-application path. Hook the **shared**
+`apply_mover_command_to_targets_inner` (`commands.rs`), the single point *both*
+public funnels reach — `apply_mover_command_to_targets` (script reaction/sequence
+routes) **and** `apply_mover_command_to_known_movers` (the trigger-volume `command`
+KVP route, `trigger_system.rs`, the canonical way a map door is re-triggered). The
+latter threads no `MoverCommandDiagnostics` today, so an observer bolted onto only
+the former silently misses trigger-volume re-trigger/stop and AC9 fails for that
+route while passing for script commands. An optional host-only observer at the
+shared inner records `Start`/`GoToPathNode` (reset) and `Stop` (cancel) per mover;
+clients thread none. Auto-close and a same-tick block reaction resolve in the host pass
 with the block decision last, so a blocked door does not auto-close into the
 obstruction. A `<2`-waypoint mover (pure rotator) has no closed terminus to return to —
 it ignores `auto_close_ms` with a seed-time warning; cyclic waypoint chains are

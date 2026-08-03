@@ -63,9 +63,9 @@ pub struct KinematicMoverComponent {
     pub carry_yaw: bool,
     /// Static host-authoritative collision response, seeded from map authoring.
     pub block_policy: BlockPolicy,
-    /// Static host-only damage amount for future crusher policies.
+    /// Static host-only damage amount dealt on each crusher hit.
     pub crush_damage: f32,
-    /// Static host-only cadence for future crusher policies.
+    /// Static host-only cadence between crusher hits; zero hits every tick.
     pub crush_interval_ms: f32,
     /// Static host-only automatic-close delay.
     pub auto_close_ms: f32,
@@ -75,7 +75,7 @@ pub struct KinematicMoverComponent {
     pub close_event: Option<String>,
     /// Optional host-local named-event address for reactive block contact.
     pub blocked_event: Option<String>,
-    /// Optional host-local named-event address for a future crusher hit.
+    /// Optional host-local named-event address dispatched when a crusher deals damage.
     pub crush_event: Option<String>,
     pub segment_index: u16,
     pub direction_sign: i8,

@@ -8,6 +8,7 @@ use super::data_archetype::{find_descriptor, spawn_descriptor_instance};
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::touchable::TouchableComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{EntityId, EntityRegistry};
@@ -185,6 +186,7 @@ fn compose_wieldable_inventory_slots<'a>(
         let _ = registry.set_map_kvps(weapon_id, Default::default());
         inventory.wieldables[slot] = Some(weapon_id);
         let _ = registry.remove_component::<MeshComponent>(weapon_id);
+        let _ = registry.remove_component::<TouchableComponent>(weapon_id);
 
         if carried_loadout.is_none()
             && let Some(WeaponResource::Ammo(ammo)) = weapon.resource.as_ref()
@@ -259,6 +261,7 @@ pub(crate) fn acquire_wieldable_at(
         return false;
     }
     let _ = registry.remove_component::<MeshComponent>(item);
+    let _ = registry.remove_component::<TouchableComponent>(item);
     true
 }
 
@@ -305,7 +308,8 @@ mod tests {
 
     use postretro_entities::registry::Transform;
     use postretro_scripting_core::data_descriptors::{
-        AmmoResource, FireMode, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
+        AmmoResource, FireMode, MeshDescriptor, ReloadStyle, ResolutionMode, TouchMode,
+        TouchableDescriptor, WeaponDescriptor, WeaponResource,
     };
 
     fn pawn_descriptor() -> EntityTypeDescriptor {
@@ -403,6 +407,15 @@ mod tests {
                 MeshComponent::stateless("models/item.gltf".to_string()),
             )
             .unwrap();
+        registry
+            .set_component(
+                item,
+                TouchableComponent {
+                    mode: TouchMode::Auto,
+                    radius: 1.0,
+                },
+            )
+            .unwrap();
         let mut reserve = AmmoReserve::default();
         reserve.set_exact("cells", 13);
         registry.set_component(pawn, reserve).unwrap();
@@ -415,6 +428,10 @@ mod tests {
         assert_eq!(inventory.switch_target, Some(1));
         assert_eq!(inventory.switch_origin, Some(1));
         assert!(registry.get_component::<MeshComponent>(item).is_err());
+        assert!(
+            registry.get_component::<TouchableComponent>(item).is_err(),
+            "inventory ownership must remove world-item membership"
+        );
         assert_eq!(
             registry
                 .get_component::<AmmoReserve>(pawn)
@@ -496,6 +513,53 @@ mod tests {
         let inventory = registry.get_component::<Inventory>(pawn).unwrap();
         assert_eq!(inventory.active_slot, 0);
         assert_eq!(inventory.wieldables, [None; WIELDABLE_SLOT_CAPACITY]);
+    }
+
+    // Regression: authored loadout composition left touchable weapons registered
+    // as world items at their stale player-spawn transform.
+    #[test]
+    fn authored_loadout_strips_world_item_components_from_held_wieldable() {
+        let mut pawn_descriptor = pawn_descriptor();
+        pawn_descriptor.inventory = Some(postretro_entities::InventoryDescriptor {
+            loadout: vec!["droppable_pistol".to_string()],
+        });
+        let mut weapon_descriptor = weapon_descriptor("droppable_pistol", "cells", 6, 20);
+        weapon_descriptor.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 1.0,
+        });
+        weapon_descriptor.mesh = Some(MeshDescriptor {
+            model: "models/pistol_world.gltf".to_string(),
+            shadow_only: false,
+            attachments: Default::default(),
+            shadow_bias_scale: 1.0,
+            animations: Default::default(),
+            default_state: None,
+            locomotion: None,
+        });
+        let descriptors = [pawn_descriptor.clone(), weapon_descriptor];
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+
+        let _ = compose_wieldable_inventory(
+            &mut registry,
+            pawn,
+            &pawn_descriptor,
+            &placement(),
+            &descriptors,
+            None,
+        );
+
+        let held = registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .wieldables[0]
+            .expect("authored loadout materializes");
+        assert!(registry.get_component::<MeshComponent>(held).is_err());
+        assert!(
+            registry.get_component::<TouchableComponent>(held).is_err(),
+            "held loadout instance is not a host world item"
+        );
     }
 
     #[test]

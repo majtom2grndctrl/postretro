@@ -6,7 +6,7 @@ use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
     spawn_from_player_starts_with_carried_loadout, suppressed_client_host_replicated_mesh_models,
-    weapon_presentation_models,
+    touchable_wieldable_world_models, weapon_presentation_models,
 };
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
@@ -247,6 +247,10 @@ pub(crate) fn install_world_cpu(
     // declared third- and first-person model so attachment/viewmodel changes never
     // trigger runtime model loads or leave a transient placeholder.
     let weapon_presentation_models = weapon_presentation_models(&descriptors);
+    // A loadout-only touchable wieldable loses its own MeshComponent when held,
+    // but drop restores that descriptor mesh during gameplay. Preload the world
+    // holder and attachments now; model upload remains renderer-owned.
+    let touchable_wieldable_world_models = touchable_wieldable_world_models(&descriptors);
     let first_spawn = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
@@ -362,6 +366,11 @@ pub(crate) fn install_world_cpu(
             }
         }
         for model in &weapon_presentation_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &touchable_wieldable_world_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

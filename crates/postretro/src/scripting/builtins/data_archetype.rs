@@ -444,6 +444,38 @@ pub(crate) fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -
     ordered
 }
 
+/// Collect world-mesh models for wieldables that can later leave an inventory.
+/// Inventory composition strips their `MeshComponent`, so a registry-driven
+/// install sweep cannot discover a descriptor referenced only by a loadout.
+/// Requiring both weapon and touchable authoring keeps this preload scoped to
+/// instances the drop path can actually restore as world items.
+pub(crate) fn touchable_wieldable_world_models(
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for descriptor in descriptors {
+        if descriptor.weapon.is_none() || descriptor.touchable.is_none() {
+            continue;
+        }
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
+        let mut attachment_models: Vec<&str> =
+            mesh.attachments.values().map(String::as_str).collect();
+        attachment_models.sort_unstable();
+        for attachment_model in attachment_models {
+            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
+                ordered.push(attachment_model.to_string());
+            }
+        }
+    }
+    ordered
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -2814,6 +2846,59 @@ mod tests {
                 "models/rifle/model.gltf".to_string(),
             ],
             "declared weapon presentation models preserve descriptor order and dedupe paths"
+        );
+    }
+
+    #[test]
+    fn touchable_wieldable_world_models_collects_loadout_only_drop_assets() {
+        // Regression: a touchable weapon referenced only by a starting inventory
+        // lost its MeshComponent before the install sweep, so a later drop had no
+        // uploaded world model or clip data.
+        let mut droppable = weapon_descriptor("droppable");
+        droppable.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+        droppable.mesh = mesh_descriptor("droppable", false).mesh;
+        let mesh = droppable
+            .mesh
+            .as_mut()
+            .expect("fixture supplies world mesh");
+        mesh.model = "models/droppable/world.gltf".to_string();
+        mesh.attachments = [
+            (
+                "muzzle".to_string(),
+                "models/droppable/muzzle.gltf".to_string(),
+            ),
+            (
+                "battery".to_string(),
+                "models/droppable/battery.gltf".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut held_only = weapon_descriptor("held_only");
+        held_only.mesh = mesh_descriptor("held_only", false).mesh;
+        let mut non_weapon_touchable = mesh_descriptor("touch_prop", false);
+        non_weapon_touchable.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+
+        assert_eq!(
+            touchable_wieldable_world_models(&[
+                droppable,
+                held_only,
+                non_weapon_touchable,
+                mesh_descriptor("scenery", false),
+            ]),
+            vec![
+                "models/droppable/world.gltf".to_string(),
+                "models/droppable/battery.gltf".to_string(),
+                "models/droppable/muzzle.gltf".to_string(),
+            ],
+            "only meshes that the drop path can restore are preloaded"
         );
     }
 

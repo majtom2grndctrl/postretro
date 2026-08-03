@@ -20,8 +20,8 @@ use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 /// Contract notes for importers:
 /// - It reads the **live component columns**, NOT `DescriptorProvenance.owned_components`.
 ///   `owned_components` only tracks the modder-declarable `DescriptorComponentKind` set
-///   (weapon/movement/light/emitter/mesh/health) and never includes the AI components,
-///   so it cannot be used to detect an AI enemy.
+///   and never includes engine-owned AI components, so it cannot be used to detect an
+///   AI enemy.
 /// - It is registry-blind about role: it does not check host/client. Host registration
 ///   (this task) gates on the role separately; connected-client spawn suppression (Task 5)
 ///   imports the same predicate to decide which descriptor placements NOT to spawn locally.

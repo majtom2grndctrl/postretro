@@ -33,7 +33,8 @@ pub(crate) use data_archetype::{
 pub(crate) use data_archetype::{
     descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
     filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
-    suppressed_client_host_replicated_mesh_models, weapon_presentation_models,
+    suppressed_client_host_replicated_mesh_models, touchable_wieldable_world_models,
+    weapon_presentation_models,
 };
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep

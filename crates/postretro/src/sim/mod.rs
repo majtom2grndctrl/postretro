@@ -247,8 +247,8 @@ pub(crate) struct TickEvents {
     /// this after simulation so the hand socket follows committed ownership, never
     /// a pending selection.
     pub(crate) repointed_pawns: Vec<EntityId>,
-    /// World-item meshes restored by a drop need same-tick clip binding. Touch
-    /// acquisition never adds entries; Task 6 supplies the producer.
+    /// The host drop path restores meshes outside spawn-context resolution, so it
+    /// reports them here for clip binding in the same fixed tick, before rendering.
     pub(crate) dropped_item_meshes: Vec<EntityId>,
     /// Bound trigger residuals drained app-side after every fixed tick this frame.
     pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,

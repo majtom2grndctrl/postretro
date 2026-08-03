@@ -893,7 +893,11 @@ mod tests {
             .unwrap();
 
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_mover_reaction_primitives(&mut reactions, Default::default());
+        register_mover_reaction_primitives(
+            &mut reactions,
+            Default::default(),
+            MoverAutoCloseTimers::default(),
+        );
         assert!(
             reactions
                 .dispatch(
@@ -910,6 +914,7 @@ mod tests {
             &mut sequences,
             sequence_ctx.clone(),
             Default::default(),
+            MoverAutoCloseTimers::default(),
         );
         sequences
             .get("moverSetBlockPolicy")

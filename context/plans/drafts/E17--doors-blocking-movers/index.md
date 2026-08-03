@@ -114,9 +114,9 @@ under it is engine-owned correctness.
   app-drain producer is stubbed), so the beyond-lethal fact keeps reaching a
   future mod gib policy. Crush adds no engine death/overkill/gib behavior; a
   crushed enemy is removed by the mod's own death/gib despawn policy.
-- `scripting.md` §12: "a dispatch source is added only when a case blocks on
-  it." Mover sound events publish no ephemeral per-fire inputs an author needs,
-  so E adds no typed source; named events reuse the dispatch-address model.
+- `scripting.md` §12: a new dispatch source is justified only by ephemeral
+  per-fire inputs a case blocks on. Mover sound events publish none an author
+  needs, so E adds no typed source; named events reuse the dispatch-address model.
 
 **Alternatives rejected.**
 - **Client-predicted blocking.** Would need clients to simulate every entity's
@@ -150,11 +150,13 @@ Tasks 1/2/5/6 reference these rows.
 | Opened | `open_event` | mover reaches its forward (open) terminus | host-only tick step |
 | Closed | `close_event` | mover reaches its start (closed) terminus | host-only tick step |
 | Blocked | `blocked_event` | a `stop`- or `reverse`-policy mover enters reactive contact (rising edge) | blocking pass |
-| Crushed | `crush_event` | a `crush`-policy mover deals crush damage to a victim (first pinned tick, per victim) | blocking pass |
+| Crushed | `crush_event` | a `crush`-policy mover deals crush damage to a victim (each tick damage lands, per victim) | blocking pass |
 
 "Open" is the forward-travel terminus (highest segment reached traveling `+1`);
-"closed" is the start terminus (segment 0). A looping mover with no start/end
-terminus has no Opened/Closed edge and ignores `auto_close_ms` (warn at seed).
+"closed" is the start terminus (segment 0). A single-waypoint pure rotator has no
+travel termini: no Opened/Closed edge, and it ignores `auto_close_ms` (warn at
+seed). A cyclic waypoint chain is already a load error (`resolve_waypoint_chain`),
+so no other terminus-free mover exists.
 Reverse-on-contact fires `Blocked`, not a distinct event — the door reacting to
 an obstruction is one authored sound whether the reaction is hold or reverse.
 
@@ -213,7 +215,7 @@ empty even through catch-up replay.
   overrides both.
 - [ ] **AC11 (sound executes, host-local).** On the host or in single-player,
   authoring a mover transition-event name and a matching
-  `defineReaction(name, [playSound(...)])` plays the sound on that transition —
+  `defineReaction(name, playSound(...))` plays the sound on that transition —
   the mover event reaches the executing dispatch path, not the non-executing
   drain. A connected client emits no mover sound.
 - [ ] **AC12 (wire).** The drift-guard tests on both the net and engine sides
@@ -231,8 +233,11 @@ Add a `BlockPolicy` enum (`Displace`, `Reverse`, `Stop`, `Crush`;
 `#[serde(rename_all = "snake_case")]`) and a **host-only** `block_policy` field on
 `KinematicMoverComponent`, seeded from a new `block_policy` KVP.
 
-**Seed the new per-mover KVPs through the full compiled-map chain, exactly as
-`carry_yaw`/`speed_mps` are** (the exemplar to follow end to end). A map KVP
+**Seed all of E's per-mover KVPs (`block_policy`, `crush_damage`,
+`crush_interval_ms`, `auto_close_ms`, `open_event`/`close_event`/`blocked_event`/
+`crush_event`) through the full compiled-map chain in this task, exactly as
+`carry_yaw`/`speed_mps` are** (the exemplar to follow end to end) — one format
+bump; Tasks 2/5/6 read fields this task seeded and touch no format file. A map KVP
 traverses: (1) the level-format record `KinematicMoverRecord`
 (`crates/level-format/src/kinematic_geometry.rs`) — **bump
 `KINEMATIC_GEOMETRY_VERSION` 2→3** and add the legacy-V2 read path plus its
@@ -241,8 +246,8 @@ round-trip test (the section is version-gated); (2) the KVP parse in
 `crates/level-loader/src/prl.rs` onto `LoadedKinematicMover` (not onto
 `KinematicGeometry`, which holds only `{movers, waypoints}`); (4) the real seed
 into `KinematicMoverComponent` in `runtime_movers.rs` (`spawn_from_geometry`).
-This PRL-section version bump is distinct from the SNAPSHOT/WIRE bumps below;
-Tasks 2/5/6's KVPs ride the same chain. The `block_policy` field is held locally
+This PRL-section version bump is distinct from the SNAPSHOT/WIRE bumps below and
+happens once. The `block_policy` field is held locally
 and **not** added to the wire mirror `WireKinematicMoverState`, following
 `carry_yaw`. `block_policy` is the first host-only field on this component; the
 warrant is that per-client deltas are diffed from `WireKinematicMoverState`, not
@@ -272,14 +277,23 @@ set `blocked = true` while the player is in swept contact and clear it when clea
 The deterministic driver (mover tick, order 1) must **honor `blocked`**: a blocked
 mover advances neither `segment_elapsed_ms` nor spin phase (holds the whole mover,
 so a stopped rotating gate stops rotating), and resumes from the held phase when
-cleared. The `blocked` check precedes the `completed` early-return so a stale flag
-cannot ride completion. Split `blocked` mutation by concern so host and client
+cleared. The hold is a zero-motion tick, not a skipped tick: the driver still
+refreshes per-tick provenance (`spin_angle_before_tick_rad`,
+`was_active_this_tick`, `current_linear_velocity`) so carry, replay, and the
+replicated pose read zero motion — an early return above those writes leaves
+last tick's rotation delta live and phantom-rotates riders. The `blocked` check
+precedes the `completed` early-return so a stale flag cannot ride completion.
+Split `blocked` mutation by concern so host and client
 converge: the host-only pass **sets** `blocked` on contact and force-clears it on
 no contact (host authority the client reconciles); the **completion-clear** lives
 in the shared driver and the **restart-clear** (on `Start`/`Reverse`/
 `GoToPathNode`) lives in the shared `apply_mover_command`, so a client applying a
 replicated restart command clears its locally-predicted `blocked` in lockstep
-rather than snapping on the next snapshot.
+rather than snapping on the next snapshot. The restart-clear runs before each
+arm's idempotence early-return — a `Start` on a held mover is otherwise a
+whole-arm no-op (`started` stays true through a hold) and AC7's during-block
+clear would never fire; the host pass re-asserts `blocked` next tick if contact
+persists.
 
 **Producer→next-tick latency.** The mover moves at order 1; the pass decides at
 order 6b; the driver honors it at the next tick's order 1. So a mover completes
@@ -293,7 +307,8 @@ sweep through the same latch.
 The pass is host-only **by construction**: it lives inside `simulate_tick`, which
 connected clients already skip (they run `run_kinematic_mover_tick` directly for
 prediction) — there is no host-role flag to thread; single-player and the host run
-it. `displace_from_movers` stays byte-for-byte unchanged on all peers. Define the
+it. `displace_from_movers` keeps today's behavior on all peers — the
+pinned-predicate extraction it absorbs is a pure refactor. Define the
 shared `MoverEventKind` enum and the mover `TickEvents` bucket; the bucket entry is
 `(MoverEventKind, mover_id)` (Task 1 pushes edges — Task 6 maps kind → that mover's
 authored `*_event` name → dispatch address). Add the host-only Opened/Closed
@@ -308,7 +323,8 @@ Extend `run_mover_blocking_pass` with the remaining player policies.
 
 `Reverse`: express the reversal as a **directional intent**, not a blind flip. On
 swept contact, judge approach against the mover's **tick-end heading** — its
-`direction_sign` and current-segment direction *after* the order-1 driver step,
+`direction_sign` and current-segment direction read live at the pass (post-driver,
+post-command: an order-3 trigger command's mutation is deliberately visible) —
 not the net per-tick `tick_delta`, which blends incoming/outgoing segments at a
 corner and points the wrong way at a terminus the mover auto-reversed through this
 tick. If the tick-end heading has a positive component toward the contact
@@ -318,7 +334,9 @@ door), and a no-op at a terminus where the only valid segment already leads away
 Clear any outstanding `target_segment` so a stale `go_to_path_node` destination
 does not survive. The pass runs after the trigger tick (order 3), so a same-tick
 block-reverse takes precedence over a trigger command. A `<2`-waypoint mover has
-no path to reverse along; under `reverse` it degrades to `stop` (freeze). Emit
+no path to reverse along; under `reverse` it degrades to `stop` (behaves as
+`block_policy = stop`: `blocked` holds it, spin included, and the hold
+replicates). Emit
 `Blocked` on the reverse-contact **rising edge** (once on approach, suppressed
 while receding) — this is pass-owned and decoupled from the `blocked` flag, which
 stays `stop`-only.
@@ -328,13 +346,19 @@ predicate from Task 1 reports no room to push clear), apply damage through
 `apply_damage_with_context` with `DamagePayload { amount }` and `DamageContext {
 source_id: "mover.crush", attacker: None, weapon: None, zone: None, producer:
 DamageProducer::InTick }` — `InTick` is the arm whose impact policies evaluate, so
-a future gib policy is reachable. Cadence is **per victim**: each pinned entity
+a future gib policy is reachable. Evaluation is caller-pumped, not automatic: the
+pass invokes the sim's impact hook (`simulate_tick`'s `on_impact` closure, which
+runs `ImpactPolicyRuntime::evaluate_pending_in_registry`) immediately after each
+hit, exactly as the AI and weapon producers do — an in-tick dispatch left for the
+app-drain sink is dropped there with an error, never evaluated. Cadence is **per
+victim**: each pinned entity
 accrues its own countdown in a **host-only side-table** keyed by (mover, victim)
 where the victim is the full `EntityId` including generation (a despawn bumps the
 generation, so a reused slot cannot inherit a prior victim's countdown). Not a
 component field — mutating per-tick state stays off the replicated component.
 Damage lands on the first pinned tick and every `crush_interval_ms` of continuous
-pinning, **continuing past death**: each post-death hit re-emits the beyond-lethal
+pinning (an interval of `0`, or below one tick, damages every pinned tick),
+**continuing past death**: each post-death hit re-emits the beyond-lethal
 overkill fact (`health_after`) at the E16 chokepoint, which a mod gib policy
 accumulates (per-entity-state) and acts on — the engine defines no overkill
 threshold or gib behavior. Retire a victim's entry only when it **leaves contact
@@ -342,8 +366,8 @@ or is despawned**, not at the death latch. A crushed player pawn is not despawne
 (respawn model), so its overkill facts keep flowing while it stays pinned —
 harmless (a mod gib policy fires once, idempotent via per-entity-state); the
 cadence ends when the door reverses or the pawn is moved. `crush_damage` and
-`crush_interval_ms` are seeded mover KVPs (same authoring chain as Task 1) with
-engine defaults. A player with room to be pushed clear is not pinned and takes no
+`crush_interval_ms` are seeded mover KVPs (seeded by Task 1's chain) with engine
+defaults. A player with room to be pushed clear is not pinned and takes no
 damage. The lethal path is unchanged — HP latches at zero and the existing sweep
 fires `playerDied`; the firing client reconciles its HP via the owner-private
 `player.health` slot. Emit `Crushed` per victim on each tick damage lands. Verifies
@@ -419,22 +443,31 @@ Verifies AC8.
 ### Task 5: Auto-close timer + mod-descriptor default
 
 Add a host-only auto-close/auto-return timer. The mover carries a seeded
-`auto_close_ms` value (component field + KVP through Task 1's authoring chain —
-level-format record + `KINEMATIC_GEOMETRY_VERSION` bump + compiler parse + prl
-`From` + `runtime_movers` construct — off-wire like `block_policy`); when
+`auto_close_ms` value (component field + KVP seeded by Task 1's chain, off-wire
+like `block_policy`); when
 a mover reaches its forward (open) terminus and `auto_close_ms > 0`, the host
 counts a **host-only side-table** countdown down and on expiry issues the close —
 a directional intent setting travel toward the closed terminus, mutating
 replicated `direction` (the timer itself is never on the wire; clients reconcile
 the reversal, same shape as the block decision). A re-trigger during the hold
 resets the countdown; a `stop` command (interruption) during the hold cancels the
-pending return. Auto-close and a same-tick block reaction resolve in the host pass
+pending return. Neither is observable from phase — a `Start` re-fired at a
+completed held door no-ops entirely in the shared applier — and the
+dependency-free applier cannot reach a host-only table, so the reset/cancel
+observation lives on the host's command-application path: the funnel
+`apply_mover_command_to_targets` already threads level-scoped context
+(`MoverCommandDiagnostics`) and shows the shape — an optional host-only observer
+records `Start`/`GoToPathNode` (reset) and `Stop` (cancel) per mover; clients
+thread none. Auto-close and a same-tick block reaction resolve in the host pass
 with the block decision last, so a blocked door does not auto-close into the
-obstruction. A `<2`-waypoint or looping mover has no closed terminus to return to —
-it ignores `auto_close_ms` with a seed-time warning.
+obstruction. A `<2`-waypoint mover (pure rotator) has no closed terminus to return to —
+it ignores `auto_close_ms` with a seed-time warning; cyclic waypoint chains are
+already a load error, so no looping case exists.
 
 The default value cascades: engine constant < `ModManifest` field < per-mover KVP
-(most specific wins). Add the `ModManifest` field mirroring `render` — a new field
+(most specific wins). The engine constant is `0` — auto-close disabled — so
+unauthored movers keep today's behavior; the cascade exists for mods that want a
+mod-wide close. Add the `ModManifest` field mirroring `render` — a new field
 on `ModManifestResult` (`scripting-core/src/runtime/types.rs`), parsed in the
 js/lua manifest parsers (`data_descriptors/js/manifest.rs`,
 `.../lua/manifest.rs`) like `drain_render_profile_js`/`_lua`, drained at boot in
@@ -448,8 +481,8 @@ level unload. Verifies AC9, AC10.
 
 Wire the mover `TickEvents` bucket (defined in Task 1) to author-wired
 `playSound`, host-local. The mover carries seeded per-transition event-name KVPs
-(`open_event`, `close_event`, `blocked_event`, `crush_event`; seeded through Task
-1's authoring chain) — each an optional string naming a reaction **dispatch
+(`open_event`, `close_event`, `blocked_event`, `crush_event`; seeded by Task 1)
+— each an optional string naming a reaction **dispatch
 address**, mapped per the Event-edge table (`Opened → open_event`, `Closed →
 close_event`, `Blocked → blocked_event`, `Crushed → crush_event`). The bucket entry
 is `(MoverEventKind, mover_id)` (Task 1); Task 6 maps each entry's kind to that
@@ -457,7 +490,7 @@ mover's authored `*_event` name and pushes the resolved dispatch address.
 Drain the bucket post-tick through the **executing**
 `fire_named_event_with_sequences` (`reaction_dispatch.rs`, the death-event
 precedent in `main.rs`) — **not** the non-executing `fire_named_event` the
-weapon/movement drains use — so a `defineReaction("<name>", [playSound(...)])`
+weapon/movement drains use — so a `defineReaction("<name>", playSound(...))`
 actually dispatches `SystemReactionCommand::PlaySound` into
 `App::dispatch_system_commands` → `Audio::play`.
 
@@ -474,8 +507,11 @@ is its own effort, out of scope; note the smell, do not split. Verifies AC11.
 **Phase 1 (sequential):** Task 1 — thin slice; falsifies host-authoritative
 block reconciliation and the wire bump before any fan-out.
 **Phase 2 (concurrent):** Task 2 (player reverse+crush — edits the pass module),
-Task 4 (scripting setter — edits `commands.rs`/`trigger_bindings.rs`/SDK), Task 5
-(auto behavior + mod descriptor — edits the driver/manifest/boot). Disjoint files.
+Task 4 (scripting setter — edits `commands.rs`, the `MoverCommand` enum, and the
+SDK; no `trigger_bindings.rs` change), Task 5 (auto behavior + mod descriptor —
+its own host-only timer step plus manifest/boot). Near-disjoint: Task 1 seeded
+every KVP and component field, so the only overlap is one call line each for
+Tasks 2/5 in `sim/mod.rs`.
 **Phase 3 (sequential):** Task 3 — consumes Task 2's policy dispatch in the pass
 module.
 **Phase 4 (sequential):** Task 6 — emits at edges built by Tasks 1/2/5 and drains
@@ -494,7 +530,8 @@ through the executing path; touches the pass and driver after they settle.
 - The blocking pass is a new host-only module under
   `crates/postretro/src/kinematic_mover/`; it reuses the movement stage's
   collision inputs and the extracted pinned predicate, and calls
-  `apply_damage_with_context` directly. It runs after agent steering, feeding
+  `apply_damage_with_context` directly, pumping the sim's in-tick impact hook
+  after each hit. It runs after agent steering, feeding
   mover phase for the next mover tick — the producer→next-tick shape trigger
   commands use.
 - `blocked` is the only new wire field, and it is `stop`-only. Reversals (block
@@ -521,8 +558,9 @@ One new field: `blocked: bool` appended to `WireKinematicMoverState`, beside
 It is a deterministic input to client mover reconciliation, so it rides the
 existing mover phase payload (added after the current phase fields, consistent
 with `ComponentKind` numeric order for the payload). `SNAPSHOT_VERSION` 12→13 and
-`WIRE_VERSION` 15→16; both drift-guard tests extend. Bumping `WIRE_VERSION` for a
-snapshot-only field departs from the v11/v12 precedent, but AC12 requires it: the
+`WIRE_VERSION` 15→16; both drift-guard tests extend. Bumping `WIRE_VERSION`
+alongside a snapshot field follows the replay-provenance precedent
+(`SNAPSHOT_VERSION` 12 / `WIRE_VERSION` 13), and AC12 requires it: the
 handshake gate compares only `WIRE_VERSION`, never `SNAPSHOT_VERSION`, so a
 pre-`blocked` peer is refused only via the `WIRE_VERSION` bump.
 
@@ -570,7 +608,7 @@ Spec text; the test tasks cite these rows.
 | `blocked=true` rides a mover into completion / re-activation | `blocked` force-cleared at completion (shared driver) and on restart (shared applier) before the next driver tick | Client never holds on a stale `blocked` |
 | Rotating `stop`-policy mover contacts an entity | `blocked` freezes both linear and spin advance | A stopped rotating gate stops rotating; a `crush`-policy rotator keeps rotating and grinds (crush does not freeze) |
 | Co-op client predicts a loaded mover across its open terminus | Client runs the shared driver (predict + reconcile catch-up); edge detection is a separate host-only step | Client emits no Opened/Closed; its mover bucket stays empty across N catch-up ticks |
-| `reverse`/auto-close on a `<2`-waypoint or looping mover | No path/terminus to reverse toward | Degrades to `stop` (reverse) or ignores `auto_close_ms` (looping), with a seed-time warning — entity not left in permanent no-op contact |
+| `reverse`/auto-close on a `<2`-waypoint (pure-rotator) mover | No path/terminus to reverse toward | Reverse degrades to `stop` (sets `blocked`, freezing spin); `auto_close_ms` is ignored with a seed-time warning — entity not left in permanent no-op contact |
 | Auto-close timer expires the same tick a re-trigger arrives | Re-trigger observed before the expiry check | Timer resets; no close that tick |
 | Auto-close hold crosses a level unload | Side-table entry cleared on unload | No dangling reverse |
 | `stop` command during an auto-return hold | Interrupt observed during hold | Pending auto-return cancelled; mover stops |
@@ -596,11 +634,12 @@ Author wires the sounds and flips a specific door to a crusher at runtime:
 ```typescript
 import { defineReaction, playSound, world } from "postretro";
 
-defineReaction("vaultDoorBlocked", [playSound({ sound: "door_blocked" })]);
-defineReaction("vaultDoorOpen",    [playSound({ sound: "door_open" })]);
+defineReaction("vaultDoorBlocked", playSound("door_blocked"));
+defineReaction("vaultDoorOpen",    playSound("door_open"));
 
-const crusher = world.query({ component: "kinematic_mover", tag: "trap_a" });
-crusher.setBlockPolicy("crush");
+// Fired at runtime by a map trigger's on_fire KVP naming "armCrusher".
+const [crusher] = world.query({ component: "kinematic_mover", tag: "trap_a" });
+defineReaction("armCrusher", { sequence: crusher.setBlockPolicy("crush") });
 ```
 
 Mod-wide auto-close default in the manifest, mirroring `render`:

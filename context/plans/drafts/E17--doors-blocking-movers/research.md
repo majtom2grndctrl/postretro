@@ -70,8 +70,8 @@ setter needs its twin.
   *command* would extend this table; the user's ask does not require it.
 - The mover's own **seeded `block_policy` KVP** — a property of the
   `kinematic_mover` entity (its default block reaction), authored where
-  `mode`/`speed`/`wait` are seeded, carried on PRL `KinematicGeometry`. This is
-  the surface E adds for authoring.
+  `mode`/`speed`/`wait` are seeded, carried in the PRL kinematic-geometry
+  section (`KinematicMoverRecord`). This is the surface E adds for authoring.
 
 ## Damage / crush seam (E16)
 
@@ -241,8 +241,9 @@ Settled decisions the spec encodes, kept here so the two docs do not drift:
   early-return, and freezes spin as well as linear advance.
 - **`moverSetBlockPolicy` is host-only, not consequential.** It writes an
   off-wire field; the one applier arm that breaks the "phase-only" contract is
-  documented; it is trigger-bindable (`trigger_bindings.rs`) but absent from
-  both consequential allowlists.
+  documented; it is trigger-authorable through `on_fire` reactions (no
+  `bind_command` arm — binding runs only for consequential primitives) and
+  absent from both consequential allowlists.
 - **Mover audio is host-local this slice.** No world sound is networked today
   and doing it well is gated on deferred spatialization; peer audibility is a
   new roadmap item (Epic 12). The `blocked` wire field is for reconciliation,

@@ -323,7 +323,7 @@ mod tests {
                 };
                 let production_source = mask_test_only_blocks(&source);
                 let relative_path = path.strip_prefix(root).map(PathBuf::from).unwrap_or(path);
-                for _ in 0..method_call_count(&production_source, method) {
+                if method_call_count(&production_source, method) > 0 {
                     call_sites.push(relative_path.clone());
                 }
             }

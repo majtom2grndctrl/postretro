@@ -3,6 +3,7 @@
 // See: context/lib/build_pipeline.md (Lightmap id 22)
 
 use glam::Vec3;
+use rayon::prelude::*;
 
 use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
 use crate::bake_control::BakeControl;
@@ -210,6 +211,7 @@ pub fn bake_light_layer(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    control: &BakeControl,
 ) -> LightmapLayer {
     bake_light_layer_controlled(
         light,
@@ -218,7 +220,7 @@ pub fn bake_light_layer(
         primitives,
         geometry,
         area_sample_count,
-        &BakeControl::unrestricted(),
+        control,
     )
 }
 
@@ -232,7 +234,6 @@ pub fn bake_light_layer_controlled(
     control: &BakeControl,
 ) -> LightmapLayer {
     let atlas_w = atlas.atlas_width;
-    let mut texels: Vec<LayerTexel> = Vec::new();
 
     // The atlas array layer count: the highest layer any chart landed on, plus
     // one. The multi-bin packer (`pack_layers`) spills leaves onto higher layers,
@@ -244,49 +245,66 @@ pub fn bake_light_layer_controlled(
         .max()
         .unwrap_or(1);
 
-    for (face_idx, placement) in atlas.placements.iter().enumerate() {
-        control.governor().checkpoint();
-        let chart = &atlas.charts[face_idx];
-        if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-            control.advance(1);
-            continue;
-        }
-        let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
-        let (interior_w, interior_h) = chart_interior_dims(chart);
-
-        for ty in 0..interior_h {
-            for tx in 0..interior_w {
-                let atlas_x = placement.x as i32 + padding + tx;
-                let atlas_y = placement.y as i32 + padding + ty;
-                // Within-layer index — the atlas layer rides in `LayerTexel.layer`,
-                // not folded into `idx`.
-                let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
-
-                let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
-                let surface_normal = chart.normal;
-                let seed = texel_seed(atlas_x as u32, atlas_y as u32);
-
-                let (irr, weighted_dir, raw_visibility) = light_texel_contribution_and_visibility(
-                    light,
-                    world_p,
-                    surface_normal,
-                    seed,
-                    area_sample_count,
-                    |from, to| segment_clear(bvh, primitives, geometry, from, to),
-                );
-
-                texels.push(LayerTexel {
-                    idx: idx as u32,
-                    layer: placement.layer,
-                    irradiance: irr.to_array(),
-                    weighted_dir: weighted_dir.to_array(),
-                    fallback_normal: surface_normal.to_array(),
-                    raw_visibility: raw_visibility.unwrap_or(-1.0),
-                });
+    // `par_iter().map().collect()` is indexed: the outer collection retains the
+    // placement order even while ray work runs concurrently. Flattening those
+    // per-chart buffers therefore preserves the cache payload's established
+    // chart/row/column order exactly.
+    let per_chart_texels: Vec<Vec<LayerTexel>> = atlas
+        .placements
+        .par_iter()
+        .enumerate()
+        .map(|(face_idx, placement)| {
+            // Parallel bake work must enter once at its outermost boundary so
+            // pause and the shared concurrency cap apply to every chart.
+            let _permit = control.governor().enter();
+            let chart = &atlas.charts[face_idx];
+            if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+                // Degenerate charts still consume one progress unit while the
+                // permit is held; their ordered slot is an empty buffer.
+                control.advance(1);
+                return Vec::new();
             }
-        }
-        control.advance(1);
-    }
+            let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
+            let (interior_w, interior_h) = chart_interior_dims(chart);
+            let mut texels = Vec::with_capacity((interior_w * interior_h) as usize);
+
+            for ty in 0..interior_h {
+                for tx in 0..interior_w {
+                    let atlas_x = placement.x as i32 + padding + tx;
+                    let atlas_y = placement.y as i32 + padding + ty;
+                    // Within-layer index — the atlas layer rides in `LayerTexel.layer`,
+                    // not folded into `idx`.
+                    let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
+
+                    let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+                    let surface_normal = chart.normal;
+                    let seed = texel_seed(atlas_x as u32, atlas_y as u32);
+
+                    let (irr, weighted_dir, raw_visibility) =
+                        light_texel_contribution_and_visibility(
+                            light,
+                            world_p,
+                            surface_normal,
+                            seed,
+                            area_sample_count,
+                            |from, to| segment_clear(bvh, primitives, geometry, from, to),
+                        );
+
+                    texels.push(LayerTexel {
+                        idx: idx as u32,
+                        layer: placement.layer,
+                        irradiance: irr.to_array(),
+                        weighted_dir: weighted_dir.to_array(),
+                        fallback_normal: surface_normal.to_array(),
+                        raw_visibility: raw_visibility.unwrap_or(-1.0),
+                    });
+                }
+            }
+            control.advance(1);
+            texels
+        })
+        .collect();
+    let texels = per_chart_texels.into_iter().flatten().collect();
 
     LightmapLayer {
         atlas_width: atlas_w,
@@ -567,7 +585,11 @@ mod tests {
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use rayon::ThreadPoolBuilder;
     use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     /// One per-texel contribution term for `expected_atlas_from_texels`:
     /// `(layer, within-layer idx, irradiance, weighted_dir, fallback_normal)`.
@@ -658,6 +680,50 @@ mod tests {
         l
     }
 
+    fn bake_layer_for_test(
+        light: &MapLight,
+        atlas: &SharedAtlas<'_>,
+        bvh: &bvh::bvh::Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+        area_sample_count: u32,
+    ) -> LightmapLayer {
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+        bake_light_layer(
+            light,
+            atlas,
+            bvh,
+            primitives,
+            geometry,
+            area_sample_count,
+            &control,
+        )
+    }
+
+    fn expected_chart_texel_order(atlas: &SharedAtlas<'_>) -> Vec<(u32, u32)> {
+        let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
+        let mut order = Vec::new();
+        for (face_idx, placement) in atlas.placements.iter().enumerate() {
+            let chart = &atlas.charts[face_idx];
+            if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+                continue;
+            }
+            let (interior_w, interior_h) = chart_interior_dims(chart);
+            for ty in 0..interior_h {
+                for tx in 0..interior_w {
+                    let atlas_x = placement.x as i32 + padding + tx;
+                    let atlas_y = placement.y as i32 + padding + ty;
+                    order.push((
+                        placement.layer,
+                        atlas_y as u32 * atlas.atlas_width + atlas_x as u32,
+                    ));
+                }
+            }
+        }
+        order
+    }
+
     /// The headline gate (in miniature): the per-light compositor reproduces the
     /// monolithic `bake_face_chart` pre-BC6H atlas bit-for-bit on a synthetic
     /// multi-light atlas. Two point lights over different quads plus one
@@ -732,6 +798,211 @@ mod tests {
         assert_eq!(
             mono_atlas, composite,
             "per-light composite must equal the monolithic atlas bit-for-bit"
+        );
+    }
+
+    #[test]
+    fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        assert!(
+            prepared.placements.len() > 1,
+            "fixture must have enough charts to exercise ordered parallel collection"
+        );
+        let (bvh, primitives, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let single_progress = StageProgress::with_total(prepared.placements.len());
+        let single_control = BakeControl::new(Arc::new(Governor::new(1, false)), &single_progress);
+        let one_thread = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("single-worker rayon pool");
+        let single_thread_layer = one_thread.install(|| {
+            bake_light_layer_controlled(
+                &lights[0],
+                &shared,
+                &bvh,
+                &primitives,
+                &geo,
+                AREA_SAMPLES,
+                &single_control,
+            )
+        });
+
+        let multi_progress = StageProgress::with_total(prepared.placements.len());
+        let multi_control = BakeControl::new(Arc::new(Governor::new(2, false)), &multi_progress);
+        let multi_thread = ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("multi-worker rayon pool");
+        let multi_thread_layer = multi_thread.install(|| {
+            bake_light_layer_controlled(
+                &lights[0],
+                &shared,
+                &bvh,
+                &primitives,
+                &geo,
+                AREA_SAMPLES,
+                &multi_control,
+            )
+        });
+
+        assert_eq!(
+            single_progress.completed(),
+            prepared.placements.len(),
+            "one progress advance is required for every chart"
+        );
+        assert_eq!(
+            multi_progress.completed(),
+            prepared.placements.len(),
+            "parallel workers must advance every chart exactly once"
+        );
+        assert_eq!(
+            single_thread_layer.to_bytes(),
+            multi_thread_layer.to_bytes(),
+            "layer cache bytes must not depend on Rayon worker count"
+        );
+        assert_eq!(
+            multi_thread_layer
+                .texels
+                .iter()
+                .map(|texel| (texel.layer, texel.idx))
+                .collect::<Vec<_>>(),
+            expected_chart_texel_order(&shared),
+            "parallel chart buffers must concatenate in placement order"
+        );
+    }
+
+    #[test]
+    fn layer_bake_degenerate_chart_advances_progress_and_keeps_ordered_empty_slot() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let mut prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        assert!(
+            prepared.placements.len() > 1,
+            "fixture must have a non-degenerate chart after the forced skip"
+        );
+        prepared.charts[0].uv_extent[0] = 0.0;
+        let (bvh, primitives, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+        let progress = StageProgress::with_total(prepared.placements.len());
+        let control = BakeControl::new(Arc::new(Governor::new(2, false)), &progress);
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("multi-worker rayon pool");
+        let layer = pool.install(|| {
+            bake_light_layer_controlled(
+                &lights[0],
+                &shared,
+                &bvh,
+                &primitives,
+                &geo,
+                AREA_SAMPLES,
+                &control,
+            )
+        });
+
+        assert_eq!(progress.completed(), prepared.placements.len());
+        assert_eq!(
+            layer
+                .texels
+                .iter()
+                .map(|texel| (texel.layer, texel.idx))
+                .collect::<Vec<_>>(),
+            expected_chart_texel_order(&shared),
+            "the degenerate chart must contribute an empty ordered buffer"
+        );
+    }
+
+    #[test]
+    fn layer_bake_paused_before_permit_release_starts_no_chart() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, primitives, _) = build_bvh(&geo).unwrap();
+        let chart_count = prepared.placements.len();
+        let expected_texel_count = expected_chart_texel_order(&SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        })
+        .len();
+        let governor = Arc::new(Governor::new(1, false));
+        let held_permit = governor.enter();
+        let progress = StageProgress::with_total(chart_count);
+        let control = BakeControl::new(Arc::clone(&governor), &progress);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        let worker = thread::spawn(move || {
+            let shared = SharedAtlas {
+                charts: &prepared.charts,
+                placements: &prepared.placements,
+                atlas_width: prepared.atlas_width,
+                atlas_height: prepared.atlas_height,
+            };
+            started_tx.send(()).expect("test coordinator is waiting");
+            let layer = ThreadPoolBuilder::new()
+                .num_threads(2)
+                .build()
+                .expect("multi-worker rayon pool")
+                .install(|| {
+                    bake_light_layer_controlled(
+                        &lights[0],
+                        &shared,
+                        &bvh,
+                        &primitives,
+                        &geo,
+                        AREA_SAMPLES,
+                        &control,
+                    )
+                });
+            finished_tx
+                .send(layer)
+                .expect("test coordinator is waiting");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bake worker did not start");
+        // The held permit prevents an in-flight chart. Pausing before releasing
+        // it makes every pending `enter` observe the pause, without a timing
+        // window in which a new chart could begin.
+        governor.set_paused(true);
+        drop(held_permit);
+        assert_eq!(
+            progress.completed(),
+            0,
+            "no chart may advance after pause and before admission resumes"
+        );
+
+        governor.set_paused(false);
+        let layer = finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bake did not resume after unpausing");
+        worker.join().expect("bake worker must not panic");
+        assert_eq!(progress.completed(), chart_count);
+        assert_eq!(
+            layer.texels.len(),
+            expected_texel_count,
+            "every placement must bake once after resume"
         );
     }
 
@@ -896,7 +1167,7 @@ mod tests {
             atlas_width: prepared.atlas_width,
             atlas_height: prepared.atlas_height,
         };
-        let layer = bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+        let layer = bake_layer_for_test(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
 
         let bytes = layer.to_bytes();
         let decoded = LightmapLayer::from_bytes(&bytes).expect("round-trip decode");
@@ -1042,7 +1313,7 @@ mod tests {
         for light in &lights {
             let key = layer_key(light, &shared, &prims, &geo);
             assert!(cache.get(&key).is_none(), "first build must miss");
-            let layer = bake_light_layer(light, &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+            let layer = bake_layer_for_test(light, &shared, &bvh, &prims, &geo, AREA_SAMPLES);
             cache.put(&key, &layer.to_bytes());
         }
 
@@ -1207,7 +1478,7 @@ mod tests {
         let cache = StageCache::new(&dir).expect("cache dir");
         let key = layer_key(&lights[0], &shared, &prims, &geo);
 
-        let original = bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+        let original = bake_layer_for_test(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
         cache.put(&key, &original.to_bytes());
 
         // Corrupt every file in the cache dir.
@@ -1224,7 +1495,7 @@ mod tests {
             .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
         {
             Some(layer) => layer,
-            None => bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES),
+            None => bake_layer_for_test(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES),
         };
         assert_eq!(
             original, recovered,
@@ -1254,7 +1525,7 @@ mod tests {
         let dir = fresh_cache_dir("override");
         let cache = StageCache::new(&dir).expect("cache dir");
         let key = layer_key(&lights[0], &shared, &prims, &geo);
-        let layer = bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+        let layer = bake_layer_for_test(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
         cache.put(&key, &layer.to_bytes());
 
         let entry = dir.join(key.as_filename());
@@ -1333,7 +1604,7 @@ mod tests {
             let layers: Vec<LightmapLayer> = layer_lights
                 .iter()
                 .map(|l| {
-                    bake_light_layer(
+                    bake_layer_for_test(
                         l,
                         &shared,
                         &layer_bvh,
@@ -1387,7 +1658,7 @@ mod tests {
     ) -> LightmapSection {
         let layers: Vec<LightmapLayer> = lights
             .iter()
-            .map(|l| bake_light_layer(l, shared, bvh, prims, geo, AREA_SAMPLES))
+            .map(|l| bake_layer_for_test(l, shared, bvh, prims, geo, AREA_SAMPLES))
             .collect();
         let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
         composite.dilate();

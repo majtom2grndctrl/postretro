@@ -23,7 +23,7 @@ pub use components::deferred_effect::{
 };
 pub use components::entity_state::EntityStateComponent;
 pub use components::kinematic_mover::{
-    KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
+    BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
 };
 pub use components::trigger_volume::{TriggerActivation, TriggerFireMode, TriggerVolumeComponent};
 pub use ctx::ScriptCtx;

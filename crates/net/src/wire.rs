@@ -87,7 +87,10 @@ pub struct NetworkId(pub u32);
 ///
 /// Bumped to 12 for mover replay provenance: kinematic mover phase gained the
 /// pre-tick spin angle and active-at-tick-start flag.
-pub const SNAPSHOT_VERSION: u16 = 12;
+///
+/// Bumped to 13 for E17 blocking movers: kinematic mover phase gained the
+/// host-authoritative `blocked` stop-hold flag.
+pub const SNAPSHOT_VERSION: u16 = 13;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -238,6 +241,7 @@ pub struct WireKinematicMoverState {
     pub wait_remaining_ms: f32,
     pub started: bool,
     pub completed: bool,
+    pub blocked: bool,
     pub velocity: [f32; 3],
     pub target_segment: Option<u16>,
     pub spin_angle_rad: f32,
@@ -1225,6 +1229,7 @@ mod tests {
             wait_remaining_ms: 0.0,
             started: true,
             completed: false,
+            blocked: true,
             velocity: [1.0, 0.0, -0.5],
             target_segment: Some(2),
             spin_angle_rad: 1.25,
@@ -1865,14 +1870,14 @@ mod tests {
     }
 
     #[test]
-    fn mover_replay_provenance_snapshot_version_rejects_immediately_previous_layout() {
-        const PRE_MOVER_REPLAY_PROVENANCE_SNAPSHOT_VERSION: u16 = 11;
+    fn blocked_mover_phase_snapshot_version_rejects_immediately_previous_layout() {
+        const PRE_BLOCKED_MOVER_SNAPSHOT_VERSION: u16 = 12;
         assert_eq!(
-            SNAPSHOT_VERSION, 12,
-            "mover replay provenance requires snapshot version 12"
+            SNAPSHOT_VERSION, 13,
+            "blocked mover phase requires snapshot version 13"
         );
         let raw = RawSnapshotMessage {
-            version: PRE_MOVER_REPLAY_PROVENANCE_SNAPSHOT_VERSION,
+            version: PRE_BLOCKED_MOVER_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
@@ -1883,7 +1888,7 @@ mod tests {
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: PRE_MOVER_REPLAY_PROVENANCE_SNAPSHOT_VERSION,
+                received: PRE_BLOCKED_MOVER_SNAPSHOT_VERSION,
             })
         );
     }

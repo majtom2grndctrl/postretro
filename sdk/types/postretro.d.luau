@@ -636,6 +636,12 @@ export type RenderProfile = {
   bloom: BloomRenderProfile?,
 }
 
+--- Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence.
+export type MoverDefaults = {
+  --- Automatic return delay after a mover reaches its open terminus, in milliseconds. Optional; defaults to 0 (disabled).
+  autoCloseMs: number?,
+}
+
 --- Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.
 export type SwitchingDescriptor = {
   --- Whether a direct slot-select action emits a commit immediately. Input-layer policy only.
@@ -656,6 +662,8 @@ export type ModManifest = {
   version: string,
   --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.
   render: RenderProfile?,
+  --- Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay.
+  movers: MoverDefaults?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.
@@ -918,6 +926,8 @@ export type MoverEntityHandle = {
   --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
   --- on the mover's authored map entity.
   setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
+  --- Sets the host-authoritative response when the mover contacts an entity.
+  setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 
 --- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
@@ -1142,6 +1152,13 @@ export type MoverSetSpinRateStep = {
   args: { rate: number },
 }
 
+--- Sequence step that sets a kinematic mover's host-authoritative block policy.
+export type MoverSetBlockPolicyStep = {
+  id: EntityId,
+  primitive: "moverSetBlockPolicy",
+  args: { policy: "displace" | "reverse" | "stop" | "crush" },
+}
+
 export type ArmTriggerStep = {
   id: EntityId | "@trigger",
   primitive: "armTrigger",
@@ -1156,7 +1173,7 @@ export type DisarmTriggerStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

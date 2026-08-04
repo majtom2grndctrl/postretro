@@ -34,6 +34,15 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("MoverDefaults")
+        .doc("Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence.")
+        .field(
+            "autoCloseMs?",
+            "f32",
+            "Automatic return delay after a mover reaches its open terminus, in milliseconds. Optional; defaults to 0 (disabled).",
+        )
+        .finish();
+    registry
         .register_type("SwitchingDescriptor")
         .doc("Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.")
         .field(
@@ -70,6 +79,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "render?",
             "RenderProfile",
             "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.",
+        )
+        .field(
+            "movers?",
+            "MoverDefaults",
+            "Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay.",
         )
         .field(
             "switching?",
@@ -147,7 +161,9 @@ mod tests {
         ModFontAssets, ModThemeTokens, SwitchingDescriptor,
     };
     use postretro_scripting_core::primitives_registry::TypeShape;
-    use postretro_scripting_core::runtime::{ModManifestResult, ModRenderProfile};
+    use postretro_scripting_core::runtime::{
+        ModManifestResult, ModMoverDefaults, ModRenderProfile,
+    };
 
     #[test]
     fn mod_manifest_registered_type_matches_mod_manifest_result() {
@@ -170,6 +186,7 @@ mod tests {
             id: String::new(),
             version: String::new(),
             render: ModRenderProfile::default(),
+            movers: ModMoverDefaults::default(),
             switching: SwitchingDescriptor::default(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
@@ -189,6 +206,7 @@ mod tests {
             "id",
             "version",
             "render",
+            "movers",
             "switching",
             "entities",
             "uiTrees",

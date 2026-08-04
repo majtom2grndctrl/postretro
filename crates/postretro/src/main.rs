@@ -138,7 +138,7 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
 use postretro_entities::components::inventory::Inventory;
-use postretro_entities::{ComponentKind, SystemReactionCommand, Transform};
+use postretro_entities::{ComponentKind, ComponentValue, SystemReactionCommand, Transform};
 use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
@@ -191,6 +191,55 @@ fn append_tick_weapon_script_events(
             .into_iter()
             .map(PendingWeaponScriptEvent::Reload),
     );
+}
+
+/// Resolve host-local mover transition edges to the authored named-reaction
+/// addresses on their source movers. Missing movers and absent event KVPs are
+/// ordinary no-ops.
+fn mover_event_dispatch_addresses(
+    events: &[(kinematic_mover::MoverEventKind, u32)],
+    registry: &postretro_entities::EntityRegistry,
+) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|(kind, mover_id)| {
+            registry
+                .iter_with_kind(ComponentKind::KinematicMover)
+                .filter_map(|(_, value)| {
+                    let ComponentValue::KinematicMover(mover) = value else {
+                        return None;
+                    };
+                    Some(mover)
+                })
+                .find(|mover| mover.mover_id == *mover_id)
+                .and_then(|mover| kind.dispatch_address(mover))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Execute the host-local mover sound-event drain. This deliberately uses the
+/// sequence-aware dispatcher: plain `fire_named_event` only collects chained
+/// names and would leave `playSound` reactions unexecuted.
+fn drain_mover_sound_events_with_sequences(
+    event_names: &[String],
+    data_registry: &postretro_entities::DataRegistry,
+    sequence_registry: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
+    reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
+    system_registry: &postretro_scripting_core::reaction_registry::SystemReactionRegistry,
+    script_ctx: &postretro_entities::ScriptCtx,
+) {
+    for event_name in event_names {
+        let _ = fire_named_event_with_sequences(
+            event_name,
+            data_registry,
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            script_ctx,
+            None,
+        );
+    }
 }
 
 fn staged_ui_commit_payload(
@@ -2287,6 +2336,10 @@ impl ApplicationHandler for App {
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
                 let mut pending_weapon_script_events = Vec::new();
+                // These edges are populated only by the authoritative simulation
+                // branch below. Connected clients run the shared mover driver but
+                // never enqueue host-local mover audio.
+                let mut pending_mover_events = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut repointed_pawns = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
@@ -2634,6 +2687,9 @@ impl ApplicationHandler for App {
                                 bindings: trigger_bindings,
                                 slot_table: script_ctx.slot_table.clone(),
                                 script_ctx: Some(script_ctx.clone()),
+                                auto_close_timers: Some(
+                                    session.scripting.auto_close_timers.clone(),
+                                ),
                                 use_edges: &trigger_use_edges,
                             }),
                             |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
@@ -2675,6 +2731,7 @@ impl ApplicationHandler for App {
                             tick_events.weapon,
                             tick_events.reload_deliveries,
                         );
+                        pending_mover_events.extend(tick_events.mover);
                         repointed_pawns.extend(tick_events.repointed_pawns);
                         pending_death_events.extend(tick_events.death);
                         pending_trigger_residuals.extend(tick_events.trigger_residuals);
@@ -2734,12 +2791,24 @@ impl ApplicationHandler for App {
                     let _ =
                         fire_named_event(event.event_name(), &script_ctx.data_registry.borrow());
                 }
+                let pending_mover_event_names = {
+                    let registry = script_ctx.registry.borrow();
+                    mover_event_dispatch_addresses(&pending_mover_events, &registry)
+                };
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
                 // would no-op under plain `fire_named_event`. Chained-event names
                 // are discarded (`let _ =`), matching the drains above.
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
+                    drain_mover_sound_events_with_sequences(
+                        &pending_mover_event_names,
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    );
                     for event_name in &pending_death_events {
                         let _ = fire_named_event_with_sequences(
                             event_name,
@@ -8083,6 +8152,93 @@ mod tests {
     }
 
     #[test]
+    fn mover_sound_event_drain_maps_authored_name_and_executes_play_sound() {
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, EntityRegistry, KinematicMoverComponent, KinematicMoverConfig,
+            KinematicMoverMode, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = KinematicMoverComponent::new(
+            17,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        mover.open_event = Some("door.open".to_string());
+        registry
+            .set_component(mover_entity, mover)
+            .expect("mover fixture attaches");
+
+        let event_names = mover_event_dispatch_addresses(
+            &[
+                (kinematic_mover::MoverEventKind::Opened, 17),
+                (kinematic_mover::MoverEventKind::Closed, 17),
+            ],
+            &registry,
+        );
+        assert_eq!(event_names, vec!["door.open"]);
+
+        let script_ctx = ScriptCtx::new();
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "door.open".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "door_open", "bus": "sfx" }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let sequence_registry = SequencedPrimitiveRegistry::new();
+        let reaction_registry = ReactionPrimitiveRegistry::new();
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+
+        // Regression: the ordinary post-tick drain only collects chained names;
+        // it does not execute the `playSound` primitive.
+        assert!(fire_named_event("door.open", &data_registry).is_empty());
+        assert!(script_ctx.system_commands.take().is_empty());
+
+        drain_mover_sound_events_with_sequences(
+            &event_names,
+            &data_registry,
+            &sequence_registry,
+            &reaction_registry,
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "door_open".to_string(),
+                bus: Some("sfx".to_string()),
+            }],
+            "mover events must use the executing dispatch path so the audio drain receives playSound"
+        );
+    }
+
+    #[test]
     fn camera_follow_does_not_fallback_when_marked_movement_pawn_lacks_transform() {
         use postretro_entities::{EntityRegistry, Transform};
         use postretro_foundation::PlayerMovementComponent;
@@ -9257,6 +9413,7 @@ mod tests {
                     id: "ui-commit".to_string(),
                     version: "1".to_string(),
                     render: Default::default(),
+                    movers: Default::default(),
                     switching: Default::default(),
                     entities: Vec::new(),
                     maps: Vec::new(),

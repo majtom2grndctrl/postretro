@@ -13,6 +13,8 @@ export type MoverEntityHandle = {
   --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
   --- on the mover's authored map entity.
   setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
+  --- Sets the host-authoritative response when the mover contacts an entity.
+  setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 
 local MoversSdk = {}
@@ -37,6 +39,9 @@ function MoversSdk.wrapMoverEntity(snapshot: MoverEntity): MoverEntityHandle
     end,
     setSpinRate = function(_self: MoverEntityHandle, rate: number): {MoverSetSpinRateStep}
       return { { id = id, primitive = "moverSetSpinRate", args = { rate = rate } } }
+    end,
+    setBlockPolicy = function(_self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush"): {MoverSetBlockPolicyStep}
+      return { { id = id, primitive = "moverSetBlockPolicy", args = { policy = policy } } }
     end,
   }
 end

@@ -230,6 +230,9 @@ pub(crate) struct TriggerTickContext<'a> {
     /// Present for production level installs and IR-aware harnesses. Literal
     /// fixtures may omit it and keep their direct table execution path.
     pub(crate) script_ctx: Option<ScriptCtx>,
+    /// Host-only auto-close timer side table. Omitted by lightweight fixtures
+    /// and never constructed for connected-client prediction.
+    pub(crate) auto_close_timers: Option<kinematic_mover::MoverAutoCloseTimers>,
     pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
 }
 
@@ -240,6 +243,9 @@ pub(crate) struct TickEvents {
     /// entered graph state's authored `on_enter`, which is owned.
     pub(crate) ai: Vec<Cow<'static, str>>,
     pub(crate) weapon: Vec<&'static str>,
+    /// Host-local kinematic mover transition edges. A connected client never
+    /// runs the host simulation seam, so its bucket remains empty.
+    pub(crate) mover: Vec<(kinematic_mover::MoverEventKind, u32)>,
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
@@ -355,9 +361,16 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
     }
 
+    let auto_close_timers = trigger_context
+        .as_ref()
+        .and_then(|context| context.auto_close_timers.clone());
     {
         let mut registry = registry.borrow_mut();
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
+    }
+    let mut mover_events: Vec<_> = mover_tick_states.terminus_events().collect();
+    if let Some(auto_close_timers) = auto_close_timers.as_ref() {
+        auto_close_timers.arm_opened_termini(&mut registry.borrow_mut(), &mover_events);
     }
 
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
@@ -553,6 +566,20 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 remote_network_ids: &HashMap::new(),
             },
         );
+        if let Some(auto_close_timers) = auto_close_timers.as_ref() {
+            auto_close_timers.tick(&mut registry, tick_dt);
+        }
+        let (mover_poses, blocking_state) = mover_tick_states.split_for_blocking();
+        kinematic_mover::run_mover_blocking_pass(
+            &mut registry,
+            collision_world,
+            mover_colliders,
+            &mover_poses,
+            blocking_state,
+            tick_dt,
+            &mut mover_events,
+            &mut on_impact,
+        );
     }
 
     let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
@@ -590,6 +617,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         movement,
         ai,
         weapon,
+        mover: mover_events,
         death,
         authorized_shots,
         reload_deliveries,
@@ -2001,6 +2029,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table,
                 script_ctx: None,
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2301,6 +2330,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
                 script_ctx: Some(script_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2421,6 +2451,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
                 script_ctx: Some(script_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2557,6 +2588,7 @@ mod tests {
                     bindings: &bindings,
                     slot_table: script_ctx.slot_table.clone(),
                     script_ctx: Some(script_ctx.clone()),
+                    auto_close_timers: None,
                     use_edges: &use_edges,
                 }),
                 |_| {},

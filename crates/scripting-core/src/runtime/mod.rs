@@ -10,7 +10,7 @@ mod types;
 
 pub use types::{
     Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModManifestResult, ModMapEntry,
-    ModRenderProfile, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
+    ModMoverDefaults, ModRenderProfile, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
     StagedManifestCommitOutcome,
 };
 pub(crate) use types::{validate_mod_manifest_id, validate_mod_manifest_version};

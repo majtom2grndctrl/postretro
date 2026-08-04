@@ -92,6 +92,14 @@ struct PendingKinematicMover {
     spin_speed_deg_s: f32,
     spin_accel_deg_s2: f32,
     carry_yaw: bool,
+    block_policy: String,
+    crush_damage: f32,
+    crush_interval_ms: f32,
+    auto_close_ms: Option<f32>,
+    open_event: Option<String>,
+    close_event: Option<String>,
+    blocked_event: Option<String>,
+    crush_event: Option<String>,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -316,6 +324,63 @@ fn parse_kinematic_mover(
         }
     };
 
+    let block_policy = match props
+        .get("block_policy")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("displace")
+    {
+        policy @ ("displace" | "reverse" | "stop" | "crush") => policy.to_string(),
+        other => {
+            anyhow::bail!(
+                "kinematic_mover `{name}` `block_policy` must be `displace`, `reverse`, `stop`, or `crush`, got `{other}`"
+            );
+        }
+    };
+    let crush_damage =
+        parse_optional_finite_f32(props, "crush_damage", 0.0, "kinematic_mover", &name)?;
+    if crush_damage < 0.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `crush_damage` must be finite and non-negative, got {crush_damage}"
+        );
+    }
+    let crush_interval_ms =
+        parse_optional_finite_f32(props, "crush_interval_ms", 0.0, "kinematic_mover", &name)?;
+    if crush_interval_ms < 0.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `crush_interval_ms` must be finite and non-negative, got {crush_interval_ms}"
+        );
+    }
+    let auto_close_ms = props
+        .get("auto_close_ms")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<f32>().map_err(|_| {
+                anyhow::anyhow!(
+                    "kinematic_mover `{name}` `auto_close_ms` must be a finite number, got `{value}`"
+                )
+            })
+        })
+        .transpose()?;
+    if auto_close_ms.is_some_and(|value| !value.is_finite() || value < 0.0) {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `auto_close_ms` must be finite and non-negative, got {}",
+            auto_close_ms.expect("checked as present")
+        );
+    }
+    let optional_event = |key: &str| {
+        props
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let open_event = optional_event("open_event");
+    let close_event = optional_event("close_event");
+    let blocked_event = optional_event("blocked_event");
+    let crush_event = optional_event("crush_event");
+
     let move_mode = match props
         .get("move_mode")
         .map(|value| value.trim())
@@ -358,6 +423,14 @@ fn parse_kinematic_mover(
         spin_speed_deg_s,
         spin_accel_deg_s2,
         carry_yaw,
+        block_policy,
+        crush_damage,
+        crush_interval_ms,
+        auto_close_ms,
+        open_event,
+        close_event,
+        blocked_event,
+        crush_event,
         move_mode,
         start_on_spawn,
         brush_ids,
@@ -1586,6 +1659,14 @@ fn resolve_kinematic_movers(
             spin_speed_deg_s: pending.spin_speed_deg_s,
             spin_accel_deg_s2: pending.spin_accel_deg_s2,
             carry_yaw: pending.carry_yaw,
+            block_policy: pending.block_policy,
+            crush_damage: pending.crush_damage,
+            crush_interval_ms: pending.crush_interval_ms,
+            auto_close_ms: pending.auto_close_ms,
+            open_event: pending.open_event,
+            close_event: pending.close_event,
+            blocked_event: pending.blocked_event,
+            crush_event: pending.crush_event,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -3374,6 +3455,14 @@ mod tests {
             "spin_speed(float) : \"Initial spin speed (degrees per second)\" : \"0\"",
             "spin_accel(float) : \"Spin acceleration (degrees per second squared)\" : \"0\"",
             "carry_yaw(choices) : \"Carry world-up player yaw while rotating; never pitch or roll\" : 0 =",
+            "block_policy(choices) : \"Host-authoritative response when this mover contacts an entity\" : \"displace\" =",
+            "crush_damage(float) : \"Damage per crusher hit\" : \"0\"",
+            "crush_interval_ms(float) : \"Milliseconds between crusher hits (0 hits every tick)\" : \"0\"",
+            "auto_close_ms(float) : \"Milliseconds before automatic close; blank inherits the mod default, 0 disables\" : \"\"",
+            "open_event(string) : \"Named event when the mover reaches its open terminus\" : \"\"",
+            "close_event(string) : \"Named event when the mover reaches its closed terminus\" : \"\"",
+            "blocked_event(string) : \"Named event when a blocking mover reacts to contact\" : \"\"",
+            "crush_event(string) : \"Named event when a crusher deals damage\" : \"\"",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -3807,6 +3896,87 @@ mod tests {
         assert_eq!(mover.spin_speed_deg_s, 90.0);
         assert_eq!(mover.spin_accel_deg_s2, 12.5);
         assert!(mover.carry_yaw);
+    }
+
+    #[test]
+    fn kinematic_mover_blocking_properties_parse_and_reach_the_prl_record() {
+        let map_text = spinning_kinematic_test_map("wp_b").replacen(
+            "\"carry_yaw\" \"1\"\n",
+            "\"carry_yaw\" \"1\"\n\"block_policy\" \"stop\"\n\"crush_damage\" \"12.5\"\n\"crush_interval_ms\" \"250\"\n\"auto_close_ms\" \"1750\"\n\"open_event\" \"  lift_open  \"\n\"close_event\" \"lift_closed\"\n\"blocked_event\" \"  lift_blocked\"\n\"crush_event\" \"\"\n",
+            1,
+        );
+        let map_data = parse_inline_map(&map_text).expect("blocking mover authoring must parse");
+        let authored = &map_data.kinematic_movers[0];
+        assert_eq!(authored.block_policy, "stop");
+        assert!((authored.crush_damage - 12.5).abs() < f32::EPSILON);
+        assert!((authored.crush_interval_ms - 250.0).abs() < f32::EPSILON);
+        assert_eq!(authored.auto_close_ms, Some(1750.0));
+        assert_eq!(authored.open_event.as_deref(), Some("lift_open"));
+        assert_eq!(authored.close_event.as_deref(), Some("lift_closed"));
+        assert_eq!(authored.blocked_event.as_deref(), Some("lift_blocked"));
+        assert_eq!(authored.crush_event, None);
+
+        let mut texture_names =
+            postretro_level_format::texture_names::TextureNamesSection { names: Vec::new() };
+        let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
+            &map_data.kinematic_movers,
+            &map_data.kinematic_waypoints,
+            &mut texture_names,
+        )
+        .expect("mover authoring must encode into kinematic geometry");
+        let record = &section.movers[0];
+        assert_eq!(record.block_policy, "stop");
+        assert!((record.crush_damage - 12.5).abs() < f32::EPSILON);
+        assert!((record.crush_interval_ms - 250.0).abs() < f32::EPSILON);
+        assert_eq!(record.auto_close_ms, Some(1750.0));
+        assert_eq!(record.open_event.as_deref(), Some("lift_open"));
+        assert_eq!(record.close_event.as_deref(), Some("lift_closed"));
+        assert_eq!(record.blocked_event.as_deref(), Some("lift_blocked"));
+        assert_eq!(record.crush_event, None);
+    }
+
+    // Regression: collapsing both forms to zero made an authored disable
+    // unable to override a positive mod-wide default.
+    #[test]
+    fn kinematic_mover_auto_close_preserves_absent_blank_and_explicit_zero() {
+        let absent = parse_inline_map(&kinematic_test_map("wp_b")).unwrap();
+        assert_eq!(absent.kinematic_movers[0].auto_close_ms, None);
+
+        let blank_text = kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"auto_close_ms\" \"\"\n",
+            1,
+        );
+        let blank = parse_inline_map(&blank_text).unwrap();
+        assert_eq!(blank.kinematic_movers[0].auto_close_ms, None);
+
+        let zero_text = kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"auto_close_ms\" \"0\"\n",
+            1,
+        );
+        let zero = parse_inline_map(&zero_text).unwrap();
+        assert_eq!(zero.kinematic_movers[0].auto_close_ms, Some(0.0));
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_invalid_blocking_properties() {
+        for (property, value) in [
+            ("block_policy", "pause"),
+            ("crush_damage", "-1"),
+            ("crush_interval_ms", "-1"),
+            ("auto_close_ms", "nan"),
+        ] {
+            let map_text = kinematic_test_map("wp_b").replacen(
+                "\"start_on_spawn\" \"1\"\n",
+                &format!("\"start_on_spawn\" \"1\"\n\"{property}\" \"{value}\"\n"),
+                1,
+            );
+            assert!(
+                parse_inline_map(&map_text).is_err(),
+                "{property}={value} must be rejected"
+            );
+        }
     }
 
     #[test]

@@ -219,6 +219,14 @@ pub(crate) struct ScriptingCore {
     /// routes. Registries retain clones across reloads; level unload clears it.
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
 
+    /// Host-only auto-close countdowns. This side table intentionally does not
+    /// participate in snapshots, digests, or the connected-client simulation.
+    pub(crate) auto_close_timers: crate::kinematic_mover::MoverAutoCloseTimers,
+
+    /// Committed mod-wide auto-close default applied when the next level's
+    /// static mover components are seeded.
+    pub(crate) mover_auto_close_ms: f32,
+
     /// Per-level resolved enemy descriptors and nav-agent bake for the
     /// VM-free fixed-tick spawner executor.
     pub(crate) spawn_context: crate::spawner::SpawnContext,
@@ -440,6 +448,11 @@ impl Session {
                 &net_endpoint,
                 Some(netcode::NetEndpoint::Client { .. })
             ));
+        scripting.auto_close_timers.set_enabled(!matches!(
+            &net_endpoint,
+            Some(netcode::NetEndpoint::Client { .. })
+        ));
+        let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 
         Ok(Self {
@@ -464,7 +477,9 @@ impl Session {
             fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
-            trigger_system: crate::trigger_system::TriggerSystem::default(),
+            trigger_system: crate::trigger_system::TriggerSystem::with_mover_auto_close_timers(
+                trigger_auto_close_timers,
+            ),
             touch_system: crate::sim::touch::TouchSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
@@ -650,6 +665,7 @@ fn build_scripting_core(
 ) -> Result<(ScriptingCore, ClassnameDispatch)> {
     let script_ctx = ScriptCtx::new();
     let command_diagnostics = crate::kinematic_mover::MoverCommandDiagnostics::default();
+    let auto_close_timers = crate::kinematic_mover::MoverAutoCloseTimers::default();
     let spawn_context = crate::spawner::SpawnContext::default();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
@@ -676,6 +692,7 @@ fn build_scripting_core(
         &mut sequence_registry,
         script_ctx.clone(),
         command_diagnostics.clone(),
+        auto_close_timers.clone(),
     );
     register_sequenced_trigger_primitives(
         &mut sequence_registry,
@@ -690,7 +707,11 @@ fn build_scripting_core(
     register_enemy_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
-    register_mover_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    register_mover_reaction_primitives(
+        &mut reaction_registry,
+        command_diagnostics.clone(),
+        auto_close_timers.clone(),
+    );
     register_spawner_reaction_primitives(&mut reaction_registry, spawn_context.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
 
@@ -718,6 +739,8 @@ fn build_scripting_core(
 
     let scripting = ScriptingCore {
         command_diagnostics,
+        auto_close_timers,
+        mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
         spawn_context,
         script_runtime,
         impact_policy_runtime: ImpactPolicyRuntime::new(script_ctx.clone()),

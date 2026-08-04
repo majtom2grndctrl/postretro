@@ -107,11 +107,11 @@ component field held **locally, not replicated** — the precedent for a
 host-only field.
 
 Wire: `KinematicMoverState` payload carries phase only (networking §"Snapshot
-apply ordering"). Current `SNAPSHOT_VERSION = 12` (`crates/net/src/wire.rs:78`),
-`WIRE_VERSION = 15` (`crates/net/src/handshake.rs:11`). Rotating-mover replay
-provenance was the last mover phase addition and bumped both. Adding the
-replicated `blocked` flag advances `SNAPSHOT_VERSION → 13` and `WIRE_VERSION →
-16`; the level content digest already covers static mover geometry.
+apply ordering"). Current `SNAPSHOT_VERSION = 12` (`crates/net/src/wire.rs`),
+`WIRE_VERSION = 16` (`crates/net/src/handshake.rs`), because E16 consumed
+wire version 16 for `drop_pressed`. Adding the replicated `blocked` flag advances
+`SNAPSHOT_VERSION → 13` and `WIRE_VERSION → 17`; the level content digest already
+covers static mover geometry.
 
 ## Mod descriptor (auto-close default)
 

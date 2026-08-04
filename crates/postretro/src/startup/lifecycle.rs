@@ -785,6 +785,7 @@ impl App {
                 .expect("level installed before segment B"),
             script_ctx: &script_ctx,
             command_diagnostics: session.scripting.command_diagnostics.clone(),
+            mover_auto_close_ms: session.scripting.mover_auto_close_ms,
             spawn_context: session.scripting.spawn_context.clone(),
             content_root: install_content_root.as_path(),
             active_level_tags: &self.active_level_tags,
@@ -1288,6 +1289,8 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) world: &'a postretro_level_loader::LevelWorld,
     pub(crate) script_ctx: &'a postretro_entities::ScriptCtx,
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    /// Current mod-wide auto-close default. Static level-install input only.
+    pub(crate) mover_auto_close_ms: f32,
     /// Session-owned VM-free resolved descriptor cache for entity spawners.
     pub(crate) spawn_context: crate::spawner::SpawnContext,
     pub(crate) content_root: &'a std::path::Path,
@@ -1551,6 +1554,8 @@ mod tests {
                 font_system: postretro_ui::text::build_font_system(),
                 scripting: crate::session::ScriptingCore {
                     command_diagnostics: Default::default(),
+                    auto_close_timers: Default::default(),
+                    mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                     spawn_context: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),
@@ -2075,6 +2080,7 @@ mod tests {
             let session = app.session.as_mut().expect("test app session installed");
             let handles = WorldInstallHandles {
                 command_diagnostics: Default::default(),
+                mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                 spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
@@ -2738,6 +2744,7 @@ mod tests {
                 id: "replacement".to_string(),
                 version: "1".to_string(),
                 render: Default::default(),
+                movers: Default::default(),
                 switching: Default::default(),
                 entities: Vec::new(),
                 maps: Vec::new(),
@@ -3629,6 +3636,7 @@ mod tests {
             let session = app.session.as_mut().expect("test app session installed");
             let handles = WorldInstallHandles {
                 command_diagnostics: Default::default(),
+                mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                 spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,

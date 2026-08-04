@@ -637,6 +637,12 @@ declare module "postretro" {
     bloom?: BloomRenderProfile;
   };
 
+  /** Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence. */
+  export type MoverDefaults = {
+    /** Automatic return delay after a mover reaches its open terminus, in milliseconds. Optional; defaults to 0 (disabled). */
+    autoCloseMs?: number;
+  };
+
   /** Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption. */
   export type SwitchingDescriptor = {
     /** Whether a direct slot-select action emits a commit immediately. Input-layer policy only. */
@@ -657,6 +663,8 @@ declare module "postretro" {
     version: string;
     /** Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom. */
     render?: RenderProfile;
+    /** Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay. */
+    movers?: MoverDefaults;
     /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
     switching?: SwitchingDescriptor;
     /** Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates. */
@@ -888,6 +896,8 @@ declare module "postretro" {
      * A nonzero rate requires the mover to author a nonzero `spin_axis` in its map entity.
      */
     setSpinRate(rate: number): SequenceStep[];
+    /** Set the host-authoritative response when the mover contacts an entity. */
+    setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[];
   }
 
   /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. Switch entities also emit a `trigger_volume` component and are indistinguishable from authored trigger volumes here; separate them with a tag convention. */
@@ -1047,6 +1057,8 @@ declare module "postretro" {
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
   /** Sequence step that sets a kinematic mover target spin rate in degrees per second. */
   export type MoverSetSpinRateStep = { id: EntityId; primitive: "moverSetSpinRate"; args: { rate: number } };
+  /** Sequence step that sets a kinematic mover's host-authoritative block policy. */
+  export type MoverSetBlockPolicyStep = { id: EntityId; primitive: "moverSetBlockPolicy"; args: { policy: "displace" | "reverse" | "stop" | "crush" } };
 
   /** Sequence step that arms one trigger volume. */
   export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
@@ -1067,6 +1079,7 @@ declare module "postretro" {
     | MoverReverseStep
     | MoverGoToPathNodeStep
     | MoverSetSpinRateStep
+    | MoverSetBlockPolicyStep
     | ArmTriggerStep
     | DisarmTriggerStep;
 

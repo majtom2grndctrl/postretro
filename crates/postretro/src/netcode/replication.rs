@@ -264,6 +264,7 @@ pub(crate) fn kinematic_mover_state_to_wire(
         wait_remaining_ms: mover.wait_remaining_ms,
         started: mover.started,
         completed: mover.completed,
+        blocked: mover.blocked,
         velocity: [
             mover.current_linear_velocity.x,
             mover.current_linear_velocity.y,
@@ -438,7 +439,7 @@ mod tests {
     use postretro_entities::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
-    use postretro_entities::{ComponentValue, Transform};
+    use postretro_entities::{BlockPolicy, ComponentValue, Transform};
     use postretro_foundation::data_descriptors::TouchMode;
 
     // A minimal valid graph brain — the predicate only needs the component
@@ -529,6 +530,7 @@ mod tests {
         mover.was_active_this_tick = true;
         mover.spin_rate_rad_s = 1.25;
         mover.spin_target_rate_rad_s = -0.5;
+        mover.blocked = true;
 
         let wire = kinematic_mover_state_to_wire(&mover);
 
@@ -538,6 +540,21 @@ mod tests {
         assert!(wire.was_active_this_tick);
         assert!((wire.spin_rate_rad_s - 1.25).abs() < f32::EPSILON);
         assert!((wire.spin_target_rate_rad_s + 0.5).abs() < f32::EPSILON);
+        assert!(wire.blocked);
+
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 20.0;
+        mover.crush_interval_ms = 125.0;
+        mover.auto_close_ms = 750.0;
+        mover.open_event = Some("door_open".to_string());
+        mover.close_event = Some("door_close".to_string());
+        mover.blocked_event = Some("door_blocked".to_string());
+        mover.crush_event = Some("door_crush".to_string());
+        assert_eq!(
+            kinematic_mover_state_to_wire(&mover),
+            wire,
+            "host-only policy, timing, and event authoring must never affect the wire mirror"
+        );
     }
 
     /// Spawn a map-placed AI enemy the way `apply_data_archetype_dispatch` does: a

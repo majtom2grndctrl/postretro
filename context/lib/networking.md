@@ -184,7 +184,7 @@ bounds stale playback when authored reload cadence outruns publication.
 
 On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the level content digest proves cross-peer parity before this phase is trusted.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed/blocked flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the level content digest proves cross-peer parity before this phase is trusted.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
@@ -397,11 +397,12 @@ already-shipped message — bumps the wire-version (layout) constant again, inde
 any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
 the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11;
-mover replay provenance advances it to 12. The static-kinematic handshake field
-uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, E15's tagged
-Control layout advances it to 14, and participation-framed traffic advances it to
-15. E16's `drop_pressed` input edge advances it to 16. Earlier peers are refused
-by both handshake gates.
+mover replay provenance advances it to 12, and E17's replicated mover `blocked`
+phase advances it to 13. The static-kinematic handshake field uses `WIRE_VERSION`
+12; mover replay provenance advances it to 13, E15's tagged Control layout advances
+it to 14, and participation-framed traffic advances it to 15. E16's `drop_pressed`
+input edge advances it to 16, and E17's `blocked` phase advances it to 17. Earlier
+peers are refused by both handshake gates.
 
 ## Phase boundaries
 

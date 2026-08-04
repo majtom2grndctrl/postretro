@@ -12,9 +12,10 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// bitcode layout of the five shipped variants intact.
 pub const PROTOCOL_ID: u32 = 0x_5052_4C36; // "PRL6"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
-/// E16 adds `drop_pressed` to `WireMovementInput`, changing the per-tick Input
-/// channel layout. The independent tuning-payload epoch remains unchanged here.
-pub const WIRE_VERSION: u32 = 16;
+/// E17 adds `blocked` to `WireKinematicMoverState`; E16 already consumed epoch
+/// 16 for `drop_pressed` on the Input channel. The tuning-payload epoch remains
+/// independent.
+pub const WIRE_VERSION: u32 = 17;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -77,24 +78,24 @@ mod tests {
     }
 
     #[test]
-    fn drop_pressed_input_layout_refuses_previous_wire_version() {
-        const PRE_DROP_PRESSED_WIRE_VERSION: u32 = 15;
+    fn blocked_mover_phase_layout_refuses_previous_wire_version() {
+        const PRE_BLOCKED_WIRE_VERSION: u32 = 16;
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C36,
             "session roster requires application protocol PRL6"
         );
         assert_eq!(
-            WIRE_VERSION, 16,
-            "drop_pressed changes the Input command bitcode layout"
+            WIRE_VERSION, 17,
+            "blocked changes the kinematic mover snapshot bitcode layout"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_DROP_PRESSED_WIRE_VERSION),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_BLOCKED_WIRE_VERSION),
             "gate 1 rejects the previous layout before app decode"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
-            wire_version: PRE_DROP_PRESSED_WIRE_VERSION,
+            wire_version: PRE_BLOCKED_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),

@@ -18,7 +18,8 @@ pub use super::components::mesh::{AnimationState, InterruptPolicy};
 pub use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub use super::registry::EntityId;
 pub use super::runtime::{
-    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModMapEntry, ModRenderProfile,
+    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModMapEntry, ModMoverDefaults,
+    ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{

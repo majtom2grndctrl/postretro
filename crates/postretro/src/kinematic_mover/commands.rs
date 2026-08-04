@@ -6,12 +6,14 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use glam::Vec3;
-use postretro_entities::{EntityId, EntityRegistry, KinematicMoverComponent, MoverCommand};
+use postretro_entities::{
+    BlockPolicy, EntityId, EntityRegistry, KinematicMoverComponent, MoverCommand,
+};
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
 use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegistry};
 use serde::Deserialize;
 
-use super::{mover_is_at_waypoint, path_coordinate, reanchor_direction};
+use super::{MoverAutoCloseTimers, mover_is_at_waypoint, path_coordinate, reanchor_direction};
 
 /// Per-level warning deduplication shared by mover command routes whose
 /// registries survive level reloads.
@@ -42,13 +44,17 @@ impl MoverCommandDiagnostics {
     }
 }
 
-/// Apply a declarative command by mutating only deterministic mover phase.
+/// Apply a declarative command through the shared every-peer mover applier.
 ///
-/// This deliberately has no registry, clock, RNG, or host-role dependency so
-/// the same command produces the same next phase for every simulation peer.
+/// `SetBlockPolicy` is the sole exception: it writes a host-only, off-wire
+/// field. Clients still apply it through the shared applier, but never read the
+/// field, leaving their replicated phase identical to a client that did not.
+/// The applier otherwise has no registry, clock, RNG, or host-role dependency,
+/// so commands produce the same next phase for every simulation peer.
 pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
     match command {
         MoverCommand::Start => {
+            mover.blocked = false;
             if mover.completed || (mover.started && mover.wait_remaining_ms <= 0.0) {
                 return;
             }
@@ -62,6 +68,7 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
             mover.started = false;
         }
         MoverCommand::Reverse => {
+            mover.blocked = false;
             if mover.waypoints.len() < 2 {
                 return;
             }
@@ -91,6 +98,7 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
                 return;
             }
             let target = target as u16;
+            mover.blocked = false;
             if mover_is_at_waypoint(mover, target) {
                 return;
             }
@@ -129,6 +137,9 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
             }
             mover.spin_target_rate_rad_s = rate_deg_s.to_radians();
         }
+        MoverCommand::SetBlockPolicy(policy) => {
+            mover.block_policy = *policy;
+        }
     }
 }
 
@@ -140,7 +151,26 @@ pub(crate) fn apply_mover_command_to_targets(
     command: &MoverCommand,
     diagnostics: &MoverCommandDiagnostics,
 ) {
-    apply_mover_command_to_targets_inner(registry, targets, command, Some(diagnostics));
+    apply_mover_command_to_targets_inner(registry, targets, command, Some(diagnostics), None);
+}
+
+/// Apply an authored command while allowing the host-only auto-close observer
+/// to see the final deterministic mover phase. Keeping this observer at the
+/// shared inner applier covers reaction, sequence, and direct KVP routes.
+fn apply_mover_command_to_targets_with_auto_close_observer(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    command: &MoverCommand,
+    diagnostics: &MoverCommandDiagnostics,
+    auto_close_timers: &MoverAutoCloseTimers,
+) {
+    apply_mover_command_to_targets_inner(
+        registry,
+        targets,
+        command,
+        Some(diagnostics),
+        Some(auto_close_timers),
+    );
 }
 
 /// Apply a command to targets produced by a `KinematicMover` component query.
@@ -149,8 +179,9 @@ pub(crate) fn apply_mover_command_to_known_movers(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
     command: &MoverCommand,
+    auto_close_timers: Option<&MoverAutoCloseTimers>,
 ) {
-    apply_mover_command_to_targets_inner(registry, targets, command, None);
+    apply_mover_command_to_targets_inner(registry, targets, command, None, auto_close_timers);
 }
 
 fn apply_mover_command_to_targets_inner(
@@ -158,6 +189,7 @@ fn apply_mover_command_to_targets_inner(
     targets: &[EntityId],
     command: &MoverCommand,
     diagnostics: Option<&MoverCommandDiagnostics>,
+    auto_close_timers: Option<&MoverAutoCloseTimers>,
 ) {
     for &entity in targets {
         let Ok(mut mover) = registry
@@ -170,6 +202,9 @@ fn apply_mover_command_to_targets_inner(
             continue;
         };
         apply_mover_command(&mut mover, command);
+        if let Some(auto_close_timers) = auto_close_timers {
+            auto_close_timers.observe_command(entity, &mover, command);
+        }
         let _ = registry.set_component(entity, mover);
     }
 }
@@ -180,52 +215,87 @@ fn apply_mover_command_to_targets_inner(
 pub(crate) fn register_mover_reaction_primitives(
     registry: &mut ReactionPrimitiveRegistry,
     diagnostics: MoverCommandDiagnostics,
+    auto_close_timers: MoverAutoCloseTimers,
 ) {
     let start_diagnostics = diagnostics.clone();
+    let start_auto_close_timers = auto_close_timers.clone();
     registry.register("moverStart", move |registry, targets, _args| {
-        apply_mover_command_to_targets(registry, targets, &MoverCommand::Start, &start_diagnostics);
+        apply_mover_command_to_targets_with_auto_close_observer(
+            registry,
+            targets,
+            &MoverCommand::Start,
+            &start_diagnostics,
+            &start_auto_close_timers,
+        );
         Ok(())
     });
     let stop_diagnostics = diagnostics.clone();
+    let stop_auto_close_timers = auto_close_timers.clone();
     registry.register("moverStop", move |registry, targets, _args| {
-        apply_mover_command_to_targets(registry, targets, &MoverCommand::Stop, &stop_diagnostics);
+        apply_mover_command_to_targets_with_auto_close_observer(
+            registry,
+            targets,
+            &MoverCommand::Stop,
+            &stop_diagnostics,
+            &stop_auto_close_timers,
+        );
         Ok(())
     });
     let reverse_diagnostics = diagnostics.clone();
+    let reverse_auto_close_timers = auto_close_timers.clone();
     registry.register("moverReverse", move |registry, targets, _args| {
-        apply_mover_command_to_targets(
+        apply_mover_command_to_targets_with_auto_close_observer(
             registry,
             targets,
             &MoverCommand::Reverse,
             &reverse_diagnostics,
+            &reverse_auto_close_timers,
         );
         Ok(())
     });
     let go_to_path_node_diagnostics = diagnostics.clone();
+    let go_to_path_node_auto_close_timers = auto_close_timers.clone();
     registry.register("moverGoToPathNode", move |registry, targets, args| {
         let args: MoverGoToPathNodeArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("moverGoToPathNode: failed to deserialize args: {e}"),
             })?;
-        apply_mover_command_to_targets(
+        apply_mover_command_to_targets_with_auto_close_observer(
             registry,
             targets,
             &MoverCommand::GoToPathNode(args.node),
             &go_to_path_node_diagnostics,
+            &go_to_path_node_auto_close_timers,
         );
         Ok(())
     });
     let set_spin_rate_diagnostics = diagnostics.clone();
+    let set_spin_rate_auto_close_timers = auto_close_timers;
     registry.register("moverSetSpinRate", move |registry, targets, args| {
         let args: MoverSetSpinRateArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("moverSetSpinRate: failed to deserialize args: {e}"),
             })?;
-        apply_mover_command_to_targets(
+        apply_mover_command_to_targets_with_auto_close_observer(
             registry,
             targets,
             &MoverCommand::SetSpinRate(args.rate),
             &set_spin_rate_diagnostics,
+            &set_spin_rate_auto_close_timers,
+        );
+        Ok(())
+    });
+    let set_block_policy_diagnostics = diagnostics.clone();
+    registry.register("moverSetBlockPolicy", move |registry, targets, args| {
+        let args: MoverSetBlockPolicyArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("moverSetBlockPolicy: failed to deserialize args: {e}"),
+            })?;
+        apply_mover_command_to_targets(
+            registry,
+            targets,
+            &MoverCommand::SetBlockPolicy(args.policy),
+            &set_block_policy_diagnostics,
         );
         Ok(())
     });
@@ -238,11 +308,13 @@ pub(crate) fn register_sequenced_mover_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: postretro_entities::ScriptCtx,
     diagnostics: MoverCommandDiagnostics,
+    auto_close_timers: MoverAutoCloseTimers,
 ) {
     register_sequenced_mover_command(
         registry,
         ctx.clone(),
         diagnostics.clone(),
+        auto_close_timers.clone(),
         "moverStart",
         MoverCommand::Start,
     );
@@ -250,6 +322,7 @@ pub(crate) fn register_sequenced_mover_primitives(
         registry,
         ctx.clone(),
         diagnostics.clone(),
+        auto_close_timers.clone(),
         "moverStop",
         MoverCommand::Stop,
     );
@@ -257,35 +330,56 @@ pub(crate) fn register_sequenced_mover_primitives(
         registry,
         ctx.clone(),
         diagnostics.clone(),
+        auto_close_timers.clone(),
         "moverReverse",
         MoverCommand::Reverse,
     );
     let go_to_path_node_ctx = ctx.clone();
     let go_to_path_node_diagnostics = diagnostics.clone();
+    let go_to_path_node_auto_close_timers = auto_close_timers.clone();
     registry.register("moverGoToPathNode", move |id, args| {
         let args: MoverGoToPathNodeArgs =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
                 reason: format!("moverGoToPathNode: failed to deserialize args: {e}"),
             })?;
         let mut entities = go_to_path_node_ctx.registry.borrow_mut();
-        apply_mover_command_to_targets(
+        apply_mover_command_to_targets_with_auto_close_observer(
             &mut entities,
             &[id],
             &MoverCommand::GoToPathNode(args.node),
             &go_to_path_node_diagnostics,
+            &go_to_path_node_auto_close_timers,
         );
         Ok(())
     });
+    let set_spin_rate_ctx = ctx.clone();
+    let set_spin_rate_diagnostics = diagnostics.clone();
+    let set_spin_rate_auto_close_timers = auto_close_timers;
     registry.register("moverSetSpinRate", move |id, args| {
         let args: MoverSetSpinRateArgs =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
                 reason: format!("moverSetSpinRate: failed to deserialize args: {e}"),
             })?;
+        let mut entities = set_spin_rate_ctx.registry.borrow_mut();
+        apply_mover_command_to_targets_with_auto_close_observer(
+            &mut entities,
+            &[id],
+            &MoverCommand::SetSpinRate(args.rate),
+            &set_spin_rate_diagnostics,
+            &set_spin_rate_auto_close_timers,
+        );
+        Ok(())
+    });
+    registry.register("moverSetBlockPolicy", move |id, args| {
+        let args: MoverSetBlockPolicyArgs =
+            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
+                reason: format!("moverSetBlockPolicy: failed to deserialize args: {e}"),
+            })?;
         let mut entities = ctx.registry.borrow_mut();
         apply_mover_command_to_targets(
             &mut entities,
             &[id],
-            &MoverCommand::SetSpinRate(args.rate),
+            &MoverCommand::SetBlockPolicy(args.policy),
             &diagnostics,
         );
         Ok(())
@@ -296,12 +390,19 @@ fn register_sequenced_mover_command(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: postretro_entities::ScriptCtx,
     diagnostics: MoverCommandDiagnostics,
+    auto_close_timers: MoverAutoCloseTimers,
     name: &'static str,
     command: MoverCommand,
 ) {
     registry.register(name, move |id, _args| {
         let mut entities = ctx.registry.borrow_mut();
-        apply_mover_command_to_targets(&mut entities, &[id], &command, &diagnostics);
+        apply_mover_command_to_targets_with_auto_close_observer(
+            &mut entities,
+            &[id],
+            &command,
+            &diagnostics,
+            &auto_close_timers,
+        );
         Ok(())
     });
 }
@@ -314,6 +415,11 @@ struct MoverGoToPathNodeArgs {
 #[derive(Debug, Deserialize)]
 pub(crate) struct MoverSetSpinRateArgs {
     pub(crate) rate: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct MoverSetBlockPolicyArgs {
+    policy: BlockPolicy,
 }
 
 #[cfg(test)]
@@ -413,6 +519,27 @@ mod tests {
     }
 
     #[test]
+    fn restart_commands_clear_a_reconciled_stop_hold() {
+        let mut start = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        start.blocked = true;
+        apply_mover_command(&mut start, &MoverCommand::Start);
+        assert!(!start.blocked);
+
+        let mut reverse = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        reverse.blocked = true;
+        apply_mover_command(&mut reverse, &MoverCommand::Reverse);
+        assert!(!reverse.blocked);
+
+        let mut go_to = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        go_to.blocked = true;
+        apply_mover_command(
+            &mut go_to,
+            &MoverCommand::GoToPathNode("finish".to_string()),
+        );
+        assert!(!go_to.blocked);
+    }
+
+    #[test]
     fn set_spin_rate_converts_degrees_and_mutates_only_target_rate() {
         let mut mover = spin_capable_mover(KinematicMoverMode::PingPong, 250.0);
         mover.direction_sign = -1;
@@ -428,6 +555,26 @@ mod tests {
         expected.spin_target_rate_rad_s = 180.0_f32.to_radians();
 
         apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(180.0));
+
+        assert_eq!(mover, expected);
+    }
+
+    #[test]
+    fn set_block_policy_mutates_only_host_only_policy() {
+        let mut mover = sample_mover(KinematicMoverMode::PingPong, 250.0);
+        mover.direction_sign = -1;
+        mover.segment_elapsed_ms = 750.0;
+        mover.wait_remaining_ms = 100.0;
+        mover.current_linear_velocity = Vec3::X;
+        mover.blocked = true;
+
+        let mut expected = mover.clone();
+        expected.block_policy = BlockPolicy::Crush;
+
+        apply_mover_command(
+            &mut mover,
+            &MoverCommand::SetBlockPolicy(BlockPolicy::Crush),
+        );
 
         assert_eq!(mover, expected);
     }
@@ -458,6 +605,7 @@ mod tests {
                 &mut registry,
                 &[entity],
                 &MoverCommand::SetSpinRate(180.0),
+                None,
             );
             let mut tick_states = super::super::MoverTickStateTable::default();
             super::super::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
@@ -505,6 +653,7 @@ mod tests {
             &mut registry,
             &[entity],
             &MoverCommand::SetSpinRate(180.0),
+            None,
         );
         let mut tick_states = super::super::MoverTickStateTable::default();
         super::super::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
@@ -648,7 +797,7 @@ mod tests {
             .unwrap();
 
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_mover_reaction_primitives(&mut reactions, Default::default());
+        register_mover_reaction_primitives(&mut reactions, Default::default(), Default::default());
         assert!(
             reactions
                 .dispatch(
@@ -664,6 +813,7 @@ mod tests {
         register_sequenced_mover_primitives(
             &mut sequences,
             sequence_ctx.clone(),
+            Default::default(),
             Default::default(),
         );
         sequences
@@ -706,5 +856,94 @@ mod tests {
             (-90.0_f32).to_radians(),
             "the shared applier owns degrees-to-radians conversion"
         );
+    }
+
+    #[test]
+    fn set_block_policy_reaction_and_sequence_routes_match_kvp_seeded_policy() {
+        let mut reaction_registry_entities = EntityRegistry::new();
+        let reaction_target = reaction_registry_entities.spawn(transform_at(Vec3::ZERO));
+        reaction_registry_entities
+            .set_component(
+                reaction_target,
+                sample_mover(KinematicMoverMode::PingPong, 0.0),
+            )
+            .unwrap();
+
+        let mut kvp_registry = EntityRegistry::new();
+        let kvp_target = kvp_registry.spawn(transform_at(Vec3::ZERO));
+        assert_eq!(reaction_target, kvp_target, "fixture registries must align");
+        let mut kvp_seeded_mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        kvp_seeded_mover.block_policy = BlockPolicy::Crush;
+        kvp_registry
+            .set_component(kvp_target, kvp_seeded_mover)
+            .unwrap();
+
+        let sequence_ctx = ScriptCtx::new();
+        let sequence_target = sequence_ctx
+            .registry
+            .borrow_mut()
+            .spawn(transform_at(Vec3::ZERO));
+        sequence_ctx
+            .registry
+            .borrow_mut()
+            .set_component(
+                sequence_target,
+                sample_mover(KinematicMoverMode::PingPong, 0.0),
+            )
+            .unwrap();
+
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_mover_reaction_primitives(
+            &mut reactions,
+            Default::default(),
+            MoverAutoCloseTimers::default(),
+        );
+        assert!(
+            reactions
+                .dispatch(
+                    "moverSetBlockPolicy",
+                    &mut reaction_registry_entities,
+                    &[reaction_target],
+                    &serde_json::json!({ "policy": "crush" }),
+                )
+                .unwrap()
+        );
+
+        let mut sequences = SequencedPrimitiveRegistry::new();
+        register_sequenced_mover_primitives(
+            &mut sequences,
+            sequence_ctx.clone(),
+            Default::default(),
+            MoverAutoCloseTimers::default(),
+        );
+        sequences
+            .get("moverSetBlockPolicy")
+            .expect("set-block-policy sequence primitive should register")(
+            sequence_target,
+            &serde_json::json!({ "policy": "crush" }),
+        )
+        .unwrap();
+
+        let kvp_seeded_mover = kvp_registry
+            .get_component::<KinematicMoverComponent>(kvp_target)
+            .unwrap();
+        assert_eq!(
+            reaction_registry_entities
+                .get_component::<KinematicMoverComponent>(reaction_target)
+                .unwrap(),
+            kvp_seeded_mover,
+            "the reaction primitive must match the KVP-seeded policy"
+        );
+        let sequence_mover = sequence_ctx
+            .registry
+            .borrow()
+            .get_component::<KinematicMoverComponent>(sequence_target)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            sequence_mover, *kvp_seeded_mover,
+            "the sequence primitive must match the KVP-seeded policy"
+        );
+        assert_eq!(kvp_seeded_mover.block_policy, BlockPolicy::Crush);
     }
 }

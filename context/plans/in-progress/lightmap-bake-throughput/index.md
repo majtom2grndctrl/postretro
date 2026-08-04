@@ -159,6 +159,8 @@ The Phase-1 gate artifact is also byte-identical to its pre-Phase-1 counterpart:
 
 `campaign-test` is the sole mismatch in this narrowed sample. For the cold pair, a section-level read-only comparison found that every section except `MapEntity` was identical, including Lightmap, SH, Direct SH, Delta SH, animated direct SH, Shadowmask, Chunk, Entity Shadow, and DataScript. The first differing byte is 261,522,361, in `MapEntity` (section id 29; section-relative offset 405). The fresh-cache pair has the same first differing byte. Decoding the section localized the mismatch to one `billboard_emitter`: both artifacts contain the same eight KVPs in different orders. The compiler collected source properties into a randomized `HashMap` and serialized its iteration order. `scripts-build` is not involved; the `DataScript` sections are identical. The parser now sorts residual runtime KVPs by key before constructing `MapEntityRecord`.
 
+Post-fix repeatability is recorded under `/private/tmp/postretro-lightmap-bake-final-artifacts` using the isolated fixed compiler target `/private/tmp/postretro-lightmap-bake-final-target/debug/prl-build`. Two cold `campaign-test --no-cache` builds both produced `ef5d6aa785c6304887c9c10c8bc5976d18220bbaf06401816a6e0c580b1a2375`; two first builds against distinct empty cache directories both produced `ff086efed6d3a2093a2f6759a6cf5e304d0e63eb005f7711d3e05766f38357fb`. A read-only normalization of the preserved legacy cold artifact's `MapEntity` section (sorting each record's KVPs by key, without changing any other byte) produced the cold fixed hash exactly. This closes the historical difference as order-only and confirms whole-PRL determinism for the fixed compiler in both required campaign modes.
+
 ### Determinism, progress, and equivalence gates
 
 - `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler --bin prl-build monolithic_ -- --nocapture`: passed (5 tests; 2 ignored fixture gates).
@@ -188,10 +190,6 @@ These are single-run measurements on a shared host, not a benchmark distribution
 
 ## Open questions
 
-- `campaign-test` comparison evidence: compile the fixed compiler twice in both cold and
-  fresh-cache modes and require whole-PRL byte identity. Compare the preserved baseline
-  and fixed `MapEntity` records after canonicalizing KVP order to confirm the historical
-  difference is order-only. Historical whole-PRL hashes cannot match because the baseline
-  retains the legacy randomized order.
+None.
 
 The one item that read as open — whether to enable the `bvh` crate's rayon feature for parallel tree construction, currently off via `default-features = false` — is decided as no. `traverse_iterator` needs no feature, so this plan is unaffected either way, and the build pipeline documents the BVH stage as fast enough that it is not even cached. Enabling a default feature to speed up a stage nobody has measured as slow is the wrong trade against the lean-dependency goal.

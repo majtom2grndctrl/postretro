@@ -1,6 +1,7 @@
 // Directional lightmap baker.
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
@@ -10,6 +11,7 @@ use postretro_level_format::lightmap::{
     IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
     encode_direction_oct, f32_to_f16_bits,
 };
+use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 use crate::bc6h;
@@ -509,28 +511,53 @@ pub(crate) fn bake_monolithic_atlas_controlled(
     area_sample_count: u32,
     control: &BakeControl,
 ) -> CompositedAtlas {
-    let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count);
+    // `pack_layers` assigns every chart a disjoint rectangle, so a chart can
+    // bake independently. Keep only one local chart buffer per admitted worker
+    // and scatter it immediately; collecting every chart buffer would duplicate
+    // the entire uncompressed atlas working set.
+    let atlas = Mutex::new(CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count));
 
-    for (face_idx, placement) in placements.iter().enumerate() {
-        control.governor().checkpoint();
-        bake_face_chart(
-            bvh,
-            primitives,
-            geometry,
-            static_lights,
-            face_idx,
-            &charts[face_idx],
-            placement,
-            atlas_w,
-            atlas_h,
-            area_sample_count,
-            &mut atlas.irradiance,
-            &mut atlas.direction,
-            &mut atlas.coverage,
-        );
-        control.advance(1);
-    }
+    placements
+        .par_iter()
+        .enumerate()
+        .for_each(|(face_idx, placement)| {
+            // Parallel work items must enter exactly once at their outermost
+            // boundary. In particular, `checkpoint` alone would honor pause while
+            // bypassing the compiler's `-j` concurrency cap.
+            let _permit = control.governor().enter();
+            let chart = &charts[face_idx];
+            let chart_atlas = bake_face_chart(
+                bvh,
+                primitives,
+                geometry,
+                static_lights,
+                chart,
+                placement,
+                area_sample_count,
+            );
 
+            // This lock only protects finite row-wise memcpy operations. It never
+            // waits on another permit or on stage completion, so holding the permit
+            // while waiting for the lock cannot form a nested-wait deadlock. A
+            // degenerate chart's local buffer is all-default and intentionally has
+            // no scatter work.
+            if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
+                let mut atlas = atlas
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                scatter_chart_into_atlas(&chart_atlas, placement, &mut atlas);
+            }
+            // Progress means charts baked. Degenerate charts return an empty local
+            // contribution, still scatter as a no-op, and still advance here.
+            control.advance(1);
+        });
+
+    let mut atlas = atlas
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Dilation deliberately remains sequential and un-gated after every chart
+    // has scattered, preserving the serial bake's post-pass ordering.
     atlas.dilate();
     atlas
 }
@@ -1178,31 +1205,27 @@ fn bake_face_chart(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     static_lights: &[&MapLight],
-    _face_idx: usize,
     chart: &Chart,
     placement: &ChartPlacement,
-    atlas_w: u32,
-    atlas_h: u32,
     area_sample_count: u32,
-    irradiance: &mut [f32],
-    direction: &mut [Vec3],
-    coverage: &mut [bool],
-) {
+) -> CompositedAtlas {
+    // The local buffer is bounded to this chart's rectangle. Atlas-space
+    // coordinates below remain the source of the deterministic sample seed;
+    // only the output address becomes chart-local.
+    let mut chart_atlas = CompositedAtlas::zeroed(chart.width_texels, chart.height_texels, 1);
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-        return;
+        return chart_atlas;
     }
     let padding = CHART_PADDING_TEXELS as i32;
     let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
-
-    // Offset into this chart's atlas layer. The buffers are layer-major, so a
-    // chart on layer `l` writes into the slice starting at `l × (w × h)`.
-    let layer_offset = placement.layer as usize * (atlas_w * atlas_h) as usize;
 
     for ty in 0..interior_h {
         for tx in 0..interior_w {
             let atlas_x = placement.x as i32 + padding + tx;
             let atlas_y = placement.y as i32 + padding + ty;
-            let idx = layer_offset + (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
+            let local_x = padding + tx;
+            let local_y = padding + ty;
+            let idx = (local_y as u32 * chart.width_texels + local_x as u32) as usize;
 
             // Shared helper keeps static and animated-weight bakers aligned at chunk boundaries.
             let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
@@ -1230,10 +1253,10 @@ fn bake_face_chart(
                 weighted_dir += dir_contrib;
             }
 
-            irradiance[idx * 4] = irr.x;
-            irradiance[idx * 4 + 1] = irr.y;
-            irradiance[idx * 4 + 2] = irr.z;
-            irradiance[idx * 4 + 3] = 1.0;
+            chart_atlas.irradiance[idx * 4] = irr.x;
+            chart_atlas.irradiance[idx * 4 + 1] = irr.y;
+            chart_atlas.irradiance[idx * 4 + 2] = irr.z;
+            chart_atlas.irradiance[idx * 4 + 3] = 1.0;
 
             let dir = if weighted_dir.length_squared() > 1.0e-8 {
                 weighted_dir.normalize()
@@ -1241,9 +1264,44 @@ fn bake_face_chart(
                 // No contribution — surface normal degrades bumped-Lambert to flat Lambert.
                 surface_normal
             };
-            direction[idx] = dir;
-            coverage[idx] = true;
+            chart_atlas.direction[idx] = dir;
+            chart_atlas.coverage[idx] = true;
         }
+    }
+
+    chart_atlas
+}
+
+/// Copy one chart-local bake buffer into its disjoint rectangle in the
+/// layer-major atlas. `pack_layers` establishes the non-overlap contract that
+/// makes the completion order of these copies irrelevant to output bytes.
+fn scatter_chart_into_atlas(
+    chart_atlas: &CompositedAtlas,
+    placement: &ChartPlacement,
+    atlas: &mut CompositedAtlas,
+) {
+    debug_assert_eq!(chart_atlas.layer_count, 1);
+    debug_assert!(chart_atlas.atlas_width + placement.x <= atlas.atlas_width);
+    debug_assert!(chart_atlas.atlas_height + placement.y <= atlas.atlas_height);
+    debug_assert!(placement.layer < atlas.layer_count);
+
+    let chart_w = chart_atlas.atlas_width as usize;
+    let chart_h = chart_atlas.atlas_height as usize;
+    let atlas_w = atlas.atlas_width as usize;
+    let layer_offset = placement.layer as usize * atlas_w * atlas.atlas_height as usize;
+
+    for row in 0..chart_h {
+        let source_start = row * chart_w;
+        let source_end = source_start + chart_w;
+        let dest_start =
+            layer_offset + (placement.y as usize + row) * atlas_w + placement.x as usize;
+        let dest_end = dest_start + chart_w;
+        atlas.irradiance[dest_start * 4..dest_end * 4]
+            .copy_from_slice(&chart_atlas.irradiance[source_start * 4..source_end * 4]);
+        atlas.direction[dest_start..dest_end]
+            .copy_from_slice(&chart_atlas.direction[source_start..source_end]);
+        atlas.coverage[dest_start..dest_end]
+            .copy_from_slice(&chart_atlas.coverage[source_start..source_end]);
     }
 }
 
@@ -1978,11 +2036,16 @@ fn encode_direction_rgba8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bake_control::BakeControl;
     use crate::bvh_build::build_bvh;
     use crate::geometry::FaceIndexRange;
+    use crate::governor::Governor;
+    use crate::reporter::StageProgress;
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use rayon::ThreadPoolBuilder;
+    use std::sync::Arc;
 
     fn unit_quad_geometry() -> GeometryResult {
         let v0 = Vertex::new(
@@ -2036,6 +2099,33 @@ mod tests {
                 index_count: 6,
             }],
         }
+    }
+
+    fn two_disjoint_quads_geometry() -> GeometryResult {
+        let mut geometry = unit_quad_geometry();
+        let mut second = unit_quad_geometry();
+        let vertex_offset = geometry.geometry.vertices.len() as u32;
+        let index_offset = geometry.geometry.indices.len() as u32;
+
+        for vertex in &mut second.geometry.vertices {
+            vertex.position[0] += 2.0;
+        }
+        geometry.geometry.vertices.extend(second.geometry.vertices);
+        geometry.geometry.indices.extend(
+            second
+                .geometry
+                .indices
+                .into_iter()
+                .map(|index| index + vertex_offset),
+        );
+        geometry.geometry.faces.extend(second.geometry.faces);
+        geometry
+            .face_index_ranges
+            .extend(second.face_index_ranges.into_iter().map(|mut range| {
+                range.index_offset += index_offset;
+                range
+            }));
+        geometry
     }
 
     fn point_light_above() -> MapLight {
@@ -2603,6 +2693,104 @@ mod tests {
         assert!(
             n > u32::MAX as usize,
             "the guarded product must exceed u32::MAX to exercise the wrap path"
+        );
+    }
+
+    fn bake_monolithic_with_workers(worker_count: usize) -> CompositedAtlas {
+        let mut geometry = two_disjoint_quads_geometry();
+        let lights = vec![point_light_above()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .collect();
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25).unwrap();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let progress = StageProgress::with_total(prepared.placements.len());
+        let control = BakeControl::new(Arc::new(Governor::new(worker_count, false)), &progress);
+
+        let atlas = ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .unwrap()
+            .install(|| {
+                bake_monolithic_atlas_controlled(
+                    &bvh,
+                    &primitives,
+                    &geometry,
+                    &light_refs,
+                    &prepared.charts,
+                    &prepared.placements,
+                    prepared.atlas_width,
+                    prepared.atlas_height,
+                    prepared.layer_count,
+                    DEFAULT_AREA_SAMPLE_COUNT,
+                    &control,
+                )
+            });
+
+        assert_eq!(
+            progress.completed(),
+            prepared.placements.len(),
+            "every chart must advance progress exactly once"
+        );
+        atlas
+    }
+
+    #[test]
+    fn monolithic_atlas_is_byte_identical_with_one_or_many_workers() {
+        let serial = bake_monolithic_with_workers(1);
+        let parallel = bake_monolithic_with_workers(4);
+
+        assert_eq!(
+            serial, parallel,
+            "chart completion order must not change the pre-BC6H atlas"
+        );
+    }
+
+    #[test]
+    fn monolithic_atlas_counts_degenerate_chart_progress_without_scatter() {
+        let geometry = unit_quad_geometry();
+        let bvh = Bvh { nodes: Vec::new() };
+        let primitives = Vec::new();
+        let lights = vec![point_light_above()];
+        let light_refs: Vec<&MapLight> = lights.iter().collect();
+        let charts = vec![empty_chart_for_leaf(0)];
+        let placements = vec![ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let progress = StageProgress::with_total(placements.len());
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+
+        let atlas = bake_monolithic_atlas_controlled(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &charts,
+            &placements,
+            MIN_ATLAS_DIMENSION,
+            MIN_ATLAS_DIMENSION,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            &control,
+        );
+
+        assert_eq!(
+            progress.completed(),
+            1,
+            "degenerate chart must still advance"
+        );
+        assert!(
+            atlas.coverage.iter().all(|&covered| !covered),
+            "a degenerate chart must leave the atlas untouched"
+        );
+        assert!(
+            atlas.irradiance.iter().all(|&value| value == 0.0),
+            "a degenerate chart must not write irradiance"
         );
     }
 

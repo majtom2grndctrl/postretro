@@ -861,9 +861,19 @@ mod tests {
             "one progress advance is required for every chart"
         );
         assert_eq!(
+            single_progress.total(),
+            Some(single_progress.completed()),
+            "single-worker bake must advance its published chart total exactly"
+        );
+        assert_eq!(
             multi_progress.completed(),
             prepared.placements.len(),
             "parallel workers must advance every chart exactly once"
+        );
+        assert_eq!(
+            multi_progress.total(),
+            Some(multi_progress.completed()),
+            "parallel bake must advance its published chart total exactly"
         );
         assert_eq!(
             single_thread_layer.to_bytes(),
@@ -918,6 +928,11 @@ mod tests {
         });
 
         assert_eq!(progress.completed(), prepared.placements.len());
+        assert_eq!(
+            progress.total(),
+            Some(progress.completed()),
+            "the degenerate chart must still complete the published chart total"
+        );
         assert_eq!(
             layer
                 .texels
@@ -999,6 +1014,11 @@ mod tests {
             .expect("bake did not resume after unpausing");
         worker.join().expect("bake worker must not panic");
         assert_eq!(progress.completed(), chart_count);
+        assert_eq!(
+            progress.total(),
+            Some(progress.completed()),
+            "the resumed layer bake must advance its published chart total exactly"
+        );
         assert_eq!(
             layer.texels.len(),
             expected_texel_count,

@@ -2046,6 +2046,9 @@ mod tests {
     use postretro_level_format::texture_names::TextureNamesSection;
     use rayon::ThreadPoolBuilder;
     use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     fn unit_quad_geometry() -> GeometryResult {
         let v0 = Vertex::new(
@@ -2735,6 +2738,11 @@ mod tests {
             prepared.placements.len(),
             "every chart must advance progress exactly once"
         );
+        assert_eq!(
+            progress.total(),
+            Some(progress.completed()),
+            "at bake return the published total must equal completed chart advances"
+        );
         atlas
     }
 
@@ -2784,6 +2792,11 @@ mod tests {
             1,
             "degenerate chart must still advance"
         );
+        assert_eq!(
+            progress.total(),
+            Some(progress.completed()),
+            "at bake return the published total must include the degenerate chart"
+        );
         assert!(
             atlas.coverage.iter().all(|&covered| !covered),
             "a degenerate chart must leave the atlas untouched"
@@ -2791,6 +2804,76 @@ mod tests {
         assert!(
             atlas.irradiance.iter().all(|&value| value == 0.0),
             "a degenerate chart must not write irradiance"
+        );
+    }
+
+    #[test]
+    fn monolithic_bake_paused_before_permit_release_starts_no_chart() {
+        let mut geometry = two_disjoint_quads_geometry();
+        let lights = vec![point_light_above()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25).unwrap();
+        assert!(
+            prepared.placements.len() > 1,
+            "fixture must have enough charts to park multiple parallel workers"
+        );
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let chart_count = prepared.placements.len();
+        let governor = Arc::new(Governor::new(1, false));
+        let held_permit = governor.enter();
+        let progress = StageProgress::with_total(chart_count);
+        let control = BakeControl::new(Arc::clone(&governor), &progress);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        let worker = thread::spawn(move || {
+            let light_refs: Vec<&MapLight> = lights.iter().collect();
+            started_tx.send(()).expect("test coordinator is waiting");
+            ThreadPoolBuilder::new()
+                .num_threads(2)
+                .build()
+                .expect("multi-worker rayon pool")
+                .install(|| {
+                    bake_monolithic_atlas_controlled(
+                        &bvh,
+                        &primitives,
+                        &geometry,
+                        &light_refs,
+                        &prepared.charts,
+                        &prepared.placements,
+                        prepared.atlas_width,
+                        prepared.atlas_height,
+                        prepared.layer_count,
+                        DEFAULT_AREA_SAMPLE_COUNT,
+                        &control,
+                    )
+                });
+            finished_tx.send(()).expect("test coordinator is waiting");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bake worker did not start");
+        // Holding the only permit ensures there is no in-flight chart. Once the
+        // pause is set, each queued `enter` must observe it before admission.
+        governor.set_paused(true);
+        drop(held_permit);
+        assert_eq!(
+            progress.completed(),
+            0,
+            "no monolithic chart may advance after pause and before admission resumes"
+        );
+
+        governor.set_paused(false);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("monolithic bake did not resume after unpausing");
+        worker.join().expect("bake worker must not panic");
+        assert_eq!(progress.completed(), chart_count);
+        assert_eq!(
+            progress.total(),
+            Some(progress.completed()),
+            "resumed monolithic bake must advance its published chart total exactly"
         );
     }
 

@@ -546,6 +546,7 @@ mod tests {
                 assert_eq!(cell_id, MAX_CELL_ID_EXCLUSIVE);
                 assert_eq!(max, MAX_CELL_ID_EXCLUSIVE);
             }
+            Err(other) => panic!("unexpected BVH build error: {other}"),
             Ok(_) => panic!("expected CellIdOutOfRange error"),
         }
     }

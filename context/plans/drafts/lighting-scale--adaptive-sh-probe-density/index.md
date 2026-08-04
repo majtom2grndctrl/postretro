@@ -2,7 +2,7 @@
 
 > **Status:** draft. Spike-led thin vertical slice. **Gated on its own Task 1 measurement** — Tasks 2+ proceed only if the spike confirms adaptive density dissolves the direct-SH delta overflow.
 > **Track:** Lighting / build pipeline — the O(n³) root-cause lever behind the direct-SH delta storage-buffer wall.
-> **Related:** `context/lib/build_pipeline.md` §Octahedral irradiance volume bake, §PRL section IDs (id 34/35 base atlases, id 27/41 deltas) · `context/lib/rendering_pipeline.md` §4 (Indirect / Animated SH delta volumes / Baked static direct), §7.1 (SH compose) · `context/plans/drafts/lighting-scale--sh-delta-footprint-instrumentation/` (the measurement prerequisite this consumes) · `context/plans/done/sh-array-atlas/` (base-atlas D2→D2Array, already landed) · `context/plans/done/perf-animated-sh-light-culling/` (the sparse-CSR affinity-cell delta form this extends) · `context/lib/experimental_spikes.md`.
+> **Related:** `context/lib/build_pipeline.md` §Octahedral irradiance volume bake, §PRL section IDs (id 34/35 base atlases, id 27/41 deltas) · `context/lib/rendering_pipeline.md` §4 (Indirect / Animated SH delta volumes / Baked static direct), §7.1 (SH compose) · `context/plans/ready/lighting-scale--sh-delta-footprint-instrumentation/` (the measurement prerequisite this consumes) · `context/plans/done/sh-array-atlas/` (base-atlas D2→D2Array, already landed) · `context/plans/done/perf-animated-sh-light-culling/` (the sparse-CSR affinity-cell delta form this extends) · `context/lib/experimental_spikes.md`.
 
 ## Goal
 

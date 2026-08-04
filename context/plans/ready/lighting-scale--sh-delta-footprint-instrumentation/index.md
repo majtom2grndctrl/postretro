@@ -1,6 +1,6 @@
 # Direct SH Delta Footprint Instrumentation
 
-> **Status:** draft.
+> **Status:** ready.
 > **Track:** Lighting / build pipeline — measurement prerequisite, not a fix.
 > **Related:** `context/lib/build_pipeline.md` (PRL sections, prl-build) · `context/lib/rendering_pipeline.md` §4/§7.1 (SH compose) · `context/plans/done/lighting--entity-direct-sh/` (the direct-SH feature this measures) · `context/plans/done/perf-animated-sh-light-culling/` (the sparse-CSR delta form).
 > **Dependencies (this backlog):** No upstream dependency — this is the measurement foundation. Its delta-byte footprint output is consumed by `lighting-scale--adaptive-sh-probe-density`'s Task 1 measurement spike. It shares the `pack.rs` section-size logging surface with `compiler-log-hygiene`; coordination pinned: the id-27 per-section size line (Task 2) is part of the breakdown and follows its level, including any `compiler-log-hygiene` downgrade to `debug!`; Task 1's direct-delta summary and Task 4's SH-total aggregate are pinned `info!` and that spec's sweep must exempt them.

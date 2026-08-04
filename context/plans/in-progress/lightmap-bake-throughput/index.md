@@ -110,6 +110,82 @@ Not open questions — each has a decided response.
 - **Chart imbalance.** The 4× target assumes chart count greatly exceeds core count and that charts are roughly balanced. Boxy level geometry works against that: one wall of a large room is a single chart whose texel count dwarfs a dozen small ones, and the bake finishes when that chart finishes. If Task 5 finds a fixture where the largest chart alone exceeds the target wall clock, the fix is splitting within a chart by texel rows — a change to the parallel unit, not to this plan's structure — and it becomes its own plan rather than expanding this one. The follow-on must respect the Governor's nested-wait rule: a permitted chart must not wait on row sub-tasks that themselves call `enter`; the permit moves to the row level, or rows run un-permitted under the chart's permit. Task 5 records the largest-chart share of total bake time so the follow-on is either justified or ruled out on evidence.
 - **Peak memory.** Memory rises with worker count, since each worker holds per-chart buffers. If the 25% acceptance bound proves tight on large atlases, cap the worker count for this stage rather than restructuring the merge; a bake that uses six cores instead of eight still delivers most of the win, and bounded memory matters more than the last 25% of throughput on a compile step authors run on their own machines.
 
+## Task 5 evidence (2026-08-04)
+
+### Scope and setup
+
+The user explicitly narrowed the cross-change artifact capture from every development map to `gate-heavily-lit`, `campaign-test`, and `occlusion-test`. This is an evidence-scope exception to AC 1/AC 4's original every-fixture wording, not a claim that the unrun fixtures passed. The stopped exhaustive pre-Phase-1 capture at `/private/tmp/postretro-lightmap-bake-baseline-prephase1.C4YJjp` was preserved and was not resumed.
+
+All three maps use their default flags. Cold comparisons used `--no-cache`; cache-enabled comparisons used a distinct, initially empty `--cache-dir` for each compiler side and map, and the first build was the compared artifact. Thus cold runs exercise the monolithic path and fresh cache-enabled runs exercise the layer path. The measuring host was an Intel Core i9-9980HK (8 physical / 16 logical cores). Finished-state commands used the compiler default of 14 jobs (two logical cores of headroom); the Phase-1 allocation-only measurement pinned `RAYON_NUM_THREADS=1`.
+
+Artifacts and binaries were deliberately isolated:
+
+- Preserved pre-Phase-1 artifacts: `/private/tmp/postretro-lightmap-bake-baseline-prephase1.C4YJjp`; its compiler was `/Users/dhiester/Projects/Personal/postretro/target/debug/prl-build` and was never rebuilt or overwritten.
+- Phase-1 compiler: commit `a7a25d4f`, worktree `/private/tmp/postretro-lightmap-bake-phase1`, target `/private/tmp/postretro-lightmap-bake-phase1-target`, binary `debug/prl-build`.
+- Finished-state compiler: target `/private/tmp/postretro-lightmap-bake-phase3-target.53JRTt`, binary `debug/prl-build`.
+- New comparison artifacts and fresh caches: `/private/tmp/postretro-lightmap-bake-phase3-artifacts.FnQkWR`.
+
+The finished-state target was built with `CARGO_TARGET_DIR=/private/tmp/postretro-lightmap-bake-phase3-target.53JRTt cargo build -p postretro-level-compiler --bin prl-build`. `campaign-test` additionally required `CARGO_TARGET_DIR=/private/tmp/postretro-lightmap-bake-phase3-target.53JRTt cargo build -p postretro-script-compiler --bin scripts-build`; the first attempted post-change campaign run failed before producing an artifact because that isolated target lacked `scripts-build`, then the recorded rerun succeeded. The Phase-1 target was built with `CARGO_TARGET_DIR=/private/tmp/postretro-lightmap-bake-phase1-target cargo build -p postretro-level-compiler --bin prl-build`.
+
+The artifact commands were, for each map in the named three-map scope (with the literal map name substituted in every path):
+
+```text
+# cold
+target/debug/prl-build content/dev/maps/<map>.map --no-cache -o <baseline>/cold/<map>.prl
+/private/tmp/postretro-lightmap-bake-phase3-target.53JRTt/debug/prl-build content/dev/maps/<map>.map --no-cache -o <artifacts>/post-cold/<map>.prl
+
+# first build against a fresh, map-specific cache directory
+target/debug/prl-build content/dev/maps/<map>.map --cache-dir <artifacts>/pre-cache/cache-<map> -o <artifacts>/pre-cache/outputs/<map>.prl
+/private/tmp/postretro-lightmap-bake-phase3-target.53JRTt/debug/prl-build content/dev/maps/<map>.map --cache-dir <artifacts>/post-cache/cache-<map> -o <artifacts>/post-cache/outputs/<map>.prl
+
+# allocation-only checkpoint
+RAYON_NUM_THREADS=1 /usr/bin/time -l /private/tmp/postretro-lightmap-bake-phase1-target/debug/prl-build content/dev/maps/gate-heavily-lit.map --no-cache -o <artifacts>/phase1-cold/gate-heavily-lit.prl
+```
+
+`<baseline>` is the preserved baseline root above and `<artifacts>` is the Phase-3 artifact root above. SHA-256 was computed with `shasum -a 256` for every pair.
+
+### Output evidence
+
+| Mode | Map | Pre-change SHA-256 | Finished-state SHA-256 | Result |
+|---|---|---|---|---|
+| `--no-cache` | `gate-heavily-lit` | `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13` | `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13` | identical |
+| `--no-cache` | `campaign-test` | `722bd98747bcbe6c4e08fe3eccd6594c711abb9e62b1db177c79bdcb628a2e27` | `bdf97b551ee1fa0fe65b26480808fd025276aa178767dc29586e6b8a9665105e` | differs; see below |
+| `--no-cache` | `occlusion-test` | `d7ca787a6ca3a96f7f8524c39879685f95a90329fe2a41857e4ac0583386004c` | `d7ca787a6ca3a96f7f8524c39879685f95a90329fe2a41857e4ac0583386004c` | identical |
+| fresh cache | `gate-heavily-lit` | `7c8e210f110299212cb3b61d06759169a5311e901cfa852298808e5096411850` | `7c8e210f110299212cb3b61d06759169a5311e901cfa852298808e5096411850` | identical |
+| fresh cache | `campaign-test` | `81a4d880fad6b3644fbf63747d7c368366b7fb2c2b5df316c2010ddf034f36c2` | `08ade6a10e6e949e4c2d7eb568547cd839f4bcbd8ed252228fad91f554080252` | differs; see below |
+| fresh cache | `occlusion-test` | `10284278372237fc40dea6844ae25c48c2b6b74e016ec43474e9db65b26ecc09` | `10284278372237fc40dea6844ae25c48c2b6b74e016ec43474e9db65b26ecc09` | identical |
+
+The Phase-1 gate artifact is also byte-identical to its pre-Phase-1 counterpart: `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13`.
+
+`campaign-test` is the sole mismatch in this narrowed sample. For the cold pair, a section-level read-only comparison found that every section except `MapEntity` was identical, including Lightmap, SH, Direct SH, Delta SH, animated direct SH, Shadowmask, Chunk, Entity Shadow, and DataScript. The first differing byte is 261,522,361, in `MapEntity` (section id 29; section-relative offset 405). The fresh-cache pair has the same first differing byte. This cannot be attributed to the lightmap-path changes from the observed artifacts; it remains a whole-PRL mismatch to investigate, particularly because the baseline and isolated post targets used separately built script compilers.
+
+### Determinism, progress, and equivalence gates
+
+- `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler --bin prl-build monolithic_ -- --nocapture`: passed (5 tests; 2 ignored fixture gates).
+- `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler --bin prl-build layer_bake_ -- --nocapture`: passed (4 tests).
+- `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler --bin prl-build lightmap_bake_produces_byte_identical_output_on_repeated_runs -- --nocapture`: passed.
+- `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler --bin prl-build lightmap_composite_equals_monolithic_on_fixtures -- --ignored --nocapture`: passed (33.39 s).
+- `cargo check -p postretro-level-compiler`: passed.
+
+The added checks cover monolithic and layer one-v-many Rayon worker equivalence, repeated output, degenerate charts, `completed == total` at bake return, and the deterministic pause-before-admission case (hold the sole permit, pause, release it, verify no chart advances until resume). Timing-window tests for in-flight completion and quit remain intentionally omitted per Task 5.
+
+### Performance and RSS evidence
+
+The controlled heavily-lit cold measurements are below. “Pre rerun” and “finished state” were each one `--no-cache` run on the current host using `/usr/bin/time -l`; that makes them the fairest before/after pair. The historical baseline provides an additional prior pre-change observation. Peak RSS is whole-process maximum resident set size.
+
+| State | Lightmap bake | Total | Peak RSS | Notes |
+|---|---:|---:|---:|---|
+| pre-change historical baseline | 84.44 s | 163.02 s | unavailable | original capture; sandboxed `time -lp` failed only while querying clock rate after the compiler wrote the artifact |
+| pre-change rerun | 92.30 s | 171.37 s | 1,354,825,728 B | same old compiler and flags, current-host pair |
+| Phase 1 (`a7a25d4f`, one Rayon worker) | 38.81 s | 236.97 s | 1,148,891,136 B | allocation-only checkpoint; output hash unchanged |
+| finished state (default 14 jobs) | 7.95 s | 67.07 s | 1,272,582,144 B | parallel monolithic bake; output hash unchanged |
+
+The finished-state cold lightmap bake is **11.61×** faster than the fair pre-change rerun (92.30 / 7.95) and **10.62×** faster than the historical capture (84.44 / 7.95), exceeding the 4× requirement. Its peak RSS is 82,243,584 B lower (6.07%) than the fair pre-change run, within the 25% bound. The allocation-only checkpoint improved the lightmap phase relative to the pre-change rerun; because the old monolithic path was serial, the single Rayon-worker setting isolates the allocation revision from the later chart parallelism.
+
+For context, fresh-cache first-build times were: `gate-heavily-lit` pre 73.05 s lightmap / 105.38 s total (1,293,365,248 B RSS), finished 11.08 s / 23.72 s total (23.82 s process real); `campaign-test` pre 225.78 s / 413.81 s total (413.95 s real), finished 162.95 s process real; `occlusion-test` pre 38.01 s / 189.07 s total (189.45 s real), finished 11.28 s / 140.91 s total (141.13 s real). The retained campaign terminal output did not include its finished-state stage summary, so only its whole-process real time is recorded.
+
+These are single-run measurements on a shared host, not a benchmark distribution; host load varied between captures, and only the named fixtures were run. The Phase-1 run is the requested single-worker allocation checkpoint but was not paired with a fresh single-worker pre-change rerun. No largest-chart instrumentation was added because the measured 4× cold target passed, so the imbalance fallback is not invoked. These limitations, plus the unresolved `campaign-test` `MapEntity` diff, mean the evidence records the successful scoped gates and performance result without claiming that the original exhaustive AC 1/AC 4 capture is complete.
+
 ## Open questions
 
 None.

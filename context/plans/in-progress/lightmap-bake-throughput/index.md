@@ -157,7 +157,7 @@ RAYON_NUM_THREADS=1 /usr/bin/time -l /private/tmp/postretro-lightmap-bake-phase1
 
 The Phase-1 gate artifact is also byte-identical to its pre-Phase-1 counterpart: `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13`.
 
-`campaign-test` is the sole mismatch in this narrowed sample. For the cold pair, a section-level read-only comparison found that every section except `MapEntity` was identical, including Lightmap, SH, Direct SH, Delta SH, animated direct SH, Shadowmask, Chunk, Entity Shadow, and DataScript. The first differing byte is 261,522,361, in `MapEntity` (section id 29; section-relative offset 405). The fresh-cache pair has the same first differing byte. This cannot be attributed to the lightmap-path changes from the observed artifacts; it remains a whole-PRL mismatch to investigate, particularly because the baseline and isolated post targets used separately built script compilers.
+`campaign-test` is the sole mismatch in this narrowed sample. For the cold pair, a section-level read-only comparison found that every section except `MapEntity` was identical, including Lightmap, SH, Direct SH, Delta SH, animated direct SH, Shadowmask, Chunk, Entity Shadow, and DataScript. The first differing byte is 261,522,361, in `MapEntity` (section id 29; section-relative offset 405). The fresh-cache pair has the same first differing byte. Decoding the section localized the mismatch to one `billboard_emitter`: both artifacts contain the same eight KVPs in different orders. The compiler collected source properties into a randomized `HashMap` and serialized its iteration order. `scripts-build` is not involved; the `DataScript` sections are identical. The parser now sorts residual runtime KVPs by key before constructing `MapEntityRecord`.
 
 ### Determinism, progress, and equivalence gates
 
@@ -184,12 +184,14 @@ The finished-state cold lightmap bake is **11.61×** faster than the fair pre-ch
 
 For context, fresh-cache first-build times were: `gate-heavily-lit` pre 73.05 s lightmap / 105.38 s total (1,293,365,248 B RSS), finished 11.08 s / 23.72 s total (23.82 s process real); `campaign-test` pre 225.78 s / 413.81 s total (413.95 s real), finished 162.95 s process real; `occlusion-test` pre 38.01 s / 189.07 s total (189.45 s real), finished 11.28 s / 140.91 s total (141.13 s real). The retained campaign terminal output did not include its finished-state stage summary, so only its whole-process real time is recorded.
 
-These are single-run measurements on a shared host, not a benchmark distribution; host load varied between captures, and only the named fixtures were run. The Phase-1 run is the requested single-worker allocation checkpoint but was not paired with a fresh single-worker pre-change rerun. No largest-chart instrumentation was added because the measured 4× cold target passed, so the imbalance fallback is not invoked. These limitations, plus the unresolved `campaign-test` `MapEntity` diff, mean the evidence records the successful scoped gates and performance result without claiming that the original exhaustive AC 1/AC 4 capture is complete.
+These are single-run measurements on a shared host, not a benchmark distribution; host load varied between captures, and only the named fixtures were run. The Phase-1 run is the requested single-worker allocation checkpoint but was not paired with a fresh single-worker pre-change rerun. No largest-chart instrumentation was added because the measured 4× cold target passed, so the imbalance fallback is not invoked. These limitations, plus the legacy randomized `campaign-test` `MapEntity` ordering in the preserved baseline, mean the evidence records the successful scoped gates and performance result without claiming that the original exhaustive AC 1/AC 4 capture is complete.
 
 ## Open questions
 
-- `campaign-test` whole-PRL mismatch: reproduce the pre/post comparison with one shared
-  `scripts-build` artifact, then compare the `MapEntity` payloads to identify their
-  producer before treating the narrowed fixture set as fully whole-PRL equivalent.
+- `campaign-test` comparison evidence: compile the fixed compiler twice in both cold and
+  fresh-cache modes and require whole-PRL byte identity. Compare the preserved baseline
+  and fixed `MapEntity` records after canonicalizing KVP order to confirm the historical
+  difference is order-only. Historical whole-PRL hashes cannot match because the baseline
+  retains the legacy randomized order.
 
 The one item that read as open — whether to enable the `bvh` crate's rayon feature for parallel tree construction, currently off via `default-features = false` — is decided as no. `traverse_iterator` needs no feature, so this plan is unaffected either way, and the build pipeline documents the BVH stage as fast enough that it is not even cached. Enabling a default feature to speed up a stage nobody has measured as slow is the wrong trade against the lean-dependency goal.

@@ -8,7 +8,7 @@ Session-scoped. Saving a per-player value to disk and carrying it into someone e
 
 ## Prerequisites
 
-- **`E16--resource-grant-chokepoint`** — establishes source-addressed effect application: a planned command carries the token it addresses rather than assuming the dispatch target, and the bind guard becomes an expected-token checker. The owner-addressed `slot.add` here is the second consumer of both.
+- **`E16--resource-grant-chokepoint`** (shipped) — established source-addressed effect application: a planned command carries the token it addresses rather than assuming the dispatch target, and the bind guard becomes an expected-token checker. The owner-addressed `slot.add` here is the second consumer of both.
 - **Epic 15 Phase 3.5** (shipped) — the owner-private replication scope, whose wire tracker already keys values by slot and owner, and which reserved the `ownerPrivate` declaration for mod stores "until a per-player authoring namespace exists." This is that namespace.
 - **`E16--impact-policy-substrate`** (shipped) — the `slot.add` effect this gives a target token, and the evaluate-then-apply snapshot model its reads obey.
 
@@ -93,11 +93,11 @@ Give the slot table per-seat storage and the declaration that selects it. A mod 
 
 ### Task 3: Owner-addressed writes
 
-Make a per-owner slot writable from both paths, mirroring the dual `E16--resource-grant-chokepoint` establishes for grant. **Impact policy:** the shipped `slot.add` effect rejects any target today and lowers to a self-referential add on a global slot; give it an optional target token, reusing the expected-token checker the grant spec generalizes rather than adding a third guard, and route a targeted add to the addressed player's seat via Task 1's entity-to-seat lookup. An absent token keeps today's global behavior byte-for-byte. **Reaction:** register a primitive crediting a named per-owner slot for every target, accepting the activators token or a tag, so a trigger volume, a crossing, or a level-load reaction can award a currency — the only path reaching several players in one fire, since the IR has no iteration. Both paths skip a recipient with no seat, warn, and continue. Export the SDK builders for both, mirroring the shipped damage builder's activators-or-tag dual.
+Make a per-owner slot writable from both paths, mirroring the dual `E16--resource-grant-chokepoint` establishes for grant. **Impact policy:** the shipped `slot.add` effect rejects any target today and lowers to a self-referential add on a global slot; give it an optional target token, reusing the expected-token checker the grant spec generalizes rather than adding a third guard, and route a targeted add to the addressed player's seat via Task 1's entity-to-seat lookup. An absent token keeps today's global behavior byte-for-byte. **Reaction:** register a primitive crediting a named per-owner slot for every target, accepting the activators token or a tag, so a trigger volume, a crossing, or a level-load reaction can award a currency — the only path reaching several players in one fire, since the IR has no iteration. Both paths skip a recipient with no seat, warn, and continue; an empty recipient set is the no-warning row of the Ordering pins. Export the SDK builders for both, mirroring the shipped damage builder's activators-or-tag dual. Assert the first two Ordering pins rows here.
 
 ### Task 4: Owner-addressed reads and publish paths
 
-Give a policy a way to read a per-owner value and the HUD a way to see it. **Read:** an owner-addressed read form binding a per-owner slot against an explicit owner token, resolved per fire through the same entity-to-seat lookup the write uses; a bare read is Task 2's load error. Reads come off the per-fire frozen snapshot the evaluator already applies to store reads. **Publish, host and single-player:** the HUD slot publisher republishes player slots each frame from local state — resolve per-owner slots against the local seat there, following the existing no-value skip that leaves a slot at its previous value rather than resetting it. **Publish, connected clients:** the owner-private source resolver dispatches named projections ahead of a global fall-through, and a mod slot currently falls through to one global value served to every owner; add the per-seat lookup ahead of that fall-through, mapping each owner's connection to its seat. That file's non-test body is past the size guidance — add the lookup as a sibling helper beside the existing projections and do not restructure. Test cross-owner isolation explicitly, including a late joiner and a disconnect.
+Give a policy a way to read a per-owner value and the HUD a way to see it. **Read:** an owner-addressed read form binding a per-owner slot against an explicit owner token, resolved per fire through the same entity-to-seat lookup the write uses; a bare read is Task 2's load error. Reads come off the per-fire frozen snapshot the evaluator already applies to store reads. **Publish, host and single-player:** the HUD slot publisher republishes player slots each frame from local state — resolve per-owner slots against the local seat there, following the existing no-value skip that leaves a slot at its previous value rather than resetting it. **Publish, connected clients:** the owner-private source resolver dispatches named projections ahead of a global fall-through, and a mod slot currently falls through to one global value served to every owner; add the per-seat lookup ahead of that fall-through, mapping each owner's connection to its seat. That file's non-test body is past the size guidance — add the lookup as a sibling helper beside the existing projections and do not restructure. Test cross-owner isolation explicitly, including a late joiner and a disconnect; the late-joiner leg asserts the third Ordering pins row.
 
 ### Task 5: Reference per-player XP
 
@@ -121,6 +121,16 @@ Ship the reference economy in the dev mod. Declare a per-owner XP slot and a sha
 | Cardinality and replication stay independent | Task 2 (separate declarations, one cross-check) | A later shortcut that infers one from the other re-fuses the axes | AC 5, 6 |
 | A gate never observes a write from its own fire | Task 4 (reads from the frozen snapshot) | Shared with the evaluator's evaluate-then-apply model | AC 9 |
 
+## Ordering pins
+
+Concrete orderings the tasks must hold and the tests in Tasks 3 and 4 assert directly rather than restating.
+
+| Scenario | Ordering | Expected outcome |
+|---|---|---|
+| Level-load reaction credits players | Seat-to-pawn re-binding on level install completes before level-load reactions dispatch | The award lands; a dispatch ahead of the re-bind would skip-warn every recipient and silently zero the award |
+| Trigger fires with zero activators | An `addSlot` reaction receives an empty activator set (N=0) | Credits no one, emits no warning, sibling effects in the same fire apply normally |
+| Late joiner's first owner-private snapshot | Seat is minted at admission, before the replication tracker's first per-owner ingest for that connection | The first delivered value is the slot's declared default (or the seat's current value), never another owner's value |
+
 ## Boundary inventory
 
 | Name | Rust | Wire / serde | JS / TS | Luau |
@@ -128,9 +138,9 @@ Ship the reference economy in the dev mod. Declare a per-owner XP slot and a sha
 | player seat | floor-crate seat registry | not replicated — seats map to existing connection ids | — (not author-facing) | — |
 | per-owner cardinality | per-seat slot storage | slot declaration key | `perOwner: true` | same |
 | replication scope | existing owner-private scope | existing scope tag | `network: "ownerPrivate"` | same |
-| owner-addressed add (impact) | `slot.add` effect with a target token | effect args plus the addressed token | `slot.of(impact.source).add(delta)` | `slot:of(impact.source):add(delta)` |
+| owner-addressed add (impact) | `slot.add` effect with a target token | effect args plus the addressed token | `slot(ref).of(impact.source).add(delta)` — extends the shipped `slot(ref): NumberSlot` builder | `slot(ref):of(impact.source):add(delta)` |
 | owner-addressed add (reaction) | reaction primitive | primitive name, `target?: "@activators"` or tag, args carry slot and delta | `addSlot(target, slot, delta)` | same |
-| owner-addressed read | seat-bound store read | existing store input leaf, seat resolved per fire | `slot.of(impact.source)` | `slot:of(impact.source)` |
+| owner-addressed read | seat-bound store read | existing store input leaf, seat resolved per fire | `slot(ref).of(impact.source)` | `slot(ref):of(impact.source)` |
 
 ## Script syntax examples
 
@@ -152,15 +162,17 @@ const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
   const bonus = impact.target.healthAfter.le(-40).select(50, 25);
   return [
     { when: killed, do: [
-        progression.xp.of(impact.source).add(bonus),   // per player
-        progression.teamKills.add(1),                   // shared, unchanged from today
+        slot(progression.xp).of(impact.source).add(bonus), // per player
+        slot(progression.teamKills).add(1),                // shared, unchanged from today
     ]},
   ];
 });
 
 // Awardable without dealing damage — the objective volume pays everyone in it.
+// Tracer returns the builder's descriptor directly, like the shipped
+// `grantAmmo(on.activators, ...)` pattern in combat-demo-reaction.ts.
 onTriggerEvent({ tag: "objective" }, "enter", [
-  defineReaction((on: TriggerEventParams) => seq([addSlot(on.activators, progression.xp, 100)])),
+  defineReaction((on: TriggerEventParams) => addSlot(on.activators, progression.xp, 100)),
 ]);
 ```
 

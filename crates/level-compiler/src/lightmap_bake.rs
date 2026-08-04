@@ -1834,10 +1834,9 @@ pub(crate) fn segment_clear(
         Point3::new(origin.x, origin.y, origin.z),
         Vector3::new(dir.x, dir.y, dir.z),
     );
-    let candidates = bvh.traverse(&ray, primitives);
     let max_distance = length - RAY_EPSILON;
     let geom = &geometry.geometry;
-    for prim in candidates {
+    for prim in bvh.traverse_iterator(&ray, primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;

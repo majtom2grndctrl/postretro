@@ -1,5 +1,5 @@
 // SAH BVH construction and flattening for the level compiler.
-// See: context/plans/in-progress/bvh-foundation/1-compile-bvh.md
+// See: context/lib/build_pipeline.md
 
 use bvh::aabb::{Aabb, Bounded};
 use bvh::bounding_hierarchy::BHShape;

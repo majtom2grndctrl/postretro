@@ -188,6 +188,8 @@ These are single-run measurements on a shared host, not a benchmark distribution
 
 ## Open questions
 
-None.
+- `campaign-test` whole-PRL mismatch: reproduce the pre/post comparison with one shared
+  `scripts-build` artifact, then compare the `MapEntity` payloads to identify their
+  producer before treating the narrowed fixture set as fully whole-PRL equivalent.
 
 The one item that read as open — whether to enable the `bvh` crate's rayon feature for parallel tree construction, currently off via `default-features = false` — is decided as no. `traverse_iterator` needs no feature, so this plan is unaffected either way, and the build pipeline documents the BVH stage as fast enough that it is not even cached. Enabling a default feature to speed up a stage nobody has measured as slow is the wrong trade against the lean-dependency goal.

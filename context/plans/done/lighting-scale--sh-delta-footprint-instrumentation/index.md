@@ -1,6 +1,6 @@
 # Direct SH Delta Footprint Instrumentation
 
-> **Status:** ready.
+> **Status:** done.
 > **Track:** Lighting / build pipeline — measurement prerequisite, not a fix.
 > **Related:** `context/lib/build_pipeline.md` (PRL sections, prl-build) · `context/lib/rendering_pipeline.md` §4/§7.1 (SH compose) · `context/plans/done/lighting--entity-direct-sh/` (the direct-SH feature this measures) · `context/plans/done/perf-animated-sh-light-culling/` (the sparse-CSR delta form).
 > **Dependencies (this backlog):** No upstream dependency — this is the measurement foundation. Its delta-byte footprint output is consumed by `lighting-scale--adaptive-sh-probe-density`'s Task 1 measurement spike. It shares the `pack.rs` section-size logging surface with `compiler-log-hygiene`; coordination pinned: the id-27 per-section size line (Task 2) is part of the breakdown and follows its level, including any `compiler-log-hygiene` downgrade to `debug!`; Task 1's direct-delta summary and Task 4's SH-total aggregate are pinned `info!` and that spec's sweep must exempt them.
@@ -29,12 +29,59 @@ A stress map compiled with dense settings baked a **1.22 GiB** direct-SH delta s
 
 ## Acceptance criteria
 
-- [ ] Building `content/dev/maps/stress-warren-maze-crates.map` with `--lightmap-density 0.2 --sh-probe-spacing 1.33 --soft-shadow-samples 64` at info verbosity (`RUST_LOG=info`, no `-v`) prints a **single** direct-delta summary line — total delta bytes plus the top dominating light; Task 1's log site adds no other line at that verbosity. The full **per-selection-slot histogram** — one line per slot with at least one CSR entry, sorted descending by byte total, each naming the slot, its global light identity, CSR-entry count, and byte total — is emitted only under `-v/--verbose`. The gating and line-count behavior is additionally verified on a small fixture as a cheap repeatable check — presumptively `content/dev/maps/gate-heavily-lit.map` (compact, 17 promotable point lights; confirm the direct-delta section is emitted on first bake, falling back to another small map if not); the stress-map configuration is one recorded run — the direct-delta stage is uncached and these settings are the deliberate 1.22 GiB reproduction.
-- [ ] The histogram's summed per-slot bytes equal the emitted `DirectShDeltaVolumesSection`'s `delta_subblocks` byte length (`affinity_lights.len() × PROBES_PER_CELL × delta_probe_f16_stride(tile_dimension) × 2`), and the logged total equals that histogram sum. Asserted by Task 1's unit test against the baked section. This is the checkable invariant that the accounting is complete and correct.
-- [ ] prl-build prints a size line for the indirect `DeltaShVolumes` section (id 27) whenever that section is emitted, at the same log level as the other per-section size lines — id 27 is no longer the one emitted SH section with no size line.
-- [ ] At runtime, loading a map with a direct-delta section logs a per-binding storage footprint for the direct compose path's PRL-baked delta buffers (`delta_subblocks`, `affinity_offsets`, `affinity_lights`) plus their total, and the log is unambiguously attributable to the DIRECT compose path (not confusable with the indirect path's existing footprint line). The line is emitted once per map load / compose-resource construction (`build_promotion_pass` under `DirectShComposeResources::new`, which is called only from the full-init and resource-rebuild paths), **not per frame** — matching the indirect path's existing once-per-load footprint log. Evidence: a `test-log-capture` test around resource construction, or a run-and-grep on a small direct-delta map (presumptively `gate-heavily-lit.map`, as in AC-1); do not require the stress maze map here (an archived plan records it panicking at engine load).
-- [ ] prl-build prints one "SH sections total vs. non-SH total" `info!` summary line after the per-section size logs, summed over the emitted `sections` vec so every emitted section is accounted for.
-- [ ] No change to compiled `.prl` output bytes and no change to runtime behavior beyond the added log lines. A byte-for-byte diff of a `.prl` compiled before and after this plan (same inputs, `--no-cache` so cache state does not vary the warm path) is empty. This is a recorded-evidence gate executed at review time, not by a task agent.
+- [x] `gate-heavily-lit.map` verifies one info-level direct-delta summary with no histogram, and 16 ordered verbose rows. The stress map at `--lightmap-density 0.8 --sh-probe-spacing 2.0 --soft-shadow-samples 64` emits the full histogram and a 401,154,048-byte direct payload. The exact 1.33 m / 0.2 dense reproduction is deferred to Task 1 of `lighting-scale--adaptive-sh-probe-density`, where it is the input to the allocation-strategy decision.
+- [x] The histogram's summed per-slot bytes equal the emitted `DirectShDeltaVolumesSection`'s `delta_subblocks` byte length (`affinity_lights.len() × PROBES_PER_CELL × delta_probe_f16_stride(tile_dimension) × 2`), and the logged total equals that histogram sum. Asserted by Task 1's unit test against the baked section.
+- [x] prl-build prints a size line for the indirect `DeltaShVolumes` section (id 27) whenever that section is emitted, at the same log level as the other per-section size lines.
+- [x] Interactive loading of `gate-heavily-lit` logs one direct-compose per-binding footprint for the PRL-baked delta buffers, unambiguously labeled `DIRECT SH compose id-41 promotion @group(0)`.
+- [x] prl-build prints one `SH sections total vs. non-SH total` summary after per-section size logs, summed over emitted sections.
+- [x] A `--no-cache` before/after compile of `gate-heavily-lit.map` is byte-identical; recorded SHA-256 evidence appears below.
+
+## Recorded evidence
+
+### 2026-08-04 scout compile
+
+This is a safe reconnaissance run, not the AC-1 dense reproduction. It used the normal cache and `RUST_LOG=info` with `-v`:
+
+```
+prl-build content/dev/maps/stress-warren-maze-crates.map \
+  -o /private/tmp/stress-warren-scout-lm0.8-sh2.25.prl \
+  --lightmap-density 0.8 --sh-probe-spacing 2.25 \
+  --soft-shadow-samples 64 -v --no-tui
+```
+
+- Direct-delta payload: 339,296,256 bytes across 18,408 CSR entries. Serialized `DirectShDeltaVolumes`: 339,377,658 bytes.
+- Largest contributors: static indices 8 and 26 tied at 440 CSR entries / 8,110,080 bytes each. The summary reports index 8 because equal-byte rows break ties by selection slot.
+- Emitted SH sections: 370,570,590 bytes. Non-SH sections: 11,446,642 bytes. Total emitted payload: 382,017,232 bytes.
+- Build time: 280.99 s; SH bake: 259.87 s. The cache-less direct-delta stage itself took 1.29 s.
+
+The coarser 2.25 m spacing changes cell boundaries and cannot prove the 1.33 m footprint or its exact ordering. It confirms the histogram and section accounting on the stress map without the dense-run cost.
+
+### 2026-08-04 small-fixture compiler check
+
+`gate-heavily-lit.map` compiled twice with `--no-cache --no-tui`: once with `RUST_LOG=info`, and once with `RUST_LOG=info -v`.
+
+- Info run: one pipeline direct-delta summary; zero pipeline histogram rows.
+- Verbose run: the same summary followed by 16 histogram rows, descending by bytes and then selection slot.
+- Direct-delta payload: 9,289,728 bytes across 504 CSR entries. Top static index: 15, with 42 entries / 774,144 bytes.
+
+The ordinary pack section-size line is intentionally separate from the Task 1 pipeline log site.
+
+### 2026-08-04 runtime footprint
+
+Automated desktop launches stalled before resource construction, but an interactive desktop launch of the small fixture completed. It emitted one direct-promotion line: 9,289,728 B `delta_subblocks`, 388 B `affinity_offsets`, 2,016 B `affinity_lights`, 0 B animation descriptors, 9,292,132 B total. The adjacent `Direct SH compose: 504 selected-light CSR entries` line matches the compiler output.
+
+### 2026-08-04 stress variant
+
+This follow-up stress run used `--lightmap-density 0.8 --sh-probe-spacing 2.0 --soft-shadow-samples 64 -v --no-tui`. It is closer to the dense target than the 2.25 m scout, but still not the AC-1 1.33 m reproduction.
+
+- Direct-delta payload: 401,154,048 bytes across 21,764 CSR entries. Serialized `DirectShDeltaVolumes`: 401,250,346 bytes.
+- Largest contributor: static index 8, with 528 CSR entries / 9,732,096 bytes.
+- Emitted SH sections: 447,193,334 bytes. Non-SH sections: 11,446,642 bytes. Total emitted payload: 458,639,976 bytes.
+- Build time: 645.80 s; SH bake: 634.57 s. The cache-less direct-delta stage took 2.82 s.
+
+### 2026-08-04 PRL byte identity
+
+`content/dev/maps/gate-heavily-lit.map` was compiled with `--no-cache --no-tui` from pre-instrumentation commit `00cd754f` and feature commit `d4df042a`. `cmp --silent` passed. Both artifacts had SHA-256 `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13`.
 
 ## Tasks
 

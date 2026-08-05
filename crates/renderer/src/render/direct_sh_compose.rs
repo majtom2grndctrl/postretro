@@ -5,8 +5,9 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes,
+    ComposeGridParams, ComposeStorageFootprint, DirectDeltaComposeBuffers,
+    build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
+    u32_slice_to_bytes,
 };
 
 use super::animated_direct_sh_compose::{
@@ -24,6 +25,7 @@ pub(super) const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_SELECTION_WEIGHTS: u32 = 26;
 const BIND_DEBUG_OVERRIDE: u32 = 27;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
+const DIRECT_PROMOTION_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-41 promotion @group(0)";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DirectShDebugOverride {
@@ -80,6 +82,43 @@ pub(super) struct DirectComposeLayout {
     pub(super) atlas_tiles_per_row: u32,
     pub(super) tiles_per_layer: u32,
     pub(super) atlas_layer_count: u32,
+}
+
+struct DirectPromotionStorage {
+    buffers: DirectDeltaComposeBuffers,
+    subblock_bytes: Vec<u8>,
+    offsets_bytes: Vec<u8>,
+    lights_bytes: Vec<u8>,
+}
+
+impl DirectPromotionStorage {
+    fn new(delta: Option<&DirectShDeltaVolumesSection>, grid_dimensions: [u32; 3]) -> Self {
+        let buffers = build_direct_delta_buffers(delta, grid_dimensions);
+        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+        let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
+        let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
+        Self {
+            buffers,
+            subblock_bytes,
+            offsets_bytes,
+            lights_bytes,
+        }
+    }
+
+    fn footprint(&self) -> ComposeStorageFootprint {
+        ComposeStorageFootprint {
+            delta_subblocks_bytes: self.subblock_bytes.len(),
+            affinity_offsets_bytes: self.offsets_bytes.len(),
+            affinity_lights_bytes: self.lights_bytes.len(),
+            // The id-41 promotion pass has no descriptor-index binding. Case
+            // 2's id-45 animated-add storage belongs to its sibling pass.
+            animation_descriptor_indices_bytes: 0,
+        }
+    }
+
+    fn log_footprint(&self) {
+        self.footprint().log(DIRECT_PROMOTION_FOOTPRINT_LABEL);
+    }
 }
 
 pub(crate) struct DirectShComposeResources {
@@ -320,10 +359,16 @@ fn build_promotion_pass(
     weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
 ) -> DirectShComposePipeline {
-    let buffers = build_direct_delta_buffers(delta, layout.grid_dimensions);
-    let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
-    let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
-    let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
+    let storage = DirectPromotionStorage::new(delta, layout.grid_dimensions);
+    // One construction-site call covers both cases. The promotion pass binds
+    // only id-41 storage; runtime weights and Case 2's id-45 pass are excluded.
+    storage.log_footprint();
+    let DirectPromotionStorage {
+        buffers,
+        subblock_bytes,
+        offsets_bytes,
+        lights_bytes,
+    } = storage;
 
     use wgpu::util::DeviceExt;
     let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -554,6 +599,27 @@ fn direct_compose_should_dispatch(
 mod tests {
     use super::*;
 
+    use log::Level;
+    use postretro_level_format::delta_sh_volumes::{
+        AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+    };
+    use postretro_level_format::octahedral::{
+        DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+    };
+    use postretro_test_log_capture::LogCapture;
+
+    fn direct_delta_fixture() -> DirectShDeltaVolumesSection {
+        DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        }
+    }
+
     #[test]
     fn direct_compose_schedules_load_active_and_zero_transition() {
         assert!(direct_compose_should_dispatch(false, true, false));
@@ -575,6 +641,54 @@ mod tests {
         assert!((f32::from_ne_bytes(bytes[16..20].try_into().unwrap()) - 0.5).abs() < f32::EPSILON);
         assert!(bytes[8..16].iter().all(|&byte| byte == 0));
         assert!(bytes[20..32].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn direct_promotion_logs_id_41_bound_storage_once() {
+        let section = direct_delta_fixture();
+        let storage = DirectPromotionStorage::new(Some(&section), [4, 4, 4]);
+        assert_eq!(
+            storage.footprint(),
+            ComposeStorageFootprint {
+                delta_subblocks_bytes: 18_432,
+                affinity_offsets_bytes: 8,
+                affinity_lights_bytes: 4,
+                animation_descriptor_indices_bytes: 0,
+            }
+        );
+        let capture = LogCapture::start();
+
+        storage.log_footprint();
+
+        capture.assert_logged_once(
+            Level::Info,
+            "[Renderer] DIRECT SH compose id-41 promotion @group(0) storage footprint:",
+        );
+        capture.assert_not_logged(Level::Info, "SH compose @group(1) storage footprint:");
+    }
+
+    #[test]
+    fn direct_promotion_case_2_stub_logs_actual_bound_sizes_once() {
+        // Case 2 may have id 45 without id 41. Its promotion pass still binds
+        // two four-byte dummy payloads and the dense zeroed offsets table.
+        let storage = DirectPromotionStorage::new(None, [5, 2, 1]);
+        assert_eq!(
+            storage.footprint(),
+            ComposeStorageFootprint {
+                delta_subblocks_bytes: 4,
+                affinity_offsets_bytes: 12,
+                affinity_lights_bytes: 4,
+                animation_descriptor_indices_bytes: 0,
+            }
+        );
+        let capture = LogCapture::start();
+
+        storage.log_footprint();
+
+        capture.assert_logged_once(
+            Level::Info,
+            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), affinity_offsets 0.00 MiB (12 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (20 B)",
+        );
     }
 
     #[test]

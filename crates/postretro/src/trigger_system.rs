@@ -2,8 +2,6 @@
 //! See: context/lib/entity_model.md §5 · context/lib/scripting.md §10
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
 
 use glam::Vec3;
 use postretro_entities::{
@@ -113,6 +111,12 @@ pub(crate) struct TriggerSystem {
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
     mover_auto_close_timers: Option<MoverAutoCloseTimers>,
+    // Per-system test probes prevent parallel trigger tests from sharing traces.
+    // They survive `clear` so level-replacement tests can observe both levels.
+    #[cfg(test)]
+    recorded_gate_fires: Vec<PlayerId>,
+    #[cfg(test)]
+    recorded_paired_exits: Vec<PlayerId>,
 }
 
 impl TriggerSystem {
@@ -283,7 +287,8 @@ impl TriggerSystem {
                         if !self.paired_enters.remove(&(trigger_id, player_id)) {
                             continue;
                         }
-                        record_paired_exit(player_id);
+                        #[cfg(test)]
+                        self.recorded_paired_exits.push(player_id);
                         let Ok(trigger) = registry
                             .get_component::<TriggerVolumeComponent>(trigger_id)
                             .cloned()
@@ -326,6 +331,8 @@ impl TriggerSystem {
                         {
                             continue;
                         }
+                        #[cfg(test)]
+                        self.recorded_gate_fires.push(player_id);
 
                         let mut targets: Vec<EntityId> = registry
                             .query_by_component_and_tag(
@@ -379,6 +386,16 @@ impl TriggerSystem {
                 .filter(|player| alive_players.contains(player))
                 .count()
         })
+    }
+
+    #[cfg(test)]
+    fn recorded_gate_fires(&self) -> &[PlayerId] {
+        &self.recorded_gate_fires
+    }
+
+    #[cfg(test)]
+    fn recorded_paired_exits(&self) -> &[PlayerId] {
+        &self.recorded_paired_exits
     }
 }
 
@@ -562,7 +579,7 @@ fn evaluate_trigger_activation(
     state: &TriggerVolumeComponent,
     activator: PlayerId,
 ) -> TriggerActivationDecision {
-    #[cfg(not(any(feature = "dev-tools", test)))]
+    #[cfg(not(feature = "dev-tools"))]
     let _ = activator;
     #[cfg(feature = "dev-tools")]
     log::debug!("[Trigger] activation candidate from {activator:?}");
@@ -571,8 +588,6 @@ fn evaluate_trigger_activation(
         && !matches!(state.fire_mode, TriggerFireMode::Once if state.latched)
         && state.rearm_remaining_ms <= 0.0;
     if fire {
-        #[cfg(test)]
-        record_gate_fire(activator);
         TriggerActivationDecision::Fire
     } else {
         TriggerActivationDecision::Suppress
@@ -636,71 +651,6 @@ fn segment_range_distance(
     } else {
         0.0
     }
-}
-
-#[cfg(test)]
-fn gate_fires() -> &'static Mutex<Vec<PlayerId>> {
-    static FIRES: OnceLock<Mutex<Vec<PlayerId>>> = OnceLock::new();
-    FIRES.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-#[cfg(test)]
-fn paired_exits() -> &'static Mutex<Vec<PlayerId>> {
-    static EXITS: OnceLock<Mutex<Vec<PlayerId>>> = OnceLock::new();
-    EXITS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-#[cfg(test)]
-fn gate_test_guard() -> &'static Mutex<()> {
-    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD.get_or_init(|| Mutex::new(()))
-}
-
-#[cfg(test)]
-fn record_gate_fire(activator: PlayerId) {
-    gate_fires()
-        .lock()
-        .expect("gate fire recorder poisoned")
-        .push(activator);
-}
-
-#[cfg(test)]
-fn record_paired_exit(activator: PlayerId) {
-    paired_exits()
-        .lock()
-        .expect("paired exit recorder poisoned")
-        .push(activator);
-}
-
-#[cfg(not(test))]
-fn record_paired_exit(_activator: PlayerId) {}
-
-#[cfg(test)]
-fn reset_gate_fires() {
-    gate_fires()
-        .lock()
-        .expect("gate fire recorder poisoned")
-        .clear();
-    paired_exits()
-        .lock()
-        .expect("paired exit recorder poisoned")
-        .clear();
-}
-
-#[cfg(test)]
-fn recorded_gate_fires() -> Vec<PlayerId> {
-    gate_fires()
-        .lock()
-        .expect("gate fire recorder poisoned")
-        .clone()
-}
-
-#[cfg(test)]
-fn recorded_paired_exits() -> Vec<PlayerId> {
-    paired_exits()
-        .lock()
-        .expect("paired exit recorder poisoned")
-        .clone()
 }
 
 #[cfg(test)]
@@ -906,8 +856,6 @@ mod tests {
 
     #[test]
     fn touch_tracks_each_players_rising_entry_and_once_latches() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -949,13 +897,11 @@ mod tests {
                 .unwrap()
                 .latched
         );
-        assert_eq!(recorded_gate_fires(), vec![PlayerId::Local(first)]);
+        assert_eq!(system.recorded_gate_fires(), &[PlayerId::Local(first)]);
     }
 
     #[test]
     fn multiple_rearms_disabled_is_inert_and_use_needs_same_tick_edge() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let multiple = spawn_trigger(
@@ -1014,7 +960,7 @@ mod tests {
         );
         // Touch fires on entry, use fires only on its explicit edge, then touch
         // fires again only after the 100 ms rearm interval has elapsed.
-        assert_eq!(recorded_gate_fires(), vec![id, id, id]);
+        assert_eq!(system.recorded_gate_fires(), &[id, id, id]);
         assert!(
             !registry
                 .get_component::<TriggerVolumeComponent>(use_trigger)
@@ -1028,8 +974,6 @@ mod tests {
     // remote `use_pressed` command.
     #[test]
     fn level_change_rebuilds_local_and_remote_touch_and_use_paths() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut system = TriggerSystem::default();
 
         for level in 0..2 {
@@ -1118,7 +1062,7 @@ mod tests {
         }
 
         assert_eq!(
-            recorded_gate_fires().len(),
+            system.recorded_gate_fires().len(),
             8,
             "two levels each run touch and Use through local and remote player identities"
         );
@@ -1126,8 +1070,6 @@ mod tests {
 
     #[test]
     fn trigger_command_starts_targeted_mover_and_gate_is_sole_fire_path() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         spawn_trigger(
@@ -1153,8 +1095,8 @@ mod tests {
             "trigger command must mutate the mover phase"
         );
         assert_eq!(
-            recorded_gate_fires(),
-            vec![id],
+            system.recorded_gate_fires(),
+            &[id],
             "only the gate records fires and receives its activator"
         );
         let mut mover_ticks = crate::kinematic_mover::MoverTickStateTable::default();
@@ -1261,8 +1203,6 @@ mod tests {
 
     #[test]
     fn fire_report_orders_enter_and_paired_exit_edges_by_trigger_then_player() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let first_trigger = spawn_trigger(
@@ -1361,8 +1301,6 @@ mod tests {
 
     #[test]
     fn same_tick_enter_and_exit_share_one_trigger_player_order() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -1421,8 +1359,6 @@ mod tests {
 
     #[test]
     fn missing_player_snapshot_removes_occupancy_and_fires_paired_exit() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -1461,13 +1397,11 @@ mod tests {
             }]
         );
         assert_eq!(system.occupancy(trigger), 0);
-        assert_eq!(recorded_paired_exits(), vec![player_id]);
+        assert_eq!(system.recorded_paired_exits(), &[player_id]);
     }
 
     #[test]
     fn effective_occupancy_excludes_corpses_and_exit_excludes_the_leaver() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -1546,8 +1480,6 @@ mod tests {
         // gates must still fire because `bound_edges` holds its (volume, edge).
         // The existing tests either name their events or pass an empty
         // `bound_edges`, so this widened branch is otherwise unproven.
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         // spawn_trigger leaves on_fire/on_exit empty — the KVP-less binding case.
@@ -1630,8 +1562,6 @@ mod tests {
         // E18-C containment is authored as an onTriggerEvent fan-out. One
         // script-bound enter edge must dispatch both named reaction bodies;
         // neither is nested in the other as a sequence step.
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -1791,8 +1721,6 @@ mod tests {
         // `build_with_script_ctx_and_diagnostics`) that both holds runtime-spawn
         // authority and has the archetype resolved in its descriptor cache; a
         // `Default` spawn context would silently no-op the materialization.
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -1927,8 +1855,6 @@ mod tests {
 
     #[test]
     fn duplicate_player_ids_and_despawned_triggers_leave_no_stale_occupancy() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -1970,8 +1896,6 @@ mod tests {
 
     #[test]
     fn suppressed_enter_does_not_produce_a_paired_exit() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -2008,13 +1932,11 @@ mod tests {
         let exited = tick(&mut system, &mut registry, &bridge, &players, &[]);
 
         assert!(exited.exits().is_empty());
-        assert!(recorded_paired_exits().is_empty());
+        assert!(system.recorded_paired_exits().is_empty());
     }
 
     #[test]
     fn paired_exit_survives_once_rearm_and_mid_stand_disarm() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let once = spawn_trigger(
@@ -2093,13 +2015,11 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(recorded_paired_exits(), vec![player_id; 3]);
+        assert_eq!(system.recorded_paired_exits(), &[player_id; 3]);
     }
 
     #[test]
     fn arm_and_disarm_primitives_control_enter_firing_and_reset_gate_state() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -2230,8 +2150,6 @@ mod tests {
 
     #[test]
     fn rearming_touch_while_standing_refires_once_and_keeps_one_paired_exit() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(
@@ -2299,8 +2217,6 @@ mod tests {
 
     #[test]
     fn arming_use_while_standing_still_requires_a_press() {
-        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
-        reset_gate_fires();
         let mut registry = EntityRegistry::new();
         let mut bridge = TriggerVolumeBridge::new();
         let trigger = spawn_trigger(

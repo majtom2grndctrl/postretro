@@ -37,10 +37,10 @@ impl ComposeStorageFootprint {
             + self.animation_descriptor_indices_bytes
     }
 
-    pub fn log(&self) {
+    pub fn log(&self, log_label: &str) {
         let mib = |b: usize| b as f64 / (1024.0 * 1024.0);
         log::info!(
-            "[Renderer] SH compose @group(1) storage footprint: \
+            "[Renderer] {log_label} storage footprint: \
              delta_subblocks {:.2} MiB ({} B), affinity_offsets {:.2} MiB ({} B), \
              affinity_lights {:.2} MiB ({} B), animation_descriptor_indices {:.2} MiB ({} B) \
              - total {:.2} MiB ({} B)",

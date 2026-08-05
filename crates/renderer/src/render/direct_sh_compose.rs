@@ -5,8 +5,8 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes,
+    ComposeGridParams, ComposeStorageFootprint, build_compose_grid_bytes,
+    build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::animated_direct_sh_compose::{
@@ -324,6 +324,16 @@ fn build_promotion_pass(
     let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
     let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
     let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
+
+    // The promotion pass binds only the id-41 baked delta CSR payload. Runtime
+    // selection weights and Case-2's id-45 animated-add buffers are excluded.
+    ComposeStorageFootprint {
+        delta_subblocks_bytes: subblock_bytes.len(),
+        affinity_offsets_bytes: offsets_bytes.len(),
+        affinity_lights_bytes: lights_bytes.len(),
+        animation_descriptor_indices_bytes: 0,
+    }
+    .log("DIRECT SH compose @group(0)");
 
     use wgpu::util::DeviceExt;
     let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

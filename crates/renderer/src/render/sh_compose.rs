@@ -112,7 +112,7 @@ impl ShComposeResources {
             affinity_lights_bytes: lights_bytes.len(),
             animation_descriptor_indices_bytes: descriptor_index_bytes.len(),
         };
-        footprint.log();
+        footprint.log("SH compose @group(1)");
 
         let grid_bytes = build_compose_grid_bytes(ComposeGridParams {
             grid_dimensions: sh.grid_dimensions,

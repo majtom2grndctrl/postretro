@@ -11,8 +11,9 @@
 import { defineImpactEvent } from "postretro";
 
 const RESURRECT_DELAY_MS = 3_000;
-// The reference shotgun deals 12 damage. A third hit from 6 HP lands at -6 and
-// downs the dummy; the next hit from zero lands at -12 and becomes the finisher.
+// A point-blank full shotgun shell deals 24 damage. The 40-HP dummy goes
+// 40 → 16 → -8 and downs; its next shell reaches -32, crossing this finisher
+// level. The `.le` predicate also gibs a shell landing exactly at -12.
 const FINISHER_OVERSHOOT = -12;
 
 export const combatDummyLifecycle = defineImpactEvent(

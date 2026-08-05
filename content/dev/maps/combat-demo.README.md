@@ -210,38 +210,43 @@ cargo run -p postretro -- content/dev/maps/combat-demo.prl
 The descriptor → `components.health` → model-authored hit-zone capsules → spawn → hitscan target →
 `apply_damage` chokepoint → mod-global impact policy → authored lifecycle, end to end:
 
-- Each `target_dummy` (max 30 HP) spawns standing in front of the player. Aiming
-  the reference shotgun (12 damage/hit) at one and firing **takes 12 HP per hit**,
-  routed through the `apply_damage` chokepoint. Three torso hits down it
-  (12 + 12 + 12 = 36 ≥ 30), but **do not remove it**: the mod-global policy queues
-  `setHealth(maxHealth, { afterMs: 3000 })`. The target remains ray-targetable at
-  zero HP, then re-arms when it recovers. This is the foundation for future
+- The shot counts below assume a point-blank torso shot at **1 m or closer**.
+  At that distance the 4° cone keeps every pellet within 7 cm of the aim ray, so
+  all eight pellets connect. Each pellet deals 3 damage, making a full shell 24
+  damage, routed through the `apply_damage` chokepoint.
+
+- Each `target_dummy` (max 40 HP) goes **40 → 16 → -8** after two full-connect
+  shells and downs, but **does not remove**: the mod-global policy queues
+  `setHealth(maxHealth, { afterMs: 3000 })`. The target remains ray-targetable
+  while down, then re-arms when it recovers. This is the foundation for future
   stagger, revive, glory-kill, mod-owned reward, and presentation policies.
 
-- While a dummy is down, land a **fourth shot**. That follow-up hit reaches -12;
-  the policy's level gate calls `despawn()`, so the dummy disappears, leaves the
-  resurrection loop, and only then contributes its frozen kill credit to progress.
-  There is no distinct down animation in the current single-clip fixture model;
-  verify the down/recovery loop by waiting three seconds and downing it again.
+- While a dummy is down, land a **third shell**. It reaches **-32**, below the
+  `-12` gib level (which also gibs an impact landing exactly at `-12`); the
+  policy calls `despawn()`, so the dummy disappears, leaves the resurrection
+  loop, and only then contributes its frozen kill credit to progress. There is
+  no distinct down animation in the current single-clip fixture model; verify
+  the down/recovery loop by waiting three seconds and downing it again.
 
-- After the four-shot dummy demonstration, hold reload and watch the shotgun
+- After the three-shell dummy demonstration, hold reload and watch the shotgun
   refill one `shells.buck` round every 450 ms. The shotgun holds eight rounds:
-  the dummy's four shots and the enemy's six shots each fit within one magazine,
-  but a reload deliberately separates those two encounters. Fire during that
-  reload to see the in-flight shell step cancel; keep reload held through the
-  shot to see it restart on the following tick.
+  the dummy's three shells and the enemy's four shells each fit within one
+  magazine, but a reload deliberately separates those two encounters. Fire
+  during that reload to see the in-flight shell step cancel; keep reload held
+  through the shot to see it restart on the following tick.
 
-- The far `reference_enemy` is the visual companion demo. Five body shots
-  (60 HP at 12 damage per shotgun hit) down it; its declared `death` state plays
-  and its brain and navigation agent pause while the same three-second recovery
-  is queued. Recovery immediately returns it to its idle pose, then normal AI
-  resumes and selects its walk animation as it pursues. A sixth body shot while
-  down reaches -12 and gibs it. The `combat-zombie` tag scopes this policy to
-  this map, so other reference-enemy fixtures retain their existing behavior.
+- The far `reference_enemy` is the visual companion demo. At point blank, three
+  body shells take its 70 HP through **46 → 22 → -2** and down it; its declared
+  `death` state plays and its brain and navigation agent pause while the same
+  three-second recovery is queued. Recovery immediately returns it to its idle
+  pose, then normal AI resumes and selects its walk animation as it pursues. A
+  fourth body shell while down reaches **-26** and gibs it. The `combat-zombie`
+  tag scopes this policy to this map, so other reference-enemy fixtures retain
+  their existing behavior.
 
 - **Model-authored hit zones.** The dummy uses the visible model's torso, head,
-  arm, and leg capsules. Aim at the torso for the most reliable 12-damage shotgun
-  hits; the demo deliberately defines no zone damage multipliers.
+  arm, and leg capsules. Aim at the torso for the most reliable full-connect
+  shotgun shells; the demo deliberately defines no zone damage multipliers.
 
 - The `progress` reaction's denominator (4 tagged dummies) is captured at level
   load. At `at: 0.5`, killing **two** dummies crosses the threshold and fires the
@@ -259,13 +264,14 @@ The engine intentionally does not classify any event as a reward. The two grants
 below are dev-mod reference content that another mod replaces with its own
 policies; they exercise two distinct recipient paths.
 
-1. **Kill payout — impact source.** Shoot a `target_dummy` three times with the
-   reference shotgun. The third hit crosses from positive health to zero or below,
-   so `dev:ammo-on-kill` grants the damager **8 `shells.buck`**. This is a kill
-   edge, not a corpse-hit level gate. `combatDummyLifecycle` resurrects a merely
-   downed dummy after three seconds, so downing it again earns another 8-ammo
-   payout. A follow-up fourth hit while it is down reaches the `-12` gib threshold
-   instead: it removes that dummy from the loop and does not pay the kill edge.
+1. **Kill payout — impact source.** At the point-blank distance above, shoot a
+   `target_dummy` twice with the reference shotgun. The second full-connect shell
+   crosses from positive health to below zero, so `dev:ammo-on-kill` grants the
+   damager **8 `shells.buck`**. This is a kill edge, not a corpse-hit level gate.
+   `combatDummyLifecycle` resurrects a merely downed dummy after three seconds,
+   so downing it again earns another 8-ammo payout. A third full-connect shell
+   while it is down reaches `-32`, below the `-12` gib threshold instead: it
+   removes that dummy from the loop and does not pay the kill edge.
 
 2. **Volume payout — trigger activator.** From the player start, walk east through
    `ammo_pickup_volume` (the `A` in the floor plan). Its `onTriggerEvent` enter

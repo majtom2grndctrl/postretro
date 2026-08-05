@@ -788,6 +788,7 @@ mod tests {
     use crate::components::billboard_emitter::SpinAnimation;
     use crate::components::particle::ParticleState;
     use crate::components::player_movement::MovementState;
+    use crate::components::wieldable_state::WieldableState;
     use crate::data_descriptors::{
         AirParams, CapsuleParams, DashParams, FallParams, FireMode, GroundParams,
         PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,

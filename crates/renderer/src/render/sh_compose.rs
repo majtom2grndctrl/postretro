@@ -3,9 +3,11 @@
 // See: context/lib/rendering_pipeline.md §7.1
 
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+#[cfg(feature = "dev-tools")]
+use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, ComposeStorageFootprint, build_compose_grid_bytes, build_delta_buffers,
-    pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
+    ComposeGridParams, build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes,
+    u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolumeResources};
@@ -102,16 +104,17 @@ impl ShComposeResources {
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
-        // Footprint AC: report per-binding byte sizes of every `@group(1)`
-        // storage buffer the compose pass binds, plus the combined total. The
-        // CSR form should keep this well under the storage-buffer binding floor
+        // Report per-binding byte sizes only in development builds. The CSR
+        // form should keep this well under the storage-buffer binding floor
         // regardless of animated-light count.
+        #[cfg(feature = "dev-tools")]
         let footprint = ComposeStorageFootprint {
             delta_subblocks_bytes: subblock_bytes.len(),
             affinity_offsets_bytes: offsets_bytes.len(),
             affinity_lights_bytes: lights_bytes.len(),
             animation_descriptor_indices_bytes: descriptor_index_bytes.len(),
         };
+        #[cfg(feature = "dev-tools")]
         footprint.log("SH compose @group(1)");
 
         let grid_bytes = build_compose_grid_bytes(ComposeGridParams {

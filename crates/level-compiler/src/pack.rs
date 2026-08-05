@@ -882,6 +882,14 @@ pub fn pack_and_write_portals(
             section.affinity_lights.len(),
         );
     }
+    if let (Some(section), Some(bytes)) = (delta_sh_volumes, &delta_sh_volumes_bytes) {
+        log::info!(
+            "  DeltaShVolumes: {} bytes ({} animated light(s), {} CSR entries)",
+            bytes.len(),
+            section.animation_descriptor_indices.len(),
+            section.affinity_lights.len(),
+        );
+    }
     if let (Some(section), Some(bytes)) = (
         animated_direct_sh_delta_volumes,
         &animated_direct_sh_delta_volumes_bytes,

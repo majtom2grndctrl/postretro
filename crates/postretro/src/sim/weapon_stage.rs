@@ -48,7 +48,7 @@ mod tests {
     };
     use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
     use glam::Vec3;
-    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::weapon::{
         ReloadFeedback, ReloadFeedbackConsumer, WeaponComponent,
@@ -107,6 +107,47 @@ mod tests {
         let weapon = registry.spawn(Transform::default());
         registry.set_component(weapon, component).unwrap();
         (pawn, weapon)
+    }
+
+    fn spawn_local_pellet_weapon(
+        registry: &mut EntityRegistry,
+        credit_source: &str,
+    ) -> (EntityId, EntityId) {
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let mut component = weapon_component(credit_source);
+        component.pellet_count = 8;
+        component.spread_degrees = 0.0;
+        registry.set_component(weapon, component).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
+        (pawn, weapon)
+    }
+
+    fn spawn_pellet_target(registry: &mut EntityRegistry) -> EntityId {
+        let target = registry.spawn(Transform {
+            position: Vec3::new(0.0, 0.0, -5.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                target,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: Vec3::splat(0.5),
+                        offset: Vec3::ZERO,
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        target
     }
 
     fn set_reload_style(
@@ -263,7 +304,7 @@ mod tests {
         let command = fire_command(true, true);
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events, _) = run_local_weapon_command(
+        let (deliveries, events, _, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -291,7 +332,7 @@ mod tests {
             assert!(!outgoing.owner_reload_status().1);
         }
 
-        let (deliveries, events, _) = run_local_weapon_command(
+        let (deliveries, events, _, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -315,7 +356,7 @@ mod tests {
             assert_eq!(outgoing.state_remaining_ms, 11);
         }
 
-        let (deliveries, events, _) = run_local_weapon_command(
+        let (deliveries, events, _, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -420,7 +461,7 @@ mod tests {
         };
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events, repointed) = run_local_weapon_command(
+        let (deliveries, events, repointed, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -494,7 +535,7 @@ mod tests {
         };
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events, repointed) = run_local_weapon_command(
+        let (deliveries, events, repointed, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -654,7 +695,7 @@ mod tests {
         };
         let mut no_impact = ignore_impact;
 
-        let (_, _, repointed) = run_local_weapon_command(
+        let (_, _, repointed, _) = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -1713,9 +1754,9 @@ mod tests {
             let mut registry = registry.borrow_mut();
             let pawn = registry.spawn(Transform::default());
             let weapon = registry.spawn(Transform::default());
-            registry
-                .set_component(weapon, weapon_component("weapon.test.remote"))
-                .unwrap();
+            let mut component = weapon_component("weapon.test.remote");
+            component.pellet_count = 8;
+            registry.set_component(weapon, component).unwrap();
             let target = registry.spawn(Transform::default());
             registry
                 .set_component(
@@ -1744,11 +1785,16 @@ mod tests {
         assert_eq!(events.authorized_shots[0].shot.shot_id, shot_id);
         assert_eq!(events.authorized_shots[0].shot.pawn, pawn);
         assert_eq!(events.authorized_shots[0].shot.fire_tick, 33);
+        assert_eq!(events.authorized_shots[0].shot.pellet_count, 8);
         assert_eq!(events.authorized_shots[0].owner_client_id, 7);
         assert_eq!(events.weapon, vec!["activate"]);
         let registry = registry.borrow();
         let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert!((weapon_state.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
+        assert_eq!(
+            weapon_state.shells_fired, 0,
+            "the host mints remote authorization but never samples the client's pellet fan"
+        );
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 100.0).abs() < f32::EPSILON);
     }
@@ -3745,6 +3791,180 @@ mod tests {
                 .unwrap()
                 .state_remaining_ms,
             0
+        );
+    }
+
+    #[test]
+    fn local_pellet_policy_settles_before_a_despawned_target_can_receive_later_pellets() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, target) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, _) = spawn_local_pellet_weapon(&mut registry, "weapon.test.pellet");
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, target)
+        };
+        let mut policy_fires = 0;
+        let mut policy = |registry: &mut EntityRegistry| {
+            policy_fires += 1;
+            if registry.exists(target) {
+                registry.despawn(target).unwrap();
+            }
+        };
+
+        let (_, events, _, impact_points) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut policy,
+        );
+
+        assert_eq!(events, vec!["activate", "impact"]);
+        assert_eq!(
+            impact_points.len(),
+            8,
+            "the cast set includes skipped pellets"
+        );
+        assert_eq!(policy_fires, 1, "target despawn settles before pellet two");
+        assert!(!registry.borrow().exists(target));
+    }
+
+    #[test]
+    fn local_pellet_policy_settles_before_a_despawned_shooter_can_fire_later_policies() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, target) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, _) = spawn_local_pellet_weapon(&mut registry, "weapon.test.pellet");
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, target)
+        };
+        let mut policy_fires = 0;
+        let mut policy = |registry: &mut EntityRegistry| {
+            policy_fires += 1;
+            if registry.exists(pawn) {
+                registry.despawn(pawn).unwrap();
+            }
+        };
+
+        let (_, _, _, impact_points) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut policy,
+        );
+
+        assert_eq!(impact_points.len(), 8, "the cast set retains every pellet");
+        assert_eq!(policy_fires, 1, "shooter despawn settles before pellet two");
+        let health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        assert!((health.current - 90.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn local_world_pellets_run_policy_once_per_impact_without_damage() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let pawn = {
+            let mut registry = registry.borrow_mut();
+            spawn_local_pellet_weapon(&mut registry, "weapon.test.pellet").0
+        };
+        let mut policy_fires = 0;
+        let mut policy = |_: &mut EntityRegistry| policy_fires += 1;
+
+        let (_, events, _, impact_points) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &wall_world(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut policy,
+        );
+
+        assert_eq!(events, vec!["activate", "impact"]);
+        assert_eq!(impact_points.len(), 8);
+        assert_eq!(
+            policy_fires, 8,
+            "each world pellet runs its policy sequence"
+        );
+    }
+
+    #[test]
+    fn local_pellet_policy_swap_keeps_the_outgoing_weapon_credit_for_the_whole_shell() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, target) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, _) = spawn_local_pellet_weapon(&mut registry, "weapon.test.outgoing");
+            let incoming = registry.spawn(Transform::default());
+            registry
+                .set_component(incoming, weapon_component("weapon.test.incoming"))
+                .unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(incoming);
+            registry.set_component(pawn, inventory).unwrap();
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, target)
+        };
+        let mut swapped = false;
+        let mut policy = |registry: &mut EntityRegistry| {
+            if !swapped {
+                let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+                inventory.active_slot = 1;
+                registry.set_component(pawn, inventory).unwrap();
+                swapped = true;
+            }
+        };
+
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut policy,
+        );
+
+        let health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        assert_eq!(health.contributor_ledger.total_recorded_hits(), 8);
+        assert_eq!(
+            health
+                .contributor_ledger
+                .recorded_damage_by_source("weapon.test.outgoing"),
+            Some(80.0)
+        );
+        assert_eq!(
+            health
+                .contributor_ledger
+                .recorded_damage_by_source("weapon.test.incoming"),
+            None
         );
     }
 

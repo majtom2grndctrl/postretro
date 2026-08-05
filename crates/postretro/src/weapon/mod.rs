@@ -194,8 +194,8 @@ impl ClientPredictedShots {
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
 // hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which owns a list of
 // them) move/borrow rather than copy. Audited call sites: `fire_hitscan`
-// constructs the per-pellet literals, and the sim weapon stage borrows the first
-// `events.impacts` entry until Task 4 consumes the full list.
+// constructs the per-pellet literals, and the sim weapon stage consumes the
+// list in order while retaining a pre-policy cast-point record for determinism.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WeaponImpact {

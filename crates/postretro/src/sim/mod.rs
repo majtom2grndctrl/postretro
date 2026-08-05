@@ -160,7 +160,7 @@ pub(crate) fn simulate_client_wieldable_tick(
         can_fire: false,
     };
     let mut ignore_impact = |_: &mut EntityRegistry| {};
-    let (_, _, repointed) = weapon_stage::run_local_weapon_command(
+    let (_, _, repointed, _) = weapon_stage::run_local_weapon_command(
         &registry,
         pawn,
         mod_block_during_reload,
@@ -243,6 +243,10 @@ pub(crate) struct TickEvents {
     /// entered graph state's authored `on_enter`, which is owned.
     pub(crate) ai: Vec<Cow<'static, str>>,
     pub(crate) weapon: Vec<&'static str>,
+    /// Per-pellet cast points from the local fire path. This is captured before
+    /// impact policy runs, so observability records the ray result rather than
+    /// the subset that remained live long enough to receive damage.
+    pub(crate) weapon_impact_points: Vec<Vec3>,
     /// Host-local kinematic mover transition edges. A connected client never
     /// runs the host simulation seam, so its bucket remains empty.
     pub(crate) mover: Vec<(kinematic_mover::MoverEventKind, u32)>,
@@ -589,19 +593,20 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         registry.local_player_movement_pawn()
     };
     let weapon_fire = weapon_stage::weapon_fire_command(command.fire_button, post_movement_command);
-    let (local_deliveries, mut weapon, repointed_pawn) = weapon_stage::run_local_weapon_command(
-        &registry,
-        own_pawn,
-        mod_block_during_reload,
-        command.select_slot,
-        &weapon_fire,
-        command.reload,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        tick_dt,
-        &mut on_impact,
-    );
+    let (local_deliveries, mut weapon, repointed_pawn, weapon_impact_points) =
+        weapon_stage::run_local_weapon_command(
+            &registry,
+            own_pawn,
+            mod_block_during_reload,
+            command.select_slot,
+            &weapon_fire,
+            command.reload,
+            collision_world,
+            hit_zone_store,
+            anim_time,
+            tick_dt,
+            &mut on_impact,
+        );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry);
@@ -617,6 +622,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         movement,
         ai,
         weapon,
+        weapon_impact_points,
         mover: mover_events,
         death,
         authorized_shots,

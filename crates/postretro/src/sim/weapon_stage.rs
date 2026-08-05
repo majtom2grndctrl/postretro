@@ -1409,6 +1409,8 @@ mod tests {
         let events = weapon::tick_resolved_component(
             &registry,
             &mut component,
+            "weapon.unknown",
+            0,
             &command,
             &CollisionWorld::new(),
             &HitZoneStore::new(),
@@ -1620,13 +1622,15 @@ mod tests {
         let events = weapon::tick_resolved_component(
             &registry,
             &mut component,
+            "weapon.unknown",
+            0,
             &command,
             &wall_world(),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
         );
-        assert!(events.impact.is_some());
+        assert!(!events.impacts.is_empty());
         assert_eq!(component.magazine, 10);
     }
 
@@ -1646,13 +1650,15 @@ mod tests {
         let events = weapon::tick_resolved_component(
             &registry,
             &mut component,
+            "weapon.unknown",
+            0,
             &command,
             &CollisionWorld::new(),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
         );
-        assert!(events.impact.is_none());
+        assert!(events.impacts.is_empty());
         assert_eq!(component.magazine, 10);
     }
 
@@ -1670,13 +1676,15 @@ mod tests {
         let events = weapon::tick_resolved_component(
             &registry,
             &mut component,
+            "weapon.unknown",
+            0,
             &command,
             &CollisionWorld::new(),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
         );
-        assert!(events.impact.is_none());
+        assert!(events.impacts.is_empty());
         assert!((component.cooldown_remaining_ms - 100.0).abs() < 1.0e-5);
     }
 

@@ -5732,7 +5732,7 @@ impl App {
             return;
         };
         let script_ctx = session.scripting.script_ctx.clone();
-        let (active_slot, weapon_id, mut component) = {
+        let (active_slot, weapon_id, mut component, pellet_salt_name) = {
             let registry = script_ctx.registry.borrow();
             let Some((active_slot, weapon_id)) = local_active_wieldable(&registry) else {
                 if zero_tick_fire_command.is_some()
@@ -5748,7 +5748,8 @@ impl App {
             else {
                 return;
             };
-            (active_slot, weapon_id, component)
+            let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &component);
+            (active_slot, weapon_id, component, pellet_salt_name)
         };
         if let Some(command) = zero_tick_fire_command.as_mut() {
             command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
@@ -5781,6 +5782,8 @@ impl App {
             let registry = script_ctx.registry.borrow();
             weapon::resolve_client_fire(
                 &mut component,
+                &pellet_salt_name,
+                active_slot,
                 button,
                 aim_origin,
                 aim_direction,
@@ -7678,7 +7681,10 @@ mod tests {
 
     #[test]
     fn held_auto_fire_tick_selection_accounts_for_hitch_cooldown_windows() {
-        let state = client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
+        let mut state =
+            client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
+        state.pellet_count = 8;
+        state.spread_degrees = 4.0;
         let commands = [
             ClientFrameFireCommand {
                 client_tick: 7,
@@ -7706,11 +7712,36 @@ mod tests {
             },
         ];
 
+        let selected = client_fire_ticks_for_post_loop(&commands, &state);
         assert_eq!(
-            client_fire_ticks_for_post_loop(&commands, &state),
+            selected,
             vec![7, 9],
             "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
         );
+
+        // The post-loop fire path resolves only `selected[0]`; its remaining
+        // selected ticks are retired by the empty-declaration loop. This keeps
+        // a hitch frame to one rendered-pose cast and one shell-counter advance.
+        let registry = postretro_entities::EntityRegistry::new();
+        let resolution = weapon::resolve_client_fire(
+            &mut state,
+            "weapon.unknown",
+            0,
+            commands[0].button,
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            selected[0],
+            &collision::CollisionWorld::new(),
+            &registry,
+            &scripting_systems::hit_zones::HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("the first selected auto tick resolves the frame's one cast");
+
+        assert_eq!(resolution.client_tick, 7);
+        assert_eq!(state.shells_fired, 1);
+        assert_eq!(selected[1..], [9]);
     }
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {

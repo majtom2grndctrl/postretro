@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
-use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ResolutionMode};
 
@@ -191,10 +192,10 @@ impl ClientPredictedShots {
 }
 
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
-// hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which embeds it)
-// move/borrow rather than copy. Audited call sites: `fire_hitscan` constructs it
-// (the sole literal site, production), and the sim weapon stage borrows
-// `events.impact` rather than copying it out.
+// hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which owns a list of
+// them) move/borrow rather than copy. Audited call sites: `fire_hitscan`
+// constructs the per-pellet literals, and the sim weapon stage borrows the first
+// `events.impacts` entry until Task 4 consumes the full list.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WeaponImpact {
@@ -218,7 +219,7 @@ pub(crate) struct WeaponImpact {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
-    pub(crate) impact: Option<WeaponImpact>,
+    pub(crate) impacts: Vec<WeaponImpact>,
     pub(crate) dry_fire: bool,
 }
 
@@ -231,7 +232,7 @@ impl WeaponFireEvents {
         if self.activate.is_some() {
             names.push("activate");
         }
-        if self.impact.is_some() {
+        if !self.impacts.is_empty() {
             names.push("impact");
         }
         names
@@ -298,10 +299,13 @@ pub(crate) fn tick_resolved(
         return WeaponFireEvents::default();
     };
     let mut weapon = existing.clone();
+    let pellet_salt_name = pellet_salt_name(registry, weapon_id, &weapon);
 
     let events = tick_resolved_component(
         registry,
         &mut weapon,
+        &pellet_salt_name,
+        0,
         command,
         collision_world,
         hit_zone_store,
@@ -317,6 +321,8 @@ pub(crate) fn tick_resolved(
 pub(crate) fn tick_resolved_component(
     registry: &EntityRegistry,
     weapon: &mut WeaponComponent,
+    pellet_salt_name: &str,
+    active_slot: usize,
     command: &WeaponFireCommand,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -325,20 +331,34 @@ pub(crate) fn tick_resolved_component(
 ) -> WeaponFireEvents {
     let stats = weapon.effective();
     let damage = stats.damage;
+    let pellet_count = stats.pellet_count;
+    let spread_radians = stats.spread_degrees.to_radians();
     let range = stats.range;
     let resolution = stats.resolution;
     match fire {
-        WeaponFireAuthorization::Accepted => fire_hitscan(
-            command.aim_origin,
-            command.aim_direction,
-            collision_world,
-            registry,
-            hit_zone_store,
-            anim_time,
-            damage,
-            range,
-            resolution,
-        ),
+        WeaponFireAuthorization::Accepted => {
+            // A shell position is consumed whether it is a single exact-axis ray
+            // or a spread fan, preserving future spread changes' deterministic
+            // sequence. Only a resolved shell advances this instance-local state.
+            let shell_counter = weapon.shells_fired;
+            weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
+            fire_hitscan(
+                command.aim_origin,
+                command.aim_direction,
+                collision_world,
+                registry,
+                hit_zone_store,
+                anim_time,
+                damage,
+                pellet_count,
+                spread_radians,
+                range,
+                resolution,
+                shell_counter,
+                pellet_salt_name,
+                active_slot,
+            )
+        }
         WeaponFireAuthorization::Empty => WeaponFireEvents {
             dry_fire: true,
             ..WeaponFireEvents::default()
@@ -356,37 +376,55 @@ fn fire_hitscan(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     damage: f32,
+    pellet_count: u32,
+    spread_radians: f32,
     range: f32,
     resolution: ResolutionMode,
+    shell_counter: u32,
+    pellet_salt_name: &str,
+    active_slot: usize,
 ) -> WeaponFireEvents {
     let mut events = WeaponFireEvents {
         activate: Some(WeaponActivation { origin, direction }),
-        impact: None,
+        impacts: Vec::with_capacity(pellet_count as usize),
         dry_fire: false,
     };
 
     match resolution {
         ResolutionMode::Hitscan => {
-            let impact = match resolve_nearest_hit(
-                origin,
-                direction,
-                collision_world,
-                registry,
-                hit_zone_store,
-                anim_time,
-                range,
-            ) {
-                Some(NearestHit::Entity(entity)) => impact_from_entity(entity, damage),
-                Some(NearestHit::World(world)) => WeaponImpact {
-                    point: world.point,
-                    normal: world.normal,
-                    target: None,
-                    zone: None,
-                    outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
-                },
-                None => return events,
-            };
-            events.impact = Some(impact);
+            let mut pellet_rng = spread::PelletRng::new(spread::pellet_rng_seed(
+                shell_counter,
+                pellet_salt_name,
+                active_slot,
+            ));
+            for _ in 0..pellet_count {
+                let pellet_direction = spread::sample_cone_direction(
+                    direction,
+                    spread_radians,
+                    pellet_rng.next_f32(),
+                    pellet_rng.next_f32(),
+                );
+                let impact = match resolve_nearest_hit(
+                    origin,
+                    pellet_direction,
+                    collision_world,
+                    registry,
+                    hit_zone_store,
+                    anim_time,
+                    range,
+                ) {
+                    Some(NearestHit::Entity(entity)) => impact_from_entity(entity, damage),
+                    Some(NearestHit::World(world)) => WeaponImpact {
+                        point: world.point,
+                        normal: world.normal,
+                        target: None,
+                        zone: None,
+                        outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+                    },
+                    None => continue,
+                };
+                events.impacts.push(impact);
+            }
         }
     }
 
@@ -396,6 +434,8 @@ fn fire_hitscan(
 #[allow(clippy::too_many_arguments)] // mirrors the host/single-player hitscan inputs.
 pub(crate) fn resolve_client_fire(
     weapon: &mut WeaponComponent,
+    pellet_salt_name: &str,
+    active_slot: usize,
     button: FireButtonState,
     aim_origin: Vec3,
     aim_direction: Vec3,
@@ -410,9 +450,20 @@ pub(crate) fn resolve_client_fire(
         return None;
     }
 
-    let (cooldown_ms, range, resolution) = {
+    // As on the local path, consume one deterministic shell position only after
+    // this frame has an authorized cast. A send failure deliberately does not
+    // roll this back: the next shell must use the next fan.
+    let shell_counter = weapon.shells_fired;
+    weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
+    let (cooldown_ms, pellet_count, spread_radians, range, resolution) = {
         let stats = weapon.effective();
-        (stats.cooldown_ms, stats.range, stats.resolution)
+        (
+            stats.cooldown_ms,
+            stats.pellet_count,
+            stats.spread_degrees.to_radians(),
+            stats.range,
+            stats.resolution,
+        )
     };
     weapon.cooldown_remaining_ms = cooldown_ms;
     let hits = resolve_client_hitscan(
@@ -422,8 +473,13 @@ pub(crate) fn resolve_client_fire(
         registry,
         hit_zone_store,
         anim_time,
+        pellet_count,
+        spread_radians,
         range,
         resolution,
+        shell_counter,
+        pellet_salt_name,
+        active_slot,
     );
     Some(ClientFireResolution { client_tick, hits })
 }
@@ -461,25 +517,66 @@ fn resolve_client_hitscan(
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
+    pellet_count: u32,
+    spread_radians: f32,
     range: f32,
     resolution: ResolutionMode,
+    shell_counter: u32,
+    pellet_salt_name: &str,
+    active_slot: usize,
 ) -> Vec<LocalHitRecord> {
     match resolution {
-        ResolutionMode::Hitscan => match resolve_nearest_hit(
-            origin,
-            direction,
-            collision_world,
-            registry,
-            hit_zone_store,
-            anim_time,
-            range,
-        ) {
-            // Only an entity hit produces a local hit record; a nearer world hit
-            // (or no hit) yields none — the client owns no world-impact record.
-            Some(NearestHit::Entity(entity)) => vec![local_hit_record(entity)],
-            _ => Vec::new(),
-        },
+        ResolutionMode::Hitscan => {
+            let mut hits = Vec::with_capacity(pellet_count as usize);
+            let mut pellet_rng = spread::PelletRng::new(spread::pellet_rng_seed(
+                shell_counter,
+                pellet_salt_name,
+                active_slot,
+            ));
+            for _ in 0..pellet_count {
+                let pellet_direction = spread::sample_cone_direction(
+                    direction,
+                    spread_radians,
+                    pellet_rng.next_f32(),
+                    pellet_rng.next_f32(),
+                );
+                // Only an entity hit produces a local hit record; a nearer world
+                // hit (or no hit) yields none — the client owns no world-impact
+                // record.
+                if let Some(NearestHit::Entity(entity)) = resolve_nearest_hit(
+                    origin,
+                    pellet_direction,
+                    collision_world,
+                    registry,
+                    hit_zone_store,
+                    anim_time,
+                    range,
+                ) {
+                    hits.push(local_hit_record(entity));
+                }
+            }
+            hits
+        }
     }
+}
+
+/// The deterministic pellet salt chooses a canonical descriptor identity first,
+/// then the live component's credit source, and finally the shared unknown
+/// source. Never use allocation-ordered entity/network ids here: spawn-order
+/// reversal replays must preserve the sampled fan.
+pub(crate) fn pellet_salt_name(
+    registry: &EntityRegistry,
+    weapon_id: EntityId,
+    weapon: &WeaponComponent,
+) -> String {
+    registry
+        .get_component::<DescriptorProvenance>(weapon_id)
+        .ok()
+        .map(|provenance| provenance.canonical_name.as_str())
+        .filter(|name| !name.is_empty())
+        .or_else(|| (!weapon.credit_source.is_empty()).then_some(weapon.credit_source.as_str()))
+        .unwrap_or(UNKNOWN_WEAPON_CREDIT_SOURCE)
+        .to_owned()
 }
 
 fn local_hit_record(entity: EntityRayHit) -> LocalHitRecord {
@@ -596,6 +693,19 @@ pub(crate) mod tests {
             actual.y,
             actual.z,
         );
+    }
+
+    fn assert_vec3_bits_eq(actual: Vec3, expected: Vec3) {
+        assert_eq!(actual.x.to_bits(), expected.x.to_bits());
+        assert_eq!(actual.y.to_bits(), expected.y.to_bits());
+        assert_eq!(actual.z.to_bits(), expected.z.to_bits());
+    }
+
+    fn only_impact(events: &WeaponFireEvents) -> &WeaponImpact {
+        let [impact] = events.impacts.as_slice() else {
+            panic!("expected exactly one impact, got {}", events.impacts.len());
+        };
+        impact
     }
 
     pub(crate) fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
@@ -769,6 +879,8 @@ pub(crate) mod tests {
 
         let first = resolve_client_fire(
             &mut state,
+            "weapon.unknown",
+            0,
             button,
             Vec3::ZERO,
             Vec3::NEG_Z,
@@ -783,9 +895,15 @@ pub(crate) mod tests {
         assert_eq!(first.client_tick, 7);
         assert_eq!(first.hits.len(), 1);
         assert_eq!(first.hits[0].target, target);
+        assert_eq!(
+            state.shells_fired, 1,
+            "the resolved client shell advances once"
+        );
 
         let blocked = resolve_client_fire(
             &mut state,
+            "weapon.unknown",
+            0,
             FireButtonState {
                 pressed: false,
                 active: true,
@@ -821,12 +939,262 @@ pub(crate) mod tests {
         );
 
         assert_eq!(events.event_names(), vec!["activate", "impact"]);
-        let impact = events.impact.expect("world hit should emit impact");
+        let impact = only_impact(&events);
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
         assert_vec3_approx(impact.normal, Vec3::new(0.0, 0.0, 1.0));
         assert_eq!(
             impact.outcome,
             ActivationOutcome::Hit(DamagePayload { amount: 25.0 })
+        );
+    }
+
+    #[test]
+    fn legacy_single_pellet_keeps_exact_axis_and_one_impact_event() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let (_, aim_direction) = camera.aim_ray();
+        let world = wall_world();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.impacts.len(), 1);
+        assert_eq!(events.event_names(), vec!["activate", "impact"]);
+        let activation = events.activate.expect("resolved shell activates once");
+        assert_vec3_bits_eq(activation.direction, aim_direction);
+        assert_vec3_approx(only_impact(&events).point, Vec3::new(0.0, 0.0, -5.0));
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .expect("weapon remains attached")
+                .shells_fired,
+            1,
+            "even a legacy exact-axis shell consumes one deterministic position"
+        );
+    }
+
+    #[test]
+    fn eight_zero_spread_pellets_resolve_eight_exact_axis_impacts() {
+        let mut registry = EntityRegistry::new();
+        let mut component = weapon_component(FireMode::Semi, 100.0);
+        component.pellet_count = 8;
+        component.spread_degrees = 0.0;
+        let weapon_id = spawn_weapon(&mut registry, component);
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = wall_world();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.impacts.len(), 8);
+        assert_eq!(events.event_names(), vec!["activate", "impact"]);
+        let exact_axis_point = events.impacts[0].point;
+        for impact in &events.impacts {
+            assert_vec3_bits_eq(impact.point, exact_axis_point);
+            assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
+            assert_vec3_approx(impact.normal, Vec3::new(0.0, 0.0, 1.0));
+        }
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .expect("weapon remains attached")
+                .shells_fired,
+            1,
+            "one multi-pellet shell increments once"
+        );
+    }
+
+    #[test]
+    fn client_all_pellets_miss_returns_valid_empty_declaration_and_advances_once() {
+        let registry = EntityRegistry::new();
+        let mut weapon = weapon_component(FireMode::Auto, 100.0);
+        weapon.pellet_count = 8;
+        weapon.spread_degrees = 4.0;
+
+        let resolution = resolve_client_fire(
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            7,
+            &CollisionWorld::new(),
+            &registry,
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("an off-cooldown shot still declares an all-miss shell");
+
+        assert!(
+            resolution.hits.is_empty(),
+            "an empty list is a valid miss declaration"
+        );
+        assert_eq!(weapon.shells_fired, 1);
+    }
+
+    #[test]
+    fn client_zero_spread_pellets_emit_one_entity_record_per_pellet() {
+        let mut registry = EntityRegistry::new();
+        let target = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
+        let mut weapon = weapon_component(FireMode::Auto, 100.0);
+        weapon.pellet_count = 8;
+        weapon.spread_degrees = 0.0;
+
+        let resolution = resolve_client_fire(
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            7,
+            &CollisionWorld::new(),
+            &registry,
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("an off-cooldown client shell resolves");
+
+        assert_eq!(resolution.hits.len(), 8);
+        for hit in resolution.hits {
+            assert_eq!(hit.target, target);
+            assert_vec3_approx(hit.point, Vec3::new(0.0, 0.0, -4.5));
+        }
+        assert_eq!(weapon.shells_fired, 1);
+    }
+
+    #[test]
+    fn client_fire_gate_does_not_advance_shell_counter_without_a_resolved_shell() {
+        let registry = EntityRegistry::new();
+        let mut weapon = weapon_component(FireMode::Auto, 100.0);
+        weapon.shells_fired = 9;
+        weapon.cooldown_remaining_ms = 1.0;
+
+        let resolution = resolve_client_fire(
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            FireButtonState {
+                pressed: false,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            7,
+            &CollisionWorld::new(),
+            &registry,
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        );
+
+        assert!(resolution.is_none());
+        assert_eq!(weapon.shells_fired, 9);
+    }
+
+    #[test]
+    fn no_tick_client_fire_state_advance_does_not_consume_a_shell_position() {
+        let mut weapon = weapon_component(FireMode::Auto, 100.0);
+        weapon.shells_fired = 9;
+
+        assert!(advance_client_fire_state(
+            &mut weapon,
+            FireButtonState {
+                pressed: false,
+                active: true,
+            },
+            0.0,
+        ));
+        assert_eq!(weapon.shells_fired, 9);
+    }
+
+    #[test]
+    fn pellet_salt_name_prefers_provenance_then_credit_source_then_unknown() {
+        let mut registry = EntityRegistry::new();
+
+        let mut provenance_component = weapon_component(FireMode::Semi, 100.0);
+        provenance_component.credit_source = "weapon.credit".to_string();
+        let provenance_weapon = spawn_weapon(&mut registry, provenance_component);
+        registry
+            .set_component(
+                provenance_weapon,
+                DescriptorProvenance {
+                    canonical_name: "weapon.canonical".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: postretro_entities::provenance::DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .expect("weapon provenance attaches");
+
+        let mut credit_component = weapon_component(FireMode::Semi, 100.0);
+        credit_component.credit_source = "weapon.credit".to_string();
+        let credit_weapon = spawn_weapon(&mut registry, credit_component);
+
+        let mut unknown_component = weapon_component(FireMode::Semi, 100.0);
+        unknown_component.credit_source.clear();
+        let unknown_weapon = spawn_weapon(&mut registry, unknown_component);
+
+        assert_eq!(
+            pellet_salt_name(
+                &registry,
+                provenance_weapon,
+                registry
+                    .get_component::<WeaponComponent>(provenance_weapon)
+                    .expect("weapon component remains attached"),
+            ),
+            "weapon.canonical"
+        );
+        assert_eq!(
+            pellet_salt_name(
+                &registry,
+                credit_weapon,
+                registry
+                    .get_component::<WeaponComponent>(credit_weapon)
+                    .expect("weapon component remains attached"),
+            ),
+            "weapon.credit"
+        );
+        assert_eq!(
+            pellet_salt_name(
+                &registry,
+                unknown_weapon,
+                registry
+                    .get_component::<WeaponComponent>(unknown_weapon)
+                    .expect("weapon component remains attached"),
+            ),
+            UNKNOWN_WEAPON_CREDIT_SOURCE
         );
     }
 
@@ -889,7 +1257,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("entity hit should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(
             impact.target,
             Some(target),
@@ -929,7 +1297,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("wall hit should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(impact.target, None, "wall wins; no entity target");
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
     }
@@ -960,7 +1328,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("entity hit should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(impact.target, Some(target), "nearer entity beats the wall");
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -2.5));
     }
@@ -992,7 +1360,7 @@ pub(crate) mod tests {
         );
 
         assert!(
-            events.impact.is_none(),
+            events.impacts.is_empty(),
             "entity beyond weapon range is not targeted"
         );
     }
@@ -1023,7 +1391,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("wall hit should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(impact.target, None, "near miss falls through to the wall");
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
     }
@@ -1068,7 +1436,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("downed target should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(impact.target, Some(corpse));
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -2.5));
     }
@@ -1215,6 +1583,8 @@ pub(crate) mod tests {
 
         let resolution = resolve_client_fire(
             &mut state,
+            "weapon.unknown",
+            0,
             FireButtonState {
                 pressed: true,
                 active: true,
@@ -1266,7 +1636,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("zone hit should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(impact.target, Some(target), "zone entity is targeted");
         assert_eq!(
             impact.zone.as_deref(),
@@ -1300,7 +1670,7 @@ pub(crate) mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("wall hit should emit impact");
+        let impact = only_impact(&events);
         assert_eq!(impact.target, None, "wall wins; no zone entity targeted");
         assert_eq!(impact.zone, None, "no zone tag for a world hit");
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
@@ -1339,7 +1709,7 @@ pub(crate) mod tests {
             0.0,
             1.0 / 60.0,
         );
-        let impact = events.impact.expect("weapon reports the entity hit");
+        let impact = only_impact(&events);
 
         assert_eq!(Some(direct.target), impact.target, "same target");
         assert_eq!(direct.zone, impact.zone, "same zone tag");

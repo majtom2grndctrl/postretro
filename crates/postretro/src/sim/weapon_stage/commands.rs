@@ -163,6 +163,10 @@ pub(in crate::sim) fn run_local_weapon_command(
     else {
         return (Vec::new(), Vec::new(), None);
     };
+    let active_slot = inventory
+        .as_ref()
+        .map_or(0, |inventory| inventory.active_slot);
+    let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &weapon_component);
     // The descriptor override stays unresolved in the component. Only this
     // App-fed local input gate resolves it against the mod-global policy.
     let block_during_reload = weapon_component
@@ -226,6 +230,8 @@ pub(in crate::sim) fn run_local_weapon_command(
     let events = weapon::tick_resolved_component(
         &registry,
         &mut weapon_component,
+        &pellet_salt_name,
+        active_slot,
         command,
         collision_world,
         hit_zone_store,
@@ -258,7 +264,10 @@ pub(in crate::sim) fn run_local_weapon_command(
         }
     }
     let _ = registry.set_component(weapon_id, weapon_component);
-    if let Some(impact) = events.impact.as_ref() {
+    // Task 4 will consume every pellet impact in order. This transitional read
+    // deliberately preserves the pre-spread single-impact behavior while the
+    // event shape is generalized here.
+    if let Some(impact) = events.impacts.first() {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
         apply_weapon_impact_damage(&mut registry, pawn, impact);
         on_impact(&mut registry);

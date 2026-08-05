@@ -1013,7 +1013,12 @@ mod tests {
                 .get_component::<WeaponComponent>(weapon_id)
                 .unwrap();
             assert_eq!(weapon.pellet_count, expected_count);
-            assert_eq!(weapon.spread_degrees, expected_spread);
+            assert!(
+                (weapon.spread_degrees - expected_spread).abs() <= f32::EPSILON,
+                "spread_degrees {} differs from expected {}",
+                weapon.spread_degrees,
+                expected_spread
+            );
         }
     }
 

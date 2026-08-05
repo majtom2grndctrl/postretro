@@ -8,8 +8,8 @@ mod machine;
 mod state;
 
 pub(super) use commands::{
-    normalize_all_inventory_liveness, normalize_inventory_liveness, refuse_local_switch,
-    run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
+    LocalWeaponCommandResult, normalize_all_inventory_liveness, normalize_inventory_liveness,
+    refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
 pub(crate) use state::transition_to_idle;
@@ -304,7 +304,7 @@ mod tests {
         let command = fire_command(true, true);
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events, _, _) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -317,8 +317,8 @@ mod tests {
             0.01,
             &mut no_impact,
         );
-        assert!(deliveries.is_empty());
-        assert!(events.is_empty());
+        assert!(result.reload_deliveries.is_empty());
+        assert!(result.weapon_events.is_empty());
         {
             let registry = registry.borrow();
             let inventory = registry.get_component::<Inventory>(pawn).unwrap();
@@ -332,7 +332,7 @@ mod tests {
             assert!(!outgoing.owner_reload_status().1);
         }
 
-        let (deliveries, events, _, _) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -345,8 +345,8 @@ mod tests {
             0.0,
             &mut no_impact,
         );
-        assert!(deliveries.is_empty());
-        assert!(events.is_empty());
+        assert!(result.reload_deliveries.is_empty());
+        assert!(result.weapon_events.is_empty());
         {
             let registry = registry.borrow();
             let inventory = registry.get_component::<Inventory>(pawn).unwrap();
@@ -356,7 +356,7 @@ mod tests {
             assert_eq!(outgoing.state_remaining_ms, 11);
         }
 
-        let (deliveries, events, _, _) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -369,8 +369,8 @@ mod tests {
             0.01,
             &mut no_impact,
         );
-        assert!(deliveries.is_empty());
-        assert!(events.is_empty());
+        assert!(result.reload_deliveries.is_empty());
+        assert!(result.weapon_events.is_empty());
         let registry_ref = registry.borrow();
         let inventory = registry_ref.get_component::<Inventory>(pawn).unwrap();
         let outgoing = registry_ref
@@ -461,7 +461,7 @@ mod tests {
         };
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events, repointed, _) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -476,7 +476,7 @@ mod tests {
         );
 
         assert_eq!(
-            deliveries,
+            result.reload_deliveries,
             vec![ReloadDelivery {
                 pawn,
                 weapon: outgoing,
@@ -484,8 +484,14 @@ mod tests {
             }],
             "the completed reload is the one lifecycle outcome before lowering"
         );
-        assert!(events.is_empty(), "the commit tick cannot authorize a shot");
-        assert_eq!(repointed, None, "the non-zero lower has only just started");
+        assert!(
+            result.weapon_events.is_empty(),
+            "the commit tick cannot authorize a shot"
+        );
+        assert_eq!(
+            result.repointed_pawn, None,
+            "the non-zero lower has only just started"
+        );
         let registry = registry.borrow();
         let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
         assert_eq!(outgoing.state, WieldableState::Lowering);
@@ -535,7 +541,7 @@ mod tests {
         };
         let mut no_impact = ignore_impact;
 
-        let (deliveries, events, repointed, _) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -550,15 +556,15 @@ mod tests {
         );
 
         assert_eq!(
-            deliveries,
+            result.reload_deliveries,
             vec![ReloadDelivery {
                 pawn,
                 weapon: outgoing,
                 outcome: ReloadOutcome::Completed { transferred: 8 },
             }]
         );
-        assert!(events.is_empty());
-        assert_eq!(repointed, Some(pawn));
+        assert!(result.weapon_events.is_empty());
+        assert_eq!(result.repointed_pawn, Some(pawn));
         let registry = registry.borrow();
         assert_eq!(
             registry
@@ -695,7 +701,7 @@ mod tests {
         };
         let mut no_impact = ignore_impact;
 
-        let (_, _, repointed, _) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -709,7 +715,7 @@ mod tests {
             &mut no_impact,
         );
 
-        assert_eq!(repointed, Some(pawn));
+        assert_eq!(result.repointed_pawn, Some(pawn));
         let registry = registry.borrow();
         assert_eq!(
             registry
@@ -3811,7 +3817,7 @@ mod tests {
             }
         };
 
-        let (_, events, _, impact_points) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -3825,9 +3831,9 @@ mod tests {
             &mut policy,
         );
 
-        assert_eq!(events, vec!["activate", "impact"]);
+        assert_eq!(result.weapon_events, vec!["activate", "impact"]);
         assert_eq!(
-            impact_points.len(),
+            result.weapon_impact_points.len(),
             8,
             "the cast set includes skipped pellets"
         );
@@ -3852,7 +3858,7 @@ mod tests {
             }
         };
 
-        let (_, _, _, impact_points) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -3866,7 +3872,11 @@ mod tests {
             &mut policy,
         );
 
-        assert_eq!(impact_points.len(), 8, "the cast set retains every pellet");
+        assert_eq!(
+            result.weapon_impact_points.len(),
+            8,
+            "the cast set retains every pellet"
+        );
         assert_eq!(policy_fires, 1, "shooter despawn settles before pellet two");
         let health = registry
             .borrow()
@@ -3886,7 +3896,7 @@ mod tests {
         let mut policy_fires = 0;
         let mut policy = |_: &mut EntityRegistry| policy_fires += 1;
 
-        let (_, events, _, impact_points) = run_local_weapon_command(
+        let result = run_local_weapon_command(
             &registry,
             Some(pawn),
             false,
@@ -3900,8 +3910,8 @@ mod tests {
             &mut policy,
         );
 
-        assert_eq!(events, vec!["activate", "impact"]);
-        assert_eq!(impact_points.len(), 8);
+        assert_eq!(result.weapon_events, vec!["activate", "impact"]);
+        assert_eq!(result.weapon_impact_points.len(), 8);
         assert_eq!(
             policy_fires, 8,
             "each world pellet runs its policy sequence"

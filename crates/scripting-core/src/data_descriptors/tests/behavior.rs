@@ -562,34 +562,43 @@ fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
 /// through the PRODUCTION paths — `scripts-build` + the QuickJS SDK prelude on
 /// one side, the mod-rooted Luau prelude on the other — and each result is run
 /// through the production descriptor bridge. The two resulting
-/// `BehaviorGraphDescriptor`s are then compared for full structural equality, so
-/// ANY divergence between the twins fails here: a retuned range, a reordered
-/// edge, a changed motion/action verb, a renamed state or animation, a dropped
-/// interrupt, a different guard tree. The absolute pin below additionally fails
-/// when both twins are changed together in a way that leaves the shipped enemy
-/// disagreeing with the shape the engine's parity tests assume.
+/// `EntityTypeDescriptor`s are then compared for full structural equality, so
+/// ANY divergence between the twins fails here: a retuned health value or
+/// hitbox, a reordered edge, a changed motion/action verb, a renamed state or
+/// animation, a dropped interrupt, or a different guard tree. The absolute pins
+/// below additionally fail when both twins are changed together in a way that
+/// leaves the shipped enemy disagreeing with the shape the engine's parity tests
+/// assume.
 ///
 /// The pose fixture below extends the same production-path coverage to the
 /// cross-component mesh-animation names its direct graph drives.
 #[test]
-fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
-    let ts = shipped_reference_enemy_from_typescript()
-        .behavior
-        .expect("the TS reference enemy carries a behavior graph");
-    let luau = shipped_reference_enemy_from_luau()
-        .behavior
-        .expect("the Luau reference enemy carries a behavior graph");
+fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
+    let ts_descriptor = shipped_reference_enemy_from_typescript();
+    let luau_descriptor = shipped_reference_enemy_from_luau();
 
     assert_eq!(
-        ts, luau,
-        "the shipped reference enemy's two authorings must produce the identical graph"
+        ts_descriptor, luau_descriptor,
+        "the shipped reference enemy's two authorings must produce identical descriptors"
     );
+
+    // The absolute pins: the health and graph shape the engine's parity tests assume.
+    assert_eq!(
+        ts_descriptor
+            .health
+            .as_ref()
+            .expect("the reference enemy has health")
+            .max,
+        70.0
+    );
+    let ts = ts_descriptor
+        .behavior
+        .expect("the TS reference enemy carries a behavior graph");
     assert!(
         postretro_foundation::data_descriptors::types::behavior_lints::inspect(&ts).is_empty(),
         "the shipped reference enemy authors both disengagement paths"
     );
 
-    // The absolute pin: the shape the engine's behavior tests assume.
     assert_eq!(ts.initial, "idle");
     assert_eq!(ts.move_speed, 3.0);
     assert_eq!(ts.engagement_radius, Some(2.0));

@@ -19,6 +19,15 @@ use super::state::{
     WieldableStateEvent, begin_raising, finish_lowering, transition_wieldable_state,
 };
 
+#[derive(Debug, Default)]
+pub(in crate::sim) struct LocalWeaponCommandResult {
+    pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
+    pub(in crate::sim) weapon_events: Vec<&'static str>,
+    pub(in crate::sim) repointed_pawn: Option<EntityId>,
+    #[cfg(test)]
+    pub(in crate::sim) weapon_impact_points: Vec<Vec3>,
+}
+
 pub(in crate::sim) fn weapon_fire_command(
     button: FireButtonState,
     post_movement: PostMovementCommand,
@@ -150,25 +159,20 @@ pub(in crate::sim) fn run_local_weapon_command(
     anim_time: f64,
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-) -> (
-    Vec<ReloadDelivery>,
-    Vec<&'static str>,
-    Option<EntityId>,
-    Vec<Vec3>,
-) {
+) -> LocalWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut inventory = pawn.and_then(|pawn| {
         normalize_inventory_liveness(&mut registry, pawn).map(|(inventory, _)| inventory)
     });
     let weapon_id = inventory.as_ref().and_then(Inventory::active_wieldable);
     let Some(weapon_id) = weapon_id else {
-        return (Vec::new(), Vec::new(), None, Vec::new());
+        return LocalWeaponCommandResult::default();
     };
     let Ok(mut weapon_component) = registry
         .get_component::<WeaponComponent>(weapon_id)
         .cloned()
     else {
-        return (Vec::new(), Vec::new(), None, Vec::new());
+        return LocalWeaponCommandResult::default();
     };
     let active_slot = inventory
         .as_ref()
@@ -252,9 +256,10 @@ pub(in crate::sim) fn run_local_weapon_command(
         anim_time,
         machine.authorization,
     );
-    // This is the cast result, intentionally captured before any impact policy
-    // can despawn a target and make later pellets inapplicable.
-    let impact_points = events.impacts.iter().map(|impact| impact.point).collect();
+    #[cfg(test)]
+    // Determinism tests compare the cast set, including pellets a policy makes
+    // inapplicable. Capture it before the first policy runs.
+    let weapon_impact_points = events.impacts.iter().map(|impact| impact.point).collect();
     let mut repointed_pawn = None;
     if machine.lowered {
         if let (Some(pawn), Some(inventory)) = (pawn, inventory.as_mut())
@@ -309,12 +314,13 @@ pub(in crate::sim) fn run_local_weapon_command(
         }
         on_impact(&mut registry);
     }
-    (
-        machine.deliveries,
-        events.event_names(),
+    LocalWeaponCommandResult {
+        reload_deliveries: machine.deliveries,
+        weapon_events: events.event_names(),
         repointed_pawn,
-        impact_points,
-    )
+        #[cfg(test)]
+        weapon_impact_points,
+    }
 }
 
 pub(crate) fn normalize_inventory_liveness(

@@ -90,6 +90,13 @@ weapon, already carrying per-shell reload — hit like rifles.
   `simulate_tick`, which the determinism gate replays — so seeding here is
   deterministic from sim state, deliberately opposite the precedent's policy
   while reusing its math.
+- **Divergence, named:** `E18--trap-pools-seeded-arming` (whose SplitMix64 mixer
+  Task 2 reuses) rules "RNG lives only in the install pass — never in per-tick
+  evaluation." That rule's underlying invariant is replay determinism, which its
+  install-time-only scoping guaranteed for trap pools. This spec does run seeded
+  RNG per tick, and preserves the same invariant a different way: directions are
+  a pure function of (fire tick, weapon id), so replayed runs reproduce them
+  exactly — verified by the determinism gate itself (AC 6).
 
 **Placement.** Spread lives on the weapon descriptor behind `effective()` — the
 stat seam the roadmap reserves for accuracy axes — not on the camera/aim layer and

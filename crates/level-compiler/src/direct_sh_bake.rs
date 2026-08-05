@@ -36,7 +36,7 @@ use crate::bake_control::BakeControl;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
     DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
-    PROBES_PER_CELL as FORMAT_PROBES_PER_CELL,
+    PROBES_PER_CELL as FORMAT_PROBES_PER_CELL, delta_probe_f16_stride,
 };
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
@@ -273,12 +273,28 @@ pub fn bake_direct_sh_volume_controlled(
 /// Bake sparse per-selected-light direct SH deltas. `affinity_lights` entries are
 /// positions in `EntityShadowLightsSection::light_indices`, not AlphaLights or
 /// source light indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectDeltaBakeStats {
+    /// One nonempty selected-light slot, ordered by descending payload bytes.
+    pub(crate) rows: Vec<DirectDeltaBakeStatsRow>,
+    pub(crate) total_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectDeltaBakeStatsRow {
+    pub(crate) selection_slot: usize,
+    /// Stable identity: position in `StaticBakedLights`.
+    pub(crate) static_index: u64,
+    pub(crate) csr_entry_count: usize,
+    pub(crate) byte_total: usize,
+}
+
 pub fn bake_direct_sh_delta_volumes(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
-) -> Option<DirectShDeltaVolumesSection> {
+) -> Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)> {
     bake_direct_sh_delta_volumes_controlled(
         inputs,
         config,
@@ -294,7 +310,7 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
     control: &BakeControl,
-) -> Option<DirectShDeltaVolumesSection> {
+) -> Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)> {
     if entity_shadow_lights.light_indices.is_empty()
         || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
     {
@@ -343,7 +359,12 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         .zip(csr_cells.par_iter())
         .flat_map(|(&selection_index, &cell)| {
             let _permit = control.governor().enter();
-            let entry = selected[selection_index as usize];
+            let selection_slot = usize::try_from(selection_index)
+                .expect("direct SH delta selection indices fit usize");
+            let entry = selected
+                .get(selection_slot)
+                .copied()
+                .expect("direct SH delta CSR entry must index the selected-light slice");
             let subblock =
                 bake_direct_delta_subblock(inputs, &layout, entry.light, entry.static_index, cell);
             control.advance(1);
@@ -351,7 +372,44 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         })
         .collect();
 
-    Some(DirectShDeltaVolumesSection {
+    // `build_csr` numbers each entry by its position in `selected`, so these are
+    // selection slots rather than AlphaLights/source-light ids. The bake reads
+    // the same producer contract above when resolving each selected light.
+    let mut csr_entry_counts = vec![0usize; selected.len()];
+    for &selection_index in &affinity_lights {
+        let slot =
+            usize::try_from(selection_index).expect("direct SH delta selection indices fit usize");
+        let Some(count) = csr_entry_counts.get_mut(slot) else {
+            unreachable!("direct SH delta CSR entry must index the selected-light slice");
+        };
+        *count += 1;
+    }
+
+    let per_entry_payload_bytes = FORMAT_PROBES_PER_CELL
+        * delta_probe_f16_stride(TILE_DIMENSION)
+        * std::mem::size_of::<u16>();
+    let mut rows: Vec<_> = selected
+        .iter()
+        .enumerate()
+        .filter_map(|(selection_slot, light)| {
+            let csr_entry_count = csr_entry_counts[selection_slot];
+            (csr_entry_count != 0).then_some(DirectDeltaBakeStatsRow {
+                selection_slot,
+                static_index: light.static_index,
+                csr_entry_count,
+                byte_total: csr_entry_count * per_entry_payload_bytes,
+            })
+        })
+        .collect();
+    rows.sort_unstable_by(|left, right| {
+        right
+            .byte_total
+            .cmp(&left.byte_total)
+            .then_with(|| left.selection_slot.cmp(&right.selection_slot))
+    });
+    let total_bytes = rows.iter().map(|row| row.byte_total).sum();
+
+    let section = DirectShDeltaVolumesSection {
         affinity_factor: FORMAT_AFFINITY_FACTOR,
         affinity_dims,
         tile_dimension: TILE_DIMENSION,
@@ -359,7 +417,13 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         affinity_offsets,
         affinity_lights,
         delta_subblocks,
-    })
+    };
+    debug_assert_eq!(
+        total_bytes,
+        section.delta_subblocks.len() * std::mem::size_of::<u16>()
+    );
+
+    Some((section, DirectDeltaBakeStats { rows, total_bytes }))
 }
 
 #[derive(Clone, Copy)]
@@ -1450,8 +1514,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn direct_sh_delta_affinity_lights_are_selection_indices() {
+    fn bake_direct_sh_delta_selection_index_fixture() -> (
+        DirectShDeltaVolumesSection,
+        DirectDeltaBakeStats,
+        Option<usize>,
+        usize,
+    ) {
         let geo = floor_and_walls_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -1487,7 +1555,7 @@ mod tests {
             std::sync::Arc::new(crate::governor::Governor::new(2, false)),
             &progress,
         );
-        let delta = bake_direct_sh_delta_volumes_controlled(
+        let (delta, stats) = bake_direct_sh_delta_volumes_controlled(
             &inputs,
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
@@ -1495,8 +1563,14 @@ mod tests {
             &control,
         )
         .expect("selected lights should produce direct deltas");
-        assert_eq!(progress.total(), Some(delta.affinity_lights.len()));
-        assert_eq!(progress.completed(), delta.affinity_lights.len());
+        (delta, stats, progress.total(), progress.completed())
+    }
+
+    #[test]
+    fn direct_sh_delta_affinity_lights_are_selection_indices() {
+        let (delta, _, total, completed) = bake_direct_sh_delta_selection_index_fixture();
+        assert_eq!(total, Some(delta.affinity_lights.len()));
+        assert_eq!(completed, delta.affinity_lights.len());
 
         assert!(
             delta.affinity_lights.iter().all(|&index| index < 2),
@@ -1510,6 +1584,21 @@ mod tests {
         assert!(
             !delta.affinity_lights.contains(&2),
             "AlphaLights index 2 must not appear in affinity_lights"
+        );
+    }
+
+    #[test]
+    fn direct_sh_delta_stats_total_matches_section_payload() {
+        let (delta, stats, _, _) = bake_direct_sh_delta_selection_index_fixture();
+        assert_eq!(
+            stats.total_bytes,
+            delta.delta_subblocks.len() * std::mem::size_of::<u16>(),
+            "histogram total must account for every serialized f16 half"
+        );
+        assert_eq!(
+            stats.rows.iter().map(|row| row.byte_total).sum::<usize>(),
+            stats.total_bytes,
+            "per-selection-slot histogram rows must sum to the total"
         );
     }
 
@@ -1548,7 +1637,7 @@ mod tests {
         let selected = EntityShadowLightsSection {
             light_indices: vec![0],
         };
-        let delta =
+        let (delta, _) =
             bake_direct_sh_delta_volumes(&inputs, &config, &alpha_lights, &selected).unwrap();
         let excluded = bake_direct_for_lights(&[kept_light], &geo);
 

@@ -946,10 +946,10 @@ fn run_after_parsing(
             });
     let direct_sh_delta_elapsed = stage_start.elapsed();
 
-    let (entity_shadow_lights_section, direct_sh_delta_volumes_section) =
+    let (entity_shadow_lights_section, direct_sh_delta_volumes_section, direct_sh_delta_stats) =
         match raw_entity_shadow_lights_section {
             Some(selection) => match raw_direct_sh_delta_volumes_section {
-                Some(deltas)
+                Some((deltas, stats))
                     if direct_sh_volume_section.as_ref().is_some_and(|direct| {
                         pack::direct_sh_delta_is_usable_for_selection(
                             &deltas,
@@ -958,24 +958,24 @@ fn run_after_parsing(
                         )
                     }) =>
                 {
-                    (Some(selection), Some(deltas))
+                    (Some(selection), Some(deltas), Some(stats))
                 }
                 Some(_) => {
                     log::warn!(
                         "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is unusable for the DirectShVolume base",
                         selection.light_indices.len()
                     );
-                    (None, None)
+                    (None, None, None)
                 }
                 None => {
                     log::warn!(
                         "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is absent",
                         selection.light_indices.len()
                     );
-                    (None, None)
+                    (None, None, None)
                 }
             },
-            None => (None, None),
+            None => (None, None, None),
         };
     timings.push((
         StageId::EntityShadowLights.label(),
@@ -992,18 +992,32 @@ fn run_after_parsing(
     } else {
         reporter.skip_stage(StageId::DirectShDeltaBake);
     }
-    if args.verbose {
-        if let Some(ref section) = direct_sh_delta_volumes_section {
-            log::info!(
-                "DirectShDeltaVolumes: {} CSR entr(y/ies), affinity grid {}x{}x{}",
-                section.affinity_lights.len(),
-                section.affinity_dims[0],
-                section.affinity_dims[1],
-                section.affinity_dims[2],
-            );
-        } else {
-            log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
+    if let Some(stats) = direct_sh_delta_stats.as_ref() {
+        let top = stats
+            .rows
+            .first()
+            .expect("a usable direct SH delta section has at least one CSR entry");
+        log::info!(
+            "DirectShDeltaVolumes: {} delta bytes; top static_index {} (selection slot {}, {} CSR entries, {} bytes)",
+            stats.total_bytes,
+            top.static_index,
+            top.selection_slot,
+            top.csr_entry_count,
+            top.byte_total,
+        );
+        if args.verbose {
+            for row in &stats.rows {
+                log::info!(
+                    "DirectShDeltaVolumes histogram: selection slot {}, static_index {}, {} CSR entries, {} bytes",
+                    row.selection_slot,
+                    row.static_index,
+                    row.csr_entry_count,
+                    row.byte_total,
+                );
+            }
         }
+    } else if args.verbose {
+        log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);

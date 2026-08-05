@@ -66,9 +66,18 @@ The coarser 2.25 m spacing changes cell boundaries and cannot prove the 1.33 m f
 
 The ordinary pack section-size line is intentionally separate from the Task 1 pipeline log site.
 
-### 2026-08-04 runtime check limitation
+### 2026-08-04 runtime footprint
 
-Two local engine launches of the fixture stalled after desktop startup and before resource construction; neither emitted the direct compose footprint. The first temporary output path resolved `/private` as content root. A second run under `content/dev/maps/` resolved `content/dev` correctly but stalled at the same desktop-startup point. The captured unit-level direct-promotion footprint tests remain green. A desktop environment that can complete window initialization is still needed for live-load evidence.
+Automated desktop launches stalled before resource construction, but an interactive desktop launch of the small fixture completed. It emitted one direct-promotion line: 9,289,728 B `delta_subblocks`, 388 B `affinity_offsets`, 2,016 B `affinity_lights`, 0 B animation descriptors, 9,292,132 B total. The adjacent `Direct SH compose: 504 selected-light CSR entries` line matches the compiler output.
+
+### 2026-08-04 stress variant
+
+This follow-up stress run used `--lightmap-density 0.8 --sh-probe-spacing 2.0 --soft-shadow-samples 64 -v --no-tui`. It is closer to the dense target than the 2.25 m scout, but still not the AC-1 1.33 m reproduction.
+
+- Direct-delta payload: 401,154,048 bytes across 21,764 CSR entries. Serialized `DirectShDeltaVolumes`: 401,250,346 bytes.
+- Largest contributor: static index 8, with 528 CSR entries / 9,732,096 bytes.
+- Emitted SH sections: 447,193,334 bytes. Non-SH sections: 11,446,642 bytes. Total emitted payload: 458,639,976 bytes.
+- Build time: 645.80 s; SH bake: 634.57 s. The cache-less direct-delta stage took 2.82 s.
 
 ### 2026-08-04 PRL byte identity
 

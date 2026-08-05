@@ -360,6 +360,8 @@ mod tests {
         descriptor.mesh = None;
         descriptor.weapon = Some(WeaponDescriptor {
             damage: 1.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 1.0,
             cooldown_ms: 1.0,
             fire_mode: FireMode::Semi,

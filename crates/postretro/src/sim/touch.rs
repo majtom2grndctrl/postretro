@@ -762,6 +762,8 @@ mod tests {
     fn weapon(canonical_name: &str, magazine: u32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
@@ -878,6 +880,8 @@ mod tests {
             movement: None,
             weapon: Some(WeaponDescriptor {
                 damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 100.0,
                 cooldown_ms: 100.0,
                 fire_mode: FireMode::Semi,

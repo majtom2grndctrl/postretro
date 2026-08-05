@@ -601,6 +601,8 @@ pub(crate) mod tests {
     pub(crate) fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage: 25.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 10.0,
             cooldown_ms,
             fire_mode,
@@ -636,6 +638,8 @@ pub(crate) mod tests {
     fn weapon_descriptor(fire_mode: FireMode, cooldown_ms: f32) -> WeaponDescriptor {
         WeaponDescriptor {
             damage: 25.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 10.0,
             cooldown_ms,
             fire_mode,

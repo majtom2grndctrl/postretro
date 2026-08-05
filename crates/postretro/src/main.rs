@@ -7343,6 +7343,8 @@ mod tests {
             movement: None,
             weapon: Some(postretro_foundation::WeaponDescriptor {
                 damage: 1.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 1.0,
                 cooldown_ms: 1.0,
                 fire_mode: postretro_foundation::FireMode::Semi,

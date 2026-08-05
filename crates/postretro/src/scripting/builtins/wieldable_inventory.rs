@@ -341,6 +341,8 @@ mod tests {
             movement: None,
             weapon: Some(WeaponDescriptor {
                 damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 20.0,
                 cooldown_ms: 100.0,
                 fire_mode: FireMode::Semi,

@@ -1525,6 +1525,8 @@ mod tests {
     pub(super) fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
@@ -1547,6 +1549,8 @@ mod tests {
     ) -> (WeaponComponent, AmmoReserve) {
         let descriptor = WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

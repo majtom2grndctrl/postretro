@@ -656,6 +656,8 @@ mod tests {
     ) -> WeaponDescriptor {
         WeaponDescriptor {
             damage,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 64.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

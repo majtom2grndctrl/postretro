@@ -2390,6 +2390,8 @@ mod tests {
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
             damage: 14.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 140.0,
             cooldown_ms: 180.0,
             fire_mode: FireMode::Auto,
@@ -2581,6 +2583,8 @@ mod tests {
     fn test_weapon(damage: f32, range: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
@@ -2883,6 +2887,8 @@ mod tests {
             movement: None,
             weapon: Some(WeaponDescriptor {
                 damage: 1.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 1.0,
                 cooldown_ms: 1.0,
                 fire_mode: FireMode::Semi,

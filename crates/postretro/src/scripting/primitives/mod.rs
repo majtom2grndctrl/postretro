@@ -321,7 +321,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
-        .field("damage", "f32", "Base damage payload per resolved shot. Must be finite and ≥ 0.")
+        .field("damage", "f32", "Base damage payload per pellet; a shell's total is damage × pelletCount. Must be finite and ≥ 0.")
+        .field("pelletCount?", "u32", "Pellets resolved per shell. Range: 1..=32; defaults to 1.")
+        .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
         .field("range", "f32", "Maximum hitscan distance in metres. Must be finite and > 0.")
         .field("fireRateMs", "f32", "Minimum interval between shots in milliseconds. Must be finite and > 0.")
         .field("fireMode", "FireMode", "Semi or automatic input gate.")

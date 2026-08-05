@@ -260,6 +260,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
             id,
             WeaponComponent::from_descriptor(&WeaponDescriptor {
                 damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 30.0,
                 cooldown_ms: 80.0,
                 fire_mode: FireMode::Semi,

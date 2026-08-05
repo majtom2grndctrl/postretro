@@ -804,6 +804,8 @@ mod tests {
             movement: None,
             weapon: Some(WeaponDescriptor {
                 damage,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 100.0,
                 cooldown_ms: 250.0,
                 fire_mode: FireMode::Semi,
@@ -1015,8 +1017,12 @@ mod tests {
 
     #[test]
     fn weapon_refresh_preserves_runtime_state() {
-        let old = vec![weapon_descriptor("pistol", 10.0)];
-        let new = vec![weapon_descriptor("pistol", 25.0)];
+        let mut old = vec![weapon_descriptor("pistol", 10.0)];
+        old[0].weapon.as_mut().unwrap().pellet_count = 2;
+        old[0].weapon.as_mut().unwrap().spread_degrees = 1.0;
+        let mut new = vec![weapon_descriptor("pistol", 25.0)];
+        new[0].weapon.as_mut().unwrap().pellet_count = 8;
+        new[0].weapon.as_mut().unwrap().spread_degrees = 4.0;
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
         let mut weapon = WeaponComponent::from_descriptor_with_canonical(
@@ -1025,6 +1031,9 @@ mod tests {
         );
         weapon.cooldown_remaining_ms = 42.0;
         weapon.shoot_press_consumed = true;
+        weapon.magazine = 3;
+        weapon.state = WieldableState::Reloading;
+        weapon.shells_fired = 7;
         registry.set_component(id, weapon).unwrap();
         registry
             .set_component(id, provenance("pistol", &[DescriptorComponentKind::Weapon]))
@@ -1042,8 +1051,13 @@ mod tests {
             panic!("expected weapon replacement");
         };
         assert_eq!(component.damage, 25.0);
+        assert_eq!(component.pellet_count, 8);
+        assert_eq!(component.spread_degrees, 4.0);
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
+        assert_eq!(component.magazine, 3);
+        assert_eq!(component.state, WieldableState::Reloading);
+        assert_eq!(component.shells_fired, 7);
         assert_eq!(component.credit_source, "pistol");
     }
 

@@ -129,6 +129,8 @@ mod tests {
     fn refreshed_ammo_descriptor(reload_style: ReloadStyle) -> WeaponDescriptor {
         WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

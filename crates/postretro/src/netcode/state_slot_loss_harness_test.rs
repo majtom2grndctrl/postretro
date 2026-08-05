@@ -130,6 +130,8 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
     let weapon = |ammo_type: &str| {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 64.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

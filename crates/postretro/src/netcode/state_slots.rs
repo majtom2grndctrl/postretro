@@ -1274,6 +1274,8 @@ mod tests {
                 weapon,
                 WeaponComponent {
                     damage: 10.0,
+                    pellet_count: 1,
+                    spread_degrees: 0.0,
                     range: 100.0,
                     cooldown_ms: 250.0,
                     lower_ms: 0,
@@ -1292,6 +1294,7 @@ mod tests {
                     state_total_ms: 0,
                     state_elapsed_sub_ms: 0.0,
                     reload_credited: 0,
+                    shells_fired: 0,
                     reload_feedback: Default::default(),
                 },
             )
@@ -1327,6 +1330,8 @@ mod tests {
                 weapon,
                 WeaponComponent {
                     damage: 10.0,
+                    pellet_count: 1,
+                    spread_degrees: 0.0,
                     range: 100.0,
                     cooldown_ms: 250.0,
                     lower_ms: 0,
@@ -1355,6 +1360,7 @@ mod tests {
                     state_total_ms: spec.state_total_ms,
                     state_elapsed_sub_ms: 0.0,
                     reload_credited: 0,
+                    shells_fired: 0,
                     reload_feedback: Default::default(),
                 },
             )

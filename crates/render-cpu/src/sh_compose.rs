@@ -21,6 +21,9 @@ pub struct ComposeGridParams {
     pub affinity_dims: [u32; 3],
 }
 
+/// Development-only description of the storage buffers bound by an SH compose
+/// pass. Shipping builds do not compile this instrumentation.
+#[cfg(feature = "dev-tools")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeStorageFootprint {
     pub delta_subblocks_bytes: usize,
@@ -29,6 +32,7 @@ pub struct ComposeStorageFootprint {
     pub animation_descriptor_indices_bytes: usize,
 }
 
+#[cfg(feature = "dev-tools")]
 impl ComposeStorageFootprint {
     pub fn total_bytes(&self) -> usize {
         self.delta_subblocks_bytes

@@ -4,10 +4,11 @@
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+#[cfg(feature = "dev-tools")]
+use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, ComposeStorageFootprint, DirectDeltaComposeBuffers,
-    build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
-    u32_slice_to_bytes,
+    ComposeGridParams, DirectDeltaComposeBuffers, build_compose_grid_bytes,
+    build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::animated_direct_sh_compose::{
@@ -25,6 +26,7 @@ pub(super) const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_SELECTION_WEIGHTS: u32 = 26;
 const BIND_DEBUG_OVERRIDE: u32 = 27;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
+#[cfg(feature = "dev-tools")]
 const DIRECT_PROMOTION_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-41 promotion @group(0)";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,6 +107,7 @@ impl DirectPromotionStorage {
         }
     }
 
+    #[cfg(feature = "dev-tools")]
     fn footprint(&self) -> ComposeStorageFootprint {
         ComposeStorageFootprint {
             delta_subblocks_bytes: self.subblock_bytes.len(),
@@ -116,6 +119,7 @@ impl DirectPromotionStorage {
         }
     }
 
+    #[cfg(feature = "dev-tools")]
     fn log_footprint(&self) {
         self.footprint().log(DIRECT_PROMOTION_FOOTPRINT_LABEL);
     }
@@ -360,8 +364,9 @@ fn build_promotion_pass(
     output_storage_view: &wgpu::TextureView,
 ) -> DirectShComposePipeline {
     let storage = DirectPromotionStorage::new(delta, layout.grid_dimensions);
-    // One construction-site call covers both cases. The promotion pass binds
-    // only id-41 storage; runtime weights and Case 2's id-45 pass are excluded.
+    // The instrumentation covers both cases. The promotion pass binds only
+    // id-41 storage; runtime weights and Case 2's id-45 pass are excluded.
+    #[cfg(feature = "dev-tools")]
     storage.log_footprint();
     let DirectPromotionStorage {
         buffers,
@@ -599,15 +604,20 @@ fn direct_compose_should_dispatch(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "dev-tools")]
     use log::Level;
+    #[cfg(feature = "dev-tools")]
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
+    #[cfg(feature = "dev-tools")]
     use postretro_level_format::octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
+    #[cfg(feature = "dev-tools")]
     use postretro_test_log_capture::LogCapture;
 
+    #[cfg(feature = "dev-tools")]
     fn direct_delta_fixture() -> DirectShDeltaVolumesSection {
         DirectShDeltaVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
@@ -643,6 +653,7 @@ mod tests {
         assert!(bytes[20..32].iter().all(|&byte| byte == 0));
     }
 
+    #[cfg(feature = "dev-tools")]
     #[test]
     fn direct_promotion_logs_id_41_bound_storage_once() {
         let section = direct_delta_fixture();
@@ -667,6 +678,7 @@ mod tests {
         capture.assert_not_logged(Level::Info, "SH compose @group(1) storage footprint:");
     }
 
+    #[cfg(feature = "dev-tools")]
     #[test]
     fn direct_promotion_case_2_stub_logs_actual_bound_sizes_once() {
         // Case 2 may have id 45 without id 41. Its promotion pass still binds

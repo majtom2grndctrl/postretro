@@ -11,10 +11,12 @@
 import { defineImpactEvent } from "postretro";
 
 const RESURRECT_DELAY_MS = 3_000;
-// A point-blank full shotgun shell deals 24 damage. The 40-HP dummy goes
-// 40 → 16 → -8 and downs; its next shell reaches -32, crossing this finisher
-// level. The `.le` predicate also gibs a shell landing exactly at -12.
-const FINISHER_OVERSHOOT = -12;
+// This is one authored per-impact raw-overkill rule, not accumulated shell
+// damage. Stored health floors at zero, so a 3-damage corpse pellet reads
+// `healthAfter = -3`. The 48-HP dummy therefore downs on the final pellet of
+// its second 24-damage shell, then its next shell gibs on its first pellet.
+// Mods that do not want gibbing omit or replace the despawn branch below.
+const FINISHER_OVERSHOOT = -3;
 
 export const combatDummyLifecycle = defineImpactEvent(
   "dev:combat-dummy-lifecycle",

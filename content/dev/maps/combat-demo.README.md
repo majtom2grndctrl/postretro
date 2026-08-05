@@ -5,7 +5,7 @@ DEMO CONTENT exercising three connected paths end to end:
 1. **Impact-derived lifecycle.** A descriptor-declared health+hitbox entity is
    placed in a map and hit by the shipped weapon. A **mod-global** impact policy
    chooses what lethal damage means: ordinary lethal damage downs the dummy and
-   queues recovery; a follow-up hit gibs it. Only removal reports a
+   queues recovery; its authored raw-overkill predicate can gib it. Only removal reports a
    kill, so killing a fraction of the tagged dummies fires a `progress` event that
    drives an `applyDamage` reaction on the player, and the readonly
    `player.health` HUD slot drops.
@@ -215,18 +215,27 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
   all eight pellets connect. Each pellet deals 3 damage, making a full shell 24
   damage, routed through the `apply_damage` chokepoint.
 
-- Each `target_dummy` (max 40 HP) goes **40 → 16 → -8** after two full-connect
-  shells and downs, but **does not remove**: the mod-global policy queues
+- Each `target_dummy` (max 48 HP) goes **48 → 24 → 0** after two full-connect
+  shells and downs on the second shell's final pellet, but **does not remove**:
+  the mod-global policy queues
   `setHealth(maxHealth, { afterMs: 3000 })`. The target remains ray-targetable
   while down, then re-arms when it recovers. This is the foundation for future
   stagger, revive, glory-kill, mod-owned reward, and presentation policies.
 
-- While a dummy is down, land a **third shell**. It reaches **-32**, below the
-  `-12` gib level (which also gibs an impact landing exactly at `-12`); the
+- While a dummy is down, land a **third shell**. Its first pellet reads
+  **0 → -3**, exactly meeting the authored `-3` raw-overkill predicate; the
   policy calls `despawn()`, so the dummy disappears, leaves the resurrection
-  loop, and only then contributes its frozen kill credit to progress. There is
-  no distinct down animation in the current single-clip fixture model; verify
-  the down/recovery loop by waiting three seconds and downing it again.
+  loop, and only then contributes its frozen kill credit to progress. This is
+  one impact's unfloored `healthAfter`, not accumulated shell damage: stored HP
+  stays at zero between pellets. There is no distinct down animation in the
+  current single-clip fixture model; verify the down/recovery loop by waiting
+  three seconds and downing it again.
+
+- The finisher is content policy, not an engine corpse rule. A low-HP target can
+  gib within one pellet fan when its own predicate crosses: at 3 damage per
+  pellet, a 5-HP target goes **5 → 2 → -1**, then its next pellet reads
+  **0 → -3** and this policy gibs it. An author who does not want gibbing omits
+  or replaces the `despawn()` branch entirely.
 
 - After the three-shell dummy demonstration, hold reload and watch the shotgun
   refill one `shells.buck` round every 450 ms. The shotgun holds eight rounds:
@@ -236,13 +245,14 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
   through the shot to see it restart on the following tick.
 
 - The far `reference_enemy` is the visual companion demo. At point blank, three
-  body shells take its 70 HP through **46 → 22 → -2** and down it; its declared
-  `death` state plays and its brain and navigation agent pause while the same
-  three-second recovery is queued. Recovery immediately returns it to its idle
-  pose, then normal AI resumes and selects its walk animation as it pursues. A
-  fourth body shell while down reaches **-26** and gibs it. The `combat-zombie`
-  tag scopes this policy to this map, so other reference-enemy fixtures retain
-  their existing behavior.
+  body shells take its 70 HP through **46 → 22 → -2** and down it on the third
+  shell's final pellet. That raw `-2` does not cross the authored `-3` predicate;
+  its declared `death` state plays and its brain and navigation agent pause while
+  the same three-second recovery is queued. Recovery immediately returns it to
+  its idle pose, then normal AI resumes and selects its walk animation as it
+  pursues. The first pellet of a fourth body shell reads **0 → -3** and gibs it.
+  The `combat-zombie` tag scopes this policy to this map, so other
+  reference-enemy fixtures retain their existing behavior.
 
 - **Model-authored hit zones.** The dummy uses the visible model's torso, head,
   arm, and leg capsules. Aim at the torso for the most reliable full-connect
@@ -270,8 +280,9 @@ policies; they exercise two distinct recipient paths.
    damager **8 `shells.buck`**. This is a kill edge, not a corpse-hit level gate.
    `combatDummyLifecycle` resurrects a merely downed dummy after three seconds,
    so downing it again earns another 8-ammo payout. A third full-connect shell
-   while it is down reaches `-32`, below the `-12` gib threshold instead: it
-   removes that dummy from the loop and does not pay the kill edge.
+   while it is down has a first pellet with raw `healthAfter = -3`, meeting the
+   authored gib threshold instead: it removes that dummy from the loop and does
+   not pay the kill edge.
 
 2. **Volume payout — trigger activator.** From the player start, walk east through
    `ammo_pickup_volume` (the `A` in the floor plan). Its `onTriggerEvent` enter

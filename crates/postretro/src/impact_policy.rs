@@ -956,6 +956,92 @@ mod tests {
         );
     }
 
+    // Regression: the combat demo's 48-HP dummy must down on the sixteenth
+    // 3-damage pellet, then let the next pellet's raw -3 overkill trigger its
+    // authored finisher. Stored HP floors at zero; overkill never accumulates
+    // across pellets.
+    #[test]
+    fn shotgun_demo_policy_downs_on_second_shell_then_gibs_on_next_pellet() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["dummy"]);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target has health")
+            .clone();
+        health.max = 48.0;
+        health.current = 48.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .expect("target remains live");
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "demo-shotgun-finish",
+            "dummy",
+            vec![json!({
+                "when": {
+                    "op": "le",
+                    "a": input("@impact.healthAfter"),
+                    "b": number(-3.0),
+                },
+                "do": [{ "primitive": "despawn", "target": "@impact.target", "args": {} }],
+            })],
+        )]);
+
+        for pellet in 0..16 {
+            let mut registry = ctx.registry.borrow_mut();
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 3.0 },
+                DamageContext::new("weapon.shotgun", DamageProducer::InTick),
+            );
+            runtime.evaluate_pending_in_registry(&mut registry);
+            drop(registry);
+
+            assert!(
+                ctx.registry
+                    .borrow()
+                    .get_component::<postretro_entities::DeferredEffectComponent>(target)
+                    .is_ok_and(|effects| !effects.inert),
+                "pellet {} must not gib the staged dummy",
+                pellet + 1
+            );
+        }
+
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("target stays live while down")
+                .current,
+            0.0,
+            "the second shell's final pellet downs the dummy"
+        );
+
+        let mut registry = ctx.registry.borrow_mut();
+        apply_damage_with_context(
+            &mut registry,
+            target,
+            &DamagePayload { amount: 3.0 },
+            DamageContext::new("weapon.shotgun", DamageProducer::InTick),
+        );
+        runtime.evaluate_pending_in_registry(&mut registry);
+        drop(registry);
+
+        assert!(
+            ctx.registry
+                .borrow()
+                .get_component::<postretro_entities::DeferredEffectComponent>(target)
+                .expect("the finisher marks the target for despawn")
+                .inert,
+            "the next pellet's healthAfter = -3 triggers the authored finisher"
+        );
+    }
+
     #[test]
     fn matching_override_uses_last_registered_policy_only() {
         let ctx = ScriptCtx::new();

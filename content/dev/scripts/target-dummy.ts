@@ -11,11 +11,12 @@
 // loops clip 0 on the animation clock.
 //
 // Sizing:
-//   - `max: 40`. At point-blank range the shipped `reference_shotgun` lands all
+//   - `max: 48`. At point-blank range the shipped `reference_shotgun` lands all
 //     eight 3-damage pellets for 24 damage per shell (see
-//     content/dev/scripts/reference-shotgun.ts), so a dummy goes 40 → 16 → -8
-//     and downs on the second shell. A third full-connect shell reaches -32 and
-//     demonstrates the authored follow-up finisher.
+//     content/dev/scripts/reference-shotgun.ts), so a dummy goes 48 → 24 → 0
+//     and downs on the final pellet of the second shell. The next shell's first
+//     corpse pellet reads raw `healthAfter = -3` and demonstrates the authored
+//     follow-up finisher.
 //   - The model supplies its own torso/head/limb hit-zone capsules. The demo
 //     uses those authored zones directly, so aiming at its torso is the most
 //     reliable way to demonstrate the full-connect shotgun shells.
@@ -35,7 +36,7 @@ export const targetDummyEntity = defineEntity({
       defaultState: "idle",
     },
     health: {
-      max: 40,
+      max: 48,
     },
   },
 });

@@ -2803,6 +2803,9 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
             .any(|events| !events.trigger_fires.is_empty()),
         "the baseline must include at least one named trigger fire"
     );
+}
+
+fn assert_fixed_stream_weapon_positive_anchors(run: &SimRun) {
     let pellet_fans = run
         .events
         .iter()
@@ -2822,6 +2825,10 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
     assert_ne!(
         pellet_fans[0], pellet_fans[1],
         "consecutive shells, fired from the two inventory slots after the switch, must use distinct fans"
+    );
+    assert_ne!(
+        pellet_fans[1], pellet_fans[2],
+        "consecutive shells from the same inventory slot must use distinct fans"
     );
 }
 
@@ -2966,6 +2973,7 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
     assert_trigger_positive_anchors(&baseline);
+    assert_fixed_stream_weapon_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
 }

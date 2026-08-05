@@ -56,6 +56,20 @@ prl-build content/dev/maps/stress-warren-maze-crates.map \
 
 The coarser 2.25 m spacing changes cell boundaries and cannot prove the 1.33 m footprint or its exact ordering. It confirms the histogram and section accounting on the stress map without the dense-run cost.
 
+### 2026-08-04 small-fixture compiler check
+
+`gate-heavily-lit.map` compiled twice with `--no-cache --no-tui`: once with `RUST_LOG=info`, and once with `RUST_LOG=info -v`.
+
+- Info run: one pipeline direct-delta summary; zero pipeline histogram rows.
+- Verbose run: the same summary followed by 16 histogram rows, descending by bytes and then selection slot.
+- Direct-delta payload: 9,289,728 bytes across 504 CSR entries. Top static index: 15, with 42 entries / 774,144 bytes.
+
+The ordinary pack section-size line is intentionally separate from the Task 1 pipeline log site.
+
+### 2026-08-04 runtime check limitation
+
+Two local engine launches of the fixture stalled after desktop startup and before resource construction; neither emitted the direct compose footprint. The first temporary output path resolved `/private` as content root. A second run under `content/dev/maps/` resolved `content/dev` correctly but stalled at the same desktop-startup point. The captured unit-level direct-promotion footprint tests remain green. A desktop environment that can complete window initialization is still needed for live-load evidence.
+
 ### 2026-08-04 PRL byte identity
 
 `content/dev/maps/gate-heavily-lit.map` was compiled with `--no-cache --no-tui` from pre-instrumentation commit `00cd754f` and feature commit `d4df042a`. `cmp --silent` passed. Both artifacts had SHA-256 `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13`.

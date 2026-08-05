@@ -168,7 +168,13 @@ Two production fire paths, one aim source, no spread anywhere today:
   weapon descriptor fields are author-facing (`fireRateMs` precedent —
   author-unit-friendly names); the emitter's radians `spread` is an FGD KVP,
   a different authoring surface.
-- **Seed inputs.** Local path: fire tick + firing weapon entity id — both
-  sim-visible, replay-stable. Client path: `client_tick` + weapon slot identity;
-  the client path is outside the determinism gate, but the same scheme costs
-  nothing. Host and client never need matching directions (host casts no rays).
+- **Seed inputs.** A per-weapon monotonic shell counter (`WeaponComponent` live
+  state) mixed with a spawn-order-stable instance salt (canonical-name hash +
+  owning seat/client + inventory slot). Two constraints force this shape: no
+  tick reaches the local weapon stage (`run_local_weapon_command`,
+  `simulate_tick`, and `SimCommand` carry none — threading one crosses ~46 call
+  sites), and `EntityId`/`NetworkId` bits are allocation-ordered, which the
+  shipped spawn-order-reversal determinism assertion
+  (`simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order`)
+  would catch as divergence. Host and client never need matching directions
+  (host casts no rays).

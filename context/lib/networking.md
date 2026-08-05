@@ -99,7 +99,7 @@ Two rules derive every per-slot effect from the state pair rather than from whic
 - **Any exit from participating clears that slot's state** — pawn, replication, ownership, command, state-slot, and combat — whatever the destination. A demotion clears exactly what a close clears because both are the same edge, and a slot demoted and then closed clears once, not twice.
 - **Any entry to participating registers the slot and spawns its pawn** — first admission and re-promotion alike, so a re-promoted slot needs no special case and no "must re-emit" rider.
 
-The connection survives; its state does not. A client id is stable across a level change, which is what later specs key player identity to.
+The connection survives; its state does not. A client id is stable within one connection but not across a rejoin — a relaunching peer arrives on a freshly minted id — so player identity keys to a durable seat, never to the connection.
 
 **A held slot is gated in both directions.** It is sent no entity state, and its inbound traffic is drained and discarded. The drain is not an optimization: an undrained reliable channel overflows its memory budget and the transport disconnects the peer — which would break the never-close guarantee through a path that never decided anything.
 
@@ -148,9 +148,21 @@ Identity is declared, not proven — tamper resistance is a non-goal, and neithe
 
 ## Session-state ledger
 
-State that survives a level change, enumerated rather than accreted. One entry today: **the connection** — its id, its lifecycle stage, and its last parity declaration.
+State that survives a level change, enumerated rather than accreted:
 
-The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch. Later specs add the seat and the roster to this list rather than discovering one.
+- **The connection** — its id, lifecycle stage, and last parity declaration.
+- **The seat** — the host-minted durable player key, its asserted claim when one exists, its carried state, and its level-independent placement-assignment cursor. A seat sits above participation and is never released by a level transition.
+- **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Claims remain host-local for rejoin; neither player ids nor display names cross the roster wire.
+
+The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch.
+
+Seat ids are non-recycled within one session. The `u16` namespace therefore has no
+recovery path after exhaustion: new remote admissions remain unavailable until a
+new session starts.
+
+Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind.
+
+The roster publishes no lower than admitted. Admission is a compatibility gate, not a trust decision: it checks the build constants and the mod id, admits automatically, and never asks the host who the peer is. A peer below it has proven only that it can reach the socket, so it receives no roster frame — not even a seat count. Admitted and participating peers receive a status-only frame encoded separately with their own seat.
 
 ## Game-logic-owned apply invariant
 
@@ -172,7 +184,7 @@ bounds stale playback when authored reload cadence outruns publication.
 
 On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the level content digest proves cross-peer parity before this phase is trusted.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed/blocked flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the level content digest proves cross-peer parity before this phase is trusted.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
@@ -196,7 +208,7 @@ Role is selected once at startup from CLI flags; default is **single-player with
 
 **No endpoint, no gate.** Single-player constructs no endpoint, so no compatibility value is computed, no gate runs, and a level change announces nothing. Nothing branches on player count — the absent endpoint *is* the branch, which is why the compatibility digests are computed inside that check rather than unconditionally and discarded.
 
-`--host` and `--connect` are mutually exclusive. **Direct connect only** — no discovery, no matchmaking, no relay. Endpoint construction can fail (socket bind, transport init); a failure is logged and **degrades to single-player** rather than blocking boot — a netcode setup error never stops the engine from running. Clients receive host-authoritative replication, predict their own pawn locally, and reconcile against host acks.
+`--host` and `--connect` are mutually exclusive. **Direct connect only** — no discovery, no matchmaking, no relay. Network setup can fail (socket bind, transport init, hosted session-id entropy); a failure is logged and **degrades to single-player** rather than blocking boot — a netcode setup error never stops the engine from running. The local seat ledger remains available for single-player carry, but its fallback session id is never published. Clients receive host-authoritative replication, predict their own pawn locally, and reconcile against host acks.
 
 ## Testing the conditioned link
 
@@ -350,11 +362,12 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
 
 ### Ownership and identity maps
 
-- **`WeaponOwners`** (`crate::netcode`): host-only pawn -> active-weapon map, mirroring
-  `MovementOwners`. A connected client's pawn carries no host-visible local weapon
-  simulation; the host resolves fire legitimacy, credit, and cooldown for a remote pawn
-  through this map. A pawn whose descriptor names no weapon has no entry and never fires
-  host-side.
+- **Pawn `Inventory`** (`postretro_entities`): the single source of truth for a pawn's
+  active wieldable instance on every role. Host fire legitimacy, credit, cooldown,
+  snapshot archetypes, owner-private projections, HUD feedback, and presentation all
+  resolve through this component. `WeaponOwners` is only a host-side dirty attachment
+  queue; it contains no pawn -> weapon mapping. A pawn with no active inventory entry
+  cannot fire host-side.
 - **`NetworkId <-> EntityId` reverse maps, one per peer role.** The client keeps
   `EntityId -> NetworkId` (to name a locally-hit remote enemy on the wire); the host keeps
   `NetworkId -> EntityId` (to resolve a declared target back to a live entity). Both are
@@ -384,10 +397,12 @@ already-shipped message — bumps the wire-version (layout) constant again, inde
 any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
 the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11;
-mover replay provenance advances it to 12. The static-kinematic handshake field
-uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, E15's tagged
-Control layout advances it to 14, and participation-framed traffic advances it to
-15. Earlier peers are refused by both handshake gates.
+mover replay provenance advances it to 12, and E17's replicated mover `blocked`
+phase advances it to 13. The static-kinematic handshake field uses `WIRE_VERSION`
+12; mover replay provenance advances it to 13, E15's tagged Control layout advances
+it to 14, and participation-framed traffic advances it to 15. E16's `drop_pressed`
+input edge advances it to 16, and E17's `blocked` phase advances it to 17. Earlier
+peers are refused by both handshake gates.
 
 ## Phase boundaries
 
@@ -398,6 +413,8 @@ Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn,
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
 
 Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. Rotating movers seed angle plus current and target spin rates; clients combine that phase with local PRL axis, acceleration, path, collision geometry, and carry policy, all covered by the level content digest. There is no provisional client-created mover copy.
+
+A mover's **block reaction** (reverse/stop/crush on contact) is the exception to this pure re-simulation: it depends on entity positions the client does not simulate for remote pawns and enemies, so the host decides and clients reconcile only the resulting stop-hold as replicated phase. Block policy, auto-close timers, and per-victim crush cadence stay host-only — off the wire and off the content digest.
 
 Trigger volumes are shared baked map data, not replicated state. Clients send a `use_pressed` input bit with movement input; only the host evaluates touch/use overlap and fires trigger commands. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
 

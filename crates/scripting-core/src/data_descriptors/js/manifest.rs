@@ -82,6 +82,52 @@ fn is_resource_grant_reaction_js<'js>(value: &JsValue<'js>) -> bool {
     )
 }
 
+/// Drain the strict mod-global switching declaration. Unlike presentation
+/// preferences, an invalid switching policy changes simulation authorization,
+/// so the complete mod-init attempt must fail rather than degrade a field.
+pub fn drain_switching_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<SwitchingDescriptor, DescriptorError> {
+    if !obj.contains_key("switching").map_err(js_err)? {
+        return Ok(SwitchingDescriptor::default());
+    }
+    let raw: JsValue = obj.get("switching").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(SwitchingDescriptor::default());
+    }
+    if !raw.is_object() || raw.is_array() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `switching` must be an object"),
+        });
+    }
+    let switching = raw
+        .as_object()
+        .expect("object type was checked before borrowing");
+    let commit_on_direct_select = get_required_bool_js(switching, "commitOnDirectSelect")
+        .map_err(|error| switching_field_error(scope, "commitOnDirectSelect", error))?;
+    let cycle_commit_dwell_ms = get_required_f32_js(switching, "cycleCommitDwellMs")
+        .map_err(|error| switching_field_error(scope, "cycleCommitDwellMs", error))?;
+    let block_during_reload = get_required_bool_js(switching, "blockDuringReload")
+        .map_err(|error| switching_field_error(scope, "blockDuringReload", error))?;
+
+    SwitchingDescriptor {
+        commit_on_direct_select,
+        cycle_commit_dwell_ms,
+        block_during_reload,
+    }
+    .validate()
+    .map_err(|error| DescriptorError::InvalidShape {
+        reason: format!("{scope}: {error}"),
+    })
+}
+
+fn switching_field_error(scope: &str, field: &str, error: DescriptorError) -> DescriptorError {
+    DescriptorError::InvalidShape {
+        reason: format!("{scope}: `switching.{field}` invalid: {error}"),
+    }
+}
+
 /// Drain the optional static renderer profile from a QuickJS mod manifest.
 /// Every malformed field degrades independently so presentation preferences
 /// never reject an otherwise valid manifest.
@@ -164,6 +210,47 @@ pub fn drain_render_profile_js<'js>(
             pixelated,
         },
     })
+}
+
+/// Drain optional mod-wide mover defaults. Malformed presentation-like defaults
+/// warn and fall back rather than rejecting an otherwise valid manifest.
+pub fn drain_mover_defaults_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<ModMoverDefaults, DescriptorError> {
+    if !obj.contains_key("movers").map_err(js_err)? {
+        return Ok(ModMoverDefaults::default());
+    }
+    let raw_movers: JsValue = obj.get("movers").map_err(js_err)?;
+    if raw_movers.is_null() || raw_movers.is_undefined() {
+        return Ok(ModMoverDefaults::default());
+    }
+    if !raw_movers.is_object() || raw_movers.is_array() {
+        log::warn!("[Scripting] {scope}: `movers` must be an object; using default mover settings");
+        return Ok(ModMoverDefaults::default());
+    }
+    let movers = raw_movers
+        .as_object()
+        .expect("object type was checked before borrowing");
+    if !movers.contains_key("autoCloseMs").map_err(js_err)? {
+        return Ok(ModMoverDefaults::default());
+    }
+    let raw: JsValue = movers.get("autoCloseMs").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(ModMoverDefaults::default());
+    }
+    let value = raw.as_int().map(f64::from).or_else(|| raw.as_float());
+    match value.filter(|value| value.is_finite() && *value >= 0.0 && (*value as f32).is_finite()) {
+        Some(auto_close_ms) => Ok(ModMoverDefaults {
+            auto_close_ms: auto_close_ms as f32,
+        }),
+        None => {
+            log::warn!(
+                "[Scripting] {scope}: `movers.autoCloseMs` must be a finite non-negative number; using 0"
+            );
+            Ok(ModMoverDefaults::default())
+        }
+    }
 }
 
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. Parsing stops at

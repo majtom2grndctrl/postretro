@@ -2,6 +2,10 @@ import { defineMod, defineTriggerPool } from "postretro";
 import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { referenceShotgunEntity } from "./scripts/reference-shotgun";
+import {
+  wieldableFixtureAutoEntity,
+  wieldableFixturePressEntity,
+} from "./scripts/wieldable-fixture-weapons";
 import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
 import { targetDummyEntity } from "./scripts/target-dummy";
 import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
@@ -21,6 +25,11 @@ export default defineMod({
   name: "dev",
   id: "postretro.dev",
   version: "dev",
+  switching: {
+    commitOnDirectSelect: true,
+    cycleCommitDwellMs: 128,
+    blockDuringReload: false,
+  },
   maps: mapCatalog,
   // Dogfoods the mod-authored bloom surface on every dev launch. `resolution`
   // is left at the engine default (`half`); `pixelated: true` is the non-default
@@ -63,6 +72,8 @@ export default defineMod({
     playerEntity,
     referencePistolEntity,
     referenceShotgunEntity,
+    wieldableFixtureAutoEntity,
+    wieldableFixturePressEntity,
     // DEMO: M10 skinned-animation grunt. Map-placeable via
     // `"classname" "anim_demo_grunt"`; see content/dev/maps/anim-demo.map.
     animDemoGruntEntity,

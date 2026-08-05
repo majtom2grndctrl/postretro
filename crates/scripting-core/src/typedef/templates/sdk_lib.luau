@@ -78,6 +78,8 @@ export type MoverEntityHandle = {
   --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
   --- on the mover's authored map entity.
   setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
+  --- Sets the host-authoritative response when the mover contacts an entity.
+  setBlockPolicy: (self: MoverEntityHandle, policy: "displace" | "reverse" | "stop" | "crush") -> {MoverSetBlockPolicyStep},
 }
 
 --- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
@@ -302,6 +304,13 @@ export type MoverSetSpinRateStep = {
   args: { rate: number },
 }
 
+--- Sequence step that sets a kinematic mover's host-authoritative block policy.
+export type MoverSetBlockPolicyStep = {
+  id: EntityId,
+  primitive: "moverSetBlockPolicy",
+  args: { policy: "displace" | "reverse" | "stop" | "crush" },
+}
+
 export type ArmTriggerStep = {
   id: EntityId | "@trigger",
   primitive: "armTrigger",
@@ -316,7 +325,7 @@ export type DisarmTriggerStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.
@@ -516,10 +525,11 @@ declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
---- Pure identity builder for entity-type descriptors returned from
---- `ModManifest.entities`. `descriptor` is the full archetype table: optional
---- `canonicalName`, optional `defaultWeapon`, and optional component presets.
-declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+--- An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout.
+export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } }
+--- Lowers `components.inventory.loadout` weapon descriptor references to their
+--- canonical names after validating each reference by value.
+declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must
 --- declare the same id to connect. Must be non-empty ASCII, at most 64

@@ -19,7 +19,7 @@ use crate::input;
 use crate::startup::StartupTimings;
 use crate::trigger_pools::{TriggerPoolSeedPolicy, entropy_seed};
 use crate::{App, collision, kinematic_mover, runtime_movers, view_feel};
-use postretro_foundation::ModThemeTokens;
+use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 
 /// Dev-default boot map when no content root or map argument is supplied. Used by
 /// `content_root_from_map` to derive the default `content/dev` root.
@@ -239,6 +239,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         // endpoint, audio, debug UI) is owned by `Session`, built post-first-pixel
         // by `PendingSessionInit::install`. See: context/lib/boot_sequence.md §1.
         mod_theme_override: ModThemeTokens::default(),
+        switching: SwitchingDescriptor::default(),
         pending_mode_signal: None,
         pending_menu_toggle: false,
         pending_exit_to_desktop: false,
@@ -251,9 +252,6 @@ pub(crate) fn build_session() -> Result<BootSession> {
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
-        active_wieldable: None,
-        active_wieldable_descriptor: None,
-        client_weapon_state: None,
         client_fire_resolutions: Vec::new(),
         client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
         host_spawn_points: Vec::new(),

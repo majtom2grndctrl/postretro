@@ -748,11 +748,12 @@ mod tests {
         let mut data = DataRegistry::new();
         data.upsert_entity_type(EntityTypeDescriptor {
             canonical_name: Some("grunt".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -763,11 +764,12 @@ mod tests {
             resolved,
             Some(&EntityTypeDescriptor {
                 canonical_name: Some("grunt".to_string()),
-                default_weapon: None,
+                inventory: None,
                 light: None,
                 emitter: None,
                 movement: None,
                 weapon: None,
+                touchable: None,
                 mesh: None,
                 health: None,
                 behavior: None,

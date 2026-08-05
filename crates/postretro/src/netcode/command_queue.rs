@@ -37,7 +37,8 @@ use postretro_net::wire::InputCommand;
 use crate::netcode::prediction::client_tick_le;
 use crate::netcode::wire_convert::{input_command_to_sim, sanitize_input_command};
 use crate::sim::SimCommand;
-use postretro_entities::EntityId;
+use postretro_entities::components::inventory::Inventory;
+use postretro_entities::{EntityId, EntityRegistry};
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's
@@ -75,12 +76,13 @@ impl MovementOwners {
     }
 }
 
-/// Host-side active-weapon owner map: `pawn EntityId -> active weapon EntityId`.
-/// Remote client pawns own their active weapon through this host-only table; enemy
-/// health and weapon state remain registry-owned and host-authoritative.
+/// Explicitly-marked work queue for third-person weapon attachment updates.
+///
+/// Active wieldable identity is pawn-owned state. This tracker deliberately keeps
+/// only the presentation dirties; draining it resolves the current active instance
+/// from the pawn's [`Inventory`] rather than retaining a second pawn-to-weapon map.
 #[derive(Debug, Default)]
 pub(crate) struct WeaponOwners {
-    weapons: HashMap<EntityId, EntityId>,
     attachment_dirty: HashSet<EntityId>,
 }
 
@@ -89,39 +91,47 @@ impl WeaponOwners {
         Self::default()
     }
 
-    /// Record `weapon` as the active weapon for `pawn`.
-    pub(crate) fn set(&mut self, pawn: EntityId, weapon: EntityId) {
-        if self.weapons.insert(pawn, weapon) != Some(weapon) {
-            self.attachment_dirty.insert(pawn);
-        }
+    /// Mark `pawn` for an attachment refresh. Call this after inventory
+    /// materialization, repoint, and pawn removal; the queue intentionally does no
+    /// implicit change detection because the inventory is the sole active source.
+    pub(crate) fn mark_attachment_dirty(&mut self, pawn: EntityId) {
+        self.attachment_dirty.insert(pawn);
     }
 
-    /// The active weapon for `pawn`, if one was materialized.
-    pub(crate) fn weapon_of(&self, pawn: EntityId) -> Option<EntityId> {
-        self.weapons.get(&pawn).copied()
-    }
-
-    /// Forget a pawn's active weapon (on slot close / despawn). Idempotent.
+    /// Mark a pawn's attachment as removed. The pawn may already be gone by the
+    /// time the queue drains, which resolves naturally to no active wieldable.
     pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
-        if self.weapons.remove(&pawn).is_some() {
-            self.attachment_dirty.insert(pawn);
-        }
+        self.mark_attachment_dirty(pawn);
     }
 
-    /// Drain pawn bindings whose authoritative weapon assignment changed. The
-    /// relationship map remains intact for snapshot provenance and combat lookup;
-    /// only the presentation work queue is consumed.
-    pub(crate) fn take_attachment_changes(&mut self) -> Vec<(EntityId, Option<EntityId>)> {
+    /// Drain pawn attachment changes, resolving each active wieldable at the moment
+    /// of consumption from live pawn inventory.
+    pub(crate) fn take_attachment_changes(
+        &mut self,
+        registry: &EntityRegistry,
+    ) -> Vec<(EntityId, Option<EntityId>)> {
         let dirty: Vec<EntityId> = self.attachment_dirty.drain().collect();
         dirty
             .into_iter()
-            .map(|pawn| (pawn, self.weapons.get(&pawn).copied()))
+            .map(|pawn| (pawn, active_wieldable_for_pawn(registry, pawn)))
             .collect()
     }
 
     pub(crate) fn has_attachment_changes(&self) -> bool {
         !self.attachment_dirty.is_empty()
     }
+}
+
+/// Resolve the active inventory instance for a live pawn. This is the one shared
+/// lookup for fire, replication, HUD projections, and presentation plumbing.
+pub(crate) fn active_wieldable_for_pawn(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+) -> Option<EntityId> {
+    registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .and_then(Inventory::active_wieldable)
 }
 
 /// Hold the last resolved command for at most this many missing ticks before
@@ -529,22 +539,27 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
             crouch_intent: false,
             facing_yaw,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 
-/// Build a held-gap command from the previous resolved command, clearing FIRE but
-/// carrying movement and `reload` forward unchanged. The two fields diverge on
-/// purpose: `fire_button` authorizes cooldown and ammo consumption whenever it resolves
-/// `active`, so a held command must not re-authorize FIRE. `reload` is a level bit;
-/// weapon-owned `reload_press_consumed` deduplicates it while held. Carrying that bit
-/// preserves reload intent across a packet gap without synthesizing another press.
+/// Build a held-gap command from the previous resolved command, clearing FIRE and
+/// one-tick use/drop edges but carrying movement and `reload` forward unchanged.
+/// The two level fields diverge on purpose: `fire_button` authorizes cooldown and
+/// ammo consumption whenever it resolves `active`, so a held command must not
+/// re-authorize FIRE. `reload` is a level bit; weapon-owned `reload_press_consumed`
+/// deduplicates it while held. Carrying that bit preserves reload intent across a
+/// packet gap without synthesizing another press.
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);
     sim.fire_button = crate::weapon::FireButtonState {
@@ -553,6 +568,8 @@ fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     };
     sim.movement.use_pressed = false;
     sim.use_pressed = false;
+    sim.movement.drop_pressed = false;
+    sim.drop_pressed = false;
     sim
 }
 
@@ -577,7 +594,9 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.5,
                 use_pressed: false,
+                drop_pressed: false,
                 aim_pitch: 0.0,
+                firing_slot: 0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -811,6 +830,42 @@ mod tests {
         assert!(
             !held.command.fire_button.pressed && !held.command.fire_button.active,
             "gap-filled movement hold must not synthesize remote FIRE"
+        );
+    }
+
+    #[test]
+    fn one_drop_press_crossing_a_packet_gap_resolves_exactly_once() {
+        let mut queues = HostCommandQueues::new();
+        let mut cmd = command(0, 1.0);
+        cmd.movement.drop_pressed = true;
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
+        assert!(real.command.drop_pressed);
+        assert!(real.command.movement.drop_pressed);
+        let mut resolved_drop_edges = usize::from(real.command.drop_pressed);
+
+        let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+        assert_eq!(held.source, ResolutionSource::Held);
+        assert!(!held.command.drop_pressed);
+        assert!(!held.command.movement.drop_pressed);
+        resolved_drop_edges += usize::from(held.command.drop_pressed);
+
+        for _ in 1..INPUT_HOLD_TICKS {
+            let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+            assert_eq!(held.source, ResolutionSource::Held);
+            resolved_drop_edges += usize::from(held.command.drop_pressed);
+        }
+        let neutral = queues
+            .resolve_tick(CLIENT)
+            .expect("neutral fallback resolves");
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert!(!neutral.command.drop_pressed);
+        assert!(!neutral.command.movement.drop_pressed);
+        resolved_drop_edges += usize::from(neutral.command.drop_pressed);
+        assert_eq!(
+            resolved_drop_edges, 1,
+            "a held packet gap cannot replay the one-tick drop action"
         );
     }
 

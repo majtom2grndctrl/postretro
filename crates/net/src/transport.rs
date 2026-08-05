@@ -16,8 +16,8 @@ use renet_netcode::{
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
-    self, ClientControlMessage, ParityDeclaration, ParticipationFrame, ServerControlFrame,
-    ServerControlMessage,
+    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, NETCODE_USER_DATA_BYTES,
+    ParityDeclaration, ParticipationFrame, ServerControlFrame, ServerControlMessage,
 };
 
 pub use crate::handshake::*;
@@ -94,8 +94,15 @@ pub enum HandshakeOutcome {
 #[derive(Debug, Default)]
 #[must_use = "a poll carries gate verdicts and slot lifecycle transitions"]
 pub struct ServerPoll {
+    /// Client slots closed since the preceding poll. This edge includes admitted
+    /// and pending connections, unlike lifecycle events which only report a
+    /// former participating slot.
+    pub disconnects: Vec<ClientId>,
     pub handshakes: Vec<HandshakeOutcome>,
     pub lifecycle: Vec<SlotEvent>,
+    /// Registry-blind reliable controls from currently participating clients.
+    /// Engine code resolves the client id into a pawn and validates its state.
+    pub switch_declarations: Vec<(ClientId, ClientSwitchDeclaration)>,
 }
 
 /// Synchronous server transport. It knows only opaque declarations and slot ids.
@@ -104,7 +111,13 @@ pub struct NetServer {
     transport: NetcodeServerTransport,
     slots: SlotTable,
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
+    connect_claims: HashMap<ClientId, ConnectClaim>,
     pending_lifecycle: Vec<SlotEvent>,
+    /// Live slots that closed since the previous poll. Reported to the engine
+    /// so it can retire slot-bound game state.
+    pending_slot_disconnects: Vec<ClientId>,
+    /// Slots awaiting transport teardown after a reliable closing cause was
+    /// sent. They are not reported as new disconnects a second time.
     pending_disconnects: Vec<ClientId>,
     holding_diagnostics: HashMap<ClientId, HoldingCause>,
     next_participation_epoch: u64,
@@ -141,7 +154,9 @@ impl NetServer {
             transport,
             slots: SlotTable::new(),
             parity_declarations: HashMap::new(),
+            connect_claims: HashMap::new(),
             pending_lifecycle: Vec::new(),
+            pending_slot_disconnects: Vec::new(),
             pending_disconnects: Vec::new(),
             holding_diagnostics: HashMap::new(),
             next_participation_epoch: 1,
@@ -221,13 +236,16 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let handshakes = self.process_control_messages();
+        let (handshakes, switch_declarations) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
+        let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
         self.transport.send_packets(&mut self.server);
         Ok(ServerPoll {
+            disconnects,
             handshakes,
             lifecycle,
+            switch_declarations,
         })
     }
 
@@ -266,7 +284,14 @@ impl NetServer {
     fn collect_server_events(&mut self) {
         while let Some(event) = self.server.get_event() {
             match event {
-                ServerEvent::ClientConnected { client_id } => self.slots.on_connect(client_id),
+                ServerEvent::ClientConnected { client_id } => {
+                    self.slots.on_connect(client_id);
+                    if let Some(user_data) = self.transport.user_data(client_id)
+                        && let Some(claim) = wire::decode_connect_claim(&user_data)
+                    {
+                        self.connect_claims.insert(client_id, claim);
+                    }
+                }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
                     if let Some(event) = self.close_slot(client_id, close_cause_from(reason)) {
                         self.pending_lifecycle.push(event);
@@ -276,10 +301,16 @@ impl NetServer {
         }
     }
 
-    fn process_control_messages(&mut self) -> Vec<HandshakeOutcome> {
+    fn process_control_messages(
+        &mut self,
+    ) -> (
+        Vec<HandshakeOutcome>,
+        Vec<(ClientId, ClientSwitchDeclaration)>,
+    ) {
         let mut outcomes = Vec::new();
+        let mut switch_declarations = Vec::new();
         let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
-            return outcomes;
+            return (outcomes, switch_declarations);
         };
         let expected_protocol = protocol_version();
 
@@ -365,6 +396,15 @@ impl NetServer {
                             break;
                         }
                     }
+                    ClientControlMessage::SwitchDeclaration(declaration) => {
+                        // A declaration has no meaning before a slot owns a live
+                        // pawn. Keeping it inside the participation gate also
+                        // prevents pre-admission controls from leaking into a later
+                        // promotion generation.
+                        if self.is_participating(client_id) {
+                            switch_declarations.push((client_id, declaration));
+                        }
+                    }
                 }
                 if self.mod_digest.is_none() {
                     break;
@@ -388,7 +428,7 @@ impl NetServer {
                 }
             }
         }
-        outcomes
+        (outcomes, switch_declarations)
     }
 
     fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
@@ -482,9 +522,16 @@ impl NetServer {
     }
 
     fn close_slot(&mut self, client_id: ClientId, cause: CloseCause) -> Option<SlotEvent> {
+        // `close` records a tombstone for unknown/already-closed ids, so read
+        // the prior state first to report only a live transport disconnect.
+        let was_live = matches!(self.slots.state(client_id), Some(state) if !matches!(state, SlotState::Closed { .. }));
         self.parity_declarations.remove(&client_id);
+        self.connect_claims.remove(&client_id);
         self.holding_diagnostics.remove(&client_id);
         self.participation_epochs.remove(&client_id);
+        if was_live {
+            self.pending_slot_disconnects.push(client_id);
+        }
         self.slots.close(client_id, cause)
     }
 
@@ -547,6 +594,19 @@ impl NetServer {
     #[must_use]
     pub fn connected_clients(&self) -> Vec<ClientId> {
         self.server.clients_id()
+    }
+
+    /// The immutable connection claim received during this client's transport
+    /// handshake. It disappears with the connection slot.
+    #[must_use]
+    pub fn connect_claim(&self, client_id: ClientId) -> Option<&ConnectClaim> {
+        self.connect_claims.get(&client_id)
+    }
+
+    /// Number of transport-scoped claims retained by live slots.
+    #[cfg(test)]
+    fn connect_claim_count(&self) -> usize {
+        self.connect_claims.len()
     }
 
     /// Snapshots and Input are both participation-gated; held peers are drained
@@ -636,9 +696,22 @@ impl NetServer {
         let _ = self.server.process_packet_from(packet, client_id);
     }
 
-    pub fn add_relay_connection(&mut self, client_id: ClientId) {
+    /// Add an in-memory relay connection for deterministic transport tests.
+    ///
+    /// Relay connections bypass renetcode, so their optional user data is
+    /// decoded here just as it is on the production `ClientConnected` edge.
+    pub fn add_relay_connection(
+        &mut self,
+        client_id: ClientId,
+        user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
+    ) {
         self.server.add_connection(client_id);
         self.slots.on_connect(client_id);
+        if let Some(user_data) = user_data
+            && let Some(claim) = wire::decode_connect_claim(&user_data)
+        {
+            self.connect_claims.insert(client_id, claim);
+        }
     }
 
     #[must_use]
@@ -659,12 +732,15 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let handshakes = self.process_control_messages();
+        let (handshakes, switch_declarations) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
+        let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
         ServerPoll {
+            disconnects,
             handshakes,
             lifecycle,
+            switch_declarations,
         }
     }
 }
@@ -733,6 +809,7 @@ impl NetClient {
         client_id: u64,
         current_time: Duration,
         kinematic_static_fingerprint: Option<[u8; 32]>,
+        user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
     ) -> Result<Self, NetcodeTransportError> {
         let client = RenetClient::new(connection_config());
         let transport = NetcodeClientTransport::new(
@@ -741,7 +818,7 @@ impl NetClient {
                 client_id,
                 protocol_id: transport_protocol_id(),
                 server_addr,
-                user_data: None,
+                user_data,
             },
             socket,
         )?;
@@ -853,6 +930,19 @@ impl NetClient {
                 participation_epoch,
                 payload: input,
             }),
+        );
+    }
+
+    /// Send one gameplay control only while a participation generation is active.
+    /// Admission and parity still own the early Control ordering; game declarations
+    /// are valid only after the host has made the client a participant.
+    pub fn send_switch_declaration(&mut self, declaration: ClientSwitchDeclaration) {
+        if self.active_participation_epoch.is_none() {
+            return;
+        }
+        self.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::SwitchDeclaration(declaration)),
         );
     }
 
@@ -1008,9 +1098,10 @@ mod tests {
             RELAY_CLIENT_ID,
             Duration::from_secs(1),
             None,
+            None,
         )
         .expect("construct relay client");
-        server.add_relay_connection(RELAY_CLIENT_ID);
+        server.add_relay_connection(RELAY_CLIENT_ID, None);
         client.set_connected();
         (server, client)
     }
@@ -1081,6 +1172,35 @@ mod tests {
         assert!(
             client.drain_control().is_empty(),
             "matching admission and parity must not emit a holding diagnostic"
+        );
+    }
+
+    #[test]
+    fn participating_switch_declaration_reaches_the_server_poll() {
+        let (mut server, mut client) = participate_relay_pair();
+        // The participation marker normally establishes this before gameplay
+        // controls are emitted. Set it directly here so the public client send
+        // path, rather than the test-only raw Renet handle, is exercised.
+        client.active_participation_epoch = Some(1);
+        client.send_switch_declaration(ClientSwitchDeclaration {
+            declaration_id: 9,
+            slot: 2,
+        });
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+
+        assert!(poll.handshakes.is_empty());
+        assert!(poll.lifecycle.is_empty());
+        assert_eq!(
+            poll.switch_declarations,
+            vec![(
+                RELAY_CLIENT_ID,
+                ClientSwitchDeclaration {
+                    declaration_id: 9,
+                    slot: 2,
+                },
+            )]
         );
     }
 
@@ -1621,6 +1741,169 @@ mod tests {
             vec![ServerControlMessage::Relevel("e1m2".to_string())],
             "a catalog install must announce the next map to admitted clients"
         );
+    }
+
+    #[test]
+    fn close_slot_reports_each_live_connection_once_and_clears_its_claim() {
+        let (mut server, _client) = relay_pair();
+        let claim = ConnectClaim {
+            player_id: crate::wire::PlayerClaimId([0x6c; 16]),
+            display_name: "Neon Runner".to_string(),
+        };
+        server.connect_claims.insert(RELAY_CLIENT_ID, claim);
+
+        assert_eq!(
+            server.close_relay_connection(RELAY_CLIENT_ID, CloseCause::Disconnect),
+            None,
+            "a pending connection has no lifecycle event"
+        );
+        assert_eq!(server.connect_claim(RELAY_CLIENT_ID), None);
+        assert_eq!(server.poll_handshakes().disconnects, vec![RELAY_CLIENT_ID]);
+
+        assert_eq!(
+            server.close_slot(RELAY_CLIENT_ID, CloseCause::Disconnect),
+            None
+        );
+        assert!(
+            server.poll_handshakes().disconnects.is_empty(),
+            "a closed slot cannot emit a second unbind"
+        );
+    }
+
+    #[test]
+    fn close_slot_does_not_report_never_connected_tombstones() {
+        let (mut server, _client) = relay_pair();
+
+        assert_eq!(server.close_slot(99, CloseCause::Timeout), None);
+        assert!(
+            server.poll_handshakes().disconnects.is_empty(),
+            "an unknown close records a stale-packet tombstone, not a disconnect"
+        );
+    }
+
+    #[test]
+    fn reject_reports_disconnect_in_its_same_poll() {
+        let (mut server, _client) = relay_pair();
+        server.reject(
+            RELAY_CLIENT_ID,
+            ClosingCause::Protocol {
+                expected: protocol_version(),
+                received: crate::wire::ProtocolVersion {
+                    app_protocol_id: 0,
+                    wire_version: 0,
+                },
+            },
+        );
+
+        assert_eq!(server.poll_handshakes().disconnects, vec![RELAY_CLIENT_ID]);
+    }
+
+    #[test]
+    fn netcode_connection_stashes_decoded_connect_claim() {
+        let server_socket =
+            UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind server socket");
+        let server_addr = server_socket.local_addr().expect("server local address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 8, Duration::from_secs(1), None)
+                .expect("construct server");
+        let claim = ConnectClaim {
+            player_id: crate::wire::PlayerClaimId([0x1b; 16]),
+            display_name: "Neon Runner".to_string(),
+        };
+        let client_socket =
+            UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind client socket");
+        let mut client = NetClient::new(
+            client_socket,
+            server_addr,
+            RELAY_CLIENT_ID,
+            Duration::from_secs(1),
+            None,
+            Some(crate::wire::encode_connect_claim(&claim)),
+        )
+        .expect("construct client");
+
+        for _ in 0..32 {
+            client
+                .update(Duration::from_millis(16))
+                .expect("advance client transport");
+            let _ = server
+                .update(Duration::from_millis(16))
+                .expect("advance server transport");
+            if server.connect_claim(RELAY_CLIENT_ID).is_some() {
+                break;
+            }
+        }
+
+        assert_eq!(server.connect_claim(RELAY_CLIENT_ID), Some(&claim));
+    }
+
+    #[test]
+    fn relay_connection_stashes_decoded_connect_claim() {
+        let server_socket =
+            UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind server socket");
+        let server_addr = server_socket.local_addr().expect("server local address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 8, Duration::from_secs(1), None)
+                .expect("construct relay server");
+        let claim = ConnectClaim {
+            player_id: crate::wire::PlayerClaimId([0x3e; 16]),
+            display_name: "Relay Runner".to_string(),
+        };
+
+        server.add_relay_connection(
+            RELAY_CLIENT_ID,
+            Some(crate::wire::encode_connect_claim(&claim)),
+        );
+
+        assert_eq!(server.connect_claim(RELAY_CLIENT_ID), Some(&claim));
+    }
+
+    #[test]
+    fn repeated_pending_and_participating_closes_bound_connect_claim_stash() {
+        const CYCLES: u64 = 32;
+        let (mut server, _client) = relay_pair();
+        let _ = server.close_relay_connection(RELAY_CLIENT_ID, CloseCause::Disconnect);
+        let _ = server.poll_handshakes();
+
+        for cycle in 0..CYCLES {
+            let pending_id = 100 + cycle * 2;
+            let participating_id = pending_id + 1;
+            let pending_claim = ConnectClaim {
+                player_id: crate::wire::PlayerClaimId([cycle as u8; 16]),
+                display_name: "Pending Runner".to_owned(),
+            };
+            server.add_relay_connection(
+                pending_id,
+                Some(crate::wire::encode_connect_claim(&pending_claim)),
+            );
+            assert_eq!(server.connect_claim_count(), 1);
+            let _ = server.close_relay_connection(pending_id, CloseCause::Disconnect);
+            assert_eq!(
+                server.connect_claim_count(),
+                0,
+                "closing a pending transport slot removes its asserted claim"
+            );
+            let _ = server.poll_handshakes();
+
+            let participating_claim = ConnectClaim {
+                player_id: crate::wire::PlayerClaimId([0x80 | cycle as u8; 16]),
+                display_name: "Participating Runner".to_owned(),
+            };
+            server.add_relay_connection(
+                participating_id,
+                Some(crate::wire::encode_connect_claim(&participating_claim)),
+            );
+            let _ = server.slots.admit(participating_id);
+            let _ = server.slots.participate(participating_id);
+            assert_eq!(server.connect_claim_count(), 1);
+            let _ = server.close_relay_connection(participating_id, CloseCause::Disconnect);
+            assert_eq!(
+                server.connect_claim_count(),
+                0,
+                "closing a participating transport slot removes its asserted claim"
+            );
+            let _ = server.poll_handshakes();
+        }
     }
 
     #[derive(Debug, Clone)]

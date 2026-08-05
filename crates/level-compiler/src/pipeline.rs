@@ -1007,6 +1007,11 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
+    // Shadowmask layers now bake charts in parallel. They must share the live
+    // governor, but not the completed LightmapBake progress stage: that stage
+    // has already finished and its published total covers different work.
+    let shadowmask_progress = StageProgress::indeterminate();
+    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
     let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
         let shared = lightmap_layer::SharedAtlas {
             charts: &face_charts,
@@ -1024,6 +1029,7 @@ fn run_after_parsing(
             final_lightmap_density,
             args.soft_shadow_samples,
             stage_cache.as_ref(),
+            &shadowmask_control,
         )
     } else {
         None

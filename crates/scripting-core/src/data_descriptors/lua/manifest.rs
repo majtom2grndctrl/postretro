@@ -83,6 +83,50 @@ fn is_resource_grant_reaction_lua(value: &LuaValue) -> bool {
     )
 }
 
+/// Drain the strict mod-global switching declaration. Mirrors
+/// [`drain_switching_js`] field-for-field: an invalid policy rejects the
+/// complete mod-init attempt because it changes simulation authorization.
+pub fn drain_switching_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<SwitchingDescriptor, DescriptorError> {
+    let raw: LuaValue = table.get("switching").map_err(lua_err)?;
+    let switching = match raw {
+        LuaValue::Nil => return Ok(SwitchingDescriptor::default()),
+        LuaValue::Table(switching) => switching,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{scope}: `switching` must be a table, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    let commit_on_direct_select = get_required_bool_lua(&switching, "commitOnDirectSelect")
+        .map_err(|error| switching_field_error(scope, "commitOnDirectSelect", error))?;
+    let cycle_commit_dwell_ms = get_required_f32_lua(&switching, "cycleCommitDwellMs")
+        .map_err(|error| switching_field_error(scope, "cycleCommitDwellMs", error))?;
+    let block_during_reload = get_required_bool_lua(&switching, "blockDuringReload")
+        .map_err(|error| switching_field_error(scope, "blockDuringReload", error))?;
+
+    SwitchingDescriptor {
+        commit_on_direct_select,
+        cycle_commit_dwell_ms,
+        block_during_reload,
+    }
+    .validate()
+    .map_err(|error| DescriptorError::InvalidShape {
+        reason: format!("{scope}: {error}"),
+    })
+}
+
+fn switching_field_error(scope: &str, field: &str, error: DescriptorError) -> DescriptorError {
+    DescriptorError::InvalidShape {
+        reason: format!("{scope}: `switching.{field}` invalid: {error}"),
+    }
+}
+
 /// Drain the optional static renderer profile from a Luau mod manifest.
 /// Mirrors [`drain_render_profile_js`] field-for-field.
 pub fn drain_render_profile_lua(
@@ -150,6 +194,44 @@ pub fn drain_render_profile_lua(
             resolution,
             pixelated,
         },
+    })
+}
+
+/// Luau twin of the QuickJS mover-default drain.
+pub fn drain_mover_defaults_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<ModMoverDefaults, DescriptorError> {
+    let raw_movers: LuaValue = table.get("movers").map_err(lua_err)?;
+    let movers = match raw_movers {
+        LuaValue::Nil => return Ok(ModMoverDefaults::default()),
+        LuaValue::Table(movers) => movers,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `movers` must be a table; using default mover settings"
+            );
+            return Ok(ModMoverDefaults::default());
+        }
+    };
+    let value = match movers.get::<LuaValue>("autoCloseMs").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(ModMoverDefaults::default()),
+        LuaValue::Integer(value) => value as f64,
+        LuaValue::Number(value) => value,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `movers.autoCloseMs` must be a finite non-negative number; using 0"
+            );
+            return Ok(ModMoverDefaults::default());
+        }
+    };
+    if !value.is_finite() || value < 0.0 || !(value as f32).is_finite() {
+        log::warn!(
+            "[Scripting] {scope}: `movers.autoCloseMs` must be a finite non-negative number; using 0"
+        );
+        return Ok(ModMoverDefaults::default());
+    }
+    Ok(ModMoverDefaults {
+        auto_close_ms: value as f32,
     })
 }
 

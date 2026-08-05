@@ -2668,6 +2668,14 @@ mod tests {
                 spin_speed_deg_s: 0.0,
                 spin_accel_deg_s2: 0.0,
                 carry_yaw: false,
+                block_policy: "displace".to_string(),
+                crush_damage: 0.0,
+                crush_interval_ms: 0.0,
+                auto_close_ms: None,
+                open_event: None,
+                close_event: None,
+                blocked_event: None,
+                crush_event: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

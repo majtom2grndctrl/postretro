@@ -16,6 +16,7 @@ use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
+use crate::components::inventory::Inventory;
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
@@ -23,6 +24,7 @@ use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
+use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
@@ -133,6 +135,10 @@ pub enum ComponentKind {
     /// Every entity receives an empty component at spawn so effects do not
     /// depend on an AI brain being present.
     DeferredEffect = 18,
+    /// Pawn-owned ordered wieldable instances and in-flight switch target.
+    Inventory = 19,
+    /// Host-local interaction tuning for a world touchable entity.
+    Touchable = 20,
 }
 
 impl ComponentKind {
@@ -161,6 +167,8 @@ impl ComponentKind {
             ComponentKind::Spawner,
             ComponentKind::EntityState,
             ComponentKind::DeferredEffect,
+            ComponentKind::Inventory,
+            ComponentKind::Touchable,
         ];
         VARIANTS.len()
     };
@@ -225,6 +233,8 @@ pub enum ComponentValue {
     Spawner(SpawnerComponent),
     EntityState(EntityStateComponent),
     DeferredEffect(DeferredEffectComponent),
+    Inventory(Inventory),
+    Touchable(TouchableComponent),
 }
 
 impl ComponentValue {
@@ -249,6 +259,8 @@ impl ComponentValue {
             ComponentValue::Spawner(_) => ComponentKind::Spawner,
             ComponentValue::EntityState(_) => ComponentKind::EntityState,
             ComponentValue::DeferredEffect(_) => ComponentKind::DeferredEffect,
+            ComponentValue::Inventory(_) => ComponentKind::Inventory,
+            ComponentValue::Touchable(_) => ComponentKind::Touchable,
         }
     }
 }
@@ -602,6 +614,36 @@ impl Component for DeferredEffectComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::DeferredEffect(self)
+    }
+}
+
+impl Component for Inventory {
+    const KIND: ComponentKind = ComponentKind::Inventory;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Inventory(inventory) => Some(inventory),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Inventory(self)
+    }
+}
+
+impl Component for TouchableComponent {
+    const KIND: ComponentKind = ComponentKind::Touchable;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Touchable(touchable) => Some(touchable),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Touchable(self)
     }
 }
 
@@ -1004,6 +1046,15 @@ impl EntityRegistry {
         Ok(())
     }
 
+    /// Whether `id` is queued for the app-owned frame-end removal pass.
+    ///
+    /// Fixed-tick systems use this to avoid mutating an entity whose terminal
+    /// deferred effect already won earlier in the tick.
+    pub fn is_marked_for_end_of_frame_removal(&self, id: EntityId) -> Result<bool, RegistryError> {
+        let _ = self.validate(id)?;
+        Ok(self.end_of_frame_removals.contains(&id))
+    }
+
     /// Drain ids staged for the app-owned frame-end removal pass.
     pub fn take_end_of_frame_removals(&mut self) -> Vec<EntityId> {
         std::mem::take(&mut self.end_of_frame_removals)
@@ -1053,6 +1104,20 @@ impl EntityRegistry {
             .and_then(|cell| cell.as_ref())
             .ok_or(RegistryError::ComponentNotFound { id, kind: T::KIND })?;
         T::from_value(value).ok_or(RegistryError::ComponentNotFound { id, kind: T::KIND })
+    }
+
+    /// Mutably access one erased component cell without cloning its payload.
+    /// Fixed-tick systems use this when a component owns persistent vectors or
+    /// strings whose immutable configuration should not be copied each tick.
+    pub fn get_component_value_mut(
+        &mut self,
+        id: EntityId,
+        kind: ComponentKind,
+    ) -> Result<&mut ComponentValue, RegistryError> {
+        let index = self.validate(id)?;
+        self.components[kind as usize][index]
+            .as_mut()
+            .ok_or(RegistryError::ComponentNotFound { id, kind })
     }
 
     pub fn set_component<T: Component>(
@@ -1162,7 +1227,7 @@ impl EntityRegistry {
     /// Presentation-pose write: set the entity's visible transform to `pose` and
     /// stamp its previous-tick slot to the **same** pose, so the render-stage
     /// [`interpolated_transform`](Self::interpolated_transform) blend is a no-op at
-    /// any alpha and `pose` is shown verbatim. Two callers, one shape:
+    /// any alpha and `pose` is shown verbatim. Callers share one shape:
     ///
     /// - **Remote interpolation (M15 Phase 2):** the interpolation buffer already
     ///   resolved the final pose for this render frame at the correct server-time
@@ -1176,11 +1241,14 @@ impl EntityRegistry {
     ///   arc would smear the teleport into a visible slide. Stamping
     ///   `previous == current` collapses it, so the snapped pose renders cleanly the
     ///   frame the teleport lands.
+    /// - **Discrete visibility transitions:** when gameplay restores presentation
+    ///   after relocating an entity, its first visible frame must start at the new
+    ///   pose rather than blending from hidden, stale transform history.
     ///
     /// Time-base reasoning (why previous == current / alpha-agnostic): the render
     /// accessor's `alpha` is the *sim sub-tick* fraction (`accumulator /
     /// tick_duration`, see `crate::frame_timing`), unrelated to either the remote
-    /// buffer's server-time target or a one-shot local teleport. Blending toward the
+    /// buffer's server-time target or a one-shot discrete teleport. Blending toward the
     /// prior frame's pose by that sub-tick alpha would re-sample at a frame-varying
     /// offset (injecting jitter) or smear a teleport. No pop: no consumer reads
     /// these entities' previous transform for motion blur / trails, so collapsing it

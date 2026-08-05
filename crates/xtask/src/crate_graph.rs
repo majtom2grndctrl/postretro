@@ -525,5 +525,14 @@ mod tests {
             vec!["postretro-foundation".to_string()],
             "`entities` must depend only on `foundation` to stay a thin chokepoint"
         );
+
+        // 4. The transport stays an engine/registry-blind leaf. Wire identities
+        // are plain values; it must never learn an internal engine crate merely
+        // to carry them.
+        let net_deps = graph.reachable("postretro-net", Direction::Dependencies);
+        assert!(
+            net_deps.is_empty(),
+            "`postretro-net` must have no internal dependencies, found: {net_deps:?}"
+        );
     }
 }

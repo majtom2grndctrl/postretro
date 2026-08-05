@@ -152,6 +152,10 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | --- | --- |
 | `getGameState().player.health` | `player.health` |
 | `getGameState().player.maxHealth` | `player.maxHealth` |
+| `getGameState().player.weapon.current` | `player.weapon.current` |
+| `getGameState().player.weapon.pending` | `player.weapon.pending` |
+| `getGameState().player.weapon.switching` | `player.weapon.switching` |
+| `getGameState().session.openSeats` | `session.openSeats` |
 | `getGameState().screen.flash` | `screen.flash` |
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |
@@ -159,6 +163,10 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 The runtime installs the generated tree before SDK prelude evaluation, captures it into a language-native `getGameState()` closure, and hides the bridge global before author code runs. Calling `getGameState()` invokes no host callback or FFI.
 
 `player.health` and `player.maxHealth` are direct readonly refs for HUD authors. `player.health` is current HP. `player.maxHealth` is maximum HP. The engine does not publish `player.healthFraction`; consumers derive fractions from the two direct refs. Use `bindState(ref, options)` for bind-only options such as text formatting or bar tweening, and use `player.maxHealth` directly as the health bar denominator. The same contract applies in Luau. Do not import `"postretro/game-state"` and do not call `.get()` on state refs.
+
+`player.weapon.current`, `player.weapon.pending`, and `player.weapon.switching` are readonly local display slots on every role. `current` names the committed active wieldable and changes only when the inventory repoints; `switching` is true while that inventory has an in-flight target. `pending` is the input-layer cursor's display value and defaults to an empty string until its producer is present. These values are not host-authoritative and do not replicate; HUD crossing behavior follows the local machine's publication cadence.
+
+`session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and never carries player claims or display names. The roster Control message remains its only transport path.
 
 ---
 
@@ -378,7 +386,7 @@ the frontend through the same path as `returnToFrontend()`.
 
 ### 10.6 Mover Commands
 
-`world.query({ component: "kinematic_mover", tag })` reads map movers. The raw query result is a snapshot (`id`, position, tags); the SDK wraps it in a mover handle that builds tag-targeted reaction steps. `start`, `stop`, `reverse`, `goToPathNode(node)`, and `setSpinRate(rate)` map to the closed Rust command vocabulary. `setSpinRate(rate)` emits the `moverSetSpinRate` primitive and the `set_spin_rate` command verb. `rate` is a finite target in degrees per second at every author-facing surface; the shared command applier converts it to radians per second. A nonzero target requires the map mover to author a finite, nonzero `spin_axis`; otherwise the command warns and leaves phase unchanged. Zero remains valid for legacy or translation-only movers, but only resets the spin target; use `stop()` to freeze linear motion. The command changes only target rate, so the deterministic driver ramps through signed reversals and toward rest. Commands are declarative reaction data, not a per-tick script-control path: the deterministic mover driver owns motion every tick.
+`world.query({ component: "kinematic_mover", tag })` reads map movers. The raw query result is a snapshot (`id`, position, tags); the SDK wraps it in a mover handle that builds tag-targeted reaction steps. `start`, `stop`, `reverse`, `goToPathNode(node)`, `setSpinRate(rate)`, and `setBlockPolicy(policy)` map to the closed Rust command vocabulary. `setSpinRate(rate)` emits the `moverSetSpinRate` primitive and the `set_spin_rate` command verb. `rate` is a finite target in degrees per second at every author-facing surface; the shared command applier converts it to radians per second. A nonzero target requires the map mover to author a finite, nonzero `spin_axis`; otherwise the command warns and leaves phase unchanged. Zero remains valid for legacy or translation-only movers, but only resets the spin target; use `stop()` to freeze linear motion. The command changes only target rate, so the deterministic driver ramps through signed reversals and toward rest. `setBlockPolicy(policy)` emits `moverSetBlockPolicy` and the `set_block_policy` command verb, changing the mover's host-only collision response (`displace`, `reverse`, `stop`, or `crush`). A client may apply that reaction through the shared applier, but never reads this off-wire field, so its replicated phase is unchanged. Commands are declarative reaction data, not a per-tick script-control path: the deterministic mover driver owns motion every tick.
 
 ### 10.7 Trigger Commands
 

@@ -10,7 +10,8 @@ use crate::data_descriptors::{
     EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_render_profile_js, drain_render_profile_lua, drain_theme_js,
+    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua, drain_render_profile_js,
+    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
     drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
     entity_descriptor_from_lua,
@@ -256,6 +257,28 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let movers = match drain_mover_defaults_js(&obj, "default mod manifest export") {
+            Ok(defaults) => defaults,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `movers` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
+        let switching = match drain_switching_js(&obj, "default mod manifest export") {
+            Ok(switching) => switching,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `switching` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let frontend = match drain_frontend_js(&obj, "default mod manifest export") {
             Ok(frontend) => frontend,
             Err(e) => {
@@ -341,6 +364,8 @@ pub(super) fn run_mod_init_quickjs(
             id,
             version,
             render,
+            movers,
+            switching,
             entities,
             ui_trees,
             theme,
@@ -504,6 +529,20 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let movers = drain_mover_defaults_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `movers` invalid: {e}"
+            ),
+        }
+    })?;
+    let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `switching` invalid: {e}"
+            ),
+        }
+    })?;
     let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -565,6 +604,8 @@ pub(super) fn run_mod_init_luau(
         id,
         version,
         render,
+        movers,
+        switching,
         entities,
         ui_trees,
         theme,
@@ -583,7 +624,7 @@ pub(super) fn run_mod_init_luau(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_descriptors::TriggerPoolArm;
+    use crate::data_descriptors::{SwitchingDescriptor, TriggerPoolArm};
     use crate::primitives_registry::PrimitiveRegistry;
     use crate::runtime::{ModBloomProfile, ModBloomResolution, ModRenderProfile};
 
@@ -655,6 +696,133 @@ mod tests {
             let (js, luau) = cold_render_profiles(js_source, luau_source);
             assert_eq!(js, expected);
             assert_eq!(luau, expected);
+        }
+    }
+
+    #[test]
+    fn mod_init_mover_defaults_match_in_both_runtimes_and_degrade_to_off() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Mover', id: 'mover', version: '1', movers: { autoCloseMs: 250 } };",
+            "mover.js",
+        )
+        .expect("QuickJS mover defaults should parse");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Mover', id = 'mover', version = '1', movers = { autoCloseMs = 250 } }",
+            "mover.luau",
+            Path::new("."),
+        )
+        .expect("Luau mover defaults should parse");
+        assert_eq!(js.movers.auto_close_ms, 250.0);
+        assert_eq!(luau.movers, js.movers);
+
+        let malformed_js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Mover', id: 'mover', version: '1', movers: { autoCloseMs: -1 } };",
+            "mover-malformed.js",
+        )
+        .expect("malformed optional QuickJS mover defaults should degrade");
+        let malformed_luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Mover', id = 'mover', version = '1', movers = { autoCloseMs = -1 } }",
+            "mover-malformed.luau",
+            Path::new("."),
+        )
+        .expect("malformed optional Luau mover defaults should degrade");
+        assert_eq!(malformed_js.movers.auto_close_ms, 0.0);
+        assert_eq!(malformed_luau.movers, malformed_js.movers);
+    }
+
+    #[test]
+    fn mod_init_switching_matches_in_both_runtimes_and_omits_to_defaults() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Switch', id: 'switch', version: '1', switching: { commitOnDirectSelect: false, cycleCommitDwellMs: 125, blockDuringReload: true } };",
+            "switch.js",
+        )
+        .expect("QuickJS switching manifest should parse");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Switch', id = 'switch', version = '1', switching = { commitOnDirectSelect = false, cycleCommitDwellMs = 125, blockDuringReload = true } }",
+            "switch.luau",
+            Path::new("."),
+        )
+        .expect("Luau switching manifest should parse");
+        let expected = SwitchingDescriptor {
+            commit_on_direct_select: false,
+            cycle_commit_dwell_ms: 125.0,
+            block_during_reload: true,
+        };
+        assert_eq!(js.switching, expected);
+        assert_eq!(luau.switching, expected);
+
+        let js_default = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Default', id: 'default', version: '1' };",
+            "default.js",
+        )
+        .expect("absent QuickJS switching block should default");
+        let luau_default = run_mod_init_luau(
+            &[],
+            "return { name = 'Default', id = 'default', version = '1' }",
+            "default.luau",
+            Path::new("."),
+        )
+        .expect("absent Luau switching block should default");
+        assert_eq!(js_default.switching, SwitchingDescriptor::default());
+        assert_eq!(luau_default.switching, SwitchingDescriptor::default());
+    }
+
+    #[test]
+    fn mod_init_switching_rejects_invalid_fields_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        for (label, js_switching, luau_switching, field) in [
+            (
+                "missing required boolean",
+                "{ cycleCommitDwellMs: 10, blockDuringReload: true }",
+                "{ cycleCommitDwellMs = 10, blockDuringReload = true }",
+                "commitOnDirectSelect",
+            ),
+            (
+                "negative dwell",
+                "{ commitOnDirectSelect: true, cycleCommitDwellMs: -1, blockDuringReload: false }",
+                "{ commitOnDirectSelect = true, cycleCommitDwellMs = -1, blockDuringReload = false }",
+                "cycleCommitDwellMs",
+            ),
+            (
+                "nonfinite dwell",
+                "{ commitOnDirectSelect: true, cycleCommitDwellMs: NaN, blockDuringReload: false }",
+                "{ commitOnDirectSelect = true, cycleCommitDwellMs = 0/0, blockDuringReload = false }",
+                "cycleCommitDwellMs",
+            ),
+        ] {
+            let js_source = format!(
+                "globalThis.__postretroModManifest = {{ name: 'Bad', id: 'bad', version: '1', switching: {js_switching} }};"
+            );
+            let js_error = run_mod_init_quickjs(&quickjs, &js_source, "bad.js")
+                .expect_err("invalid QuickJS switching field must abort mod init");
+            let luau_source = format!(
+                "return {{ name = 'Bad', id = 'bad', version = '1', switching = {luau_switching} }}"
+            );
+            let luau_error = run_mod_init_luau(&[], &luau_source, "bad.luau", Path::new("."))
+                .expect_err("invalid Luau switching field must abort mod init");
+            assert!(
+                js_error.to_string().contains(field),
+                "{label}: QuickJS diagnostic must name {field}: {js_error}"
+            );
+            assert!(
+                luau_error.to_string().contains(field),
+                "{label}: Luau diagnostic must name {field}: {luau_error}"
+            );
         }
     }
 

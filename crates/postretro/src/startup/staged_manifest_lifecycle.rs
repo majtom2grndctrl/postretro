@@ -3,6 +3,7 @@
 // session, active level, and UI in their required commit order.
 // See: context/lib/boot_sequence.md §1 · context/lib/scripting.md
 
+use postretro_foundation::SwitchingDescriptor;
 use postretro_scripting_core::runtime::{ModRenderProfile, StagedManifestCommitOutcome};
 use postretro_scripting_core::staged_manifest::{
     StagedManifestBuildResult, StagedManifestBuildStatus,
@@ -27,6 +28,43 @@ pub(crate) fn staged_render_profile(
     match &result.status {
         StagedManifestBuildStatus::Built(manifest) => Some(manifest.render),
         StagedManifestBuildStatus::NoStartScript => Some(ModRenderProfile::default()),
+        StagedManifestBuildStatus::Failed => None,
+    }
+}
+
+/// Switching policy a staged manifest result commits, if any. Like the render
+/// profile, it is a whole-snapshot App policy: a committed no-start result
+/// restores defaults, while every rejected or failed result retains the active
+/// setting.
+pub(crate) fn staged_switching(
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) -> Option<SwitchingDescriptor> {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return None;
+    }
+
+    match &result.status {
+        StagedManifestBuildStatus::Built(manifest) => Some(manifest.switching),
+        StagedManifestBuildStatus::NoStartScript => Some(SwitchingDescriptor::default()),
+        StagedManifestBuildStatus::Failed => None,
+    }
+}
+
+/// Kinematic-mover default committed with a staged manifest snapshot. Static
+/// mover components read this only when their next level is installed.
+pub(crate) fn staged_mover_auto_close_ms(
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) -> Option<f32> {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return None;
+    }
+    match &result.status {
+        StagedManifestBuildStatus::Built(manifest) => Some(manifest.movers.auto_close_ms),
+        StagedManifestBuildStatus::NoStartScript => {
+            Some(crate::runtime_movers::ENGINE_AUTO_CLOSE_MS)
+        }
         StagedManifestBuildStatus::Failed => None,
     }
 }
@@ -105,6 +143,14 @@ impl App {
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
                 self.apply_mod_bloom_render_profile(render_profile);
             }
+            if let Some(switching) = staged_switching(&result, &outcome) {
+                self.switching = switching;
+            }
+            if let Some(mover_auto_close_ms) = staged_mover_auto_close_ms(&result, &outcome)
+                && let Some(session) = self.session.as_mut()
+            {
+                session.scripting.mover_auto_close_ms = mover_auto_close_ms;
+            }
             self.commit_staged_ui_manifest(&result, &outcome);
             if committed {
                 self.install_network_mod_content();
@@ -132,6 +178,13 @@ mod tests {
     }
 
     fn built_result(render: ModRenderProfile) -> StagedManifestBuildResult {
+        built_result_with_switching(render, SwitchingDescriptor::default())
+    }
+
+    fn built_result_with_switching(
+        render: ModRenderProfile,
+        switching: SwitchingDescriptor,
+    ) -> StagedManifestBuildResult {
         StagedManifestBuildResult {
             generation: GENERATION,
             mod_root: PathBuf::from("content/dev"),
@@ -140,6 +193,8 @@ mod tests {
                 id: "render-profile".to_string(),
                 version: "1".to_string(),
                 render,
+                movers: Default::default(),
+                switching,
                 entities: Vec::new(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
@@ -233,6 +288,34 @@ mod tests {
                 None,
                 "{outcome:?} must not move the active bloom profile",
             );
+        }
+    }
+
+    #[test]
+    fn staged_switching_commits_only_successful_whole_snapshots() {
+        let expected = SwitchingDescriptor {
+            commit_on_direct_select: false,
+            cycle_commit_dwell_ms: 125.0,
+            block_during_reload: true,
+        };
+        let result = built_result_with_switching(quarter_pixelated(), expected);
+        assert_eq!(staged_switching(&result, &committed()), Some(expected));
+        assert_eq!(
+            staged_switching(
+                &status_result(StagedManifestBuildStatus::NoStartScript),
+                &committed(),
+            ),
+            Some(SwitchingDescriptor::default()),
+        );
+        assert_eq!(
+            staged_switching(
+                &status_result(StagedManifestBuildStatus::Failed),
+                &committed(),
+            ),
+            None,
+        );
+        for outcome in non_committed_outcomes() {
+            assert_eq!(staged_switching(&result, &outcome), None);
         }
     }
 }

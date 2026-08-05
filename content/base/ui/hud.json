@@ -20,6 +20,17 @@
           "slot": "player.health",
           "format": "FALLBACK HUD HP {}"
         }
+      },
+      {
+        "kind": "text",
+        "content": "",
+        "fontSize": 18.0,
+        "color": "ok",
+        "font": "mono",
+        "bind": {
+          "slot": "session.openSeats",
+          "format": "OPEN SEATS {}"
+        }
       }
     ]
   }

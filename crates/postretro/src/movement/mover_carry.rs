@@ -5,12 +5,12 @@ use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
-use crate::collision::cast_capsule;
 use crate::collision::moving::{
     CollisionSource, CombinedCastHit, CombinedCollisionWorld, MoverPenetration,
     deepest_mover_penetration, deepest_mover_push_penetration,
     deepest_mover_push_penetration_excluding_swept,
 };
+use crate::collision::{CollisionWorld, cast_capsule};
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 pub(super) fn ground_ref_from_hit(hit: CombinedCastHit) -> GroundRef {
@@ -111,8 +111,33 @@ fn unblocked_mover_displacement(
     collision: &CombinedCollisionWorld<'_>,
     capsule: &Capsule,
 ) -> Option<Vec3> {
-    let blocked = cast_capsule(
-        collision.static_world,
+    let blocked =
+        mover_push_is_blocked_by_static(collision.static_world, position, capsule, penetration);
+    if blocked {
+        #[cfg(debug_assertions)]
+        log::warn!(
+            "[Movement] mover {} push was blocked by static geometry; local displacement recovery left position unchanged",
+            penetration.mover_id
+        );
+        None
+    } else {
+        Some(position + penetration.normal * penetration.depth)
+    }
+}
+
+/// Whether the static world prevents the mover-overlap recovery push.
+///
+/// The host blocking pass also evaluates this definition so later pin-sensitive
+/// policies share this geometry, while the predicted displacement path retains
+/// its existing response unchanged.
+pub(crate) fn mover_push_is_blocked_by_static(
+    static_world: &CollisionWorld,
+    position: Vec3,
+    capsule: &Capsule,
+    penetration: MoverPenetration,
+) -> bool {
+    cast_capsule(
+        static_world,
         Point::new(position.x, position.y, position.z),
         capsule,
         Vector::new(
@@ -122,15 +147,5 @@ fn unblocked_mover_displacement(
         ),
         penetration.depth,
     )
-    .is_some();
-    if blocked {
-        #[cfg(debug_assertions)]
-        log::warn!(
-            "[Movement] mover {} push was blocked by static geometry; pinch/crush resolution is deferred",
-            penetration.mover_id
-        );
-        None
-    } else {
-        Some(position + penetration.normal * penetration.depth)
-    }
+    .is_some()
 }

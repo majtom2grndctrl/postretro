@@ -1,814 +1,35 @@
 // Weapon command orchestration, impact damage, and reload delivery.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
-use std::cell::RefCell;
-use std::rc::Rc;
+mod commands;
+mod fire;
+mod impact;
+mod machine;
+mod state;
 
-use glam::Vec3;
-
-use crate::collision::CollisionWorld;
-use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
-use postretro_entities::components::health::{
-    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+pub(super) use commands::{
+    normalize_all_inventory_liveness, normalize_inventory_liveness, refuse_local_switch,
+    run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
-use postretro_entities::components::weapon::{
-    ReloadFeedback, UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent,
-};
-use postretro_entities::components::wieldable_state::WieldableState;
-use postretro_entities::data_descriptors::ReloadStyle;
-use postretro_entities::{AmmoReserve, ComponentKind, EntityId, EntityRegistry};
-
-use super::{
-    OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, ReloadOutcome, RemotePawnCommand,
-};
-
-#[derive(Debug)]
-struct WeaponMachineTick {
-    authorization: WeaponFireAuthorization,
-    deliveries: Vec<ReloadDelivery>,
-}
-
-struct FireAuthorizationContext<'a> {
-    tick_dt: f32,
-    reload_started_this_tick: bool,
-    feedback_tick: u64,
-    pawn: Option<EntityId>,
-    weapon: EntityId,
-    deliveries: &'a mut Vec<ReloadDelivery>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum WieldableStateEvent {
-    BeginReload {
-        duration_ms: u32,
-        reload_style: ReloadStyle,
-        feedback_tick: u64,
-    },
-    Expired {
-        pawn_present: bool,
-        feedback_tick: u64,
-    },
-    Cancel {
-        feedback_tick: u64,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StateTransition {
-    Noop,
-    ReloadStarted,
-    ReloadStep {
-        shell_loaded: bool,
-        completed: Option<u32>,
-        restart_duration_ms: Option<u32>,
-    },
-    ReloadCancelled {
-        transferred: u32,
-    },
-}
-
-/// Run the one ordered weapon machine shared by local and host-simulated pawns.
-/// Reload entry must run before expiry and fire: a reload started this tick owns
-/// the fire gate even when a short duration completes before that gate runs.
-fn tick_weapon_machine(
-    registry: &mut EntityRegistry,
-    pawn: Option<EntityId>,
-    weapon: EntityId,
-    component: &mut WeaponComponent,
-    reload: bool,
-    command: &WeaponFireCommand,
-    tick_dt: f32,
-) -> WeaponMachineTick {
-    let pawn = pawn.filter(|pawn| registry.exists(*pawn));
-    let feedback_tick = component.begin_reload_feedback_tick();
-    let mut deliveries = Vec::new();
-    let mut reload_started_this_tick = false;
-
-    // 1. Reload intent. Pawnless ticks intentionally leave the edge untouched:
-    // a held level becomes a real rising edge once its pawn returns.
-    if let Some(pawn) = pawn {
-        let fresh_press = reload && !component.reload_press_consumed;
-        component.reload_press_consumed = reload;
-        if fresh_press && component.state.allows_reload() {
-            if let Some((capacity, ammo_type, reload_ms, reload_style)) =
-                component.effective().ammo.map(|ammo| {
-                    (
-                        ammo.capacity,
-                        ammo.ammo_type.to_string(),
-                        ammo.reload_ms,
-                        ammo.reload_style,
-                    )
-                })
-            {
-                if component.magazine >= capacity {
-                    deliveries.push(ReloadDelivery {
-                        pawn,
-                        weapon,
-                        outcome: ReloadOutcome::BlockedFull,
-                    });
-                } else if registry
-                    .get_component::<AmmoReserve>(pawn)
-                    .map_or(0, |reserve| reserve.available(&ammo_type))
-                    == 0
-                {
-                    deliveries.push(ReloadDelivery {
-                        pawn,
-                        weapon,
-                        outcome: ReloadOutcome::BlockedEmpty,
-                    });
-                } else if transition_wieldable_state(
-                    component,
-                    WieldableStateEvent::BeginReload {
-                        duration_ms: reload_ms,
-                        reload_style,
-                        feedback_tick,
-                    },
-                    None,
-                ) == StateTransition::ReloadStarted
-                {
-                    reload_started_this_tick = true;
-                    deliveries.push(ReloadDelivery {
-                        pawn,
-                        weapon,
-                        outcome: ReloadOutcome::Started,
-                    });
-                }
-            }
-        }
-    }
-
-    // 2. Timer advance. The shared helper owns the sub-millisecond carry.
-    if component.state.is_reload_activity()
-        && let Some(overshoot_ms) = super::reload::advance_timer(component, tick_dt)
-    {
-        // 3. State expiry. Its meaning is selected by the state/event transition,
-        // never by a second state match in the machine.
-        resolve_expired_state(
-            registry,
-            pawn,
-            weapon,
-            component,
-            overshoot_ms,
-            feedback_tick,
-            &mut deliveries,
-        );
-    }
-
-    // 4. Fire intent. Cooldown remains orthogonal to wieldable state.
-    let authorization = authorize_fire(
-        component,
-        command,
-        FireAuthorizationContext {
-            tick_dt,
-            reload_started_this_tick,
-            feedback_tick,
-            pawn,
-            weapon,
-            deliveries: &mut deliveries,
-        },
-    );
-    WeaponMachineTick {
-        authorization,
-        deliveries,
-    }
-}
-
-/// The sole state/event dispatch. New wieldable states add rows here rather than
-/// changing component shape or teaching callers what a timer expiry means.
-fn transition_wieldable_state(
-    component: &mut WeaponComponent,
-    event: WieldableStateEvent,
-    reserve: Option<&mut AmmoReserve>,
-) -> StateTransition {
-    match (component.state, event) {
-        (
-            WieldableState::Idle,
-            WieldableStateEvent::BeginReload {
-                duration_ms,
-                reload_style,
-                feedback_tick,
-            },
-        ) => {
-            component.state = match reload_style {
-                ReloadStyle::Magazine => WieldableState::Reloading,
-                ReloadStyle::PerShell => WieldableState::ShellLoading,
-            };
-            component.state_total_ms = duration_ms;
-            component.state_remaining_ms = duration_ms;
-            component.state_elapsed_sub_ms = 0.0;
-            component.reload_credited = 0;
-            component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
-            StateTransition::ReloadStarted
-        }
-        (WieldableState::Idle, WieldableStateEvent::Expired { .. })
-        | (WieldableState::Idle, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
-        (WieldableState::Reloading, WieldableStateEvent::BeginReload { .. }) => {
-            StateTransition::Noop
-        }
-        (
-            WieldableState::Reloading,
-            WieldableStateEvent::Expired {
-                pawn_present,
-                feedback_tick,
-            },
-        ) => {
-            if !pawn_present {
-                transition_to_idle(component);
-                return StateTransition::Noop;
-            }
-
-            // Completion honors refreshed ammo tuning, while preserving the live
-            // timed state until this decision point.
-            let effective_ammo = component
-                .effective()
-                .ammo
-                .map(|ammo| (ammo.capacity, ammo.ammo_type.to_string()));
-            let transferred = if let Some((capacity, ammo_type)) = effective_ammo {
-                let requested = capacity.saturating_sub(component.magazine).min(
-                    reserve
-                        .as_ref()
-                        .map_or(0, |reserve| reserve.available(&ammo_type)),
-                );
-                let transferred = reserve.map_or(0, |reserve| reserve.take(&ammo_type, requested));
-                component.magazine = component.magazine.saturating_add(transferred);
-                transferred
-            } else {
-                0
-            };
-            component.reload_credited = component.reload_credited.saturating_add(transferred);
-            complete_reload(component, false, feedback_tick)
-        }
-        (WieldableState::ShellLoading, WieldableStateEvent::BeginReload { .. }) => {
-            StateTransition::Noop
-        }
-        (
-            WieldableState::ShellLoading,
-            WieldableStateEvent::Expired {
-                pawn_present,
-                feedback_tick,
-            },
-        ) => {
-            if !pawn_present {
-                transition_to_idle(component);
-                return StateTransition::Noop;
-            }
-
-            let Some((capacity, ammo_type, reload_ms, reload_style)) =
-                component.effective().ammo.map(|ammo| {
-                    (
-                        ammo.capacity,
-                        ammo.ammo_type.to_string(),
-                        ammo.reload_ms,
-                        ammo.reload_style,
-                    )
-                })
-            else {
-                return complete_reload(component, false, feedback_tick);
-            };
-
-            // The continue guard reads this same one-tick working copy as the
-            // debit below. A zero result is unreachable during ordinary play but
-            // protects a reserve that was emptied between guard and credit.
-            let Some(reserve) = reserve else {
-                return complete_reload(component, false, feedback_tick);
-            };
-            let transferred = reserve.take(&ammo_type, 1);
-            if transferred == 0 {
-                return complete_reload(component, false, feedback_tick);
-            }
-
-            component.magazine = component.magazine.saturating_add(transferred);
-            component.reload_credited = component.reload_credited.saturating_add(transferred);
-            let continues = component.magazine < capacity
-                && reserve.available(&ammo_type) > 0
-                && reload_style == ReloadStyle::PerShell;
-            if continues {
-                // A per-shell boundary completes the current meter step even
-                // though the loop immediately starts the next one.
-                component.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
-                StateTransition::ReloadStep {
-                    shell_loaded: true,
-                    completed: None,
-                    restart_duration_ms: Some(reload_ms),
-                }
-            } else {
-                complete_reload(component, true, feedback_tick)
-            }
-        }
-        (WieldableState::ShellLoading, WieldableStateEvent::Cancel { feedback_tick }) => {
-            let transferred = component.reload_credited;
-            transition_to_idle(component);
-            component.reload_press_consumed = false;
-            component.clear_cancelled_reload_feedback(feedback_tick);
-            StateTransition::ReloadCancelled { transferred }
-        }
-        (WieldableState::Reloading, WieldableStateEvent::Cancel { .. }) => StateTransition::Noop,
-    }
-}
-
-fn complete_reload(
-    component: &mut WeaponComponent,
-    shell_loaded: bool,
-    feedback_tick: u64,
-) -> StateTransition {
-    let transferred = component.reload_credited;
-    transition_to_idle(component);
-    component.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
-    StateTransition::ReloadStep {
-        shell_loaded,
-        completed: Some(transferred),
-        restart_duration_ms: None,
-    }
-}
-
-fn resolve_expired_state(
-    registry: &mut EntityRegistry,
-    pawn: Option<EntityId>,
-    weapon: EntityId,
-    component: &mut WeaponComponent,
-    mut overshoot_ms: f64,
-    feedback_tick: u64,
-    deliveries: &mut Vec<ReloadDelivery>,
-) {
-    let reserve_was_present = pawn.is_some_and(|pawn| {
-        registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true)
-    });
-    let mut working_reserve = pawn.map(|pawn| {
-        registry
-            .get_component::<AmmoReserve>(pawn)
-            .cloned()
-            .unwrap_or_default()
-    });
-
-    while component.state.is_reload_activity() && component.state_remaining_ms == 0 {
-        let transition = transition_wieldable_state(
-            component,
-            WieldableStateEvent::Expired {
-                pawn_present: pawn.is_some(),
-                feedback_tick,
-            },
-            working_reserve.as_mut(),
-        );
-        let StateTransition::ReloadStep {
-            shell_loaded,
-            completed,
-            restart_duration_ms,
-        } = transition
-        else {
-            break;
-        };
-
-        if let Some(pawn) = pawn {
-            if shell_loaded {
-                deliveries.push(ReloadDelivery {
-                    pawn,
-                    weapon,
-                    outcome: ReloadOutcome::ShellLoaded,
-                });
-            }
-            if let Some(transferred) = completed {
-                deliveries.push(ReloadDelivery {
-                    pawn,
-                    weapon,
-                    outcome: ReloadOutcome::Completed { transferred },
-                });
-            }
-        }
-
-        let Some(duration_ms) = restart_duration_ms else {
-            break;
-        };
-        if restart_timed_step(component, duration_ms, overshoot_ms) {
-            overshoot_ms = (overshoot_ms - f64::from(duration_ms)).max(0.0);
-            continue;
-        }
-        break;
-    }
-
-    if reserve_was_present && let (Some(pawn), Some(reserve)) = (pawn, working_reserve) {
-        let _ = registry.set_component(pawn, reserve);
-    }
-}
-
-/// Restart a repeated timed step. The carry stores only the fractional
-/// remainder; a whole-step overshoot leaves the timer expired so the caller can
-/// credit the next shell in this same tick. The shared boundary comparison keeps
-/// an exact f32-authored duration from deferring a shell one fixed tick.
-fn restart_timed_step(
-    component: &mut WeaponComponent,
-    duration_ms: u32,
-    overshoot_ms: f64,
-) -> bool {
-    component.state_total_ms = duration_ms;
-    if super::reload::reaches_millisecond_boundary(overshoot_ms, duration_ms) {
-        component.state_remaining_ms = 0;
-        component.state_elapsed_sub_ms = 0.0;
-        return true;
-    }
-
-    let whole_ms = overshoot_ms.floor() as u32;
-    component.state_remaining_ms = duration_ms - whole_ms;
-    component.state_elapsed_sub_ms = overshoot_ms - f64::from(whole_ms);
-    false
-}
-
-fn transition_to_idle(component: &mut WeaponComponent) {
-    component.state = WieldableState::Idle;
-    component.state_remaining_ms = 0;
-    component.state_total_ms = 0;
-    component.state_elapsed_sub_ms = 0.0;
-    component.reload_credited = 0;
-}
-
-fn authorize_fire(
-    weapon: &mut WeaponComponent,
-    command: &WeaponFireCommand,
-    context: FireAuthorizationContext<'_>,
-) -> WeaponFireAuthorization {
-    let dt_ms = (context.tick_dt.max(0.0)) * 1000.0;
-    weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
-
-    let verdict = weapon_fire_authorization_verdict(weapon, command);
-    if weapon.state == WieldableState::ShellLoading
-        && verdict == WeaponFireAuthorization::Accepted
-        && !context.reload_started_this_tick
-        && let StateTransition::ReloadCancelled { transferred } = transition_wieldable_state(
-            weapon,
-            WieldableStateEvent::Cancel {
-                feedback_tick: context.feedback_tick,
-            },
-            None,
-        )
-        && let Some(pawn) = context.pawn
-    {
-        context.deliveries.push(ReloadDelivery {
-            pawn,
-            weapon: context.weapon,
-            outcome: ReloadOutcome::Cancelled { transferred },
-        });
-    }
-
-    let fire_mode = weapon.effective().fire_mode;
-    if fire_mode == postretro_entities::data_descriptors::FireMode::Semi && command.button.pressed {
-        weapon.shoot_press_consumed = true;
-    } else if !command.button.active {
-        weapon.shoot_press_consumed = false;
-    }
-
-    if context.reload_started_this_tick || !weapon.state.allows_fire() {
-        return WeaponFireAuthorization::Rejected;
-    }
-
-    match verdict {
-        WeaponFireAuthorization::Rejected => WeaponFireAuthorization::Rejected,
-        WeaponFireAuthorization::Empty => {
-            weapon.cooldown_remaining_ms = weapon.effective().cooldown_ms;
-            WeaponFireAuthorization::Empty
-        }
-        WeaponFireAuthorization::Accepted => {
-            let (cooldown_ms, cost_per_shot) = {
-                let stats = weapon.effective();
-                (
-                    stats.cooldown_ms,
-                    stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot),
-                )
-            };
-            if let Some(cost_per_shot) = cost_per_shot {
-                weapon.magazine -= cost_per_shot;
-            }
-            weapon.cooldown_remaining_ms = cooldown_ms;
-            WeaponFireAuthorization::Accepted
-        }
-    }
-}
-
-/// Answer the fire question as if the weapon were Idle. This is deliberately
-/// state- and reload-latch-blind so a ShellLoading loop can decide whether to
-/// cancel before the real gate applies state legality.
-fn weapon_fire_authorization_verdict(
-    weapon: &WeaponComponent,
-    command: &WeaponFireCommand,
-) -> WeaponFireAuthorization {
-    let stats = weapon.effective();
-    let wants_fire = match stats.fire_mode {
-        postretro_entities::data_descriptors::FireMode::Semi => {
-            command.button.pressed && !weapon.shoot_press_consumed
-        }
-        postretro_entities::data_descriptors::FireMode::Auto => command.button.active,
-    };
-    if !command.can_fire || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
-        return WeaponFireAuthorization::Rejected;
-    }
-    if let Some(cost_per_shot) = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot) {
-        if weapon.magazine < cost_per_shot {
-            return WeaponFireAuthorization::Empty;
-        }
-    }
-    WeaponFireAuthorization::Accepted
-}
-
-pub(super) fn weapon_fire_command(
-    button: FireButtonState,
-    post_movement: PostMovementCommand,
-) -> WeaponFireCommand {
-    // The aim normalization and `can_fire` gate below are degenerate-input guards.
-    // `camera.aim_ray()` already returns normalized, finite values in normal operation;
-    // these checks protect against NaN/zero vectors from headless or mocked callers.
-    if post_movement.aim_origin.is_finite()
-        && let Some(aim_direction) = normalize_aim_direction(post_movement.aim_direction)
-    {
-        return WeaponFireCommand {
-            button,
-            aim_origin: post_movement.aim_origin,
-            aim_direction,
-            can_fire: true,
-        };
-    }
-
-    WeaponFireCommand {
-        button,
-        aim_origin: Vec3::ZERO,
-        aim_direction: Vec3::Z,
-        can_fire: false,
-    }
-}
-
-fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
-    if !direction.is_finite() {
-        return None;
-    }
-    let length_squared = direction.length_squared();
-    if !length_squared.is_finite() || length_squared <= 1.0e-12 {
-        return None;
-    }
-    Some(direction / length_squared.sqrt())
-}
-
-pub(super) fn run_remote_weapon_commands(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    remote_pawn_commands: &[RemotePawnCommand],
-    tick_dt: f32,
-) -> (
-    Vec<OpenAuthorizedShot>,
-    Vec<ReloadDelivery>,
-    Vec<&'static str>,
-) {
-    let mut registry = registry.borrow_mut();
-    let mut authorized = Vec::new();
-    let mut reload_deliveries = Vec::new();
-    let mut weapon_events = Vec::new();
-
-    for remote in remote_pawn_commands {
-        // Remote authorization requires live ownership. A delayed command for a
-        // despawned pawn must not mutate its former weapon or mint an open shot.
-        if !registry.exists(remote.pawn) {
-            continue;
-        }
-        let Some(weapon) = remote.weapon else {
-            continue;
-        };
-        let Ok(mut weapon_component) = registry.get_component::<WeaponComponent>(weapon).cloned()
-        else {
-            continue;
-        };
-        let command = WeaponFireCommand {
-            button: remote.command.fire_button,
-            aim_origin: Vec3::ZERO,
-            aim_direction: Vec3::Z,
-            // Repurposes `can_fire` (elsewhere "aim valid") to mean "pawn has a NetworkId";
-            // the real fire gate is `button` -> `wants_fire`. The host casts no local aim ray.
-            can_fire: remote.shot_id.is_some(),
-        };
-        let machine = tick_weapon_machine(
-            &mut registry,
-            Some(remote.pawn),
-            weapon,
-            &mut weapon_component,
-            remote.command.reload,
-            &command,
-            tick_dt,
-        );
-        reload_deliveries.extend(machine.deliveries);
-        let effective = weapon_component.effective();
-        let damage = effective.damage;
-        let range = effective.range;
-        let credit_source = effective.credit_source.to_string();
-        let _ = registry.set_component(weapon, weapon_component);
-        match machine.authorization {
-            WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
-            WeaponFireAuthorization::Empty => {
-                weapon_events.push("dry_fire");
-                continue;
-            }
-            WeaponFireAuthorization::Rejected => continue,
-        }
-        let Some(shot_id) = remote.shot_id else {
-            continue;
-        };
-        authorized.push(OpenAuthorizedShot {
-            shot: super::AuthorizedShot {
-                shot_id,
-                pawn: remote.pawn,
-                weapon,
-                fire_tick: remote.fire_tick,
-                damage,
-                range,
-                pellet_count: 1,
-                credit_source,
-            },
-            owner_client_id: remote.owner_client_id,
-        });
-    }
-
-    (authorized, reload_deliveries, weapon_events)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_local_weapon_command(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    pawn: Option<EntityId>,
-    active_wieldable: Option<EntityId>,
-    command: &WeaponFireCommand,
-    reload_pressed: bool,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    tick_dt: f32,
-    on_impact: &mut impl FnMut(&mut EntityRegistry),
-) -> (Vec<ReloadDelivery>, Vec<&'static str>) {
-    let Some(weapon_id) = active_wieldable else {
-        return (Vec::new(), Vec::new());
-    };
-    let mut registry = registry.borrow_mut();
-    let Ok(mut weapon_component) = registry
-        .get_component::<WeaponComponent>(weapon_id)
-        .cloned()
-    else {
-        return (Vec::new(), Vec::new());
-    };
-    let machine = tick_weapon_machine(
-        &mut registry,
-        pawn,
-        weapon_id,
-        &mut weapon_component,
-        reload_pressed,
-        command,
-        tick_dt,
-    );
-    let events = weapon::tick_resolved_component(
-        &registry,
-        &mut weapon_component,
-        command,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        machine.authorization,
-    );
-    let _ = registry.set_component(weapon_id, weapon_component);
-    if let Some(impact) = events.impact.as_ref() {
-        weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-        apply_weapon_impact_damage(&mut registry, active_wieldable, pawn, impact);
-        on_impact(&mut registry);
-    }
-    (machine.deliveries, events.event_names())
-}
-
-pub(crate) fn apply_weapon_impact_damage(
-    registry: &mut EntityRegistry,
-    active_wieldable: Option<EntityId>,
-    attacker: Option<EntityId>,
-    impact: &weapon::WeaponImpact,
-) {
-    let (Some(_), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome) else {
-        return;
-    };
-    let Some(weapon_id) = active_wieldable else {
-        log::warn!("[Weapon] hitscan impact had no active wieldable; dropping damage");
-        return;
-    };
-    let Ok(component) = registry.get_component::<WeaponComponent>(weapon_id) else {
-        log::warn!("[Weapon] active wieldable {weapon_id} has no WeaponComponent; dropping damage");
-        return;
-    };
-
-    let effective = component.effective();
-    apply_weapon_impact_damage_with_source(
-        registry,
-        weapon_id,
-        attacker,
-        impact,
-        effective.credit_source.to_string(),
-        payload.amount,
-    );
-}
-
-pub(crate) fn apply_authorized_weapon_impact_damage(
-    registry: &mut EntityRegistry,
-    weapon_id: EntityId,
-    attacker: Option<EntityId>,
-    impact: &weapon::WeaponImpact,
-    credit_source: String,
-    damage_amount: f32,
-) {
-    apply_weapon_impact_damage_with_source(
-        registry,
-        weapon_id,
-        attacker,
-        impact,
-        credit_source,
-        damage_amount,
-    );
-}
-
-fn apply_weapon_impact_damage_with_source(
-    registry: &mut EntityRegistry,
-    weapon_id: EntityId,
-    attacker: Option<EntityId>,
-    impact: &weapon::WeaponImpact,
-    credit_source: String,
-    damage_amount: f32,
-) {
-    let (Some(target), weapon::ActivationOutcome::Hit(_)) = (impact.target, impact.outcome) else {
-        return;
-    };
-    let source_id = if credit_source.is_empty() {
-        log::warn!(
-            "[Weapon] active wieldable {weapon_id} resolved an empty credit source; using {UNKNOWN_WEAPON_CREDIT_SOURCE}"
-        );
-        UNKNOWN_WEAPON_CREDIT_SOURCE.to_string()
-    } else {
-        credit_source
-    };
-    let multiplier = impact
-        .zone
-        .as_deref()
-        .and_then(|tag| {
-            registry
-                .get_component::<HealthComponent>(target)
-                .ok()
-                .and_then(|health| health.zone_multipliers.get(tag).copied())
-        })
-        .unwrap_or(1.0);
-    let scaled = weapon::DamagePayload {
-        amount: damage_amount * multiplier,
-    };
-    if !scaled.amount.is_finite() {
-        log::warn!(
-            "[Weapon] scaled damage amount {} is non-finite; dropping damage",
-            scaled.amount
-        );
-        return;
-    }
-    apply_damage_with_context(
-        registry,
-        target,
-        &scaled,
-        DamageContext {
-            source_id,
-            attacker,
-            weapon: Some(weapon_id),
-            zone: impact.zone.clone(),
-            producer: DamageProducer::InTick,
-        },
-    );
-}
+pub(crate) use impact::apply_authorized_weapon_impact_damage;
+pub(crate) use state::transition_to_idle;
 
 #[cfg(test)]
 pub(super) fn deliver_reload_to_weapon(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    weapon: EntityId,
+    registry: &mut postretro_entities::EntityRegistry,
+    pawn: postretro_entities::EntityId,
+    weapon: postretro_entities::EntityId,
     reload_pressed: bool,
     tick_dt: f32,
-) -> Vec<ReloadDelivery> {
-    let Ok(mut component) = registry.get_component::<WeaponComponent>(weapon).cloned() else {
-        return Vec::new();
-    };
-    let command = WeaponFireCommand {
-        button: FireButtonState {
-            pressed: false,
-            active: false,
-        },
-        aim_origin: Vec3::ZERO,
-        aim_direction: Vec3::Z,
-        can_fire: false,
-    };
-    let machine = tick_weapon_machine(
-        registry,
-        Some(pawn),
-        weapon,
-        &mut component,
-        reload_pressed,
-        &command,
-        tick_dt,
-    );
-    let _ = registry.set_component(weapon, component);
-    machine.deliveries
+) -> Vec<super::ReloadDelivery> {
+    machine::deliver_reload_to_weapon(registry, pawn, weapon, reload_pressed, tick_dt)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::impact::apply_weapon_impact_damage;
+    use super::machine::{WeaponMachineTick, tick_weapon_machine};
+    use super::state::{WieldableStateEvent, transition_wieldable_state};
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -821,19 +42,22 @@ mod tests {
         trigger_movement, weapon_component,
     };
     use crate::sim::{PostMovementCommand, ReloadDelivery, ReloadOutcome, ShotId, simulate_tick};
-    use crate::weapon;
     use crate::weapon::tests::{
         ammo_weapon_component as gate_ammo_weapon_component, wall_world,
         weapon_component as gate_weapon_component,
     };
+    use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
     use glam::Vec3;
     use postretro_entities::components::health::HealthComponent;
-    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_entities::components::inventory::Inventory;
+    use postretro_entities::components::weapon::{
+        ReloadFeedback, ReloadFeedbackConsumer, WeaponComponent,
+    };
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::data_descriptors::{
         AmmoResource, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
     };
-    use postretro_entities::{AmmoReserve, EntityRegistry, Transform};
+    use postretro_entities::{AmmoReserve, EntityId, EntityRegistry, Transform};
     use postretro_foundation::FireMode;
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -846,6 +70,8 @@ mod tests {
             can_fire: true,
         }
     }
+
+    fn ignore_impact(_: &mut EntityRegistry) {}
 
     fn tick_machine(
         registry: &mut EntityRegistry,
@@ -866,6 +92,7 @@ mod tests {
             &mut component,
             reload,
             command,
+            false,
             tick_dt,
         );
         registry.set_component(weapon, component).unwrap();
@@ -917,7 +144,1150 @@ mod tests {
                 reload_ms: 100,
                 reload_style,
             })),
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         }
+    }
+
+    fn spawn_switch_pair(
+        registry: &mut EntityRegistry,
+        outgoing_lower_ms: u32,
+        outgoing_raise_ms: u32,
+        incoming_lower_ms: u32,
+        incoming_raise_ms: u32,
+    ) -> (EntityId, EntityId, EntityId) {
+        let pawn = registry.spawn(Transform::default());
+        let outgoing = registry.spawn(Transform::default());
+        let incoming = registry.spawn(Transform::default());
+        let mut outgoing_component = gate_weapon_component(FireMode::Semi, 100.0);
+        outgoing_component.lower_ms = outgoing_lower_ms;
+        outgoing_component.raise_ms = outgoing_raise_ms;
+        let mut incoming_component = gate_weapon_component(FireMode::Semi, 100.0);
+        incoming_component.lower_ms = incoming_lower_ms;
+        incoming_component.raise_ms = incoming_raise_ms;
+        registry
+            .set_component(outgoing, outgoing_component)
+            .unwrap();
+        registry
+            .set_component(incoming, incoming_component)
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(outgoing);
+        inventory.wieldables[1] = Some(incoming);
+        registry.set_component(pawn, inventory).unwrap();
+        (pawn, outgoing, incoming)
+    }
+
+    #[test]
+    fn begin_lower_clears_reload_feedback_for_every_state_row() {
+        for (state, existing_remaining_ms) in [
+            (WieldableState::Idle, 0),
+            (WieldableState::Reloading, 9),
+            (WieldableState::ShellLoading, 9),
+            (WieldableState::Lowering, 9),
+            (WieldableState::Raising, 9),
+        ] {
+            let mut weapon = gate_weapon_component(FireMode::Semi, 100.0);
+            weapon.state = state;
+            weapon.state_remaining_ms = existing_remaining_ms;
+            weapon.state_total_ms = existing_remaining_ms;
+            let feedback_tick = weapon.begin_reload_feedback_tick();
+            weapon.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
+
+            let _ = transition_wieldable_state(
+                &mut weapon,
+                WieldableStateEvent::BeginLower { duration_ms: 17 },
+                None,
+            );
+
+            assert_eq!(weapon.state, WieldableState::Lowering);
+            assert_eq!(
+                weapon.state_remaining_ms,
+                if state == WieldableState::Lowering {
+                    existing_remaining_ms
+                } else {
+                    17
+                },
+                "lowering must not restart when retargeted"
+            );
+            for consumer in [
+                ReloadFeedbackConsumer::Hud,
+                ReloadFeedbackConsumer::OwnerProjection,
+            ] {
+                assert!(
+                    weapon.reload_feedback_sample(consumer).endpoint.is_none(),
+                    "{state:?} BeginLower must drain reload feedback"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn o4_commit_on_a_repoint_tick_applies_to_the_newly_active_instance_once() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, first_target, second_target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let outgoing = registry.spawn(Transform::default());
+            let first_target = registry.spawn(Transform::default());
+            let second_target = registry.spawn(Transform::default());
+            let mut outgoing_component = gate_weapon_component(FireMode::Semi, 100.0);
+            outgoing_component.lower_ms = 20;
+            let feedback_tick = outgoing_component.begin_reload_feedback_tick();
+            outgoing_component.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
+            let mut first_target_component = gate_weapon_component(FireMode::Semi, 100.0);
+            first_target_component.raise_ms = 15;
+            let mut second_target_component = gate_weapon_component(FireMode::Semi, 100.0);
+            second_target_component.raise_ms = 15;
+            registry
+                .set_component(outgoing, outgoing_component)
+                .unwrap();
+            registry
+                .set_component(first_target, first_target_component)
+                .unwrap();
+            registry
+                .set_component(second_target, second_target_component)
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(outgoing);
+            inventory.wieldables[1] = Some(first_target);
+            inventory.wieldables[2] = Some(second_target);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, outgoing, first_target, second_target)
+        };
+        let collision_world = CollisionWorld::default();
+        let hit_zone_store = HitZoneStore::new();
+        let command = fire_command(true, true);
+        let mut no_impact = ignore_impact;
+
+        let (deliveries, events, _) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            Some(1),
+            &command,
+            true,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.01,
+            &mut no_impact,
+        );
+        assert!(deliveries.is_empty());
+        assert!(events.is_empty());
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+            assert_eq!(inventory.active_slot, 0);
+            assert_eq!(inventory.switch_target, Some(1));
+            assert_eq!(inventory.switch_origin, Some(0));
+            assert_eq!(outgoing.state, WieldableState::Lowering);
+            assert_eq!(outgoing.state_remaining_ms, 11);
+            assert!(!outgoing.reload_status().1);
+            assert!(!outgoing.owner_reload_status().1);
+        }
+
+        let (deliveries, events, _) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            Some(2),
+            &command,
+            true,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+        assert!(deliveries.is_empty());
+        assert!(events.is_empty());
+        {
+            let registry = registry.borrow();
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+            assert_eq!(inventory.switch_target, Some(2));
+            assert_eq!(inventory.switch_origin, Some(0));
+            assert_eq!(outgoing.state_remaining_ms, 11);
+        }
+
+        let (deliveries, events, _) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &command,
+            true,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.01,
+            &mut no_impact,
+        );
+        assert!(deliveries.is_empty());
+        assert!(events.is_empty());
+        let registry_ref = registry.borrow();
+        let inventory = registry_ref.get_component::<Inventory>(pawn).unwrap();
+        let outgoing = registry_ref
+            .get_component::<WeaponComponent>(outgoing)
+            .unwrap();
+        let first_target = registry_ref
+            .get_component::<WeaponComponent>(first_target)
+            .unwrap();
+        let second_target = registry_ref
+            .get_component::<WeaponComponent>(second_target)
+            .unwrap();
+        assert_eq!(inventory.active_slot, 2);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(outgoing.state, WieldableState::Idle);
+        assert_eq!(first_target.state, WieldableState::Idle);
+        assert_eq!(second_target.state, WieldableState::Raising);
+        assert_eq!(second_target.state_remaining_ms, 15);
+        assert!(second_target.reload_press_consumed);
+    }
+
+    #[test]
+    fn o1_lowering_timer_advances_and_expires_through_the_timed_state_predicate() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) =
+            spawn_gate_weapon(&mut registry, gate_weapon_component(FireMode::Semi, 100.0));
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .expect("weapon exists")
+            .clone();
+        component.state = WieldableState::Lowering;
+        component.state_total_ms = 10;
+        component.state_remaining_ms = 10;
+        registry.set_component(weapon, component).unwrap();
+
+        let first = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.004,
+        );
+        assert!(!first.lowered);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state_remaining_ms,
+            6
+        );
+
+        let second = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.006,
+        );
+        assert!(second.lowered, "a lowering timer expires at zero");
+    }
+
+    #[test]
+    fn o2_reload_expiry_completes_before_same_tick_commit_starts_lowering() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, incoming) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, outgoing) = spawn_reload_pair(&mut registry, 10, 8, 10, 0);
+            let incoming = registry.spawn(Transform::default());
+            registry
+                .set_component(incoming, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut outgoing_component = registry
+                .get_component::<WeaponComponent>(outgoing)
+                .unwrap()
+                .clone();
+            outgoing_component.lower_ms = 7;
+            outgoing_component.state = WieldableState::Reloading;
+            outgoing_component.state_total_ms = 10;
+            outgoing_component.state_remaining_ms = 10;
+            registry
+                .set_component(outgoing, outgoing_component)
+                .unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(incoming);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, outgoing, incoming)
+        };
+        let mut no_impact = ignore_impact;
+
+        let (deliveries, events, repointed) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            Some(1),
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.01,
+            &mut no_impact,
+        );
+
+        assert_eq!(
+            deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon: outgoing,
+                outcome: ReloadOutcome::Completed { transferred: 8 },
+            }],
+            "the completed reload is the one lifecycle outcome before lowering"
+        );
+        assert!(events.is_empty(), "the commit tick cannot authorize a shot");
+        assert_eq!(repointed, None, "the non-zero lower has only just started");
+        let registry = registry.borrow();
+        let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+        assert_eq!(outgoing.state, WieldableState::Lowering);
+        assert_eq!(outgoing.state_remaining_ms, 7);
+        assert_eq!(outgoing.reload_status().1, false);
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .switch_target,
+            Some(1)
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+    }
+
+    #[test]
+    fn o2_expired_reload_with_zero_lower_repoints_once_without_authorizing_fire() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, incoming) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, outgoing) = spawn_reload_pair(&mut registry, 10, 8, 10, 0);
+            let incoming = registry.spawn(Transform::default());
+            registry
+                .set_component(incoming, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut outgoing_component = registry
+                .get_component::<WeaponComponent>(outgoing)
+                .unwrap()
+                .clone();
+            outgoing_component.lower_ms = 0;
+            outgoing_component.state = WieldableState::Reloading;
+            outgoing_component.state_total_ms = 10;
+            outgoing_component.state_remaining_ms = 10;
+            registry
+                .set_component(outgoing, outgoing_component)
+                .unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(incoming);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, outgoing, incoming)
+        };
+        let mut no_impact = ignore_impact;
+
+        let (deliveries, events, repointed) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            Some(1),
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.01,
+            &mut no_impact,
+        );
+
+        assert_eq!(
+            deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon: outgoing,
+                outcome: ReloadOutcome::Completed { transferred: 8 },
+            }]
+        );
+        assert!(events.is_empty());
+        assert_eq!(repointed, Some(pawn));
+        let registry = registry.borrow();
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            1
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(outgoing)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .state,
+            WieldableState::Raising
+        );
+    }
+
+    #[test]
+    fn o3_commit_during_reload_forfeits_atomic_but_preserves_credited_shells() {
+        let atomic_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (atomic_pawn, atomic_weapon) = {
+            let mut registry = atomic_registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 0);
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut weapon_component = registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .clone();
+            weapon_component.lower_ms = 10;
+            weapon_component.state = WieldableState::Reloading;
+            weapon_component.state_total_ms = 100;
+            weapon_component.state_remaining_ms = 100;
+            registry.set_component(weapon, weapon_component).unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(target);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, weapon)
+        };
+        let mut no_atomic_impact = ignore_impact;
+        let _ = run_local_weapon_command(
+            &atomic_registry,
+            Some(atomic_pawn),
+            false,
+            Some(1),
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_atomic_impact,
+        );
+        assert_eq!(
+            atomic_registry
+                .borrow()
+                .get_component::<WeaponComponent>(atomic_weapon)
+                .unwrap()
+                .magazine,
+            0,
+            "atomic reload transfers nothing when the lower preempts it"
+        );
+
+        let shell_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (shell_pawn, shell_weapon) = {
+            let mut registry = shell_registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 1);
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut weapon_component = registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .clone();
+            weapon_component.lower_ms = 10;
+            weapon_component.state = WieldableState::ShellLoading;
+            weapon_component.state_total_ms = 100;
+            weapon_component.state_remaining_ms = 100;
+            weapon_component.reload_credited = 1;
+            registry.set_component(weapon, weapon_component).unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(target);
+            registry.set_component(pawn, inventory).unwrap();
+            (pawn, weapon)
+        };
+        let mut no_shell_impact = ignore_impact;
+        let _ = run_local_weapon_command(
+            &shell_registry,
+            Some(shell_pawn),
+            false,
+            Some(1),
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_shell_impact,
+        );
+        let shell_registry = shell_registry.borrow();
+        assert_eq!(
+            shell_registry
+                .get_component::<WeaponComponent>(shell_weapon)
+                .unwrap()
+                .magazine,
+            1,
+            "the already-credited shell remains in the magazine"
+        );
+        assert_eq!(
+            shell_registry
+                .get_component::<AmmoReserve>(shell_pawn)
+                .unwrap()
+                .available("bullets.light"),
+            8
+        );
+    }
+
+    #[test]
+    fn o5_zero_duration_lower_repoints_once_and_clears_the_outgoing_timed_fields() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, incoming) = {
+            let mut registry = registry.borrow_mut();
+            spawn_switch_pair(&mut registry, 0, 0, 0, 14)
+        };
+        let mut no_impact = ignore_impact;
+
+        let (_, _, repointed) = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            Some(1),
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+
+        assert_eq!(repointed, Some(pawn));
+        let registry = registry.borrow();
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            1
+        );
+        let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
+        assert_eq!(outgoing.state, WieldableState::Idle);
+        assert_eq!(outgoing.state_total_ms, 0);
+        assert_eq!(outgoing.state_remaining_ms, 0);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .state,
+            WieldableState::Raising
+        );
+    }
+
+    #[test]
+    fn o6_zero_duration_raise_waits_until_the_incoming_instance_is_next_ticked() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, _, incoming) = {
+            let mut registry = registry.borrow_mut();
+            spawn_switch_pair(&mut registry, 0, 0, 0, 0)
+        };
+        let mut no_impact = ignore_impact;
+        let mut run = |select_slot| {
+            run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                false,
+                select_slot,
+                &fire_command(false, false),
+                false,
+                &CollisionWorld::default(),
+                &HitZoneStore::new(),
+                0.0,
+                0.0,
+                &mut no_impact,
+            )
+        };
+
+        let _ = run(Some(1));
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .state,
+            WieldableState::Raising,
+            "the repoint tick does not tick the incoming instance a second time"
+        );
+        let _ = run(None);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+    }
+
+    #[test]
+    fn o7_lower_timer_overshoot_does_not_shorten_the_incoming_full_raise() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, _, incoming) = {
+            let mut registry = registry.borrow_mut();
+            spawn_switch_pair(&mut registry, 10, 0, 0, 30)
+        };
+        let mut no_impact = ignore_impact;
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            Some(1),
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.02,
+            &mut no_impact,
+        );
+
+        let incoming = registry
+            .borrow()
+            .get_component::<WeaponComponent>(incoming)
+            .unwrap()
+            .clone();
+        assert_eq!(incoming.state, WieldableState::Raising);
+        assert_eq!(incoming.state_total_ms, 30);
+        assert_eq!(incoming.state_remaining_ms, 30);
+    }
+
+    #[test]
+    fn o8_reselecting_a_terminal_outgoing_instance_starts_a_clean_full_raise() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, _) = {
+            let mut registry = registry.borrow_mut();
+            spawn_switch_pair(&mut registry, 0, 23, 0, 0)
+        };
+        let mut no_impact = ignore_impact;
+        let mut run = |select_slot| {
+            run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                false,
+                select_slot,
+                &fire_command(false, false),
+                false,
+                &CollisionWorld::default(),
+                &HitZoneStore::new(),
+                0.0,
+                0.0,
+                &mut no_impact,
+            )
+        };
+
+        let _ = run(Some(1));
+        let _ = run(None);
+        let _ = run(Some(0));
+
+        let outgoing = registry
+            .borrow()
+            .get_component::<WeaponComponent>(outgoing)
+            .unwrap()
+            .clone();
+        assert_eq!(outgoing.state, WieldableState::Raising);
+        assert_eq!(outgoing.state_total_ms, 23);
+        assert_eq!(outgoing.state_remaining_ms, 23);
+    }
+
+    #[test]
+    fn o9_fire_held_across_a_switch_allows_auto_but_requires_a_new_semi_press() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, auto) =
+            spawn_gate_weapon(&mut registry, gate_weapon_component(FireMode::Auto, 100.0));
+        assert_eq!(
+            tick_machine(
+                &mut registry,
+                Some(pawn),
+                auto,
+                false,
+                &fire_command(false, true),
+                0.0,
+            )
+            .authorization,
+            WeaponFireAuthorization::Accepted
+        );
+
+        let mut semi = gate_weapon_component(FireMode::Semi, 100.0);
+        semi.shoot_press_consumed = true;
+        let (_, semi_id) = spawn_gate_weapon(&mut registry, semi);
+        assert_eq!(
+            tick_machine(
+                &mut registry,
+                Some(pawn),
+                semi_id,
+                false,
+                &fire_command(true, true),
+                0.0,
+            )
+            .authorization,
+            WeaponFireAuthorization::Rejected,
+            "an incoming semi instance requires release and a new press"
+        );
+    }
+
+    #[test]
+    fn o10_held_reload_is_consumed_on_repoint_and_does_not_start_on_the_incoming_weapon() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, _, incoming) = {
+            let mut registry = registry.borrow_mut();
+            spawn_switch_pair(&mut registry, 0, 0, 0, 0)
+        };
+        let mut no_impact = ignore_impact;
+        let mut run = |select_slot| {
+            run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                false,
+                select_slot,
+                &fire_command(false, false),
+                true,
+                &CollisionWorld::default(),
+                &HitZoneStore::new(),
+                0.0,
+                0.0,
+                &mut no_impact,
+            )
+        };
+
+        let _ = run(Some(1));
+        assert!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .reload_press_consumed
+        );
+        let _ = run(None);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(incoming)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+    }
+
+    #[test]
+    fn o11_deploy_clamp_keeps_remaining_cooldown_after_a_short_round_trip_switch() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, _) = {
+            let mut registry = registry.borrow_mut();
+            let ids = spawn_switch_pair(&mut registry, 10, 20, 0, 0);
+            let mut component = registry
+                .get_component::<WeaponComponent>(ids.1)
+                .unwrap()
+                .clone();
+            component.cooldown_remaining_ms = 100.0;
+            registry.set_component(ids.1, component).unwrap();
+            ids
+        };
+        let mut no_impact = ignore_impact;
+        let mut run = |select_slot, tick_dt| {
+            run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                false,
+                select_slot,
+                &fire_command(false, false),
+                false,
+                &CollisionWorld::default(),
+                &HitZoneStore::new(),
+                0.0,
+                tick_dt,
+                &mut no_impact,
+            )
+        };
+
+        let _ = run(Some(1), 0.0);
+        let _ = run(None, 0.01);
+        let _ = run(None, 0.0);
+        let _ = run(Some(0), 0.0);
+
+        assert!(
+            (registry
+                .borrow()
+                .get_component::<WeaponComponent>(outgoing)
+                .unwrap()
+                .cooldown_remaining_ms
+                - 90.0)
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn o12_inactive_weapon_cooldown_freezes_at_its_last_active_value() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, outgoing, _) = {
+            let mut registry = registry.borrow_mut();
+            let ids = spawn_switch_pair(&mut registry, 10, 0, 0, 0);
+            let mut component = registry
+                .get_component::<WeaponComponent>(ids.1)
+                .unwrap()
+                .clone();
+            component.cooldown_remaining_ms = 100.0;
+            registry.set_component(ids.1, component).unwrap();
+            ids
+        };
+        let mut no_impact = ignore_impact;
+        let mut run = |select_slot, tick_dt| {
+            run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                false,
+                select_slot,
+                &fire_command(false, false),
+                false,
+                &CollisionWorld::default(),
+                &HitZoneStore::new(),
+                0.0,
+                tick_dt,
+                &mut no_impact,
+            )
+        };
+
+        let _ = run(Some(1), 0.0);
+        let _ = run(None, 0.01);
+        let _ = run(None, 0.0);
+        for _ in 0..10 {
+            let _ = run(None, 0.05);
+        }
+
+        assert!(
+            (registry
+                .borrow()
+                .get_component::<WeaponComponent>(outgoing)
+                .unwrap()
+                .cooldown_remaining_ms
+                - 90.0)
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn o46_expiry_loop_admits_lowering_and_exits_after_its_repoint_transition() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) =
+            spawn_gate_weapon(&mut registry, gate_weapon_component(FireMode::Semi, 100.0));
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.state = WieldableState::Lowering;
+        component.state_total_ms = 0;
+        component.state_remaining_ms = 0;
+        registry.set_component(weapon, component).unwrap();
+
+        let tick = tick_machine(
+            &mut registry,
+            Some(pawn),
+            weapon,
+            false,
+            &fire_command(false, false),
+            0.0,
+        );
+        assert!(tick.lowered, "the timed-state expiry loop reaches Lowered");
+    }
+
+    #[test]
+    fn o25_switch_refusal_restores_origin_after_local_repoint_and_clears_equip_state() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let origin = registry.spawn(Transform::default());
+        let refused = registry.spawn(Transform::default());
+        registry
+            .set_component(origin, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut refused_component = gate_weapon_component(FireMode::Semi, 100.0);
+        refused_component.state = WieldableState::Raising;
+        refused_component.state_total_ms = 15;
+        refused_component.state_remaining_ms = 11;
+        registry.set_component(refused, refused_component).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(origin);
+        inventory.wieldables[1] = Some(refused);
+        inventory.active_slot = 1;
+        inventory.switch_origin = Some(0);
+        registry.set_component(pawn, inventory).unwrap();
+
+        assert!(refuse_local_switch(&mut registry, pawn, 1, 0));
+
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        let refused = registry.get_component::<WeaponComponent>(refused).unwrap();
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        assert_eq!(refused.state, WieldableState::Idle);
+        assert_eq!(refused.state_total_ms, 0);
+        assert_eq!(refused.state_remaining_ms, 0);
+    }
+
+    #[test]
+    fn o21_active_instance_despawn_during_lower_abandons_switch_without_raise() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, stale, live) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let stale = registry.spawn(Transform::default());
+            let live = registry.spawn(Transform::default());
+            let mut lowering = gate_weapon_component(FireMode::Semi, 100.0);
+            lowering.state = WieldableState::Lowering;
+            lowering.state_total_ms = 20;
+            lowering.state_remaining_ms = 10;
+            registry.set_component(stale, lowering).unwrap();
+            registry
+                .set_component(live, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(stale);
+            inventory.wieldables[1] = Some(live);
+            inventory.switch_target = Some(1);
+            inventory.switch_origin = Some(0);
+            registry.set_component(pawn, inventory).unwrap();
+            registry.despawn(stale).unwrap();
+            (pawn, stale, live)
+        };
+        let mut no_impact = ignore_impact;
+
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+
+        let registry = registry.borrow();
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[0], None);
+        assert_eq!(inventory.active_slot, 1);
+        assert_eq!(inventory.active_wieldable(), Some(live));
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(inventory.switch_origin, None);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(live)
+                .unwrap()
+                .state,
+            WieldableState::Idle,
+            "liveness repair selects the first occupied slot without starting a raise"
+        );
+        assert!(!registry.exists(stale));
+    }
+
+    // Regression: host-mirrored inventories were normalized only while consuming a
+    // weapon command, so a despawned sibling could remain active indefinitely.
+    #[test]
+    fn commandless_liveness_sweep_repairs_active_and_target_and_surfaces_repoint() {
+        let mut registry = EntityRegistry::new();
+
+        let active_stale_pawn = registry.spawn(Transform::default());
+        let stale_active = registry.spawn(Transform::default());
+        let replacement = registry.spawn(Transform::default());
+        registry
+            .set_component(stale_active, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        registry
+            .set_component(replacement, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut active_stale_inventory = Inventory::default();
+        active_stale_inventory.wieldables[0] = Some(stale_active);
+        active_stale_inventory.wieldables[1] = Some(replacement);
+        registry
+            .set_component(active_stale_pawn, active_stale_inventory)
+            .unwrap();
+        registry.despawn(stale_active).unwrap();
+
+        let target_stale_pawn = registry.spawn(Transform::default());
+        let retained_active = registry.spawn(Transform::default());
+        let stale_target = registry.spawn(Transform::default());
+        let mut lowering = gate_weapon_component(FireMode::Semi, 100.0);
+        lowering.state = WieldableState::Lowering;
+        lowering.state_total_ms = 20;
+        lowering.state_remaining_ms = 10;
+        registry.set_component(retained_active, lowering).unwrap();
+        registry
+            .set_component(stale_target, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut target_stale_inventory = Inventory::default();
+        target_stale_inventory.wieldables[0] = Some(retained_active);
+        target_stale_inventory.wieldables[1] = Some(stale_target);
+        target_stale_inventory.switch_target = Some(1);
+        target_stale_inventory.switch_origin = Some(0);
+        registry
+            .set_component(target_stale_pawn, target_stale_inventory)
+            .unwrap();
+        registry.despawn(stale_target).unwrap();
+
+        let attachment_dirty = normalize_all_inventory_liveness(&mut registry);
+
+        assert_eq!(attachment_dirty, vec![active_stale_pawn]);
+        let repaired = registry
+            .get_component::<Inventory>(active_stale_pawn)
+            .unwrap();
+        assert_eq!(repaired.active_slot, 1);
+        assert_eq!(repaired.active_wieldable(), Some(replacement));
+        let abandoned = registry
+            .get_component::<Inventory>(target_stale_pawn)
+            .unwrap();
+        assert_eq!(abandoned.active_slot, 0);
+        assert_eq!(abandoned.switch_target, None);
+        assert_eq!(abandoned.switch_origin, None);
+        let retained = registry
+            .get_component::<WeaponComponent>(retained_active)
+            .unwrap();
+        assert_eq!(retained.state, WieldableState::Idle);
+        assert_eq!(retained.state_remaining_ms, 0);
+    }
+
+    #[test]
+    fn despawned_switch_target_abandons_lower_and_keeps_first_live_active() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, active, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let active = registry.spawn(Transform::default());
+            let target = registry.spawn(Transform::default());
+            let mut active_component = gate_weapon_component(FireMode::Semi, 100.0);
+            active_component.state = WieldableState::Lowering;
+            active_component.state_total_ms = 20;
+            active_component.state_remaining_ms = 10;
+            registry.set_component(active, active_component).unwrap();
+            registry
+                .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                .unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(active);
+            inventory.wieldables[1] = Some(target);
+            inventory.switch_target = Some(1);
+            inventory.switch_origin = Some(0);
+            registry.set_component(pawn, inventory).unwrap();
+            registry.despawn(target).unwrap();
+            (pawn, active, target)
+        };
+
+        let mut no_impact = ignore_impact;
+        let _ = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(false, false),
+            false,
+            &CollisionWorld::default(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut no_impact,
+        );
+
+        let registry = registry.borrow();
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.wieldables[1], None);
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(active)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert!(!registry.exists(target));
+    }
+
+    #[test]
+    fn reload_switch_gate_resolves_weapon_override_before_mod_global() {
+        let attempt_switch = |mod_block_during_reload: bool, weapon_override: Option<bool>| {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let (pawn, outgoing) = {
+                let mut registry_ref = registry.borrow_mut();
+                let pawn = registry_ref.spawn(Transform::default());
+                let outgoing = registry_ref.spawn(Transform::default());
+                let target = registry_ref.spawn(Transform::default());
+                let mut outgoing_component = gate_weapon_component(FireMode::Semi, 100.0);
+                outgoing_component.lower_ms = 10;
+                outgoing_component.block_during_reload = weapon_override;
+                outgoing_component.state = WieldableState::Reloading;
+                outgoing_component.state_remaining_ms = 20;
+                outgoing_component.state_total_ms = 20;
+                registry_ref
+                    .set_component(outgoing, outgoing_component)
+                    .unwrap();
+                registry_ref
+                    .set_component(target, gate_weapon_component(FireMode::Semi, 100.0))
+                    .unwrap();
+                let mut inventory = Inventory::default();
+                inventory.wieldables[0] = Some(outgoing);
+                inventory.wieldables[1] = Some(target);
+                registry_ref.set_component(pawn, inventory).unwrap();
+                (pawn, outgoing)
+            };
+            let collision_world = CollisionWorld::default();
+            let hit_zone_store = HitZoneStore::new();
+            let mut no_impact = ignore_impact;
+            let _ = run_local_weapon_command(
+                &registry,
+                Some(pawn),
+                mod_block_during_reload,
+                Some(1),
+                &fire_command(false, false),
+                false,
+                &collision_world,
+                &hit_zone_store,
+                0.0,
+                0.0,
+                &mut no_impact,
+            );
+            let registry_ref = registry.borrow();
+            (
+                registry_ref
+                    .get_component::<WeaponComponent>(outgoing)
+                    .unwrap()
+                    .state,
+                registry_ref
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .switch_target,
+            )
+        };
+
+        assert_eq!(
+            attempt_switch(true, None),
+            (WieldableState::Reloading, None)
+        );
+        assert_eq!(
+            attempt_switch(true, Some(false)),
+            (WieldableState::Lowering, Some(1)),
+            "a weapon override can allow reload interruption under a blocking mod policy"
+        );
+        assert_eq!(
+            attempt_switch(false, Some(true)),
+            (WieldableState::Reloading, None),
+            "a weapon override can block reload interruption under a permissive mod policy"
+        );
     }
 
     #[test]
@@ -3397,8 +3767,11 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
         };
 
-        let attacker = Some(registry.spawn(Transform::default()));
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), attacker, &impact);
+        let attacker = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        registry.set_component(attacker, inventory).unwrap();
+        apply_weapon_impact_damage(&mut registry, Some(attacker), &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 75.0).abs() < f32::EPSILON);
@@ -3410,7 +3783,7 @@ mod tests {
         assert!((entry.last_hit_damage - 25.0).abs() < f32::EPSILON);
         assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
         assert_eq!(entry.last_weapon, Some(weapon_id));
-        assert_eq!(entry.last_attacker, attacker);
+        assert_eq!(entry.last_attacker, Some(attacker));
     }
 
     #[test]
@@ -3442,7 +3815,11 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: f32::MAX }),
         };
 
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), None, &impact);
+        let attacker = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        registry.set_component(attacker, inventory).unwrap();
+        apply_weapon_impact_damage(&mut registry, Some(attacker), &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 100.0).abs() < f32::EPSILON);

@@ -1,6 +1,8 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+pub(crate) mod touch;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,6 +25,7 @@ use crate::scripting_systems::hit_zones::{
     HitZoneStore, model_matrix, sample_world_pose_for_probe,
 };
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::sim::touch::TouchSystem;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
 use crate::trigger_commands::TriggerFireContext;
 #[cfg(test)]
@@ -41,7 +44,8 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, SlotTable,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
+    SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;
@@ -52,15 +56,147 @@ pub(crate) struct SimCommand {
     pub(crate) movement: MovementInput,
     pub(crate) fire_button: FireButtonState,
     pub(crate) reload: bool,
+    /// Slot the local client declares as the source of fire. The host resolves it
+    /// from pawn inventory by possession rather than from its active pointer.
+    pub(crate) firing_slot: u8,
+    /// Direct number-row selection is a discrete simulation command. Cursor and
+    /// dwell remain input-only state.
+    pub(crate) select_slot: Option<usize>,
     /// Use rising edge routed to the host-authoritative trigger stage. Kept on
     /// the full command alongside fire/reload; `MovementInput` mirrors it for the
     /// client-prediction input boundary.
     pub(crate) use_pressed: bool,
+    /// Drop rising edge routed to the host-authoritative touch stage. Kept on
+    /// the full command alongside `use_pressed`; `MovementInput` mirrors it for
+    /// the client-prediction input boundary.
+    pub(crate) drop_pressed: bool,
 }
 
 pub(crate) struct PostMovementCommand {
     pub(crate) aim_origin: Vec3,
     pub(crate) aim_direction: Vec3,
+}
+
+/// Roll back a host-refused locally-running inventory switch without entering a
+/// second equip transition. The network Control drain owns when this is invoked;
+/// the weapon stage owns the machine-state cleanup.
+pub(crate) fn refuse_local_wieldable_switch(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    refused_slot: usize,
+    rollback_slot: usize,
+) -> bool {
+    weapon_stage::refuse_local_switch(registry, pawn, refused_slot, rollback_slot)
+}
+
+/// Clear despawned wieldable slots and surface pawns whose active instance changed.
+/// The caller feeds those pawns into the existing attachment-dirty path.
+pub(crate) fn normalize_wieldable_inventories(registry: &mut EntityRegistry) -> Vec<EntityId> {
+    weapon_stage::normalize_all_inventory_liveness(registry)
+}
+
+/// Normalize one pawn before a host declaration and report whether its active
+/// instance changed so presentation dirtiness follows the same liveness result.
+pub(crate) fn normalize_wieldable_inventory(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+) -> Option<(postretro_entities::components::inventory::Inventory, bool)> {
+    weapon_stage::normalize_inventory_liveness(registry, pawn)
+}
+
+/// Advance only the connected client's local wieldable machine. Movement stays on
+/// the prediction path and authoritative combat stays on the host; this pass owns
+/// the immediate local lower/raise/repoint and suppresses fire while doing so.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn simulate_client_wieldable_tick(
+    registry: Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    pawn: Option<EntityId>,
+    mod_block_during_reload: bool,
+    select_slot: Option<usize>,
+    fire_button: crate::weapon::FireButtonState,
+    reload_held: bool,
+    anim_time: f64,
+    tick_dt: f32,
+) -> (bool, Option<EntityId>) {
+    let mut equip_was_active = false;
+    let mut requested_new_slot = false;
+    let cooldown_before = pawn.and_then(|pawn| {
+        let registry = registry.borrow();
+        let inventory = registry
+            .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+            .ok()?;
+        requested_new_slot = select_slot.is_some_and(|slot| {
+            slot != inventory.active_slot
+                && inventory.switch_target != Some(slot)
+                && inventory.wieldables.get(slot).copied().flatten().is_some()
+        });
+        let weapon = inventory.active_wieldable()?;
+        let component = registry
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+            .ok()?;
+        equip_was_active = matches!(
+            component.state,
+            postretro_entities::components::wieldable_state::WieldableState::Lowering
+                | postretro_entities::components::wieldable_state::WieldableState::Raising
+        );
+        let cooldown = component.cooldown_remaining_ms;
+        Some((weapon, cooldown))
+    });
+    let machine_button = if select_slot.is_some() || equip_was_active {
+        fire_button
+    } else {
+        crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        }
+    };
+    let machine_reload = (select_slot.is_some() || equip_was_active) && reload_held;
+    let command = crate::weapon::WeaponFireCommand {
+        button: machine_button,
+        aim_origin: Vec3::ZERO,
+        aim_direction: Vec3::Z,
+        can_fire: false,
+    };
+    let mut ignore_impact = |_: &mut EntityRegistry| {};
+    let (_, _, repointed) = weapon_stage::run_local_weapon_command(
+        &registry,
+        pawn,
+        mod_block_during_reload,
+        select_slot,
+        &command,
+        machine_reload,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        &mut ignore_impact,
+    );
+    // Client fire prediction advances cooldown once at render rate after the
+    // fixed-tick loop. Keep this equip-only pass from charging the same elapsed
+    // time twice while preserving deploy clamps on the incoming instance.
+    if let Some((weapon, cooldown)) = cooldown_before {
+        let mut registry = registry.borrow_mut();
+        if let Ok(mut component) = registry
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+            .cloned()
+        {
+            component.cooldown_remaining_ms = cooldown;
+            let _ = registry.set_component(weapon, component);
+        }
+    }
+    let accepted = requested_new_slot
+        && match (pawn, select_slot) {
+            (Some(pawn), Some(slot)) => registry
+                .borrow()
+                .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
+                .is_ok_and(|inventory| {
+                    inventory.switch_target == Some(slot) || inventory.active_slot == slot
+                }),
+            _ => false,
+        };
+    (accepted, repointed)
 }
 
 fn player_is_present_for_trigger_occupancy(
@@ -94,6 +230,9 @@ pub(crate) struct TriggerTickContext<'a> {
     /// Present for production level installs and IR-aware harnesses. Literal
     /// fixtures may omit it and keep their direct table execution path.
     pub(crate) script_ctx: Option<ScriptCtx>,
+    /// Host-only auto-close timer side table. Omitted by lightweight fixtures
+    /// and never constructed for connected-client prediction.
+    pub(crate) auto_close_timers: Option<kinematic_mover::MoverAutoCloseTimers>,
     pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
 }
 
@@ -104,9 +243,19 @@ pub(crate) struct TickEvents {
     /// entered graph state's authored `on_enter`, which is owned.
     pub(crate) ai: Vec<Cow<'static, str>>,
     pub(crate) weapon: Vec<&'static str>,
+    /// Host-local kinematic mover transition edges. A connected client never
+    /// runs the host simulation seam, so its bucket remains empty.
+    pub(crate) mover: Vec<(kinematic_mover::MoverEventKind, u32)>,
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
+    /// Pawns whose active inventory slot repointed this tick. Presentation drains
+    /// this after simulation so the hand socket follows committed ownership, never
+    /// a pending selection.
+    pub(crate) repointed_pawns: Vec<EntityId>,
+    /// The host drop path restores meshes outside spawn-context resolution, so it
+    /// reports them here for clip binding in the same fixed tick, before rendering.
+    pub(crate) dropped_item_meshes: Vec<EntityId>,
     /// Bound trigger residuals drained app-side after every fixed tick this frame.
     pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
@@ -132,7 +281,7 @@ pub(crate) fn simulate_tick(
     hit_zone_store: &HitZoneStore,
     nav_graph: Option<&NavGraph>,
     gravity: f32,
-    active_wieldable: Option<EntityId>,
+    _legacy_active_wieldable: Option<EntityId>,
     anim_time: f64,
     _progress_tracker: &mut ProgressTracker,
     ai_runtime: &mut scripting_systems::ai::AiRuntime,
@@ -145,13 +294,15 @@ pub(crate) fn simulate_tick(
     trigger_context: Option<TriggerTickContext<'_>>,
     on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
+    let mut touch_system = TouchSystem::default();
+    let touch_edges = HashMap::new();
     simulate_tick_with_presentation_aim(
         registry,
         collision_world,
         hit_zone_store,
         nav_graph,
         gravity,
-        active_wieldable,
+        false,
         anim_time,
         (0.0, 0.0),
         _progress_tracker,
@@ -162,6 +313,10 @@ pub(crate) fn simulate_tick(
         command,
         post_movement,
         tick_dt,
+        &mut touch_system,
+        &[],
+        &touch_edges,
+        &touch_edges,
         trigger_context,
         on_impact,
     )
@@ -177,7 +332,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     hit_zone_store: &HitZoneStore,
     nav_graph: Option<&NavGraph>,
     gravity: f32,
-    active_wieldable: Option<EntityId>,
+    mod_block_during_reload: bool,
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
@@ -188,6 +343,10 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     command: &SimCommand,
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
+    touch_system: &mut TouchSystem,
+    descriptors: &[EntityTypeDescriptor],
+    use_pressed: &HashMap<PlayerId, bool>,
+    drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
@@ -202,9 +361,16 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
     }
 
+    let auto_close_timers = trigger_context
+        .as_ref()
+        .and_then(|context| context.auto_close_timers.clone());
     {
         let mut registry = registry.borrow_mut();
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
+    }
+    let mut mover_events: Vec<_> = mover_tick_states.terminus_events().collect();
+    if let Some(auto_close_timers) = auto_close_timers.as_ref() {
+        auto_close_timers.arm_opened_termini(&mut registry.borrow_mut(), &mover_events);
     }
 
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
@@ -240,27 +406,30 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         &command.movement,
         tick_dt,
     ));
+    let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
+        .iter()
+        .map(|remote| AuthoritativePlayer {
+            id: PlayerId::Remote(remote.owner_client_id),
+            pawn: remote.pawn,
+        })
+        .collect();
+    let local_player = {
+        let registry = registry.borrow();
+        registry.local_player_movement_pawn()
+    };
+    if let Some(pawn) = local_player {
+        players.push(AuthoritativePlayer {
+            id: PlayerId::Local(pawn),
+            pawn,
+        });
+    }
+
     let mut trigger_residuals = Vec::new();
     #[cfg(test)]
     let mut trigger_fires = Vec::new();
     #[cfg(test)]
     let mut trigger_command_fires = Vec::new();
     if let Some(trigger_context) = trigger_context {
-        let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
-            .iter()
-            .map(|remote| AuthoritativePlayer {
-                id: PlayerId::Remote(remote.owner_client_id),
-                pawn: remote.pawn,
-            })
-            .collect();
-        let local_player = {
-            let registry = registry.borrow();
-            registry.local_player_movement_pawn()
-        };
-        if let Some(pawn) = local_player {
-            let id = PlayerId::Local(pawn);
-            players.push(AuthoritativePlayer { id, pawn });
-        }
         let canonical_player_pawns = {
             let registry = registry.borrow();
             crate::trigger_system::canonical_player_pawns(&registry, &players)
@@ -351,6 +520,17 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             );
         }
     }
+    let touch_events = {
+        let mut registry = registry.borrow_mut();
+        touch_system.run_authoritative_tick(
+            &mut registry,
+            collision_world,
+            descriptors,
+            &players,
+            use_pressed,
+            drop_pressed,
+        )
+    };
     let ai = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
@@ -386,6 +566,20 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 remote_network_ids: &HashMap::new(),
             },
         );
+        if let Some(auto_close_timers) = auto_close_timers.as_ref() {
+            auto_close_timers.tick(&mut registry, tick_dt);
+        }
+        let (mover_poses, blocking_state) = mover_tick_states.split_for_blocking();
+        kinematic_mover::run_mover_blocking_pass(
+            &mut registry,
+            collision_world,
+            mover_colliders,
+            &mover_poses,
+            blocking_state,
+            tick_dt,
+            &mut mover_events,
+            &mut on_impact,
+        );
     }
 
     let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
@@ -395,10 +589,11 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         registry.local_player_movement_pawn()
     };
     let weapon_fire = weapon_stage::weapon_fire_command(command.fire_button, post_movement_command);
-    let (local_deliveries, mut weapon) = weapon_stage::run_local_weapon_command(
+    let (local_deliveries, mut weapon, repointed_pawn) = weapon_stage::run_local_weapon_command(
         &registry,
         own_pawn,
-        active_wieldable,
+        mod_block_during_reload,
+        command.select_slot,
         &weapon_fire,
         command.reload,
         collision_world,
@@ -411,13 +606,23 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry);
 
+    let mut repointed_pawns = touch_events.repointed_pawns;
+    if let Some(pawn) = repointed_pawn {
+        repointed_pawns.push(pawn);
+    }
+    repointed_pawns.sort_unstable();
+    repointed_pawns.dedup();
+
     TickEvents {
         movement,
         ai,
         weapon,
+        mover: mover_events,
         death,
         authorized_shots,
         reload_deliveries,
+        repointed_pawns,
+        dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,
         #[cfg(test)]
         trigger_fires,
@@ -1163,12 +1368,17 @@ mod tests {
     use glam::Vec2;
     use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::components::brain::graph_state_index;
+    use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
     };
+    use postretro_entities::components::touchable::TouchableComponent;
     use postretro_entities::data_descriptors::{
         BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    };
+    use postretro_entities::{
+        DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
     };
 
     /// A direct-graph brain staged directly into its `alert` state.
@@ -1323,6 +1533,9 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         })
     }
 
@@ -1349,6 +1562,9 @@ mod tests {
                 reload_ms,
                 reload_style: ReloadStyle::Magazine,
             })),
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         };
         let descriptor = descriptor.validate().unwrap();
         let mut ammo_reserve = AmmoReserve::new();
@@ -1365,6 +1581,7 @@ mod tests {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 
@@ -1376,7 +1593,10 @@ mod tests {
                 active: fire,
             },
             reload,
+            firing_slot: 0,
+            select_slot: None,
             use_pressed: false,
+            drop_pressed: false,
         }
     }
 
@@ -1394,6 +1614,9 @@ mod tests {
         component.magazine = magazine;
         registry.set_component(weapon, component).unwrap();
         registry.set_component(pawn, reserve_component).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon);
+        registry.set_component(pawn, inventory).unwrap();
         (pawn, weapon)
     }
 
@@ -1607,6 +1830,278 @@ mod tests {
             None,
             |_| {},
         )
+    }
+
+    #[test]
+    fn touch_runs_without_a_trigger_context_before_ai() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, item) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+
+            let item = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    item,
+                    TouchableComponent {
+                        mode: postretro_entities::TouchMode::Auto,
+                        radius: 1.0,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, weapon_component("weapon.touch"))
+                .unwrap();
+            registry
+                .set_component(
+                    item,
+                    DescriptorProvenance {
+                        canonical_name: "weapon.touch".to_string(),
+                        owned_components: std::collections::BTreeSet::from([
+                            DescriptorComponentKind::Weapon,
+                            DescriptorComponentKind::Touchable,
+                        ]),
+                        map_overrides: std::collections::BTreeSet::<DescriptorMapOverride>::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, MeshComponent::stateless("weapon.glb".to_string()))
+                .unwrap();
+            (pawn, item)
+        };
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = TouchSystem::default();
+        let edges = HashMap::new();
+
+        let events = simulate_tick_with_presentation_aim(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            &mut ai_runtime,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            &mut touch_system,
+            &[],
+            &edges,
+            &edges,
+            None,
+            |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item)
+        );
+        assert_eq!(events.repointed_pawns, vec![pawn]);
+        assert!(
+            registry
+                .borrow()
+                .get_component::<TouchableComponent>(item)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn use_edge_activates_trigger_and_press_item_in_the_same_fixed_tick() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, item, trigger) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+
+            let item = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    item,
+                    TouchableComponent {
+                        mode: postretro_entities::TouchMode::Press,
+                        radius: 1.0,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, weapon_component("weapon.press"))
+                .unwrap();
+            registry
+                .set_component(
+                    item,
+                    DescriptorProvenance {
+                        canonical_name: "weapon.press".to_string(),
+                        owned_components: std::collections::BTreeSet::from([
+                            DescriptorComponentKind::Weapon,
+                            DescriptorComponentKind::Touchable,
+                        ]),
+                        map_overrides: std::collections::BTreeSet::<DescriptorMapOverride>::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            registry
+                .set_component(item, MeshComponent::stateless("weapon.glb".to_string()))
+                .unwrap();
+
+            let trigger = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    trigger,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Use,
+                        String::new(),
+                        "use_target".to_string(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .unwrap();
+            (pawn, item, trigger)
+        };
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = TouchSystem::default();
+        let mut trigger_system = TriggerSystem::default();
+        let mut bridge = TriggerVolumeBridge::new();
+        bridge.insert_for_test(trigger, Vec3::splat(-1.0), Vec3::splat(1.0));
+        let bindings = TriggerBindingTable::default();
+        let slot_table = Rc::new(RefCell::new(SlotTable::new()));
+        let use_edges = HashMap::from([(PlayerId::Local(pawn), true)]);
+
+        let events = simulate_tick_with_presentation_aim(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            &mut ai_runtime,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            &mut touch_system,
+            &[],
+            &use_edges,
+            &HashMap::new(),
+            Some(TriggerTickContext {
+                system: &mut trigger_system,
+                bridge: &bridge,
+                bindings: &bindings,
+                slot_table,
+                script_ctx: None,
+                auto_close_timers: None,
+                use_edges: &use_edges,
+            }),
+            |_| {},
+        );
+
+        assert_eq!(
+            events.trigger_fires.len(),
+            1,
+            "the trigger stage consumes the shared Use edge first"
+        );
+        assert_eq!(events.trigger_fires[0].fire.trigger, trigger);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0],
+            Some(item),
+            "the later touch stage reads the same Use edge instead of a consumed one"
+        );
+    }
+
+    #[test]
+    fn unowned_world_weapon_keeps_all_live_state_after_many_fixed_ticks() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let weapon = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+
+            let weapon = registry.spawn(Transform {
+                position: Vec3::new(10.0, 0.0, 0.0),
+                ..Transform::default()
+            });
+            let mut component = weapon_component("weapon.unowned");
+            component.state =
+                postretro_entities::components::wieldable_state::WieldableState::Reloading;
+            component.state_remaining_ms = 800;
+            component.state_total_ms = 1_000;
+            component.state_elapsed_sub_ms = 0.5;
+            component.reload_credited = 1;
+            component.cooldown_remaining_ms = 75.0;
+            component.shoot_press_consumed = true;
+            component.reload_press_consumed = true;
+            registry.set_component(weapon, component).unwrap();
+            weapon
+        };
+        let before = registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+
+        for _ in 0..5 {
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &sim_command(false, false),
+                1.0 / 60.0,
+            );
+        }
+
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap(),
+            &before,
+            "an unowned world weapon is never advanced by the weapon stage"
+        );
     }
 
     pub(super) fn run_local_only_tick(
@@ -1835,6 +2330,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
                 script_ctx: Some(script_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -1955,6 +2451,7 @@ mod tests {
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
                 script_ctx: Some(script_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -2091,6 +2588,7 @@ mod tests {
                     bindings: &bindings,
                     slot_table: script_ctx.slot_table.clone(),
                     script_ctx: Some(script_ctx.clone()),
+                    auto_close_timers: None,
                     use_edges: &use_edges,
                 }),
                 |_| {},

@@ -18,9 +18,23 @@ pub enum Action {
     Dash,
     Crouch,
     Use,
+    Drop,
     Shoot,
     AltFire,
     Reload,
+    SelectWieldable1,
+    SelectWieldable2,
+    SelectWieldable3,
+    SelectWieldable4,
+    SelectWieldable5,
+    SelectWieldable6,
+    SelectWieldable7,
+    SelectWieldable8,
+    SelectWieldable9,
+    SelectWieldable10,
+    CycleWieldableNext,
+    CycleWieldablePrevious,
+    ToggleLastWieldable,
 }
 
 impl Action {
@@ -100,6 +114,12 @@ impl AxisValue {
 pub enum PhysicalInput {
     Key(KeyCode),
     MouseButton(MouseButton),
+    /// Momentary physical wheel event. Unlike mouse buttons this is cleared by
+    /// the input system after every snapshot because the window API has no
+    /// matching release event.
+    MouseWheelUp,
+    /// Momentary physical wheel event. See [`PhysicalInput::MouseWheelUp`].
+    MouseWheelDown,
     MouseAxisX,
     MouseAxisY,
     GamepadButton(GilrsButton),
@@ -209,6 +229,7 @@ mod tests {
         assert!(!Action::Dash.is_axis());
         assert!(!Action::Crouch.is_axis());
         assert!(!Action::Use.is_axis());
+        assert!(!Action::Drop.is_axis());
         assert!(!Action::Shoot.is_axis());
         assert!(!Action::AltFire.is_axis());
         assert!(!Action::Reload.is_axis());

@@ -1,5 +1,5 @@
-// Player HUD state publisher. Publishes authoritative pawn health and active
-// weapon ammo/reload state into readonly engine-owned slots each frame.
+// Player HUD state publisher. Host publishes authoritative health, ammo, and reload slots;
+// every role publishes local display-only `player.weapon.*` slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use std::collections::HashSet;
@@ -7,8 +7,10 @@ use std::collections::HashSet;
 use crate::scripting::primitives::store::write_store_slot;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::health::pawn_with_health;
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::ctx::ScriptCtx;
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_entities::slot_table::SlotValue;
 
@@ -26,12 +28,15 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
 
 fn weapon_hud_values(
     registry: &EntityRegistry,
-    active_wieldable: Option<EntityId>,
 ) -> (Option<EntityId>, Option<(u32, u32)>, f32, bool) {
     let Some(pawn) = registry.local_player_movement_pawn() else {
         return (None, None, 0.0, false);
     };
-    let Some(weapon_id) = active_wieldable else {
+    let Some(weapon_id) = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .and_then(Inventory::active_wieldable)
+    else {
         return (None, None, 0.0, false);
     };
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
@@ -47,11 +52,43 @@ fn weapon_hud_values(
     (Some(weapon_id), ammo, progress, active)
 }
 
+/// Read the local display-only switching state from the owning pawn's inventory.
+/// The committed active instance names the current weapon; a switch target means
+/// the machine is in flight. Descriptor provenance preserves the canonical
+/// archetype identity of spawned wieldables.
+fn weapon_state_values(
+    registry: &EntityRegistry,
+    pending_slot: Option<usize>,
+) -> (String, String, bool) {
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return (String::new(), String::new(), false);
+    };
+    let Some(inventory) = registry.get_component::<Inventory>(pawn).ok() else {
+        return (String::new(), String::new(), false);
+    };
+    let weapon_name = |slot: usize| {
+        inventory
+            .wieldables
+            .get(slot)
+            .copied()
+            .flatten()
+            .and_then(|weapon| registry.get_component::<DescriptorProvenance>(weapon).ok())
+            .map(|provenance| provenance.canonical_name.clone())
+            .unwrap_or_default()
+    };
+    let current = weapon_name(inventory.active_slot);
+    let pending = pending_slot.map(weapon_name).unwrap_or_default();
+    (current, pending, inventory.switch_target.is_some())
+}
+
 /// Engine-side producer for the HUD store slots.
 pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
     invalid_max_warned_for: Option<EntityId>,
     write_failure_warned_slots: HashSet<&'static str>,
+    /// Input-layer cursor selection. It is local on every role and deliberately
+    /// never enters `Inventory`, simulation, or replication.
+    pending_weapon_slot: Option<usize>,
 }
 
 impl PlayerHudStatePublisher {
@@ -61,7 +98,13 @@ impl PlayerHudStatePublisher {
             ctx,
             invalid_max_warned_for: None,
             write_failure_warned_slots: HashSet::new(),
+            pending_weapon_slot: None,
         }
+    }
+
+    /// Set the input layer's local pending cursor for this frame's HUD publish.
+    pub(crate) fn set_pending_weapon_slot(&mut self, pending_weapon_slot: Option<usize>) {
+        self.pending_weapon_slot = pending_weapon_slot;
     }
 
     fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) -> bool {
@@ -78,34 +121,44 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    /// Republish the player HUD store slots for this frame unless this endpoint is
-    /// a connected client.
-    ///
-    /// Owner-private `player.*` HUD slots are replicated. On a connected client
-    /// the server writes them through the state-slot apply path, so the local
-    /// (non-authoritative) publisher must not overwrite them. The host and
-    /// single-player keep publishing as before. The `is_connected_client`
-    /// decision is owned by the `main.rs` call site (the `NetEndpoint` role
-    /// lives there); this test-only wrapper keeps the gate testable without an
-    /// `App`.
+    fn clear_hud_slot(&mut self, name: &'static str) -> bool {
+        let mut slots = self.ctx.slot_table.borrow_mut();
+        let Some(record) = slots.get_mut(name) else {
+            drop(slots);
+            if self.write_failure_warned_slots.insert(name) {
+                log::warn!("[HUD] failed to clear missing built-in slot `{name}`");
+            }
+            return false;
+        };
+        record.write_value(None);
+        true
+    }
+
+    /// Republish the player HUD store slots for this frame.
     #[cfg(test)]
     pub(crate) fn tick_for_role(
         &mut self,
         is_connected_client: bool,
-        active_wieldable: Option<EntityId>,
+        _legacy_active_wieldable: Option<EntityId>,
     ) {
-        let _ = self.tick_for_role_and_report_sampled_weapon(is_connected_client, active_wieldable);
+        let _ = self.tick_for_role_and_report_sampled_weapon(is_connected_client, None);
     }
 
     pub(crate) fn tick_for_role_and_report_sampled_weapon(
         &mut self,
         is_connected_client: bool,
-        active_wieldable: Option<EntityId>,
+        _legacy_active_wieldable: Option<EntityId>,
     ) -> Option<EntityId> {
+        // A connected client suppresses host-authoritative HUD writes, but still
+        // samples its locally-owned active component so the HUD feedback consumer
+        // can acknowledge and drain its stream.
         if is_connected_client {
-            return None;
+            // These switching display slots are local on every role: their inventory
+            // source is locally owned, so no host projection exists to replicate.
+            self.publish_local_weapon_state();
+            return weapon_hud_values(&self.ctx.registry.borrow()).0;
         }
-        self.tick_and_report_sampled_weapon(active_wieldable)
+        self.tick_and_report_sampled_weapon()
     }
 
     /// Republish the player HUD store slots for this frame.
@@ -120,14 +173,12 @@ impl PlayerHudStatePublisher {
     /// Runs in the frame loop after game logic and before the UI read-snapshot
     /// build, so the snapshot picks up these values the same frame.
     #[cfg(test)]
-    pub(crate) fn tick(&mut self, active_wieldable: Option<EntityId>) {
-        let _ = self.tick_and_report_sampled_weapon(active_wieldable);
+    pub(crate) fn tick(&mut self, _legacy_active_wieldable: Option<EntityId>) {
+        let _ = self.tick_and_report_sampled_weapon();
     }
 
-    fn tick_and_report_sampled_weapon(
-        &mut self,
-        active_wieldable: Option<EntityId>,
-    ) -> Option<EntityId> {
+    fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
+        self.publish_local_weapon_state();
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
@@ -150,10 +201,19 @@ impl PlayerHudStatePublisher {
         }
 
         let (sampled_weapon, ammo, reload_progress, reload_active) =
-            weapon_hud_values(&self.ctx.registry.borrow(), active_wieldable);
-        if let Some((magazine, reserve)) = ammo {
-            self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
-            self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
+            weapon_hud_values(&self.ctx.registry.borrow());
+        match (sampled_weapon, ammo) {
+            (_, Some((magazine, reserve))) => {
+                self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
+                self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
+            }
+            (Some(_), None) => {
+                // A live resourceless weapon is an authoritative absence, unlike a
+                // missing pawn. Clear the outgoing weapon's values at the repoint.
+                self.clear_hud_slot("player.ammo");
+                self.clear_hud_slot("player.ammoReserve");
+            }
+            (None, None) => {}
         }
         let reload_progress_written =
             self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
@@ -165,6 +225,14 @@ impl PlayerHudStatePublisher {
             None
         }
     }
+
+    fn publish_local_weapon_state(&mut self) {
+        let (current, pending, switching) =
+            weapon_state_values(&self.ctx.registry.borrow(), self.pending_weapon_slot);
+        self.write_hud_slot("player.weapon.current", SlotValue::String(current));
+        self.write_hud_slot("player.weapon.pending", SlotValue::String(pending));
+        self.write_hud_slot("player.weapon.switching", SlotValue::Boolean(switching));
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +242,7 @@ mod tests {
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::components::weapon::ReloadFeedback;
     use postretro_entities::components::wieldable_state::WieldableState;
+    use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
     use postretro_entities::registry::{EntityId, Transform};
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
@@ -267,6 +336,9 @@ mod tests {
                 reload_ms: 500,
                 reload_style: ReloadStyle::Magazine,
             })),
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
         };
         let mut weapon = WeaponComponent::from_descriptor(&descriptor);
         weapon.magazine = 5;
@@ -279,6 +351,20 @@ mod tests {
         registry.set_component(pawn, reserve).unwrap();
         let id = registry.spawn(Transform::default());
         registry.set_component(id, weapon).unwrap();
+        registry
+            .set_component(
+                id,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(id);
+        registry.set_component(pawn, inventory).unwrap();
         id
     }
 
@@ -518,14 +604,132 @@ mod tests {
     fn weapon_hud_values_use_movement_pawn_without_requiring_health() {
         let ctx = ScriptCtx::new();
         let pawn = spawn_movement_pawn(&ctx);
-        let weapon = spawn_ammo_weapon(&ctx, pawn);
+        let _weapon = spawn_ammo_weapon(&ctx, pawn);
 
         assert_eq!(pawn_health_values(&ctx.registry.borrow()), None);
         assert_eq!(
-            weapon_hud_values(&ctx.registry.borrow(), Some(weapon)).1,
+            weapon_hud_values(&ctx.registry.borrow()).1,
             Some((5, 20)),
             "ammo HUD identity is independent of the Health component"
         );
+    }
+
+    #[test]
+    fn weapon_state_slots_follow_committed_inventory_and_publish_on_clients() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let outgoing = spawn_ammo_weapon(&ctx, pawn);
+        let incoming = {
+            let mut registry = ctx.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    DescriptorProvenance {
+                        canonical_name: "reference_shotgun".to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(id);
+            inventory.switch_target = Some(1);
+            registry.set_component(pawn, inventory).unwrap();
+            id
+        };
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.set_pending_weapon_slot(Some(1));
+
+        publisher.tick_for_role_and_report_sampled_weapon(true, None);
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.current").unwrap(),
+            SlotValue::String("reference_pistol".to_string()),
+            "current remains the outgoing instance while lowering"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.pending").unwrap(),
+            SlotValue::String("reference_shotgun".to_string()),
+            "pending projects the input-layer cursor before any inventory repoint"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.switching").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        let mut inventory = ctx
+            .registry
+            .borrow()
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .clone();
+        inventory.active_slot = 1;
+        inventory.switch_target = None;
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, inventory)
+            .unwrap();
+        publisher.tick_for_role_and_report_sampled_weapon(true, None);
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.current").unwrap(),
+            SlotValue::String("reference_shotgun".to_string()),
+            "current flips at the active-slot repoint, not switch acceptance"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.switching").unwrap(),
+            SlotValue::Boolean(false)
+        );
+        assert_ne!(outgoing, incoming);
+    }
+
+    #[test]
+    fn o39_o40_one_frame_publish_observes_only_a_completed_short_switch() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let first = spawn_ammo_weapon(&ctx, pawn);
+        let second = {
+            let mut registry = ctx.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    DescriptorProvenance {
+                        canonical_name: "instant_weapon".to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[1] = Some(id);
+            // The zero-duration lower/repoint/raise completed during the frame's
+            // fixed-tick loop before the once-per-frame publisher runs.
+            inventory.active_slot = 1;
+            inventory.switch_target = None;
+            inventory.switch_origin = None;
+            registry.set_component(pawn, inventory).unwrap();
+            id
+        };
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick_for_role(false, None);
+
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.current").unwrap(),
+            SlotValue::String("instant_weapon".to_string())
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.weapon.switching").unwrap(),
+            SlotValue::Boolean(false),
+            "a sub-publish or multi-tick-frame switch exposes only its final state"
+        );
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -552,9 +756,9 @@ mod tests {
         publisher.tick(Some(weapon_id));
 
         assert_eq!(
-            read_store_slot(&ctx, "player.ammo").unwrap(),
-            SlotValue::Number(7.0),
-            "removed tuning still suppresses ammo publication"
+            read_store_slot(&ctx, "player.ammo").ok(),
+            None,
+            "a live weapon with no ammo resource clears stale ammo presentation"
         );
         assert_eq!(
             read_store_slot(&ctx, "player.reloadProgress").unwrap(),
@@ -567,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_skips_ammo_but_clears_reload_without_pawn_weapon_or_resource() {
+    fn o38_resourceless_incoming_weapon_clears_outgoing_ammo_and_reserve_slots() {
         use crate::scripting::primitives::store::{read_store_slot, write_store_slot};
 
         let ctx = ScriptCtx::new();
@@ -612,16 +816,30 @@ mod tests {
                         third_person_model: None,
                         viewmodel: None,
                         resource: None,
+                        lower_ms: 0,
+                        raise_ms: 0,
+                        block_during_reload: None,
                     }),
                 )
                 .unwrap();
             id
         };
-        let _ = pawn;
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, inventory)
+            .unwrap();
         publisher.tick(Some(weapon_id));
         assert_eq!(
-            read_store_slot(&ctx, "player.ammo").unwrap(),
-            SlotValue::Number(7.0)
+            read_store_slot(&ctx, "player.ammo").ok(),
+            None,
+            "incoming resourceless weapon cannot retain outgoing magazine"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammoReserve").ok(),
+            None,
+            "incoming resourceless weapon cannot retain outgoing reserve"
         );
         assert_eq!(
             read_store_slot(&ctx, "player.reloadActive").unwrap(),
@@ -649,22 +867,51 @@ mod tests {
     }
 
     #[test]
-    fn tick_for_role_skips_player_slots_on_connected_client() {
+    fn connected_client_skips_authoritative_slots_but_samples_inventory_feedback() {
         use crate::scripting::primitives::store::read_store_slot;
+        use postretro_entities::components::weapon::ReloadFeedbackConsumer;
 
         // M15 Phase 3.5 Task 4: a connected client must NOT publish the player
         // slots — the server replicates them through the state-slot apply path.
         // With a live pawn present, the gated tick still writes nothing, so the
         // engine-owned slots keep their (unset) value.
         let ctx = ScriptCtx::new();
-        spawn_pawn_with_health(&ctx, 73.0);
+        let pawn = spawn_pawn_with_health(&ctx, 73.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        let feedback_tick = weapon.begin_reload_feedback_tick();
+        weapon.publish_reload_feedback(ReloadFeedback::Completed, feedback_tick);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick_for_role(true, None);
+        assert_eq!(
+            publisher.tick_for_role_and_report_sampled_weapon(true, None),
+            Some(weapon_id),
+            "connected clients resolve the local inventory weapon for feedback acknowledgement"
+        );
         assert_eq!(
             read_store_slot(&ctx, "player.health").ok(),
             None,
             "connected client does not publish player.health",
+        );
+        crate::sim::clear_reload_feedback_for_weapon(&mut ctx.registry.borrow_mut(), weapon_id);
+        assert!(
+            ctx.registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .reload_feedback_sample(ReloadFeedbackConsumer::Hud)
+                .endpoint
+                .is_none(),
+            "the sampled client feedback endpoint is acknowledged rather than accumulating"
         );
 
         // Host / single-player (is_connected_client == false) still publishes.

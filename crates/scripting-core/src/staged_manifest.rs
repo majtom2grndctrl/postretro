@@ -14,7 +14,8 @@ use super::data_descriptors::{
     drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_render_profile_js, drain_render_profile_lua, drain_theme_js,
+    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua, drain_render_profile_js,
+    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
     drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
 };
@@ -324,6 +325,8 @@ fn run_staged_manifest_build(
         id: manifest.id,
         version: manifest.version,
         render: manifest.render,
+        movers: manifest.movers,
+        switching: manifest.switching,
         entities: manifest.entities,
         maps: manifest.maps,
         reactions: manifest.reactions,
@@ -524,6 +527,20 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let movers = drain_mover_defaults_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `movers` invalid: {e}"
+            ),
+        }
+    })?;
+    let switching = drain_switching_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `switching` invalid: {e}"
+            ),
+        }
+    })?;
     let frontend = drain_frontend_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -592,6 +609,8 @@ fn manifest_from_js_value<'js>(
         id,
         version,
         render,
+        movers,
+        switching,
         entities,
         ui_trees,
         theme,
@@ -752,6 +771,20 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let movers = drain_mover_defaults_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `movers` invalid: {e}"
+            ),
+        }
+    })?;
+    let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `switching` invalid: {e}"
+            ),
+        }
+    })?;
     let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -813,6 +846,8 @@ fn run_staged_mod_init_luau(
         id,
         version,
         render,
+        movers,
+        switching,
         entities,
         ui_trees,
         theme,
@@ -1534,6 +1569,70 @@ mod tests {
             assert_eq!(manifest.ui_trees.len(), 1);
             assert_eq!(manifest.ui_trees[0].name, "good");
         });
+    }
+
+    #[test]
+    fn staged_mod_init_switching_is_strict_and_matches_both_runtimes() {
+        let rt = JsRuntime::new().unwrap();
+        let ctx = JsContext::full(&rt).unwrap();
+        ctx.with(|ctx| {
+            let returned: JsValue = ctx
+                .eval(
+                    r#"({
+                        name: "Switch", id: "switch", version: "1",
+                        switching: {
+                            commitOnDirectSelect: false,
+                            cycleCommitDwellMs: 125,
+                            blockDuringReload: true,
+                        },
+                    })"#,
+                )
+                .unwrap();
+            let manifest = manifest_from_js_value(&ctx, "/mod/start-script.js", returned)
+                .expect("staged QuickJS switching manifest should parse");
+            assert_eq!(manifest.switching.commit_on_direct_select, false);
+            assert_eq!(manifest.switching.cycle_commit_dwell_ms, 125.0);
+            assert!(manifest.switching.block_during_reload);
+
+            let invalid: JsValue = ctx
+                .eval(
+                    r#"({
+                        name: "Bad", id: "bad", version: "1",
+                        switching: {
+                            commitOnDirectSelect: true,
+                            cycleCommitDwellMs: -1,
+                            blockDuringReload: false,
+                        },
+                    })"#,
+                )
+                .unwrap();
+            let error = manifest_from_js_value(&ctx, "/mod/start-script.js", invalid)
+                .expect_err("staged QuickJS invalid dwell must reject the manifest");
+            assert!(error.to_string().contains("cycleCommitDwellMs"));
+        });
+
+        let dir = temp_mod_root("staged_luau_switching");
+        let manifest = run_staged_mod_init_luau(
+            "return { name = 'Switch', id = 'switch', version = '1', switching = { commitOnDirectSelect = false, cycleCommitDwellMs = 125, blockDuringReload = true } }",
+            &dir.join("start-script.luau").to_string_lossy(),
+            &dir,
+            &LuauConfig::default(),
+            None,
+        )
+        .expect("staged Luau switching manifest should parse");
+        assert_eq!(manifest.switching.commit_on_direct_select, false);
+        assert_eq!(manifest.switching.cycle_commit_dwell_ms, 125.0);
+        assert!(manifest.switching.block_during_reload);
+
+        let error = run_staged_mod_init_luau(
+            "return { name = 'Bad', id = 'bad', version = '1', switching = { commitOnDirectSelect = true, cycleCommitDwellMs = 0/0, blockDuringReload = false } }",
+            &dir.join("start-script.luau").to_string_lossy(),
+            &dir,
+            &LuauConfig::default(),
+            None,
+        )
+        .expect_err("staged Luau nonfinite dwell must reject the manifest");
+        assert!(error.to_string().contains("cycleCommitDwellMs"));
     }
 
     /// Hot-reload Luau parser (`run_staged_mod_init_luau`) drains the UI fields,

@@ -13,6 +13,20 @@ pub enum KinematicMoverMode {
     PingPong,
 }
 
+/// Host-authoritative response when a kinematic mover contacts an entity.
+///
+/// The policy is static map authoring data. Clients reconcile only the resulting
+/// phase (for example, a `blocked` stop hold) and never evaluate this choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockPolicy {
+    #[default]
+    Displace,
+    Reverse,
+    Stop,
+    Crush,
+}
+
 /// Closed, declarative commands accepted by the deterministic mover driver.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,6 +37,8 @@ pub enum MoverCommand {
     GoToPathNode(String),
     /// Set the authored target spin rate in degrees per second.
     SetSpinRate(f32),
+    /// Set the host-authoritative response to entity contact.
+    SetBlockPolicy(BlockPolicy),
 }
 
 /// Live deterministic phase for one moving-world payload.
@@ -45,6 +61,22 @@ pub struct KinematicMoverComponent {
     pub spin_accel_rad_s2: f32,
     /// Static rider-orientation policy, held locally rather than replicated.
     pub carry_yaw: bool,
+    /// Static host-authoritative collision response, seeded from map authoring.
+    pub block_policy: BlockPolicy,
+    /// Static host-only damage amount dealt on each crusher hit.
+    pub crush_damage: f32,
+    /// Static host-only cadence between crusher hits; zero hits every tick.
+    pub crush_interval_ms: f32,
+    /// Static host-only automatic-close delay.
+    pub auto_close_ms: f32,
+    /// Optional host-local named-event address for reaching the open terminus.
+    pub open_event: Option<String>,
+    /// Optional host-local named-event address for reaching the closed terminus.
+    pub close_event: Option<String>,
+    /// Optional host-local named-event address for reactive block contact.
+    pub blocked_event: Option<String>,
+    /// Optional host-local named-event address dispatched when a crusher deals damage.
+    pub crush_event: Option<String>,
     pub segment_index: u16,
     pub direction_sign: i8,
     pub segment_elapsed_ms: f32,
@@ -52,6 +84,8 @@ pub struct KinematicMoverComponent {
     pub current_linear_velocity: Vec3,
     pub started: bool,
     pub completed: bool,
+    /// Replicated host-derived stop hold. No block policy or timer crosses the wire.
+    pub blocked: bool,
     /// Runtime target waypoint index for `go_to_path_node`; replicated as phase.
     pub target_segment: Option<u16>,
     /// Replicated accumulated spin phase, wrapped by the deterministic driver.
@@ -99,6 +133,14 @@ impl KinematicMoverComponent {
             spin_axis: config.spin_axis.normalize_or_zero(),
             spin_accel_rad_s2: config.spin_accel_rad_s2,
             carry_yaw: config.carry_yaw,
+            block_policy: BlockPolicy::Displace,
+            crush_damage: 0.0,
+            crush_interval_ms: 0.0,
+            auto_close_ms: 0.0,
+            open_event: None,
+            close_event: None,
+            blocked_event: None,
+            crush_event: None,
             segment_index: 0,
             direction_sign: 1,
             segment_elapsed_ms: 0.0,
@@ -106,6 +148,7 @@ impl KinematicMoverComponent {
             current_linear_velocity: Vec3::ZERO,
             started: config.started,
             completed: false,
+            blocked: false,
             target_segment: None,
             spin_angle_rad: 0.0,
             spin_angle_before_tick_rad: 0.0,
@@ -149,14 +192,18 @@ mod tests {
         assert_eq!(mover.spin_axis, Vec3::Y);
         assert_eq!(mover.spin_rate_rad_s, 1.25);
         assert_eq!(mover.spin_target_rate_rad_s, 1.25);
+        assert_eq!(mover.block_policy, BlockPolicy::Displace);
+        assert!(!mover.blocked);
+        assert_eq!(serde_json::to_value(BlockPolicy::Stop).unwrap(), "stop");
     }
 
     #[test]
-    fn set_spin_rate_command_uses_snake_case_degrees_payload() {
-        let command = MoverCommand::SetSpinRate(-90.0);
+    fn mover_commands_use_snake_case_payloads() {
+        let spin_rate = MoverCommand::SetSpinRate(-90.0);
+        let block_policy = MoverCommand::SetBlockPolicy(BlockPolicy::Crush);
 
         assert_eq!(
-            serde_json::to_value(&command).unwrap(),
+            serde_json::to_value(&spin_rate).unwrap(),
             serde_json::json!({ "set_spin_rate": -90.0 })
         );
         assert_eq!(
@@ -165,6 +212,17 @@ mod tests {
             }))
             .unwrap(),
             MoverCommand::SetSpinRate(180.0)
+        );
+        assert_eq!(
+            serde_json::to_value(&block_policy).unwrap(),
+            serde_json::json!({ "set_block_policy": "crush" })
+        );
+        assert_eq!(
+            serde_json::from_value::<MoverCommand>(serde_json::json!({
+                "set_block_policy": "reverse"
+            }))
+            .unwrap(),
+            MoverCommand::SetBlockPolicy(BlockPolicy::Reverse)
         );
     }
 }

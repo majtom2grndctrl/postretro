@@ -7,6 +7,7 @@ use crate::components::health::HealthComponent;
 use crate::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::components::mesh::MeshComponent;
 use crate::components::player_movement::{MovementState, PlayerMovementComponent};
+use crate::components::touchable::TouchableComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
 use crate::provenance::{
@@ -368,6 +369,7 @@ fn descriptor_declares(
         DescriptorComponentKind::Emitter => descriptor.emitter.is_some(),
         DescriptorComponentKind::Mesh => descriptor.mesh.is_some(),
         DescriptorComponentKind::Health => descriptor.health.is_some(),
+        DescriptorComponentKind::Touchable => descriptor.touchable.is_some(),
     }
 }
 
@@ -390,6 +392,9 @@ fn live_component_exists(
         DescriptorComponentKind::Mesh => registry.get_component::<MeshComponent>(entity).is_ok(),
         DescriptorComponentKind::Health => {
             registry.get_component::<HealthComponent>(entity).is_ok()
+        }
+        DescriptorComponentKind::Touchable => {
+            registry.get_component::<TouchableComponent>(entity).is_ok()
         }
     }
 }
@@ -420,6 +425,9 @@ fn plan_component_replace(
         // path can land later if hot-reload of the animation surface is needed.
         DescriptorComponentKind::Mesh => Err("mesh component refresh is not supported".to_string()),
         DescriptorComponentKind::Health => plan_health_replace(entity, new_descriptor, registry),
+        DescriptorComponentKind::Touchable => {
+            plan_touchable_replace(entity, new_descriptor, registry)
+        }
     };
 
     match result {
@@ -477,6 +485,23 @@ fn plan_health_replace(
     let mut refreshed = live.clone();
     refreshed.refresh_from_descriptor(descriptor);
     Ok(ComponentValue::Health(refreshed))
+}
+
+fn plan_touchable_replace(
+    entity: EntityId,
+    new_descriptor: &EntityTypeDescriptor,
+    registry: &EntityRegistry,
+) -> Result<ComponentValue, String> {
+    let descriptor = new_descriptor
+        .touchable
+        .as_ref()
+        .ok_or_else(|| "new descriptor has no touchable component".to_string())?;
+    let _ = registry
+        .get_component::<TouchableComponent>(entity)
+        .map_err(|err| format!("live touchable component unavailable: {err}"))?;
+    Ok(ComponentValue::Touchable(
+        TouchableComponent::from_descriptor(descriptor),
+    ))
 }
 
 fn plan_movement_replace(
@@ -773,7 +798,7 @@ mod tests {
     fn weapon_descriptor(name: &str, damage: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -787,7 +812,11 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -797,7 +826,7 @@ mod tests {
     fn light_descriptor(name: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [0.1, 0.2, 0.3],
                 intensity: 2.0,
@@ -807,6 +836,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -834,11 +864,12 @@ mod tests {
     fn emitter_descriptor(name: &str, sprite: &str, rate: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(emitter_component(sprite, rate)),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -858,7 +889,7 @@ mod tests {
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
@@ -897,6 +928,7 @@ mod tests {
                 view_feel: None,
             }),
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -938,11 +970,12 @@ mod tests {
         use crate::data_descriptors::HealthDescriptor;
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: Some(HealthDescriptor {
                 max,
@@ -1580,11 +1613,12 @@ mod tests {
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: Some(mesh_descriptor.clone()),
             health: None,
             behavior: None,

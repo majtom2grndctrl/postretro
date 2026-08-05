@@ -121,22 +121,62 @@ fn entity_descriptor_without_components_field_deserializes() {
     let src = r#"({ canonicalName: "vignette" })"#;
     let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
     assert_eq!(d.canonical_name.as_deref(), Some("vignette"));
-    assert!(d.default_weapon.is_none());
+    assert!(d.inventory.is_none());
     assert!(d.light.is_none());
     assert!(d.emitter.is_none());
     assert!(d.weapon.is_none());
+    assert!(d.touchable.is_none());
 }
 
 #[test]
-fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() {
+fn touchable_descriptor_has_js_luau_parity_for_defaults_and_radius_validation() {
+    let js = eval_js(
+        r#"({ components: { touchable: { mode: "press" } } })"#,
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { components = { touchable = { mode = "press" } } }"#,
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let js_touchable = js.touchable.expect("QuickJS touchable descriptor parses");
+    let lua_touchable = lua.touchable.expect("Luau touchable descriptor parses");
+    assert_eq!(js_touchable, lua_touchable);
+    assert_eq!(js_touchable.mode, TouchMode::Press);
+    assert!((js_touchable.radius - 40.0).abs() <= f32::EPSILON);
+
+    for (js_source, lua_source) in [
+        (
+            r#"({ components: { touchable: { radius: 0 } } })"#,
+            r#"return { components = { touchable = { radius = 0 } } }"#,
+        ),
+        (
+            r#"({ components: { touchable: { radius: -1 } } })"#,
+            r#"return { components = { touchable = { radius = -1 } } }"#,
+        ),
+    ] {
+        let js_error = eval_js(js_source, |ctx, value| {
+            entity_descriptor_from_js(ctx, value).unwrap_err()
+        });
+        let lua_error = eval_lua(lua_source, |value| {
+            entity_descriptor_from_lua(value).unwrap_err()
+        });
+        assert!(js_error.to_string().contains("components.touchable.radius"));
+        assert_eq!(js_error.to_string(), lua_error.to_string());
+    }
+}
+
+#[test]
+fn js_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
     let src = r#"({
         canonicalName: "player",
-        defaultWeapon: "reference_pistol",
         components: {
+            inventory: { loadout: ["reference_pistol"] },
             weapon: {
                 damage: 12.0,
                 range: 64.0,
                 fireRateMs: 180.0,
+                lowerMs: 25,
+                raiseMs: 40,
                 fireMode: "semi",
                 resolution: "hitscan",
                 creditSource: "player.reference-pistol:primary"
@@ -144,17 +184,59 @@ fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() 
         }
     })"#;
     let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-    assert_eq!(d.default_weapon.as_deref(), Some("reference_pistol"));
+    assert_eq!(d.inventory.unwrap().loadout, ["reference_pistol"]);
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.damage, 12.0);
     assert_eq!(weapon.range, 64.0);
     assert_eq!(weapon.cooldown_ms, 180.0);
+    assert_eq!(weapon.lower_ms, 25);
+    assert_eq!(weapon.raise_ms, 40);
     assert_eq!(weapon.fire_mode, FireMode::Semi);
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     assert_eq!(
         weapon.credit_source.as_deref(),
         Some("player.reference-pistol:primary")
     );
+}
+
+#[test]
+fn js_loadout_builder_rejects_invalid_descriptor_references() {
+    let rt = rquickjs::Runtime::new().expect("QuickJS runtime creates");
+    let ctx = rquickjs::Context::full(&rt).expect("QuickJS context creates");
+
+    ctx.with(|jsctx| {
+        crate::quickjs::evaluate_prelude(&jsctx).expect("SDK prelude evaluates");
+
+        for (label, source, expected) in [
+            (
+                "non-descriptor",
+                r#"defineEntity({ components: { inventory: { loadout: [42] } } });"#,
+                "must reference an entity descriptor",
+            ),
+            (
+                "descriptor without weapon",
+                r#"defineEntity({ components: { inventory: { loadout: [{ canonicalName: "not_weapon", components: {} }] } } });"#,
+                "must reference a descriptor with a weapon block",
+            ),
+            (
+                "descriptor with non-object weapon",
+                r#"defineEntity({ components: { inventory: { loadout: [{ canonicalName: "not_weapon", components: { weapon: [] } }] } } });"#,
+                "components.inventory.loadout[0] must reference a descriptor with a weapon block",
+            ),
+            (
+                "descriptor without canonical name",
+                r#"defineEntity({ components: { inventory: { loadout: [{ components: { weapon: {} } }] } } });"#,
+                "must reference a descriptor with a canonical name",
+            ),
+        ] {
+            let error = crate::quickjs::run_script::<()>(&jsctx, source, label)
+                .expect_err("invalid loadout reference must reject");
+            assert!(
+                error.to_string().contains(expected),
+                "QuickJS {label} rejection should contain {expected:?}, got: {error}"
+            );
+        }
+    });
 }
 
 #[test]
@@ -657,15 +739,17 @@ fn entity_descriptor_with_light_only_deserializes_lua() {
 }
 
 #[test]
-fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() {
+fn lua_entity_descriptor_with_inventory_and_weapon_component_deserializes() {
     let src = r#"return {
         canonicalName = "player",
-        defaultWeapon = "reference_pistol",
         components = {
+            inventory = { loadout = { "reference_pistol" } },
             weapon = {
                 damage = 12.0,
                 range = 64.0,
                 fireRateMs = 180.0,
+                lowerMs = 25,
+                raiseMs = 40,
                 fireMode = "auto",
                 resolution = "hitscan",
                 creditSource = "player.reference-pistol:alt",
@@ -673,16 +757,71 @@ fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes()
         }
     }"#;
     let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
-    assert_eq!(d.default_weapon.as_deref(), Some("reference_pistol"));
+    assert_eq!(d.inventory.unwrap().loadout, ["reference_pistol"]);
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.damage, 12.0);
     assert_eq!(weapon.cooldown_ms, 180.0);
+    assert_eq!(weapon.lower_ms, 25);
+    assert_eq!(weapon.raise_ms, 40);
     assert_eq!(weapon.fire_mode, FireMode::Auto);
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
     assert_eq!(
         weapon.credit_source.as_deref(),
         Some("player.reference-pistol:alt")
     );
+}
+
+#[test]
+fn luau_loadout_builder_rejects_invalid_descriptor_references() {
+    const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
+
+    let lua = mlua::Lua::new();
+    let sdk: mlua::Table = lua
+        .load(DATA_SCRIPT_LUAU)
+        .set_name("data_script.luau")
+        .eval()
+        .expect("data-script SDK evaluates");
+    lua.globals()
+        .set("Postretro", sdk)
+        .expect("SDK installs for test");
+
+    for (label, source, expected) in [
+        (
+            "non-descriptor",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { 42 } } } })"#,
+            "must reference an entity descriptor",
+        ),
+        (
+            "descriptor without weapon",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { canonicalName = "not_weapon", components = {} } } } } })"#,
+            "must reference a descriptor with a weapon block",
+        ),
+        (
+            "descriptor with non-table weapon",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { canonicalName = "not_weapon", components = { weapon = 42 } } } } } })"#,
+            "components.inventory.loadout[0] must reference a descriptor with a weapon block",
+        ),
+        (
+            "descriptor with array-like weapon",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { canonicalName = "not_weapon", components = { weapon = { 42 } } } } } } })"#,
+            "components.inventory.loadout[0] must reference a descriptor with a weapon block",
+        ),
+        (
+            "descriptor without canonical name",
+            r#"Postretro.defineEntity({ components = { inventory = { loadout = { { components = { weapon = {} } } } } } })"#,
+            "must reference a descriptor with a canonical name",
+        ),
+    ] {
+        let error = lua
+            .load(source)
+            .set_name(label)
+            .exec()
+            .expect_err("invalid loadout reference must reject");
+        assert!(
+            error.to_string().contains(expected),
+            "Luau {label} rejection should contain {expected:?}, got: {error}"
+        );
+    }
 }
 
 #[test]

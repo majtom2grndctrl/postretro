@@ -13,12 +13,14 @@ mod types;
 mod ui_dispatch;
 mod ui_focus;
 mod ui_nav;
+mod wieldable_selection;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
 pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
+pub use wieldable_selection::{WieldableSelection, WieldableSelectionPolicy};
 // `UiCaptureMode` is the capture/passthrough mode flag, driven by the active
 // gameplay UI descriptor via `UiDispatch::set_mode`. The boot splash leaves the
 // default `Passthrough`.
@@ -50,12 +52,30 @@ pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine, capture_slider_ste
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
+const WHEEL_DIAGNOSTICS_ENV: &str = "POSTRETRO_WHEEL_DIAGNOSTICS";
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use gilrs::Axis as GilrsAxis;
-use winit::event::MouseButton;
+use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
+
+/// Whether the opt-in raw wheel-event experiment is enabled for this process.
+///
+/// This is intentionally process-scoped: the environment is read once at
+/// startup and normal input processing remains unchanged.
+pub(crate) fn wheel_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        wheel_diagnostics_enabled_from(std::env::var(WHEEL_DIAGNOSTICS_ENV).ok().as_deref())
+    })
+}
+
+fn wheel_diagnostics_enabled_from(value: Option<&str>) -> bool {
+    value == Some("1")
+}
 
 /// Read-only snapshot of all action states for a single frame.
 /// Game logic consumes this; nothing writes back to input mid-frame.
@@ -63,6 +83,9 @@ use winit::keyboard::KeyCode;
 pub struct ActionSnapshot {
     button_states: HashMap<Action, ButtonState>,
     axis_values: HashMap<Action, Vec<AxisValue>>,
+    /// Discrete wheel notches are not button states: several can arrive in one
+    /// frame, while a wheel event has no release edge.
+    notch_counts: HashMap<Action, u32>,
 }
 
 impl ActionSnapshot {
@@ -72,6 +95,7 @@ impl ActionSnapshot {
         Self {
             button_states: HashMap::new(),
             axis_values: HashMap::new(),
+            notch_counts: HashMap::new(),
         }
     }
 
@@ -104,6 +128,111 @@ impl ActionSnapshot {
     pub fn axis_value(&self, action: Action) -> f32 {
         self.axis(action).iter().map(|v| v.value).sum()
     }
+
+    /// Number of discrete wheel notches bound to `action` during this frame.
+    pub fn notch_count(&self, action: Action) -> u32 {
+        self.notch_counts.get(&action).copied().unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_notch_counts<const N: usize>(counts: [(Action, u32); N]) -> Self {
+        let mut snapshot = Self::neutral();
+        snapshot.notch_counts.extend(counts);
+        snapshot
+    }
+}
+
+const LINE_SCROLL_GESTURE_REPEAT: Duration = Duration::from_millis(128);
+
+/// Turns continuous line-scroll input into discrete selection steps. The first
+/// event in a gesture steps immediately; sustained same-direction input repeats
+/// at a fixed cadence rather than using the platform's accelerated magnitude.
+#[derive(Debug, Default)]
+struct LineScrollGesture {
+    direction_up: Option<bool>,
+    last_event_at: Option<Instant>,
+    last_step_at: Option<Instant>,
+}
+
+impl LineScrollGesture {
+    fn accepts(&mut self, delta: f64, now: Instant) -> bool {
+        if !delta.is_finite() || delta == 0.0 {
+            return false;
+        }
+
+        let direction_up = delta.is_sign_positive();
+        let continues = self.direction_up == Some(direction_up)
+            && self
+                .last_event_at
+                .is_some_and(|last| now.duration_since(last) < LINE_SCROLL_GESTURE_REPEAT);
+        self.direction_up = Some(direction_up);
+        self.last_event_at = Some(now);
+
+        if !continues
+            || self
+                .last_step_at
+                .is_none_or(|last| now.duration_since(last) >= LINE_SCROLL_GESTURE_REPEAT)
+        {
+            self.last_step_at = Some(now);
+            return true;
+        }
+        false
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Explicit per-frame scroll count. Pixel remainders survive until they form a
+/// whole notch; only the emitted counts reset each snapshot.
+#[derive(Debug, Default)]
+struct ScrollNotchAccumulator {
+    up: u32,
+    down: u32,
+    pixel_remainder: f64,
+}
+
+impl ScrollNotchAccumulator {
+    fn add_pixel_delta(&mut self, delta: f64, pixels_per_notch: f64) {
+        if !delta.is_finite() || !pixels_per_notch.is_finite() || pixels_per_notch <= 0.0 {
+            return;
+        }
+        self.pixel_remainder += delta;
+        let notches = (self.pixel_remainder / pixels_per_notch).trunc() as i64;
+        self.pixel_remainder -= notches as f64 * pixels_per_notch;
+        self.add_signed_notches(notches);
+    }
+
+    fn add_signed_notches(&mut self, notches: i64) {
+        if notches > 0 {
+            self.up = self
+                .up
+                .saturating_add(u32::try_from(notches).unwrap_or(u32::MAX));
+        } else if notches < 0 {
+            self.down = self
+                .down
+                .saturating_add(u32::try_from(notches.unsigned_abs()).unwrap_or(u32::MAX));
+        }
+    }
+
+    fn count(&self, input: PhysicalInput) -> u32 {
+        match input {
+            PhysicalInput::MouseWheelUp => self.up,
+            PhysicalInput::MouseWheelDown => self.down,
+            _ => 0,
+        }
+    }
+
+    fn clear_frame(&mut self) {
+        self.up = 0;
+        self.down = 0;
+    }
+
+    fn clear_all(&mut self) {
+        self.clear_frame();
+        self.pixel_remainder = 0.0;
+    }
 }
 
 /// Carries button press edges across render frames until fixed game logic runs.
@@ -114,6 +243,7 @@ impl ActionSnapshot {
 #[derive(Debug, Default)]
 pub struct GameplayInputLatch {
     pressed_buttons: HashSet<Action>,
+    wieldable_selection: WieldableSelection,
 }
 
 impl GameplayInputLatch {
@@ -123,10 +253,19 @@ impl GameplayInputLatch {
 
     pub fn clear(&mut self) {
         self.pressed_buttons.clear();
+        self.wieldable_selection.clear();
     }
 
     pub fn clear_pressed(&mut self, action: Action) {
         self.pressed_buttons.remove(&action);
+    }
+
+    pub fn wieldable_selection_mut(&mut self) -> &mut WieldableSelection {
+        &mut self.wieldable_selection
+    }
+
+    pub fn wieldable_selection(&self) -> &WieldableSelection {
+        &self.wieldable_selection
     }
 
     pub fn snapshot_for_ticks(
@@ -179,6 +318,17 @@ pub struct InputSystem {
     /// Mouse axis values resolved from accumulated delta for the current frame.
     mouse_axes: HashMap<Action, f32>,
 
+    /// Explicit wheel notch counts, distinct from `ButtonState` so one frame
+    /// can retain several wheel inputs.
+    scroll_notches: ScrollNotchAccumulator,
+
+    /// Debounces continuous/accelerated `LineDelta` events into weapon-cycle
+    /// steps. Pixel deltas retain their separate configurable threshold.
+    line_scroll_gesture: LineScrollGesture,
+
+    /// Player-configured pixel distance corresponding to one wheel notch.
+    scroll_notch_pixels: f64,
+
     /// Raw gamepad axis values keyed by gilrs Axis. Resolved through bindings.
     gamepad_axes: HashMap<GilrsAxis, f32>,
 
@@ -212,6 +362,9 @@ impl InputSystem {
             prev_button_states: HashMap::with_capacity(button_action_count),
             mouse_delta: (0.0, 0.0),
             mouse_axes: HashMap::new(),
+            scroll_notches: ScrollNotchAccumulator::default(),
+            line_scroll_gesture: LineScrollGesture::default(),
+            scroll_notch_pixels: 120.0,
             gamepad_axes: HashMap::new(),
             mouse_sensitivity: DEFAULT_MOUSE_SENSITIVITY,
             invert_y: false,
@@ -232,6 +385,15 @@ impl InputSystem {
     /// Enable or disable invert-Y for mouse look.
     pub fn set_invert_y(&mut self, invert: bool) {
         self.invert_y = invert;
+    }
+
+    /// Set the pixel-scroll normalization threshold loaded from player options.
+    pub fn set_scroll_notch_pixels(&mut self, pixels: f32) {
+        self.scroll_notch_pixels = if pixels.is_finite() && pixels > 0.0 {
+            f64::from(pixels)
+        } else {
+            120.0
+        };
     }
 
     /// Whether invert-Y is currently enabled.
@@ -257,6 +419,59 @@ impl InputSystem {
             .insert(PhysicalInput::MouseButton(button), pressed);
     }
 
+    /// Normalize a winit wheel event into explicit per-frame notches. Wheel
+    /// inputs are momentary, so `snapshot` clears their physical states itself.
+    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        self.handle_mouse_wheel_at(delta, Instant::now());
+    }
+
+    fn handle_mouse_wheel_at(&mut self, delta: MouseScrollDelta, now: Instant) {
+        match delta {
+            MouseScrollDelta::LineDelta(_, vertical) => {
+                let up_before = self.scroll_notches.up;
+                let down_before = self.scroll_notches.down;
+                let emitted = self.line_scroll_gesture.accepts(f64::from(vertical), now);
+                if emitted {
+                    self.scroll_notches
+                        .add_signed_notches(if vertical.is_sign_positive() { 1 } else { -1 });
+                }
+                if wheel_diagnostics_enabled() {
+                    log::info!(
+                        "[Input] wheel diagnostic: LineDelta vertical={vertical:.4}; gesture emitted={emitted} (repeat {} ms); emitted up={} down={}",
+                        LINE_SCROLL_GESTURE_REPEAT.as_millis(),
+                        self.scroll_notches.up - up_before,
+                        self.scroll_notches.down - down_before,
+                    );
+                }
+            }
+            MouseScrollDelta::PixelDelta(position) => {
+                let remainder_before = self.scroll_notches.pixel_remainder;
+                let up_before = self.scroll_notches.up;
+                let down_before = self.scroll_notches.down;
+                self.scroll_notches
+                    .add_pixel_delta(position.y, self.scroll_notch_pixels);
+                if wheel_diagnostics_enabled() {
+                    log::info!(
+                        "[Input] wheel diagnostic: PixelDelta vertical={:.4}; pixel remainder {remainder_before:.4} -> {:.4} (threshold {:.1}); emitted up={} down={}",
+                        position.y,
+                        self.scroll_notches.pixel_remainder,
+                        self.scroll_notch_pixels,
+                        self.scroll_notches.up - up_before,
+                        self.scroll_notches.down - down_before,
+                    );
+                }
+            }
+        }
+        if self.scroll_notches.up != 0 {
+            self.physical_state
+                .insert(PhysicalInput::MouseWheelUp, true);
+        }
+        if self.scroll_notches.down != 0 {
+            self.physical_state
+                .insert(PhysicalInput::MouseWheelDown, true);
+        }
+    }
+
     /// Set a raw gamepad axis value. Called by GamepadSystem after dead zone processing.
     /// The value is resolved through bindings to produce action axis values.
     pub fn set_gamepad_axis(&mut self, axis: GilrsAxis, value: f32) {
@@ -278,6 +493,8 @@ impl InputSystem {
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
         self.gamepad_axes.clear();
+        self.scroll_notches.clear_all();
+        self.line_scroll_gesture.clear();
     }
 
     /// Resolve all bindings and produce the action snapshot for this frame.
@@ -288,6 +505,7 @@ impl InputSystem {
 
         let mut button_states = HashMap::new();
         let mut axis_values = HashMap::new();
+        let mut notch_counts = HashMap::new();
 
         for &action in &self.unique_actions {
             if action.is_axis() {
@@ -309,6 +527,15 @@ impl InputSystem {
                     &self.prev_button_states,
                 );
                 button_states.insert(action, state);
+                let count = self
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.action == action)
+                    .map(|binding| self.scroll_notches.count(binding.input))
+                    .sum();
+                if count != 0 {
+                    notch_counts.insert(action, count);
+                }
             }
         }
 
@@ -323,10 +550,14 @@ impl InputSystem {
         // Reset per-frame accumulators.
         self.mouse_delta = (0.0, 0.0);
         self.mouse_axes.clear();
+        self.scroll_notches.clear_frame();
+        self.physical_state.remove(&PhysicalInput::MouseWheelUp);
+        self.physical_state.remove(&PhysicalInput::MouseWheelDown);
 
         ActionSnapshot {
             button_states,
             axis_values,
+            notch_counts,
         }
     }
 
@@ -666,6 +897,110 @@ mod tests {
     }
 
     #[test]
+    fn line_scroll_gesture_caps_an_accelerated_event_at_one_notch() {
+        let mut sys = InputSystem::new(test_bindings());
+        let now = Instant::now();
+        sys.handle_mouse_wheel_at(MouseScrollDelta::LineDelta(0.0, -16.389_328), now);
+
+        let snap = sys.snapshot();
+        assert_eq!(snap.notch_count(Action::CycleWieldableNext), 1);
+        assert_eq!(
+            snap.button(Action::CycleWieldableNext),
+            ButtonState::Pressed,
+            "line-scroll magnitude represents accelerated motion, not a weapon-step count"
+        );
+
+        let next = sys.snapshot();
+        assert_eq!(next.notch_count(Action::CycleWieldableNext), 0);
+        assert_eq!(
+            next.button(Action::CycleWieldableNext),
+            ButtonState::Released,
+            "wheel physical state must be explicitly cleared because winit emits no release event"
+        );
+    }
+
+    #[test]
+    fn line_scroll_gesture_repeats_only_every_128_ms_while_input_continues() {
+        let mut sys = InputSystem::new(test_bindings());
+        let now = Instant::now();
+
+        sys.handle_mouse_wheel_at(MouseScrollDelta::LineDelta(0.0, 0.1), now);
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            1,
+            "a gesture steps immediately"
+        );
+
+        sys.handle_mouse_wheel_at(
+            MouseScrollDelta::LineDelta(0.0, 12.4),
+            now + Duration::from_millis(64),
+        );
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            0,
+            "a sustained gesture is debounced between repeat intervals"
+        );
+
+        sys.handle_mouse_wheel_at(
+            MouseScrollDelta::LineDelta(0.0, 0.1),
+            now + LINE_SCROLL_GESTURE_REPEAT,
+        );
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            1,
+            "continued same-direction input repeats on the configured cadence"
+        );
+    }
+
+    #[test]
+    fn line_scroll_gesture_direction_change_starts_a_new_gesture() {
+        let mut sys = InputSystem::new(test_bindings());
+        let now = Instant::now();
+        sys.handle_mouse_wheel_at(MouseScrollDelta::LineDelta(0.0, 0.1), now);
+        let _ = sys.snapshot();
+
+        sys.handle_mouse_wheel_at(
+            MouseScrollDelta::LineDelta(0.0, -0.1),
+            now + Duration::from_millis(1),
+        );
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldableNext),
+            1,
+            "reversing direction must not wait for the prior gesture's debounce"
+        );
+    }
+
+    #[test]
+    fn pixel_scroll_accumulates_against_configured_notch_threshold() {
+        let mut sys = InputSystem::new(test_bindings());
+        sys.set_scroll_notch_pixels(120.0);
+        sys.handle_mouse_wheel(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, 50.0),
+        ));
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            0
+        );
+
+        sys.handle_mouse_wheel(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, 70.0),
+        ));
+        assert_eq!(
+            sys.snapshot().notch_count(Action::CycleWieldablePrevious),
+            1,
+            "pixel residual from the prior frame completes one 120-pixel notch"
+        );
+    }
+
+    #[test]
+    fn wheel_diagnostics_enable_only_for_explicit_one() {
+        assert!(wheel_diagnostics_enabled_from(Some("1")));
+        assert!(!wheel_diagnostics_enabled_from(None));
+        assert!(!wheel_diagnostics_enabled_from(Some("true")));
+        assert!(!wheel_diagnostics_enabled_from(Some("0")));
+    }
+
+    #[test]
     fn gameplay_input_latch_carries_pressed_button_across_zero_tick_frame() {
         let mut sys = InputSystem::new(test_bindings());
         let mut latch = GameplayInputLatch::new();
@@ -719,6 +1054,58 @@ mod tests {
         assert_eq!(
             gameplay_snapshot.button(Action::Shoot),
             ButtonState::Pressed
+        );
+    }
+
+    #[test]
+    fn gameplay_input_latch_coalesces_zero_tick_drop_presses_into_one_edge() {
+        let mut latch = GameplayInputLatch::new();
+        let drop_press = ActionSnapshot::with_button_state(Action::Drop, ButtonState::Pressed);
+
+        assert!(latch.snapshot_for_ticks(&drop_press, 0).is_none());
+        assert!(latch.snapshot_for_ticks(&drop_press, 0).is_none());
+
+        let gameplay_snapshot = latch
+            .snapshot_for_ticks(&ActionSnapshot::neutral(), 2)
+            .expect("fixed ticks should receive a gameplay snapshot");
+        assert_eq!(
+            gameplay_snapshot.button(Action::Drop),
+            ButtonState::Pressed,
+            "consecutive zero-tick presses collapse into one tick-zero drop edge"
+        );
+
+        let following_snapshot = latch
+            .snapshot_for_ticks(&ActionSnapshot::neutral(), 1)
+            .expect("later fixed ticks still receive a gameplay snapshot");
+        assert_eq!(
+            following_snapshot.button(Action::Drop),
+            ButtonState::Inactive,
+            "the latched drop edge drains onto the first tick-bearing frame only"
+        );
+    }
+
+    #[test]
+    fn gameplay_input_latch_clear_discards_pending_wieldable_commit() {
+        let mut latch = GameplayInputLatch::new();
+        let occupied = [true, true];
+        latch.wieldable_selection_mut().advance_frame(
+            &ActionSnapshot::with_button_state(Action::SelectWieldable2, ButtonState::Pressed),
+            &occupied,
+            Some(0),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: true,
+                cycle_dwell_ms: 0.0,
+            },
+            0.0,
+        );
+
+        latch.clear();
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&occupied, Some(0)),
+            None,
+            "modal/focus input clears must discard the local declaration holder"
         );
     }
 

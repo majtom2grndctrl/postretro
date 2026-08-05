@@ -17,16 +17,20 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
+#[cfg(test)]
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
 use postretro_entities::components::health::HealthComponent;
+#[cfg(test)]
+use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::touchable::TouchableComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
@@ -34,9 +38,12 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::NavAgentParams;
-use postretro_scripting_core::data_descriptors::{
-    EntityTypeDescriptor, LightDescriptor, WeaponResource,
-};
+#[cfg(test)]
+use postretro_scripting_core::data_descriptors::WeaponResource;
+use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
+
+pub(super) use super::wieldable_inventory::compose_wieldable_inventory;
+pub(crate) use super::wieldable_inventory::compose_wieldable_inventory_from_slots;
 
 /// Capsule fallback for a descriptor-spawned agent when the map has no navmesh
 /// (`agent_params == None`). The agent still materializes — it simply cannot
@@ -49,27 +56,6 @@ pub(crate) const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
     step_height: 0.4,
     max_slope_deg: 45.0,
 };
-
-pub(super) fn seed_weapon_reserve(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    weapon_descriptor: &EntityTypeDescriptor,
-) {
-    let Some(WeaponResource::Ammo(ammo)) = weapon_descriptor
-        .weapon
-        .as_ref()
-        .and_then(|weapon| weapon.resource.as_ref())
-    else {
-        return;
-    };
-
-    let mut reserve = registry
-        .get_component::<AmmoReserve>(pawn)
-        .cloned()
-        .unwrap_or_default();
-    reserve.credit(&ammo.ammo_type, ammo.reserve);
-    let _ = registry.set_component(pawn, reserve);
-}
 
 /// Apply the `initial_<field>` KVP override convention to the descriptor's
 /// component presets. Each scalar field (`f32`, `u32`) parses via `FromStr`;
@@ -262,6 +248,7 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.movement.is_some()
         || descriptor.mesh.is_some()
         || descriptor.health.is_some()
+        || descriptor.touchable.is_some()
 }
 
 pub(crate) fn ai_capsule_center_from_feet_offset(
@@ -301,20 +288,26 @@ pub(crate) fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor
     descriptor_carries_brain(descriptor)
 }
 
+/// Whether this descriptor materializes a host-authoritative world item. A world
+/// item is defined solely by its `touchable` block; the host derives outbound
+/// replication membership from the corresponding live component.
+pub(crate) fn descriptor_materializes_world_item(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor.touchable.is_some()
+}
+
 /// Partition map placements for a **connected client** install (E10 Task 5):
 /// returns only the placements that should still materialize locally, dropping
-/// any whose matched descriptor would materialize an authoritative AI enemy
-/// ([`descriptor_materializes_ai_enemy`]). Those enemies are host-authoritative
-/// and reach the client solely via host snapshots (a later task materializes the
-/// remote presentation); spawning a local authoritative copy here would be a
-/// second, never-replicated brain.
+/// any whose matched descriptor would materialize a host-authoritative AI enemy
+/// ([`descriptor_materializes_ai_enemy`]) or world item
+/// ([`descriptor_materializes_world_item`]). Those entities reach the client solely
+/// via host snapshots; spawning a local copy here would duplicate their
+/// host-authoritative state.
 ///
-/// Placements whose classname has no descriptor match are retained untouched —
-/// they are not AI enemies and the downstream dispatch handles their
-/// unknown-classname / built-in-collision diagnostics exactly as it would on a
-/// host. Single-player and listen-host installs never call this (they keep every
-/// placement); only the connected-client lifecycle path filters.
-pub(crate) fn filter_out_client_ai_enemies(
+/// Placements whose classname has no descriptor match are retained untouched so the
+/// downstream dispatch handles their unknown-classname / built-in-collision diagnostics
+/// exactly as it would on a host. Single-player and listen-host installs never call this
+/// (they keep every placement); only the connected-client lifecycle path filters.
+pub(crate) fn filter_out_client_host_replicated_placements(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
 ) -> Vec<MapEntity> {
@@ -322,9 +315,12 @@ pub(crate) fn filter_out_client_ai_enemies(
         .iter()
         .filter(
             |entity| match find_descriptor(descriptors, &entity.classname) {
-                Some(descriptor) => !descriptor_materializes_ai_enemy(descriptor),
-                // No descriptor match: not an AI enemy — retain for the normal
-                // unknown-classname diagnostics in dispatch.
+                Some(descriptor) => {
+                    !descriptor_materializes_ai_enemy(descriptor)
+                        && !descriptor_materializes_world_item(descriptor)
+                }
+                // No descriptor match: retain for the normal unknown-classname
+                // diagnostics in dispatch.
                 None => true,
             },
         )
@@ -333,19 +329,18 @@ pub(crate) fn filter_out_client_ai_enemies(
 }
 
 /// Collect the distinct, non-empty mesh model handles referenced by the
-/// AI-enemy map placements a connected client suppresses
-/// ([`filter_out_client_ai_enemies`]), preserving first-seen order. GPU-free:
+/// host-authoritative map placements a connected client suppresses
+/// ([`filter_out_client_host_replicated_placements`]), preserving first-seen order. GPU-free:
 /// this is the pure analogue of [`crate::distinct_mesh_models`] for placements
 /// that never spawn a local `MeshComponent` on a connected client, so the
 /// registry-driven sweep cannot see them.
 ///
 /// Scoped to the classes the **map actually references** (the placements passed
-/// in), not every AI descriptor in the data registry — only enemies the host
-/// can replicate into this level need their model on the GPU. A placement is
-/// included only when its matched descriptor both materializes an AI enemy
-/// ([`descriptor_materializes_ai_enemy`]) AND carries a `mesh` block with a
-/// non-empty `model`; non-AI placements and AI descriptors without a renderable
-/// mesh contribute nothing.
+/// in), not every descriptor in the data registry — only host-replicated map
+/// entities in this level need their model on the GPU. A placement is included only
+/// when its matched descriptor materializes either an AI enemy or world item and
+/// carries a `mesh` block with a non-empty `model`; ordinary placements and
+/// meshless descriptors contribute nothing.
 ///
 /// Regression (E10 AC #3): a connected client filtered out the AI-enemy
 /// placement before dispatch, so its model was never in the registry-driven
@@ -353,13 +348,13 @@ pub(crate) fn filter_out_client_ai_enemies(
 /// draw planner dropped it (no uploaded mesh in the model cache) and the real
 /// model never rendered — only a dev-tools debug capsule showed. The level-load
 /// sweep unions these handles with [`crate::distinct_mesh_models`] so the
-/// suppressed enemy's model is uploaded up front.
+/// suppressed entity's model is uploaded up front.
 ///
 /// Each returned string is the VERBATIM renderer cache key (the descriptor's
 /// holder `mesh.model` or attachment model), identical in shape to
 /// [`crate::distinct_mesh_models`] output, so the caller can dedup the two sets
 /// and upload each handle once.
-pub(crate) fn suppressed_ai_enemy_mesh_models(
+pub(crate) fn suppressed_client_host_replicated_mesh_models(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
 ) -> Vec<String> {
@@ -369,7 +364,9 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
         let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
             continue;
         };
-        if !descriptor_materializes_ai_enemy(descriptor) {
+        if !descriptor_materializes_ai_enemy(descriptor)
+            && !descriptor_materializes_world_item(descriptor)
+        {
             continue;
         }
         let Some(mesh) = descriptor.mesh.as_ref() else {
@@ -441,6 +438,38 @@ pub(crate) fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -
         {
             if seen.insert(model.to_string()) {
                 ordered.push(model.to_string());
+            }
+        }
+    }
+    ordered
+}
+
+/// Collect world-mesh models for wieldables that can later leave an inventory.
+/// Inventory composition strips their `MeshComponent`, so a registry-driven
+/// install sweep cannot discover a descriptor referenced only by a loadout.
+/// Requiring both weapon and touchable authoring keeps this preload scoped to
+/// instances the drop path can actually restore as world items.
+pub(crate) fn touchable_wieldable_world_models(
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for descriptor in descriptors {
+        if descriptor.weapon.is_none() || descriptor.touchable.is_none() {
+            continue;
+        }
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
+        let mut attachment_models: Vec<&str> =
+            mesh.attachments.values().map(String::as_str).collect();
+        attachment_models.sort_unstable();
+        for attachment_model in attachment_models {
+            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
+                ordered.push(attachment_model.to_string());
             }
         }
     }
@@ -527,6 +556,11 @@ pub(crate) fn attach_descriptor_components(
         }
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Health);
+    }
+
+    if let Some(touchable_desc) = descriptor.touchable.as_ref() {
+        let _ = registry.set_component(id, TouchableComponent::from_descriptor(touchable_desc));
+        owned_components.insert(DescriptorComponentKind::Touchable);
     }
 
     // A behavior graph materializes the engine-owned brain AND a movable
@@ -776,7 +810,7 @@ pub(crate) fn apply_data_archetype_dispatch(
             registry,
             descriptor,
             entity,
-            false,
+            descriptor.touchable.is_some(),
             DescriptorSpawnPath::MapPlacement,
             agent_params,
         ) else {
@@ -808,16 +842,14 @@ pub(crate) const PLAYER_START_CLASSNAME: &str = "player_spawn";
 /// Spawn one entity per `player_spawn` placement, using each placement's
 /// `entity_class` KVP (default `"player"`) to look up an
 /// [`EntityTypeDescriptor`]. Component attachment uses the same descriptor
-/// materialization helper as the data-archetype sweep, while `defaultWeapon`
-/// spawns a sibling weapon instance only when the target descriptor declares a
-/// weapon component. The per-placement KVP bag is forwarded with
+/// materialization helper as the data-archetype sweep, while
+/// `components.inventory.loadout` spawns sibling wieldable instances only when
+/// the target descriptors declare weapon components. The per-placement KVP bag is forwarded with
 /// `entity_class` stripped so it is not confused with an `initial_*` override.
 /// Tags from the `player_spawn` placement are passed directly to `try_spawn`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PlayerSpawnResult {
     pub(crate) spawned: usize,
-    pub(crate) active_wieldable: Option<EntityId>,
-    pub(crate) active_wieldable_descriptor: Option<String>,
 }
 
 pub(crate) fn spawn_from_player_starts(
@@ -826,9 +858,26 @@ pub(crate) fn spawn_from_player_starts(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> PlayerSpawnResult {
+    spawn_from_player_starts_with_carried_loadout(
+        spawn_points,
+        descriptors,
+        registry,
+        agent_params,
+        None,
+    )
+}
+
+/// Player-start materialization with an optional carried record for the first
+/// local movement pawn. The caller owns seat lookup; this descriptor layer
+/// deliberately receives only the already-resolved record.
+pub(crate) fn spawn_from_player_starts_with_carried_loadout(
+    spawn_points: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    agent_params: Option<NavAgentParams>,
+    carried_loadout: Option<&crate::netcode::CarriedState>,
+) -> PlayerSpawnResult {
     let mut spawned = 0usize;
-    let mut active_wieldable = None;
-    let mut active_wieldable_descriptor = None;
 
     for entity in spawn_points {
         let entity_class = entity
@@ -860,13 +909,14 @@ pub(crate) fn spawn_from_player_starts(
             continue;
         };
 
-        if registry.local_player_pawn().is_none()
+        let is_first_local_pawn = registry.local_player_pawn().is_none()
             && matches!(
                 registry.has_component_kind(id, ComponentKind::PlayerMovement),
                 Ok(true)
-            )
-        {
+            );
+        if is_first_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
+            crate::netcode::restore_carried_health(carried_loadout, registry, id);
         }
 
         // Forward the per-placement KVP bag (sans `entity_class`, which is a
@@ -876,56 +926,14 @@ pub(crate) fn spawn_from_player_starts(
         kvps.remove("entity_class");
         let _ = registry.set_map_kvps(id, kvps);
 
-        if let Some(default_weapon) = descriptor.default_weapon.as_deref() {
-            let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
-                log::warn!(
-                    "[Loader] {origin}: defaultWeapon `{default_weapon}` not registered; player spawned unarmed",
-                    origin = entity.diagnostic_origin(),
-                );
-                spawned += 1;
-                continue;
-            };
-            if weapon_descriptor.weapon.is_none() {
-                log::warn!(
-                    "[Loader] {origin}: defaultWeapon `{default_weapon}` has no weapon component; player spawned unarmed",
-                    origin = entity.diagnostic_origin(),
-                );
-                spawned += 1;
-                continue;
-            }
-
-            let weapon_entity = MapEntity {
-                classname: default_weapon.to_string(),
-                origin: entity.origin,
-                angles: entity.angles,
-                key_values: Default::default(),
-                tags: vec![],
-            };
-            match spawn_descriptor_instance(
-                registry,
-                weapon_descriptor,
-                &weapon_entity,
-                true,
-                DescriptorSpawnPath::DefaultWeapon,
-                // A wieldable instance never carries an `ai` block, so no agent.
-                None,
-            ) {
-                Some(weapon_id) => {
-                    let _ = registry.set_map_kvps(weapon_id, Default::default());
-                    seed_weapon_reserve(registry, id, weapon_descriptor);
-                    if active_wieldable.is_none() {
-                        active_wieldable = Some(weapon_id);
-                        active_wieldable_descriptor = Some(default_weapon.to_string());
-                    }
-                }
-                None => {
-                    log::warn!(
-                        "[Loader] {origin}: entity registry exhausted; dropping defaultWeapon `{default_weapon}`",
-                        origin = entity.diagnostic_origin(),
-                    );
-                }
-            }
-        }
+        let _ = compose_wieldable_inventory(
+            registry,
+            id,
+            descriptor,
+            entity,
+            descriptors,
+            is_first_local_pawn.then_some(carried_loadout).flatten(),
+        );
 
         spawned += 1;
     }
@@ -937,11 +945,7 @@ pub(crate) fn spawn_from_player_starts(
         );
     }
 
-    PlayerSpawnResult {
-        spawned,
-        active_wieldable,
-        active_wieldable_descriptor,
-    }
+    PlayerSpawnResult { spawned }
 }
 
 #[cfg(test)]
@@ -949,8 +953,10 @@ mod tests {
     use super::*;
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor,
+        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
+        TouchableDescriptor, WeaponDescriptor,
     };
+    use std::collections::HashMap;
 
     // Shared descriptor/placement builders live in the sibling fixture module so
     // the netcode agreement test can reuse them without a private-helper reach
@@ -962,7 +968,7 @@ mod tests {
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [0.5, 0.5, 0.5],
                 intensity: 1.0,
@@ -972,6 +978,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1182,11 +1189,12 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("target_dummy".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: Some(HealthDescriptor {
                 max: 75.0,
@@ -1355,6 +1363,50 @@ mod tests {
         let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
         assert!(provenance.owns(DescriptorComponentKind::Light));
         assert!(!provenance.owns(DescriptorComponentKind::Weapon));
+    }
+
+    #[test]
+    fn map_sweep_spawns_weapon_and_touchable_for_touchable_wieldable() {
+        let mut reg = EntityRegistry::new();
+        let mut descriptor = weapon_descriptor("reference_pistol");
+        descriptor.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Press,
+            radius: 32.0,
+        });
+        let placements = vec![placement("reference_pistol", &[])];
+
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &[descriptor],
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
+
+        assert_eq!(handled.len(), 1);
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Touchable)
+            .next()
+            .expect("touchable wieldable should spawn");
+        let position = reg
+            .get_component::<Transform>(id)
+            .expect("world item transform should attach")
+            .position;
+        assert!(
+            (position - Vec3::new(1.0, 2.0, 3.0)).length_squared() <= f32::EPSILON,
+            "map placement should retain its authored position"
+        );
+        assert!(reg.get_component::<WeaponComponent>(id).is_ok());
+        let touchable = reg
+            .get_component::<TouchableComponent>(id)
+            .expect("touchable component should attach");
+        assert_eq!(touchable.mode, TouchMode::Press);
+        assert!((touchable.radius - 32.0).abs() <= f32::EPSILON);
+        let provenance = reg
+            .get_component::<DescriptorProvenance>(id)
+            .expect("descriptor provenance should attach");
+        assert!(provenance.owns(DescriptorComponentKind::Weapon));
+        assert!(provenance.owns(DescriptorComponentKind::Touchable));
     }
 
     #[test]
@@ -1568,7 +1620,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1587,6 +1639,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1612,7 +1665,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1631,6 +1684,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1653,7 +1707,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("campfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1672,6 +1726,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1691,7 +1746,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("burstfire".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 0.0,
@@ -1710,6 +1765,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1731,7 +1787,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("smolder".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: Some(BillboardEmitterComponent {
                 rate: 6.0,
@@ -1750,6 +1806,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1790,7 +1847,7 @@ mod tests {
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: Some("billboard_emitter".to_string()),
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [1.0, 0.0, 0.0],
                 intensity: 5.0,
@@ -1800,6 +1857,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1857,7 +1915,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             canonical_name: None,
-            default_weapon: None,
+            inventory: None,
             light: Some(LightDescriptor {
                 color: [1.0, 1.0, 1.0],
                 intensity: 1.0,
@@ -1867,6 +1925,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1934,13 +1993,13 @@ mod tests {
         ];
         let points = vec![spawn_point(&[])];
 
-        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+        let _result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let player_id = reg
-            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| Some(*id) != result.active_wieldable)
-            .expect("player entity should spawn");
+            .expect("player entity should spawn with inventory");
         let player_provenance = reg
             .get_component::<DescriptorProvenance>(player_id)
             .expect("player provenance should be recorded");
@@ -1950,8 +2009,10 @@ mod tests {
         );
         assert_eq!(player_provenance.canonical_name, "player");
 
-        let weapon_id = result
-            .active_wieldable
+        let weapon_id = reg
+            .get_component::<Inventory>(player_id)
+            .unwrap()
+            .active_wieldable()
             .expect("default weapon should spawn as active wieldable");
         let weapon_provenance = reg
             .get_component::<DescriptorProvenance>(weapon_id)
@@ -1971,11 +2032,12 @@ mod tests {
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -1985,7 +2047,7 @@ mod tests {
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
@@ -1999,7 +2061,11 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             }),
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -2020,17 +2086,94 @@ mod tests {
     }
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
+        player_with_loadout(classname, &[default_weapon])
+    }
+
+    fn player_with_loadout(classname: &str, loadout: &[&str]) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: Some(default_weapon.to_string()),
+            inventory: Some(postretro_entities::InventoryDescriptor {
+                loadout: loadout.iter().map(|name| (*name).to_string()).collect(),
+            }),
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
         }
+    }
+
+    #[test]
+    fn player_inventory_loadout_spawns_ordered_wieldables_up_to_capacity() {
+        let names = (0..(WIELDABLE_SLOT_CAPACITY + 1))
+            .map(|index| format!("weapon_{index}"))
+            .collect::<Vec<_>>();
+        let loadout = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut descriptors = vec![player_with_loadout("player", &loadout)];
+        descriptors.extend(names.iter().map(|name| weapon_descriptor(name)));
+        let mut reg = EntityRegistry::new();
+
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("player inventory should be attached");
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        assert_eq!(inventory.active_slot, 0);
+        assert_eq!(inventory.switch_target, None);
+        assert!(inventory.wieldables.iter().all(Option::is_some));
+        assert_eq!(
+            reg.iter_with_kind(ComponentKind::Weapon).count(),
+            WIELDABLE_SLOT_CAPACITY
+        );
+        assert_eq!(live_count(&reg), WIELDABLE_SLOT_CAPACITY + 1);
+    }
+
+    #[test]
+    fn o37_duplicate_descriptor_loadout_creates_independent_instances_and_one_shared_reserve() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_loadout("player", &["reference_pistol", "reference_pistol"]),
+            ammo_weapon_descriptor("reference_pistol"),
+        ];
+
+        let _ = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("spawned pawn owns an inventory");
+        let inventory = reg.get_component::<Inventory>(pawn).unwrap();
+        let first = inventory.wieldables[0].expect("first duplicate slot materializes");
+        let second = inventory.wieldables[1].expect("second duplicate slot materializes");
+        assert_ne!(
+            first, second,
+            "duplicate descriptor entries are distinct instances"
+        );
+
+        let mut first_component = reg.get_component::<WeaponComponent>(first).unwrap().clone();
+        first_component.magazine = 3;
+        reg.set_component(first, first_component).unwrap();
+        assert_eq!(
+            reg.get_component::<WeaponComponent>(second)
+                .unwrap()
+                .magazine,
+            12,
+            "changing one duplicate's magazine does not mutate its sibling"
+        );
+        assert_eq!(
+            reg.get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48,
+            "two slots sharing one ammo type seed its pawn reserve once"
+        );
     }
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
@@ -2074,11 +2217,12 @@ mod tests {
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(classname.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: Some(movement_descriptor()),
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -2094,6 +2238,61 @@ mod tests {
         e.origin = origin;
         e.angles = angles;
         e
+    }
+
+    #[test]
+    fn carried_health_restores_only_the_first_local_player_start() {
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let mut player = player_with_movement("player");
+        player.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+        let mut registry = EntityRegistry::new();
+        let starts = [
+            spawn_point(&[]),
+            spawn_point_at(Vec3::new(8.0, 0.0, 0.0), Vec3::ZERO, &[]),
+        ];
+
+        spawn_from_player_starts_with_carried_loadout(
+            &starts,
+            &[player],
+            &mut registry,
+            None,
+            Some(&crate::netcode::CarriedState {
+                health_current: Some(36.0),
+                ..Default::default()
+            }),
+        );
+
+        let local = registry
+            .local_player_pawn()
+            .expect("first movement pawn is local");
+        let local_health = registry
+            .get_component::<HealthComponent>(local)
+            .expect("descriptor materialized health")
+            .current;
+        assert!(
+            (local_health - 36.0).abs() <= 1.0e-6,
+            "expected carried health 36.0, got {local_health}"
+        );
+        let other_health: Vec<f32> = registry
+            .iter_with_kind(ComponentKind::Health)
+            .filter_map(|(id, _)| (id != local).then_some(id))
+            .map(|id| {
+                registry
+                    .get_component::<HealthComponent>(id)
+                    .unwrap()
+                    .current
+            })
+            .collect();
+        assert_eq!(other_health.len(), 1);
+        assert!(
+            (other_health[0] - 100.0).abs() <= 1.0e-6,
+            "the second player start must retain descriptor health"
+        );
     }
 
     fn live_count(reg: &EntityRegistry) -> usize {
@@ -2258,11 +2457,16 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
-        let weapon_id = result.active_wieldable.expect("active wieldable");
-        assert_eq!(
-            result.active_wieldable_descriptor.as_deref(),
-            Some("reference_pistol")
-        );
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("player inventory");
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("active wieldable");
         let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
         assert_eq!(weapon.damage, 12.0);
         assert_eq!(weapon.effective().credit_source, "reference_pistol");
@@ -2277,13 +2481,17 @@ mod tests {
             ammo_weapon_descriptor("reference_pistol"),
         ];
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
-        let weapon_id = result.active_wieldable.expect("active wieldable");
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
         let pawn = reg
-            .iter_with_kind(ComponentKind::Transform)
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| *id != weapon_id)
             .expect("spawned pawn");
+        let weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .expect("active wieldable");
 
         assert_eq!(
             reg.get_component::<AmmoReserve>(pawn)
@@ -2307,12 +2515,16 @@ mod tests {
             weapon_descriptor("reference_pistol"),
         ];
 
-        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
-        let weapon_id = result.active_wieldable.unwrap();
+        let _result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
         let pawn = reg
-            .iter_with_kind(ComponentKind::Transform)
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
             .map(|(id, _)| id)
-            .find(|id| *id != weapon_id)
+            .unwrap();
+        let _weapon_id = reg
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
             .unwrap();
 
         assert!(reg.get_component::<AmmoReserve>(pawn).is_err());
@@ -2330,8 +2542,17 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
-        assert!(result.active_wieldable.is_none());
-        assert!(result.active_wieldable_descriptor.is_none());
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Inventory)
+            .next()
+            .map(|(id, _)| id)
+            .expect("pawn receives empty inventory");
+        assert!(
+            reg.get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_wieldable()
+                .is_none()
+        );
         assert_eq!(
             live_count(&reg),
             1,
@@ -2341,7 +2562,7 @@ mod tests {
             reg.iter_with_kind(postretro_entities::registry::ComponentKind::Weapon)
                 .next()
                 .is_none(),
-            "non-weapon defaultWeapon target must not produce an active no-op entity",
+            "non-weapon inventory target must not produce an active no-op entity",
         );
     }
 
@@ -2447,7 +2668,7 @@ mod tests {
         assert_eq!(light.origin, [7.0, 0.0, 0.0]);
     }
 
-    // ---- E10 Task 5: connected-client AI-enemy spawn suppression ----
+    // ---- Connected-client host-authoritative placement suppression ----
 
     #[test]
     fn behavior_descriptor_materializes_ai_enemy() {
@@ -2465,69 +2686,101 @@ mod tests {
     }
 
     #[test]
-    fn client_filter_drops_ai_enemy_placements_keeps_props() {
-        // The connected-client pre-dispatch filter drops behavior-authored
-        // AI-enemy placements and keeps non-AI props in the same map.
+    fn descriptor_materializes_world_item_when_touchable() {
+        let mut item = weapon_descriptor("reference_pistol");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+
+        assert!(descriptor_materializes_world_item(&item));
+        assert!(!descriptor_materializes_world_item(&mesh_descriptor(
+            "crate", false
+        )));
+    }
+
+    #[test]
+    fn client_filter_drops_host_replicated_placements_keeps_props() {
+        // The connected-client pre-dispatch filter drops behavior-authored AI enemies
+        // and touchable world items, while keeping ordinary local props.
+        let mut item = weapon_descriptor("reference_pistol");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
         let descriptors = vec![
             behavior_enemy_descriptor("grunt"),
+            item,
             mesh_descriptor("crate", false),
         ];
         let placements = vec![
             placement("grunt", &[]),
+            placement("reference_pistol", &[]),
             placement("crate", &[]),
             placement("grunt", &[]),
         ];
 
-        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+        let kept = filter_out_client_host_replicated_placements(&placements, &descriptors);
 
-        assert_eq!(kept.len(), 1, "both grunt placements dropped, crate kept");
+        assert_eq!(
+            kept.len(),
+            1,
+            "host-replicated placements drop, crate stays"
+        );
         assert_eq!(kept[0].classname, "crate");
     }
 
     #[test]
-    fn suppressed_ai_enemy_mesh_models_collects_filtered_enemy_models_for_upload() {
-        // Regression (E10 AC #3): a connected client filters AI-enemy placements
-        // out before dispatch, so their model is absent from the registry-driven
-        // upload set; the host-replicated remote enemy then has no uploaded mesh
-        // and renders only a debug capsule. This pins the seam that feeds the
-        // suppressed enemies' models into the level-load upload union: the
-        // map-referenced AI enemy's model is collected; non-AI props and
-        // unknown classnames contribute nothing.
+    fn suppressed_host_replicated_mesh_models_collects_filtered_models_for_upload() {
+        // Regression: a connected client filters host-replicated placements out
+        // before dispatch, so their models are absent from the registry-driven upload
+        // set. This pins the level-load union for both AI enemies and world items.
         let mut grunt = behavior_enemy_descriptor("grunt");
         grunt.mesh.as_mut().unwrap().attachments =
             [("hand".to_string(), "models/grunt_prop.gltf".to_string())]
                 .into_iter()
                 .collect();
-        let descriptors = vec![grunt, mesh_descriptor("crate", false)];
+        let mut item = weapon_descriptor("reference_pistol");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+        item.mesh = mesh_descriptor("reference_pistol", false).mesh;
+        item.mesh.as_mut().expect("fixture mesh").model = "models/pistol_world.gltf".to_string();
+        let descriptors = vec![grunt, item, mesh_descriptor("crate", false)];
         let placements = vec![
             placement("grunt", &[]),
+            placement("reference_pistol", &[]),
             placement("crate", &[]),
             placement("grunt", &[]),
             placement("mystery", &[]),
         ];
 
-        let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
+        let models = suppressed_client_host_replicated_mesh_models(&placements, &descriptors);
 
-        // The AI enemy holder and its attachment model are both deduped across
-        // placements; the non-AI crate and unknown classname add nothing.
+        // Both host-replicated categories contribute their models, while the ordinary
+        // crate and unknown classname add nothing.
         assert_eq!(
             models,
             vec![
                 "decraniated".to_string(),
-                "models/grunt_prop.gltf".to_string()
+                "models/grunt_prop.gltf".to_string(),
+                "models/pistol_world.gltf".to_string(),
             ],
-            "the suppressed enemy's models must still preload"
+            "suppressed host-replicated models must preload"
         );
     }
 
     #[test]
-    fn suppressed_ai_enemy_mesh_models_empty_without_ai_placements() {
-        // No map-referenced AI enemy ⇒ nothing to pre-upload (the single-player /
-        // listen-host case where the registry sweep already covers every mesh).
+    fn suppressed_host_replicated_mesh_models_empty_without_suppressed_placements() {
+        // No map-referenced host-replicated placement means the ordinary registry
+        // sweep already covers every mesh.
         let descriptors = vec![mesh_descriptor("crate", false)];
         let placements = vec![placement("crate", &[]), placement("mystery", &[])];
 
-        assert!(suppressed_ai_enemy_mesh_models(&placements, &descriptors).is_empty());
+        assert!(
+            suppressed_client_host_replicated_mesh_models(&placements, &descriptors).is_empty()
+        );
     }
 
     #[test]
@@ -2597,13 +2850,66 @@ mod tests {
     }
 
     #[test]
+    fn touchable_wieldable_world_models_collects_loadout_only_drop_assets() {
+        // Regression: a touchable weapon referenced only by a starting inventory
+        // lost its MeshComponent before the install sweep, so a later drop had no
+        // uploaded world model or clip data.
+        let mut droppable = weapon_descriptor("droppable");
+        droppable.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+        droppable.mesh = mesh_descriptor("droppable", false).mesh;
+        let mesh = droppable
+            .mesh
+            .as_mut()
+            .expect("fixture supplies world mesh");
+        mesh.model = "models/droppable/world.gltf".to_string();
+        mesh.attachments = [
+            (
+                "muzzle".to_string(),
+                "models/droppable/muzzle.gltf".to_string(),
+            ),
+            (
+                "battery".to_string(),
+                "models/droppable/battery.gltf".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut held_only = weapon_descriptor("held_only");
+        held_only.mesh = mesh_descriptor("held_only", false).mesh;
+        let mut non_weapon_touchable = mesh_descriptor("touch_prop", false);
+        non_weapon_touchable.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        });
+
+        assert_eq!(
+            touchable_wieldable_world_models(&[
+                droppable,
+                held_only,
+                non_weapon_touchable,
+                mesh_descriptor("scenery", false),
+            ]),
+            vec![
+                "models/droppable/world.gltf".to_string(),
+                "models/droppable/battery.gltf".to_string(),
+                "models/droppable/muzzle.gltf".to_string(),
+            ],
+            "only meshes that the drop path can restore are preloaded"
+        );
+    }
+
+    #[test]
     fn client_filter_retains_unknown_classname_placements() {
-        // A placement with no descriptor match is not an AI enemy; the filter
+        // A placement with no descriptor match is not host-replicated; the filter
         // retains it so the dispatch's own unknown-classname diagnostics fire.
         let descriptors = vec![behavior_enemy_descriptor("grunt")];
         let placements = vec![placement("mystery", &[]), placement("grunt", &[])];
 
-        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+        let kept = filter_out_client_host_replicated_placements(&placements, &descriptors);
 
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].classname, "mystery");
@@ -2648,9 +2954,10 @@ mod tests {
             .count();
         assert_eq!(host_crates, 1, "host materializes the non-AI prop");
 
-        // Connected client: filter AI enemies before dispatch.
+        // Connected client: filter host-replicated placements before dispatch.
         let mut client_reg = EntityRegistry::new();
-        let client_placements = filter_out_client_ai_enemies(&placements, &descriptors);
+        let client_placements =
+            filter_out_client_host_replicated_placements(&placements, &descriptors);
         apply_data_archetype_dispatch(
             &client_placements,
             &descriptors,

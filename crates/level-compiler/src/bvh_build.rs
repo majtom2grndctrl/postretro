@@ -1,5 +1,5 @@
 // SAH BVH construction and flattening for the level compiler.
-// See: context/plans/in-progress/bvh-foundation/1-compile-bvh.md
+// See: context/lib/build_pipeline.md
 
 use bvh::aabb::{Aabb, Bounded};
 use bvh::bounding_hierarchy::BHShape;
@@ -17,6 +17,11 @@ use crate::geometry::GeometryResult;
 /// by the traversal shader, so BVH construction rejects it at compile time.
 const MAX_CELL_ID_EXCLUSIVE: u32 = 131072;
 
+/// `bvh` 0.11's allocation-free traversal iterator has a fixed 32-entry
+/// stack. Keep every compiled tree within that limit so bake-time traversal
+/// reports a map-build error instead of panicking while tracing a ray.
+const MAX_BVH_TRAVERSE_ITERATOR_DEPTH: usize = 32;
+
 #[derive(Debug, thiserror::Error)]
 pub enum BvhBuildError {
     #[error(
@@ -24,6 +29,11 @@ pub enum BvhBuildError {
          the map has more than {max} BSP leaves contributing geometry and cannot be rendered"
     )]
     CellIdOutOfRange { cell_id: u32, max: u32 },
+    #[error(
+        "BVH maximum depth {depth} exceeds the bvh traverse_iterator limit of {max} nodes \
+         (counting the root)"
+    )]
+    TraverseIteratorDepthExceeded { depth: usize, max: usize },
 }
 
 /// One primitive fed to the BVH builder: a contiguous index-buffer slice for a
@@ -154,8 +164,43 @@ pub fn build_bvh(
     }
 
     let bvh = Bvh::build(&mut primitives);
+    validate_traverse_iterator_depth(&bvh)?;
     let section = flatten(&bvh, &primitives);
     Ok((bvh, primitives, section))
+}
+
+fn validate_traverse_iterator_depth(bvh: &Bvh<f32, 3>) -> Result<(), BvhBuildError> {
+    let max_depth = bvh_max_depth(bvh);
+    if max_depth > MAX_BVH_TRAVERSE_ITERATOR_DEPTH {
+        return Err(BvhBuildError::TraverseIteratorDepthExceeded {
+            depth: max_depth,
+            max: MAX_BVH_TRAVERSE_ITERATOR_DEPTH,
+        });
+    }
+    Ok(())
+}
+
+/// Return the maximum node depth, counting the root as depth one.
+fn bvh_max_depth(bvh: &Bvh<f32, 3>) -> usize {
+    if bvh.nodes.is_empty() {
+        return 0;
+    }
+
+    let mut max_depth = 0;
+    let mut stack = vec![(0usize, 1usize)];
+    while let Some((node_index, depth)) = stack.pop() {
+        max_depth = max_depth.max(depth);
+        if let BvhNode::Node {
+            child_l_index,
+            child_r_index,
+            ..
+        } = bvh.nodes[node_index]
+        {
+            stack.push((child_r_index, depth + 1));
+            stack.push((child_l_index, depth + 1));
+        }
+    }
+    max_depth
 }
 
 /// Flatten `bvh::Bvh` into the dense `BvhSection` layout.
@@ -501,6 +546,7 @@ mod tests {
                 assert_eq!(cell_id, MAX_CELL_ID_EXCLUSIVE);
                 assert_eq!(max, MAX_CELL_ID_EXCLUSIVE);
             }
+            Err(other) => panic!("unexpected BVH build error: {other}"),
             Ok(_) => panic!("expected CellIdOutOfRange error"),
         }
     }
@@ -514,6 +560,24 @@ mod tests {
         );
         let (_, _, section) = build_bvh(&geo).expect("cell_id = limit - 1 must be accepted");
         assert_eq!(section.leaves[0].cell_id, MAX_CELL_ID_EXCLUSIVE - 1);
+    }
+
+    #[test]
+    fn traverse_iterator_depth_limit_rejects_overdeep_tree() {
+        let at_limit = skewed_bvh(MAX_BVH_TRAVERSE_ITERATOR_DEPTH);
+        assert_eq!(bvh_max_depth(&at_limit), MAX_BVH_TRAVERSE_ITERATOR_DEPTH);
+        validate_traverse_iterator_depth(&at_limit)
+            .expect("a tree at the iterator's depth limit must be accepted");
+
+        let over_limit = skewed_bvh(MAX_BVH_TRAVERSE_ITERATOR_DEPTH + 1);
+        match validate_traverse_iterator_depth(&over_limit) {
+            Err(BvhBuildError::TraverseIteratorDepthExceeded { depth, max }) => {
+                assert_eq!(depth, MAX_BVH_TRAVERSE_ITERATOR_DEPTH + 1);
+                assert_eq!(max, MAX_BVH_TRAVERSE_ITERATOR_DEPTH);
+            }
+            Ok(()) => panic!("expected traverse iterator depth validation to fail"),
+            Err(other) => panic!("unexpected BVH build error: {other}"),
+        }
     }
 
     #[test]
@@ -573,5 +637,47 @@ mod tests {
         ];
         let indices: Vec<u32> = (0u32..12u32).collect();
         make_geometry(&positions, &faces, &indices)
+    }
+
+    /// Build a deliberately skewed tree because the production SAH builder
+    /// normally keeps input geometry much shallower than the iterator limit.
+    fn skewed_bvh(depth: usize) -> Bvh<f32, 3> {
+        assert!(depth > 0, "a BVH root has depth one");
+
+        fn push_chain(
+            nodes: &mut Vec<BvhNode<f32, 3>>,
+            depth: usize,
+            parent_index: usize,
+            aabb: Aabb<f32, 3>,
+        ) -> usize {
+            let node_index = nodes.len();
+            nodes.push(BvhNode::Leaf {
+                parent_index,
+                shape_index: 0,
+            });
+            if depth == 1 {
+                return node_index;
+            }
+
+            let child_l_index = push_chain(nodes, depth - 1, node_index, aabb);
+            let child_r_index = nodes.len();
+            nodes.push(BvhNode::Leaf {
+                parent_index: node_index,
+                shape_index: 0,
+            });
+            nodes[node_index] = BvhNode::Node {
+                parent_index,
+                child_l_index,
+                child_l_aabb: aabb,
+                child_r_index,
+                child_r_aabb: aabb,
+            };
+            node_index
+        }
+
+        let aabb = Aabb::with_bounds(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
+        let mut nodes = Vec::new();
+        assert_eq!(push_chain(&mut nodes, depth, 0, aabb), 0);
+        Bvh { nodes }
     }
 }

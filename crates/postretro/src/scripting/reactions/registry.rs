@@ -34,8 +34,13 @@ pub(crate) fn register_spawner_reaction_primitives(
 pub(crate) fn register_mover_reaction_primitives(
     registry: &mut ReactionPrimitiveRegistry,
     diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    auto_close_timers: crate::kinematic_mover::MoverAutoCloseTimers,
 ) {
-    crate::kinematic_mover::register_mover_reaction_primitives(registry, diagnostics);
+    crate::kinematic_mover::register_mover_reaction_primitives(
+        registry,
+        diagnostics,
+        auto_close_timers,
+    );
 }
 
 pub(crate) fn register_trigger_reaction_primitives(
@@ -63,13 +68,14 @@ mod tests {
     #[test]
     fn mover_registrar_exposes_closed_command_vocabulary() {
         let mut r = ReactionPrimitiveRegistry::new();
-        register_mover_reaction_primitives(&mut r, Default::default());
+        register_mover_reaction_primitives(&mut r, Default::default(), Default::default());
         for name in [
             "moverStart",
             "moverStop",
             "moverReverse",
             "moverGoToPathNode",
             "moverSetSpinRate",
+            "moverSetBlockPolicy",
         ] {
             assert!(r.contains(name), "missing {name}");
         }

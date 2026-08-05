@@ -3,16 +3,18 @@
 // (script context + runtime, registries, and every system that captures a
 // `ScriptCtx` clone or a registry reference), the player options + settings path,
 // the committed frontend declaration, the net endpoint, the audio subsystem, and
-// (dev-tools) the debug-UI state. `Session::build` is the sole session construction
-// site; `App` holds only boot-lifetime fields plus `session: Option<Session>`.
+// (dev-tools) the debug-UI state, and host-local seat/session-roster state.
+// `Session::build` is the sole session construction site; `App` holds only
+// boot-lifetime fields plus `session: Option<Session>`.
 // Building the script tranche here moves the heaviest startup init
 // (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new`) behind first pixels.
 // See: context/lib/boot_sequence.md §1 (Deferred-session boundary and single commit)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use postretro_entities::ScriptCtx;
+use postretro_net::wire::{ConnectClaim, PlayerClaimId, encode_connect_claim};
 
 use crate::impact_policy::ImpactPolicyRuntime;
 use crate::input;
@@ -52,7 +54,8 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 /// field; none can be named while `App.session` is `None` (boot phase).
 /// `Session::build` is the sole session construction site — there is no transient
 /// pre-window construction bundle. `App` holds only boot-lifetime fields plus
-/// `session: Option<Session>`.
+/// `session: Option<Session>`. Also owns host-local seat/session-roster state;
+/// connected clients receive its status-only projection from the endpoint.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
@@ -133,6 +136,8 @@ pub(crate) struct Session {
     pub(crate) trigger_volume_bridge: scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
     /// Per-level rising-overlap state for host-authoritative trigger evaluation.
     pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
+    /// Per-level rising-overlap and prompt state for host-authoritative item touch.
+    pub(crate) touch_system: crate::sim::touch::TouchSystem,
 
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md.
@@ -186,6 +191,10 @@ pub(crate) struct Session {
     /// `crate::netcode` owns that seam. See: context/lib/networking.md.
     pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
 
+    /// Durable local/listen-host player seats. Connected clients intentionally
+    /// own no table: the host is the authority that mints session identities.
+    pub(crate) seat_table: Option<netcode::SeatTable>,
+
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
     /// See: context/lib/audio.md §1.
@@ -209,6 +218,14 @@ pub(crate) struct ScriptingCore {
     /// Per-level warning deduplication shared by mover and trigger command
     /// routes. Registries retain clones across reloads; level unload clears it.
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+
+    /// Host-only auto-close countdowns. This side table intentionally does not
+    /// participate in snapshots, digests, or the connected-client simulation.
+    pub(crate) auto_close_timers: crate::kinematic_mover::MoverAutoCloseTimers,
+
+    /// Committed mod-wide auto-close default applied when the next level's
+    /// static mover components are seeded.
+    pub(crate) mover_auto_close_ms: f32,
 
     /// Per-level resolved enemy descriptors and nav-agent bake for the
     /// VM-free fixed-tick spawner executor.
@@ -308,36 +325,7 @@ impl Session {
         //    or a save failure is logged, not fatal: boot proceeds on in-memory
         //    defaults. See: context/lib/player_options.md §3.
         let settings_path = options::settings_path();
-        let player_options = match &settings_path {
-            Some(path) => {
-                // `load` returns defaults for both missing and malformed files,
-                // so detect first-run by probing existence before loading. A
-                // malformed file exists, so it is never overwritten here.
-                let existed = path.exists();
-                let options = options::PlayerOptions::load(path);
-                if !existed {
-                    match options.save(path) {
-                        Ok(()) => log::info!(
-                            "[Options] no settings file found; wrote defaults to {}",
-                            path.display()
-                        ),
-                        Err(err) => log::warn!(
-                            "[Options] failed to write default settings to {}: {err}; \
-                             running on in-memory defaults",
-                            path.display()
-                        ),
-                    }
-                }
-                options
-            }
-            None => {
-                log::warn!(
-                    "[Options] no platform config directory; running on in-memory \
-                     defaults without persistence"
-                );
-                options::PlayerOptions::default()
-            }
-        };
+        let player_options = load_player_options(settings_path.as_deref());
 
         // 2. Audio: fault-tolerant. A kira/device failure logs and runs silent
         //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
@@ -366,6 +354,7 @@ impl Session {
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
         input_system.set_invert_y(player_options.invert_y);
+        input_system.set_scroll_notch_pixels(player_options.scroll_notch_pixels);
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
@@ -418,7 +407,12 @@ impl Session {
                 netcode::NetRole::SinglePlayer
             }
         };
-        let net_endpoint = match netcode::NetEndpoint::from_role(&net_role) {
+        let local_claim = player_options.player_id.map(|player_id| ConnectClaim {
+            player_id: PlayerClaimId(player_id),
+            display_name: String::new(),
+        });
+        let client_user_data = local_claim.as_ref().map(encode_connect_claim);
+        let mut net_endpoint = match netcode::NetEndpoint::from_role(&net_role, client_user_data) {
             Ok(endpoint) => {
                 match &net_role {
                     netcode::NetRole::SinglePlayer => {}
@@ -436,12 +430,29 @@ impl Session {
                 None
             }
         };
+        let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
+            None
+        } else {
+            let (seats, identity_error) =
+                authority_seat_table_or_local_only(&mut net_endpoint, netcode::SeatTable::new());
+            if let Some(err) = identity_error {
+                log::error!(
+                    "[Net] session identity setup failed ({err}); disabling networking for this session"
+                );
+            }
+            Some(seats)
+        };
         scripting
             .spawn_context
             .set_runtime_spawn_authority(!matches!(
                 &net_endpoint,
                 Some(netcode::NetEndpoint::Client { .. })
             ));
+        scripting.auto_close_timers.set_enabled(!matches!(
+            &net_endpoint,
+            Some(netcode::NetEndpoint::Client { .. })
+        ));
+        let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 
         Ok(Self {
@@ -466,7 +477,10 @@ impl Session {
             fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
-            trigger_system: crate::trigger_system::TriggerSystem::default(),
+            trigger_system: crate::trigger_system::TriggerSystem::with_mover_auto_close_timers(
+                trigger_auto_close_timers,
+            ),
+            touch_system: crate::sim::touch::TouchSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
             mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
@@ -478,12 +492,158 @@ impl Session {
             // frontend until then.
             frontend: None,
             net_endpoint,
+            seat_table,
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
             // available, reset on suspend. See the field doc.
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
         })
+    }
+}
+
+/// Load persisted options and ensure a durable device identity exists when it
+/// can be saved. Called only by [`Session::build`], never by `PlayerOptions::load`,
+/// so pure loading and sanitization remain deterministic.
+fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
+    let Some(path) = settings_path else {
+        log::warn!(
+            "[Options] no platform config directory; running on in-memory defaults without persistence"
+        );
+        return options::PlayerOptions::default();
+    };
+
+    let (mut player_options, load_status) = options::PlayerOptions::load_with_status(path);
+    let missing_settings = load_status == options::PlayerOptionsLoadStatus::Missing;
+    let can_persist = load_status != options::PlayerOptionsLoadStatus::Unavailable;
+    let mut generated_identity = false;
+
+    if player_options.player_id.is_none() && can_persist {
+        let mut player_id = [0; 16];
+        match getrandom::fill(&mut player_id) {
+            Ok(()) => {
+                player_options.player_id = Some(player_id);
+                generated_identity = true;
+            }
+            Err(err) => log::warn!(
+                "[Options] failed to generate device identity: {err}; connecting anonymously"
+            ),
+        }
+    }
+
+    if missing_settings || generated_identity {
+        match player_options.save(path) {
+            Ok(()) if missing_settings => log::info!(
+                "[Options] no settings file found; wrote defaults to {}",
+                path.display()
+            ),
+            Ok(()) => {}
+            Err(err) => {
+                log::warn!(
+                    "[Options] failed to persist device identity to {}: {err}; connecting anonymously",
+                    path.display()
+                );
+                if generated_identity {
+                    player_options.player_id = None;
+                }
+            }
+        }
+    }
+
+    player_options
+}
+
+/// Preserve the local seat/carry ledger when session identity entropy fails.
+/// The returned error tells the caller to disable networking before this
+/// table's sentinel identity could reach a peer.
+fn authority_seat_table_or_local_only<T, E>(
+    net_endpoint: &mut Option<T>,
+    result: std::result::Result<netcode::SeatTable, E>,
+) -> (netcode::SeatTable, Option<E>) {
+    match result {
+        Ok(seats) => (seats, None),
+        Err(err) => {
+            *net_endpoint = None;
+            (netcode::SeatTable::local_only(), Some(err))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn session_options_generate_and_persist_missing_device_identity() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+
+        let generated = load_player_options(Some(&path));
+        let player_id = generated.player_id.expect("session generated player id");
+        assert!(path.exists(), "generated identity is persisted");
+
+        let reloaded = options::PlayerOptions::load(&path);
+        assert_eq!(reloaded.player_id, Some(player_id));
+    }
+
+    #[test]
+    fn session_options_persist_identity_added_to_existing_settings() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "invert_y = true\n").expect("write existing settings");
+
+        let generated = load_player_options(Some(&path));
+        assert!(generated.invert_y);
+        assert!(generated.player_id.is_some());
+
+        let reloaded = options::PlayerOptions::load(&path);
+        assert_eq!(reloaded.player_id, generated.player_id);
+    }
+
+    #[test]
+    fn session_options_connect_anonymously_without_persistent_settings() {
+        let player_options = load_player_options(None);
+
+        assert_eq!(player_options.player_id, None);
+    }
+
+    #[test]
+    fn session_options_leave_malformed_settings_anonymous_and_untouched() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+        let malformed = "this is not valid toml = = =\n";
+        std::fs::write(&path, malformed).expect("write malformed settings");
+
+        let player_options = load_player_options(Some(&path));
+
+        assert_eq!(player_options.player_id, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read malformed settings"),
+            malformed
+        );
+    }
+
+    // Regression: session-id entropy failure used to abort engine boot.
+    #[test]
+    fn session_identity_failure_keeps_local_carry_ledger_but_is_not_network_safe() {
+        let mut net_endpoint = Some(());
+        let (seats, identity_error) = authority_seat_table_or_local_only(
+            &mut net_endpoint,
+            std::result::Result::<netcode::SeatTable, _>::Err("entropy unavailable"),
+        );
+
+        assert_eq!(identity_error, Some("entropy unavailable"));
+        assert_eq!(net_endpoint, None, "failed identity disables the endpoint");
+        assert_eq!(seats.session_id(), postretro_net::wire::SessionId([0; 16]));
+        assert_eq!(
+            seats.roster_entries(),
+            vec![postretro_net::wire::RosterEntry {
+                seat: 0,
+                connected: true,
+            }],
+            "single-player carry still owns local seat zero"
+        );
     }
 }
 
@@ -505,6 +665,7 @@ fn build_scripting_core(
 ) -> Result<(ScriptingCore, ClassnameDispatch)> {
     let script_ctx = ScriptCtx::new();
     let command_diagnostics = crate::kinematic_mover::MoverCommandDiagnostics::default();
+    let auto_close_timers = crate::kinematic_mover::MoverAutoCloseTimers::default();
     let spawn_context = crate::spawner::SpawnContext::default();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
@@ -531,6 +692,7 @@ fn build_scripting_core(
         &mut sequence_registry,
         script_ctx.clone(),
         command_diagnostics.clone(),
+        auto_close_timers.clone(),
     );
     register_sequenced_trigger_primitives(
         &mut sequence_registry,
@@ -545,7 +707,11 @@ fn build_scripting_core(
     register_enemy_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
-    register_mover_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    register_mover_reaction_primitives(
+        &mut reaction_registry,
+        command_diagnostics.clone(),
+        auto_close_timers.clone(),
+    );
     register_spawner_reaction_primitives(&mut reaction_registry, spawn_context.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
 
@@ -573,6 +739,8 @@ fn build_scripting_core(
 
     let scripting = ScriptingCore {
         command_diagnostics,
+        auto_close_timers,
+        mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
         spawn_context,
         script_runtime,
         impact_policy_runtime: ImpactPolicyRuntime::new(script_ctx.clone()),

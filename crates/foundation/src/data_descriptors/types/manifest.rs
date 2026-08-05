@@ -3,6 +3,45 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
+use crate::data_descriptors::DescriptorError;
+
+/// Mod-global switching policy. Omission preserves the original direct-select
+/// behavior: commits are immediate, wheel selection has no dwell, and reloads
+/// may be interrupted unless the current weapon opts out.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchingDescriptor {
+    pub commit_on_direct_select: bool,
+    pub cycle_commit_dwell_ms: f32,
+    pub block_during_reload: bool,
+}
+
+impl Default for SwitchingDescriptor {
+    fn default() -> Self {
+        Self {
+            commit_on_direct_select: true,
+            cycle_commit_dwell_ms: 0.0,
+            block_during_reload: false,
+        }
+    }
+}
+
+impl SwitchingDescriptor {
+    pub fn validate(self) -> Result<Self, DescriptorError> {
+        if !self.cycle_commit_dwell_ms.is_finite() || self.cycle_commit_dwell_ms < 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`switching.cycleCommitDwellMs` must be a finite value >= 0.0, got {}",
+                    self.cycle_commit_dwell_ms
+                ),
+            });
+        }
+        Ok(self)
+    }
+}
+
 /// A pure impact-policy declaration returned through a manifest's `events`
 /// child. The scripting runtime preserves the policy as JSON-compatible data;
 /// impact-specific validation, merging, binding, and execution belong to the

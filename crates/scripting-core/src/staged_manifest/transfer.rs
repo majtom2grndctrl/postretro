@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use super::super::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, RegisteredUiTree,
-    TriggerPoolDescriptor,
+    SwitchingDescriptor, TriggerPoolDescriptor,
 };
 use super::super::data_registry::{ScopedCrossing, ScopedReaction};
-use super::super::runtime::{Frontend, ModMapEntry, ModRenderProfile};
+use super::super::runtime::{Frontend, ModMapEntry, ModMoverDefaults, ModRenderProfile};
 use super::super::slot_table::StoreDeclarationSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +44,8 @@ pub struct StagedManifest {
     pub id: String,
     pub version: String,
     pub render: ModRenderProfile,
+    pub movers: ModMoverDefaults,
+    pub switching: SwitchingDescriptor,
     pub entities: Vec<EntityTypeDescriptor>,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,

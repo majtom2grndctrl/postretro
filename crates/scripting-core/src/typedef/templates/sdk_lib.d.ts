@@ -47,6 +47,8 @@
      * A nonzero rate requires the mover to author a nonzero `spin_axis` in its map entity.
      */
     setSpinRate(rate: number): SequenceStep[];
+    /** Set the host-authoritative response when the mover contacts an entity. */
+    setBlockPolicy(policy: "displace" | "reverse" | "stop" | "crush"): SequenceStep[];
   }
 
   /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. Switch entities also emit a `trigger_volume` component and are indistinguishable from authored trigger volumes here; separate them with a tag convention. */
@@ -206,6 +208,8 @@
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
   /** Sequence step that sets a kinematic mover target spin rate in degrees per second. */
   export type MoverSetSpinRateStep = { id: EntityId; primitive: "moverSetSpinRate"; args: { rate: number } };
+  /** Sequence step that sets a kinematic mover's host-authoritative block policy. */
+  export type MoverSetBlockPolicyStep = { id: EntityId; primitive: "moverSetBlockPolicy"; args: { policy: "displace" | "reverse" | "stop" | "crush" } };
 
   /** Sequence step that arms one trigger volume. */
   export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
@@ -226,6 +230,7 @@
     | MoverReverseStep
     | MoverGoToPathNodeStep
     | MoverSetSpinRateStep
+    | MoverSetBlockPolicyStep
     | ArmTriggerStep
     | DisarmTriggerStep;
 
@@ -726,8 +731,10 @@
   /** State-helper namespace (state helpers are namespaced; reactions stay bare). */
   export const ui: { createLocalState: typeof createLocalState };
 
-  /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
-  export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
+  /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
+  export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
+  /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
+  export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */

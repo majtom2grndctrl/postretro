@@ -220,13 +220,17 @@ fn idle_command() -> SimCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            drop_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        firing_slot: 0,
+        select_slot: None,
         use_pressed: false,
+        drop_pressed: false,
     }
 }
 
@@ -299,6 +303,7 @@ fn relay_pair() -> (NetServer, NetClient) {
         CLIENT_ID,
         origin,
         Some(static_fingerprint),
+        None,
     )
     .expect("fixture client transport constructs");
 
@@ -431,7 +436,7 @@ impl PersistentAtmosphereHarness {
     fn connect_client(&mut self) {
         assert!(!self.connected, "fixture client connects once");
         self.install_client_level_before_network_baseline();
-        self.server.add_relay_connection(CLIENT_ID);
+        self.server.add_relay_connection(CLIENT_ID, None);
         self.client.set_connected();
         for _ in 0..128 {
             self.relay_client_to_server();
@@ -516,6 +521,7 @@ impl PersistentAtmosphereHarness {
                 bindings: &self.host_bindings,
                 slot_table: self.host_ctx.slot_table.clone(),
                 script_ctx: Some(self.host_ctx.clone()),
+                auto_close_timers: None,
                 use_edges: &use_edges,
             }),
             |_| {},
@@ -759,6 +765,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 -20.0,
                 1.0 / 60.0,
                 Duration::from_secs_f32(frame_dt),
+                None,
                 None,
                 None,
                 false,

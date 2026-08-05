@@ -75,18 +75,22 @@ use postretro_net::wire::{
 use super::client::{ClientReplication, RemoteEntityMaterialize};
 use super::interpolation::{MAX_DELAY_MICROS, PoseSource};
 use super::remote_materialize::materialize_armed_remote_enemy;
-use super::replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
+use super::replication::{
+    ReplicableSet, host_register_map_enemies, host_register_world_items, produce_owned_snapshots,
+};
 use crate::netcode::{HostCommandQueues, MovementOwners, NetworkIdAllocator};
 use crate::scripting::builtins::data_archetype::{
-    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
+    descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
+    filter_out_client_host_replicated_placements,
 };
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
 use postretro_entities::components::spawner::SpawnerComponent;
+use postretro_entities::components::touchable::TouchableComponent;
 use postretro_entities::data_descriptors::{
     ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
-    TransitionDescriptor,
+    TouchMode, TouchableDescriptor, TransitionDescriptor,
 };
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
@@ -117,6 +121,7 @@ const TICK_MS: VirtualMillis = 16;
 /// The descriptor class the map-placed enemy is registered under (and the host stamps
 /// on its Transform-only snapshot).
 const ENEMY_CLASS: &str = "grunt";
+const WORLD_ITEM_CLASS: &str = "reference_pistol";
 
 /// The mandated automated conditioned-link profile (≈150 ms mean RTT, 5% loss, heavy
 /// jitter), applied per direction. Identical to the Phase 2 timesync harness and the
@@ -229,13 +234,45 @@ fn spawn_host_runtime_ai_enemy(
     spawn_host_ai_enemy(registry, class, position, DescriptorSpawnPath::RuntimeSpawn)
 }
 
+fn spawn_host_map_world_item(
+    registry: &mut EntityRegistry,
+    class: &str,
+    position: Vec3,
+) -> EntityId {
+    let id = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    let _ = registry.set_component(
+        id,
+        TouchableComponent {
+            mode: TouchMode::Auto,
+            radius: 32.0,
+        },
+    );
+    let _ = registry.set_component(
+        id,
+        DescriptorProvenance {
+            canonical_name: class.to_string(),
+            owned_components: std::iter::once(DescriptorComponentKind::Touchable).collect(),
+            map_overrides: Default::default(),
+            spawn_path: DescriptorSpawnPath::MapPlacement,
+        },
+    );
+    id
+}
+
 /// The shared descriptor table both peers load (same content on both ends). The enemy
 /// descriptor carries an `ai` block (so the Task 5 client filter classifies it as an
 /// AI enemy) and a two-state animated mesh (so the Task 1/6 client materialization
 /// attaches a presentation mesh). A non-AI prop descriptor is included so the
 /// suppression assertions can prove props are NOT dropped.
 fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
-    vec![enemy_descriptor(ENEMY_CLASS), prop_descriptor("crate")]
+    vec![
+        enemy_descriptor(ENEMY_CLASS),
+        world_item_descriptor(WORLD_ITEM_CLASS),
+        prop_descriptor("crate"),
+    ]
 }
 
 fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
@@ -264,11 +301,12 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
     );
     EntityTypeDescriptor {
         canonical_name: Some(class.to_string()),
-        default_weapon: None,
+        inventory: None,
         light: None,
         emitter: None,
         movement: None,
         weapon: None,
+        touchable: None,
         mesh: Some(MeshDescriptor {
             model: "decraniated".to_string(),
             shadow_only: false,
@@ -362,11 +400,12 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
     );
     EntityTypeDescriptor {
         canonical_name: Some(class.to_string()),
-        default_weapon: None,
+        inventory: None,
         light: None,
         emitter: None,
         movement: None,
         weapon: None,
+        touchable: None,
         mesh: Some(MeshDescriptor {
             model: "crate_mesh".to_string(),
             shadow_only: false,
@@ -379,6 +418,16 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         health: None,
         behavior: None,
     }
+}
+
+fn world_item_descriptor(class: &str) -> EntityTypeDescriptor {
+    let mut descriptor = prop_descriptor(class);
+    descriptor.touchable = Some(TouchableDescriptor {
+        mode: TouchMode::Auto,
+        radius: 32.0,
+    });
+    descriptor.mesh.as_mut().expect("fixture mesh").model = "world_item_mesh".to_string();
+    descriptor
 }
 
 // --- The two-sided enemy-replication harness --------------------------------
@@ -395,6 +444,8 @@ struct EnemyReplicationHarness {
     /// The host endpoint's `map_enemies` tracking set (the field on `NetEndpoint::Host`).
     /// Drives the reload-cleanup / no-leak assertions.
     map_enemies: HashSet<EntityId>,
+    /// Host endpoint world-item tracking. Touchability is the sole membership key.
+    world_items: HashSet<EntityId>,
     server_replication: ServerReplication,
     server_tick: u32,
 
@@ -418,6 +469,7 @@ impl EnemyReplicationHarness {
             allocator: NetworkIdAllocator::new(),
             replicable: ReplicableSet::new(),
             map_enemies: HashSet::new(),
+            world_items: HashSet::new(),
             server_replication,
             server_tick: 0,
             client_registry: EntityRegistry::new(),
@@ -440,9 +492,22 @@ impl EnemyReplicationHarness {
         );
     }
 
+    fn host_register_world_items(&mut self) {
+        host_register_world_items(
+            &self.host_registry,
+            &mut self.allocator,
+            &mut self.replicable,
+            &mut self.world_items,
+        );
+    }
+
     /// The stable `NetworkId` the host stamped for an enemy `EntityId`.
     fn enemy_network_id(&mut self, enemy: EntityId) -> NetworkId {
         self.allocator.stamp(enemy)
+    }
+
+    fn world_item_network_id(&mut self, item: EntityId) -> NetworkId {
+        self.allocator.stamp(item)
     }
 
     /// HOST TICK: produce owned snapshots for the registered set, ingest into the net
@@ -595,7 +660,7 @@ impl EnemyReplicationHarness {
 // Task 5 suppression + Task 6 materialization together: a connected client ends with
 // exactly ONE enemy entity — the moving replicated remote one — and NO static
 // map-spawned local authoritative enemy. We prove BOTH halves at their real seams:
-//   - the client install filter (`filter_out_client_ai_enemies`) drops the AI-enemy
+//   - the client install filter (`filter_out_client_host_replicated_placements`) drops the AI-enemy
 //     placement before dispatch, so no local authoritative enemy is ever spawned;
 //   - the host snapshot then materializes exactly one remote presentation entity.
 #[test]
@@ -612,7 +677,7 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     // dispatch — so the client never spawns a local authoritative enemy. We assert the
     // filter on the same descriptor table both peers share (the real suppression seam).
     let placements = vec![placement(ENEMY_CLASS), placement("crate")];
-    let kept = filter_out_client_ai_enemies(&placements, &h.descriptors);
+    let kept = filter_out_client_host_replicated_placements(&placements, &h.descriptors);
     assert_eq!(
         kept.len(),
         1,
@@ -678,6 +743,115 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     );
 }
 
+// World items follow the same host-baseline path as AI enemies, but their lifecycle is
+// driven solely by `TouchableComponent`: acquisition removes it, drop restores it. The
+// client never runs touch, so every visible item must be exactly one descriptor-mesh
+// presentation materialized from a Transform + entity_class baseline.
+#[test]
+fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh() {
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+    let item = spawn_host_map_world_item(
+        &mut h.host_registry,
+        WORLD_ITEM_CLASS,
+        Vec3::new(3.0, 0.0, 0.0),
+    );
+    h.host_register_world_items();
+    let initial_network_id = h.world_item_network_id(item);
+
+    let kept = filter_out_client_host_replicated_placements(
+        &[placement(WORLD_ITEM_CLASS), placement("crate")],
+        &h.descriptors,
+    );
+    assert_eq!(
+        kept.len(),
+        1,
+        "the client suppresses its map-world-item copy"
+    );
+    assert_eq!(kept[0].classname, "crate");
+    assert!(descriptor_materializes_world_item(
+        h.descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(WORLD_ITEM_CLASS))
+            .expect("world item descriptor")
+    ));
+
+    assert!(
+        h.step_until_client_maps(initial_network_id, 16) > 0,
+        "the map item reaches the client as a full baseline"
+    );
+    let remote_item = h
+        .client_mapped_entity(initial_network_id)
+        .expect("the initial item baseline materializes one remote entity");
+    assert_eq!(
+        h.client_replication.map().len(),
+        1,
+        "no local duplicate item exists"
+    );
+    assert_eq!(h.client_entities_with_kind(ComponentKind::Mesh), 1);
+    assert_eq!(
+        h.client_registry
+            .get_component::<MeshComponent>(remote_item)
+            .expect("baseline materializes descriptor mesh")
+            .model,
+        "world_item_mesh"
+    );
+    assert_eq!(
+        h.client_registry
+            .has_component_kind(remote_item, ComponentKind::Touchable),
+        Ok(false),
+        "touchability stays host-local"
+    );
+
+    h.host_registry
+        .remove_component::<TouchableComponent>(item)
+        .expect("acquisition removes the world-item membership component");
+    h.host_register_world_items();
+    assert!(
+        h.step_until_client_removes(initial_network_id, 16) > 0,
+        "the stale registration emits a despawn tombstone"
+    );
+    assert!(
+        h.client_replication.map().is_empty(),
+        "the acquired item has no client replica"
+    );
+
+    h.host_registry
+        .set_component(
+            item,
+            TouchableComponent {
+                mode: TouchMode::Auto,
+                radius: 32.0,
+            },
+        )
+        .expect("drop restores touchability");
+    h.host_register_world_items();
+    let dropped_network_id = h.world_item_network_id(item);
+    assert!(
+        dropped_network_id.0 > initial_network_id.0,
+        "drop registers a fresh NetworkId after the acquired item was forgotten"
+    );
+    assert!(
+        h.step_until_client_maps(dropped_network_id, 16) > 0,
+        "the dropped item reaches the client as a new full baseline"
+    );
+    let dropped_remote = h
+        .client_mapped_entity(dropped_network_id)
+        .expect("the dropped item materializes");
+    assert_eq!(
+        h.client_replication.map().len(),
+        1,
+        "one dropped item remains"
+    );
+    assert_eq!(h.client_entities_with_kind(ComponentKind::Mesh), 1);
+    assert_eq!(
+        h.client_registry
+            .get_component::<MeshComponent>(dropped_remote)
+            .expect("dropped baseline materializes descriptor mesh")
+            .model,
+        "world_item_mesh"
+    );
+}
+
 // The suppression seam keys on "carries a brain", and the shipped reference
 // enemy authors that brain as a `components.behavior` graph. A connected client
 // must never spawn a local authoritative duplicate brain for that class.
@@ -692,8 +866,10 @@ fn connected_client_suppresses_the_behavior_spelled_enemy_placement_too() {
         "an authored `behavior` graph classifies as an AI enemy"
     );
 
-    let kept =
-        filter_out_client_ai_enemies(&[placement(ENEMY_CLASS), placement("crate")], &descriptors);
+    let kept = filter_out_client_host_replicated_placements(
+        &[placement(ENEMY_CLASS), placement("crate")],
+        &descriptors,
+    );
 
     assert_eq!(kept.len(), 1, "the behavior-spelled enemy is suppressed");
     assert_eq!(kept[0].classname, "crate", "only the non-AI prop survives");

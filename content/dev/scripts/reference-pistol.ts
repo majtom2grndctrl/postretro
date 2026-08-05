@@ -20,5 +20,9 @@ export const referencePistolEntity = defineEntity({
         reloadStyle: "magazine",
       },
     },
+    // The dev pistol doubles as a visible world item for the E16 fixture and
+    // gives the default player loadout a recoverable drop path.
+    mesh: { model: "models/smg/model.gltf" },
+    touchable: { mode: "auto", radius: 1.0 },
   },
 });

@@ -345,6 +345,20 @@
         0 : "Off"
         1 : "On"
     ]
+    block_policy(choices) : "Host-authoritative response when this mover contacts an entity" : "displace" =
+    [
+        "displace" : "Displace"
+        "reverse" : "Reverse"
+        "stop" : "Stop"
+        "crush" : "Crush"
+    ]
+    crush_damage(float) : "Damage per crusher hit" : "0"
+    crush_interval_ms(float) : "Milliseconds between crusher hits (0 hits every tick)" : "0"
+    auto_close_ms(float) : "Milliseconds before automatic close; blank inherits the mod default, 0 disables" : ""
+    open_event(string) : "Named event when the mover reaches its open terminus" : ""
+    close_event(string) : "Named event when the mover reaches its closed terminus" : ""
+    blocked_event(string) : "Named event when a blocking mover reacts to contact" : ""
+    crush_event(string) : "Named event when a crusher deals damage" : ""
     move_mode(choices) : "Move mode" : "once" =
     [
         "once" : "Once"

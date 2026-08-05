@@ -571,11 +571,6 @@ impl ClientReplication {
         self.local_pawn
     }
 
-    pub(crate) fn local_pawn_entity(&self) -> Option<EntityId> {
-        self.local_pawn
-            .and_then(|network_id| self.map.get(&network_id).copied())
-    }
-
     /// The two independently-arriving inputs needed to rebuild local movement
     /// when host tuning arrives after the local-player baseline.
     pub(crate) fn armed_local_pawn(&self) -> Option<ArmedLocalPawn> {
@@ -1240,6 +1235,19 @@ impl ClientReplication {
     /// or already-despawned `NetworkId` is a no-op (the registry `despawn` of a stale
     /// id errors, which we swallow).
     fn apply_despawn(&mut self, registry: &mut EntityRegistry, network_id: NetworkId) {
+        let sibling_wieldables: Vec<EntityId> = self
+            .map
+            .get(&network_id)
+            .and_then(|pawn| {
+                registry
+                    .get_component::<postretro_entities::components::inventory::Inventory>(*pawn)
+                    .ok()
+            })
+            .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
+            .unwrap_or_default();
+        for wieldable in sibling_wieldables {
+            let _ = registry.despawn(wieldable);
+        }
         if let Some(id) = self.clear_identity_state(network_id) {
             // `despawn` errors on a stale id; the entity may already be gone. Either
             // way the post-state is "despawned", so the error is ignored.
@@ -2200,6 +2208,7 @@ fn seed_kinematic_mover_phase(
     mover.wait_remaining_ms = wire.wait_remaining_ms;
     mover.started = wire.started;
     mover.completed = wire.completed;
+    mover.blocked = wire.blocked;
     mover.current_linear_velocity = Vec3::from_array(wire.velocity);
     mover.target_segment = wire.target_segment;
     mover.spin_angle_rad = wire.spin_angle_rad;
@@ -2348,6 +2357,7 @@ mod tests {
             wait_remaining_ms: 5.0,
             started: true,
             completed: false,
+            blocked: true,
             velocity: [0.5, 0.0, 0.0],
             target_segment: None,
             spin_angle_rad: 0.75,
@@ -2368,6 +2378,7 @@ mod tests {
             wait_remaining_ms: 0.0,
             started: true,
             completed: false,
+            blocked: false,
             velocity: [1.0, 0.0, 0.0],
             target_segment: None,
             spin_angle_rad: 0.25,
@@ -2594,6 +2605,10 @@ mod tests {
         assert_eq!(mover.segment_index, 1);
         assert_eq!(mover.direction_sign, -1);
         assert_eq!(mover.wait_remaining_ms, 5.0);
+        assert!(
+            mover.blocked,
+            "reconciliation must apply the host stop hold"
+        );
         assert!((mover.spin_angle_rad - 0.75).abs() < EPSILON);
         assert!((mover.spin_angle_before_tick_rad - 0.5).abs() < EPSILON);
         assert!(mover.was_active_this_tick);
@@ -4887,6 +4902,48 @@ mod tests {
             None,
             "despawn clears recipient-local weapon presentation with its mapping"
         );
+    }
+
+    #[test]
+    fn local_pawn_despawn_removes_every_inventory_sibling_before_pawn() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), movement_payload()],
+                )],
+            ),
+        );
+        let pawn = *client.map().get(&NetworkId(7)).unwrap();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[0] = Some(first);
+        inventory.wieldables[3] = Some(second);
+        registry.set_component(pawn, inventory).unwrap();
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                11,
+                vec![EntityRecord::Despawn {
+                    network_id: 7,
+                    tombstone_id: 2,
+                    reason: 0,
+                }],
+            ),
+        );
+
+        assert!(!registry.exists(first));
+        assert!(!registry.exists(second));
+        assert!(!registry.exists(pawn));
     }
 
     // Regression: archetype identity can remain unchanged while the descriptor mesh

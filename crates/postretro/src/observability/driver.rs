@@ -157,6 +157,7 @@ fn run_headless_inner(
             world: &world,
             script_ctx: &script_ctx,
             command_diagnostics: session.scripting.command_diagnostics.clone(),
+            mover_auto_close_ms: session.scripting.mover_auto_close_ms,
             spawn_context: session.scripting.spawn_context.clone(),
             content_root: content_root.as_path(),
             active_level_tags: &active_level_tags,
@@ -179,6 +180,7 @@ fn run_headless_inner(
             trigger_pool_policy,
             suppress_ai_enemies: false,
             suppress_boot_pawn: false,
+            local_carried_loadout: None,
         };
         install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
             crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
@@ -187,7 +189,6 @@ fn run_headless_inner(
 
     let mover_colliders = products.mover_colliders;
     let mut mover_tick_states = products.mover_tick_states;
-    let active_wieldable = products.active_wieldable;
 
     // 6. Tick loop. Persistent per-run state: the registry handle, the progress
     //    tracker (above), the AI-warning set, the mover tick states, and the
@@ -239,8 +240,11 @@ fn run_headless_inner(
             movement,
             fire_button,
             reload,
+            firing_slot: 0,
+            select_slot: None,
             // No "use" verb in the runspec yet; headless drives no trigger stage.
             use_pressed: false,
+            drop_pressed: false,
         };
 
         // The post-movement closure returns the runspec's aim (origin + a
@@ -264,7 +268,7 @@ fn run_headless_inner(
             &hit_zone_store,
             nav_graph.as_ref(),
             gravity,
-            active_wieldable,
+            None,
             anim_time,
             &mut progress_tracker,
             &mut ai_runtime,
@@ -397,6 +401,7 @@ fn neutral_movement(facing_yaw: f32) -> MovementInput {
         running: false,
         crouch_intent: false,
         use_pressed: false,
+        drop_pressed: false,
         facing_yaw,
     }
 }
@@ -469,9 +474,52 @@ fn build_player_summary(registry: &EntityRegistry, facing_yaw: f32) -> Option<Pl
 mod tests {
     use super::*;
     use postretro_entities::DataRegistry;
+    use postretro_entities::components::inventory::Inventory;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::data_descriptors::{
         HealthDescriptor, NamedReaction, ProgressDescriptor, ReactionDescriptor,
     };
+    use postretro_scripting_core::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+    };
+
+    fn test_movement_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        }
+    }
 
     #[test]
     fn headless_install_keeps_direct_prl_paths_untagged() {
@@ -479,6 +527,28 @@ mod tests {
             active_level_tags_for_headless_install().is_empty(),
             "headless runspecs use raw .prl paths and cannot match scoped pools",
         );
+    }
+
+    #[test]
+    fn headless_summary_reads_the_installed_inventory_pawn_via_local_movement_identity() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform {
+            position: glam::Vec3::new(3.0, 2.0, 1.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                pawn,
+                PlayerMovementComponent::from_descriptor(&test_movement_descriptor()),
+            )
+            .unwrap();
+        registry.set_component(pawn, Inventory::default()).unwrap();
+        registry.mark_local_player_pawn(pawn).unwrap();
+
+        let summary = build_player_summary(&registry, 0.25).expect("installed pawn is summarized");
+        assert_eq!(summary.entity, pawn.to_raw());
+        assert_eq!(summary.position, [3.0, 2.0, 1.0]);
+        assert!((summary.facing_yaw - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

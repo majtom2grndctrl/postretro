@@ -50,6 +50,8 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::Spawner,
     ComponentKind::EntityState,
     ComponentKind::DeferredEffect,
+    ComponentKind::Inventory,
+    ComponentKind::Touchable,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -80,6 +82,8 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::Spawner => "spawner",
         ComponentKind::EntityState => "entity_state",
         ComponentKind::DeferredEffect => "deferred_effect",
+        ComponentKind::Inventory => "inventory",
+        ComponentKind::Touchable => "touchable",
     }
 }
 
@@ -275,6 +279,9 @@ mod tests {
                     third_person_model: None,
                     viewmodel: None,
                     resource: None,
+                    lower_ms: 0,
+                    raise_ms: 0,
+                    block_during_reload: None,
                 }))
             }
             ComponentKind::DescriptorProvenance => {
@@ -364,6 +371,15 @@ mod tests {
             }
             ComponentKind::DeferredEffect => ComponentValue::DeferredEffect(
                 postretro_entities::DeferredEffectComponent::default(),
+            ),
+            ComponentKind::Inventory => ComponentValue::Inventory(
+                postretro_entities::components::inventory::Inventory::default(),
+            ),
+            ComponentKind::Touchable => ComponentValue::Touchable(
+                postretro_entities::components::touchable::TouchableComponent {
+                    mode: postretro_foundation::data_descriptors::TouchMode::Auto,
+                    radius: 40.0,
+                },
             ),
         }
     }

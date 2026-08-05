@@ -18,7 +18,8 @@ pub use super::components::mesh::{AnimationState, InterruptPolicy};
 pub use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub use super::registry::EntityId;
 pub use super::runtime::{
-    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModMapEntry, ModRenderProfile,
+    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModMapEntry, ModMoverDefaults,
+    ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -77,10 +78,11 @@ pub use validate::*;
 pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{
-    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, LocomotionDescriptor,
-    MeshDescriptor, NamedReaction, PrimitiveDescriptor, ProgressDescriptor, RawAnimationState,
-    RawMeshDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget, TriggerEventDescriptor,
-    TriggerPoolArm, TriggerPoolDescriptor, build_crossing, build_predicate_crossing,
+    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, InventoryDescriptor,
+    LocomotionDescriptor, MeshDescriptor, NamedReaction, PrimitiveDescriptor, ProgressDescriptor,
+    RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget,
+    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, build_crossing,
+    build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{

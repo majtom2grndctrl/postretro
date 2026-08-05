@@ -13,6 +13,9 @@ use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 
 /// Filename written into the platform config directory.
 const SETTINGS_FILENAME: &str = "settings.toml";
+const DEFAULT_SCROLL_NOTCH_PIXELS: f32 = 120.0;
+const MAX_SCROLL_NOTCH_PIXELS: f32 = 4_096.0;
+const MAX_SWITCH_CYCLE_DWELL_MS: u32 = 60_000;
 
 /// How the crouch action is interpreted by the input layer. Resolved upstream
 /// of the movement intent: the movement intent only ever sees the single
@@ -40,6 +43,12 @@ pub enum CrouchMode {
 /// rather than failing the whole parse.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerOptions {
+    /// Device-local player identity asserted when connecting to a multiplayer
+    /// host. `None` is the anonymous fallback when this installation cannot
+    /// persist an identity.
+    #[serde(default)]
+    pub player_id: Option<[u8; 16]>,
+
     /// Radians per raw mouse unit. Must be finite and > 0; defaults to the
     /// input subsystem's `DEFAULT_MOUSE_SENSITIVITY`.
     #[serde(default = "default_mouse_sensitivity")]
@@ -61,6 +70,17 @@ pub struct PlayerOptions {
     /// surface (see player_options.md §6).
     #[serde(default)]
     pub crouch_mode: CrouchMode,
+
+    /// Optional local override for the mod's cycle-selection dwell. `None`
+    /// preserves the mod policy; an explicit zero selects immediately.
+    #[serde(default)]
+    pub switch_cycle_dwell_ms: Option<u32>,
+
+    /// Pixel distance treated as one scroll-wheel notch. This is a concrete
+    /// per-device setting, not a policy override; 120 matches the OS-standard
+    /// wheel quantum.
+    #[serde(default = "default_scroll_notch_pixels")]
+    pub scroll_notch_pixels: f32,
 }
 
 fn default_mouse_sensitivity() -> f32 {
@@ -75,13 +95,20 @@ fn default_view_feel_scale() -> f32 {
     1.0
 }
 
+fn default_scroll_notch_pixels() -> f32 {
+    DEFAULT_SCROLL_NOTCH_PIXELS
+}
+
 impl Default for PlayerOptions {
     fn default() -> Self {
         Self {
+            player_id: None,
             mouse_sensitivity: default_mouse_sensitivity(),
             invert_y: default_invert_y(),
             view_feel_scale: default_view_feel_scale(),
             crouch_mode: CrouchMode::default(),
+            switch_cycle_dwell_ms: None,
+            scroll_notch_pixels: default_scroll_notch_pixels(),
         }
     }
 }
@@ -96,6 +123,14 @@ impl PlayerOptions {
         if !(self.mouse_sensitivity.is_finite() && self.mouse_sensitivity > 0.0) {
             self.mouse_sensitivity = default_mouse_sensitivity();
         }
+        self.switch_cycle_dwell_ms = self
+            .switch_cycle_dwell_ms
+            .map(|dwell| dwell.min(MAX_SWITCH_CYCLE_DWELL_MS));
+        if !self.scroll_notch_pixels.is_finite() || self.scroll_notch_pixels <= 0.0 {
+            self.scroll_notch_pixels = default_scroll_notch_pixels();
+        } else {
+            self.scroll_notch_pixels = self.scroll_notch_pixels.min(MAX_SCROLL_NOTCH_PIXELS);
+        }
     }
 
     /// Load options from `path`.
@@ -106,31 +141,42 @@ impl PlayerOptions {
     /// - Parse error: logs a warning and returns defaults *without* touching the
     ///   file, so a malformed hand edit is preserved for the human to fix.
     /// - Success: deserializes, then sanitizes ranges.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn load(path: &Path) -> Self {
+        Self::load_with_status(path).0
+    }
+
+    /// Load options and report whether it is safe for boot to replace the file.
+    /// A malformed or unreadable file stays untouched, preserving the public
+    /// `load` degradation contract while letting Session keep its identity
+    /// generation anonymous in that case.
+    pub(crate) fn load_with_status(path: &Path) -> (Self, PlayerOptionsLoadStatus) {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return (Self::default(), PlayerOptionsLoadStatus::Missing);
+            }
             Err(err) => {
                 // Unexpected read failure (permission denied, I/O error, etc.).
                 log::warn!(
                     "[Options] failed to read {}: {err}; using defaults",
                     path.display()
                 );
-                return Self::default();
+                return (Self::default(), PlayerOptionsLoadStatus::Unavailable);
             }
         };
 
         match toml::from_str::<PlayerOptions>(&contents) {
             Ok(mut options) => {
                 options.sanitize();
-                options
+                (options, PlayerOptionsLoadStatus::Loaded)
             }
             Err(err) => {
                 log::warn!(
                     "[Options] failed to parse {}: {err}; using defaults (file left unmodified)",
                     path.display()
                 );
-                Self::default()
+                (Self::default(), PlayerOptionsLoadStatus::Unavailable)
             }
         }
     }
@@ -154,6 +200,15 @@ impl PlayerOptions {
         fs::rename(&tmp_path, path)?;
         Ok(())
     }
+}
+
+/// Whether a settings file was loaded normally, was absent, or must not be
+/// replaced after an I/O/parse failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlayerOptionsLoadStatus {
+    Missing,
+    Loaded,
+    Unavailable,
 }
 
 /// Sibling temp path (`<target>.tmp`) used by the atomic save. Kept next to the
@@ -181,6 +236,7 @@ mod tests {
     const EPSILON: f32 = 1e-6;
 
     fn assert_options_eq(a: &PlayerOptions, b: &PlayerOptions) {
+        assert_eq!(a.player_id, b.player_id);
         assert!(
             (a.mouse_sensitivity - b.mouse_sensitivity).abs() < EPSILON,
             "mouse_sensitivity: {} vs {}",
@@ -195,15 +251,25 @@ mod tests {
             b.view_feel_scale
         );
         assert_eq!(a.crouch_mode, b.crouch_mode);
+        assert_eq!(a.switch_cycle_dwell_ms, b.switch_cycle_dwell_ms);
+        assert!(
+            (a.scroll_notch_pixels - b.scroll_notch_pixels).abs() < EPSILON,
+            "scroll_notch_pixels: {} vs {}",
+            a.scroll_notch_pixels,
+            b.scroll_notch_pixels
+        );
     }
 
     #[test]
     fn player_options_roundtrips_through_toml() {
         let original = PlayerOptions {
+            player_id: Some([0x7c; 16]),
             mouse_sensitivity: 0.0035,
             invert_y: true,
             view_feel_scale: 0.5,
             crouch_mode: CrouchMode::Toggle,
+            switch_cycle_dwell_ms: Some(250),
+            scroll_notch_pixels: 96.0,
         };
         let serialized = toml::to_string_pretty(&original).unwrap();
         let restored: PlayerOptions = toml::from_str(&serialized).unwrap();
@@ -218,6 +284,7 @@ mod tests {
 
         let loaded = PlayerOptions::load(&path);
         assert_options_eq(&loaded, &PlayerOptions::default());
+        assert_eq!(loaded.player_id, None, "loading does not generate identity");
         // Load must not create the file; the caller owns writing defaults.
         assert!(!path.exists());
     }
@@ -228,10 +295,13 @@ mod tests {
         let path = dir.path().join("settings.toml");
 
         let options = PlayerOptions {
+            player_id: Some([0x8d; 16]),
             mouse_sensitivity: 0.0042,
             invert_y: true,
             view_feel_scale: 0.25,
             crouch_mode: CrouchMode::Toggle,
+            switch_cycle_dwell_ms: Some(400),
+            scroll_notch_pixels: 100.0,
         };
         options.save(&path).unwrap();
 
@@ -250,6 +320,7 @@ mod tests {
         assert!(loaded.invert_y);
         assert!((loaded.mouse_sensitivity - DEFAULT_MOUSE_SENSITIVITY).abs() < EPSILON);
         assert!((loaded.view_feel_scale - 1.0).abs() < EPSILON);
+        assert_eq!(loaded.player_id, None, "an absent key stays absent on load");
     }
 
     #[test]
@@ -273,10 +344,13 @@ mod tests {
         let path = dir.path().join("settings.toml");
 
         let options = PlayerOptions {
+            player_id: Some([0x9e; 16]),
             mouse_sensitivity: 0.003,
             invert_y: false,
             view_feel_scale: 0.75,
             crouch_mode: CrouchMode::Toggle,
+            switch_cycle_dwell_ms: Some(500),
+            scroll_notch_pixels: 80.0,
         };
         options.save(&path).unwrap();
 
@@ -361,5 +435,48 @@ mod tests {
 
         let loaded = PlayerOptions::load(&path);
         assert_eq!(loaded.crouch_mode, CrouchMode::Toggle);
+    }
+
+    #[test]
+    fn player_id_roundtrips_and_defaults_to_none_when_absent() {
+        let original = PlayerOptions {
+            player_id: Some([0x3f; 16]),
+            ..PlayerOptions::default()
+        };
+        let serialized = toml::to_string_pretty(&original).unwrap();
+        let restored: PlayerOptions = toml::from_str(&serialized).unwrap();
+        assert_eq!(restored.player_id, original.player_id);
+
+        let without_id: PlayerOptions = toml::from_str("invert_y = true\n").unwrap();
+        assert_eq!(without_id.player_id, None);
+    }
+
+    #[test]
+    fn wieldable_input_options_default_when_absent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "invert_y = true\n").unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(loaded.switch_cycle_dwell_ms, None);
+        assert!((loaded.scroll_notch_pixels - DEFAULT_SCROLL_NOTCH_PIXELS).abs() < EPSILON);
+    }
+
+    #[test]
+    fn wieldable_input_options_sanitize_to_supported_ranges() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(
+            &path,
+            "switch_cycle_dwell_ms = 999999\nscroll_notch_pixels = -1.0\n",
+        )
+        .unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(
+            loaded.switch_cycle_dwell_ms,
+            Some(MAX_SWITCH_CYCLE_DWELL_MS)
+        );
+        assert!((loaded.scroll_notch_pixels - DEFAULT_SCROLL_NOTCH_PIXELS).abs() < EPSILON);
     }
 }

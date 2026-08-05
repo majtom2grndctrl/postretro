@@ -558,7 +558,9 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.0,
                 use_pressed: false,
+                drop_pressed: false,
                 aim_pitch: 0.0,
+                firing_slot: 0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -598,6 +600,7 @@ mod tests {
             crouch_intent: false,
             facing_yaw: 0.65,
             use_pressed: false,
+            drop_pressed: false,
         };
 
         let (transform, movement, _events) =

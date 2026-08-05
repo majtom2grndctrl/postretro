@@ -283,6 +283,7 @@ mod tests {
             CLIENT_ID,
             origin,
             Some(static_fingerprint),
+            None,
         )
         .expect("client transport");
 
@@ -295,7 +296,7 @@ mod tests {
         client.set_mod_digest(Some(static_fingerprint));
         client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
 
-        server.add_relay_connection(CLIENT_ID);
+        server.add_relay_connection(CLIENT_ID, None);
         client.set_connected();
         (server, client)
     }

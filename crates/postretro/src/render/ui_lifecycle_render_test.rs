@@ -92,6 +92,8 @@ fn staged_manifest_result(
             id: "ui-lifecycle".to_string(),
             version: "1".to_string(),
             render: Default::default(),
+            movers: Default::default(),
+            switching: Default::default(),
             entities: Vec::new(),
             maps: Vec::new(),
             reactions: Vec::new(),

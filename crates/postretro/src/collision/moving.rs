@@ -56,8 +56,32 @@ pub(crate) struct MoverPose {
     pub(crate) tick_dt: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MoverTranslationLeg {
+    pub(crate) start: Vec3,
+    pub(crate) end: Vec3,
+    /// Inclusive tick-time interval traversed by this leg. Rotation advances
+    /// across the whole tick, including waits between linear legs.
+    pub(crate) start_tick_fraction: f32,
+    pub(crate) end_tick_fraction: f32,
+}
+
 pub(crate) trait MoverPoseSource {
     fn pose(&self, mover_id: u32) -> Option<MoverPose>;
+
+    /// Ordered linear legs actually traversed during this tick. A mover can
+    /// cross multiple waypoints and finish with a small or zero net delta, so
+    /// policy collision must not infer the path from the final pose alone.
+    fn translation_legs(&self, _mover_id: u32) -> Option<&[MoverTranslationLeg]> {
+        None
+    }
+
+    /// Tick-local provenance for movers whose net pose delta is zero after
+    /// crossing one or more path termini. Ordinary pose sources need no
+    /// override; the fixed-tick mover table records these arrivals explicitly.
+    fn had_endpoint_arrival(&self, _mover_id: u32) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -453,6 +477,39 @@ fn mover_sweep_transform(pose: MoverPose, t: f32) -> Transform {
         position: pose.transform.position - pose.tick_delta * (1.0 - t),
         rotation,
         scale: pose.transform.scale,
+    }
+}
+
+/// Reframe a full-tick mover pose onto one ordered translation leg while
+/// preserving the genuine angular interval that coincided with that leg.
+pub(crate) fn mover_pose_for_translation_leg(
+    pose: MoverPose,
+    leg: MoverTranslationLeg,
+) -> MoverPose {
+    let start_fraction = leg.start_tick_fraction.clamp(0.0, 1.0);
+    let end_fraction = leg.end_tick_fraction.clamp(start_fraction, 1.0);
+    let duration_fraction = end_fraction - start_fraction;
+    let start_rotation = mover_sweep_transform(pose, start_fraction).rotation;
+    let end_rotation = mover_sweep_transform(pose, end_fraction).rotation;
+    let tick_dt = pose.tick_dt * duration_fraction;
+    let tick_delta = leg.end - leg.start;
+
+    MoverPose {
+        transform: Transform {
+            position: leg.end,
+            rotation: end_rotation,
+            scale: pose.transform.scale,
+        },
+        linear_velocity: if tick_dt.is_finite() && tick_dt > 0.0 {
+            tick_delta / tick_dt
+        } else {
+            Vec3::ZERO
+        },
+        tick_delta,
+        angular_velocity: pose.angular_velocity,
+        tick_rotation_delta: normalized_rotation(end_rotation * start_rotation.conjugate()),
+        carry_yaw: pose.carry_yaw,
+        tick_dt,
     }
 }
 

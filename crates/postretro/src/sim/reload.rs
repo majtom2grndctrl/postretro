@@ -50,10 +50,10 @@ pub(super) fn reaches_millisecond_boundary(elapsed_ms: f64, boundary_ms: u32) ->
     elapsed_ms >= boundary || elapsed_ms as f32 >= boundary_ms as f32
 }
 
-/// Advance the timed-state countdown and return its full millisecond overshoot
-/// when it expires. The carry remains strictly sub-millisecond; callers that
-/// restart a timed step apply the whole overshoot to that new step.
-pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) -> Option<f64> {
+/// Whether this timed state will reach its current boundary on this tick, without
+/// mutating its millisecond or fractional carry. Command ordering uses this to let
+/// an already-due atomic reload complete before an accepted switch starts lowering.
+pub(super) fn timer_expires_this_tick(component: &WeaponComponent, tick_dt: f32) -> bool {
     let carried_ms = if component.state_elapsed_sub_ms.is_finite()
         && component.state_elapsed_sub_ms >= 0.0
         && component.state_elapsed_sub_ms < 1.0
@@ -62,6 +62,19 @@ pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) -> Op
     } else {
         0.0
     };
+    reaches_millisecond_boundary(carried_ms + tick_ms(tick_dt), component.state_remaining_ms)
+}
+
+/// Advance the timed-state countdown and return its full millisecond overshoot
+/// when it expires. The carry remains strictly sub-millisecond; callers that
+/// restart a timed step apply the whole overshoot to that new step.
+pub(super) fn advance_timer(component: &mut WeaponComponent, tick_dt: f32) -> Option<f64> {
+    let carried_ms = component
+        .state_elapsed_sub_ms
+        .is_finite()
+        .then_some(component.state_elapsed_sub_ms)
+        .filter(|carried| (0.0..1.0).contains(carried))
+        .unwrap_or(0.0);
     let elapsed_ms = carried_ms + tick_ms(tick_dt);
     if reaches_millisecond_boundary(elapsed_ms, component.state_remaining_ms) {
         let overshoot_ms = (elapsed_ms - f64::from(component.state_remaining_ms)).max(0.0);
@@ -122,6 +135,9 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
             });
             component.state_remaining_ms = remaining_ms;
             component.state_total_ms = remaining_ms;

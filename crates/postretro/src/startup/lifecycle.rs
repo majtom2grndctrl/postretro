@@ -1,21 +1,24 @@
 //! Runtime level lifecycle state-machine helpers.
 //! See: context/lib/boot_sequence.md §1
 
+#[path = "lifecycle_net.rs"]
+mod lifecycle_net;
+#[path = "lifecycle_world_cpu.rs"]
+mod lifecycle_world_cpu;
+
+#[cfg(test)]
+pub(crate) use lifecycle_world_cpu::install_descriptor_player_health_range;
+pub(crate) use lifecycle_world_cpu::install_world_cpu;
+
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 
 use glam::Vec3;
 use winit::event_loop::ActiveEventLoop;
 
-use crate::camera::Camera;
 use crate::frame_timing::InterpolableState;
 use crate::render;
-use crate::scripting::builtins::{
-    PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
-    movement_descriptor_mesh_models, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
-    weapon_presentation_models,
-};
+use crate::scripting::builtins::descriptor_materializes_ai_enemy;
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
     StartupTimings, spawn_level_worker,
@@ -25,10 +28,10 @@ use crate::trigger_pools::{
     TriggerPoolInstallReport, TriggerPoolSeedPolicy, install_trigger_pools,
 };
 use crate::{App, weapon};
-use postretro_scripting_core::data_descriptors::LevelManifest;
-use postretro_scripting_core::reaction_dispatch::{
-    fire_named_event_with_sequences, validate_sequence_primitives,
-};
+use postretro_scripting_core::reaction_dispatch::validate_sequence_primitives;
+
+#[cfg(test)]
+use crate::camera::Camera;
 
 pub(crate) const FRONTEND_CLEAR_COLOR: render::ClearColor = render::ClearColor {
     r: 0.015,
@@ -94,76 +97,6 @@ enum LoadingPoll {
 }
 
 impl App {
-    /// Install the immutable admission identity and current mod-parity digest on
-    /// an already-constructed endpoint. This is deliberately a no-op for
-    /// single-player, keeping hash work out of the ordinary boot path.
-    pub(crate) fn install_network_mod_content(&mut self) {
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        if session.net_endpoint.is_none() {
-            return;
-        }
-        let identity = session
-            .scripting
-            .script_runtime
-            .committed_mod_identity()
-            .map(|(id, version)| (id.to_owned(), version.to_owned()));
-        let digest = {
-            let registry = session.scripting.script_ctx.data_registry.borrow();
-            crate::mod_digest::mod_compatibility_digest_from_registry(&registry)
-        };
-        if let Some(endpoint) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        {
-            if let Some((id, version)) = identity {
-                endpoint.set_mod_identity(id, version);
-            }
-            endpoint.set_mod_digest(digest);
-        }
-        self.refresh_host_tuning();
-    }
-
-    /// Re-resolve participating pawns after a committed manifest changes. The
-    /// retained payload map makes this cheap on reloads that did not alter movement
-    /// or default-weapon fire values.
-    fn refresh_host_tuning(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let descriptors = session
-            .scripting
-            .script_ctx
-            .data_registry
-            .borrow()
-            .entities
-            .clone();
-        let registry = session.scripting.script_ctx.registry.borrow();
-        let Some(crate::netcode::NetEndpoint::Host {
-            server,
-            slot_pawns,
-            last_sent_tuning,
-            ..
-        }) = session.net_endpoint.as_mut()
-        else {
-            return;
-        };
-        for client_id in server.participating_clients() {
-            let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-                continue;
-            };
-            let payload = crate::netcode::tuning_payload_for_pawn(&registry, pawn, &descriptors);
-            crate::netcode::host_send_tuning_if_changed(
-                server,
-                last_sent_tuning,
-                client_id,
-                payload,
-            );
-        }
-    }
-
     pub(crate) fn initial_boot_state() -> BootState {
         BootState::Booting
     }
@@ -184,130 +117,6 @@ impl App {
         self.active_level_source = None;
         self.level_requests.clear();
         self.boot_load = false;
-    }
-
-    pub(crate) fn clear_surface_lifetime_level_state(&mut self) {
-        // Fog- and trigger-volume entities live in the script registry;
-        // clearing their bridge id tables and trigger state prevents stale
-        // slots or bindings if a future surface re-creation re-runs
-        // `populate_from_level`. collision_world is reset for the same
-        // reason — it must be a clean placeholder before resume populates it.
-        // Called both from `unload_level` (session installed) and the suspend
-        // path (session may be absent if suspend arrives pre-install), so the
-        // session-owned state clears are guarded — a no-op with no session yet.
-        if let Some(session) = self.session.as_mut() {
-            session.scripting.command_diagnostics.clear();
-            session.scripting.spawn_context.clear();
-            session.scripting.slot_accumulator_bindings.clear();
-            session.scripting.impact_policy_runtime.clear_level_events();
-            session.fog_volume_bridge.clear();
-            session.trigger_volume_bridge.clear();
-            session.trigger_system.clear();
-        }
-        self.collision_world.clear();
-        self.kinematic_mover_colliders.clear();
-        self.kinematic_mover_tick_states.clear();
-        self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
-        self.kinematic_mover_render.clear();
-        self.trigger_bindings = TriggerBindingTable::default();
-        self.trigger_pool_report = TriggerPoolInstallReport::default();
-        self.active_wieldable = None;
-        self.active_wieldable_descriptor = None;
-        self.client_weapon_state = None;
-        self.client_fire_resolutions.clear();
-        self.client_predicted_shots.clear();
-    }
-
-    /// Unload the active level without dropping renderer/window ownership.
-    ///
-    /// | Cleared on unload | Kept across unload |
-    /// |---|---|
-    /// | `self.level` (LevelWorld) | renderer device/queue, window |
-    /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
-    /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (no clear method — engine-global) |
-    /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
-    /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
-    /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
-    /// | progress tracker, death-event carryover, active wieldable, client weapon prediction state, camera pose | |
-    pub(crate) fn unload_level(&mut self) {
-        self.clear_net_level_parity();
-        // `net_endpoint` and `audio` are session-owned; reset/release them through
-        // the session borrow.
-        if let Some(session) = self.session.as_mut() {
-            if let Some(endpoint) = session.net_endpoint.as_mut() {
-                endpoint.reset_level_scoped_client_state();
-            }
-            if let Some(audio) = session.audio.as_mut() {
-                audio.release_level_sounds();
-            }
-        }
-
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.release_level_resources();
-        }
-
-        self.level = None;
-        self.clear_surface_lifetime_level_state();
-        self.nav_graph = None;
-        // The registry is cleared below, retiring the chase agent's entity slot;
-        // drop the handle so a stale id is never re-targeted after unload.
-        #[cfg(feature = "dev-tools")]
-        {
-            self.debug_chase_agent = None;
-        }
-        self.particle_live_counts.clear();
-        if let Some(session) = self.session.as_mut() {
-            session.light_bridge.clear();
-            session.particle_render.reset_for_level();
-            session.mesh_clip_tables.clear();
-            session.hit_zone_store.clear();
-            session.mesh_render.clear();
-            session.emitter_bridge.clear();
-            session.progress_tracker.clear();
-            session.pending_death_events.clear();
-            session.crossing_detector.clear();
-            session
-                .scripting
-                .script_ctx
-                .data_registry
-                .borrow_mut()
-                .clear();
-            session
-                .scripting
-                .script_ctx
-                .registry
-                .borrow_mut()
-                .clear_for_level_unload();
-            session.presentation_cells.clear();
-            session
-                .modal_stack
-                .clear_script_tree_tier(postretro_ui::modal_stack::ScopeTier::Level);
-        }
-        self.active_level_tags.clear();
-        self.active_level_source = None;
-
-        self.pending_level_log = false;
-        self.camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
-        self.frame_timing
-            .push_state(InterpolableState::new(Vec3::ZERO));
-        self.script_time = 0.0;
-        self.anim_time = 0.0;
-        self.boot_state = BootState::Frontend;
-    }
-
-    /// Forget the installed level on a still-live endpoint. Both unload and
-    /// platform suspend reach this helper so neither leaves peers participating
-    /// against a torn-down world.
-    pub(crate) fn clear_net_level_parity(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let Some(endpoint) = session.net_endpoint.as_mut() else {
-            return;
-        };
-        endpoint.set_level_parity(None);
-        endpoint.set_relevel_catalog_id(None);
-        endpoint.reset_level_scoped_host_state();
     }
 
     pub(crate) fn drive_boot_state_for_redraw(
@@ -806,8 +615,6 @@ impl App {
         // Reset the input-mode tracker so a mid-transition mode never bleeds
         // across levels.
         session.scripting.input_mode_tracker.reset();
-        self.active_wieldable = None;
-        self.active_wieldable_descriptor = None;
 
         // Derive material properties from texture names so the renderer can
         // populate per-material uniforms (shininess) without re-parsing.
@@ -978,6 +785,7 @@ impl App {
                 .expect("level installed before segment B"),
             script_ctx: &script_ctx,
             command_diagnostics: session.scripting.command_diagnostics.clone(),
+            mover_auto_close_ms: session.scripting.mover_auto_close_ms,
             spawn_context: session.scripting.spawn_context.clone(),
             content_root: install_content_root.as_path(),
             active_level_tags: &self.active_level_tags,
@@ -1000,6 +808,11 @@ impl App {
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
             suppress_ai_enemies: suppress,
             suppress_boot_pawn: suppress,
+            local_carried_loadout: session
+                .seat_table
+                .as_ref()
+                .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
+                .cloned(),
         };
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
@@ -1016,8 +829,6 @@ impl App {
         // path (M15 Phase 3 Task 4): the host materializes each accepted client's
         // descriptor pawn from them later.
         self.host_spawn_points = products.spawn_points;
-        self.active_wieldable = products.active_wieldable;
-        self.active_wieldable_descriptor = products.active_wieldable_descriptor;
 
         // The boot pawn exists before the regular host snapshot cadence (and in
         // single-player there is no `WeaponOwners` table at all), so establish its
@@ -1025,6 +836,22 @@ impl App {
         // has already built both CPU tables; resolve only this changed pawn through
         // the standard socket-binding path.
         let local_pawn = script_ctx.registry.borrow().local_player_pawn();
+        if let Some(seats) = self
+            .session
+            .as_mut()
+            .expect("session installed before local seat binding")
+            .seat_table
+            .as_mut()
+        {
+            crate::capture_player_spawn_placements(
+                &script_ctx.registry.borrow(),
+                &self.host_spawn_points,
+                seats,
+            );
+            if let Some(pawn) = local_pawn {
+                seats.bind_pawn(postretro_foundation::Seat(0), pawn);
+            }
+        }
         let descriptors = script_ctx.data_registry.borrow().entities.clone();
         if let Some(pawn) = local_pawn {
             let session = self
@@ -1035,7 +862,6 @@ impl App {
             if crate::netcode::synchronize_weapon_attachment_for_pawn(
                 &mut registry,
                 pawn,
-                self.active_wieldable,
                 &descriptors,
                 &session.hit_zone_store,
             ) {
@@ -1048,10 +874,11 @@ impl App {
             }
         }
 
-        // E10 Task 4 / M15 Phase 3: register this level's map-placed AI enemies and
-        // PRL-loaded movers for outbound replication. Host-gated (a no-op off a
-        // listen host) and reload-safe; each takes its own registry borrow.
+        // Register host-authoritative map entities and PRL-loaded movers for outbound
+        // replication. Host-gated (a no-op off a listen host) and reload-safe; each
+        // takes its own registry borrow.
         self.host_register_map_enemies_after_install();
+        self.host_register_world_items_after_install();
         self.host_register_loaded_movers_after_install();
 
         // Pick up any descriptor-spawned `LightComponent`s so they participate in
@@ -1444,10 +1271,6 @@ pub(crate) struct WorldInstallProducts {
     /// field is dead only in a build without that feature.
     #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) mover_tick_states: crate::kinematic_mover::MoverTickStateTable,
-    /// The spawned player pawn's active weapon instance and its descriptor name,
-    /// if a boot pawn spawned.
-    pub(crate) active_wieldable: Option<postretro_entities::EntityId>,
-    pub(crate) active_wieldable_descriptor: Option<String>,
     /// First `player_spawn` origin + engine-convention YXZ angles (x=pitch,
     /// y=yaw), for the windowed camera teleport. `None` when the map has none.
     pub(crate) first_spawn: Option<(Vec3, Vec3)>,
@@ -1466,6 +1289,8 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) world: &'a postretro_level_loader::LevelWorld,
     pub(crate) script_ctx: &'a postretro_entities::ScriptCtx,
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    /// Current mod-wide auto-close default. Static level-install input only.
+    pub(crate) mover_auto_close_ms: f32,
     /// Session-owned VM-free resolved descriptor cache for entity spawners.
     pub(crate) spawn_context: crate::spawner::SpawnContext,
     pub(crate) content_root: &'a std::path::Path,
@@ -1501,428 +1326,14 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// Resolved separately for each install. A pinned seed repeats exactly;
     /// arm-all is the deterministic unpinned headless default.
     pub(crate) trigger_pool_policy: TriggerPoolSeedPolicy,
-    /// Connected-client suppression: skip local AI-enemy materialization / boot
-    /// pawn spawn. Both `false` off a connected client (single-player, listen
-    /// host, headless).
+    /// Connected-client setup flag: skip host-authoritative map-placement
+    /// materialization and boot-pawn spawn. Both `false` off a connected client
+    /// (single-player, listen host, headless).
     pub(crate) suppress_ai_enemies: bool,
     pub(crate) suppress_boot_pawn: bool,
-}
-
-/// Attach the descriptor-authored `player.health` validation range before either
-/// network role builds its replicated-state schema. The selected descriptor matches
-/// `spawn_from_player_starts`: placements are visited in map order, `entity_class`
-/// defaults to `"player"`, unknown/non-movement descriptors do not become the local
-/// movement pawn, and the first movement descriptor is authoritative.
-///
-/// This deliberately resolves from shared authoring data rather than the registry.
-/// Connected clients suppress their boot pawn until the host baseline arrives, but
-/// must still fingerprint the same range as the listen host.
-pub(crate) fn install_descriptor_player_health_range(
-    slot_table: &mut postretro_entities::SlotTable,
-    spawn_points: &[crate::scripting::map_entity::MapEntity],
-    descriptors: &[postretro_entities::EntityTypeDescriptor],
-) {
-    for spawn in spawn_points {
-        let entity_class = spawn
-            .key_values
-            .get("entity_class")
-            .map(String::as_str)
-            .unwrap_or("player");
-        let Some(descriptor) = descriptors
-            .iter()
-            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
-        else {
-            continue;
-        };
-        if descriptor.movement.is_none() {
-            continue;
-        }
-        let Some(health) = descriptor.health.as_ref() else {
-            return;
-        };
-        if let Err(err) = slot_table.set_engine_numeric_range(
-            "player.health",
-            postretro_entities::NumericRange {
-                min: 0.0,
-                max: health.max,
-            },
-        ) {
-            log::warn!("[Loader] failed to set player.health range: {err}");
-        }
-        return;
-    }
-}
-
-/// Segment B of the CPU world install (renderer-free): fog-volume entities,
-/// collision world + kinematic movers, classname dispatch, the data script, the
-/// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
-/// (hit-zone store build + clip-index resolve), and the `levelLoad` fire. The
-/// sole renderer-coupled step — skinned-model upload + clip-table build — is
-/// injected as `upload_mesh_models`, called between the archetype sweep and the
-/// clip-index resolve: the windowed caller uploads models and fills the clip
-/// tables and returns renderer ownership of model-load diagnostics; a headless
-/// caller passes a no-op that returns game-side ownership, leaving clips
-/// unresolved while preserving load warnings. Stage durations record into
-/// `timings`, matching the windowed log-line-C labels.
-pub(crate) fn install_world_cpu(
-    handles: WorldInstallHandles<'_>,
-    timings: &mut StartupTimings,
-    mut upload_mesh_models: impl FnMut(
-        &[String],
-        &mut crate::scripting_systems::mesh_anim::MeshClipTables,
-    )
-        -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
-) -> WorldInstallProducts {
-    let WorldInstallHandles {
-        world,
-        script_ctx,
-        command_diagnostics,
-        spawn_context,
-        content_root,
-        active_level_tags,
-        nav_graph,
-        collision_world,
-        fog_volume_bridge,
-        trigger_volume_bridge,
-        classname_dispatch,
-        script_runtime,
-        sequence_registry,
-        reaction_registry,
-        system_registry,
-        modal_stack,
-        progress_tracker,
-        crossing_detector,
-        slot_accumulator_bindings,
-        impact_policy_runtime,
-        mesh_clip_tables,
-        hit_zone_store,
-        trigger_pool_policy,
-        suppress_ai_enemies,
-        suppress_boot_pawn,
-    } = handles;
-
-    // Fog volumes — one entity per record. Runs after the windowed light-bridge
-    // populate so the first fog entity-id lands after the light entities.
-    {
-        let mut registry = script_ctx.registry.borrow_mut();
-        fog_volume_bridge.populate_from_level(&mut registry, &world.fog_volumes);
-    }
-
-    // Trigger volumes — one entity per record. Kept directly after fog so the
-    // fog → trigger → mover entity-id order matches the pre-extraction windowed
-    // install. The host-authoritative trigger system evaluates these each tick
-    // (windowed / listen host); a headless run populates them but passes no
-    // trigger context to `simulate_tick`, so they are inert there.
-    {
-        let mut registry = script_ctx.registry.borrow_mut();
-        trigger_volume_bridge.populate_from_level(&mut registry, &world.trigger_volumes);
-    }
-
-    // Collision + kinematic movers. Populate before the first game tick so
-    // movement collision is ready.
-    collision_world.populate_from_level(world);
-    let mover_colliders = crate::runtime_movers::build_loaded_mover_colliders(world);
-    if !world.kinematic_geometry.movers.is_empty() {
-        let mut registry = script_ctx.registry.borrow_mut();
-        match crate::runtime_movers::spawn_loaded_kinematic_movers(&mut registry, world) {
-            Ok(spawned) => {
-                log::info!(
-                    "[Loader] spawned {} kinematic mover entity/entities",
-                    spawned.len()
-                );
-            }
-            Err(err) => {
-                log::warn!("[Loader] failed to spawn kinematic movers: {err}");
-            }
-        }
-    }
-    timings.record("bridges_populated");
-
-    // Classname dispatch: partition player-start placements out (retained for the
-    // caller), dispatch the remainder through built-in handlers. The handled set
-    // feeds the data-archetype sweep below.
-    let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
-        world.map_entities.iter().cloned().map(Into::into).collect();
-    let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
-        .into_iter()
-        .partition(|e| e.classname == PLAYER_START_CLASSNAME);
-    let builtin_handled = {
-        let mut registry = script_ctx.registry.borrow_mut();
-        let handled = apply_classname_dispatch(&map_entities, classname_dispatch, &mut registry);
-        if !map_entities.is_empty() {
-            log::info!(
-                "[Loader] dispatched {total} map entities; {built_in} classname(s) handled by built-in handlers",
-                built_in = handled.len(),
-                total = map_entities.len(),
-            );
-        }
-        handled
-    };
-    timings.record("classname_dispatch");
-
-    // Data script runs once at level open. Errors surface as an empty manifest so
-    // the level still loads; even levels without one compose against mod-global
-    // reactions/crossings. Composed before progress/crossing subscriber rebuild.
-    {
-        let mut manifest = if let Some(data_script) = &world.data_script {
-            script_runtime.run_data_script(data_script, content_root)
-        } else {
-            LevelManifest::default()
-        };
-        if world.data_script.is_some() {
-            manifest.reactions =
-                validate_sequence_primitives(manifest.reactions, sequence_registry);
-            // Register level-scope UI trees before the data-script VM context drops
-            // and before the manifest is consumed by the data registry.
-            modal_stack.register_script_trees(
-                std::mem::take(&mut manifest.ui_trees),
-                postretro_ui::modal_stack::ScopeTier::Level,
-            );
-        }
-        impact_policy_runtime
-            .replace_level_events(std::mem::take(&mut manifest.events), active_level_tags);
-        script_ctx
-            .data_registry
-            .borrow_mut()
-            .populate_level_with_trigger_events(
-                manifest.reactions,
-                manifest.crossings,
-                manifest.trigger_events,
-                manifest.trigger_pools,
-                active_level_tags,
-            );
-        // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this
-        // level's local slot defaults before any connected-client network baseline is
-        // applied. A late join then observes the host's persistent state as one real
-        // crossing instead of silently arming at the already-replicated value.
-        // Network baseline application begins only after world install returns.
-        rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
-        slot_accumulator_bindings.rebuild(script_ctx);
-    }
-    // Bind after subscriber rebuild: `populate_level` has committed the final
-    // composed reaction set, so tick dispatch never re-matches a name later.
-    let mut trigger_bindings = build_trigger_bindings(
-        script_ctx,
-        command_diagnostics.clone(),
-        spawn_context.clone(),
-    );
-    {
-        let registry = script_ctx.registry.borrow();
-        let data_registry = script_ctx.data_registry.borrow();
-        trigger_bindings.install_manifest_events(&registry, &data_registry, script_ctx);
-    }
-    timings.record("data_script");
-
-    // Data-archetype sweep: materialize every matching map placement the built-in
-    // dispatch did not handle, then spawn the boot pawn from the player starts.
-    let descriptors = script_ctx.data_registry.borrow().entities.clone();
-    // Read the baked navmesh agent params into an owned local BEFORE borrowing the
-    // registry (dispatch borrows it mutably); `None` when the map has no navmesh —
-    // the agent then falls back to an engine-default capsule and cannot path.
-    let agent_params: Option<postretro_foundation::NavAgentParams> =
-        nav_graph.map(|g| g.agent_params());
-    // E10 AC #3: mesh models of AI-enemy placements a connected client suppresses.
-    // They never spawn a local `MeshComponent`, so the registry-driven model sweep
-    // cannot see them; unioned into the mesh model list below so the host-replicated
-    // remote enemy is drawable. Empty off a connected client.
-    let mut suppressed_enemy_models: Vec<String> = Vec::new();
-    // Runtime net-slot materialization may select any movement descriptor on a
-    // listen host, while a connected client receives the same set by snapshot.
-    // Preload the whole category for every role; gameplay never uploads models.
-    let movement_descriptor_models = movement_descriptor_mesh_models(&descriptors);
-    // Replicated state schema must be role-invariant before the first snapshot is
-    // validated. Resolve the authored player-health range from the shared map
-    // placement + descriptor table, not from a role-specific materialized pawn: a
-    // connected client intentionally suppresses its boot pawn.
-    install_descriptor_player_health_range(
-        &mut script_ctx.slot_table.borrow_mut(),
-        &spawn_points,
-        &descriptors,
-    );
-    // Wieldable weapon instances have no MeshComponent of their own. Preload every
-    // declared third- and first-person model so attachment/viewmodel changes never
-    // trigger runtime model loads or leave a transient placeholder.
-    let weapon_presentation_models = weapon_presentation_models(&descriptors);
-    let (active_wieldable, active_wieldable_descriptor, first_spawn) = {
-        let mut registry = script_ctx.registry.borrow_mut();
-        let mut map_entities = map_entities;
-        if suppress_ai_enemies {
-            // E10 Task 5: a connected client must NOT spawn local authoritative
-            // copies of map-placed AI enemies — they are host-authoritative and
-            // arrive via snapshots. Filter before dispatch using the descriptor's
-            // `ai` block (components do not exist pre-materialization).
-            suppressed_enemy_models = suppressed_ai_enemy_mesh_models(&map_entities, &descriptors);
-            let kept = filter_out_client_ai_enemies(&map_entities, &descriptors);
-            let dropped = map_entities.len() - kept.len();
-            if dropped > 0 {
-                log::info!(
-                    "[Loader] connected client: suppressing {dropped} map-placed AI enemy \
-                     placement(s); they arrive via host snapshots"
-                );
-            }
-            map_entities = kept;
-        }
-        let descriptor_handled = apply_data_archetype_dispatch(
-            &map_entities,
-            &descriptors,
-            &builtin_handled,
-            &mut registry,
-            agent_params,
-        );
-        if !descriptor_handled.is_empty() {
-            log::info!(
-                "[Loader] dispatched {} map entities through descriptor archetypes",
-                descriptor_handled.len(),
-            );
-        }
-
-        // Camera pose is seeded from the first spawn regardless of spawn success
-        // (a connected client holds it until the net baseline arms its pawn).
-        let first_spawn: Option<(Vec3, Vec3)> = spawn_points.first().map(|e| (e.origin, e.angles));
-
-        // A connected client must NOT spawn a boot pawn (its authoritative pawn
-        // arrives as a host-replicated baseline); single-player and the listen host
-        // keep spawning theirs.
-        let (active_wieldable, active_wieldable_descriptor) = if suppress_boot_pawn {
-            log::info!("[Loader] connected client: deferring player spawn to host baseline");
-            (None, None)
-        } else if !spawn_points.is_empty() {
-            let result =
-                spawn_from_player_starts(&spawn_points, &descriptors, &mut registry, agent_params);
-            (result.active_wieldable, result.active_wieldable_descriptor)
-        } else {
-            log::info!("[Loader] no player_spawn in map; skipping player spawn");
-            (None, None)
-        };
-
-        (active_wieldable, active_wieldable_descriptor, first_spawn)
-    };
-    let spawner_diagnostics = {
-        let mut registry = script_ctx.registry.borrow_mut();
-        resolve_spawners_for_level(&mut registry, &descriptors, agent_params, &spawn_context)
-    };
-    if spawner_diagnostics.invalid_total() > 0 {
-        log::warn!(
-            "[Loader] {} entity_spawner placement(s) remain unresolved",
-            spawner_diagnostics.invalid_total()
-        );
-    }
-    // Pool arming is host-only and occurs after every trigger/spawner binding
-    // exists, but before `levelLoad` so level-load reactions can override it.
-    // Connected clients retain their authored trigger state and an empty report.
-    let trigger_pool_report = if suppress_ai_enemies {
-        TriggerPoolInstallReport::default()
-    } else {
-        let pools = script_ctx.data_registry.borrow().trigger_pools().to_vec();
-        install_trigger_pools(
-            &mut script_ctx.registry.borrow_mut(),
-            &pools,
-            trigger_pool_policy,
-            &command_diagnostics,
-            trigger_volume_bridge,
-        )
-    };
-    // An `entity_spawner` itself has no mesh. Its resolved archetype can still
-    // be the only reference to an enemy model in this level, on either the host
-    // or a connected client (spawners survive the client AI-placement filter).
-    // Feed those handles into the same install-time upload/clip-table sweep as
-    // ordinary and client-suppressed placements; no runtime GPU upload exists.
-    let spawner_models = {
-        let registry = script_ctx.registry.borrow();
-        resolved_spawner_mesh_models(&registry, &descriptors)
-    };
-    timings.record("archetype_sweep");
-
-    // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
-    // mesh entity. Reset the game-side tables, compute the distinct model list
-    // (unioning models missing due to connected-client suppression), then the
-    // renderer-coupled upload + clip-table build runs via the injected hook,
-    // followed by the CPU hit-zone build, clip-index resolve, and zone-multiplier
-    // cross-check.
-    mesh_clip_tables.clear();
-    hit_zone_store.clear();
-    let models = {
-        let registry = script_ctx.registry.borrow();
-        let mut models = crate::distinct_mesh_models(&registry);
-        let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
-        for model in &suppressed_enemy_models {
-            if seen.insert(model.clone()) {
-                models.push(model.clone());
-            }
-        }
-        for model in &movement_descriptor_models {
-            if seen.insert(model.clone()) {
-                models.push(model.clone());
-            }
-        }
-        for model in &weapon_presentation_models {
-            if seen.insert(model.clone()) {
-                models.push(model.clone());
-            }
-        }
-        for model in &spawner_models {
-            if seen.insert(model.clone()) {
-                models.push(model.clone());
-            }
-        }
-        models
-    };
-    let model_load_warning_owner = upload_mesh_models(&models, mesh_clip_tables);
-    for model in &models {
-        // Build this model's game-side hit-zone entry by re-loading the glTF
-        // independently of the renderer (CPU-only).
-        hit_zone_store.insert_from_load(model, content_root, model_load_warning_owner);
-    }
-    crate::resolve_mesh_entity_bindings(
-        &mut script_ctx.registry.borrow_mut(),
-        mesh_clip_tables,
-        hit_zone_store,
-    );
-    crate::warn_unknown_zone_multipliers(
-        &script_ctx.data_registry.borrow().entities,
-        hit_zone_store,
-    );
-    timings.record("model_load");
-
-    // Fire `levelLoad`. Headless fires it too so data-script reactions and
-    // crossings compose identically; runs after the clip resolve so a
-    // `setAnimationState` reaction sees concrete clip indices. This fire now
-    // precedes the windowed light/sprite enrollment passes
-    // (`absorb_dynamic_lights`, sprite-collection registration), which run after
-    // this function returns — so a `levelLoad` reaction that spawns a dynamic
-    // light or emitter is enrolled and renders (previously dropped). Intentional,
-    // accepted improvement.
-    fire_named_event_with_sequences(
-        "levelLoad",
-        &script_ctx.data_registry.borrow(),
-        sequence_registry,
-        reaction_registry,
-        system_registry,
-        script_ctx,
-        None,
-    );
-    // `levelLoad` may itself fire a spawner reaction after the install sweep.
-    // Its archetype's table already exists above; fill only the newly attached
-    // meshes before the first render rather than rebuilding or uploading.
-    let spawned_meshes = spawn_context.take_pending_mesh_clip_resolves();
-    crate::resolve_mesh_entity_bindings_for_entities(
-        &mut script_ctx.registry.borrow_mut(),
-        mesh_clip_tables,
-        hit_zone_store,
-        spawned_meshes,
-    );
-    timings.record("level_load_event");
-
-    WorldInstallProducts {
-        mover_colliders,
-        trigger_bindings,
-        trigger_pool_report,
-        mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
-        active_wieldable,
-        active_wieldable_descriptor,
-        first_spawn,
-        spawn_points,
-    }
+    /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
+    /// world installer remains seat-table agnostic.
+    pub(crate) local_carried_loadout: Option<crate::netcode::CarriedState>,
 }
 
 /// Connected-client trigger-pool install result exposed only to cross-subsystem
@@ -2143,6 +1554,8 @@ mod tests {
                 font_system: postretro_ui::text::build_font_system(),
                 scripting: crate::session::ScriptingCore {
                     command_diagnostics: Default::default(),
+                    auto_close_timers: Default::default(),
+                    mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                     spawn_context: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),
@@ -2184,6 +1597,7 @@ mod tests {
                 trigger_volume_bridge:
                     scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
                 trigger_system: crate::trigger_system::TriggerSystem::default(),
+                touch_system: crate::sim::touch::TouchSystem::default(),
                 emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
                 particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
@@ -2193,6 +1607,7 @@ mod tests {
                 settings_path: None,
                 frontend: None,
                 net_endpoint: None,
+                seat_table: None,
                 audio: None,
                 #[cfg(feature = "dev-tools")]
                 debug_ui: None,
@@ -2211,6 +1626,7 @@ mod tests {
             title_buffer: String::new(),
             last_title_update: Instant::now(),
             mod_theme_override: Default::default(),
+            switching: Default::default(),
             pending_mode_signal: None,
             pending_menu_toggle: false,
             pending_exit_to_desktop: false,
@@ -2223,9 +1639,6 @@ mod tests {
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
-            active_wieldable: None,
-            active_wieldable_descriptor: None,
-            client_weapon_state: None,
             client_fire_resolutions: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             boot_state: BootState::Running,
@@ -2287,11 +1700,12 @@ mod tests {
     fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some(name.to_string()),
-            default_weapon: None,
+            inventory: None,
             light: None,
             emitter: None,
             movement: None,
             weapon: None,
+            touchable: None,
             mesh: None,
             health: None,
             behavior: None,
@@ -2666,6 +2080,7 @@ mod tests {
             let session = app.session.as_mut().expect("test app session installed");
             let handles = WorldInstallHandles {
                 command_diagnostics: Default::default(),
+                mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                 spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
@@ -2690,6 +2105,7 @@ mod tests {
                 trigger_pool_policy: policy,
                 suppress_ai_enemies,
                 suppress_boot_pawn: suppress_ai_enemies,
+                local_carried_loadout: None,
             };
             install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
                 crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
@@ -3328,6 +2744,8 @@ mod tests {
                 id: "replacement".to_string(),
                 version: "1".to_string(),
                 render: Default::default(),
+                movers: Default::default(),
+                switching: Default::default(),
                 entities: Vec::new(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
@@ -4138,13 +3556,11 @@ mod tests {
         assert!(app.level_rx.is_some());
     }
 
-    // E10 Task 5: the install path keys AI-enemy spawn suppression off
-    // `is_connected_client()`. Prove the role gate that drives the
-    // `filter_out_client_ai_enemies` branch in `install_level_payload` resolves
-    // correctly for each role — single-player and listen host keep every
-    // placement (no suppression), only the connected client suppresses.
+    // The install path keys host-authoritative placement suppression off
+    // `is_connected_client()`. Prove the role gate resolves correctly for each role:
+    // only the connected client suppresses map placements.
     #[test]
-    fn ai_enemy_suppression_gate_is_connected_client_only() {
+    fn host_replicated_placement_suppression_gate_is_connected_client_only() {
         use std::net::{Ipv4Addr, SocketAddr};
 
         use crate::netcode::{NetEndpoint, NetRole};
@@ -4159,7 +3575,7 @@ mod tests {
 
         // Listen host: authoritative, keeps every placement and replicates them.
         app.session.as_mut().unwrap().net_endpoint = Some(
-            NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
                 .expect("host endpoint constructs")
                 .expect("host role yields an endpoint"),
         );
@@ -4170,9 +3586,12 @@ mod tests {
 
         // Connected client: the only role that suppresses the local spawn.
         app.session.as_mut().unwrap().net_endpoint = Some(
-            NetEndpoint::from_role(&NetRole::Connect {
-                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-            })
+            NetEndpoint::from_role(
+                &NetRole::Connect {
+                    addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
             .expect("client endpoint constructs")
             .expect("connect role yields an endpoint"),
         );
@@ -4217,6 +3636,7 @@ mod tests {
             let session = app.session.as_mut().expect("test app session installed");
             let handles = WorldInstallHandles {
                 command_diagnostics: Default::default(),
+                mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
                 spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
@@ -4241,6 +3661,7 @@ mod tests {
                 trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
                 suppress_ai_enemies: false,
                 suppress_boot_pawn: false,
+                local_carried_loadout: None,
             };
             // No-op mesh hook: headless-shaped, no renderer to upload models.
             let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {

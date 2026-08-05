@@ -192,7 +192,7 @@ Scenarios the tasks must hold and the test work asserts directly.
 | 24 | Determinism harness records a shell with a mid-shell despawn | pellet 3's policy despawns the target; pellets 4..N skipped by the liveness re-check | The recorded per-pellet impact set is the cast set, not the applied subset — the compared tick shape is stable regardless of policy side effects; captured off `events.impacts` before the first apply |
 | 25 | Client frame authorizes no fire tick | tick selection returns empty; `advance_client_fire_state` still runs on the no-tick branch and may return true | `shells_fired` does not advance; no `PelletRng` is constructed; no directions consumed |
 | 26 | Client cast whose input command fails to send | `resolve_client_fire` returns `Some` (counter and cooldown written), then the send-tick mismatch path returns early | Counter stays advanced with no declaration sent — accepted; the next shell's fan is the following counter position |
-| 27 | Impact policy displaces the shooter mid-shell | co-op: the host recomputes eye/LOS/range per record after each `on_impact`; single-player: those checks are deliberately not mirrored | Host truncates remaining records once the shooter moves past `range × HIT_RANGE_TOLERANCE`; single-player applies all N — accepted divergence, PvE |
+| 27 | Impact policy displaces the shooter mid-shell | co-op: the host recomputes eye/LOS/range per record after each `on_impact`; single-player: those checks are deliberately not mirrored | Host rejects every remaining record once the shooter moves past `range × HIT_RANGE_TOLERANCE` (each still consumes clamp budget; no early break); single-player applies all N — accepted divergence, PvE |
 | 28 | Level transition with a partly-fired weapon | `shells_fired = 5`; level change; weapon respawns from descriptor (no `WeaponComponent` persistence) | Counter resets to 0; the first shell of the new level repeats the archetype's first fan — deterministic, accepted |
 | 29 | Drop to world, re-pickup into a different slot | the weapon entity survives; slot changes 0 → 1 | Counter keeps its value (entity-lifetime state); the fan still changes because the slot salt changed — both halves asserted |
 | 30 | Two provenance-less weapons, same slot and counter | neither carries `DescriptorProvenance` nor authors `creditSource` | Identical fans — the fallback salt is the shared constant; degenerate by design, unreachable from production spawn routes |
@@ -209,10 +209,14 @@ Scenarios the tasks must hold and the test work asserts directly.
   — including ordering-pin rows 11, 12, and 19–21.
 - [ ] The same weapon in co-op: the firing client casts 8 rays at the rendered
   pose and declares 0..8 records; the host mints the shot with pellet count 8,
-  clamps and validates per record, and applies per-record damage — including
-  ordering-pin rows 3, 4, 5, 9, 10, 15, and 22.
+  clamps and validates per record, and applies per-record damage — the
+  host-ingest halves (pins 4, 9, 10, and the ingest halves of 15 and 22)
+  asserted in the host-side ingest tests, the client halves (pins 3, 5, the
+  predicted ray count, and pin 16's clamp) in the client fire and
+  payload-apply tests.
 - [ ] Every shipped weapon authored without the new fields behaves identically to
-  today on all paths, asserted by a named regression: one impact, resolved along
+  today on all paths (over the full content set this is a review/grep gate; the
+  runnable core follows), asserted by a named regression: one impact, resolved along
   the unperturbed axis, with `event_names()` containing `"impact"` exactly once
   (ordering pin 1). The weapon script events `dry_fire` / `activate` / `impact`
   keep their at-most-once-per-shell cardinality.
@@ -234,19 +238,25 @@ Scenarios the tasks must hold and the test work asserts directly.
   tuning payload, clamps them on apply (pin 16), and predicts N-ray fire from
   them; the payload epoch is bumped and the committed fixture re-blessed.
 - [ ] Hot-reloading a weapon descriptor's `pelletCount` or `spreadDegrees`
-  reseeds the live component per ordering pin 8.
+  reseeds the live component per ordering pin 8 (two tests: component-level
+  beside the refresh coverage, shot-level beside the ingest tests — the
+  open-shot half proves the fire-time snapshot).
 - [ ] A fixed-seed emitter test records the direction sequence before the
   sampler extraction and asserts it unchanged after (the emitter's
   degenerate-case early returns still consume zero draws), and the shared
-  sampler has its own uniformity check.
+  sampler has its own uniformity check. The fixed-seed gate is a
+  golden-vector test; capturing its expected values before the extraction is
+  a review obligation, not machine-checked.
 - [ ] The generated `.d.ts` and `.d.luau` typedefs document both fields as
   optional with their ranges and defaults; the committed-typedef tests pass,
   including the rewritten per-pellet `damage` doc string.
 - [ ] `reference_shotgun` fires 8 pellets per shell with per-pellet damage
   retuned; no residual 12-damage claim remains in `combat-demo.README.md`,
-  `target-dummy.ts`, or `combat-lifecycle.ts`'s derivation comment; and every
-  shot-count / HP figure re-derives from the new per-shell total at the
-  walkthrough's stated distance.
+  `target-dummy.ts`, `combat-lifecycle.ts`'s derivation comment, or the two
+  SDK `reference_enemy` authorings, and every shot-count / HP figure
+  re-derives from the new per-shell total at the walkthrough's stated
+  distance (a review/grep gate, not a runnable test); the two SDK
+  authorings keep passing their shipped parity gate.
 
 ## Tasks
 
@@ -290,8 +300,9 @@ case asserts the conv-layer message, and `WeaponDescriptor::validate`'s
 `is_finite` check is defense-in-depth for non-VM ingresses only. Add a
 weapon-refresh test beside the existing weapon coverage in
 `crates/scripting-core/src/refresh_plan.rs` asserting a descriptor edit to either
-stat reseeds the live component while cooldown/magazine/state persist (ordering
-pin 8). Register both fields on the `WeaponDescriptor` type in
+stat reseeds the live component while cooldown/magazine/state and
+`shells_fired` persist (ordering pin 8). Register both fields on the
+`WeaponDescriptor` type in
 `crates/postretro/src/scripting/primitives/mod.rs` as optional
 (`"pelletCount?"`, `"spreadDegrees?"`, the `lowerMs?`/`raiseMs?` pattern) with
 doc strings stating default, range, and half-angle semantics; regenerate typedefs
@@ -533,31 +544,44 @@ stats (`range`, `cooldown_ms`) already have; the new stats deliberately
 follow that shipped precedent rather than growing a carve-out here (pin 32).
 `damage` stays
 unreplicated — the host owns
-damage; the client needs count and cone, not amounts. Add an end-to-end
-host↔client test beside the shipped pellet regressions in the
-`netcode/mod.rs` test module: a `pelletCount: 8` weapon's declaration
-round-trips with up to 8 accepted records applying per-record damage with
-per-record zone multipliers, plus ordering-pin rows 4, 9, 10, 15, 16, and 22
-at authored counts (the two mid-RTT reload rows drive a hot reload between
-fire and declaration in the harness).
+damage; the client needs count and cone, not amounts. Two test surfaces,
+split by module — the shipped test module has no host↔client loop, so no
+single end-to-end test exists to write. Host side, beside the shipped
+pellet regressions in the `netcode/mod.rs` test module (its ingest fixture
+is host-only; the shipped authorization-time-facts-after-switch test is the
+precedent): a `pelletCount: 8` weapon's declaration applies up to 8 accepted
+records with per-record damage and zone multipliers, plus pins 4, 9, and 10,
+and the ingest halves of pins 15 and 22 — realized by mutating the live
+`WeaponComponent`'s `pellet_count` between the mint and the ingest, since the
+fire-time snapshot lives on `AuthorizedShot`. Client side, beside
+`apply_net_wieldable_tuning` in `net_descriptor.rs`: pin 16's apply-clamp and
+the predicted N-ray count. The clamp writes the base component fields —
+there is no override layer for these stats — which is exactly the pin-32
+exposure accepted above.
 
 ### Task 6: Dev-mod reference + walkthrough
 
 Retune `content/dev/scripts/reference-shotgun.ts` into a real pellet weapon:
 `pelletCount: 8`, `spreadDegrees: 4`, `damage` dropped to a per-pellet value
-(suggest 3.0 — shell total 24; comment the per-pellet semantics inline). Three dev-content files are arithmetic-locked to 12 damage: the walkthrough at
+(suggest 3.0 — shell total 24; comment the per-pellet semantics inline). Five files are arithmetic-locked to 12 damage or the HP it implies: the walkthrough at
 `content/dev/maps/combat-demo.README.md` (dummy hit counts, the 60 HP enemy's
 five-shot down, the −12 gib crossing, magazine budgets), the damage comment in
-`content/dev/scripts/target-dummy.ts`, and the derivation comment above
-`FINISHER_OVERSHOOT = -12` in `content/dev/scripts/combat-lifecycle.ts` — this
-task owns re-deriving every numeric claim in all three. The gib predicate is
+`content/dev/scripts/target-dummy.ts`, the derivation comment above
+`FINISHER_OVERSHOOT = -12` in `content/dev/scripts/combat-lifecycle.ts`, and
+the `reference_enemy` health block authored twice in the SDK —
+`sdk/behaviors/reference/entities.ts` and
+`sdk/behaviors/reference/entities.luau`, which must move together or the
+shipped parity gate
+`the_shipped_reference_enemy_graph_is_identical_in_both_authorings` fails —
+this task owns re-deriving every numeric claim in all five. The gib predicate is
 `.le(FINISHER_OVERSHOOT)`, so a shell landing exactly at −12 gibs. Anchor the
 walkthrough at a stated point-blank distance where all 8 pellets connect so
 shot counts stay deterministic, and retune both targets' HP so the staged
 down-then-gib beat survives per-shell totals of 24 — the killing shell must
-land above −12 with a later shell crossing it (suggest a 40 HP dummy: 16 →
-−8 downs → −32 gibs; and a 70 HP enemy: 46 → 22 → −2 downs → −26 gibs; the
-shipped 60 HP would down-and-gib in one shell at exactly −12, erasing the
+land above −12 with a later shell crossing it (suggest raising the shipped
+30 HP dummy to 40: 16 → −8 downs → −32 gibs; and the shipped 60 HP enemy —
+authored in the two SDK files — to 70: 46 → 22 → −2 downs → −26 gibs; at 60
+the enemy would down-and-gib in one shell at exactly −12, erasing the
 walkthrough's death/recovery beat). Exact numbers are Task 6's dev-fixture
 tuning choice within these constraints. Leave `reference_pistol`
 and both wieldable fixtures unauthored — their unchanged behavior is asserted
@@ -567,8 +591,9 @@ by Task 3's named pin-1 regression, not assumed.
 
 **Phase 1 (concurrent):** Task 1 (descriptor surface), Task 2 (sampler + seed) —
 no dependency between them. Task 1 owns every `crates/entities/src/components/weapon.rs`
-edit — including Task 2's counter field — so Task 2's files (`emitter_bridge.rs`,
-`trigger_pools.rs`, new `spread.rs`) stay disjoint from Task 1's sweep.
+edit — including Task 2's counter field. One-line overlap remains: Task 2's
+`mod spread;` declaration lands in `weapon/mod.rs`, a file Task 1's literal
+sweep also touches — a trivially mergeable line; otherwise disjoint.
 **Phase 2 (sequential):** Task 3 — thin slice through resolution; consumes Task 1's
 stats and Task 2's sampler, falsifies the fire-events reshape and seeding
 assumptions before the consumption fan-out.

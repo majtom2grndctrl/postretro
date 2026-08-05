@@ -169,8 +169,11 @@ Two production fire paths, one aim source, no spread anywhere today:
   author-unit-friendly names); the emitter's radians `spread` is an FGD KVP,
   a different authoring surface.
 - **Seed inputs.** A per-weapon monotonic shell counter (`WeaponComponent` live
-  state) mixed with a spawn-order-stable instance salt (canonical-name hash +
-  owning seat/client + inventory slot). Two constraints force this shape: no
+  state) mixed with a spawn-order-stable instance salt: canonical-name hash
+  (from `DescriptorProvenance`; `credit_source` fallback) + inventory slot. No
+  owner id — none is reachable from either fire path, and each machine samples
+  only its own pawn's fire, so owners never share a sampler. Two constraints
+  force this shape: no
   tick reaches the local weapon stage (`run_local_weapon_command`,
   `simulate_tick`, and `SimCommand` carry none — threading one crosses ~46 call
   sites), and `EntityId`/`NetworkId` bits are allocation-ordered, which the

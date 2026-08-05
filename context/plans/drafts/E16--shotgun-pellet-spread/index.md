@@ -103,6 +103,16 @@ weapon, already carrying per-shell reload — hit like rifles.
   a pure function of replay-stable weapon state (the shell counter + stable salt,
   Task 2), so replayed runs reproduce them exactly — verified by the determinism
   gate itself (AC 6).
+- **Divergence, named:** `networking.md`'s durable posture — "General posture
+  for engine randomness: host-only, load-time, consequences-only — never
+  per-tick or client-side, never shared-seed re-sim." This spec runs
+  deterministic weapon RNG per tick and on the client. The posture's
+  underlying commitments all hold: no roll crosses the wire, no client re-runs
+  another machine's roll (each machine samples only its own pawn's fire), and
+  replay determinism is preserved by the pure-function seed. At promotion,
+  that `networking.md` sentence gains the carved exception — a promotion-time
+  lib update, per the drafting rule that `context/lib/` changes land at
+  promotion.
 
 **Placement.** Spread lives on the weapon descriptor behind `effective()` — the
 stat seam the roadmap reserves for accuracy axes — not on the camera/aim layer and
@@ -111,7 +121,13 @@ not as runtime-writable weapon state. The aim direction stays the pure screen-ce
 at resolution time. **The Weapon Feel seam:** future dynamic accuracy (bloom,
 recoil, ADS) composes by either moving the axis before sampling or scaling the
 effective spread via the modifier layer — pellet sampling reads whatever axis and
-spread it is handed and needs no rework.
+spread it is handed and needs no rework. One reassignment, stated: the
+roadmap's Weapon Feel bullet owns "per-weapon accuracy stats… behind the
+`effective()` seam", and `spreadDegrees` is exactly that — this spec pulls the
+*static* accuracy stat forward into Resolution Modes because the pellet fan
+cannot ship without it; Weapon Feel's bullet narrows to the dynamic axis
+(bloom, recoil, ADS, the HUD slot and ring). The roadmap edit lands at
+promotion.
 
 **Alternatives rejected.**
 - *Authored per-pellet patterns (ring/star fixed offsets).* Rejected by owner:
@@ -129,7 +145,7 @@ spread it is handed and needs no rework.
   `EmitterBridgeState`, and its seeding policy is the opposite of what the
   determinism gate needs. Extract the pure math instead.
 - *Seeding from a sim tick + weapon entity id.* Rejected twice over: no tick
-  reaches the local weapon stage today (threading one crosses ~46
+  reaches the local weapon stage today (threading one crosses ~41
   `simulate_tick` / `run_local_weapon_command` call sites for no other consumer),
   and entity-id bits vary with spawn order, which would fail the shipped
   spawn-order-reversal determinism assertion. The per-weapon shell counter
@@ -160,9 +176,17 @@ Scenarios the tasks must hold and the test work asserts directly.
 | 11 | All pellets miss entities — local path | N world impacts | Per-impact sequence runs per world impact (FX at each point); no damage applied |
 | 12 | Mid-shell target despawn — local path | pellet k's `on_impact` policy despawns target E; pellets k+1..N also resolved onto E | Host parity: each later pellet whose entity target no longer resolves skips damage and `on_impact` (impact FX may still spawn — the host path never spawns FX, so parity does not constrain presentation); world-hit pellets unaffected |
 | 13 | Spawn-order-reversed determinism run | same command stream; harness entities spawned in reversed order | Identical labeled per-tick outcomes — pellet directions must not depend on `EntityId`/`NetworkId` allocation order |
-| 14 | Two instances of the same weapon archetype fire on one tick | both shells resolve in tick T | Distinct pellet fans per instance — the seed salt disambiguates instances, not just archetypes |
+| 14 | one pawn wields two instances of the same archetype in different inventory slots; both fire | both shells resolve in tick T | Distinct fans — the slot index in the salt disambiguates; cross-machine instances never share a sampler (each machine casts only its own pawn's rays), so no owner id is needed in the seed |
 | 15 | Hot reload lowers `pelletCount` 8→4 with a connected client mid-RTT | host refreshes + resends payload; client predicts at 8 for up to one RTT | Shots minted after the reload clamp declarations at 4 (excess records consume budget, shipped clamp); a shot minted before it ingests at 8 (pin 8); the client's stat converges on payload apply — no verdict rejection required, no desync |
 | 16 | Tuning payload carries out-of-range values | payload arrives with `pellet_count` 0 or huge, `spread_degrees` negative/NaN | Client clamps on apply to `1..=MAX_PELLET_COUNT` and finite `0..=45` — never casts 0 or >32 rays |
+| 17 | Client multi-tick Auto frame | 3 fire ticks selected in one frame (the tick-selection loop breaks only for Semi) | Shell counter advances by exactly one (once per cast); ticks 2–3 send empty declarations; the client counter may lag the host's shell tally with no observable effect |
+| 18 | Host mints a shot for a remote pawn | `run_remote_weapon_commands` accepts a remote fire | The remote weapon's shell counter does not advance host-side — the host casts no rays; only the declaring client's counter advances |
+| 19 | Same-tick fire + completed weapon switch, local path | shell fires on the tick a lower completes and the inventory repoints, in one `run_local_weapon_command` call | All N pellets credit the firing weapon's snapshot, taken before the impacts loop — never the incoming weapon |
+| 20 | Policy swaps or despawns the firing weapon mid-shell, local path | pellet k's `on_impact` changes the active wieldable | Pellets k+1..N apply with the pre-loop credit snapshot and full damage — matching the host's fire-time-snapshotted `AuthorizedShot` |
+| 21 | Target reaches 0 HP mid-shell, corpse keeps `HealthComponent` | 8 pellets on one target; 0 HP at pellet 3, no despawn | Pellets 4–8 still validate and apply on both paths (the check is component presence, not liveness); exactly one death event for the shell |
+| 22 | Hot reload raises `pelletCount` 4→8 with a connected client mid-RTT | host resends payload; client predicts at 4 for up to one RTT | Declarations of ≤4 records accepted whole (4 ≤ 8 — no clamp, no rejection); that shell deals proportionally less damage for at most one RTT; the client converges on payload apply |
+| 23 | Client weapon rematerialized by tuning payload | slot goes shotgun → rifle → shotgun across payloads (despawn + fresh spawn) | `shells_fired` is instance-lifetime state and resets to 0 — the re-acquired weapon repeats its archetype's first fan; accepted, no engine consequence |
+| 24 | Determinism harness records a shell with a mid-shell despawn | pellet 3's policy despawns the target; pellets 4..N skipped by the liveness re-check | The recorded per-pellet impact set is the cast set, not the applied subset — the compared tick shape is stable regardless of policy side effects |
 
 ## Acceptance criteria
 
@@ -170,11 +194,11 @@ Scenarios the tasks must hold and the test work asserts directly.
   single-player: consumes ammo cost once, produces up to 8 impacts inside the
   cone, applies per-pellet damage with per-pellet zone multipliers, and fires the
   impact-policy consumer once per pellet impact, effects settling between pellets
-  — including ordering-pin rows 11 and 12.
+  — including ordering-pin rows 11, 12, and 19–21.
 - [ ] The same weapon in co-op: the firing client casts 8 rays at the rendered
   pose and declares 0..8 records; the host mints the shot with pellet count 8,
   clamps and validates per record, and applies per-record damage — including
-  ordering-pin rows 3, 4, 5, 9, and 10.
+  ordering-pin rows 3, 4, 5, 9, 10, 15, and 22.
 - [ ] Every shipped weapon authored without the new fields behaves identically to
   today on all paths, asserted by a named regression: one impact, resolved along
   the unperturbed axis, with `event_names()` containing `"impact"` exactly once
@@ -187,18 +211,20 @@ Scenarios the tasks must hold and the test work asserts directly.
   a fired-shot test — a `pellet_count: 8`, zero-spread weapon produces 8 impacts
   all resolved along the exact aim axis.
 - [ ] The determinism harness drives a multi-pellet, nonzero-spread weapon
-  through `simulate_tick`, records per-pellet impact points into the compared
-  tick shape, and asserts: two identical runs match, the spawn-order-reversed
-  run matches, and two shells one tick apart record different impact sets
-  (pins 6, 7, 13).
+  (now carrying `DescriptorProvenance`) through `simulate_tick`, records
+  per-pellet impact points into the compared tick shape, and asserts: two
+  identical runs match, the spawn-order-reversed run matches, two shells one
+  tick apart record different impact sets, and a second same-archetype
+  instance in another slot records a different fan (pins 6, 7, 13, 14, 24).
 - [ ] A connected client receives `pellet_count` and `spread_degrees` in the
   tuning payload, clamps them on apply (pin 16), and predicts N-ray fire from
   them; the payload epoch is bumped and the committed fixture re-blessed.
 - [ ] Hot-reloading a weapon descriptor's `pelletCount` or `spreadDegrees`
   reseeds the live component per ordering pin 8.
-- [ ] The emitter's existing cone-distribution tests pass unchanged after its
-  sampler delegates to the shared function (its RNG draw order preserved), and
-  the shared sampler has its own uniformity check.
+- [ ] A fixed-seed emitter test records the direction sequence before the
+  sampler extraction and asserts it unchanged after (the emitter's
+  degenerate-case early returns still consume zero draws), and the shared
+  sampler has its own uniformity check.
 - [ ] The generated `.d.ts` and `.d.luau` typedefs document both fields as
   optional with their ranges and defaults; the committed-typedef tests pass.
 - [ ] `reference_shotgun` fires 8 pellets per shell with per-pellet damage
@@ -360,7 +386,7 @@ re-checks are deliberately not mirrored — the local points come from a
 same-tick cast. World-hit pellets are unaffected, and FX is unconstrained by
 parity (the host path spawns none). A local analogue of the shipped
 "policy effects settle between pellets" regression asserts this observable,
-including the mid-shell despawn case. In the same file,
+including both mid-shell despawn cases — target and shooter. In the same file,
 `run_remote_weapon_commands` mints `AuthorizedShot` with
 `pellet_count: effective.pellet_count as usize` from the weapon's `effective()`
 instead of the literal 1 — the ingest clamp, zero-count rejection, and per-record
@@ -420,12 +446,20 @@ fire and declaration in the harness).
 
 Retune `content/dev/scripts/reference-shotgun.ts` into a real pellet weapon:
 `pelletCount: 8`, `spreadDegrees: 4`, `damage` dropped to a per-pellet value
-(suggest 3.0 — shell total 24 versus today's 12; a dev-fixture tuning choice,
-comment the per-pellet semantics inline). Leave `reference_pistol` and both
-wieldable fixtures unauthored — their unchanged behavior is asserted by Task 3's
-named pin-1 regression, not assumed. Update the combat demo walkthrough at
-`content/dev/maps/combat-demo.README.md`: pellet behavior, the per-pellet damage
-meaning, and the spread cone being a descriptor stat.
+(suggest 3.0 — shell total 24; comment the per-pellet semantics inline). The
+walkthrough at `content/dev/maps/combat-demo.README.md` is arithmetic-locked to
+12 damage per shot throughout (dummy hit counts, the 60 HP enemy's five-shot
+down, the −12 gib crossing, magazine budgets) — this task owns re-deriving
+every numeric claim in it, plus the same 12-damage comment in
+`content/dev/scripts/target-dummy.ts`. Anchor the walkthrough at a stated
+point-blank distance where all 8 pellets connect so shot counts stay
+deterministic, and retune target HP so the staged down-then-gib sequence
+survives per-shell totals of 24 (suggest a 40 HP dummy: shell one → 16, shell
+two → −8 downs, shell three → −32 gibs past the −12 threshold; the 60 HP enemy
+reaches exactly −12 on shell three — state the edge). Exact numbers are Task
+6's dev-fixture tuning choice within these constraints. Leave `reference_pistol`
+and both wieldable fixtures unauthored — their unchanged behavior is asserted
+by Task 3's named pin-1 regression, not assumed.
 
 ## Sequencing
 
@@ -449,6 +483,7 @@ assumptions before the consumption fan-out.
 | pellet count | `WeaponDescriptor.pellet_count: u32`; `EffectiveStats.pellet_count`; `AuthorizedShot.pellet_count: usize` (existing) | descriptor key `pelletCount`; tuning payload JSON `pellet_count` (snake_case, matching `cooldown_ms`) | `pelletCount?: number` (default 1) | same | n/a |
 | spread cone | `WeaponDescriptor.spread_degrees: f32`; `EffectiveStats.spread_degrees` | descriptor key `spreadDegrees`; tuning payload `spread_degrees` | `spreadDegrees?: number` (default 0, half-angle) | same | n/a |
 | pellet cap | `pub const MAX_PELLET_COUNT: u32 = 32` (foundation, beside the validator; also the client apply-clamp bound) | enforced at descriptor validation and payload apply — no wire count field exists | documented in typedef doc string | same | n/a |
+| shell counter | `WeaponComponent.shells_fired: u32`, `#[serde(default)]` (as are the mirrored `pellet_count`/`spread_degrees` component fields) | not on the descriptor or tuning payload — engine live state | — (not author-facing) | — | n/a |
 
 No new wire messages, and no `WIRE_VERSION` bump despite `networking.md`
 §Version gates' field-addition rule: the tuning payload is JSON the net crate
@@ -460,9 +495,9 @@ gate. `HitDeclaration` already carries 0..N records with no count field.
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | One authorized fire accepts ≤ `pellet_count` records; invalid records consume budget; zero count rejects hits | shipped ingest (`ingest_hit_declaration`) | Task 4's mint feeds it real counts — the clamp/validation shape must not be edited | AC 2, pins 4, 10, 15 |
-| Impact-policy consumer runs after each pellet, effects settling between pellets, on **both** paths — with a dead-target pellet skipping damage + policy on both | shipped ingest (remote); Task 4 (local loop + liveness re-check) | any batching of the local apply loop, or an unconditional `on_impact`, re-opens the stale-policy-state bug the shipped regression pinned | AC 1, 2, pin 12 |
+| Impact-policy consumer runs after each pellet, effects settling between pellets, on **both** paths — with a dead-target pellet skipping damage + policy on both | shipped ingest (remote); Task 4 (local loop + liveness re-check) | any batching of the local apply loop, or an unconditional `on_impact`, re-opens the stale-policy-state bug the shipped regression pinned; per-call credit re-resolution after a same-tick switch — the loop applies through the pre-loop snapshot | AC 1, 2, pin 12, 19–21 |
 | Unauthored weapons behave byte-identically (count 1, spread 0 ⇒ exact-axis single ray) | Task 1 (named default fn = 1), Task 2 (zero-spread exactness), Task 3 (named pin-1 regression) | plain-`default` drift (u32 → 0 fails validation), or any sampler that perturbs at zero spread | AC 3, 5, pins 1, 2 |
-| Pellet directions are a pure function of replay-stable, spawn-order-stable state | Task 2 (shell counter + canonical-name/seat/slot salt), Task 3 (seed threading) | any `EntityId`/`NetworkId`/wall-clock/global-counter seeding reaching `simulate_tick` | AC 6, pins 6, 7, 13, 14 |
+| Pellet directions are a pure function of replay-stable, spawn-order-stable state | Task 2 (shell counter + canonical-name/slot salt), Task 3 (seed threading) | any `EntityId`/`NetworkId`/wall-clock/global-counter seeding reaching `simulate_tick`; any owner-id salt input (unreachable from either fire path) | AC 6, pins 6, 7, 13, 14 |
 | Client casts pellets once per frame; additional fire ticks retire via empty declarations | shipped client fire loop | Task 3 must resolve N inside the existing single cast; Task 5 must not add a second cast site | AC 2, pin 3 |
 | `damage` means per-pellet on every path; shell total is damage × count | shipped per-record/per-impact application; owner decision | any future divide-by-count "normalization" at an apply site | AC 1, 2, 11 |
 | Ammo cost and cooldown consume per shell, never per pellet | shipped weapon state machine (untouched by this plan) | any pellet loop reaching the machine or the ammo debit | AC 1 |

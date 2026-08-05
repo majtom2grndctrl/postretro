@@ -274,14 +274,14 @@ pub fn bake_direct_sh_volume_controlled(
 /// positions in `EntityShadowLightsSection::light_indices`, not AlphaLights or
 /// source light indices.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DirectDeltaBakeStats {
+pub struct DirectDeltaBakeStats {
     /// One nonempty selected-light slot, ordered by descending payload bytes.
     pub(crate) rows: Vec<DirectDeltaBakeStatsRow>,
     pub(crate) total_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DirectDeltaBakeStatsRow {
+pub struct DirectDeltaBakeStatsRow {
     pub(crate) selection_slot: usize,
     /// Stable identity: position in `StaticBakedLights`.
     pub(crate) static_index: u64,

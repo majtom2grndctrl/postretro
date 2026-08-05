@@ -1,6 +1,6 @@
 # Direct SH Delta Footprint Instrumentation
 
-> **Status:** ready.
+> **Status:** in progress.
 > **Track:** Lighting / build pipeline — measurement prerequisite, not a fix.
 > **Related:** `context/lib/build_pipeline.md` (PRL sections, prl-build) · `context/lib/rendering_pipeline.md` §4/§7.1 (SH compose) · `context/plans/done/lighting--entity-direct-sh/` (the direct-SH feature this measures) · `context/plans/done/perf-animated-sh-light-culling/` (the sparse-CSR delta form).
 > **Dependencies (this backlog):** No upstream dependency — this is the measurement foundation. Its delta-byte footprint output is consumed by `lighting-scale--adaptive-sh-probe-density`'s Task 1 measurement spike. It shares the `pack.rs` section-size logging surface with `compiler-log-hygiene`; coordination pinned: the id-27 per-section size line (Task 2) is part of the breakdown and follows its level, including any `compiler-log-hygiene` downgrade to `debug!`; Task 1's direct-delta summary and Task 4's SH-total aggregate are pinned `info!` and that spec's sweep must exempt them.
@@ -35,6 +35,30 @@ A stress map compiled with dense settings baked a **1.22 GiB** direct-SH delta s
 - [ ] At runtime, loading a map with a direct-delta section logs a per-binding storage footprint for the direct compose path's PRL-baked delta buffers (`delta_subblocks`, `affinity_offsets`, `affinity_lights`) plus their total, and the log is unambiguously attributable to the DIRECT compose path (not confusable with the indirect path's existing footprint line). The line is emitted once per map load / compose-resource construction (`build_promotion_pass` under `DirectShComposeResources::new`, which is called only from the full-init and resource-rebuild paths), **not per frame** — matching the indirect path's existing once-per-load footprint log. Evidence: a `test-log-capture` test around resource construction, or a run-and-grep on a small direct-delta map (presumptively `gate-heavily-lit.map`, as in AC-1); do not require the stress maze map here (an archived plan records it panicking at engine load).
 - [ ] prl-build prints one "SH sections total vs. non-SH total" `info!` summary line after the per-section size logs, summed over the emitted `sections` vec so every emitted section is accounted for.
 - [ ] No change to compiled `.prl` output bytes and no change to runtime behavior beyond the added log lines. A byte-for-byte diff of a `.prl` compiled before and after this plan (same inputs, `--no-cache` so cache state does not vary the warm path) is empty. This is a recorded-evidence gate executed at review time, not by a task agent.
+
+## Recorded evidence
+
+### 2026-08-04 scout compile
+
+This is a safe reconnaissance run, not the AC-1 dense reproduction. It used the normal cache and `RUST_LOG=info` with `-v`:
+
+```
+prl-build content/dev/maps/stress-warren-maze-crates.map \
+  -o /private/tmp/stress-warren-scout-lm0.8-sh2.25.prl \
+  --lightmap-density 0.8 --sh-probe-spacing 2.25 \
+  --soft-shadow-samples 64 -v --no-tui
+```
+
+- Direct-delta payload: 339,296,256 bytes across 18,408 CSR entries. Serialized `DirectShDeltaVolumes`: 339,377,658 bytes.
+- Largest contributors: static indices 8 and 26 tied at 440 CSR entries / 8,110,080 bytes each. The summary reports index 8 because equal-byte rows break ties by selection slot.
+- Emitted SH sections: 370,570,590 bytes. Non-SH sections: 11,446,642 bytes. Total emitted payload: 382,017,232 bytes.
+- Build time: 280.99 s; SH bake: 259.87 s. The cache-less direct-delta stage itself took 1.29 s.
+
+The coarser 2.25 m spacing changes cell boundaries and cannot prove the 1.33 m footprint or its exact ordering. It confirms the histogram and section accounting on the stress map without the dense-run cost.
+
+### 2026-08-04 PRL byte identity
+
+`content/dev/maps/gate-heavily-lit.map` was compiled with `--no-cache --no-tui` from pre-instrumentation commit `00cd754f` and feature commit `d4df042a`. `cmp --silent` passed. Both artifacts had SHA-256 `2a799e3a66eefd5910df8fc6804c9c0620766f71b75b64e8511c5524a74f5c13`.
 
 ## Tasks
 

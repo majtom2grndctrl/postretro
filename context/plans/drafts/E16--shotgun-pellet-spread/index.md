@@ -179,7 +179,7 @@ Scenarios the tasks must hold and the test work asserts directly.
 | 11 | All pellets miss entities — local path | N world impacts | Per-impact sequence runs per world impact (FX at each point); no damage applied |
 | 12 | Mid-shell target despawn — local path | pellet k's `on_impact` policy despawns target E; pellets k+1..N also resolved onto E | Host parity: each later pellet whose entity target no longer resolves skips damage and `on_impact` (impact FX may still spawn — the host path never spawns FX, so parity does not constrain presentation); world-hit pellets unaffected |
 | 13 | Spawn-order-reversed determinism run | same command stream; harness entities spawned in reversed order | Identical labeled per-tick outcomes — pellet directions must not depend on `EntityId`/`NetworkId` allocation order |
-| 14 | one pawn wields two instances of the same archetype in different inventory slots; both fire | both shells resolve in tick T | Distinct fans — the slot index in the salt disambiguates; cross-machine instances never share a sampler (each machine casts only its own pawn's rays), so no owner id is needed in the seed |
+| 14 | one pawn wields two instances of the same archetype in different inventory slots; both fire | each fired on its own tick after an active-slot switch — only the active wieldable fires | Distinct fans — the slot index in the salt disambiguates; cross-machine instances never share a sampler (each machine casts only its own pawn's rays), so no owner id is needed in the seed |
 | 15 | Hot reload lowers `pelletCount` 8→4 with a connected client mid-RTT | host refreshes + resends payload; client predicts at 8 for up to one RTT | Shots minted after the reload clamp declarations at 4 (excess records consume budget, shipped clamp); a shot minted before it ingests at 8 (pin 8); the client's stat converges on payload apply — no verdict rejection required, no desync |
 | 16 | Tuning payload carries out-of-range values | payload arrives with `pellet_count` 0 or huge, `spread_degrees` negative/NaN | Client clamps on apply to `1..=MAX_PELLET_COUNT` and finite `0..=45` — never casts 0 or >32 rays |
 | 17 | Client multi-tick Auto frame | 3 fire ticks selected in one frame (the tick-selection loop breaks only for Semi) | Shell counter advances by exactly one (once per cast); ticks 2–3 send empty declarations; the client counter may lag the host's shell tally with no observable effect |
@@ -217,8 +217,10 @@ Scenarios the tasks must hold and the test work asserts directly.
   (ordering pin 1). The weapon script events `dry_fire` / `activate` / `impact`
   keep their at-most-once-per-shell cardinality.
 - [ ] Descriptor validation rejects `pelletCount: 0` and `> 32`, and
-  `spreadDegrees` negative, `> 45`, or non-finite, each with a load error naming
-  the field; both VM parsers reject identically.
+  `spreadDegrees` negative or `> 45`, each with a load error naming the
+  field; both VM parsers reject identically. A non-finite `spreadDegrees` is
+  rejected by both VM conversion walkers before deserialization, asserted
+  against the conv-layer path message.
 - [ ] Zero spread means exact axis: ordering pin 2 asserted at the sampler and by
   a fired-shot test — an authored `pelletCount: 8`, zero-spread weapon produces 8 impacts
   all resolved along the exact aim axis.
@@ -226,7 +228,8 @@ Scenarios the tasks must hold and the test work asserts directly.
   (now carrying `DescriptorProvenance`) through `simulate_tick`, records
   per-pellet impact points into the compared tick shape, and asserts: two
   identical runs match, the spawn-order-reversed run matches, two consecutive shells record different impact sets, and a second same-archetype
-  instance in another slot records a different fan (pins 6, 7, 13, 14, 24).
+  instance in another slot, fired after an active-slot switch, records a
+  different fan (pins 6, 7, 13, 14, 24).
 - [ ] A connected client receives `pellet_count` and `spread_degrees` in the
   tuning payload, clamps them on apply (pin 16), and predicts N-ray fire from
   them; the payload epoch is bumped and the committed fixture re-blessed.
@@ -273,13 +276,18 @@ two fields, using the default values. Thread both through `WeaponComponent` and
 `EffectiveStats` in `crates/entities/src/components/weapon.rs` (passthrough, like
 every existing stat) and add both to the authored-tuning set
 `refresh_from_descriptor` reseeds — live fire/reload state stays preserved as
-today. Task 2's `shells_fired: u32` counter field also lands here — all three
+today. Task 2's `pub shells_fired: u32` counter field also lands here — all three
 new `WeaponComponent` fields are one edit, each `#[serde(default)]` — and
 `shells_fired` joins the preserved-live-state comment trailing
 `refresh_from_descriptor`, since it is preserved by omission. Both VM parsers (`scripting-core/src/data_descriptors/js/entity.rs`,
 `lua/entity.rs`) are serde-driven and need no reader edit; extend the shared parse
 tests in `scripting-core/src/data_descriptors/tests/entity.rs` with authored,
-defaulted, and each rejected-range case, parameterized over both VMs. Add a
+defaulted, and each rejected-range case, parameterized over both VMs. The
+non-finite `spreadDegrees` case never reaches the validator: both VM
+conversion walkers reject NaN/Infinity before deserialization with the
+conv-layer path message (``non-finite number at `spreadDegrees` ``), so that
+case asserts the conv-layer message, and `WeaponDescriptor::validate`'s
+`is_finite` check is defense-in-depth for non-VM ingresses only. Add a
 weapon-refresh test beside the existing weapon coverage in
 `crates/scripting-core/src/refresh_plan.rs` asserting a descriptor edit to either
 stat reseeds the live component while cooldown/magazine/state persist (ordering
@@ -302,8 +310,13 @@ Create a small pure module (suggest `crates/postretro/src/weapon/spread.rs`):
 orthonormal basis). Full degenerate-input contract, preserving the emitter
 behavior it absorbs: the axis is normalized via `normalize_or_zero` with a
 `Vec3::Y` fallback for a zero axis; spread is clamped to `>= 0`; at
-`half_angle_rad <= f32::EPSILON` the function returns the normalized axis exactly
-(the zero-spread exactness pin; also required because the entity ray cast
+`half_angle_rad <= f32::EPSILON` the function returns the **input axis
+unmodified** when it is finite and non-zero — only the degenerate zero-axis
+branch normalizes and falls back to `Vec3::Y` — because `normalize_or_zero` on
+an already-unit axis is not the bit-identity (it multiplies by
+`length_recip()`), and a legacy shell routed through the sampler must resolve
+byte-identically to today's straight-through cast (the zero-spread exactness
+pin; also required because the entity ray cast
 debug-asserts a finite, non-zero direction and assumes unit length so `toi` is a
 distance — the local sim path normalizes aim via `normalize_aim_direction` and
 the client path's `Camera::aim_ray` returns a normalized direction, so for both
@@ -321,15 +334,11 @@ the gate).
 Seeding: a **per-weapon shell counter** — a monotonic `shells_fired: u32` on
 `WeaponComponent` live state (the field itself lands with Task 1's component
 edits; preserved by `refresh_from_descriptor` by omission, zeroed at spawn),
-incremented once per resolved shell at exactly two sites: `tick_resolved_component`
-on the local path and `resolve_client_fire` on the client path (after
-`advance_client_fire_state` returns true, before the hitscan resolve), each
-passing the pre-increment value down as a plain `u32` seed input. `main.rs`'s
-no-tick `advance_client_fire_state` branch must not advance it (pin 25); a
-cast whose input command fails to send keeps its increment — the next shell's
-fan is simply the following counter position (pin 26); `run_remote_weapon_commands`
-never increments (pin 18); and the increment is unconditional on a resolved
-shell — a `pelletCount: 1` or zero-spread shell still advances it (pin 33).
+incremented once per resolved shell. The two increment sites live in
+`weapon/mod.rs` and belong to Task 3, which owns both functions' signatures;
+Task 2 ships the pure pieces only — `sample_cone_direction` and `PelletRng`
+plus a seed helper whose signature takes plain values,
+`(shell_counter: u32, salt_name: &str, slot: usize)`, never registry types.
 `PelletRng` wraps
 the `SplitMix64` mixer
 from `crates/postretro/src/trigger_pools.rs` — promote its private `next_u64` to
@@ -379,11 +388,13 @@ no conflict).
 seeded per Task 2's recipe; `run_local_weapon_command` holds the pawn, the
 weapon entity id, and the `Inventory` active slot, and reads the canonical name
 off the weapon's `DescriptorProvenance` — these seed inputs thread as new
-parameters through `tick_resolved_component` into `fire_hitscan`, both
-`run_local_weapon_command` call sites updating — the main sim call and the
-equip-only pass in `sim/mod.rs` — and the
-`#[cfg(test)]` `tick`/`tick_resolved` wrappers in `weapon/mod.rs` plus their
-call sites in `sim/weapon_stage.rs` update with them) and resolves each pellet
+parameters through `tick_resolved_component` into `fire_hitscan`, all
+`run_local_weapon_command` call sites updating — two production sites in
+`sim/mod.rs` (the main sim call and the equip-only pass) plus ~17 test call
+sites in `sim/weapon_stage.rs` — and the
+`#[cfg(test)]` `tick`/`tick_resolved` wrappers update with them (their call
+sites are inside `weapon/mod.rs`'s own test module — `sim/weapon_stage.rs`
+calls `tick_resolved_component` directly)) and resolves each pellet
 independently through the existing `resolve_nearest_hit`, producing one
 `WeaponImpact` per pellet that hit anything (world or entity), each carrying its
 own point, normal, target, and zone; `WeaponActivation` keeps the unperturbed
@@ -391,7 +402,19 @@ aim axis, one per shell. `resolve_client_hitscan` samples the same way; the same
 threaded as new `resolve_client_fire` parameters from its caller in `main.rs`
 — the once-per-frame
 cast *structure* (first-tick-only cast, empty-declaration retirement for
-additional ticks) is unchanged; only the argument list grows. It returns one
+additional ticks) is unchanged; only the argument list grows. Task 3 owns
+both `shells_fired` increments: `tick_resolved_component` (local) and
+`resolve_client_fire` (client — after `advance_client_fire_state` returns
+true, before the hitscan resolve), each passing the pre-increment value down
+as the seed input. `main.rs`'s no-tick `advance_client_fire_state` branch
+must not advance it (pin 25); a cast whose input command fails to send keeps
+its increment (pin 26); `run_remote_weapon_commands` never increments (pin
+18); the increment is unconditional on a resolved shell — single-pellet and
+zero-spread shells advance it (pin 33). The salt fallback chain restated for
+this task's wiring: provenance canonical name → the component's
+`credit_source` → the shared `weapon.unknown` constant. On a connected
+client the stats read the local component, which a later phase populates
+from the tuning payload — Task 3 adds no payload plumbing. It returns one
 `LocalHitRecord` per pellet whose nearest hit is an entity — the existing
 entity-only record rule, per pellet. Named regressions in this task: an
 unauthored weapon (`pellet_count` 1, `spread_degrees` 0) resolves byte-identically
@@ -422,9 +445,10 @@ weapon after a same-tick switch or a policy-driven swap mid-shell, is not
 called from this path at all (pins 19, 20). The
 impact-policy consumer runs after each pellet exactly as the host ingest
 already does for remote pellets. Host parity governs the mid-shell edges (pins
-12, 21): before each pellet's apply, the loop re-checks that the entity target
-still resolves with a `HealthComponent` and that the firing pawn still
-resolves — either failing skips damage and `on_impact` for that pellet,
+12, 21): before each pellet's apply, the loop re-checks `registry.exists(target)`
+**and** `get_component::<HealthComponent>(target).is_ok()` for the entity
+target, and that the firing pawn still resolves — either failing skips
+damage and `on_impact` for that pellet,
 silently (no per-pellet warn spam), mirroring the host's per-record checks in
 `ingest_hit_declaration`. A target at 0 HP whose corpse still carries
 `HealthComponent` keeps applying (host parity). The host's world-LOS and range
@@ -460,13 +484,17 @@ liveness re-check later skips, so the comparison is stable against policy side
 effects (pin 24). The harness gains: a `DescriptorProvenance` on its weapon (the
 canonical-name salt input — today it is spawned without one, which would
 collapse the salt to its fallback inside the very gate AC 6 relies on); a
-second same-archetype weapon in another slot whose recorded fan must differ
-(pin 14); a backstop wall behind the target — the shipped harness aims
+second same-archetype weapon in another slot, fired on later ticks after an
+active-slot switch (only the active wieldable fires; two slots cannot fire in
+one tick), whose recorded fan must differ (pin 14) — both harness weapons
+carry `DescriptorProvenance` with the same canonical name, so the slot index
+is the differentiator pin 14 asserts; a backstop wall behind the target — the shipped harness aims
 horizontally over a flat floor a horizontal ray never hits, so off-target
 pellets would record nothing and an N-impact anchor would be unfalsifiable;
 and a positive anchor asserting a shell records exactly N impacts. Capture
 plumbing, three hops: `run_local_weapon_command`'s return grows the per-shell
-impact set, `TickEvents` carries it, `RecordedTick` compares it — cloned or
+impact set (the same ~19 call sites Task 3 enumerates absorb the tuple
+change), `TickEvents` carries it, `RecordedTick` compares it — cloned or
 hashed off `events.impacts` before the first pellet applies, so no `on_impact`
 side effect can influence it (pin 24). Then drive a multi-pellet,
 nonzero-spread weapon through `simulate_tick` and assert run-to-run equality,

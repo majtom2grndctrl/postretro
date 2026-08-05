@@ -1,5 +1,5 @@
 // Deterministic pellet-cone sampling and per-shell RNG seeding for weapon resolution.
-// See: context/plans/in-progress/E16--shotgun-pellet-spread/index.md (Task 2)
+// See: context/plans/done/E16--shotgun-pellet-spread/index.md (Task 2)
 
 use glam::Vec3;
 

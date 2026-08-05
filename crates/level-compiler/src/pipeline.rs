@@ -992,33 +992,7 @@ fn run_after_parsing(
     } else {
         reporter.skip_stage(StageId::DirectShDeltaBake);
     }
-    if let Some(stats) = direct_sh_delta_stats.as_ref() {
-        let top = stats
-            .rows
-            .first()
-            .expect("a usable direct SH delta section has at least one CSR entry");
-        log::info!(
-            "DirectShDeltaVolumes: {} delta bytes; top static_index {} (selection slot {}, {} CSR entries, {} bytes)",
-            stats.total_bytes,
-            top.static_index,
-            top.selection_slot,
-            top.csr_entry_count,
-            top.byte_total,
-        );
-        if args.verbose {
-            for row in &stats.rows {
-                log::info!(
-                    "DirectShDeltaVolumes histogram: selection slot {}, static_index {}, {} CSR entries, {} bytes",
-                    row.selection_slot,
-                    row.static_index,
-                    row.csr_entry_count,
-                    row.byte_total,
-                );
-            }
-        }
-    } else if args.verbose {
-        log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
-    }
+    log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     // Shadowmask layers now bake charts in parallel. They must share the live
@@ -1359,9 +1333,62 @@ fn run_after_parsing(
     Ok(())
 }
 
+fn log_direct_sh_delta_stats(stats: Option<&direct_sh_bake::DirectDeltaBakeStats>, verbose: bool) {
+    if let Some(stats) = stats {
+        let top = stats
+            .rows
+            .first()
+            .expect("a usable direct SH delta section has at least one CSR entry");
+        log::info!(
+            "DirectShDeltaVolumes: {} delta bytes; top static_index {} (selection slot {}, {} CSR entries, {} bytes)",
+            stats.total_bytes,
+            top.static_index,
+            top.selection_slot,
+            top.csr_entry_count,
+            top.byte_total,
+        );
+        if verbose {
+            for row in &stats.rows {
+                log::info!(
+                    "DirectShDeltaVolumes histogram: selection slot {}, static_index {}, {} CSR entries, {} bytes",
+                    row.selection_slot,
+                    row.static_index,
+                    row.csr_entry_count,
+                    row.byte_total,
+                );
+            }
+        }
+    } else if verbose {
+        log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+
+    fn direct_delta_stats_fixture() -> direct_sh_bake::DirectDeltaBakeStats {
+        direct_sh_bake::DirectDeltaBakeStats {
+            rows: vec![
+                direct_sh_bake::DirectDeltaBakeStatsRow {
+                    selection_slot: 3,
+                    static_index: 17,
+                    csr_entry_count: 4,
+                    byte_total: 73_728,
+                },
+                direct_sh_bake::DirectDeltaBakeStatsRow {
+                    selection_slot: 1,
+                    static_index: 5,
+                    csr_entry_count: 1,
+                    byte_total: 18_432,
+                },
+            ],
+            total_bytes: 92_160,
+        }
+    }
 
     #[test]
     fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
@@ -1408,5 +1435,58 @@ mod tests {
         );
         assert!(!without_sdf[19].predicted_present);
         assert!(with_sdf[19].predicted_present);
+    }
+
+    #[test]
+    fn direct_delta_info_logging_emits_one_summary_without_histogram() {
+        let capture = LogCapture::start();
+
+        log_direct_sh_delta_stats(Some(&direct_delta_stats_fixture()), false);
+
+        let records = capture.records();
+        assert_eq!(
+            records.len(),
+            1,
+            "info mode adds exactly one delta log line"
+        );
+        assert_eq!(records[0].level, Level::Info);
+        assert_eq!(
+            records[0].message,
+            "DirectShDeltaVolumes: 92160 delta bytes; top static_index 17 (selection slot 3, 4 CSR entries, 73728 bytes)"
+        );
+        capture.assert_not_logged(Level::Info, "DirectShDeltaVolumes histogram:");
+    }
+
+    #[test]
+    fn direct_delta_verbose_logging_emits_sorted_per_slot_histogram() {
+        let capture = LogCapture::start();
+
+        log_direct_sh_delta_stats(Some(&direct_delta_stats_fixture()), true);
+
+        let messages: Vec<_> = capture
+            .records()
+            .into_iter()
+            .map(|record| record.message)
+            .collect();
+        assert_eq!(
+            messages,
+            vec![
+                "DirectShDeltaVolumes: 92160 delta bytes; top static_index 17 (selection slot 3, 4 CSR entries, 73728 bytes)",
+                "DirectShDeltaVolumes histogram: selection slot 3, static_index 17, 4 CSR entries, 73728 bytes",
+                "DirectShDeltaVolumes histogram: selection slot 1, static_index 5, 1 CSR entries, 18432 bytes",
+            ]
+        );
+    }
+
+    #[test]
+    fn direct_delta_info_logging_is_silent_after_usability_rejection() {
+        let capture = LogCapture::start();
+
+        log_direct_sh_delta_stats(None, false);
+
+        assert!(
+            capture.records().is_empty(),
+            "a discarded delta section must not publish a footprint summary"
+        );
     }
 }

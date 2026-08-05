@@ -32,4 +32,5 @@ ratatui = { version = "0.28", default-features = false, features = ["crossterm",
 crossterm = "0.28"
 
 [dev-dependencies]
+postretro-test-log-capture.workspace = true
 proptest = { workspace = true }

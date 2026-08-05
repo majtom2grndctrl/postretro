@@ -271,8 +271,8 @@ pub fn bake_direct_sh_volume_controlled(
 }
 
 /// Bake sparse per-selected-light direct SH deltas. `affinity_lights` entries are
-/// positions in `EntityShadowLightsSection::light_indices`, not AlphaLights or
-/// source light indices.
+/// selection slots in the post-filtered `selected` slice, never AlphaLights,
+/// source-light, or `EntityShadowLightsSection::light_indices` indices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectDeltaBakeStats {
     /// One nonempty selected-light slot, ordered by descending payload bytes.
@@ -1590,6 +1590,51 @@ mod tests {
     #[test]
     fn direct_sh_delta_stats_total_matches_section_payload() {
         let (delta, stats, _, _) = bake_direct_sh_delta_selection_index_fixture();
+        let selected_static_indices = [0u64, 2];
+        let bytes_per_csr_entry =
+            delta.delta_subblocks.len() * std::mem::size_of::<u16>() / delta.affinity_lights.len();
+        let mut expected_rows: Vec<_> = selected_static_indices
+            .iter()
+            .enumerate()
+            .filter_map(|(selection_slot, &static_index)| {
+                let csr_entry_count = delta
+                    .affinity_lights
+                    .iter()
+                    .filter(|&&slot| slot as usize == selection_slot)
+                    .count();
+                (csr_entry_count != 0).then_some((
+                    selection_slot,
+                    static_index,
+                    csr_entry_count,
+                    csr_entry_count * bytes_per_csr_entry,
+                ))
+            })
+            .collect();
+        expected_rows.sort_unstable_by(|left, right| {
+            right.3.cmp(&left.3).then_with(|| left.0.cmp(&right.0))
+        });
+
+        assert_eq!(
+            stats.rows.len(),
+            expected_rows.len(),
+            "histogram must contain one row for every selected slot with CSR entries"
+        );
+        for (row, &(selection_slot, static_index, csr_entry_count, byte_total)) in
+            stats.rows.iter().zip(&expected_rows)
+        {
+            assert_eq!(row.selection_slot, selection_slot);
+            assert_eq!(row.static_index, static_index);
+            assert_eq!(row.csr_entry_count, csr_entry_count);
+            assert_eq!(row.byte_total, byte_total);
+        }
+        assert!(
+            stats.rows.windows(2).all(|pair| {
+                pair[0].byte_total > pair[1].byte_total
+                    || (pair[0].byte_total == pair[1].byte_total
+                        && pair[0].selection_slot < pair[1].selection_slot)
+            }),
+            "histogram rows must be descending by payload bytes, then selection slot"
+        );
         assert_eq!(
             stats.total_bytes,
             delta.delta_subblocks.len() * std::mem::size_of::<u16>(),

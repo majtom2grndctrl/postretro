@@ -2,10 +2,14 @@ use crate::weapon;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
+#[cfg(test)]
 use postretro_entities::components::inventory::Inventory;
-use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
+use postretro_entities::components::weapon::UNKNOWN_WEAPON_CREDIT_SOURCE;
+#[cfg(test)]
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry};
 
+#[cfg(test)]
 pub(crate) fn apply_weapon_impact_damage(
     registry: &mut EntityRegistry,
     attacker: Option<EntityId>,

@@ -484,15 +484,10 @@ fn closest_hit(
         Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
         Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
     );
-    let candidates = ctx.bvh.traverse(&ray, ctx.primitives);
-    if candidates.is_empty() {
-        return None;
-    }
-
     let geom = &ctx.geometry.geometry;
     let mut best: Option<Hit> = None;
 
-    for prim in candidates {
+    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;
@@ -573,10 +568,9 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
         Point3::new(origin.x, origin.y, origin.z),
         Vector3::new(dir.x, dir.y, dir.z),
     );
-    let candidates = ctx.bvh.traverse(&ray, ctx.primitives);
     let max_distance = length - RAY_EPSILON;
     let geom = &ctx.geometry.geometry;
-    for prim in candidates {
+    for prim in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;

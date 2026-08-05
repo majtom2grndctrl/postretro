@@ -1109,10 +1109,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .get("_tags")
             .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
             .unwrap_or_default();
-        let key_values: Vec<(String, String)> = props
+        let mut key_values: Vec<(String, String)> = props
             .into_iter()
             .filter(|(k, _)| is_runtime_map_entity_key(k))
             .collect();
+        // MapEntity persists this sequence; HashMap iteration order is randomized.
+        key_values.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
 
         map_entities.push(MapEntityRecord {
             classname: classname.clone(),
@@ -3845,6 +3847,56 @@ mod tests {
                 .all(|(key, _)| !key.starts_with("_tb_")),
             "TrenchBroom editor metadata must not leak into runtime KVPs"
         );
+    }
+
+    #[test]
+    fn map_entity_key_values_serialize_in_canonical_order() {
+        // Regression: HashMap iteration made MapEntity bytes vary across compiler processes.
+        let map_with_properties = |properties: &str| {
+            format!(
+                r#"
+// entity 0
+{{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+}}
+// entity 1
+{{
+"classname" "billboard_emitter"
+"origin" "0 0 0"
+{properties}
+}}
+"#
+            )
+        };
+        let first = parse_inline_map(&map_with_properties(concat!(
+            "\"sprite\" \"campfire\"\n",
+            "\"rate\" \"9.5\"\n",
+            "\"drag\" \"0.4\"",
+        )))
+        .expect("first property order should parse");
+        let reordered = parse_inline_map(&map_with_properties(concat!(
+            "\"drag\" \"0.4\"\n",
+            "\"sprite\" \"campfire\"\n",
+            "\"rate\" \"9.5\"",
+        )))
+        .expect("reordered properties should parse");
+
+        let expected = vec![
+            ("drag".to_string(), "0.4".to_string()),
+            ("rate".to_string(), "9.5".to_string()),
+            ("sprite".to_string(), "campfire".to_string()),
+        ];
+        assert_eq!(first.map_entities[0].key_values, expected);
+        assert_eq!(reordered.map_entities[0].key_values, expected);
+
+        let first_bytes = crate::pack::encode_map_entities(&first.map_entities)
+            .expect("point entity should produce MapEntity section")
+            .to_bytes();
+        let reordered_bytes = crate::pack::encode_map_entities(&reordered.map_entities)
+            .expect("point entity should produce MapEntity section")
+            .to_bytes();
+        assert_eq!(first_bytes, reordered_bytes);
     }
 
     #[test]

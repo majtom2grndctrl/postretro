@@ -8,6 +8,7 @@ use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
 };
 
+use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
@@ -32,6 +33,7 @@ pub fn bake_shadowmask_atlas(
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
+    control: &BakeControl,
 ) -> Option<ShadowmaskAtlasSection> {
     let selection = selection?;
     if selection.light_indices.is_empty() {
@@ -58,7 +60,15 @@ pub fn bake_shadowmask_atlas(
     let layers: Vec<LightmapLayer> = selected
         .iter()
         .map(|(_, _, light)| {
-            bake_light_layer(light, shared, bvh, primitives, geometry, area_sample_count)
+            bake_light_layer(
+                light,
+                shared,
+                bvh,
+                primitives,
+                geometry,
+                area_sample_count,
+                control,
+            )
         })
         .collect();
     Some(build_shadowmask_from_layers(
@@ -82,6 +92,7 @@ pub fn bake_shadowmask_atlas_cached(
     lightmap_density: f32,
     area_sample_count: u32,
     stage_cache: Option<&StageCache>,
+    control: &BakeControl,
 ) -> Option<ShadowmaskAtlasSection> {
     let Some(cache) = stage_cache else {
         return bake_shadowmask_atlas(
@@ -92,6 +103,7 @@ pub fn bake_shadowmask_atlas_cached(
             primitives,
             geometry,
             area_sample_count,
+            control,
         );
     };
 
@@ -190,8 +202,15 @@ pub fn bake_shadowmask_atlas_cached(
             }
             None => {
                 log::info!("[cache] lightmap_layer miss");
-                let layer =
-                    bake_light_layer(light, shared, bvh, primitives, geometry, area_sample_count);
+                let layer = bake_light_layer(
+                    light,
+                    shared,
+                    bvh,
+                    primitives,
+                    geometry,
+                    area_sample_count,
+                    control,
+                );
                 cache.put(&layer_key, &layer.to_bytes());
                 layer
             }
@@ -591,11 +610,14 @@ fn degree(graph: &[Vec<bool>], active: &[bool], light: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bake_control::BakeControl;
     use crate::bvh_build::build_bvh;
+    use crate::governor::Governor;
     use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
     use crate::lightmap_bake::prepare_atlas;
     use crate::lightmap_layer::LayerTexel;
     use crate::map_data::{FalloffModel, LightType, ShadowType};
+    use crate::reporter::StageProgress;
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
@@ -682,10 +704,16 @@ mod tests {
 
     use crate::cache::{CacheKey, StageCache};
     use crate::lightmap_bake::PreparedAtlas;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const DENSITY: f32 = 0.25;
     const AREA_SAMPLES: u32 = 4;
+
+    fn test_control() -> BakeControl {
+        let progress = StageProgress::indeterminate();
+        BakeControl::new(Arc::new(Governor::new(1, false)), &progress)
+    }
 
     fn fresh_cache_dir(label: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -856,6 +884,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             Some(&cache),
+            &test_control(),
         )
         .expect("rebuilt section");
 
@@ -924,6 +953,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             Some(&cache),
+            &test_control(),
         )
         .expect("rebuilt section");
 
@@ -1095,6 +1125,7 @@ mod tests {
             &primitives,
             &geo,
             4,
+            &test_control(),
         )
         .unwrap();
 
@@ -1111,7 +1142,9 @@ mod tests {
             .collect();
         let layers: Vec<LightmapLayer> = selected
             .iter()
-            .map(|(_, _, light)| bake_light_layer(light, &shared, &bvh, &primitives, &geo, 4))
+            .map(|(_, _, light)| {
+                bake_light_layer(light, &shared, &bvh, &primitives, &geo, 4, &test_control())
+            })
             .collect();
 
         let preloaded = bake_shadowmask_atlas_from_layers(
@@ -1170,6 +1203,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             Some(&cache),
+            &test_control(),
         )
         .expect("cached section");
 
@@ -1249,6 +1283,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             Some(&cache),
+            &test_control(),
         )
         .expect("rebuilt section");
 
@@ -1305,6 +1340,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             Some(&cache),
+            &test_control(),
         )
         .expect("rebuilt section");
 
@@ -1366,6 +1402,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             Some(&cache),
+            &test_control(),
         )
         .expect("rebuilt section");
 
@@ -1419,6 +1456,7 @@ mod tests {
             DENSITY,
             AREA_SAMPLES,
             None,
+            &test_control(),
         )
         .expect("uncached section");
         let uncached = bake_shadowmask_atlas(
@@ -1429,6 +1467,7 @@ mod tests {
             &primitives,
             &geo,
             AREA_SAMPLES,
+            &test_control(),
         )
         .expect("direct uncached section");
 

@@ -592,7 +592,6 @@ fn segment_clear(
         Point3::new(origin.x, origin.y, origin.z),
         Vector3::new(dir.x, dir.y, dir.z),
     );
-    let candidates = bvh.traverse(&ray, primitives);
     // Stop counting hits a couple of centimeters short of the sample: a graze
     // at the endpoint is the receiving surface itself, not an occluder (see
     // `SAMPLE_END_TOLERANCE_METERS`).
@@ -601,7 +600,7 @@ fn segment_clear(
         return true;
     }
     let geom = &geometry.geometry;
-    for prim in candidates {
+    for prim in bvh.traverse_iterator(&ray, primitives) {
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;

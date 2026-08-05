@@ -982,6 +982,32 @@ pub fn pack_and_write_portals(
             section.waypoints.len(),
         );
     }
+    let (sh_section_bytes, non_sh_section_bytes) = sections.iter().fold(
+        (0usize, 0usize),
+        |(sh_section_bytes, non_sh_section_bytes), section| {
+            let section_bytes = section.data.len();
+            if matches!(
+                section.section_id,
+                section_id
+                    if section_id == SectionId::OctahedralShVolume as u32
+                        || section_id == SectionId::DirectShVolume as u32
+                        || section_id == SectionId::DeltaShVolumes as u32
+                        || section_id == SectionId::DirectShDeltaVolumes as u32
+                        || section_id == SectionId::AnimatedDirectShDeltaVolumes as u32
+                        || section_id == SectionId::EntityShadowLights as u32
+            ) {
+                (sh_section_bytes + section_bytes, non_sh_section_bytes)
+            } else {
+                (sh_section_bytes, non_sh_section_bytes + section_bytes)
+            }
+        },
+    );
+    log::info!(
+        "  SH footprint (OctahedralShVolume, DirectShVolume, DeltaShVolumes, DirectShDeltaVolumes, AnimatedDirectShDeltaVolumes, EntityShadowLights): {} bytes SH, {} bytes non-SH, {} bytes total",
+        sh_section_bytes,
+        non_sh_section_bytes,
+        sh_section_bytes + non_sh_section_bytes,
+    );
 
     Ok(())
 }

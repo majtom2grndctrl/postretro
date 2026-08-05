@@ -321,6 +321,8 @@ mod tests {
     fn spawn_ammo_weapon(ctx: &ScriptCtx, pawn: EntityId) -> EntityId {
         let descriptor = WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 64.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
@@ -808,6 +810,8 @@ mod tests {
                     id,
                     WeaponComponent::from_descriptor(&WeaponDescriptor {
                         damage: 10.0,
+                        pellet_count: 1,
+                        spread_degrees: 0.0,
                         range: 64.0,
                         cooldown_ms: 100.0,
                         fire_mode: FireMode::Semi,

@@ -11,9 +11,12 @@
 import { defineImpactEvent } from "postretro";
 
 const RESURRECT_DELAY_MS = 3_000;
-// The reference shotgun deals 12 damage. A third hit from 6 HP lands at -6 and
-// downs the dummy; the next hit from zero lands at -12 and becomes the finisher.
-const FINISHER_OVERSHOOT = -12;
+// This is one authored per-impact raw-overkill rule, not accumulated shell
+// damage. Stored health floors at zero, so a 3-damage corpse pellet reads
+// `healthAfter = -3`. The 48-HP dummy therefore downs on the final pellet of
+// its second 24-damage shell, then its next shell gibs on its first pellet.
+// Mods that do not want gibbing omit or replace the despawn branch below.
+const FINISHER_OVERSHOOT = -3;
 
 export const combatDummyLifecycle = defineImpactEvent(
   "dev:combat-dummy-lifecycle",

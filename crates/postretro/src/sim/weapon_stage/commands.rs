@@ -6,17 +6,27 @@ use glam::Vec3;
 use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::{EntityId, EntityRegistry};
 
 use super::super::{OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand};
-use super::impact::apply_weapon_impact_damage;
+use super::impact::apply_authorized_weapon_impact_damage;
 use super::machine::tick_weapon_machine;
 use super::state::{
     WieldableStateEvent, begin_raising, finish_lowering, transition_wieldable_state,
 };
+
+#[derive(Debug, Default)]
+pub(in crate::sim) struct LocalWeaponCommandResult {
+    pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
+    pub(in crate::sim) weapon_events: Vec<&'static str>,
+    pub(in crate::sim) repointed_pawn: Option<EntityId>,
+    #[cfg(test)]
+    pub(in crate::sim) weapon_impact_points: Vec<Vec3>,
+}
 
 pub(in crate::sim) fn weapon_fire_command(
     button: FireButtonState,
@@ -104,6 +114,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let effective = weapon_component.effective();
         let damage = effective.damage;
         let range = effective.range;
+        let pellet_count = effective.pellet_count as usize;
         let credit_source = effective.credit_source.to_string();
         let _ = registry.set_component(weapon, weapon_component);
         match machine.authorization {
@@ -125,7 +136,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 fire_tick: remote.fire_tick,
                 damage,
                 range,
-                pellet_count: 1,
+                pellet_count,
                 credit_source,
             },
             owner_client_id: remote.owner_client_id,
@@ -148,21 +159,25 @@ pub(in crate::sim) fn run_local_weapon_command(
     anim_time: f64,
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-) -> (Vec<ReloadDelivery>, Vec<&'static str>, Option<EntityId>) {
+) -> LocalWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut inventory = pawn.and_then(|pawn| {
         normalize_inventory_liveness(&mut registry, pawn).map(|(inventory, _)| inventory)
     });
     let weapon_id = inventory.as_ref().and_then(Inventory::active_wieldable);
     let Some(weapon_id) = weapon_id else {
-        return (Vec::new(), Vec::new(), None);
+        return LocalWeaponCommandResult::default();
     };
     let Ok(mut weapon_component) = registry
         .get_component::<WeaponComponent>(weapon_id)
         .cloned()
     else {
-        return (Vec::new(), Vec::new(), None);
+        return LocalWeaponCommandResult::default();
     };
+    let active_slot = inventory
+        .as_ref()
+        .map_or(0, |inventory| inventory.active_slot);
+    let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &weapon_component);
     // The descriptor override stays unresolved in the component. Only this
     // App-fed local input gate resolves it against the mod-global policy.
     let block_during_reload = weapon_component
@@ -209,6 +224,13 @@ pub(in crate::sim) fn run_local_weapon_command(
         begin_lower,
         tick_dt,
     );
+    // Credit belongs to the weapon that passed the firing state machine, even
+    // when this same tick completes a lower or an impact policy repoints the
+    // inventory before later pellets land.
+    let fire_snapshot = (
+        weapon_id,
+        weapon_component.effective().credit_source.to_string(),
+    );
     if complete_reload_before_lower {
         let lower_ms = weapon_component.lower_ms;
         let _ = transition_wieldable_state(
@@ -226,12 +248,18 @@ pub(in crate::sim) fn run_local_weapon_command(
     let events = weapon::tick_resolved_component(
         &registry,
         &mut weapon_component,
+        &pellet_salt_name,
+        active_slot,
         command,
         collision_world,
         hit_zone_store,
         anim_time,
         machine.authorization,
     );
+    #[cfg(test)]
+    // Determinism tests compare the cast set, including pellets a policy makes
+    // inapplicable. Capture it before the first policy runs.
+    let weapon_impact_points = events.impacts.iter().map(|impact| impact.point).collect();
     let mut repointed_pawn = None;
     if machine.lowered {
         if let (Some(pawn), Some(inventory)) = (pawn, inventory.as_mut())
@@ -258,12 +286,41 @@ pub(in crate::sim) fn run_local_weapon_command(
         }
     }
     let _ = registry.set_component(weapon_id, weapon_component);
-    if let Some(impact) = events.impact.as_ref() {
+    for impact in &events.impacts {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-        apply_weapon_impact_damage(&mut registry, pawn, impact);
+
+        if let Some(target) = impact.target {
+            // Match the host's per-record liveness check. A policy run for an
+            // earlier pellet may have despawned either endpoint, in which case
+            // the cast still gets its FX but no damage or later policy fire.
+            if !pawn.is_some_and(|pawn| registry.exists(pawn)) {
+                continue;
+            }
+            if !registry.exists(target)
+                || registry.get_component::<HealthComponent>(target).is_err()
+            {
+                continue;
+            }
+        }
+        if let weapon::ActivationOutcome::Hit(payload) = impact.outcome {
+            apply_authorized_weapon_impact_damage(
+                &mut registry,
+                fire_snapshot.0,
+                pawn,
+                impact,
+                fire_snapshot.1.clone(),
+                payload.amount,
+            );
+        }
         on_impact(&mut registry);
     }
-    (machine.deliveries, events.event_names(), repointed_pawn)
+    LocalWeaponCommandResult {
+        reload_deliveries: machine.deliveries,
+        weapon_events: events.event_names(),
+        repointed_pawn,
+        #[cfg(test)]
+        weapon_impact_points,
+    }
 }
 
 pub(crate) fn normalize_inventory_liveness(

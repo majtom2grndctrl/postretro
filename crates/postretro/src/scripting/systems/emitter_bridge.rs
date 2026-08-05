@@ -14,6 +14,8 @@ use postretro_entities::registry::{
 };
 use postretro_render_cpu::smoke::MAX_SPRITES;
 
+use crate::weapon::spread::sample_cone_direction as sample_shared_cone_direction;
+
 use super::eval_curve;
 
 /// Per-emitter transient state held bridge-side. Insert on first-seen; remove
@@ -370,49 +372,19 @@ fn spawn_one(
     let _ = registry.set_component(particle_id, visual);
 }
 
-/// Sample a uniformly-distributed unit vector inside the cone of half-angle
-/// `spread` around `axis`.
-///
-/// **Math:** for a cone of half-angle `α`, the solid-angle-uniform CDF on the
-/// elevation `θ ∈ [0, α]` is `F(θ) = (1 − cos θ) / (1 − cos α)`. Inverting at
-/// `u ∈ [0, 1)`:
-///
-/// ```text
-/// cos θ = 1 − u · (1 − cos α)
-/// θ     = acos(1 − u · (1 − cos α))
-/// ```
-///
-/// Azimuth `φ` is uniform on `[0, 2π)`. The local-frame direction
-/// `(sin θ cos φ, sin θ sin φ, cos θ)` rotates onto `axis` via an arbitrary
-/// orthonormal basis (`axis`, `tangent`, `bitangent`). When `spread == 0` the
-/// formula collapses to `axis` exactly.
+/// Preserve the emitter's no-draw degenerate paths, then delegate its
+/// pre-drawn uniforms to the shared solid-angle cone sampler.
 fn sample_cone_direction(axis: Vec3, spread: f32, state: &mut EmitterBridgeState) -> Vec3 {
-    let axis = axis.normalize_or_zero();
-    if axis == Vec3::ZERO {
+    let normalized_axis = axis.normalize_or_zero();
+    if normalized_axis == Vec3::ZERO {
         return Vec3::Y;
     }
     let spread = spread.max(0.0);
     if spread <= f32::EPSILON {
-        return axis;
+        return normalized_axis;
     }
 
-    let u = state.next_f32();
-    let phi = state.next_f32() * std::f32::consts::TAU;
-    // `1 - u · (1 - cos α)` — see doc comment.
-    let cos_theta = 1.0 - u * (1.0 - spread.cos());
-    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-
-    // Build an orthonormal frame around `axis`. Pick a helper not parallel to
-    // `axis`; a small ε guard keeps us off the degenerate case.
-    let helper = if axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
-    let tangent = axis.cross(helper).normalize_or_zero();
-    let bitangent = axis.cross(tangent);
-
-    let local =
-        tangent * (sin_theta * phi.cos()) + bitangent * (sin_theta * phi.sin()) + axis * cos_theta;
-    // `local` is a sum of three unit-scaled orthogonal components; should be
-    // unit-length to within float epsilon. Normalize defensively.
-    local.normalize_or_zero()
+    sample_shared_cone_direction(axis, spread, state.next_f32(), state.next_f32())
 }
 
 /// Throttle `log::warn!` to at most once per second per emitter. Updates
@@ -677,6 +649,54 @@ mod tests {
             dot_with_axis > 0.9,
             "mean direction should hug Y axis; dot={dot_with_axis}"
         );
+    }
+
+    #[test]
+    fn fixed_seed_emitter_cone_sequence_survives_shared_sampler_extraction() {
+        let axis = Vec3::new(0.3, 0.8, -0.5).normalize();
+        let mut state = EmitterBridgeState::new(0x00C0_FFEE);
+        let expected = [
+            Vec3::new(
+                f32::from_bits(0x3E9A_3EE4),
+                f32::from_bits(0x3F63_C9EC),
+                f32::from_bits(0xBEAF_80DC),
+            ),
+            Vec3::new(
+                f32::from_bits(0x3EDB_DF68),
+                f32::from_bits(0x3F5F_5C4A),
+                f32::from_bits(0xBE6E_AA7B),
+            ),
+            Vec3::new(
+                f32::from_bits(0x3E02_053C),
+                f32::from_bits(0x3F4C_0FB2),
+                f32::from_bits(0xBF17_1FB2),
+            ),
+            Vec3::new(
+                f32::from_bits(0x3E3D_E848),
+                f32::from_bits(0x3F54_F4C0),
+                f32::from_bits(0xBF05_E8C2),
+            ),
+        ];
+
+        for expected in expected {
+            let actual = sample_cone_direction(axis, 0.45, &mut state);
+            assert_eq!(actual.x.to_bits(), expected.x.to_bits());
+            assert_eq!(actual.y.to_bits(), expected.y.to_bits());
+            assert_eq!(actual.z.to_bits(), expected.z.to_bits());
+        }
+    }
+
+    #[test]
+    fn emitter_cone_degenerate_paths_do_not_consume_rng_draws() {
+        let mut state = EmitterBridgeState::new(0x00C0_FFEE);
+        let initial_state = state.rand_state;
+
+        assert_eq!(
+            sample_cone_direction(Vec3::ZERO, std::f32::consts::FRAC_PI_4, &mut state),
+            Vec3::Y
+        );
+        assert_eq!(sample_cone_direction(Vec3::Y, 0.0, &mut state), Vec3::Y);
+        assert_eq!(state.rand_state, initial_state);
     }
 
     #[test]

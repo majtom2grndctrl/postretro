@@ -14,7 +14,7 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
-use postretro_foundation::NavAgentParams;
+use postretro_foundation::{MAX_PELLET_COUNT, NavAgentParams};
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 use crate::netcode::{TuningPayload, WieldableTuningPayload};
@@ -361,6 +361,12 @@ fn apply_net_wieldable_tuning(
     };
     weapon.range = tuning.range;
     weapon.cooldown_ms = tuning.cooldown_ms;
+    weapon.pellet_count = tuning.pellet_count.clamp(1, MAX_PELLET_COUNT);
+    weapon.spread_degrees = if tuning.spread_degrees.is_finite() {
+        tuning.spread_degrees.clamp(0.0, 45.0)
+    } else {
+        0.0
+    };
     weapon.fire_mode = tuning.fire_mode;
     weapon.resolution = tuning.resolution;
     weapon.lower_ms = tuning.lower_ms;
@@ -433,6 +439,7 @@ mod tests {
     use super::*;
     use glam::{Quat, Vec3};
     use log::Level;
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
     use postretro_entities::components::wieldable_state::WieldableState;
@@ -845,6 +852,8 @@ mod tests {
             movement: None,
             weapon: Some(WeaponDescriptor {
                 damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 64.0,
                 cooldown_ms: 100.0,
                 fire_mode: FireMode::Semi,
@@ -965,12 +974,117 @@ mod tests {
             canonical_name: canonical_name.to_string(),
             range,
             cooldown_ms,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             lower_ms,
             raise_ms,
         });
         TuningPayload::new(None, wieldables)
+    }
+
+    #[test]
+    fn net_wieldable_tuning_clamps_untrusted_pellet_stats_on_apply() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        let descriptor = weapon_descriptor("reference_pistol");
+        registry
+            .set_component(
+                weapon_id,
+                WeaponComponent::from_descriptor(descriptor.weapon.as_ref().unwrap()),
+            )
+            .unwrap();
+        let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+
+        for (pellet_count, spread_degrees, expected_count, expected_spread) in [
+            (0, -1.0, 1, 0.0),
+            (MAX_PELLET_COUNT + 1, f32::NAN, MAX_PELLET_COUNT, 0.0),
+            (u32::MAX, f32::INFINITY, MAX_PELLET_COUNT, 0.0),
+            (8, f32::NEG_INFINITY, 8, 0.0),
+            (8, 90.0, 8, 45.0),
+        ] {
+            let payload = tuning.wieldables[0].as_mut().unwrap();
+            payload.pellet_count = pellet_count;
+            payload.spread_degrees = spread_degrees;
+            apply_net_wieldable_tuning(&mut registry, weapon_id, payload);
+
+            let weapon = registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap();
+            assert_eq!(weapon.pellet_count, expected_count);
+            assert!(
+                (weapon.spread_degrees - expected_spread).abs() <= f32::EPSILON,
+                "spread_degrees {} differs from expected {}",
+                weapon.spread_degrees,
+                expected_spread
+            );
+        }
+    }
+
+    #[test]
+    fn net_wieldable_tuning_drives_predicted_pellet_ray_count() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        let descriptor = weapon_descriptor("reference_pistol");
+        registry
+            .set_component(
+                weapon_id,
+                WeaponComponent::from_descriptor(descriptor.weapon.as_ref().unwrap()),
+            )
+            .unwrap();
+        let target = registry.spawn(Transform {
+            position: Vec3::new(0.0, 0.0, -5.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                target,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: Vec3::splat(0.5),
+                        offset: Vec3::ZERO,
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+        let payload = tuning.wieldables[0].as_mut().unwrap();
+        payload.pellet_count = 8;
+        payload.spread_degrees = 0.0;
+        apply_net_wieldable_tuning(&mut registry, weapon_id, payload);
+
+        let mut weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        let resolution = crate::weapon::resolve_client_fire(
+            &mut weapon,
+            "reference_pistol",
+            0,
+            crate::weapon::FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            7,
+            &crate::collision::CollisionWorld::new(),
+            &registry,
+            &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("an applied eight-pellet tuning resolves the client shell");
+
+        assert_eq!(resolution.hits.len(), 8);
+        assert!(resolution.hits.iter().all(|hit| hit.target == target));
     }
 
     #[test]
@@ -1045,6 +1159,8 @@ mod tests {
             canonical_name: "local_pistol".to_string(),
             range: 64.0,
             cooldown_ms: 100.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 0,
@@ -1138,6 +1254,8 @@ mod tests {
             canonical_name: "reference_pistol".to_string(),
             range: tuning_weapon.range,
             cooldown_ms: tuning_weapon.cooldown_ms,
+            pellet_count: tuning_weapon.pellet_count,
+            spread_degrees: tuning_weapon.spread_degrees,
             fire_mode: tuning_weapon.fire_mode,
             resolution: tuning_weapon.resolution,
             lower_ms: tuning_weapon.lower_ms,

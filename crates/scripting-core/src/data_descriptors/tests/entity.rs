@@ -24,6 +24,20 @@ fn ammo_resource(descriptor: EntityTypeDescriptor) -> AmmoResource {
     ammo
 }
 
+fn parse_js_weapon_stats(stats: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
+    let src = format!(
+        r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan"{stats} }} }} }})"#
+    );
+    eval_js(&src, entity_descriptor_from_js)
+}
+
+fn parse_lua_weapon_stats(stats: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
+    let src = format!(
+        r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan"{stats} }} }} }}"#
+    );
+    eval_lua(&src, entity_descriptor_from_lua)
+}
+
 fn assert_ammo_pair_rejects(
     label: &str,
     js_resource: &str,
@@ -257,6 +271,79 @@ fn js_weapon_descriptor_without_credit_source_parses_as_none() {
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.credit_source, None);
     assert_eq!(weapon.resource, None);
+}
+
+#[test]
+fn paired_weapon_pellet_stats_accept_authored_values_and_default_legacy_weapons() {
+    let js_default = parse_js_weapon_stats("").unwrap();
+    let lua_default = parse_lua_weapon_stats("").unwrap();
+    let js_default = js_default.weapon.expect("QuickJS weapon parses");
+    let lua_default = lua_default.weapon.expect("Luau weapon parses");
+    assert_eq!(js_default, lua_default);
+    assert_eq!(js_default.pellet_count, 1);
+    assert!((js_default.spread_degrees - 0.0).abs() < f32::EPSILON);
+
+    let js_authored = parse_js_weapon_stats(", pelletCount: 8, spreadDegrees: 4").unwrap();
+    let lua_authored = parse_lua_weapon_stats(", pelletCount = 8, spreadDegrees = 4").unwrap();
+    let js_authored = js_authored.weapon.expect("QuickJS weapon parses");
+    let lua_authored = lua_authored.weapon.expect("Luau weapon parses");
+    assert_eq!(js_authored, lua_authored);
+    assert_eq!(js_authored.pellet_count, 8);
+    assert!((js_authored.spread_degrees - 4.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn paired_weapon_pellet_stats_reject_out_of_range_values() {
+    for (label, js_stats, lua_stats, expected) in [
+        (
+            "zero pellet count",
+            ", pelletCount: 0",
+            ", pelletCount = 0",
+            "pelletCount",
+        ),
+        (
+            "pellet count over cap",
+            ", pelletCount: 33",
+            ", pelletCount = 33",
+            "pelletCount",
+        ),
+        (
+            "negative spread",
+            ", spreadDegrees: -0.1",
+            ", spreadDegrees = -0.1",
+            "spreadDegrees",
+        ),
+        (
+            "spread over cap",
+            ", spreadDegrees: 45.1",
+            ", spreadDegrees = 45.1",
+            "spreadDegrees",
+        ),
+    ] {
+        let js_error = parse_js_weapon_stats(js_stats).unwrap_err().to_string();
+        let lua_error = parse_lua_weapon_stats(lua_stats).unwrap_err().to_string();
+        assert!(js_error.contains(expected), "QuickJS {label}: {js_error}");
+        assert!(lua_error.contains(expected), "Luau {label}: {lua_error}");
+        assert_eq!(js_error, lua_error, "{label}");
+    }
+}
+
+#[test]
+fn paired_weapon_pellet_spread_rejects_non_finite_values_at_the_conversion_boundary() {
+    for (js_stats, lua_stats) in [
+        (", spreadDegrees: Infinity", ", spreadDegrees = math.huge"),
+        (", spreadDegrees: -Infinity", ", spreadDegrees = -math.huge"),
+        (", spreadDegrees: NaN", ", spreadDegrees = 0/0"),
+    ] {
+        let js_error = parse_js_weapon_stats(js_stats).unwrap_err().to_string();
+        let lua_error = parse_lua_weapon_stats(lua_stats).unwrap_err().to_string();
+        for error in [&js_error, &lua_error] {
+            assert!(
+                error.contains("non-finite number at `spreadDegrees`"),
+                "{error}"
+            );
+        }
+    }
 }
 
 #[test]

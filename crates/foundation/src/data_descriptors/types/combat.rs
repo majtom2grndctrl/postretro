@@ -62,6 +62,13 @@ const fn default_reload_style() -> ReloadStyle {
     ReloadStyle::Magazine
 }
 
+/// Hard upper bound for authored weapon pellets per shell.
+pub const MAX_PELLET_COUNT: u32 = 32;
+
+const fn default_pellet_count() -> u32 {
+    1
+}
+
 /// Authored weapon component preset. This is descriptor-owned tuning data:
 /// maps do not override these params, and the runtime materializes a separate
 /// wieldable instance entity from the descriptor at player spawn.
@@ -69,6 +76,10 @@ const fn default_reload_style() -> ReloadStyle {
 #[serde(rename_all = "camelCase")]
 pub struct WeaponDescriptor {
     pub damage: f32,
+    #[serde(default = "default_pellet_count")]
+    pub pellet_count: u32,
+    #[serde(default)]
+    pub spread_degrees: f32,
     pub range: f32,
     #[serde(rename = "fireRateMs")]
     pub cooldown_ms: f32,
@@ -103,6 +114,22 @@ impl WeaponDescriptor {
                 reason: format!(
                     "`components.weapon.damage` must be a finite value >= 0.0, got {}",
                     self.damage
+                ),
+            });
+        }
+        if !(1..=MAX_PELLET_COUNT).contains(&self.pellet_count) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.pelletCount` must be in 1..={MAX_PELLET_COUNT}, got {}",
+                    self.pellet_count
+                ),
+            });
+        }
+        if !self.spread_degrees.is_finite() || !(0.0..=45.0).contains(&self.spread_degrees) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.spreadDegrees` must be a finite value in 0.0..=45.0, got {}",
+                    self.spread_degrees
                 ),
             });
         }
@@ -289,6 +316,8 @@ mod tests {
     fn weapon_descriptor(credit_source: Option<&str>) -> WeaponDescriptor {
         WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 64.0,
             cooldown_ms: 180.0,
             fire_mode: FireMode::Semi,
@@ -330,6 +359,28 @@ mod tests {
             err.to_string().contains("64 bytes"),
             "unexpected overlength error: {err}"
         );
+    }
+
+    #[test]
+    fn weapon_pellet_stats_validate_their_authored_bounds() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.pellet_count = MAX_PELLET_COUNT;
+        descriptor.spread_degrees = 45.0;
+        assert!(descriptor.clone().validate().is_ok());
+
+        for pellet_count in [0, MAX_PELLET_COUNT + 1] {
+            let mut invalid = descriptor.clone();
+            invalid.pellet_count = pellet_count;
+            let error = invalid.validate().unwrap_err();
+            assert!(error.to_string().contains("pelletCount"), "{error}");
+        }
+
+        for spread_degrees in [-0.1, 45.1, f32::NAN, f32::INFINITY] {
+            let mut invalid = descriptor.clone();
+            invalid.spread_degrees = spread_degrees;
+            let error = invalid.validate().unwrap_err();
+            assert!(error.to_string().contains("spreadDegrees"), "{error}");
+        }
     }
 
     #[test]

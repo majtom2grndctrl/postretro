@@ -4,7 +4,10 @@ export const referenceShotgunEntity = defineEntity({
   canonicalName: "reference_shotgun",
   components: {
     weapon: {
-      damage: 12.0,
+      // Damage is per pellet; an eight-pellet full connect deals 8 × 3 = 24.
+      damage: 3.0,
+      pelletCount: 8,
+      spreadDegrees: 5,
       range: 64.0,
       fireRateMs: 700.0,
       fireMode: "semi",

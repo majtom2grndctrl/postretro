@@ -160,7 +160,7 @@ pub(crate) fn simulate_client_wieldable_tick(
         can_fire: false,
     };
     let mut ignore_impact = |_: &mut EntityRegistry| {};
-    let (_, _, repointed) = weapon_stage::run_local_weapon_command(
+    let result = weapon_stage::run_local_weapon_command(
         &registry,
         pawn,
         mod_block_during_reload,
@@ -196,7 +196,7 @@ pub(crate) fn simulate_client_wieldable_tick(
                 }),
             _ => false,
         };
-    (accepted, repointed)
+    (accepted, result.repointed_pawn)
 }
 
 fn player_is_present_for_trigger_occupancy(
@@ -243,6 +243,10 @@ pub(crate) struct TickEvents {
     /// entered graph state's authored `on_enter`, which is owned.
     pub(crate) ai: Vec<Cow<'static, str>>,
     pub(crate) weapon: Vec<&'static str>,
+    /// Per-pellet cast points for determinism tests. Capture precedes impact
+    /// policy, so tests compare the cast set rather than the applied subset.
+    #[cfg(test)]
+    pub(crate) weapon_impact_points: Vec<Vec3>,
     /// Host-local kinematic mover transition edges. A connected client never
     /// runs the host simulation seam, so its bucket remains empty.
     pub(crate) mover: Vec<(kinematic_mover::MoverEventKind, u32)>,
@@ -589,20 +593,25 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         registry.local_player_movement_pawn()
     };
     let weapon_fire = weapon_stage::weapon_fire_command(command.fire_button, post_movement_command);
-    let (local_deliveries, mut weapon, repointed_pawn) = weapon_stage::run_local_weapon_command(
-        &registry,
-        own_pawn,
-        mod_block_during_reload,
-        command.select_slot,
-        &weapon_fire,
-        command.reload,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        tick_dt,
-        &mut on_impact,
-    );
-    reload_deliveries.extend(local_deliveries);
+    let local_result: weapon_stage::LocalWeaponCommandResult =
+        weapon_stage::run_local_weapon_command(
+            &registry,
+            own_pawn,
+            mod_block_during_reload,
+            command.select_slot,
+            &weapon_fire,
+            command.reload,
+            collision_world,
+            hit_zone_store,
+            anim_time,
+            tick_dt,
+            &mut on_impact,
+        );
+    reload_deliveries.extend(local_result.reload_deliveries);
+    let mut weapon = local_result.weapon_events;
+    let repointed_pawn = local_result.repointed_pawn;
+    #[cfg(test)]
+    let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry);
 
@@ -617,6 +626,8 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         movement,
         ai,
         weapon,
+        #[cfg(test)]
+        weapon_impact_points,
         mover: mover_events,
         death,
         authorized_shots,
@@ -1525,6 +1536,8 @@ mod tests {
     pub(super) fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
@@ -1547,6 +1560,8 @@ mod tests {
     ) -> (WeaponComponent, AmmoReserve) {
         let descriptor = WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

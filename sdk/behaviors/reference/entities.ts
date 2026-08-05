@@ -109,7 +109,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     // half-extent is the vertical half-height and the offset lifts the box from
     // the foot-level transform origin to mid-body.
     health: {
-      max: 60,
+      max: 70,
       hitbox: {
         halfExtents: [0.4, 0.9, 0.4],
         offset: [0, 0.9, 0],

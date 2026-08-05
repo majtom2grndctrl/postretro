@@ -96,6 +96,8 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
     let test_weapon = || {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
             damage: 10.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range: 64.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

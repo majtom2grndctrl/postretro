@@ -127,6 +127,8 @@ mod tests {
         for (remaining_ms, tick_dt) in [(10, 0.01), (20, 0.02)] {
             let mut component = WeaponComponent::from_descriptor(&WeaponDescriptor {
                 damage: 0.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 0.0,
                 cooldown_ms: 0.0,
                 fire_mode: FireMode::Semi,

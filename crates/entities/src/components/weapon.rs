@@ -28,6 +28,8 @@ pub struct EffectiveAmmoStats<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveStats<'a> {
     pub damage: f32,
+    pub pellet_count: u32,
+    pub spread_degrees: f32,
     pub range: f32,
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
@@ -252,6 +254,10 @@ impl ReloadFeedbackStream {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponComponent {
     pub damage: f32,
+    #[serde(default)]
+    pub pellet_count: u32,
+    #[serde(default)]
+    pub spread_degrees: f32,
     pub range: f32,
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
@@ -288,6 +294,9 @@ pub struct WeaponComponent {
     /// transition into or out of reload activity, never inferred from magazine.
     #[serde(default)]
     pub reload_credited: u32,
+    /// Monotonic per-instance shell counter used to seed deterministic pellet spread.
+    #[serde(default)]
+    pub shells_fired: u32,
     /// Bounded endpoint stream with independent HUD and owner-projection cursors.
     #[serde(skip)]
     pub reload_feedback: ReloadFeedbackStream,
@@ -306,6 +315,8 @@ impl WeaponComponent {
         let magazine = ammo.as_ref().map_or(0, |ammo| ammo.capacity);
         Self {
             damage: desc.damage,
+            pellet_count: desc.pellet_count,
+            spread_degrees: desc.spread_degrees,
             range: desc.range,
             cooldown_ms: desc.cooldown_ms,
             fire_mode: desc.fire_mode,
@@ -324,6 +335,7 @@ impl WeaponComponent {
             state_total_ms: 0,
             state_elapsed_sub_ms: 0.0,
             reload_credited: 0,
+            shells_fired: 0,
             reload_feedback: ReloadFeedbackStream::default(),
         }
     }
@@ -331,6 +343,8 @@ impl WeaponComponent {
     pub fn effective(&self) -> EffectiveStats<'_> {
         EffectiveStats {
             damage: self.damage,
+            pellet_count: self.pellet_count,
+            spread_degrees: self.spread_degrees,
             range: self.range,
             cooldown_ms: self.cooldown_ms,
             fire_mode: self.fire_mode,
@@ -351,6 +365,8 @@ impl WeaponComponent {
 
     pub fn refresh_from_descriptor(&mut self, desc: &WeaponDescriptor) {
         self.damage = desc.damage;
+        self.pellet_count = desc.pellet_count;
+        self.spread_degrees = desc.spread_degrees;
         self.range = desc.range;
         self.cooldown_ms = desc.cooldown_ms;
         self.fire_mode = desc.fire_mode;
@@ -362,11 +378,11 @@ impl WeaponComponent {
             self.credit_source = credit_source.clone();
         }
         self.ammo = ammo_tuning(desc);
-        // Cooldown, input edges, magazine, state, timed-state fields, and reload
-        // credit are live instance state. Hot reload changes authored tuning, not
-        // the active state sample or whether this instance is mid-cooldown. An
-        // absent `creditSource` also keeps the already-resolved spawn-time default
-        // so canonical defaults do not regress to `weapon.unknown` on reload.
+        // Cooldown, input edges, magazine, state, timed-state fields, reload credit,
+        // and shells fired are live instance state. Hot reload changes authored tuning,
+        // not the active state sample or whether this instance is mid-cooldown. An
+        // absent `creditSource` also keeps the already-resolved spawn-time default so
+        // canonical defaults do not regress to `weapon.unknown` on reload.
     }
 
     pub fn reload_status(&self) -> (f32, bool) {
@@ -509,6 +525,8 @@ mod tests {
     fn descriptor(damage: f32, range: f32, cooldown_ms: f32) -> WeaponDescriptor {
         WeaponDescriptor {
             damage,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             range,
             cooldown_ms,
             fire_mode: FireMode::Semi,
@@ -896,10 +914,16 @@ mod tests {
         component.state_total_ms = 800;
         component.state_elapsed_sub_ms = 0.5;
         component.reload_credited = 3;
+        component.shells_fired = 7;
 
-        component.refresh_from_descriptor(&descriptor(25.0, 80.0, 250.0));
+        let mut reloaded = descriptor(25.0, 80.0, 250.0);
+        reloaded.pellet_count = 8;
+        reloaded.spread_degrees = 4.0;
+        component.refresh_from_descriptor(&reloaded);
 
         assert!((component.damage - 25.0).abs() < f32::EPSILON);
+        assert_eq!(component.pellet_count, 8);
+        assert!((component.spread_degrees - 4.0).abs() < f32::EPSILON);
         assert!((component.range - 80.0).abs() < f32::EPSILON);
         assert!((component.cooldown_ms - 250.0).abs() < f32::EPSILON);
         assert!((component.cooldown_remaining_ms - 42.0).abs() < f32::EPSILON);
@@ -909,6 +933,7 @@ mod tests {
         assert_eq!(component.state_total_ms, 800);
         assert!((component.state_elapsed_sub_ms - 0.5).abs() < f64::EPSILON);
         assert_eq!(component.reload_credited, 3);
+        assert_eq!(component.shells_fired, 7);
         assert_eq!(component.credit_source, "reference_pistol");
     }
 

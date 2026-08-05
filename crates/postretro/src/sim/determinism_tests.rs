@@ -44,6 +44,9 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::data_descriptors::{
     ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
 };
+use postretro_entities::provenance::{
+    DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
+};
 use postretro_entities::{
     CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, MoverCommand,
     NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx,
@@ -211,6 +214,7 @@ struct RecordedTick {
     movement: Vec<&'static str>,
     ai: Vec<Cow<'static, str>>,
     weapon: Vec<&'static str>,
+    weapon_impact_points: Vec<Vec3>,
     death: Vec<String>,
     authorized_shots: Vec<RecordedShot>,
     reload_deliveries: Vec<RecordedReload>,
@@ -282,13 +286,15 @@ impl SimHarness {
                 role_ids.push((role, id));
             }
             let enemy = spawn_enemy(&mut registry, Vec3::new(-1.0, 1.0, 0.0));
-            let weapon = spawn_weapon(&mut registry);
+            let weapon = spawn_determinism_weapon(&mut registry);
+            let secondary_weapon = spawn_determinism_weapon(&mut registry);
             let alpha = role_ids
                 .iter()
                 .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
                 .expect("alpha role is always spawned");
             let mut inventory = Inventory::default();
             inventory.wieldables[0] = Some(weapon);
+            inventory.wieldables[1] = Some(secondary_weapon);
             registry.set_component(alpha, inventory).unwrap();
             (weapon, enemy)
         };
@@ -508,7 +514,7 @@ impl SimHarness {
 
         Self {
             registry,
-            world: floor_world(),
+            world: determinism_world(),
             hit_zones: HitZoneStore::new(),
             active_wieldable,
             progress: ProgressTracker::new(),
@@ -542,7 +548,13 @@ impl SimHarness {
                 .expect("determinism accumulator rate remains declared")
                 .value = Some(SlotValue::Number(-1.0));
         }
-        let sim_command = command.to_sim_command();
+        let mut sim_command = command.to_sim_command();
+        // The first shell fires from slot zero. Complete a zero-duration switch
+        // well before the next shell, so the second same-archetype instance
+        // samples with slot one's salt.
+        if self.tick_index == 100 {
+            sim_command.select_slot = Some(1);
+        }
         let remote_pawn_commands = [RemotePawnCommand {
             pawn: self.remote_player,
             owner_client_id: 1,
@@ -601,6 +613,7 @@ impl SimHarness {
             movement: events.movement,
             ai: events.ai,
             weapon: events.weapon,
+            weapon_impact_points: events.weapon_impact_points,
             death: events.death,
             authorized_shots: events
                 .authorized_shots
@@ -951,6 +964,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
             id,
             WeaponComponent::from_descriptor(&WeaponDescriptor {
                 damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
                 range: 30.0,
                 cooldown_ms: 80.0,
                 fire_mode: FireMode::Semi,
@@ -966,6 +981,33 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
         )
         .expect("weapon component should attach");
     id
+}
+
+fn spawn_determinism_weapon(registry: &mut EntityRegistry) -> EntityId {
+    let weapon = spawn_weapon(registry);
+    let mut component = registry
+        .get_component::<WeaponComponent>(weapon)
+        .expect("determinism weapon component attaches")
+        .clone();
+    component.pellet_count = 8;
+    component.spread_degrees = 4.0;
+    registry
+        .set_component(weapon, component)
+        .expect("determinism weapon tuning updates");
+    registry
+        .set_component(
+            weapon,
+            DescriptorProvenance {
+                canonical_name: "weapon.determinism-shotgun".to_string(),
+                owned_components: std::collections::BTreeSet::from([
+                    DescriptorComponentKind::Weapon,
+                ]),
+                map_overrides: Default::default(),
+                spawn_path: DescriptorSpawnPath::DefaultWeapon,
+            },
+        )
+        .expect("determinism weapon provenance attaches");
+    weapon
 }
 
 /// Install the local ownership relationship the weapon stage resolves at runtime.
@@ -1027,6 +1069,27 @@ fn player_descriptor() -> PlayerMovementDescriptor {
 
 fn floor_world() -> CollisionWorld {
     sloped_floor_world(0.0)
+}
+
+/// The regular floor plus a broad vertical backstop. The fixed command stream
+/// aims horizontally, so this gives every spread pellet an observable world
+/// impact rather than silently missing above the floor.
+fn determinism_world() -> CollisionWorld {
+    let points = vec![
+        Point::new(-500.0, 0.0, -500.0),
+        Point::new(500.0, 0.0, -500.0),
+        Point::new(500.0, 0.0, 500.0),
+        Point::new(-500.0, 0.0, 500.0),
+        Point::new(-500.0, 0.0, -40.0),
+        Point::new(500.0, 0.0, -40.0),
+        Point::new(500.0, 500.0, -40.0),
+        Point::new(-500.0, 500.0, -40.0),
+    ];
+    let triangles = vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]];
+    CollisionWorld {
+        mesh: TriMesh::new(points, triangles),
+        isometry: Isometry::identity(),
+    }
 }
 
 /// A large ground plane tilted about the world Z axis: surface height `y =
@@ -2742,6 +2805,33 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
     );
 }
 
+fn assert_fixed_stream_weapon_positive_anchors(run: &SimRun) {
+    let pellet_fans = run
+        .events
+        .iter()
+        .filter_map(|events| {
+            (!events.weapon_impact_points.is_empty()).then_some(&events.weapon_impact_points)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pellet_fans.len(),
+        4,
+        "the fixed command stream must fire all four deterministic shotgun shells"
+    );
+    assert!(
+        pellet_fans.iter().all(|fan| fan.len() == 8),
+        "the backstop makes every multi-pellet shell expose all eight cast impacts"
+    );
+    assert_ne!(
+        pellet_fans[0], pellet_fans[1],
+        "consecutive shells, fired from the two inventory slots after the switch, must use distinct fans"
+    );
+    assert_ne!(
+        pellet_fans[1], pellet_fans[2],
+        "consecutive shells from the same inventory slot must use distinct fans"
+    );
+}
+
 fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.events, expected.events,
@@ -2883,6 +2973,7 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
     assert_trigger_positive_anchors(&baseline);
+    assert_fixed_stream_weapon_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
 }

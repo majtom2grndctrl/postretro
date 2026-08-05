@@ -10,7 +10,7 @@ use thiserror::Error;
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 3;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 4;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -22,6 +22,8 @@ pub(crate) struct WieldableTuningPayload {
     pub(crate) canonical_name: String,
     pub(crate) range: f32,
     pub(crate) cooldown_ms: f32,
+    pub(crate) pellet_count: u32,
+    pub(crate) spread_degrees: f32,
     pub(crate) fire_mode: FireMode,
     pub(crate) resolution: ResolutionMode,
     pub(crate) lower_ms: u32,
@@ -195,6 +197,8 @@ mod tests {
             canonical_name: "reference_pistol".to_string(),
             range: 128.0,
             cooldown_ms: 125.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 40,
@@ -204,6 +208,8 @@ mod tests {
             canonical_name: "ion_rifle".to_string(),
             range: 256.0,
             cooldown_ms: 240.0,
+            pellet_count: 8,
+            spread_degrees: 4.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 75,
@@ -232,6 +238,8 @@ mod tests {
         let wieldables = json["wieldables"].as_array().unwrap();
         assert_eq!(wieldables.len(), WIELDABLE_SLOT_CAPACITY);
         assert_eq!(wieldables[0]["canonical_name"], "reference_pistol");
+        assert_eq!(wieldables[2]["pellet_count"], 8);
+        assert_eq!(wieldables[2]["spread_degrees"], 4.0);
         assert!(wieldables[1].is_null());
         assert_eq!(wieldables[2]["lower_ms"], 75);
 
@@ -285,14 +293,14 @@ mod tests {
     fn payload_rejects_previous_merge_semantics_epoch() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(2);
+        json["epoch"] = serde_json::json!(3);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 3,
-                received: 2,
+                expected: 4,
+                received: 3,
             })
         ));
     }

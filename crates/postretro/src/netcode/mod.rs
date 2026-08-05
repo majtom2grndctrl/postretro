@@ -1343,6 +1343,8 @@ pub(crate) fn tuning_payload_for_pawn(
                     canonical_name,
                     range: weapon.range,
                     cooldown_ms: weapon.cooldown_ms,
+                    pellet_count: weapon.pellet_count,
+                    spread_degrees: weapon.spread_degrees,
                     fire_mode: weapon.fire_mode,
                     resolution: weapon.resolution,
                     lower_ms: weapon.lower_ms,
@@ -2292,6 +2294,8 @@ mod tests {
             canonical_name: "reference_pistol".to_string(),
             range: 12.0,
             cooldown_ms: 90.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 25,
@@ -2312,6 +2316,8 @@ mod tests {
         let weapon_id = registry.spawn(Transform::default());
         let mut weapon = test_weapon(10.0, 96.0);
         weapon.cooldown_ms = 180.0;
+        weapon.pellet_count = 8;
+        weapon.spread_degrees = 4.0;
         weapon.fire_mode = FireMode::Auto;
         weapon.lower_ms = 45;
         weapon.raise_ms = 70;
@@ -2349,6 +2355,8 @@ mod tests {
         assert_eq!(slot.canonical_name, "live_ion_rifle");
         assert_eq!(slot.range, 96.0);
         assert_eq!(slot.cooldown_ms, 180.0);
+        assert_eq!(slot.pellet_count, 8);
+        assert_eq!(slot.spread_degrees, 4.0);
         assert_eq!(slot.fire_mode, FireMode::Auto);
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
@@ -2390,8 +2398,8 @@ mod tests {
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
             damage: 14.0,
-            pellet_count: 1,
-            spread_degrees: 0.0,
+            pellet_count: 8,
+            spread_degrees: 4.0,
             range: 140.0,
             cooldown_ms: 180.0,
             fire_mode: FireMode::Auto,
@@ -2418,6 +2426,8 @@ mod tests {
         assert_eq!(last_sent.get(&41), Some(&after));
         assert_eq!(after.wieldables[0].as_ref().unwrap().lower_ms, 45);
         assert_eq!(after.wieldables[0].as_ref().unwrap().raise_ms, 70);
+        assert_eq!(after.wieldables[0].as_ref().unwrap().pellet_count, 8);
+        assert_eq!(after.wieldables[0].as_ref().unwrap().spread_degrees, 4.0);
         assert_eq!(
             registry.get_component::<Inventory>(pawn).unwrap(),
             &inventory,
@@ -3001,6 +3011,26 @@ mod tests {
         assert!(empty.is_empty(), "empty declarations remain valid misses");
     }
 
+    #[test]
+    fn local_hit_wire_conversion_preserves_all_named_pellet_records() {
+        let target = EntityId::from_raw(1);
+        let hits = (0..8)
+            .map(|pellet| weapon::LocalHitRecord {
+                target,
+                point: Vec3::new(pellet as f32, 2.0, 3.0),
+                zone: None,
+            })
+            .collect::<Vec<_>>();
+
+        let records = local_hits_to_wire_records(&hits, |_| Some(NetworkId(77)));
+
+        assert_eq!(records.len(), 8);
+        for (pellet, record) in records.iter().enumerate() {
+            assert_eq!(record.target, 77);
+            assert_eq!(record.point, [pellet as f32, 2.0, 3.0]);
+        }
+    }
+
     fn movement_component_with_eye_height(eye_height: f32) -> PlayerMovementComponent {
         let mut descriptor = host_player_descriptor()
             .movement
@@ -3132,6 +3162,38 @@ mod tests {
 
         fn ingest(&mut self, client_id: u64, declaration: &wire::HitDeclaration) -> bool {
             self.ingest_result(client_id, declaration).hit_accepted
+        }
+
+        fn mint_shot_from_live_weapon(&mut self) {
+            let stats = self
+                .registry
+                .get_component::<WeaponComponent>(self.weapon)
+                .expect("fixture weapon stays live")
+                .effective();
+            self.open_shots.retire(self.shot_id);
+            self.open_shots.record(
+                AuthorizedShot {
+                    shot_id: self.shot_id,
+                    pawn: self.pawn,
+                    weapon: self.weapon,
+                    fire_tick: 99,
+                    damage: stats.damage,
+                    range: stats.range,
+                    pellet_count: stats.pellet_count as usize,
+                    credit_source: stats.credit_source.to_string(),
+                },
+                7,
+            );
+        }
+
+        fn set_live_pellet_count(&mut self, pellet_count: u32) {
+            let mut weapon = self
+                .registry
+                .get_component::<WeaponComponent>(self.weapon)
+                .expect("fixture weapon stays live")
+                .clone();
+            weapon.pellet_count = pellet_count;
+            self.registry.set_component(self.weapon, weapon).unwrap();
         }
 
         fn target_health(&self) -> HealthComponent {
@@ -3573,6 +3635,107 @@ mod tests {
             100.0,
             "the valid second record is beyond the single declared pellet slot"
         );
+    }
+
+    #[test]
+    fn hit_declaration_eight_pellet_shot_applies_each_record_zone_multiplier() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut health = fixture.target_health();
+        health.max = 1_000.0;
+        health.current = 1_000.0;
+        health.zone_multipliers.insert("head".to_string(), 2.0);
+        fixture
+            .registry
+            .set_component(fixture.target, health)
+            .unwrap();
+        fixture.set_live_pellet_count(8);
+        fixture.mint_shot_from_live_weapon();
+
+        let declaration = fixture.declaration(
+            (0..8)
+                .map(|_| fixture.record(Vec3::new(4.0, 0.5, 0.0), Some("head")))
+                .collect(),
+        );
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        let health = fixture.target_health();
+        assert_eq!(health.current, 840.0);
+        let entry = health.contributor_ledger.entries().first().unwrap();
+        assert_eq!(entry.hit_count, 8);
+        assert_eq!(entry.accumulated_damage, 160.0);
+        assert_eq!(entry.last_hit_damage, 20.0);
+        assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
+    }
+
+    #[test]
+    fn hit_declaration_eight_pellet_clamp_spends_budget_on_invalid_network_record() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.set_live_pellet_count(8);
+        fixture.mint_shot_from_live_weapon();
+        let mut records = vec![wire::HitRecord {
+            target: 999_999,
+            point: Vec3::new(4.0, 0.5, 0.0).to_array(),
+            zone: None,
+        }];
+        records.extend((0..8).map(|_| fixture.record(Vec3::new(4.0, 0.5, 0.0), None)));
+        let declaration = fixture.declaration(records);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        let health = fixture.target_health();
+        assert_eq!(health.current, 30.0);
+        assert_eq!(
+            health
+                .contributor_ledger
+                .entries()
+                .first()
+                .unwrap()
+                .hit_count,
+            7,
+            "the invalid NetworkId record spends one of the eight authorized pellet slots"
+        );
+    }
+
+    #[test]
+    fn hit_declaration_keeps_eight_pellet_authorization_after_live_retune_down() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.set_live_pellet_count(8);
+        fixture.mint_shot_from_live_weapon();
+        fixture.set_live_pellet_count(4);
+        let declaration = fixture.declaration(
+            (0..8)
+                .map(|_| fixture.record(Vec3::new(4.0, 0.5, 0.0), None))
+                .collect(),
+        );
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert_eq!(fixture.target_health().current, 20.0);
+    }
+
+    #[test]
+    fn hit_declaration_keeps_four_pellet_authorization_after_live_retune_up() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.set_live_pellet_count(4);
+        fixture.mint_shot_from_live_weapon();
+        fixture.set_live_pellet_count(8);
+        let declaration = fixture.declaration(
+            (0..8)
+                .map(|_| fixture.record(Vec3::new(4.0, 0.5, 0.0), None))
+                .collect(),
+        );
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert_eq!(fixture.target_health().current, 60.0);
     }
 
     #[test]

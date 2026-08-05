@@ -19,6 +19,7 @@ use crate::{
 
 mod damage;
 mod impact;
+pub(crate) mod spread;
 
 pub(crate) use damage::DamagePayload;
 pub(crate) use impact::sprite_collection as impact_sprite_collection;

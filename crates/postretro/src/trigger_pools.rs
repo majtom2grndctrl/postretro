@@ -39,9 +39,10 @@ pub(crate) struct TriggerPoolOutcome {
     pub(crate) selected: Vec<EntityId>,
 }
 
-/// Deterministic SplitMix64 PRNG. This is deliberately local to the install
-/// pass: pool selection is a load-time decision and never enters tick or wire
-/// state. Copied from the net harness rather than adding a `rand` dependency.
+/// Deterministic SplitMix64 PRNG shared by trigger-pool arming and weapon
+/// pellet spread. Trigger-pool selection remains a load-time decision, while
+/// pellet sampling derives a fresh stream from replay-stable shell state.
+/// Copied from the net harness rather than adding a `rand` dependency.
 #[derive(Debug, Clone)]
 pub(crate) struct SplitMix64 {
     state: u64,
@@ -52,7 +53,8 @@ impl SplitMix64 {
         Self { state: seed }
     }
 
-    fn next_u64(&mut self) -> u64 {
+    /// Advance the stream for trigger-pool selection or pellet sampling.
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.state;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

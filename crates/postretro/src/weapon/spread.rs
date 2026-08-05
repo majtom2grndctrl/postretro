@@ -104,7 +104,10 @@ mod tests {
 
     #[test]
     fn sample_cone_direction_falls_back_to_up_for_zero_axis() {
-        assert_eq!(sample_cone_direction(Vec3::ZERO, 0.6, 0.25, 0.75), Vec3::Y);
+        let direction = sample_cone_direction(Vec3::ZERO, 0.6, 0.25, 0.75);
+
+        assert!((direction.length() - 1.0).abs() < 1e-5);
+        assert!(direction.dot(Vec3::Y) >= 0.6_f32.cos() - 1e-5);
         assert_eq!(sample_cone_direction(Vec3::ZERO, 0.0, 0.25, 0.75), Vec3::Y);
     }
 

@@ -4,10 +4,8 @@
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
-use postretro_level_format::sh_volume::{
-    OctahedralAtlasTexel, OctahedralShProbe, OctahedralShVolumeSection,
-};
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
 use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sh_volume::{
@@ -21,6 +19,12 @@ pub use postretro_render_cpu::sh_volume::{
     probe_occlusion_seed_from_fast_env,
 };
 use wgpu::util::DeviceExt;
+
+/// Dev-tools marker color while the composed dense-atlas readback has not yet
+/// completed. This deliberately replaces the removed CPU-side base-atlas
+/// decode; validity remains sourced from probe metadata independently.
+#[cfg(feature = "dev-tools")]
+const PROBE_IRRADIANCE_PLACEHOLDER: [f32; 3] = [0.25, 0.25, 0.25];
 
 /// Uploaded SH volume handles + bind group. Always populated. Empty-geometry
 /// levels bind dummy 1×1 octahedral atlas textures plus a dummy 1×1×1
@@ -368,33 +372,17 @@ impl ShVolumeResources {
             .map(|s| s.probes.iter().map(|p| p.validity).collect())
             .unwrap_or_default();
 
-        // Mirror the pack: invalid probes upload as zero, so store zero here too.
+        // The compact base atlas is BC6H by default and has no CPU decoder in
+        // production. Markers start neutral; the existing composed-atlas
+        // readback replaces these values once the irradiance overlay requests
+        // it. Validity markers keep using the separate metadata mirror above.
         #[cfg(feature = "dev-tools")]
         let probe_irradiance: Vec<[f32; 3]> = usable
-            .map(|s| {
-                s.probes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        if p.validity == 0 {
-                            [0.0; 3]
-                        } else {
-                            probe_average_irradiance(s, i)
-                        }
-                    })
-                    .collect()
-            })
+            .map(|s| vec![PROBE_IRRADIANCE_PLACEHOLDER; s.probes.len()])
             .unwrap_or_default();
 
         if let Some(sec) = usable {
-            base_atlas_texture = upload_atlas_texture(
-                device,
-                queue,
-                sec.atlas_dimensions,
-                sec.layer_count,
-                &sec.atlas_texels,
-                "SH Base Octahedral Atlas",
-            );
+            base_atlas_texture = upload_compact_base_atlas_texture(device, queue, sec);
             total_atlas_texture = create_total_atlas_texture(
                 device,
                 sec.atlas_dimensions,
@@ -416,15 +404,7 @@ impl ShVolumeResources {
             present = true;
         } else {
             let dummy = dummy_depth_moment_payload();
-            let dummy_texel = [OctahedralAtlasTexel { rgba: dummy }];
-            base_atlas_texture = upload_atlas_texture(
-                device,
-                queue,
-                [1, 1],
-                1,
-                &dummy_texel,
-                "SH Base Octahedral Atlas Dummy",
-            );
+            base_atlas_texture = upload_compact_base_atlas_dummy(device, queue);
             total_atlas_texture =
                 create_total_atlas_texture(device, [1, 1], 1, "SH Total Octahedral Atlas Dummy");
             depth_moment_texture = upload_depth_moment_texture(device, queue, [1, 1, 1], &dummy);
@@ -438,6 +418,24 @@ impl ShVolumeResources {
             tiles_per_layer = 1;
             atlas_layer_count = 1;
             present = false;
+        }
+
+        // Per-load instrumentation only: composed-atlas size and sampler
+        // bandwidth intentionally remain unchanged. Log the at-rest base
+        // payload used by this load, even when device limits force the existing
+        // `present == false` dummy path.
+        #[cfg(feature = "dev-tools")]
+        if let Some(sec) = section {
+            log::info!(
+                "[Renderer] SH base atlas footprint: {} B, {}, {}/{} valid probes",
+                sec.compact_atlas.len(),
+                base_atlas_format_label(sec.irradiance_format),
+                sec.probes
+                    .iter()
+                    .filter(|probe| probe.validity != 0)
+                    .count(),
+                sec.probes.len(),
+            );
         }
 
         // Animated-light buffers. Always created — when the SH section has
@@ -948,57 +946,116 @@ fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> boo
         && grid_dimensions[2] <= limits.max_texture_dimension_3d
 }
 
-fn upload_atlas_texture(
+/// Upload id-34's valid-probe-only atlas without re-expanding it. BC6H blobs
+/// remain compressed through upload and hardware-decode only in the compose
+/// pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
+///
+/// A valid section with zero valid probes has zero compact dimensions. Compose
+/// will bind only invalid indirection words, but wgpu still needs a nonzero
+/// texture: BC6H uses its minimum valid 4×4 zero block and the uncompressed
+/// path uses one 1×1 zero texel.
+fn upload_compact_base_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    atlas_dimensions: [u32; 2],
-    layer_count: u32,
-    texels: &[OctahedralAtlasTexel],
-    label: &str,
+    section: &OctahedralShVolumeSection,
 ) -> wgpu::Texture {
-    let size = wgpu::Extent3d {
-        width: atlas_dimensions[0].max(1),
-        height: atlas_dimensions[1].max(1),
-        depth_or_array_layers: layer_count.max(1),
+    let empty_compact_atlas = section.compact_atlas_dimensions[0] == 0
+        || section.compact_atlas_dimensions[1] == 0
+        || section.compact_atlas_layer_count == 0;
+    let zero_bc6h = [0u8; 16];
+    let zero_rgba16f = [0u8; 8];
+    let (format, size, contents) = match section.irradiance_format {
+        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => (
+            wgpu::TextureFormat::Bc6hRgbUfloat,
+            wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            zero_bc6h.as_slice(),
+        ),
+        IRRADIANCE_FORMAT_BC6H => (
+            wgpu::TextureFormat::Bc6hRgbUfloat,
+            wgpu::Extent3d {
+                width: section.compact_atlas_dimensions[0].div_ceil(4) * 4,
+                height: section.compact_atlas_dimensions[1].div_ceil(4) * 4,
+                depth_or_array_layers: section.compact_atlas_layer_count,
+            },
+            section.compact_atlas.as_slice(),
+        ),
+        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => (
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            zero_rgba16f.as_slice(),
+        ),
+        IRRADIANCE_FORMAT_RGBA16F => (
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::Extent3d {
+                width: section.compact_atlas_dimensions[0],
+                height: section.compact_atlas_dimensions[1],
+                depth_or_array_layers: section.compact_atlas_layer_count,
+            },
+            section.compact_atlas.as_slice(),
+        ),
+        // `OctahedralShVolumeSection::from_bytes` rejects unknown tags. Keep
+        // this match exhaustive so manually-constructed test data cannot be
+        // uploaded under a silently reinterpreted format.
+        unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
     };
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("SH Base Octahedral Atlas"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        contents,
+    )
+}
 
-    let mut halves = Vec::with_capacity(texels.len() * 4);
-    for texel in texels {
-        halves.extend_from_slice(&texel.rgba);
+/// Dummy for the no-usable-probes path. It is `Rgba16Float` because every
+/// compose indirection word is a sentinel, so the texture is never sampled.
+fn upload_compact_base_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let zero_texel = [0u8; 8];
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("SH Base Octahedral Atlas Dummy"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &zero_texel,
+    )
+}
+
+#[cfg(feature = "dev-tools")]
+fn base_atlas_format_label(format: u32) -> &'static str {
+    match format {
+        IRRADIANCE_FORMAT_BC6H => "BC6H",
+        IRRADIANCE_FORMAT_RGBA16F => "Rgba16Float",
+        _ => "unknown",
     }
-    let expected_halves =
-        size.width as usize * size.height as usize * size.depth_or_array_layers as usize * 4;
-    debug_assert_eq!(halves.len(), expected_halves);
-    let byte_slice = u16_slice_to_bytes(&halves);
-
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &byte_slice,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(8 * size.width),
-            rows_per_image: Some(size.height),
-        },
-        size,
-    );
-
-    texture
 }
 
 /// Build the DIRECT static-light atlas texture from the (optional) direct
@@ -1256,58 +1313,6 @@ fn create_total_atlas_texture(
     })
 }
 
-#[cfg(feature = "dev-tools")]
-fn probe_average_irradiance(section: &OctahedralShVolumeSection, probe_index: usize) -> [f32; 3] {
-    let [layer, tile_x, tile_y] =
-        postretro_level_format::octahedral::irradiance_array_tile_location(
-            probe_index,
-            section.tiles_per_layer,
-            section.atlas_tiles_per_row,
-        );
-    let origin = [
-        tile_x.saturating_mul(section.tile_dimension),
-        tile_y.saturating_mul(section.tile_dimension),
-    ];
-    let interior_start = section.tile_border.min(section.tile_dimension);
-    let interior_end = section
-        .tile_dimension
-        .saturating_sub(section.tile_border)
-        .max(interior_start);
-    let mut sum = [0.0f32; 3];
-    let mut count = 0u32;
-    for local_y in interior_start..interior_end {
-        for local_x in interior_start..interior_end {
-            let x = origin[0]
-                .saturating_add(local_x)
-                .min(section.atlas_dimensions[0].saturating_sub(1));
-            let y = origin[1]
-                .saturating_add(local_y)
-                .min(section.atlas_dimensions[1].saturating_sub(1));
-            let layer_offset = layer as usize
-                * section.atlas_dimensions[0] as usize
-                * section.atlas_dimensions[1] as usize;
-            let idx = layer_offset + (y * section.atlas_dimensions[0] + x) as usize;
-            if let Some(texel) = section.atlas_texels.get(idx) {
-                sum[0] += f16_bits_to_f32_local(texel.rgba[0]);
-                sum[1] += f16_bits_to_f32_local(texel.rgba[1]);
-                sum[2] += f16_bits_to_f32_local(texel.rgba[2]);
-                count += 1;
-            }
-        }
-    }
-    if count == 0 {
-        [0.0; 3]
-    } else {
-        let inv = 1.0 / count as f32;
-        [sum[0] * inv, sum[1] * inv, sum[2] * inv]
-    }
-}
-
-#[cfg(feature = "dev-tools")]
-fn f16_bits_to_f32_local(bits: u16) -> f32 {
-    postretro_render_cpu::sh_compose::f16_bits_to_f32(bits)
-}
-
 // --- Minor wgpu helper shims (local to this module) ---
 //
 // These exist only to keep the main `new` body readable. They inline into the
@@ -1351,11 +1356,13 @@ mod tests {
             validity: 1,
             mean_distance: 0x4200,
             mean_sq_distance: 0x4900,
+            density_level: 0,
         };
         let probe_b = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x3c00,
             mean_sq_distance: 0x4000,
+            density_level: 0,
         };
 
         let moments = pack_probe_depth_moments(&[probe_a, probe_b], [2, 1, 1]);
@@ -1375,11 +1382,13 @@ mod tests {
             validity: 1,
             mean_distance: 0x4400,
             mean_sq_distance: 0x4c00,
+            density_level: 0,
         };
         let probe_invalid = OctahedralShProbe {
             validity: 0,
             mean_distance: 0x7bff,
             mean_sq_distance: 0x7bff,
+            density_level: 0,
         };
 
         let moments = pack_probe_depth_moments(&[probe_valid, probe_invalid], [2, 1, 1]);

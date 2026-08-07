@@ -26,6 +26,7 @@ use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolume
 //     23     animation samples            (storage, shared with the SH bind group)
 //     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
 //     25     animation descriptor indices `u32` delta-light index → descriptor slot
+//     26     probe indirection (storage)  compact valid-probe slot, or invalid sentinel
 //
 // 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair.
 // 24 is numbered after the shared 22/23 so adding `affinity_lights` doesn't
@@ -35,6 +36,9 @@ const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
 const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
+const BIND_PROBE_INDIRECTION: u32 = 26;
+const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
+const INVALID_PROBE_INDIRECTION: u32 = u32::MAX;
 /// GPU-side compose pass. Always present — levels without an SH section get
 /// dummy 1×1 octahedral atlases plus valid zeroed depth-moment resources and a
 /// single workgroup dispatch. Unconditional dispatch avoids branching in the
@@ -79,6 +83,11 @@ impl ShComposeResources {
         let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
         let descriptor_index_bytes =
             pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
+        // This one word per dense-grid probe maps it to its compact id-34 tile
+        // slot. Unlike `pad_storage_bytes`, the required empty buffer value is
+        // the invalid sentinel, not zero (zero would incorrectly fetch slot 0).
+        let probe_indirection_bytes =
+            u32_slice_to_bytes(&build_probe_indirection_words(sh_section));
 
         use wgpu::util::DeviceExt;
         let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -101,6 +110,12 @@ impl ShComposeResources {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Animation Descriptor Indices"),
                 contents: &descriptor_index_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let probe_indirection_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("SH Compose Probe Indirection"),
+                contents: &probe_indirection_bytes,
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
@@ -126,6 +141,12 @@ impl ShComposeResources {
             tiles_per_layer: sh.tiles_per_layer,
             atlas_layer_count: sh.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
+            compact_atlas_tiles_per_row: sh_section
+                .map(|section| section.compact_atlas_tiles_per_row)
+                .unwrap_or(1),
+            compact_atlas_tiles_per_layer: sh_section
+                .map(|section| section.compact_atlas_tiles_per_layer)
+                .unwrap_or(1),
         });
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
@@ -186,6 +207,20 @@ impl ShComposeResources {
             cache: None,
         });
 
+        // BC6H cannot use textureLoad on Metal. Compose reads its immutable
+        // base at exact texel centers through this nearest, non-filtering
+        // sampler; it is deliberately local to this compose bind group.
+        let base_atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("SH Compose Base Atlas Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
         let entries: Vec<wgpu::BindGroupEntry> = vec![
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -194,6 +229,10 @@ impl ShComposeResources {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(&sh.total_atlas_storage_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_BASE_ATLAS_SAMPLER,
+                resource: wgpu::BindingResource::Sampler(&base_atlas_sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 18,
@@ -218,6 +257,10 @@ impl ShComposeResources {
             wgpu::BindGroupEntry {
                 binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
                 resource: animation_descriptor_indices_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_PROBE_INDIRECTION,
+                resource: probe_indirection_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 22,
@@ -304,6 +347,13 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             },
             count: None,
         },
+        // Binding 2: nearest sampler for the compact BC6H/RGBA16F base atlas.
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_BASE_ATLAS_SAMPLER,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        },
         // Binding 18: atlas/grid/tile/affinity mapping.
         wgpu::BindGroupLayoutEntry {
             binding: 18,
@@ -371,6 +421,19 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             },
             count: None,
         },
+        // Binding 26: dense-probe index -> compact id-34 tile slot, or the
+        // invalid sentinel. This is the seventh compute-visible storage buffer
+        // (bindings 20 through 26), within the downlevel ceiling of eight.
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_PROBE_INDIRECTION,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
         // Bindings 22–23: animation descriptors and samples (shared with SH bind group).
         wgpu::BindGroupLayoutEntry {
             binding: 22,
@@ -395,8 +458,43 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     ]
 }
 
+/// Derive the compact-tile slot for every dense grid probe. The v9 payload
+/// keeps valid probes in x-fastest metadata order, so its slot is their rank
+/// among valid metadata records. This map is intentionally load-derived and
+/// never serialized: metadata validity is the sole source of truth.
+fn build_probe_indirection_words(
+    sh_section: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+) -> Vec<u32> {
+    let Some(section) = sh_section else {
+        return vec![INVALID_PROBE_INDIRECTION];
+    };
+
+    let mut words = Vec::with_capacity(section.probes.len().max(1));
+    let mut next_compact_slot = 0u32;
+    for probe in &section.probes {
+        if probe.validity == 0 {
+            words.push(INVALID_PROBE_INDIRECTION);
+        } else {
+            words.push(next_compact_slot);
+            next_compact_slot = next_compact_slot
+                .checked_add(1)
+                .expect("SH compact probe slot count exceeds u32");
+        }
+    }
+    if words.is_empty() {
+        words.push(INVALID_PROBE_INDIRECTION);
+    }
+    words
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{
+        BIND_BASE_ATLAS_SAMPLER, INVALID_PROBE_INDIRECTION, build_probe_indirection_words,
+        compose_bgl_entries,
+    };
+    use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
+
     #[test]
     fn sh_compose_shader_parses_and_exports_compose_main() {
         // curve_eval.wgsl must be appended to resolve Catmull-Rom helpers.
@@ -418,5 +516,77 @@ mod tests {
             .iter()
             .any(|ep| ep.name == "compose_main" && ep.stage == naga::ShaderStage::Compute);
         assert!(has_compose, "compose_main entry point missing");
+    }
+
+    #[test]
+    fn probe_indirection_uses_valid_probe_rank_and_invalid_sentinel() {
+        let mut section = OctahedralShVolumeSection::placeholder();
+        section.grid_dimensions = [5, 1, 1];
+        section.probes = vec![
+            OctahedralShProbe {
+                validity: 0,
+                ..Default::default()
+            },
+            OctahedralShProbe {
+                validity: 1,
+                ..Default::default()
+            },
+            OctahedralShProbe {
+                validity: 2,
+                ..Default::default()
+            },
+            OctahedralShProbe {
+                validity: 0,
+                ..Default::default()
+            },
+            OctahedralShProbe {
+                validity: 1,
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            build_probe_indirection_words(Some(&section)),
+            vec![
+                INVALID_PROBE_INDIRECTION,
+                0,
+                1,
+                INVALID_PROBE_INDIRECTION,
+                2
+            ],
+        );
+        assert_eq!(
+            build_probe_indirection_words(None),
+            vec![INVALID_PROBE_INDIRECTION],
+        );
+    }
+
+    #[test]
+    fn compose_layout_keeps_seven_compute_storage_buffers_and_local_sampler() {
+        let entries = compose_bgl_entries();
+        let storage_bindings: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| {
+                matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    }
+                )
+                .then_some(entry.binding)
+            })
+            .collect();
+        assert_eq!(storage_bindings, vec![20, 21, 24, 25, 26, 22, 23]);
+        assert_eq!(storage_bindings.len(), 7);
+
+        let sampler = entries
+            .iter()
+            .find(|entry| entry.binding == BIND_BASE_ATLAS_SAMPLER)
+            .expect("compose layout should bind its local base-atlas sampler");
+        assert!(matches!(
+            sampler.ty,
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+        ));
     }
 }

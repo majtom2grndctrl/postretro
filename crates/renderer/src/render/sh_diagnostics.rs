@@ -452,8 +452,7 @@ impl ShProbeReadback {
 
 /// Decode a mapped atlas readback into per-probe average irradiance RGB,
 /// z-major (`x + y*Nx + z*Nx*Ny`). Skips the per-row alignment padding and
-/// averages each probe tile's interior, mirroring `probe_average_irradiance`'s
-/// static CPU path.
+/// averages each probe tile's interior from the dense composed-atlas layout.
 #[allow(clippy::too_many_arguments)]
 fn decode_probe_irradiance_atlas(
     bytes: &[u8],

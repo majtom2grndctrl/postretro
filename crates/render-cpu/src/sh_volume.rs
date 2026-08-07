@@ -259,7 +259,7 @@ pub fn f32_to_f16_bits(v: f32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShProbe};
+    use postretro_level_format::sh_volume::OctahedralShProbe;
 
     fn test_octahedral_section(
         grid: [u32; 3],
@@ -283,10 +283,12 @@ mod tests {
             tiles_per_layer,
             atlas_tiles_per_row,
             probes: vec![OctahedralShProbe::default(); probe_count],
-            atlas_texels: vec![
-                OctahedralAtlasTexel::default();
-                (atlas_dimensions[0] * atlas_dimensions[1]) as usize
-            ],
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            compact_atlas: Vec::new(),
             animation_descriptors,
             slot_for_map_light: Vec::new(),
         }

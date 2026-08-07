@@ -1196,9 +1196,6 @@ mod tests {
         )
         .unwrap();
         let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
-        let atlas_texel_count = layout.layer_count as usize
-            * atlas_dimensions[0] as usize
-            * atlas_dimensions[1] as usize;
         OctahedralShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -1214,10 +1211,12 @@ mod tests {
                 postretro_level_format::sh_volume::OctahedralShProbe::default();
                 probe_count
             ],
-            atlas_texels: vec![
-                postretro_level_format::sh_volume::OctahedralAtlasTexel::default();
-                atlas_texel_count
-            ],
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }
@@ -1227,9 +1226,6 @@ mod tests {
         direct: &DirectShVolumeSection,
     ) -> OctahedralShVolumeSection {
         let probe_count = direct.total_probes();
-        let atlas_texel_count = direct.layer_count as usize
-            * direct.atlas_dimensions[0] as usize
-            * direct.atlas_dimensions[1] as usize;
         OctahedralShVolumeSection {
             grid_origin: direct.grid_origin,
             cell_size: direct.cell_size,
@@ -1245,10 +1241,12 @@ mod tests {
                 postretro_level_format::sh_volume::OctahedralShProbe::default();
                 probe_count
             ],
-            atlas_texels: vec![
-                postretro_level_format::sh_volume::OctahedralAtlasTexel::default();
-                atlas_texel_count
-            ],
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }
@@ -1896,7 +1894,12 @@ mod tests {
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            atlas_texels: Vec::new(),
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         };

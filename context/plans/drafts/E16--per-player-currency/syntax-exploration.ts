@@ -2,139 +2,205 @@
 // NOT part of the spec yet. Iterating here before folding anything into
 // context/plans/drafts/E16--per-player-currency/index.md.
 //
-// Status: exploring a Pinia-flavored `.for(owner)` scoping accessor as an
-// alternative to both `slot(ref).of(token).add(delta)` and the
-// `SourceHandle.slot()/.addSlot()` two-method proposal.
-//
-// Open questions (unresolved — do not treat anything below as settled):
-// - Exact name for `.for()`. Candidates: for, of, scoped, at. "for" reads
-//   well at the call site (`progression.for(impact.source)`) but collides
-//   informally with JS's `for` keyword in conversation, not in code.
-// - Does `.for(owner)` return a NEW object per call (cheap? does it need to
-//   be, given the VM drops after setup and this all still lowers to the
-//   same per-fire IR — no live allocation cost at *runtime*, only at
-//   author-time tracing)?
-// - Read confirmed to need the NumberRef/BoolRef fluent family (GatedEffect.
-//   when: BoolRef, data_script.ts:216) — plain RuntimeValue (runtime.*) does
-//   NOT interoperate, numberRef() wrapper is not exported. So `.for()`'s
-//   returned per-slot accessors must themselves be real NumberRef-producing,
-//   same as SourceHandle.slot() would have been.
-// - `id`/name strings (defineImpactEvent, defineStore's namespace) stay
-//   required — the VM drops after setup, nothing survives except serialized
-//   data, and `.override()` mints a second object reusing the same `id`
-//   string (data_script.ts:397-408), which a JS variable binding can't do.
+// Current direction: Variant C (bottom). `impact.source` becomes a plain
+// branded frozen value carrying its own token; store slot handles gain
+// read+write on one object; `addSlot` is dropped in favor of an
+// expression-taking update method.
 
-// ---------------------------------------------------------------------------
-// Variant A — `.for(owner)` scoping accessor, addressed once
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Verified facts (line numbers are checkable; everything else here is a
+// proposal, not shipped)
+// ===========================================================================
+//
+// 1. `slot.add` is ALREADY a read-modify-write set. impact_policy.rs:457-467:
+//
+//      "slot.add" if target.is_none() => {
+//          let value = json!({ "op": "add",
+//                              "a": { "op": "input", "name": slot },
+//                              "b": delta });
+//          bind_number_write(slot.to_string(), &value, scope).map(BoundEffect::Write)
+//      }
+//
+//    `bind_number_write` is the same function `setState` binds through
+//    (impact_policy.rs:455). There is NO additive primitive at the substrate —
+//    `add(delta)` is SDK sugar over `set(read(slot) + delta)`. So exposing a
+//    `.set(expr)` verb widens no engine surface; it removes a sugar layer.
+//    Corollary: `.set()` carries no ordering hazard `.add()` didn't already
+//    have, since both lower to the same snapshot-read-then-write.
+//
+// 2. Expression-in-parameter is already the house style for updates:
+//      setHealth(value: NumberValue, opts?)          data_script.ts:228, 344-348
+//      setState(name: string, value: NumberValue)    data_script.ts:230, 352-354
+//    Both lower via `numberNode(value)`. `slot(ref).add(delta)` (:249-251, :369)
+//    is the outlier — the only update verb fixed to one operation.
+//
+// 3. Read/write are already symmetric for per-entity state and asymmetric for
+//    store slots:
+//      impact.target.state(name) -> NumberRef   /  .setState(name, v) -> Effect
+//      progression.xp            -> {slot:string} (NO read capability at all)
+//    `WritableStateRef<number>` is literally `{ slot: string }` plus brands
+//    (widgets.ts:47-55; built at data_script.ts:774). It cannot be read from
+//    or written to directly — `slot(ref)` (:369) is the only door, and it
+//    opens only onto `.add`.
+//
+// 4. `IMPACT_SOURCE` is a module-private frozen singleton built at SDK load
+//    (data_script.ts:357-360), holding only `grantHealth`/`grantAmmo` closures
+//    over the wire literal "@impact.source". It exposes no token field.
+//    `SourceHandle` (:233-247) is `{ [sourceBrand]: true }` + those two methods.
+//
+// 5. `ActivatorsTarget` (:18-22) is the reaction-side precedent for a
+//    data-free branded handle: checked by identity against a private singleton
+//    (`target === ACTIVATORS_TARGET`, :509/521/534), with the wire string
+//    baked into the free function rather than read off the handle. Free
+//    functions taking a handle (grantHealth(target, amount), :514-523) are
+//    already the reaction-side shape.
+//
+// 6. `id`/namespace strings stay required. The setup VM drops after execution;
+//    only serialized data survives. `.override()` (:397-408) mints a second
+//    ImpactEvent reusing the same `id` string, which a JS binding cannot do.
+
+// ===========================================================================
+// Superseded (kept only so the reasoning isn't re-derived)
+// ===========================================================================
+//
+// Variant A — `progression.for(impact.source)` returning an owner-scoped store
+//   instance, Pinia's useStore() flavor. Superseded by C, which keeps the same
+//   scoping move but fixes the read/write asymmetry at the slot level rather
+//   than wrapping the whole store.
+//
+// Variant B — SourceHandle as a token-carrying value consumed by free
+//   functions `grantHealth(source, amount)` / `addSlot(source, ref, delta)`.
+//   The token-carrying half survives into C. The free-function half is dropped:
+//   it left shared (non-owner) writes with no handle to pass, forcing either
+//   two `addSlot` signatures or a split between owned and global write paths.
+//   C removes that problem by putting the verb on the slot handle, where the
+//   owner is an addressing detail rather than a required argument.
+
+// ===========================================================================
+// Variant C — current direction
+// ===========================================================================
+//
+// Three moves, each independently justified above:
+//
+//   (a) `impact.source` becomes a plain branded frozen value carrying its own
+//       token. This makes "the handle IS the ID" hold on the owner side the
+//       way it already holds on the slot side, AND makes the token
+//       load-bearing — today nothing reads it, so it is decorative.
+//
+//         export type SourceHandle = Readonly<{
+//           readonly token: "@impact.source";
+//           readonly [sourceBrand]: true;
+//         }>;
+//
+//   (b) Store slot handles carry read AND write on one object, keeping the
+//       `slot: string` field so `runtime.read(ref)` (runtime.ts:54-56) and
+//       `stateSlot(ref)` (reactions.ts:57-62) keep working unchanged:
+//
+//         export interface NumberSlotRef extends NumberRef {
+//           readonly slot: string;
+//           set(value: NumberValue): Effect;
+//           add(delta: NumberValue): Effect;   // sugar, kept for legibility
+//         }
+//
+//       Extending NumberRef is what buys the dry read: the handle IS the
+//       readable expression, so `.gt()`, `.plus()`, `.select()` compose off it
+//       directly. No `slot()` wrapper, no separate read door.
+//
+//   (c) Owner scoping is a method on the STORE handle taking the owner token,
+//       not a property path off the owner. `impact.source.entityStore.
+//       progression` is not constructible: IMPACT_SOURCE is frozen at SDK load
+//       (fact 4) and `progression` is declared later by author code, so the
+//       singleton cannot carry a property named after it. Inverting preserves
+//       the reading order almost exactly and is buildable:
+//
+//         progression.of(impact.source).xp
+
+// --- Declarations (proposed shapes, for the examples below) ----------------
 
 const progression = defineStore("player", {
   xp: { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
   teamKills: { type: "number", default: 0 },
 });
 
+// --- Read and write, owner-scoped -----------------------------------------
+
 const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
-  const mine = progression.for(impact.source); // owner-scoped instance, ~Pinia's useStore()
+  const mine = progression.of(impact.source);
 
   const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   const base = impact.target.healthAfter.le(-40).select(50, 25);
-  const bonus = mine.xp.gt(100).select(base.times(2), base); // read — already owner-bound
+
+  // READ: `mine.xp` is itself a NumberRef — arithmetic and comparison compose
+  // straight off it, no wrapper.
+  const bonus = mine.xp.gt(100).select(base.times(2), base);
 
   return [
-    { when: killed, do: [
-        mine.xp.add(bonus),              // write — per player, addressed once by `.for(...)`
-        progression.teamKills.add(1),    // shared — untouched, no scoping needed
-    ]},
+    {
+      when: killed,
+      do: [
+        // WRITE, expression parameter — the general form. Arbitrary IR in,
+        // including a read of the same slot.
+        mine.xp.set(mine.xp.plus(bonus).clamp(0, 9999)),
+
+        // The common case stays short. Identical lowering to the above minus
+        // the clamp, per fact 1.
+        progression.teamKills.add(1),
+      ],
+    },
   ];
 });
 
-// ---------------------------------------------------------------------------
-// Variant A2 — named actions (Pinia-flavored, bigger departure — new
-// defineStore schema surface, likely out of spec scope, kept here for the
-// idea only)
-// ---------------------------------------------------------------------------
+// Note what (b) bought: `progression.teamKills` and `mine.xp` are the same
+// interface. Global and owner-scoped writes are one code path, differing only
+// in whether `.of()` was applied. This is the shared-write problem Variant B
+// could not resolve.
 
-// const progression2 = defineStore("player", {
-//   state: { xp: { type: "number", default: 0, perOwner: true } },
-//   actions: {
-//     awardXp(amount) { this.xp.add(amount); },
-//   },
-// });
-// mine.awardXp(bonus)  // instead of mine.xp.add(bonus) — names the domain verb, not the mechanism
+// --- What `.of()` returns --------------------------------------------------
+//
+//   interface StoreDefinition<S> {
+//     of(owner: SourceHandle): OwnedSlots<S>;   // owner-addressed view
+//     // ...plus the bare per-slot NumberSlotRefs already exposed today
+//   }
+//
+// `.of()` reads `owner.token` and stamps it into each returned slot handle's
+// lowered IR — the owner is an addressing detail carried in the wire data,
+// not a separate argument threaded through every call site. Whether the
+// lowered form is an owner field on the input/write node or an encoded slot
+// string is an engine-side question the spec already takes a position on;
+// this file does not re-decide it.
 
-// ---------------------------------------------------------------------------
-// Correction (verified against source): the reaction-side write below was
-// invented, not real. `addSlot` does not exist. What DOES exist is a
-// free-function precedent for reactions:
-//
-//   export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
-//     (data_script.ts:514-523)
-//
-// `ActivatorsTarget` (data_script.ts:18-22) is `Readonly<{ [brand]: true }>` —
-// zero exposed data fields, checked by identity against a private singleton
-// (`target === ACTIVATORS_TARGET`, :509/521/534). The wire string "@activators"
-// is baked into the function body, not read off the handle. `SourceHandle`
-// (data_script.ts:233-247, singleton built :357-360) is the same shape:
-// `{ [sourceBrand]: true }`, no token field, methods closed over the wire
-// literal "@impact.source" internally.
-//
-// So PostRetro already has a *shape* precedent — top-level functions that take
-// a handle as an argument, not methods living on the handle (reactions'
-// grantHealth(target, amount) vs. impact policy's SourceHandle.grantHealth
-// (amount)) — but neither handle today is a real token-carrying value the way
-// WritableStateRef (`{ slot: string }`, data_script.ts:774) already is.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Variant B — SourceHandle restructured as a token-carrying value, consumed
-// by free functions. Makes "handle is the ID" hold the same way on the
-// owner/source side as it already does on the slot side (WritableStateRef).
-// ---------------------------------------------------------------------------
-
-// Proposed shape (mirrors WritableStateRef's `{ slot: string }` exactly):
-//
-//   export type SourceHandle = Readonly<{
-//     readonly token: "@impact.source";
-//     readonly [sourceBrand]: true;
-//   }>;
-//
-// grantHealth/grantAmmo move off the handle and become free functions,
-// matching the reaction side's existing shape:
-//
-//   export function grantHealth(source: SourceHandle, amount: NumberValue): Effect { ... }
-//   export function grantAmmo(source: SourceHandle, type: string, amount: NumberValue): Effect { ... }
-//
-// For this spec, the same free-function shape covers the new per-owner slot
-// write, and the `.for(owner)` scoping accessor from Variant A becomes
-// unnecessary — the owner token is just another argument, not a wrapper object:
-//
-//   addSlot(impact.source, progression.xp, bonus)   // source: SourceHandle, ref: WritableStateRef<number>
-
-const reward2 = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
-  const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
-  const base = impact.target.healthAfter.le(-40).select(50, 25);
-
-  return [
-    { when: killed, do: [
-        addSlot(impact.source, progression.xp, base),   // per-owner write, source handle carries its own token
-        addSlot(progression.teamKills, base),            // shared write, no owner argument — needs a second overload or a distinct free fn
-    ]},
-  ];
-});
-
-// Open problem with Variant B: the shared (non-owner) write above doesn't
-// have a handle to pass — `progression.teamKills` alone identifies the slot,
-// not who's writing it. Either `addSlot` needs two signatures (owner-scoped
-// vs. global), or global writes keep using `slot(ref).add(delta)` and only
-// the owner-scoped path gets the new free function. Unresolved — pick before
-// this goes in the spec.
-
-// ---------------------------------------------------------------------------
-// Reaction-side write — unaffected by any of the above. Reactions have no
-// `impact.source`; stays a flat top-level call addressed by activators/tag,
-// using the real, verified `grantHealth(target, amount)` free-function shape.
-// ---------------------------------------------------------------------------
+// --- Reaction side, unchanged ---------------------------------------------
+// Reactions have no `impact.source`. They stay flat top-level calls addressed
+// by activators/tag, using the shipped free-function shape (fact 5).
 
 onTriggerEvent({ tag: "objective" }, "enter", [
   defineReaction((on: TriggerEventParams) => grantHealth(on.activators, 25)),
 ]);
+
+// ===========================================================================
+// Open questions
+// ===========================================================================
+//
+// - Name for the scoping method. `.of(owner)` reads well at the call site
+//   ("progression of the impact source, xp") and matches the discarded
+//   `slot(ref).of(token)` chain, so it carries no new vocabulary. Alternatives:
+//   `.for()`, `.owned()`, `.scoped()`.
+//
+// - Keep `.add()` alongside `.set()`? It is pure sugar (fact 1) but it is the
+//   overwhelmingly common case and reads better than `x.set(x.plus(n))`. Cost
+//   is two verbs where one would do.
+//
+// - Does `slot(ref)` (:369) survive? If NumberSlotRef carries `.set`/`.add`
+//   directly, the wrapper has no remaining job. Removing it is a breaking SDK
+//   change to a shipped export — probably out of scope for this spec, so it
+//   likely stays as a deprecated alias.
+//
+// - Does `NumberSlotRef extends NumberRef` create a read where the substrate
+//   has none? Global store slots resolve through StoreScope, so a bare read
+//   is fine. Owner-scoped reads are exactly what the spec's per-owner input
+//   work exists to provide — this syntax assumes that work lands, and should
+//   be checked against the spec's own AC list before folding in.
+//
+// - `WritableStateRef<T>` is generic over number|boolean|string, but `.plus`,
+//   `.clamp` etc. only make sense for numbers. Needs either a conditional type
+//   or a separate BoolSlotRef/StringSlotRef with the appropriate verbs.

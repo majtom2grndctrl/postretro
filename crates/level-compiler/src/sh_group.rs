@@ -9,11 +9,13 @@
 // nonnegative term: warm SH is a strict, benign underestimate, never miscolored.
 //
 // Each group's baked tiles/moments are cached via the flat-file `StageCache` and
-// later *assembled* (pure byte-copy placement, no re-pack) into the
-// `OctahedralShVolume` section the runtime consumes. Assembly reproduces the
-// per-group bakes exactly; the warm volume only *approximates* the monolithic
-// `bake_sh_volume` (it drops past-cutoff far bounces). The cold
-// `--release`/`--no-cache` path runs the exact whole-volume bake for shipping.
+// later *assembled* by pure dense byte-copy placement. The shared compact
+// packaging transform then filters valid probes, and the pipeline seam applies
+// the at-rest encoding, so neither step changes this cache payload.
+// Assembly reproduces the per-group bakes exactly; the warm volume only
+// *approximates* the monolithic `bake_sh_volume` (it drops past-cutoff far
+// bounces). The cold `--release`/`--no-cache` path runs the exact whole-volume
+// bake for shipping.
 
 use blake3::Hasher;
 use glam::DVec3;
@@ -31,16 +33,19 @@ use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::map_data::{LightType, MapLight};
 use crate::sh_bake::{
-    BakedProbe, ProbeGridLayout, ShBakeCtx, ShConfig, bake_probe, pack_octahedral_irradiance_tile,
-    probe_grid_layout, sh_atlas_array_layout, static_light_refs, vec3_from,
+    BakedProbe, ProbeGridLayout, ShBakeCtx, ShConfig, bake_probe, compact_section_from_dense_atlas,
+    pack_octahedral_irradiance_tile, probe_grid_layout, sh_atlas_array_layout, static_light_refs,
+    vec3_from,
 };
 
 /// Cache stage id for per-group SH entries on the shared `StageCache`.
 pub const SH_GROUP_STAGE_ID: &str = "sh_group";
 
 /// Bump this when the per-group SH bake algorithm, the reaching-light selection,
-/// the payload codec, or the assembly placement changes. Versions independently
-/// from the other cached stages so each can evolve without invalidating the other.
+/// the cached payload codec, or the dense byte-copy assembly placement changes.
+/// The downstream compact-section/BC6H packaging transform is not part of these
+/// cached records. Versions independently from the other cached stages so each
+/// can evolve without invalidating the other.
 pub const SH_GROUP_STAGE_VERSION: u32 = 1;
 
 /// Edge length of a probe group, in probes, per axis. 4³ aligns with the
@@ -248,7 +253,8 @@ const PAYLOAD_CODEC_VERSION: u32 = 1;
 ///     T × [u16; 4]  octahedral tile texels (f16 bits)
 /// ```
 /// Tiles are the post-`pack_octahedral_irradiance_tile` f16 octahedral tile, so
-/// assembly is a byte-copy into the section with no re-pack.
+/// dense assembly is a byte-copy. The shared compact-packaging step later
+/// filters metadata-valid tiles; the pipeline re-encodes the completed volume.
 fn encode_group_payload(baked: &[(BakedProbe, Vec<OctahedralAtlasTexel>)]) -> Vec<u8> {
     let t = tile_texel_count();
     let per_probe = 1 + 2 + 2 + t * 8;
@@ -325,6 +331,7 @@ fn decode_group_payload(data: &[u8]) -> Option<Vec<GroupProbeRecord>> {
                 validity,
                 mean_distance,
                 mean_sq_distance,
+                density_level: 0,
             },
             tile,
         });
@@ -540,11 +547,11 @@ pub(crate) fn bake_or_load_group(
     }
 }
 
-/// Assemble baked groups into the `OctahedralShVolume` section by pure placement:
-/// each group's probe records are byte-copied into their global offsets (probe
-/// metadata record + octahedral tile origin). The section is initialized for the
-/// shared grid layout; `assemble_groups` fills its probes/atlas. No re-pack, so
-/// the assembled volume reproduces the per-group bakes exactly.
+/// Assemble baked groups into a dense intermediate by pure placement: each
+/// group's probe records are byte-copied into their global offsets (probe
+/// metadata record + octahedral tile origin). The shared compact-packaging
+/// transform filters that intermediate after this assembly completes, and the
+/// pipeline later applies its at-rest encoding.
 ///
 /// `non_atlas` carries the section fields the per-group bake does not produce
 /// (animation descriptors + slot table), threaded through from the caller's
@@ -554,30 +561,47 @@ pub(crate) struct ShVolumeShell {
     pub(crate) slot_for_map_light: Vec<u32>,
 }
 
-/// Build the empty (probes/atlas zero-filled) `OctahedralShVolumeSection` for the
-/// shared grid layout, sized so groups can be byte-copied into it.
+/// Dense intermediate used only while the grouped path places cached records.
+/// It preserves the v8 dense tile locations so cached values are byte-copied
+/// before the v9 compact packaging transform runs.
+pub(crate) struct DenseAssembledSection {
+    pub(crate) section: OctahedralShVolumeSection,
+    pub(crate) dense_atlas: Vec<OctahedralAtlasTexel>,
+}
+
+/// Build the empty dense intermediate for the shared grid layout, sized so
+/// groups can be byte-copied into it.
 pub(crate) fn empty_assembled_section(
     layout: &ProbeGridLayout,
     shell: ShVolumeShell,
-) -> OctahedralShVolumeSection {
+) -> DenseAssembledSection {
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
     use postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE;
 
     if layout.is_empty() {
-        return OctahedralShVolumeSection {
-            grid_origin: [0.0, 0.0, 0.0],
-            cell_size: layout.cell_size,
-            grid_dimensions: [0, 0, 0],
-            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
-            tile_dimension: TILE_DIMENSION,
-            tile_border: TILE_BORDER,
-            atlas_dimensions: [0, 0],
-            layer_count: 0,
-            tiles_per_layer: 0,
-            atlas_tiles_per_row: 0,
-            probes: Vec::new(),
-            atlas_texels: Vec::new(),
-            animation_descriptors: shell.animation_descriptors,
-            slot_for_map_light: shell.slot_for_map_light,
+        return DenseAssembledSection {
+            section: OctahedralShVolumeSection {
+                grid_origin: [0.0, 0.0, 0.0],
+                cell_size: layout.cell_size,
+                grid_dimensions: [0, 0, 0],
+                probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+                tile_dimension: TILE_DIMENSION,
+                tile_border: TILE_BORDER,
+                atlas_dimensions: [0, 0],
+                layer_count: 0,
+                tiles_per_layer: 0,
+                atlas_tiles_per_row: 0,
+                probes: Vec::new(),
+                compact_atlas_dimensions: [0, 0],
+                compact_atlas_tiles_per_row: 0,
+                compact_atlas_tiles_per_layer: 0,
+                compact_atlas_layer_count: 0,
+                irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+                compact_atlas: Vec::new(),
+                animation_descriptors: shell.animation_descriptors,
+                slot_for_map_light: shell.slot_for_map_light,
+            },
+            dense_atlas: Vec::new(),
         };
     }
 
@@ -589,43 +613,51 @@ pub(crate) fn empty_assembled_section(
         * atlas_layout.atlas_width as usize
         * atlas_layout.atlas_height as usize;
 
-    OctahedralShVolumeSection {
-        grid_origin: [
-            layout.world_min.x as f32,
-            layout.world_min.y as f32,
-            layout.world_min.z as f32,
-        ],
-        cell_size: layout.cell_size,
-        grid_dimensions: dims,
-        probe_stride: OCTAHEDRAL_PROBE_STRIDE,
-        tile_dimension: TILE_DIMENSION,
-        tile_border: TILE_BORDER,
-        atlas_dimensions: [atlas_layout.atlas_width, atlas_layout.atlas_height],
-        layer_count: atlas_layout.layer_count,
-        tiles_per_layer: atlas_layout.tiles_per_layer,
-        atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
-        probes: vec![OctahedralShProbe::default(); total],
-        atlas_texels: vec![OctahedralAtlasTexel::default(); atlas_texel_count],
-        animation_descriptors: shell.animation_descriptors,
-        slot_for_map_light: shell.slot_for_map_light,
+    DenseAssembledSection {
+        section: OctahedralShVolumeSection {
+            grid_origin: [
+                layout.world_min.x as f32,
+                layout.world_min.y as f32,
+                layout.world_min.z as f32,
+            ],
+            cell_size: layout.cell_size,
+            grid_dimensions: dims,
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: TILE_DIMENSION,
+            tile_border: TILE_BORDER,
+            atlas_dimensions: [atlas_layout.atlas_width, atlas_layout.atlas_height],
+            layer_count: atlas_layout.layer_count,
+            tiles_per_layer: atlas_layout.tiles_per_layer,
+            atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
+            probes: vec![OctahedralShProbe::default(); total],
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            compact_atlas: Vec::new(),
+            animation_descriptors: shell.animation_descriptors,
+            slot_for_map_light: shell.slot_for_map_light,
+        },
+        dense_atlas: vec![OctahedralAtlasTexel::default(); atlas_texel_count],
     }
 }
 
-/// Place one baked group's records into `section` at their global offsets. Each
+/// Place one baked group's records into the dense intermediate at their global offsets. Each
 /// probe's metadata goes to `probes[global_index]`; its tile is byte-copied to
 /// the layer-major atlas at `irradiance_array_tile_location(global_index, ...)`.
 /// Pure placement.
-pub(crate) fn place_group(section: &mut OctahedralShVolumeSection, group: &BakedGroup) {
-    let atlas_width = section.atlas_dimensions[0] as usize;
-    let layer_texel_count = atlas_width * section.atlas_dimensions[1] as usize;
+pub(crate) fn place_group(section: &mut DenseAssembledSection, group: &BakedGroup) {
+    let atlas_width = section.section.atlas_dimensions[0] as usize;
+    let layer_texel_count = atlas_width * section.section.atlas_dimensions[1] as usize;
     for (slot, &global_index) in group.probe_indices.iter().enumerate() {
         let record = &group.records[slot];
-        section.probes[global_index] = record.metadata;
+        section.section.probes[global_index] = record.metadata;
 
         let [layer, tile_x, tile_y] = irradiance_array_tile_location(
             global_index,
-            section.tiles_per_layer,
-            section.atlas_tiles_per_row,
+            section.section.tiles_per_layer,
+            section.section.atlas_tiles_per_row,
         );
         let origin = [tile_x * TILE_DIMENSION, tile_y * TILE_DIMENSION];
         let layer_offset = layer as usize * layer_texel_count;
@@ -634,8 +666,7 @@ pub(crate) fn place_group(section: &mut OctahedralShVolumeSection, group: &Baked
                 let texel = record.tile[(tile_y * TILE_DIMENSION + tile_x) as usize];
                 let ax = origin[0] + tile_x;
                 let ay = origin[1] + tile_y;
-                section.atlas_texels[layer_offset + ay as usize * atlas_width + ax as usize] =
-                    texel;
+                section.dense_atlas[layer_offset + ay as usize * atlas_width + ax as usize] = texel;
             }
         }
     }
@@ -669,7 +700,7 @@ pub fn bake_sh_volume_grouped_controlled(
 
     let mut section = empty_assembled_section(&layout, shell);
     if layout.is_empty() {
-        return section;
+        return compact_section_from_dense_atlas(section.section, &section.dense_atlas);
     }
 
     let static_lights = static_light_refs(inputs);
@@ -701,7 +732,7 @@ pub fn bake_sh_volume_grouped_controlled(
     for baked in &baked_groups {
         place_group(&mut section, baked);
     }
-    section
+    compact_section_from_dense_atlas(section.section, &section.dense_atlas)
 }
 
 /// Build the non-atlas shell (animation descriptors + slot table) for the warm
@@ -902,6 +933,7 @@ mod tests {
                         validity: (i % 2) as u8,
                         mean_distance: 0x3c00 + i as u16,
                         mean_sq_distance: 0x4000 + i as u16,
+                        density_level: 0,
                     },
                 };
                 let tile = (0..t)
@@ -1577,7 +1609,7 @@ mod tests {
         let shell = super::build_shell(inputs);
         let mut section = empty_assembled_section(&layout, shell);
         if layout.is_empty() {
-            return section;
+            return compact_section_from_dense_atlas(section.section, &section.dense_atlas);
         }
 
         let static_refs = static_light_refs(inputs);
@@ -1605,7 +1637,7 @@ mod tests {
                 },
             );
         }
-        section
+        compact_section_from_dense_atlas(section.section, &section.dense_atlas)
     }
 
     /// Gate (2): a cold `--no-cache`-equivalent grouped bake with FULL

@@ -7,7 +7,9 @@ use bvh::bvh::Bvh;
 use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
-use postretro_level_format::lightmap::f32_to_f16_bits;
+use postretro_level_format::lightmap::{
+    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits,
+};
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, IrradianceAtlasArrayLayout,
     MAX_SH_ATLAS_LAYERS, irradiance_array_tile_location, irradiance_atlas_array_layout,
@@ -231,7 +233,12 @@ pub fn bake_sh_volume_controlled(
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            atlas_texels: Vec::new(),
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: vec![ANIMATED_SLOT_NONE; inputs.total_light_count],
         };
@@ -296,7 +303,7 @@ pub fn bake_sh_volume_controlled(
         }
     }
 
-    OctahedralShVolumeSection {
+    let section = OctahedralShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
         cell_size,
         grid_dimensions: dims,
@@ -308,10 +315,16 @@ pub fn bake_sh_volume_controlled(
         tiles_per_layer: atlas_layout.tiles_per_layer,
         atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
         probes: base_probes,
-        atlas_texels,
+        compact_atlas_dimensions: [0, 0],
+        compact_atlas_tiles_per_row: 0,
+        compact_atlas_tiles_per_layer: 0,
+        compact_atlas_layer_count: 0,
+        irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+        compact_atlas: Vec::new(),
         animation_descriptors,
         slot_for_map_light,
-    }
+    };
+    compact_section_from_dense_atlas(section, &atlas_texels)
 }
 
 pub fn log_stats(section: &OctahedralShVolumeSection) {
@@ -354,6 +367,162 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
         section.cell_size[0],
         section.animation_descriptors.len(),
     );
+}
+
+/// Convert a dense, layer-major tile atlas from a bake into the v9 compact
+/// payload. The source's tile locations retain the dense grid layout, while the
+/// destination assigns slots only to metadata-valid probes in x-fastest order.
+///
+/// The compact result deliberately remains `Rgba16Float` here. The pipeline
+/// seam re-encodes it to BC6H after both the grouped and monolithic bake paths
+/// converge, so the group cache never stores an output-format-specific value.
+pub(crate) fn compact_section_from_dense_atlas(
+    mut section: OctahedralShVolumeSection,
+    dense_atlas: &[OctahedralAtlasTexel],
+) -> OctahedralShVolumeSection {
+    let dense_texel_count = section.layer_count as usize
+        * section.atlas_dimensions[0] as usize
+        * section.atlas_dimensions[1] as usize;
+    debug_assert_eq!(dense_atlas.len(), dense_texel_count);
+
+    let valid_probe_count = section
+        .probes
+        .iter()
+        .filter(|probe| probe.validity != 0)
+        .count();
+    let compact_layout = sh_atlas_array_layout(
+        [
+            u32::try_from(valid_probe_count).expect("SH compact valid-probe count must fit in u32"),
+            1,
+            1,
+        ],
+        section.tile_dimension,
+    )
+    .unwrap_or_else(|e| panic!("compact SH atlas layout failed: {e}"));
+
+    let compact_texel_count = compact_layout.layer_count as usize
+        * compact_layout.atlas_width as usize
+        * compact_layout.atlas_height as usize;
+    let mut compact_atlas = vec![OctahedralAtlasTexel::default(); compact_texel_count];
+    let dense_width = section.atlas_dimensions[0] as usize;
+    let dense_layer_texels = dense_width * section.atlas_dimensions[1] as usize;
+    let compact_width = compact_layout.atlas_width as usize;
+    let compact_layer_texels = compact_width * compact_layout.atlas_height as usize;
+    let tile_dimension = section.tile_dimension as usize;
+    let mut compact_slot = 0usize;
+
+    for (probe_index, probe) in section.probes.iter().enumerate() {
+        if probe.validity == 0 {
+            continue;
+        }
+
+        let [dense_layer, dense_tile_x, dense_tile_y] = irradiance_array_tile_location(
+            probe_index,
+            section.tiles_per_layer,
+            section.atlas_tiles_per_row,
+        );
+        let [compact_layer, compact_tile_x, compact_tile_y] = irradiance_array_tile_location(
+            compact_slot,
+            compact_layout.tiles_per_layer,
+            compact_layout.atlas_tiles_per_row,
+        );
+        let dense_origin = [
+            dense_tile_x as usize * tile_dimension,
+            dense_tile_y as usize * tile_dimension,
+        ];
+        let compact_origin = [
+            compact_tile_x as usize * tile_dimension,
+            compact_tile_y as usize * tile_dimension,
+        ];
+        let dense_layer_offset = dense_layer as usize * dense_layer_texels;
+        let compact_layer_offset = compact_layer as usize * compact_layer_texels;
+
+        for tile_y in 0..tile_dimension {
+            let dense_row = dense_layer_offset + (dense_origin[1] + tile_y) * dense_width;
+            let compact_row = compact_layer_offset + (compact_origin[1] + tile_y) * compact_width;
+            let source = &dense_atlas
+                [dense_row + dense_origin[0]..dense_row + dense_origin[0] + tile_dimension];
+            compact_atlas
+                [compact_row + compact_origin[0]..compact_row + compact_origin[0] + tile_dimension]
+                .copy_from_slice(source);
+        }
+        compact_slot += 1;
+    }
+    debug_assert_eq!(compact_slot, valid_probe_count);
+
+    section.compact_atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
+    section.compact_atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
+    section.compact_atlas_tiles_per_layer = compact_layout.tiles_per_layer;
+    section.compact_atlas_layer_count = compact_layout.layer_count;
+    section.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+    section.compact_atlas = atlas_texels_to_bytes(&compact_atlas);
+    section
+}
+
+/// Re-encode the compact, lossless v9 base atlas for its at-rest representation.
+/// The logical compact geometry stays unchanged; only the BC6H input gains a
+/// zero-filled 4×4 fringe that is never addressed by the runtime tile layout.
+pub(crate) fn encode_sh_volume_section_bc6h(
+    section: &OctahedralShVolumeSection,
+    uncompressed_irradiance: bool,
+) -> OctahedralShVolumeSection {
+    if uncompressed_irradiance {
+        return section.clone();
+    }
+    debug_assert_eq!(
+        section.irradiance_format, IRRADIANCE_FORMAT_RGBA16F,
+        "SH BC6H encode expects the compact RGBA16F section from the bake",
+    );
+
+    let width = section.compact_atlas_dimensions[0];
+    let height = section.compact_atlas_dimensions[1];
+    let padded_width = width.div_ceil(4) * 4;
+    let padded_height = height.div_ceil(4) * 4;
+    let source_layer_stride = width as usize * height as usize * 8;
+    let encoded_layer_len = (padded_width / 4) as usize * (padded_height / 4) as usize * 16;
+    let mut compact_atlas =
+        Vec::with_capacity(section.compact_atlas_layer_count as usize * encoded_layer_len);
+
+    for layer in 0..section.compact_atlas_layer_count as usize {
+        // BC6H consumes f32 RGBA input but encodes RGB only. The valid-probe
+        // metadata, not alpha, defines compact payload membership in v9.
+        let mut rgba_f32 = vec![0.0f32; padded_width as usize * padded_height as usize * 4];
+        let source_layer = layer * source_layer_stride;
+        for y in 0..height {
+            for x in 0..width {
+                let src = source_layer + ((y * width + x) * 8) as usize;
+                let dst = ((y * padded_width + x) * 4) as usize;
+                for channel in 0..4 {
+                    let bits = u16::from_le_bytes([
+                        section.compact_atlas[src + channel * 2],
+                        section.compact_atlas[src + channel * 2 + 1],
+                    ]);
+                    rgba_f32[dst + channel] = f16_bits_to_f32(bits);
+                }
+            }
+        }
+        compact_atlas.extend_from_slice(&crate::bc6h::encode_bc6h_rgb_from_f32_rgba(
+            &rgba_f32,
+            padded_width,
+            padded_height,
+        ));
+    }
+
+    OctahedralShVolumeSection {
+        irradiance_format: IRRADIANCE_FORMAT_BC6H,
+        compact_atlas,
+        ..section.clone()
+    }
+}
+
+fn atlas_texels_to_bytes(atlas_texels: &[OctahedralAtlasTexel]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(atlas_texels.len() * 8);
+    for texel in atlas_texels {
+        for channel in texel.rgba {
+            bytes.extend_from_slice(&channel.to_le_bytes());
+        }
+    }
+    bytes
 }
 
 pub(crate) fn sh_atlas_array_layout(
@@ -1038,6 +1207,7 @@ pub(crate) fn bake_probe(
             validity: 1,
             mean_distance: f32_to_f16_bits(mean_distance),
             mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
+            density_level: 0,
         },
     }
 }
@@ -1254,6 +1424,108 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compact_atlas_excludes_invalid_tiles_in_x_fastest_order() {
+        let dense_layout = sh_atlas_array_layout([3, 1, 1], DEFAULT_IRRADIANCE_TILE_DIMENSION)
+            .expect("three-probe dense layout");
+        let dense_texel_count = dense_layout.layer_count as usize
+            * dense_layout.atlas_width as usize
+            * dense_layout.atlas_height as usize;
+        let mut dense_atlas = vec![OctahedralAtlasTexel::default(); dense_texel_count];
+        let dense_width = dense_layout.atlas_width as usize;
+        let dense_layer_texels = dense_width * dense_layout.atlas_height as usize;
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION as usize;
+
+        for probe_index in 0..3usize {
+            let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+                probe_index,
+                dense_layout.tiles_per_layer,
+                dense_layout.atlas_tiles_per_row,
+            );
+            let value = (probe_index as u16) + 10;
+            let layer_offset = layer as usize * dense_layer_texels;
+            for tile_y_offset in 0..tile_dimension {
+                let row = layer_offset
+                    + (tile_y as usize * tile_dimension + tile_y_offset) * dense_width
+                    + tile_x as usize * tile_dimension;
+                dense_atlas[row..row + tile_dimension].fill(OctahedralAtlasTexel {
+                    rgba: [value, value, value, value],
+                });
+            }
+        }
+
+        let section = OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [3, 1, 1],
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [dense_layout.atlas_width, dense_layout.atlas_height],
+            layer_count: dense_layout.layer_count,
+            tiles_per_layer: dense_layout.tiles_per_layer,
+            atlas_tiles_per_row: dense_layout.atlas_tiles_per_row,
+            probes: vec![
+                OctahedralShProbe {
+                    validity: 1,
+                    mean_distance: 0,
+                    mean_sq_distance: 0,
+                    density_level: 0,
+                },
+                OctahedralShProbe {
+                    validity: 0,
+                    mean_distance: 0,
+                    mean_sq_distance: 0,
+                    density_level: 0,
+                },
+                OctahedralShProbe {
+                    validity: 1,
+                    mean_distance: 0,
+                    mean_sq_distance: 0,
+                    density_level: 0,
+                },
+            ],
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            compact_atlas: Vec::new(),
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        };
+
+        let compact = compact_section_from_dense_atlas(section, &dense_atlas);
+        let tile_bytes = tile_dimension * tile_dimension * 8;
+        assert_eq!(
+            compact.compact_atlas.len(),
+            2 * tile_bytes,
+            "two valid probes must contribute exactly two 288-byte tiles before encoding",
+        );
+        assert_eq!(compact.compact_atlas_dimensions, [12, 6]);
+        assert_eq!(compact.compact_atlas_tiles_per_row, 2);
+        assert_eq!(compact.compact_atlas_tiles_per_layer, 2);
+        assert_eq!(compact.compact_atlas_layer_count, 1);
+        assert_eq!(
+            u16::from_le_bytes([compact.compact_atlas[0], compact.compact_atlas[1]]),
+            10,
+            "first compact slot must retain global probe 0",
+        );
+        assert_eq!(
+            u16::from_le_bytes([
+                compact.compact_atlas[tile_dimension * 8],
+                compact.compact_atlas[tile_dimension * 8 + 1],
+            ]),
+            12,
+            "second compact slot must skip invalid global probe 1 and retain probe 2",
+        );
+
+        let bc6h = encode_sh_volume_section_bc6h(&compact, false);
+        assert_eq!(bc6h.irradiance_format, IRRADIANCE_FORMAT_BC6H);
+        assert_eq!(bc6h.compact_atlas.len(), 3 * 2 * 16);
+        assert_eq!(encode_sh_volume_section_bc6h(&compact, true), compact);
+    }
+
     // Pins the contract that `sh_bake::falloff` mirrors `falloff` in `forward.wgsl`.
     // Drift here produces "ghost glow" (indirect picked up where direct is culled).
 
@@ -1428,7 +1700,7 @@ mod tests {
         assert_eq!(section.tiles_per_layer, 0);
         assert_eq!(section.atlas_tiles_per_row, 0);
         assert!(section.probes.is_empty());
-        assert!(section.atlas_texels.is_empty());
+        assert!(section.compact_atlas.is_empty());
     }
 
     #[test]
@@ -2644,7 +2916,7 @@ mod tests {
             assert_eq!(a.validity, b.validity);
         }
         assert_eq!(
-            with_dynamic.atlas_texels, baseline.atlas_texels,
+            with_dynamic.compact_atlas, baseline.compact_atlas,
             "dynamic-light bake diverged from baseline atlas",
         );
     }
@@ -2724,7 +2996,7 @@ mod tests {
         };
 
         assert_eq!(with_sdf.probes.len(), baseline.probes.len());
-        let diverged = with_sdf.atlas_texels != baseline.atlas_texels;
+        let diverged = with_sdf.compact_atlas != baseline.compact_atlas;
         assert!(
             diverged,
             "an sdf-typed light's bounce must bake into the octahedral atlas (indirect not starved)",

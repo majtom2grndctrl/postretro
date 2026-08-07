@@ -1,11 +1,33 @@
 // E16--per-player-currency — syntax exploration scratchpad
-// NOT part of the spec yet. Iterating here before folding anything into
-// context/plans/drafts/E16--per-player-currency/index.md.
+// DELETE BEFORE PROMOTING THE SPEC.
 //
-// Current direction: Variant C (bottom). `impact.source` becomes a plain
-// branded frozen value carrying its own token; store slot handles gain
-// read+write on one object; `addSlot` is dropped in favor of an
-// expression-taking update method.
+// LANDED — folded into index.md. What shipped:
+//
+//   ref.byPlayer(token)                          owner-addressed ref
+//   slot(ref.byPlayer(impact.source)).add(delta) write
+//   ref.byPlayer(impact.source)                  read (same ref, read directly)
+//
+// `byPlayer` sits on the REF, not the store handle — it maps 1:1 onto the
+// `.of(token)` form it replaces, survives the spec's `const { state:
+// progression }` destructuring (index.md:167), and reads without a `slot()`
+// wrapper. It SELECTS and never acts, so no ref gains a verb and
+// scripting.md §5 (:141) holds.
+//
+// Two things below are superseded by the fold, kept only for the reasoning:
+//   - "THE OPEN ONE" (read mechanism) was never actually open. index.md:69
+//     already committed one token-addressed form to both reads and writes;
+//     Variant D lost that by simplifying too far.
+//   - SourceHandle restructuring is NOT required. The reaction side already
+//     identity-checks a handle against a private singleton
+//     (data_script.ts:509), so a token field is optional polish.
+//
+// Fact 7 below concerns the raw defineStore return. The spec is correct as
+// written — it destructures `state`, so `progression.xp` is right there. Do
+// not "fix" it to `progression.state.xp`.
+//
+// Deliberately NOT folded: the co-op-bot reasoning (a bot is a seat-holder, so
+// "player" means seat-holder rather than human) — speculative until a bot spec
+// exists. The dialect-convergence problem is its own spec.
 
 // ===========================================================================
 // Verified facts (line numbers are checkable; everything else here is a

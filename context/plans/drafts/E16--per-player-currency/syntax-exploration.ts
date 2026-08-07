@@ -63,10 +63,78 @@ const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
 // mine.awardXp(bonus)  // instead of mine.xp.add(bonus) — names the domain verb, not the mechanism
 
 // ---------------------------------------------------------------------------
+// Correction (verified against source): the reaction-side write below was
+// invented, not real. `addSlot` does not exist. What DOES exist is a
+// free-function precedent for reactions:
+//
+//   export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+//     (data_script.ts:514-523)
+//
+// `ActivatorsTarget` (data_script.ts:18-22) is `Readonly<{ [brand]: true }>` —
+// zero exposed data fields, checked by identity against a private singleton
+// (`target === ACTIVATORS_TARGET`, :509/521/534). The wire string "@activators"
+// is baked into the function body, not read off the handle. `SourceHandle`
+// (data_script.ts:233-247, singleton built :357-360) is the same shape:
+// `{ [sourceBrand]: true }`, no token field, methods closed over the wire
+// literal "@impact.source" internally.
+//
+// So PostRetro already has a *shape* precedent — top-level functions that take
+// a handle as an argument, not methods living on the handle (reactions'
+// grantHealth(target, amount) vs. impact policy's SourceHandle.grantHealth
+// (amount)) — but neither handle today is a real token-carrying value the way
+// WritableStateRef (`{ slot: string }`, data_script.ts:774) already is.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Variant B — SourceHandle restructured as a token-carrying value, consumed
+// by free functions. Makes "handle is the ID" hold the same way on the
+// owner/source side as it already does on the slot side (WritableStateRef).
+// ---------------------------------------------------------------------------
+
+// Proposed shape (mirrors WritableStateRef's `{ slot: string }` exactly):
+//
+//   export type SourceHandle = Readonly<{
+//     readonly token: "@impact.source";
+//     readonly [sourceBrand]: true;
+//   }>;
+//
+// grantHealth/grantAmmo move off the handle and become free functions,
+// matching the reaction side's existing shape:
+//
+//   export function grantHealth(source: SourceHandle, amount: NumberValue): Effect { ... }
+//   export function grantAmmo(source: SourceHandle, type: string, amount: NumberValue): Effect { ... }
+//
+// For this spec, the same free-function shape covers the new per-owner slot
+// write, and the `.for(owner)` scoping accessor from Variant A becomes
+// unnecessary — the owner token is just another argument, not a wrapper object:
+//
+//   addSlot(impact.source, progression.xp, bonus)   // source: SourceHandle, ref: WritableStateRef<number>
+
+const reward2 = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
+  const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
+  const base = impact.target.healthAfter.le(-40).select(50, 25);
+
+  return [
+    { when: killed, do: [
+        addSlot(impact.source, progression.xp, base),   // per-owner write, source handle carries its own token
+        addSlot(progression.teamKills, base),            // shared write, no owner argument — needs a second overload or a distinct free fn
+    ]},
+  ];
+});
+
+// Open problem with Variant B: the shared (non-owner) write above doesn't
+// have a handle to pass — `progression.teamKills` alone identifies the slot,
+// not who's writing it. Either `addSlot` needs two signatures (owner-scoped
+// vs. global), or global writes keep using `slot(ref).add(delta)` and only
+// the owner-scoped path gets the new free function. Unresolved — pick before
+// this goes in the spec.
+
+// ---------------------------------------------------------------------------
 // Reaction-side write — unaffected by any of the above. Reactions have no
-// `impact.source`; stays a flat top-level call addressed by activators/tag.
+// `impact.source`; stays a flat top-level call addressed by activators/tag,
+// using the real, verified `grantHealth(target, amount)` free-function shape.
 // ---------------------------------------------------------------------------
 
 onTriggerEvent({ tag: "objective" }, "enter", [
-  defineReaction((on: TriggerEventParams) => addSlot(on.activators, progression.xp, 100)),
+  defineReaction((on: TriggerEventParams) => grantHealth(on.activators, 25)),
 ]);

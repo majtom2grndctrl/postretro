@@ -297,6 +297,37 @@ onTriggerEvent({ tag: "objective" }, "enter", [
 //       players outright: "Seats belong to players. An enemy's own counter
 //       stays per-entity state."
 //
+//     * DECISIVE: it is the only candidate that survives persistence. The
+//       storage key is on a migration path — Seat is session-scoped by design
+//       (index.md:29), so E16--per-player-persistence cannot key by it and
+//       must move to a durable account identity. Against that:
+//
+//         bySeat(...)   breaks. Bakes today's key into every call site, and
+//                       that key is precisely what has to change. Scripts have
+//                       no seat vocabulary today either.
+//         byEntity(...) outlives its truth. Entities are the addressing token,
+//                       not the durable identity; NPCs can never persist
+//                       per-player, so the name keeps promising generality
+//                       persistence cannot deliver.
+//         byPlayer(...) survives. "Player" is invariant across both key
+//                       regimes — a player persists across sessions, a seat
+//                       does not.
+//
+//       The chain grows in the middle; the call site never moves:
+//         today             entity -> Seat -> record
+//         after persistence entity -> Seat -> account -> record
+//
+//       Rule this implies: the name should describe the DURABLE IDENTITY the
+//       value belongs to — not the token passed in, and not the storage key of
+//       the day.
+//
+//     * Corollary worth promoting into the spec's Decisions: `Seat` must never
+//       appear in the authoring surface. index.md:22 already addresses access
+//       "against an explicit owner token" and index.md:60 says the spec "mints
+//       no seat," but both are descriptions rather than commitments. Made a
+//       decision, it lets persistence re-key per-owner records without
+//       changing a single script.
+//
 //   An earlier draft of this file objected that `byPlayer(aTurret)` would
 //   type-check and silently no-op. That objection was wrong: index.md:70 and
 //   AC index.md:85 already have a seatless recipient write nothing, WARN, and

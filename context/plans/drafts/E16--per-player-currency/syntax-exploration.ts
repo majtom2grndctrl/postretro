@@ -113,7 +113,7 @@
 //       singleton cannot carry a property named after it. Inverting preserves
 //       the reading order almost exactly and is buildable:
 //
-//         progression.of(impact.source).xp
+//         progression.getByPlayer(impact.source).xp
 
 // --- Declarations (proposed shapes, for the examples below) ----------------
 
@@ -125,22 +125,22 @@ const progression = defineStore("player", {
 // --- Read and write, owner-scoped -----------------------------------------
 
 const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
-  const mine = progression.of(impact.source);
+  const attackerProgression = progression.getByPlayer(impact.source);
 
-  const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
+  const targetIsKilled = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   const base = impact.target.healthAfter.le(-40).select(50, 25);
 
-  // READ: `mine.xp` is itself a NumberRef — arithmetic and comparison compose
-  // straight off it, no wrapper.
-  const bonus = mine.xp.gt(100).select(base.times(2), base);
+  // READ: `attackerProgression.xp` is itself a NumberRef — arithmetic and
+  // comparison compose straight off it, no wrapper.
+  const bonus = attackerProgression.xp.gt(100).select(base.times(2), base);
 
   return [
     {
-      when: killed,
+      when: targetIsKilled,
       do: [
         // WRITE, expression parameter — the general form. Arbitrary IR in,
         // including a read of the same slot.
-        mine.xp.set(mine.xp.plus(bonus).clamp(0, 9999)),
+        attackerProgression.xp.set(attackerProgression.xp.plus(bonus).clamp(0, 9999)),
 
         // The common case stays short. Identical lowering to the above minus
         // the clamp, per fact 1.
@@ -150,19 +150,19 @@ const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
   ];
 });
 
-// Note what (b) bought: `progression.teamKills` and `mine.xp` are the same
-// interface. Global and owner-scoped writes are one code path, differing only
-// in whether `.of()` was applied. This is the shared-write problem Variant B
-// could not resolve.
+// Note what (b) bought: `progression.teamKills` and `attackerProgression.xp`
+// are the same interface. Global and owner-scoped writes are one code path,
+// differing only in whether `.getByPlayer()` was applied. This is the
+// shared-write problem Variant B could not resolve.
 
-// --- What `.of()` returns --------------------------------------------------
+// --- What `.getByPlayer()` returns -----------------------------------------
 //
 //   interface StoreDefinition<S> {
-//     of(owner: SourceHandle): OwnedSlots<S>;   // owner-addressed view
+//     getByPlayer(owner: SourceHandle): OwnedSlots<S>;   // owner-addressed view
 //     // ...plus the bare per-slot NumberSlotRefs already exposed today
 //   }
 //
-// `.of()` reads `owner.token` and stamps it into each returned slot handle's
+// It reads `owner.token` and stamps it into each returned slot handle's
 // lowered IR — the owner is an addressing detail carried in the wire data,
 // not a separate argument threaded through every call site. Whether the
 // lowered form is an owner field on the input/write node or an encoded slot
@@ -181,10 +181,26 @@ onTriggerEvent({ tag: "objective" }, "enter", [
 // Open questions
 // ===========================================================================
 //
-// - Name for the scoping method. `.of(owner)` reads well at the call site
-//   ("progression of the impact source, xp") and matches the discarded
-//   `slot(ref).of(token)` chain, so it carries no new vocabulary. Alternatives:
-//   `.for()`, `.owned()`, `.scoped()`.
+// - Name for the scoping method. Currently `.getByPlayer(owner)`, chosen for
+//   explicitness — it says what is being scoped by, where `.of()` left that to
+//   inference. Two unresolved objections, both worth a decision before this
+//   folds into the spec:
+//
+//     * The `get` prefix implies a runtime lookup returning a value. Nothing
+//       in this SDK does that — every builder is pure and returns descriptor
+//       data, and the setup VM drops after execution (reactions.ts:1-4: "Pure
+//       — returns a plain object, no engine side effect... it never calls back
+//       into Rust; the FFI boundary is the `return` statement"). House prefixes
+//       are `define*` / `on*`. `.byPlayer(owner)` keeps the explicitness
+//       without promising a fetch.
+//
+//     * The name says "player" but the parameter is a SourceHandle, which is
+//       whatever damaged the target — a turret or monster is a legal source
+//       with no seat behind it. Per the spec's own resolution path those fires
+//       skip silently (impact_policy.rs:298), so `getByPlayer(aTurret)` type-
+//       checks, lowers, and quietly does nothing. Either the name should not
+//       promise a player, or the skip needs to be loud enough that an author
+//       who mis-scoped finds out.
 //
 // - Keep `.add()` alongside `.set()`? It is pure sugar (fact 1) but it is the
 //   overwhelmingly common case and reads better than `x.set(x.plus(n))`. Cost

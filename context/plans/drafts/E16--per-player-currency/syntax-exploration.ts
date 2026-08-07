@@ -58,6 +58,36 @@
 // 6. `id`/namespace strings stay required. The setup VM drops after execution;
 //    only serialized data survives. `.override()` (:397-408) mints a second
 //    ImpactEvent reusing the same `id` string, which a JS binding cannot do.
+//
+// 7. defineStore returns `{ declaration, state }` (data_script.ts:776-779).
+//    Slots are at `progression.state.xp`. Only `declaration` reaches the engine,
+//    and only when returned from `ModManifest.stores` (:758).
+//
+// 8. Cross-file store access already works — NO new sugar needed.
+//    scripting.md:253: "`scripts-build` bundles the entry file with its
+//    relative imports, strips TypeScript-only syntax, and removes
+//    bare-specifier imports. Engine APIs and SDK library symbols arrive as
+//    QuickJS globals, not module imports."
+//
+//    So this is legal today:
+//
+//      // stores.ts
+//      export const progression = defineStore("player", { ... });
+//
+//      // weapons.ts
+//      import { progression } from "./stores";
+//
+//    Bare specifiers (`from "postretro"`) are stripped because those symbols
+//    are already globals — the prelude rewrites named exports to
+//    `globalThis.<name>` (scripting.md:267). Two hazards: scripts-build "does
+//    not type-check" (:259), and `const enum` across file boundaries yields
+//    `undefined` silently (:271).
+//
+// 9. State access has a WRITTEN house rule, and it forbids verbs on refs.
+//    scripting.md:141: "There is no `.get()`, `.set()` ... Nouns select state.
+//    Helpers describe how a reference is used" — helpers enumerated at :143-145
+//    (bindState, stateEquals, updateState), restated at :161. Property access
+//    "never reads current engine state" (:132).
 
 // ===========================================================================
 // Superseded (kept only so the reasoning isn't re-derived)
@@ -77,10 +107,26 @@
 //   owner is an addressing detail rather than a required argument.
 
 // ===========================================================================
-// Variant C — current direction
+// Variant C — WITHDRAWN in part. Its (b) violates a written rule.
 // ===========================================================================
 //
-// Three moves, each independently justified above:
+// scripting.md:141 states the house rule for state access outright:
+//
+//   "There is no `.get()`, `.set()`, `gameState` global, `playerState` global,
+//    `gameState.query()`, or `postretro/game-state` module. Nouns select
+//    state. Helpers describe how a reference is used"
+//
+// with the sanctioned helpers enumerated at :143-145 — `bindState(ref, opts)`,
+// `stateEquals(ref, value)`, `updateState(ref, value)` — and reinforced at
+// :161 ("do not call `.get()` on state refs"). scripting.md:132 adds that
+// property access "never reads current engine state."
+//
+// C(b) proposed `NumberSlotRef extends NumberRef` with `.set()` / `.add()`
+// methods on the ref. That is the forbidden shape. Variant B's free functions
+// were the orthodox one; C traded that away to solve the shared-write problem,
+// which does not justify breaking a documented rule.
+//
+// C(a) and C(c) survive:
 //
 //   (a) `impact.source` becomes a plain branded frozen value carrying its own
 //       token. This makes "the handle IS the ID" hold on the owner side the
@@ -92,75 +138,104 @@
 //           readonly [sourceBrand]: true;
 //         }>;
 //
-//   (b) Store slot handles carry read AND write on one object, keeping the
-//       `slot: string` field so `runtime.read(ref)` (runtime.ts:54-56) and
-//       `stateSlot(ref)` (reactions.ts:57-62) keep working unchanged:
-//
-//         export interface NumberSlotRef extends NumberRef {
-//           readonly slot: string;
-//           set(value: NumberValue): Effect;
-//           add(delta: NumberValue): Effect;   // sugar, kept for legibility
-//         }
-//
-//       Extending NumberRef is what buys the dry read: the handle IS the
-//       readable expression, so `.gt()`, `.plus()`, `.select()` compose off it
-//       directly. No `slot()` wrapper, no separate read door.
-//
 //   (c) Owner scoping is a method on the STORE handle taking the owner token,
 //       not a property path off the owner. `impact.source.entityStore.
 //       progression` is not constructible: IMPACT_SOURCE is frozen at SDK load
 //       (fact 4) and `progression` is declared later by author code, so the
 //       singleton cannot carry a property named after it. Inverting preserves
-//       the reading order almost exactly and is buildable:
+//       the reading order almost exactly and is buildable. Critically, this is
+//       SELECTION, which :141 expressly permits ("Nouns select state") — it
+//       returns another noun, it does not act.
 //
-//         progression.byPlayer(impact.source).xp
+//         progression.state.xp   /   progression.byPlayer(impact.source).xp
 
-// --- Declarations (proposed shapes, for the examples below) ----------------
+// ===========================================================================
+// The dialect problem (larger than this spec — do not solve it here)
+// ===========================================================================
+//
+// Three non-converging dialects exist for building state expressions:
+//
+//   1. Engine state — nouns plus free helpers: `updateState(ref, v)`,
+//      `bindState(ref, opts)`, `stateEquals(ref, v)`.   scripting.md:132-146
+//   2. runtime.*    — nested builders: `runtime.add(a, b)`.  runtime.ts:48-109
+//   3. Impact policy — fluent methods: `.plus()`, `.setState()`,
+//      `slot(ref).add()`.        data_script.ts:179-201, :221-251
+//
+// (2) and (3) do not interoperate: `GatedEffect.when` requires a BoolRef
+// (data_script.ts:216), `runtime.*` yields RuntimeValue, and the bridging
+// `numberRef()` (data_script.ts:285) is not exported. So an impact policy
+// CANNOT be written in the documented dialect (1) today.
+//
+// This is the incoherence, and converging it is its own spec. E16's job is to
+// avoid adding a FOURTH dialect while it lands per-owner access.
+
+// ===========================================================================
+// Variant D — current direction. Minimal, adds no new dialect.
+// ===========================================================================
+//
+//   - Keep C(a): SourceHandle carries its own token.
+//   - Keep C(c): `byPlayer(owner)` SELECTS, returning a ref — a `{slot, owner}`
+//     noun. No verbs added to refs, so :141 holds.
+//   - Writes keep using the shipped door, `slot(ref).add(delta)`
+//     (data_script.ts:249-251, :369), widened to accept an owner-addressed ref.
+//     Reads keep using whatever the policy dialect already provides.
+//
+// Cost: the read/write symmetry C(b) bought is given up, and `slot(ref)`
+// survives rather than being retired. Benefit: nothing new to unify when the
+// dialect convergence spec lands.
+
+// --- Declarations ----------------------------------------------------------
+// Note the `.state` hop: defineStore returns `{ declaration, state }`
+// (data_script.ts:776-779), so slots live at `progression.state.xp`, NOT
+// `progression.xp`. Earlier drafts of this file had that wrong throughout.
+//
+// Cross-file: this can live in its own `stores.ts` and be imported. See the
+// import note below.
 
 const progression = defineStore("player", {
   xp: { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
   teamKills: { type: "number", default: 0 },
 });
 
-// --- Read and write, owner-scoped -----------------------------------------
+// --- Read and write, owner-scoped (Variant D) ------------------------------
 
 const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
-  const attackerProgression = progression.byPlayer(impact.source);
+  // SELECT: returns a ref — a noun — per scripting.md:141. No verbs on it.
+  const attackerXp = progression.byPlayer(impact.source).xp;
 
   const targetIsKilled = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   const base = impact.target.healthAfter.le(-40).select(50, 25);
-
-  // READ: `attackerProgression.xp` is itself a NumberRef — arithmetic and
-  // comparison compose straight off it, no wrapper.
-  const bonus = attackerProgression.xp.gt(100).select(base.times(2), base);
+  const bonus = base; // owner-addressed READ deferred — see open questions
 
   return [
     {
       when: targetIsKilled,
       do: [
-        // WRITE, expression parameter — the general form. Arbitrary IR in,
-        // including a read of the same slot.
-        attackerProgression.xp.set(attackerProgression.xp.plus(bonus).clamp(0, 9999)),
+        // WRITE through the shipped door, widened to accept an owner-addressed
+        // ref. Adds no dialect: `slot(ref).add()` already exists
+        // (data_script.ts:249-251, :369) and already lowers to a
+        // read-modify-write set (fact 1).
+        slot(attackerXp).add(bonus),
 
-        // The common case stays short. Identical lowering to the above minus
-        // the clamp, per fact 1.
-        progression.teamKills.add(1),
+        // Global slot, same door, no owner selection applied.
+        slot(progression.state.teamKills).add(1),
       ],
     },
   ];
 });
 
-// Note what (b) bought: `progression.teamKills` and `attackerProgression.xp`
-// are the same interface. Global and owner-scoped writes are one code path,
-// differing only in whether `.byPlayer()` was applied. This is the
-// shared-write problem Variant B could not resolve.
-
-// --- What `.byPlayer()` returns -----------------------------------------
+// --- What `.byPlayer()` returns --------------------------------------------
 //
 //   interface StoreDefinition<S> {
-//     byPlayer(owner: SourceHandle): OwnedSlots<S>;   // owner-addressed view
-//     // ...plus the bare per-slot NumberSlotRefs already exposed today
+//     readonly declaration: ...;
+//     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+//     byPlayer(owner: SourceHandle): { readonly [K in keyof S]: ... };
 //   }
+//
+// The returned per-slot values are refs of the SAME kind `state` already
+// yields — `{ slot: string }` plus an owner token — so every existing consumer
+// that reads `.slot` (runtime.read, runtime.ts:54-56; stateSlot,
+// reactions.ts:57-62) keeps working, and nothing gains a verb.
 //
 // It reads `owner.token` and stamps it into each returned slot handle's
 // lowered IR — the owner is an addressing detail carried in the wire data,
@@ -228,21 +303,37 @@ onTriggerEvent({ tag: "objective" }, "enter", [
 //   leave sibling effects applying — explicitly distinguished from the shipped
 //   silent skip for an absent source. The mis-scoping case is already loud.
 //
-// - Keep `.add()` alongside `.set()`? It is pure sugar (fact 1) but it is the
-//   overwhelmingly common case and reads better than `x.set(x.plus(n))`. Cost
-//   is two verbs where one would do.
+// - THE OPEN ONE: how does a policy READ an owner-addressed slot? Variant D
+//   gives up C(b)'s answer (ref extends NumberRef) because :141 forbids it, and
+//   leaves nothing in its place — the example above sidesteps the read. The
+//   spec requires owner-addressed reads (index.md:22, "a policy reads a
+//   per-owner slot against an explicit owner token"), so this cannot stay open.
 //
-// - Does `slot(ref)` (:369) survive? If NumberSlotRef carries `.set`/`.add`
-//   directly, the wrapper has no remaining job. Removing it is a breaking SDK
-//   change to a shipped export — probably out of scope for this spec, so it
-//   likely stays as a deprecated alias.
+//   The obstacle is the dialect split, not the per-owner work. Impact policies
+//   need NumberRef/BoolRef (GatedEffect.when, data_script.ts:216). The
+//   documented dialect (1) has no expression vocabulary of its own, and dialect
+//   (2)'s output does not convert (numberRef not exported, :285). Candidates:
 //
-// - Does `NumberSlotRef extends NumberRef` create a read where the substrate
-//   has none? Global store slots resolve through StoreScope, so a bare read
-//   is fine. Owner-scoped reads are exactly what the spec's per-owner input
-//   work exists to provide — this syntax assumes that work lands, and should
-//   be checked against the spec's own AC list before folding in.
+//     * Export `numberRef()` so runtime.* output bridges into policy
+//       expressions. Smallest change; makes dialect (1)+(2) usable in policies;
+//       arguably belongs to the convergence spec, not E16.
+//     * A read helper in the :143-145 family, e.g. `readState(ref)` returning a
+//       NumberRef. Fits "helpers describe how a reference is used" exactly, and
+//       is the same move `bindState`/`stateEquals` already make.
+//     * Let `slot(ref)` yield reads as well as writes, keeping one door.
 //
-// - `WritableStateRef<T>` is generic over number|boolean|string, but `.plus`,
-//   `.clamp` etc. only make sense for numbers. Needs either a conditional type
-//   or a separate BoolSlotRef/StringSlotRef with the appropriate verbs.
+//   Recommend the second: it adds a helper to a documented family rather than
+//   a verb to a ref, and it works for global and owner-addressed refs alike.
+//
+// - Does `slot(ref)` (:369) survive? Under Variant D, yes — it stays the write
+//   door and needs only to accept an owner-addressed ref. Nothing is retired,
+//   nothing is deprecated.
+//
+// - Is per-slot type-narrowing needed? `WritableStateRef<T>` is generic over
+//   number|boolean|string. Variant D adds no arithmetic to refs, so this
+//   pressure mostly disappears — but whatever read helper lands must still
+//   reject non-number slots at the type level.
+//
+// - Should the dialect convergence be its own spec? Almost certainly yes, and
+//   E16 should avoid prejudging it. Worth naming explicitly in E16's
+//   out-of-scope list so the omission reads as deliberate.

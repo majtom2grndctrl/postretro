@@ -421,20 +421,35 @@ impl ShVolumeResources {
         }
 
         // Per-load instrumentation only: composed-atlas size and sampler
-        // bandwidth intentionally remain unchanged. Log the at-rest base
-        // payload used by this load, even when device limits force the existing
-        // `present == false` dummy path.
+        // bandwidth intentionally remain unchanged. Report the actual base
+        // texture allocation, which can be a dummy when SH is absent, empty,
+        // or exceeds device limits; retain serialized bytes as a separate
+        // on-disk payload metric.
         #[cfg(feature = "dev-tools")]
-        if let Some(sec) = section {
+        {
+            let allocation = compact_base_atlas_allocation(usable);
+            let (serialized_bytes, valid_probe_count, probe_count) = section
+                .map(|sec| {
+                    (
+                        sec.compact_atlas.len(),
+                        sec.probes
+                            .iter()
+                            .filter(|probe| probe.validity != 0)
+                            .count(),
+                        sec.probes.len(),
+                    )
+                })
+                .unwrap_or((0, 0, 0));
             log::info!(
-                "[Renderer] SH base atlas footprint: {} B, {}, {}/{} valid probes",
-                sec.compact_atlas.len(),
-                base_atlas_format_label(sec.irradiance_format),
-                sec.probes
-                    .iter()
-                    .filter(|probe| probe.validity != 0)
-                    .count(),
-                sec.probes.len(),
+                "[Renderer] SH base atlas physical allocation: {} {}x{} texels, {} layer(s) ({} B); serialized compact payload: {} B; {}/{} valid probes",
+                base_atlas_format_label(allocation.format),
+                allocation.extent.width,
+                allocation.extent.height,
+                allocation.extent.depth_or_array_layers,
+                base_atlas_allocation_bytes(allocation),
+                serialized_bytes,
+                valid_probe_count,
+                probe_count,
             );
         }
 
@@ -954,6 +969,89 @@ fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> boo
 /// will bind only invalid indirection words, but wgpu still needs a nonzero
 /// texture: BC6H uses its minimum valid 4×4 zero block and the uncompressed
 /// path uses one 1×1 zero texel.
+#[derive(Clone, Copy)]
+struct BaseAtlasAllocation {
+    format: wgpu::TextureFormat,
+    extent: wgpu::Extent3d,
+}
+
+fn compact_base_atlas_allocation(
+    section: Option<&OctahedralShVolumeSection>,
+) -> BaseAtlasAllocation {
+    let Some(section) = section else {
+        return BaseAtlasAllocation {
+            format: wgpu::TextureFormat::Rgba16Float,
+            extent: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        };
+    };
+
+    let empty_compact_atlas = section.compact_atlas_dimensions[0] == 0
+        || section.compact_atlas_dimensions[1] == 0
+        || section.compact_atlas_layer_count == 0;
+    match section.irradiance_format {
+        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => BaseAtlasAllocation {
+            format: wgpu::TextureFormat::Bc6hRgbUfloat,
+            extent: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+        },
+        IRRADIANCE_FORMAT_BC6H => BaseAtlasAllocation {
+            format: wgpu::TextureFormat::Bc6hRgbUfloat,
+            extent: wgpu::Extent3d {
+                width: section.compact_atlas_dimensions[0].div_ceil(4) * 4,
+                height: section.compact_atlas_dimensions[1].div_ceil(4) * 4,
+                depth_or_array_layers: section.compact_atlas_layer_count,
+            },
+        },
+        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => BaseAtlasAllocation {
+            format: wgpu::TextureFormat::Rgba16Float,
+            extent: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        },
+        IRRADIANCE_FORMAT_RGBA16F => BaseAtlasAllocation {
+            format: wgpu::TextureFormat::Rgba16Float,
+            extent: wgpu::Extent3d {
+                width: section.compact_atlas_dimensions[0],
+                height: section.compact_atlas_dimensions[1],
+                depth_or_array_layers: section.compact_atlas_layer_count,
+            },
+        },
+        // `OctahedralShVolumeSection::from_bytes` rejects unknown tags. Keep
+        // this match exhaustive so manually-constructed test data cannot be
+        // uploaded under a silently reinterpreted format.
+        unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
+    }
+}
+
+#[cfg(any(feature = "dev-tools", test))]
+fn base_atlas_allocation_bytes(allocation: BaseAtlasAllocation) -> u64 {
+    let extent = allocation.extent;
+    match allocation.format {
+        wgpu::TextureFormat::Bc6hRgbUfloat => {
+            u64::from(extent.width.div_ceil(4))
+                * u64::from(extent.height.div_ceil(4))
+                * u64::from(extent.depth_or_array_layers)
+                * 16
+        }
+        wgpu::TextureFormat::Rgba16Float => {
+            u64::from(extent.width)
+                * u64::from(extent.height)
+                * u64::from(extent.depth_or_array_layers)
+                * 8
+        }
+        _ => unreachable!("base SH atlas allocation only uses BC6H or Rgba16Float"),
+    }
+}
+
 fn upload_compact_base_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -964,46 +1062,11 @@ fn upload_compact_base_atlas_texture(
         || section.compact_atlas_layer_count == 0;
     let zero_bc6h = [0u8; 16];
     let zero_rgba16f = [0u8; 8];
-    let (format, size, contents) = match section.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => (
-            wgpu::TextureFormat::Bc6hRgbUfloat,
-            wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            zero_bc6h.as_slice(),
-        ),
-        IRRADIANCE_FORMAT_BC6H => (
-            wgpu::TextureFormat::Bc6hRgbUfloat,
-            wgpu::Extent3d {
-                width: section.compact_atlas_dimensions[0].div_ceil(4) * 4,
-                height: section.compact_atlas_dimensions[1].div_ceil(4) * 4,
-                depth_or_array_layers: section.compact_atlas_layer_count,
-            },
-            section.compact_atlas.as_slice(),
-        ),
-        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => (
-            wgpu::TextureFormat::Rgba16Float,
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            zero_rgba16f.as_slice(),
-        ),
-        IRRADIANCE_FORMAT_RGBA16F => (
-            wgpu::TextureFormat::Rgba16Float,
-            wgpu::Extent3d {
-                width: section.compact_atlas_dimensions[0],
-                height: section.compact_atlas_dimensions[1],
-                depth_or_array_layers: section.compact_atlas_layer_count,
-            },
-            section.compact_atlas.as_slice(),
-        ),
-        // `OctahedralShVolumeSection::from_bytes` rejects unknown tags. Keep
-        // this match exhaustive so manually-constructed test data cannot be
-        // uploaded under a silently reinterpreted format.
+    let allocation = compact_base_atlas_allocation(Some(section));
+    let contents = match section.irradiance_format {
+        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => zero_bc6h.as_slice(),
+        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => zero_rgba16f.as_slice(),
+        IRRADIANCE_FORMAT_BC6H | IRRADIANCE_FORMAT_RGBA16F => section.compact_atlas.as_slice(),
         unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
     };
 
@@ -1011,11 +1074,11 @@ fn upload_compact_base_atlas_texture(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("SH Base Octahedral Atlas"),
-            size,
+            size: allocation.extent,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: allocation.format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
@@ -1050,11 +1113,11 @@ fn upload_compact_base_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -
 }
 
 #[cfg(feature = "dev-tools")]
-fn base_atlas_format_label(format: u32) -> &'static str {
+fn base_atlas_format_label(format: wgpu::TextureFormat) -> &'static str {
     match format {
-        IRRADIANCE_FORMAT_BC6H => "BC6H",
-        IRRADIANCE_FORMAT_RGBA16F => "Rgba16Float",
-        _ => "unknown",
+        wgpu::TextureFormat::Bc6hRgbUfloat => "BC6H",
+        wgpu::TextureFormat::Rgba16Float => "Rgba16Float",
+        _ => unreachable!("base SH atlas allocation only uses BC6H or Rgba16Float"),
     }
 }
 
@@ -1349,6 +1412,31 @@ mod tests {
     const SH_DEPTH_MIN_VARIANCE_M2_REF: f32 = 1.0e-4;
     const SH_DEPTH_BIAS_CELL_FRACTION_REF: f32 = 0.05;
     const SH_DEPTH_MIN_VISIBILITY_REF: f32 = 0.03;
+
+    #[test]
+    fn base_atlas_allocation_bytes_uses_physical_bc6h_blocks() {
+        let allocation = BaseAtlasAllocation {
+            format: wgpu::TextureFormat::Bc6hRgbUfloat,
+            extent: wgpu::Extent3d {
+                width: 12,
+                height: 8,
+                depth_or_array_layers: 3,
+            },
+        };
+
+        assert_eq!(base_atlas_allocation_bytes(allocation), 288);
+    }
+
+    #[test]
+    fn missing_sh_base_atlas_reports_rgba16f_dummy_allocation() {
+        let allocation = compact_base_atlas_allocation(None);
+
+        assert_eq!(allocation.format, wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(allocation.extent.width, 1);
+        assert_eq!(allocation.extent.height, 1);
+        assert_eq!(allocation.extent.depth_or_array_layers, 1);
+        assert_eq!(base_atlas_allocation_bytes(allocation), 8);
+    }
 
     #[test]
     fn pack_probe_depth_moments_preserves_valid_probe_f16_bits() {

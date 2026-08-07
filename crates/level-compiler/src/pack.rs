@@ -610,7 +610,9 @@ pub fn pack_and_write_portals(
     );
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
-    let sh_volume_bytes = sh_volume.to_bytes();
+    let sh_volume_bytes = sh_volume.try_to_bytes().map_err(|error| {
+        anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+    })?;
     let direct_sh_volume_bytes = direct_sh_volume.map(|s| s.to_bytes());
     let entity_shadow_light_count = entity_shadow_lights
         .map(|section| section.light_indices.len())

@@ -858,7 +858,12 @@ fn run_after_parsing(
             // Report both footprints alongside indirect SH for comparison.
             let post_compression = section.atlas.len();
             let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-            let indirect_atlas = sh_volume_section.to_bytes().len();
+            let indirect_atlas = sh_volume_section
+                .try_to_bytes()
+                .map_err(|error| {
+                    anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+                })?
+                .len();
             log::info!(
                 "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
                  (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \

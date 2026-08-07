@@ -40,8 +40,8 @@ struct GridDims {
     atlas_tiles_per_row: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
-    _pad0: u32,
-    _pad1: u32,
+    compact_atlas_tiles_per_row: u32,
+    compact_atlas_tiles_per_layer: u32,
 };
 
 struct GridFrame {
@@ -55,6 +55,7 @@ struct GridFrame {
 
 @group(1) @binding(0) var sh_base_atlas: texture_2d_array<f32>;
 @group(1) @binding(1) var sh_total_atlas: texture_storage_2d_array<rgba16float, write>;
+@group(1) @binding(2) var sh_base_atlas_sampler: sampler;
 
 @group(1) @binding(18) var<uniform> grid: GridDims;
 @group(1) @binding(19) var<uniform> grid_frame: GridFrame;
@@ -73,14 +74,19 @@ struct GridFrame {
 // Maps delta-light index to the SH animation descriptor slot. `0xffffffff`
 // means "no descriptor" and contributes nothing.
 @group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
+// Dense-grid probe index -> compact id-34 tile slot. The sentinel means the
+// metadata record is invalid and no base-atlas fetch may occur.
+@group(1) @binding(26) var<storage, read> probe_indirection: array<u32>;
 
 // Probes per affinity cell (4×4×4). Matches `PROBES_PER_CELL` in the bake.
 const AFFINITY_FACTOR: u32 = 4u;
 const PROBES_PER_CELL: u32 = 64u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
+const INVALID_PROBE_INDIRECTION: u32 = 0xffffffffu;
 
 struct AtlasTexelMapping {
     probe: vec3<u32>,
+    probe_index: u32,
     tile_texel: vec2<u32>,
     in_grid: bool,
 };
@@ -104,7 +110,7 @@ fn map_atlas_texel(atlas_texel: vec3<u32>) -> AtlasTexelMapping {
         || grid.grid_dimensions.x == 0u
         || grid.grid_dimensions.y == 0u
     ) {
-        return AtlasTexelMapping(vec3<u32>(0u), tile_texel, false);
+        return AtlasTexelMapping(vec3<u32>(0u), 0u, tile_texel, false);
     }
 
     let xy = grid.grid_dimensions.x * grid.grid_dimensions.y;
@@ -115,7 +121,28 @@ fn map_atlas_texel(atlas_texel: vec3<u32>) -> AtlasTexelMapping {
         rem / grid.grid_dimensions.x,
         z,
     );
-    return AtlasTexelMapping(probe, tile_texel, true);
+    return AtlasTexelMapping(probe, probe_index, tile_texel, true);
+}
+
+fn sample_compact_base_atlas(compact_slot: u32, tile_texel: vec2<u32>) -> vec4<f32> {
+    let compact_tiles_per_row = max(grid.compact_atlas_tiles_per_row, 1u);
+    let compact_tiles_per_layer = max(grid.compact_atlas_tiles_per_layer, 1u);
+    let layer = compact_slot / compact_tiles_per_layer;
+    let tile_slot = compact_slot - layer * compact_tiles_per_layer;
+    let tile_origin = vec2<u32>(
+        tile_slot % compact_tiles_per_row,
+        tile_slot / compact_tiles_per_row,
+    ) * grid.tile_dimension;
+    let compact_texel = tile_origin + tile_texel;
+    let uv = (vec2<f32>(compact_texel) + 0.5)
+        / vec2<f32>(textureDimensions(sh_base_atlas));
+    return textureSampleLevel(
+        sh_base_atlas,
+        sh_base_atlas_sampler,
+        uv,
+        i32(layer),
+        0.0,
+    );
 }
 
 struct AffinityMapping {
@@ -190,17 +217,22 @@ fn compose_main(
     }
     let p = vec2<i32>(i32(gid.x), i32(gid.y));
     let layer = i32(gid.z);
-    let base = textureLoad(sh_base_atlas, p, layer, 0);
 
     let atlas_mapping = map_atlas_texel(gid);
-    if (!atlas_mapping.in_grid || base.a < 0.5) {
-        textureStore(sh_total_atlas, p, layer, base);
+    if (!atlas_mapping.in_grid) {
+        textureStore(sh_total_atlas, p, layer, vec4<f32>(0.0));
         return;
     }
+    let compact_slot = probe_indirection[atlas_mapping.probe_index];
+    if (compact_slot == INVALID_PROBE_INDIRECTION) {
+        textureStore(sh_total_atlas, p, layer, vec4<f32>(0.0));
+        return;
+    }
+    let base = sample_compact_base_atlas(compact_slot, atlas_mapping.tile_texel);
 
     let affinity = map_probe_to_affinity(atlas_mapping.probe);
     if (!affinity.in_range) {
-        textureStore(sh_total_atlas, p, layer, base);
+        textureStore(sh_total_atlas, p, layer, vec4<f32>(base.rgb, 1.0));
         return;
     }
 
@@ -214,5 +246,5 @@ fn compose_main(
         accum = accum + delta.rgb * scale;
     }
 
-    textureStore(sh_total_atlas, p, layer, vec4<f32>(accum, base.a));
+    textureStore(sh_total_atlas, p, layer, vec4<f32>(accum, 1.0));
 }

@@ -749,6 +749,24 @@ fn run_after_parsing(
     // once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
+    // Both warm grouped and cold monolithic bakes reach this packaging seam as
+    // the same compact RGBA16F v9 section. Keep group-cache records lossless and
+    // format-independent; the emitted base atlas defaults to BC6H here.
+    let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
+    sh_volume_section =
+        sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
+    let total_probes = sh_volume_section.total_probes();
+    let valid_probes = sh_volume_section
+        .probes
+        .iter()
+        .filter(|probe| probe.validity != 0)
+        .count();
+    log::info!(
+        "[Compiler] OctahedralShVolume compact atlas: {valid_probes}/{total_probes} valid probes, \
+         compact {compact_atlas_bytes} bytes, encoded {} bytes, format tag {}",
+        sh_volume_section.compact_atlas.len(),
+        sh_volume_section.irradiance_format,
+    );
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -840,7 +858,12 @@ fn run_after_parsing(
             // Report both footprints alongside indirect SH for comparison.
             let post_compression = section.atlas.len();
             let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-            let indirect_atlas = sh_volume_section.to_bytes().len();
+            let indirect_atlas = sh_volume_section
+                .try_to_bytes()
+                .map_err(|error| {
+                    anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+                })?
+                .len();
             log::info!(
                 "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
                  (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \

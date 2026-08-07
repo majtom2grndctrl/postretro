@@ -610,7 +610,9 @@ pub fn pack_and_write_portals(
     );
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
-    let sh_volume_bytes = sh_volume.to_bytes();
+    let sh_volume_bytes = sh_volume.try_to_bytes().map_err(|error| {
+        anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+    })?;
     let direct_sh_volume_bytes = direct_sh_volume.map(|s| s.to_bytes());
     let entity_shadow_light_count = entity_shadow_lights
         .map(|section| section.light_indices.len())
@@ -1305,6 +1307,8 @@ mod tests {
     }
 
     fn empty_sh_volume() -> OctahedralShVolumeSection {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+
         OctahedralShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
             cell_size: [1.0, 1.0, 1.0],
@@ -1317,7 +1321,12 @@ mod tests {
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            atlas_texels: Vec::new(),
+            compact_atlas_dimensions: [0, 0],
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
+            compact_atlas_layer_count: 0,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }

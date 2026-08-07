@@ -1,6 +1,6 @@
 # Lighting Scale — SH Base Atlas At-Rest Slimming
 
-> **Status:** draft. Certain-win storage work — no measurement gate, no visual-risk mechanism. Prerequisite of the gated sibling `lighting-scale--adaptive-base-probe-density` (drafts/), which populates the density-level field this spec reserves.
+> **Status:** ready. Reviewed through validate-plan, review-draft-spec (two rounds), and review-implementability; awaiting `/orchestrate`. Certain-win storage work — no measurement gate, no visual-risk mechanism. Prerequisite of the gated sibling `lighting-scale--adaptive-base-probe-density` (drafts/), which populates the density-level field this spec reserves.
 > **Track:** Lighting / build pipeline — at-rest cost of the base octahedral SH volume (PRL id 34).
 > **Related:** `context/lib/build_pipeline.md` §PRL section IDs (id 34/35 entries) · `context/lib/rendering_pipeline.md` §4 "Indirect", §7.1 step 5 · `context/plans/done/sh-array-atlas/` (layer-aware atlas, landed) · `context/plans/drafts/lighting-scale--adaptive-base-probe-density/` (the follow-on this spec's format field serves).
 

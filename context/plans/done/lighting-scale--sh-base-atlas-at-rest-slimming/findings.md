@@ -198,14 +198,14 @@ could be selected in a live devtools UI without a usable adapter. Likewise,
 no multi-second `RUST_LOG=info` windowed run could be made, so the
 per-frame-noise gate is not passed from inspection alone.
 
-### Remaining fixture-specific checks
+### Fixture-specific coverage accepted at landing
 
 The desktop run clears the default-map GPU/manual gates: clean boot, dev-tools
 footprint, marker interaction, no per-frame footprint noise, visual parity,
-overlay toggle, reload, and capture smoke behavior. It did not itself create
-the synthetic all-invalid (P6) or unusable-grid (P7) fixtures; retain those as
-separate checks unless they were exercised in the desktop run. P8 and P10
-likewise need their scenario-specific observation for a literal P1–P11 pass.
+overlay toggle, reload, and capture smoke behavior. It did not create the
+synthetic all-invalid (P6) or unusable-grid (P7) fixtures; P8 and P10 likewise
+lack scenario-specific live observation. The owner accepted landing on the
+existing source and automated coverage for those fixture-specific paths.
 
 ## Required interpretation
 

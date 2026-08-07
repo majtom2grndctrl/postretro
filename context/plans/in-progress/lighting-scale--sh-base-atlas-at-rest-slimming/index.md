@@ -1,6 +1,6 @@
 # Lighting Scale — SH Base Atlas At-Rest Slimming
 
-> **Status:** in progress. All tasks, measurements, preflight, and review are complete; awaiting review fixes and landing. Certain-win storage work — no measurement gate, no visual-risk mechanism. Prerequisite of the gated sibling `lighting-scale--adaptive-base-probe-density` (drafts/), which populates the density-level field this spec reserves.
+> **Status:** in progress. Implementation, preflight, re-review, and default-map GPU/manual checks are complete; synthetic degenerate fixtures remain separately tracked before landing. BC6H visual parity was checked on the default map. Prerequisite of the gated sibling `lighting-scale--adaptive-base-probe-density` (drafts/), which populates the density-level field this spec reserves.
 > **Track:** Lighting / build pipeline — at-rest cost of the base octahedral SH volume (PRL id 34).
 > **Related:** `context/lib/build_pipeline.md` §PRL section IDs (id 34/35 entries) · `context/lib/rendering_pipeline.md` §4 "Indirect", §7.1 step 5 · `context/plans/done/sh-array-atlas/` (layer-aware atlas, landed) · `context/plans/drafts/lighting-scale--adaptive-base-probe-density/` (the follow-on this spec's format field serves).
 

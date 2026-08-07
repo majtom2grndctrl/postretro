@@ -131,18 +131,14 @@ to warm the OS cache and script path before each three-run series.
 
 The v8 reference allocation is `2646 × 2640 × 8 = 55,883,520 B`
 (`Rgba16Float`, calculated from the parsed dense header and the texture
-format). The required v9 dev-tools once-per-load footprint log was attempted
-through a real `capture,dev-tools` binary and is **not available**: wgpu
-reported `frame capture requires a GPU adapter: No suitable graphics adapter
-found` (`metal found no adapters`; the other enabled backends were likewise
-unavailable). Therefore the v9 base-atlas VRAM and its ratio are **not
-measured** in this environment. The v9 header/compile summary's 2,067,840 B
-BC6H payload is retained as an artifact-size result above, not mislabelled as
-a devtools VRAM observation.
+format). A later desktop GPU run supplied the required v9 dev-tools
+once-per-load measurement: `BC6H 1440 × 1436 × 1 = 2,067,840 B`, matching its
+serialized compact payload. That is 0.037003 after/before: 27.025× smaller
+(`−53,815,680 B`).
 
 | Base-atlas VRAM required source | Before | After | Ratio |
 |---|---:|---:|---:|
-| Once-per-load devtools footprint log | Not logged in v8; 55,883,520 B dense allocation is calculated from parsed dimensions and `Rgba16Float` | **Not measured:** no usable GPU adapter to run the v9 devtools log | N/A |
+| Once-per-load devtools footprint log | Not logged in v8; 55,883,520 B dense allocation is calculated from parsed dimensions and `Rgba16Float` | 2,067,840 B, `BC6H`, 1440 × 1436 × 1 | 0.037003 (27.025× smaller; −53,815,680 B) |
 
 ## Honesty-gate record
 
@@ -154,9 +150,8 @@ a devtools VRAM observation.
   headers; values are recorded above.
 - **Sampler-side scope:** `git diff --name-only 70240c25..HEAD --
   crates/renderer/src/shaders` lists only `sh_compose.wgsl`; no sampler WGSL
-  changed. The renderer diff contains no sampler bind-group layout edit. The
-  base atlas is consumed by the compose grid binding; the sampler continues to
-  receive the dense composed atlas.
+  changed. The renderer adds a compose-local non-filtering base-atlas sampler;
+  the shared sampler bind group continues to receive the dense composed atlas.
 - **Actual stale-version load:** the current v9 headless binary was pointed at
   the produced v8 PRL. It aborted at the loader with `octahedral sh volume
   section version 8, expected 9 — recompile the .prl with the current
@@ -179,6 +174,11 @@ a devtools VRAM observation.
   `capture,dev-tools` binary but renderer initialization failed because this
   environment exposes no usable wgpu adapter. It therefore provides neither a
   clean GPU boot pass nor a footprint log.
+- **Desktop GPU/manual run (2026-08-07):** the default BC6H `campaign-test`
+  bake booted cleanly. The once-per-load renderer log reported `BC6H 1440x1436
+  texels, 1 layer(s) (2067840 B); serialized compact payload: 2067840 B;
+  57128/194028 valid probes` and did not repeat per frame. The guided visual,
+  marker, overlay-toggle, reload, and capture smoke checks all passed.
 
 ### Ordering pins P5–P11 (scope of observation)
 
@@ -198,16 +198,14 @@ could be selected in a live devtools UI without a usable adapter. Likewise,
 no multi-second `RUST_LOG=info` windowed run could be made, so the
 per-frame-noise gate is not passed from inspection alone.
 
-### Pending or environment-gated at this point in the record
+### Remaining fixture-specific checks
 
-No source-level inspection is treated as a pass for the GPU/manual gates. The
-stale-v8 reject and both three-run timing series are actual runs. Clean GPU
-boot, dev-tools footprint log, explicit
-Validity/Irradiance marker interaction, multi-second per-frame log check,
-visual A/B (world/entity/fog and compact-remap seams), and the interactive
-ordering pins P1–P11 are blocked by the absent adapter/display interaction.
-P8/P11 have source-level ordering evidence only; P1–P7/P9/P10 have not been
-observed in this environment.
+The desktop run clears the default-map GPU/manual gates: clean boot, dev-tools
+footprint, marker interaction, no per-frame footprint noise, visual parity,
+overlay toggle, reload, and capture smoke behavior. It did not itself create
+the synthetic all-invalid (P6) or unusable-grid (P7) fixtures; retain those as
+separate checks unless they were exercised in the desktop run. P8 and P10
+likewise need their scenario-specific observation for a literal P1–P11 pass.
 
 ## Required interpretation
 

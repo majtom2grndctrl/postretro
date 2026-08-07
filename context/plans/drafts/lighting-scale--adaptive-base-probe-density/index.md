@@ -83,7 +83,7 @@ Split per `context/lib/experimental_spikes.md`: honesty gates vs measured findin
 
 - [ ] Section bytes per id (34/27/41/45) and total `.prl`, both maps; stress id-41 uniform baseline 2,578,802,688 B at 1.0 m (from the recorded identity if the uniform bake cannot complete on the host).
 - [ ] Composed-atlas VRAM (indirect total + direct composed) and base-atlas VRAM, from the once-per-load footprint, cross-checked against compiler-reported payloads.
-- [ ] Per-frame compose traffic and GPU time: the indirect and direct compose pass times via `POSTRETRO_GPU_TIMING=1`, naming the adapter; a GTX 10-series-class measurement preferred where available, and the findings note states which GPU class produced the numbers.
+- [ ] Per-frame compose traffic and GPU time: the indirect and direct compose pass times via `POSTRETRO_GPU_TIMING=1`, naming the adapter; a GTX 10-series-class measurement preferred where available, and the findings note states which GPU class produced the numbers. On a host whose adapter lacks `TIMESTAMP_QUERY`, this measurement is a recorded handoff, not a Task 6 completion gate.
 - [ ] Per-level brick histogram and dropped-entry count as emitted.
 - [ ] Binding-floor consequence (constraint, not target): with the requested storage-buffer limit temporarily set to the 128 MiB WebGPU floor (edit reverted after measuring), whether the adaptively-baked stress map loads — recorded as a finding feeding Task 6 decision (5).
 - [ ] Manual visual A/B on both maps (normal path with depth-visibility weighting active, plus dev-tools isolation views): hunting seams, banding, or popping at brick boundaries where the level changes — including level-2 bricks — on world surfaces, entities crossing open air, and fog. Parity to the uniform bake is explicitly not the goal; seams are.
@@ -147,7 +147,7 @@ No concurrent phase: every task consumes the previous seam's output (spike → c
 | Name | Rust | Wire / serde | FGD KVP | CLI |
 |---|---|---|---|---|
 | Detail distance (m) | implementer-named config field | n/a (bake input, not stored) | `_sh_detail_distance` | `--sh-detail-distance` |
-| Open-air coarseness floor | implementer-named config field | brick level values 0/1/2 in id 34 | `_sh_open_air_level` | `--sh-open-air-level` |
+| Open-air coarseness floor | implementer-named config field | id-34 field values 0/1/2 (KVP/CLI accept only 1 or 2) | `_sh_open_air_level` | `--sh-open-air-level` |
 | Delta pool cap | implementer-named config field | n/a | none (deliberate — a cap in map source would silently change on cap-policy updates; CLI only) | `--sh-delta-max-size` |
 
 ## Wire format

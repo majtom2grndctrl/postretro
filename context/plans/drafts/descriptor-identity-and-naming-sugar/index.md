@@ -142,6 +142,19 @@ colon segment is mandatory, `data_script.ts:435-440`).
   field, changing a default — would change the key and orphan data exactly
   like a rename does today. Identity must not derive from anything mutable;
   a hash of mutable content is mutable.
+- *Authored-name-as-key plus explicit rename migrations* (the
+  Factorio/datafixer shape): keep the dotted authored name as the durable
+  key; a rename ships an `old → new` migration entry in a mod-content file,
+  applied at persistence overlay. Cheaper mechanisms — no engine-written
+  file, no dev/release split, human-readable save keys. Rejected because a
+  forgotten migration is exactly as silent as today's forgotten rename: it
+  surfaces only when stale data meets the overlay, i.e. in a player's old
+  save. The ledger makes the mapping complete and machine-checked at every
+  commit regardless of whether old data exists — the same property the
+  wire-discriminant drift-guard (`networking.md:48-50`) and whole-attempt
+  staged validation (`scripting.md:127`) already chose over
+  detect-on-collision. It also degrades better under chained renames: edit
+  one ledger line versus resolving a transitive migration chain.
 
 ## Design
 

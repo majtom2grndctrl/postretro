@@ -14,7 +14,7 @@ use crate::{
 };
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps, bvh_build, cache,
-    cell_draw_index_bake, chunk_light_list_bake, delta_sh_bake, direct_sh_bake,
+    cell_draw_index_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
     lightmap_bake, lightmap_layer, map_data, navmesh_bake, pack, parse, partition, portals,
     sdf_bake, sh_bake, sh_group, shadowmask_bake, texture_mips, texture_validation,
@@ -1017,13 +1017,28 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
+    // The three delta bakes meet at one owned compiler-only seam. Task-local
+    // policy can transform or reject these sections here before packing without
+    // changing their dense runtime representation or the PRL wire format.
+    let delta_sections = delta_sections::PostBakeDeltaSections::new(
+        args.delta_section_config,
+        delta_sh_volumes_section,
+        entity_shadow_lights_section,
+        direct_sh_delta_volumes_section,
+        animated_direct_sh_delta_volumes_section,
+    );
+    debug_assert_eq!(
+        delta_sections.config, args.delta_section_config,
+        "the post-bake delta handoff must retain the resolved compiler configuration"
+    );
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     // Shadowmask layers now bake charts in parallel. They must share the live
     // governor, but not the completed LightmapBake progress stage: that stage
     // has already finished and its published total covers different work.
     let shadowmask_progress = StageProgress::indeterminate();
     let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
-    let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
+    let shadowmask_atlas_section = if delta_sections.entity_shadow_lights.is_some() {
         let shared = lightmap_layer::SharedAtlas {
             charts: &face_charts,
             placements: &face_placements,
@@ -1031,7 +1046,7 @@ fn run_after_parsing(
             atlas_height,
         };
         shadowmask_bake::bake_shadowmask_atlas_cached(
-            entity_shadow_lights_section.as_ref(),
+            delta_sections.entity_shadow_lights.as_ref(),
             &alpha_lights_ns,
             &shared,
             &bvh,
@@ -1323,15 +1338,15 @@ fn run_after_parsing(
         &light_influence_section,
         &sh_volume_section,
         direct_sh_volume_section.as_ref(),
-        entity_shadow_lights_section.as_ref(),
-        direct_sh_delta_volumes_section.as_ref(),
+        delta_sections.entity_shadow_lights.as_ref(),
+        delta_sections.direct.as_ref(),
         shadowmask_atlas_section.as_ref(),
         &lightmap_section,
         &chunk_light_list_section,
         animated_light_chunks_section.as_ref(),
         animated_light_weight_maps_section.as_ref(),
         light_tags_section.as_ref(),
-        delta_sh_volumes_section.as_ref(),
+        delta_sections.indirect.as_ref(),
         data_script_section.as_ref(),
         map_entities_section.as_ref(),
         &fog_volumes_section,
@@ -1341,7 +1356,7 @@ fn run_after_parsing(
         kinematic_geometry_section.as_ref(),
         trigger_volumes_section.as_ref(),
         cell_draw_index_bytes,
-        animated_direct_sh_delta_volumes_section.as_ref(),
+        delta_sections.animated_direct.as_ref(),
     )?;
     finish_stage(
         &mut timings,

@@ -13,6 +13,7 @@ pub mod cache;
 pub mod cell_draw_index_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
+pub mod delta_drop_policy;
 pub mod delta_sections;
 pub mod delta_sh_bake;
 pub mod direct_sh_bake;

@@ -65,9 +65,12 @@ const PROBES_PER_CELL: usize = AF * AF * AF; // 64
 const NEAR_ZERO_EPS: f32 = 1.0e-4;
 
 /// Default composed-error thresholds swept in the histogram/savings table.
-/// Irradiance units; seeded to bracket the plausible coarsenability band.
-pub const DEFAULT_THRESHOLDS: [f32; 8] =
-    [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5];
+/// Irradiance units; seeded to bracket the plausible coarsenability band from
+/// near-lossless (0.005) up past the observed per-brick composed-L2 max on the
+/// stress map (~3.4) so the histogram actually discriminates L0 vs L2.
+pub const DEFAULT_THRESHOLDS: [f32; 11] = [
+    0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0,
+];
 
 // ---------------------------------------------------------------------------
 // Public inputs
@@ -375,6 +378,10 @@ pub struct LevelErrStats {
     pub weighted_p95: f32,
     /// Texel samples that contributed (valid probes × interior texels).
     pub texel_samples: u64,
+    /// False when the level could not be reconstructed at all (e.g. L1 when the
+    /// brick's 8 corner probes are all invalid). An unevaluable level is
+    /// INELIGIBLE for coarsening — never treated as error-zero by the gate.
+    pub evaluable: bool,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -840,8 +847,8 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 comp_l1_w_agg.push_weighted(&comp_l1);
                 comp_l2_w_agg.push_weighted(&comp_l2);
 
-                brick_comp_l1_max[cell_lin] = comp_l1.max;
-                brick_comp_l2_max[cell_lin] = comp_l2.max;
+                brick_comp_l1_max[cell_lin] = comp_l1.gate_max();
+                brick_comp_l2_max[cell_lin] = comp_l2.gate_max();
 
                 // --- Byte lines (base) ---
                 base_uniform_tiles += PROBES_PER_CELL as u64; // dense brick
@@ -1278,6 +1285,17 @@ impl LevelErr {
             weighted_mean: self.weighted_mean,
             weighted_p95: self.weighted_p95,
             texel_samples: self.texel_samples,
+            evaluable: self.texel_samples > 0,
+        }
+    }
+    /// Gate value for level selection: the reconstruction max error when the
+    /// level is evaluable, else +inf so the gate never selects it. Never
+    /// serialized (JSON rejects non-finite floats).
+    fn gate_max(&self) -> f32 {
+        if self.texel_samples > 0 {
+            self.max
+        } else {
+            f32::INFINITY
         }
     }
 }
@@ -1648,6 +1666,16 @@ pub fn log_summary(report: &AnalysisReport) {
         );
     };
     log::info!("[sh-analyze] === base-irradiance reconstruction error (metric 1) ===");
+    if report.composed_l1_aggregate.bricks == 0 && report.nonempty_bricks > 0 {
+        log::info!(
+            "[sh-analyze] NOTE: L1 is UNEVALUABLE on every non-empty brick — the grid is only \
+             {} probe(s) tall, so each brick's 8 corner probes fall on the solid floor/ceiling \
+             y-planes (all invalid). L1's corner basis collapses at this spacing; only L2 is \
+             evaluable. L1 is reported as ineligible (never error-zero), so the sweep/seam use \
+             L0/L2 only.",
+            report.grid_dims[1]
+        );
+    }
     agg("base L1", &report.base_l1_aggregate);
     agg("base L2", &report.base_l2_aggregate);
     log::info!("[sh-analyze] === composed-receiver error (metric 2, PRIMARY) ===");

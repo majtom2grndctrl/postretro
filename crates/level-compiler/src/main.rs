@@ -41,6 +41,7 @@ pub mod portals;
 pub mod reporter;
 pub mod script_light_membership;
 pub mod sdf_bake;
+pub mod sh_analyze;
 pub mod sh_bake;
 pub mod sh_group;
 pub mod shadowmask_bake;
@@ -546,6 +547,20 @@ struct Args {
     jobs: usize,
     /// Interactive reporter selection policy.
     tui: TuiPreference,
+    /// When true, run the output-preserving SH coarsenability analysis pass
+    /// after all base + delta SH bakes are available. Measurement only — it
+    /// emits log/JSON diagnostics and changes no emitted `.prl` bytes.
+    sh_analyze: bool,
+    /// Destination path for the machine-readable per-brick + aggregate SH
+    /// analysis JSON. `None` with `sh_analyze` set defaults to
+    /// `<output>.sh-analysis.json`. Ignored when `sh_analyze` is false.
+    sh_analyze_out: Option<PathBuf>,
+    /// Protection-volume stand-in for the SH analysis. Each entry is a
+    /// world-space AABB `[minx, miny, minz, maxx, maxy, maxz]`; any 4×4×4 brick
+    /// intersecting any AABB is forced to keep full L0 density in the
+    /// analysis's protected projection. Repeatable. Compiler-only measurement
+    /// input — never stored, never affects emitted bytes.
+    sh_protect_aabbs: Vec<[f32; 6]>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -581,6 +596,9 @@ fn help_text() -> String {
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
+         --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
+         --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
+         --sh-protect-aabb <AABB>   Force L0 for bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz in the analysis; repeatable (default: none)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -613,6 +631,9 @@ where
     let mut uncompressed_irradiance = false;
     let mut jobs = default_jobs();
     let mut tui = TuiPreference::Auto;
+    let mut sh_analyze = false;
+    let mut sh_analyze_out: Option<PathBuf> = None;
+    let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -739,6 +760,21 @@ where
             "--uncompressed-irradiance" => {
                 uncompressed_irradiance = true;
             }
+            "--sh-analyze" => {
+                sh_analyze = true;
+            }
+            "--sh-analyze-out" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--sh-analyze-out requires a path"))?;
+                sh_analyze_out = Some(PathBuf::from(path));
+            }
+            "--sh-protect-aabb" => {
+                let spec = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--sh-protect-aabb requires a value"))?;
+                sh_protect_aabbs.push(parse_protect_aabb(&spec)?);
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -776,7 +812,44 @@ where
         uncompressed_irradiance,
         jobs,
         tui,
+        sh_analyze,
+        sh_analyze_out,
+        sh_protect_aabbs,
     })
+}
+
+/// Parse a `--sh-protect-aabb minx,miny,minz,maxx,maxy,maxz` value into a
+/// world-space AABB. Each of the six comma-separated fields must be a finite
+/// number, and each max must be >= its matching min.
+fn parse_protect_aabb(spec: &str) -> anyhow::Result<[f32; 6]> {
+    let parts: Vec<&str> = spec.split(',').collect();
+    if parts.len() != 6 {
+        anyhow::bail!(
+            "--sh-protect-aabb expects 6 comma-separated numbers \
+             (minx,miny,minz,maxx,maxy,maxz), got {}",
+            parts.len()
+        );
+    }
+    let mut v = [0.0f32; 6];
+    for (i, part) in parts.iter().enumerate() {
+        let parsed: f32 = part.trim().parse().map_err(|_| {
+            anyhow::anyhow!("--sh-protect-aabb field {} is not a number: {part:?}", i + 1)
+        })?;
+        if !parsed.is_finite() {
+            anyhow::bail!("--sh-protect-aabb field {} must be finite", i + 1);
+        }
+        v[i] = parsed;
+    }
+    for axis in 0..3 {
+        if v[axis + 3] < v[axis] {
+            anyhow::bail!(
+                "--sh-protect-aabb max[{axis}] ({}) must be >= min[{axis}] ({})",
+                v[axis + 3],
+                v[axis]
+            );
+        }
+    }
+    Ok(v)
 }
 
 /// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn

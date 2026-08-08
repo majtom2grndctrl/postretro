@@ -1047,7 +1047,7 @@ fn run_after_parsing(
         delta_sections.direct.as_ref(),
     ) {
         anyhow::ensure!(
-            pack::direct_sh_delta_covers_selection(&deltas, selection.light_indices.len()),
+            pack::direct_sh_delta_covers_selection(deltas, selection.light_indices.len()),
             "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
         );
     }

@@ -5,28 +5,19 @@
 //! decoded RGB f16 texels in the 64-probe payload are zero.  That keeps the
 //! omitted contribution at exactly zero through every runtime compose path,
 //! including id-41's signed subtraction, the final non-negative clamp, and the
-//! `rgba16float` store.  It is therefore strictly inside the fixed 0.001 RGB
-//! error budget without making an unproved claim about f16 rounding thresholds.
-//!
-//! The descriptor extrema and script-mutability helpers below are intentionally
-//! kept with the policy.  A later non-zero eligibility rule must consume these
-//! bounds rather than treating raw unit-radiance tiles as their runtime scale.
+//! `rgba16float` store, without making an unproved claim about f16 rounding
+//! thresholds for nonzero tiles.
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, PROBES_PER_CELL};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::light_membership::LightMembershipManifest;
-use postretro_level_format::lightmap::f32_to_f16_bits;
-use postretro_level_format::sh_volume::{ANIMATED_SLOT_NONE, AnimationDescriptor};
+use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
 
 use crate::map_data::MapLight;
 
-/// Fixed, componentwise runtime-output budget.  Do not tune this to make a map
-/// fit a size target.
-pub const MAX_OUTPUT_ERROR: f32 = 0.001;
-
-/// Descriptor slots whose animated entries must never be omitted: scripts can
-/// replace their curve after compilation, so authored extrema are not a bound.
+/// Descriptor slots whose animated entries are retained conservatively because
+/// scripts can replace their curve after compilation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptMutableDescriptorSlots {
     pub indirect: Vec<bool>,
@@ -101,112 +92,6 @@ pub fn script_mutable_descriptor_slots(
         }
     }
     result
-}
-
-/// Per-channel absolute scale for unit-radiance animated delta tiles over the
-/// complete curve cycle.  The runtime clamps brightness and color samples to
-/// non-negative before multiplication, so this is an upper bound on the
-/// magnitude of an immutable descriptor's contribution.
-pub fn immutable_descriptor_scale_bound(desc: &AnimationDescriptor) -> [f32; 3] {
-    let open = desc.period < 0.0;
-    let brightness = curve_nonnegative_supremum(&desc.brightness, 1.0, open);
-    let color = if desc.color.is_empty() {
-        [1.0; 3]
-    } else {
-        [
-            curve_nonnegative_supremum_rgb(&desc.color, 0, open),
-            curve_nonnegative_supremum_rgb(&desc.color, 1, open),
-            curve_nonnegative_supremum_rgb(&desc.color, 2, open),
-        ]
-    };
-    [
-        desc.base_color[0].abs() * color[0] * brightness,
-        desc.base_color[1].abs() * color[1] * brightness,
-        desc.base_color[2].abs() * color[2] * brightness,
-    ]
-}
-
-/// Exact maximum of the runtime Catmull-Rom scalar evaluator, after its
-/// non-negative clamp.  It checks segment endpoints and every derivative root
-/// in the segment interior, so authored key samples alone cannot miss an
-/// overshoot.
-pub fn curve_nonnegative_supremum(samples: &[f32], fallback: f32, open: bool) -> f32 {
-    if samples.is_empty() {
-        return fallback.max(0.0);
-    }
-    if samples.len() == 1 {
-        return samples[0].max(0.0);
-    }
-    curve_supremum(samples.len(), open, |index| samples[index]).max(0.0)
-}
-
-fn curve_nonnegative_supremum_rgb(samples: &[[f32; 3]], channel: usize, open: bool) -> f32 {
-    curve_supremum(samples.len(), open, |index| samples[index][channel]).max(0.0)
-}
-
-fn curve_supremum(count: usize, open: bool, value: impl Fn(usize) -> f32) -> f32 {
-    debug_assert!(count >= 2);
-    let segment_count = if open { count - 1 } else { count };
-    let mut maximum = f32::NEG_INFINITY;
-    for segment in 0..segment_count {
-        let (i0, i1, i2, i3) = if open {
-            (
-                segment.saturating_sub(1),
-                segment,
-                (segment + 1).min(count - 1),
-                (segment + 2).min(count - 1),
-            )
-        } else {
-            (
-                (segment + count - 1) % count,
-                segment,
-                (segment + 1) % count,
-                (segment + 2) % count,
-            )
-        };
-        let p0 = value(i0);
-        let p1 = value(i1);
-        let p2 = value(i2);
-        let p3 = value(i3);
-        let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
-        let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
-        let c = -0.5 * p0 + 0.5 * p2;
-        maximum = maximum.max(p1).max(((a + b) + c) + p1);
-        // The derivative is 3a*f² + 2b*f + c.  Degenerate linear cases are
-        // handled directly; duplicate roots are harmless.
-        let qa = 3.0 * a;
-        let qb = 2.0 * b;
-        if qa.abs() <= f32::EPSILON {
-            if qb.abs() > f32::EPSILON {
-                let f = -c / qb;
-                if (0.0..1.0).contains(&f) {
-                    maximum = maximum.max(((a * f + b) * f + c) * f + p1);
-                }
-            }
-        } else {
-            let discriminant = qb * qb - 4.0 * qa * c;
-            if discriminant >= 0.0 {
-                let root = discriminant.sqrt();
-                for f in [(-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)] {
-                    if (0.0..1.0).contains(&f) {
-                        maximum = maximum.max(((a * f + b) * f + c) * f + p1);
-                    }
-                }
-            }
-        }
-    }
-    maximum
-}
-
-/// Exact runtime output difference for one direct channel.  This is used by
-/// tests to pin the signed subtraction, clamp, and f16 storage semantics.  The
-/// zero-only acceptance rule below has `delta == 0`, making this zero for every
-/// `weight ∈ [0, 1]`, including clamp transitions.
-pub fn direct_f16_output_error(base: f32, delta: f32, weight: f32) -> f32 {
-    let weight = weight.clamp(0.0, 1.0);
-    let before = f16_bits_to_f32(f32_to_f16_bits(base.max(0.0)));
-    let after = f16_bits_to_f32(f32_to_f16_bits((base - delta * weight).max(0.0)));
-    (before - after).abs()
 }
 
 /// Summary produced by a policy pass.  `largest_accepted_bound` is zero for
@@ -398,6 +283,7 @@ mod tests {
     use postretro_level_format::light_membership::{
         LightMembershipManifest, LightMembershipRecord,
     };
+    use postretro_level_format::lightmap::f32_to_f16_bits;
 
     const TILE: u32 = 1;
     const STRIDE: usize = PROBES_PER_CELL * 4;
@@ -466,6 +352,13 @@ mod tests {
         }
     }
 
+    fn direct_f16_output_error(base: f32, delta: f32, weight: f32) -> f32 {
+        let weight = weight.clamp(0.0, 1.0);
+        let before = f16_bits_to_f32(f32_to_f16_bits(base.max(0.0)));
+        let after = f16_bits_to_f32(f32_to_f16_bits((base - delta * weight).max(0.0)));
+        (before - after).abs()
+    }
+
     #[test]
     fn exact_zero_drop_is_safe_for_signed_clamped_f16_direct_compose() {
         for weight in [0.0, 0.37, 1.0] {
@@ -474,7 +367,7 @@ mod tests {
         }
         // The interior case crosses the clamp boundary for a nonzero delta;
         // keeping it demonstrates why only exact zero is accepted today.
-        assert!(direct_f16_output_error(0.003, 0.01, 0.37) > MAX_OUTPUT_ERROR);
+        assert!(direct_f16_output_error(0.003, 0.01, 0.37) > 0.001);
     }
 
     #[test]
@@ -517,23 +410,6 @@ mod tests {
         );
         assert_eq!(mask.indirect, vec![true, true]);
         assert_eq!(mask.animated_direct, vec![true, true]);
-    }
-
-    #[test]
-    fn authored_curve_bound_includes_internal_catmull_rom_overshoot() {
-        // The keys top out at 1, while this exact closed Catmull-Rom segment
-        // has a positive internal overshoot.
-        let desc = AnimationDescriptor {
-            base_color: [2.0, 1.0, 1.0],
-            brightness: vec![0.0, 1.0, 1.0, 0.0],
-            color: vec![[1.0; 3]; 4],
-            ..AnimationDescriptor::default()
-        };
-        let bound = immutable_descriptor_scale_bound(&desc);
-        assert!(
-            bound[0] > 2.0,
-            "internal extrema must exceed authored samples"
-        );
     }
 
     #[test]

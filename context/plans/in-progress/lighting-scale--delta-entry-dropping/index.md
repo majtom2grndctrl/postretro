@@ -4,8 +4,8 @@
 
 Reduce desktop map lighting storage and compose-buffer traffic without changing
 probe density, runtime atlas layout, or any SH sampler. Omit a delta CSR entry
-only when its omitted runtime contribution is bounded below a fixed cumulative
-error budget.
+only when every decoded f16 RGB texel in its dense 64-probe payload is exactly
+zero, so absence is output-equivalent to the existing zero payload.
 
 The base indirect atlas already stores only valid probes at rest. This feature
 preserves that landed contract and applies only to ids 27, 41, and 45.
@@ -17,15 +17,11 @@ preserves that landed contract and applies only to ids 27, 41, and 45.
 - Conservative entry dropping for the existing sparse delta sections:
   `DeltaShVolumes` (id 27), `DirectShDeltaVolumes` (id 41), and
   `AnimatedDirectShDeltaVolumes` (id 45).
-- One compiler-only drop policy. For every candidate record, bound each
-  decoded f16 RGB texel of all 64 local probes in f32 through the actual
-  compose operation. Accumulate componentwise absolute bounds per affinity
-  cell: one `0.001` RGB budget for id 27's indirect output, and one shared
-  `0.001` RGB budget for ids 41 and 45's direct output.
-- The direct bound proves every promotion weight `w ∈ [0, 1]`, including the
-  id-41 signed subtraction, non-negative clamp, and f16 output rounding. A
-  documented conservative equivalent is allowed only when it bounds those
-  operations for every output component and every `w`.
+- One compiler-only exact-zero drop policy. A candidate record is omitted only
+  when every decoded f16 RGB texel of all 64 local probes is zero; alpha is
+  structural and does not carry radiance. That makes absence exactly equivalent
+  through id 27 accumulation, id 41's signed subtraction and clamp, id 45
+  addition, and final `rgba16float` storage for every promotion weight.
 - Script-mutable animated descriptors in ids 27 and 45 are never droppable.
   Derive a compiler-only `script_mutable_descriptor_slots` mask from every
   script-membership-manifest target and every map-authored `_animated`
@@ -34,11 +30,7 @@ preserves that landed contract and applies only to ids 27, 41, and 45.
   descriptor and `AnimatedBakedLights` index spaces used by ids 27 and 45;
   ignore `ANIMATED_SLOT_NONE` targets because they are runtime-only and have
   no id-27/45 entry. Thread that mask into the drop policy and retain every
-  marked entry. For
-  immutable descriptors, bound runtime radiance with the supremum of the exact
-  runtime Catmull–Rom curve over its complete cycle, including internal extrema
-  and positive overshoot after runtime non-negative clamping. This changes
-  storage eligibility only; it does not change curve or scripting behavior.
+  marked entry.
 - Scan cells in increasing index order. Within each cell, preserve the source
   records' ascending index and index-parallel payload pairing. Recompute CSR
   offsets from retained records. A missing entry means zero; every retained
@@ -71,24 +63,17 @@ preserves that landed contract and applies only to ids 27, 41, and 45.
 - [ ] Retained ids 27, 41, and 45 entries keep the existing fixed dense
   64-probe stride and canonical CSR order. Their existing parsers, loaders,
   render-cpu buffer builders, renderer uploads, and WGSL loops need no change.
-- [ ] For each affinity cell and runtime state, all 64 local-probe f16 RGB
-  texels of dropped records remain within `0.001` per channel after the same
-  compose semantics as runtime: id 27 has its own indirect budget; ids 41 and
-  45 share one direct budget. Tests cover signed id-41 subtraction, clamp, f16
-  rounding, the full `w ∈ [0, 1]` promotion interval (endpoints and an
-  interior clamp-transition case), and cumulative dropped records.
-- [ ] Script-mutable animated ids 27 and 45 entries are retained. Immutable
-  animated entries use the supremum of the exact Catmull–Rom cycle, including
-  internal extrema and positive overshoot, without changing authored curves or
-  scripting behavior. Fixtures cover a manifest-derived static target, a
-  runtime-only manifest target, an `_animated` target, an authored immutable
-  curve, and a later
-  `setLightAnimation` target.
+- [ ] Every dropped record has zero decoded f16 RGB for all 64 local-probe
+  texels. Tests cover signed id-41 subtraction, clamp, f16 storage, promotion
+  endpoints and an interior clamp-transition, and cumulative zero records.
+- [ ] Script-mutable animated ids 27 and 45 entries are retained. Fixtures
+  cover a manifest-derived static target, a runtime-only manifest target, an
+  `_animated` target, and a later `setLightAnimation` target.
 - [ ] Dropping a section entry produces the same composed result as replacing
-  that entry with a zero payload, within the output-path cumulative budget.
+  that entry with a zero payload, exactly.
 - [ ] Every id-41 selection slot remains represented by at least one retained
   entry. Existing promotion, direct-delta, and shadowmask contracts remain
-  usable; no selected light is double-counted above the error bound.
+  usable; no selected light is double-counted.
 - [ ] An all-empty id-27 keeps its current base-only behavior. An all-empty
   id-45 normalizes to absent before packing. Tests cover both cases.
 - [ ] The aggregate post-drop raw delta payload defaults to at most 256 MiB.
@@ -115,29 +100,25 @@ human-readable byte syntax as existing size options, defaulting to 256 MiB.
 Thread the resolved cap through the compiler configuration to the post-bake
 handoff; it has no wire, FGD, or runtime representation.
 
-### Task 2: bounded drop policy and canonical CSR rebuild
+### Task 2: exact-zero drop policy and canonical CSR rebuild
 
-Add a focused compiler module that evaluates and drops existing delta entries
-without changing retained payloads. It must bound every decoded f16 RGB texel
-of all 64 local probes through its output compose path, accumulate per-cell
-componentwise absolute error against the separate indirect and shared-direct
-budgets, and retain records that would exceed either budget. Prove the direct
-bound for every promotion weight `w ∈ [0, 1]`, including the signed
-subtraction, clamp, and f16 rounding; test both endpoints and an interior
-clamp-transition. Derive `script_mutable_descriptor_slots` from every
+Add a focused compiler module that drops only existing delta entries whose
+decoded f16 RGB texels are all exactly zero, without changing retained
+payloads. Pin equivalence through id 27 accumulation, id 41 signed subtraction
+and clamp, id 45 addition, and f16 storage for promotion endpoints and an
+interior clamp-transition. Derive `script_mutable_descriptor_slots` from every
 manifest target and `_animated` reservation, mapping raw `MapLight` indices
 through `OctahedralShVolumeSection::slot_for_map_light` into the descriptor
 and `AnimatedBakedLights` namespaces before passing the mask to this policy.
 Ignore `ANIMATED_SLOT_NONE` runtime-only targets: they have no id-27/45 entry.
-Never drop a marked id-27 or id-45 entry. For immutable descriptors, use the
-exact runtime Catmull–Rom cycle supremum, including internal extrema. Rebuild
+Never drop a marked id-27 or id-45 entry. Rebuild
 by increasing cell index while preserving each cell's original ascending
 index/payload pairing and recomputing offsets. If needed, retain the highest
-canonical cell record for an id-41 selection. Unit-test compose bounds,
-signed/clamped/f16 direct output, cumulative records, manifest-derived static
-and runtime-only manifest fixtures, `_animated` mutable fixtures, an authored immutable curve, a later
-`setLightAnimation` target, curve extrema, exact payload/order preservation,
-and empty cells.
+canonical cell record for an id-41 selection. Unit-test exact-zero compose equivalence,
+signed/clamped/f16 direct output, cumulative zero records, manifest-derived
+static and runtime-only manifest fixtures, `_animated` mutable fixtures, a
+later `setLightAnimation` target, exact payload/order preservation, and empty
+cells.
 
 ### Task 3: apply drops and enforce cap
 
@@ -166,7 +147,7 @@ desktop cap.
 
 **Phase 1 (sequential):** Task 1 — extracts the configuration and post-bake seams Task 3 consumes.
 
-**Phase 2 (sequential):** Task 2 — establishes the bounded drop and CSR-rebuild contract.
+**Phase 2 (sequential):** Task 2 — establishes the exact-zero drop and CSR-rebuild contract.
 
 **Phase 3 (sequential):** Task 3 — consumes Tasks 1–2 and changes compiler output.
 
@@ -192,11 +173,11 @@ subblock; absence already means zero contribution.
 |---|---|---|---|
 | I1 — Sampling stays dense | Existing renderer | Tasks 1–3 must not change runtime contracts | Renderer/WGSL diff audit; boot and visual A/B |
 | I2 — Retained stride/order | Task 2 | Task 3 packaging | Format tests; deterministic CSR tests |
-| I3 — Bounded omitted radiance | Task 2 | Task 3 policy inputs | Runtime-scale, cumulative, and zero-payload compose tests |
+| I3 — Exact omitted-zero radiance | Task 2 | Task 3 policy inputs | Zero-payload compose tests |
 | I4 — Promoted-light integrity | Task 2 | Task 3 id-41 application | Coverage and promotion regression tests |
 | I5 — Explicit cap | Task 1 | Task 3 enforcement | CLI and over-cap compile tests |
 | I6 — No silent quality fit | Task 3 | Task 4 measurements | Named failure test; findings |
-| I7 — Script behavior unchanged | Task 2 | Task 3 application | Mutable-descriptor retention and curve-extrema tests |
+| I7 — Script behavior unchanged | Task 2 | Task 3 application | Mutable-descriptor retention tests |
 
 ## Risks
 
@@ -204,5 +185,6 @@ subblock; absence already means zero contribution.
   upstream dense bake. The known 1.0 m stress OOM remains separate work.
 - The 256 MiB cap is below the existing 2 GiB per-storage-binding requirement,
   but it is not a total VRAM budget. Runtime measurement remains required.
-- The `0.001` bound is deliberately conservative but must remain a fixed safety
-  policy for this feature; agents must not tune it to make a map fit.
+- Broader nonzero dropping needs a compiler-side, hardware-faithful evaluator
+  of decoded production BC6H inputs and the id 41 → id 45 composed intermediate;
+  it is intentionally deferred rather than approximated to fit a map.

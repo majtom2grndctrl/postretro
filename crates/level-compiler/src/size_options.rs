@@ -1,5 +1,5 @@
 //! Parses human-readable byte-budget options for the level compiler.
-//! See: context/lib/build_pipeline.md §Build Cache.
+//! See: context/lib/build_pipeline.md §CLI flags.
 
 /// Parse a byte-budget CLI value. Accepts a plain integer (bytes) or a decimal
 /// value with a binary unit suffix: `B`, `KiB`, `MiB`, `GiB`, `TiB`
@@ -45,7 +45,7 @@ pub(crate) fn format_size_for_help(bytes: u64) -> String {
     const KIB: u64 = 1024;
 
     for (unit, suffix) in [(TIB, "TiB"), (GIB, "GiB"), (MIB, "MiB"), (KIB, "KiB")] {
-        if bytes >= unit && bytes.is_multiple_of(unit) {
+        if bytes >= unit && bytes % unit == 0 {
             return format!("{} {suffix}", bytes / unit);
         }
     }

@@ -84,7 +84,6 @@ pub struct ProtectAabb {
 struct DeltaView<'a> {
     affinity_dims: [u32; 3],
     tile_dimension: usize,
-    tile_border: usize,
     offsets: &'a [u32],
     subblocks: &'a [u16],
 }
@@ -94,7 +93,6 @@ impl<'a> DeltaView<'a> {
         Self {
             affinity_dims: s.affinity_dims,
             tile_dimension: s.tile_dimension as usize,
-            tile_border: s.tile_border as usize,
             offsets: &s.affinity_offsets,
             subblocks: &s.delta_subblocks,
         }
@@ -103,7 +101,6 @@ impl<'a> DeltaView<'a> {
         Self {
             affinity_dims: s.affinity_dims,
             tile_dimension: s.tile_dimension as usize,
-            tile_border: s.tile_border as usize,
             offsets: &s.affinity_offsets,
             subblocks: &s.delta_subblocks,
         }
@@ -112,7 +109,6 @@ impl<'a> DeltaView<'a> {
         Self {
             affinity_dims: s.affinity_dims,
             tile_dimension: s.tile_dimension as usize,
-            tile_border: s.tile_border as usize,
             offsets: &s.affinity_offsets,
             subblocks: &s.delta_subblocks,
         }
@@ -746,7 +742,6 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
 
     // Sweep counters.
     let thresholds = inputs.thresholds;
-    let mut sweep_counts: Vec<[u64; 6]> = vec![[0; 6]; thresholds.len()]; // l0,l1,l2, l0p,l1p,l2p
 
     // Byte accumulators, per (level assignment) for the sweep, per section.
     // We accumulate stored-tile counts; bytes = tiles * probe_tile_bytes.
@@ -761,8 +756,6 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // For the sweep projected bytes we need, per threshold, the chosen level per
     // brick and the resulting stored tiles for base + composed + each delta
     // section. We compute delta stored tiles per brick per level too.
-    let mut sweep_base_tiles: Vec<[u64; 2]> = vec![[0; 2]; thresholds.len()]; // [no-protect, protect]
-    let mut sweep_delta_tiles: Vec<[u64; 2]> = vec![[0; 2]; thresholds.len()];
 
     // Delta uniform/compacted/coarsen accumulators (aggregate across 3 sections).
     let mut delta_uniform_tiles = 0u64; // entries * 64
@@ -1018,7 +1011,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // Uniform baseline for the ratio = base uniform + delta uniform + composed
     // uniform (dense everything).
     let uniform_total_tiles = base_uniform_tiles + delta_uniform_tiles + base_uniform_tiles;
-    for (ti, &t) in thresholds.iter().enumerate() {
+    for &t in thresholds.iter() {
         let mut counts = [0u64; 6];
         let mut proj_tiles = 0u64;
         let mut proj_tiles_prot = 0u64;
@@ -1058,9 +1051,6 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
             }
             proj_tiles_prot += pbase_t * 2 + pdelta_t;
         }
-        sweep_counts[ti] = counts;
-        sweep_base_tiles[ti] = [proj_tiles, proj_tiles_prot];
-        let _ = &sweep_delta_tiles;
         report.sweep.push(SweepRow {
             threshold: t,
             l0: counts[0],

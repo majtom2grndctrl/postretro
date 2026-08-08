@@ -17,7 +17,7 @@ use crate::{
     cell_draw_index_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
     lightmap_bake, lightmap_layer, map_data, navmesh_bake, pack, parse, partition, portals,
-    sdf_bake, sh_bake, sh_group, shadowmask_bake, texture_mips, texture_validation,
+    sdf_bake, sh_analyze, sh_bake, sh_group, shadowmask_bake, texture_mips, texture_validation,
     trigger_volumes, visibility,
 };
 
@@ -757,6 +757,16 @@ fn run_after_parsing(
     // the same compact RGBA16F v9 section. Keep group-cache records lossless and
     // format-independent; the emitted base atlas defaults to BC6H here.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
+    // Output-preserving SH analysis needs the base indirect tiles at full
+    // RGBA16F precision — capture the compact section BEFORE the lossy BC6H
+    // re-encode below. Cloned only under `--sh-analyze`; changes no emitted
+    // bytes (the clone is read, never packed).
+    let sh_analyze_base_indirect: Option<postretro_level_format::sh_volume::OctahedralShVolumeSection> =
+        if args.sh_analyze {
+            Some(sh_volume_section.clone())
+        } else {
+            None
+        };
     sh_volume_section =
         sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
     let total_probes = sh_volume_section.total_probes();
@@ -826,6 +836,11 @@ fn run_after_parsing(
     // static lights exist — preserving byte-identity with the baseline and keeping
     // the downstream EntityShadowLights selection running exactly as before.
     let mut direct_sh_present = false;
+    // Pre-BC6H base-direct capture for the SH analysis (RGBA16F precision).
+    // Populated only under `--sh-analyze`; read-only, never packed.
+    let mut sh_analyze_base_direct: Option<
+        postretro_level_format::direct_sh_volume::DirectShVolumeSection,
+    > = None;
     let direct_sh_volume_section = if static_baked_lights.is_empty() {
         if args.verbose {
             log::info!("DirectShVolume: skipped (no static lights)");
@@ -850,6 +865,9 @@ fn run_after_parsing(
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
         direct_sh_present = raw.grid_dimensions != [0, 0, 0];
+        if args.sh_analyze {
+            sh_analyze_base_direct = Some(raw.clone());
+        }
         // Re-encode the uncompressed RGBA16F bake output into the production
         // BC6H section, honoring the lightmap path's debug bypass. Emitted
         // unconditionally (matching baseline) even for a degenerate grid, where the
@@ -1020,6 +1038,22 @@ fn run_after_parsing(
         reporter.skip_stage(StageId::DirectShDeltaBake);
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
+
+    // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs after
+    // base + all three delta bakes are available and BEFORE the sections are
+    // moved into the packing seam, reading captured pre-BC6H base tiles plus the
+    // owned delta sections. Measurement only — it reads, never mutates, so the
+    // emitted `.prl` stays byte-identical to a run without the flag.
+    if args.sh_analyze {
+        run_sh_analysis(
+            args,
+            sh_analyze_base_indirect.as_ref(),
+            sh_analyze_base_direct.as_ref(),
+            delta_sh_volumes_section.as_ref(),
+            direct_sh_delta_volumes_section.as_ref(),
+            animated_direct_sh_delta_volumes_section.as_ref(),
+        );
+    }
 
     // The three delta bakes meet at one owned compiler-only seam. Task-local
     // policy can transform or reject these sections here before packing without
@@ -1389,6 +1423,65 @@ fn run_after_parsing(
     reporter.finalize(&timings, started.elapsed());
 
     Ok(())
+}
+
+/// Drive the output-preserving SH coarsenability analysis and emit its summary
+/// + JSON. Reads captured pre-BC6H base tiles and the three owned delta sections;
+/// mutates nothing that reaches the packer.
+fn run_sh_analysis(
+    args: &Args,
+    base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+    base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    delta_indirect: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
+    delta_direct: Option<
+        &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
+    >,
+    delta_anim_direct: Option<
+        &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
+    >,
+) {
+    let Some(base) = base_indirect else {
+        log::warn!("[sh-analyze] no base SH volume produced (empty grid?); analysis skipped");
+        return;
+    };
+    if base.grid_dimensions == [0, 0, 0] {
+        log::warn!("[sh-analyze] degenerate SH grid; analysis skipped");
+        return;
+    }
+    let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
+    let protect: Vec<sh_analyze::ProtectAabb> = args
+        .sh_protect_aabbs
+        .iter()
+        .map(|a| sh_analyze::ProtectAabb {
+            min: [a[0], a[1], a[2]],
+            max: [a[3], a[4], a[5]],
+        })
+        .collect();
+    let inputs = sh_analyze::AnalyzeInputs {
+        grid_origin: base.grid_origin,
+        cell_size: base.cell_size,
+        grid_dims: base.grid_dimensions,
+        validity: &validity,
+        base_indirect: base,
+        base_direct,
+        delta_indirect,
+        delta_direct,
+        delta_anim_direct,
+        protect_aabbs: &protect,
+        thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
+    };
+    let report = sh_analyze::run_analysis(&inputs);
+    sh_analyze::log_summary(&report);
+
+    let out = args.sh_analyze_out.clone().unwrap_or_else(|| {
+        let mut p = args.output.clone().into_os_string();
+        p.push(".sh-analysis.json");
+        std::path::PathBuf::from(p)
+    });
+    match sh_analyze::write_json(&report, &out) {
+        Ok(()) => log::info!("[sh-analyze] wrote analysis JSON to {}", out.display()),
+        Err(e) => log::warn!("[sh-analyze] failed to write {}: {e}", out.display()),
+    }
 }
 
 fn log_direct_sh_delta_stats(stats: Option<&direct_sh_bake::DirectDeltaBakeStats>, verbose: bool) {

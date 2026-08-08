@@ -28,6 +28,7 @@ use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
+use postretro_foundation::Seat;
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -695,6 +696,19 @@ pub struct EntityRegistry {
     /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
     /// affect world queries or authored entity properties.
     local_player_pawn: Option<EntityId>,
+    /// Reverse index of the session seat that owns each player pawn. Sparse —
+    /// only pawns currently bound to a seat appear, so it is a map rather than
+    /// a per-slot column, matching `kvp_table`. Kept parallel to `components`
+    /// (not folded into a component) so owner-addressed layers — impact effects,
+    /// impact policy, reaction dispatch — read it without disturbing the
+    /// scripting component surface, and without adding a `ComponentKind`
+    /// discriminant that the replication wire format would have to carry.
+    ///
+    /// The seat table above this registry owns the seat→pawn direction and is
+    /// the sole writer here. An entry exists exactly while a seat is bound to a
+    /// live pawn: `despawn` removes it, so a recycled slot never inherits one.
+    /// See: context/lib/networking.md §Session-state ledger.
+    pawn_seats: HashMap<EntityId, Seat>,
     /// Fires from the health chokepoint after each accepted damage call. The
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
@@ -722,6 +736,7 @@ impl EntityRegistry {
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
+            pawn_seats: HashMap::new(),
             impact_dispatches: Vec::new(),
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
@@ -744,6 +759,32 @@ impl EntityRegistry {
         let _ = self.validate(id)?;
         self.local_player_pawn = Some(id);
         Ok(())
+    }
+
+    /// Record `seat` as the owner of `pawn`, evicting whatever pawn that seat
+    /// owned before. The relationship is one seat per pawn *and* one pawn per
+    /// seat: a rebind that left the outgoing pawn behind would make two pawns
+    /// resolve to the same owner. Callers reach this only through the seat
+    /// table's single binding path, which keeps its own seat→pawn map in step.
+    pub fn bind_pawn_seat(&mut self, pawn: EntityId, seat: Seat) {
+        self.pawn_seats.retain(|_, owner| *owner != seat);
+        self.pawn_seats.insert(pawn, seat);
+    }
+
+    /// Drop `pawn`'s seat ownership. A pawn with no entry is not an error: the
+    /// unbinding paths run for seats that may never have carried a pawn.
+    pub fn clear_pawn_seat(&mut self, pawn: EntityId) {
+        self.pawn_seats.remove(&pawn);
+    }
+
+    /// Resolve the session seat that owns `pawn`, if any.
+    ///
+    /// This is the pawn-to-owner lookup for layers that hold a registry and an
+    /// entity but not the host's seat table. Stale ids resolve to `None`: the
+    /// generation is part of the key, and `despawn` removes the entry.
+    #[must_use]
+    pub fn seat_for_pawn(&self, pawn: EntityId) -> Option<Seat> {
+        self.pawn_seats.get(&pawn).copied()
     }
 
     /// Return the marked local player pawn when it is still live.
@@ -947,6 +988,10 @@ impl EntityRegistry {
         self.previous_transforms[index] = None;
         self.tags[index].clear();
         self.kvp_table.remove(&id);
+        // Seat ownership is a property of a live pawn. Clearing it here is also
+        // what keeps `clear_for_level_unload` — which despawns every live
+        // entity — from leaving an entry behind for a recycled slot index.
+        self.pawn_seats.remove(&id);
         if self.local_player_pawn == Some(id) {
             self.local_player_pawn = None;
         }

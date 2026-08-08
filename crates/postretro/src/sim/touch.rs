@@ -2078,7 +2078,7 @@ mod tests {
             "the later carry harvest reads the instance acquired by the touch pass"
         );
         let mut seats = SeatTable::from_test_session_id([0x16; 16]);
-        seats.bind_pawn(Seat(0), pawn);
+        seats.bind_pawn(&mut registry, Seat(0), pawn);
         seats.harvest_pawn(&registry, pawn);
         let carried = seats
             .carried_state(Seat(0))
@@ -2088,7 +2088,7 @@ mod tests {
         assert_eq!(carried.wieldables[0].as_deref(), Some("ion"));
         assert_eq!(carried.magazines[0], Some(5));
         registry.clear_for_level_unload();
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut registry);
 
         let mut next_level = EntityRegistry::new();
         let next_pawn = next_level.spawn(Transform::default());

@@ -178,14 +178,12 @@ impl App {
                     seats.harvest_bound_pawns(&registry);
                 }
             }
-            session
-                .scripting
-                .script_ctx
-                .registry
-                .borrow_mut()
-                .clear_for_level_unload();
-            if let Some(seats) = session.seat_table.as_mut() {
-                seats.clear_pawn_bindings_for_level_unload();
+            {
+                let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                registry.clear_for_level_unload();
+                if let Some(seats) = session.seat_table.as_mut() {
+                    seats.clear_pawn_bindings_for_level_unload(&mut registry);
+                }
             }
             session.presentation_cells.clear();
             session

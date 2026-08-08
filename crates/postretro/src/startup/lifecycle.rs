@@ -848,7 +848,11 @@ impl App {
                 seats,
             );
             if let Some(pawn) = local_pawn {
-                seats.bind_pawn(postretro_foundation::Seat(0), pawn);
+                seats.bind_pawn(
+                    &mut script_ctx.registry.borrow_mut(),
+                    postretro_foundation::Seat(0),
+                    pawn,
+                );
             }
         }
         let descriptors = script_ctx.data_registry.borrow().entities.clone();

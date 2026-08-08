@@ -4007,7 +4007,7 @@ impl App {
                     durable_pawn,
                 );
                 if let Some(seats) = seat_table.as_deref_mut() {
-                    seats.hold_disconnected_client(*client_id);
+                    seats.hold_disconnected_client(&mut registry, *client_id);
                 }
             }
             for outcome in &host_poll.handshakes {
@@ -5263,7 +5263,7 @@ impl App {
                                     durable_pawn,
                                 );
                                 if let Some(seats) = seat_table.as_deref_mut() {
-                                    seats.hold_disconnected_client(*client_id);
+                                    seats.hold_disconnected_client(&mut registry, *client_id);
                                 }
                             }
                             for outcome in &poll.handshakes {
@@ -5420,7 +5420,7 @@ impl App {
                                 replication.register_client(*client_id);
                                 state_slots.register_client(*client_id);
                                 if let Some(seats) = seat_table.as_deref_mut() {
-                                    seats.bind_pawn(seat, pawn);
+                                    seats.bind_pawn(&mut registry, seat, pawn);
                                 }
                                 resolve_accepted_host_pawn_presentation(
                                     &mut registry,

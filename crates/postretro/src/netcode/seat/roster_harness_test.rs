@@ -11,6 +11,8 @@ use postretro_net::wire::{
     self, ConnectClaim, PlayerClaimId, RosterEntry, ServerControlMessage, SessionRosterMessage,
 };
 
+use postretro_entities::EntityRegistry;
+
 use super::{HOLD_WINDOW, SeatTable, finish_host_poll};
 use crate::netcode::endpoint::ClientSessionStatus;
 
@@ -212,6 +214,7 @@ fn admitted_peer_retains_open_seat_count_for_presentation() {
 
 #[test]
 fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
+    let mut registry = EntityRegistry::new();
     const ALPHA: u64 = 51;
     const BRAVO: u64 = 52;
     const ALPHA_REJOIN: u64 = 53;
@@ -247,7 +250,7 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
 
     // The level boundary clears only pawn-level bindings. The durable seat/status
     // projection stays intact and a later publication keeps the same session id.
-    seats.clear_pawn_bindings_for_level_unload();
+    seats.clear_pawn_bindings_for_level_unload(&mut registry);
     assert_eq!(seats.session_id(), initial_alpha.session_id);
     assert_eq!(seats.roster_entries(), connected_entries);
 
@@ -258,7 +261,7 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
         "the live transport slot closes before its durable seat enters the hold"
     );
     assert_eq!(
-        seats.hold_disconnected_client(ALPHA),
+        seats.hold_disconnected_client(&mut registry, ALPHA),
         Some(alpha_seat),
         "the level-independent seat remains rostered while its connection is held"
     );
@@ -297,7 +300,7 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
         "the rebound connection can enter a new hold"
     );
     assert_eq!(
-        seats.hold_disconnected_client(ALPHA_REJOIN),
+        seats.hold_disconnected_client(&mut registry, ALPHA_REJOIN),
         Some(alpha_seat)
     );
     seats.advance_hold_clock(HOLD_WINDOW);
@@ -328,6 +331,7 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
 #[test]
 fn expired_seat_cycles_bound_host_local_seat_rows() {
     const CYCLES: u64 = 32;
+    let mut registry = EntityRegistry::new();
     let mut seats = SeatTable::from_test_session_id([0x60; 16]);
 
     for cycle in 0..CYCLES {
@@ -336,7 +340,10 @@ fn expired_seat_cycles_bound_host_local_seat_rows() {
             .admit_or_reclaim(client_id, Some(claim(cycle as u8, "Cycle Runner")), false)
             .expect("each cycle mints one fresh seat");
         assert_eq!(seat, Seat((cycle + 1) as u16));
-        assert_eq!(seats.hold_disconnected_client(client_id), Some(seat));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut registry, client_id),
+            Some(seat)
+        );
         seats.advance_hold_clock(HOLD_WINDOW);
         seats.release_expired_holds();
 

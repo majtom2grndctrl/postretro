@@ -743,6 +743,10 @@ fn run_after_parsing(
         // shippable source of truth. No per-group reads/writes, no warning.
         sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
     };
+    // Keep the raw MapData-indexed descriptor lookup for compiler-only delta
+    // policy. Runtime map lights come from compact AlphaLights (`_bake_only`
+    // omitted), so the emitted table is remapped exactly once below.
+    let raw_slot_for_map_light = sh_volume_section.slot_for_map_light.clone();
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
@@ -1020,7 +1024,13 @@ fn run_after_parsing(
     // The three delta bakes meet at one owned compiler-only seam. Task-local
     // policy can transform or reject these sections here before packing without
     // changing their dense runtime representation or the PRL wire format.
-    let delta_sections = delta_sections::PostBakeDeltaSections::new(
+    let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
+        &map_data.lights,
+        membership_manifest.as_ref(),
+        &raw_slot_for_map_light,
+        animated_baked_lights.len(),
+    );
+    let mut delta_sections = delta_sections::PostBakeDeltaSections::new(
         args.delta_section_config,
         delta_sh_volumes_section,
         entity_shadow_lights_section,
@@ -1031,6 +1041,16 @@ fn run_after_parsing(
         delta_sections.config, args.delta_section_config,
         "the post-bake delta handoff must retain the resolved compiler configuration"
     );
+    delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
+    if let (Some(selection), Some(deltas)) = (
+        delta_sections.entity_shadow_lights.as_ref(),
+        delta_sections.direct.as_ref(),
+    ) {
+        anyhow::ensure!(
+            pack::direct_sh_delta_covers_selection(&deltas, selection.light_indices.len()),
+            "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
+        );
+    }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     // Shadowmask layers now bake charts in parallel. They must share the live

@@ -14,7 +14,7 @@ use crate::{
 };
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps, bvh_build, cache,
-    cell_draw_index_bake, chunk_light_list_bake, delta_sh_bake, direct_sh_bake,
+    cell_draw_index_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
     lightmap_bake, lightmap_layer, map_data, navmesh_bake, pack, parse, partition, portals,
     sdf_bake, sh_bake, sh_group, shadowmask_bake, texture_mips, texture_validation,
@@ -743,12 +743,34 @@ fn run_after_parsing(
         // shippable source of truth. No per-group reads/writes, no warning.
         sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
     };
+    // Keep the raw MapData-indexed descriptor lookup for compiler-only delta
+    // policy. Runtime map lights come from compact AlphaLights (`_bake_only`
+    // omitted), so the emitted table is remapped exactly once below.
+    let raw_slot_for_map_light = sh_volume_section.slot_for_map_light.clone();
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
     // once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
+    // Both warm grouped and cold monolithic bakes reach this packaging seam as
+    // the same compact RGBA16F v9 section. Keep group-cache records lossless and
+    // format-independent; the emitted base atlas defaults to BC6H here.
+    let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
+    sh_volume_section =
+        sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
+    let total_probes = sh_volume_section.total_probes();
+    let valid_probes = sh_volume_section
+        .probes
+        .iter()
+        .filter(|probe| probe.validity != 0)
+        .count();
+    log::info!(
+        "[Compiler] OctahedralShVolume compact atlas: {valid_probes}/{total_probes} valid probes, \
+         compact {compact_atlas_bytes} bytes, encoded {} bytes, format tag {}",
+        sh_volume_section.compact_atlas.len(),
+        sh_volume_section.irradiance_format,
+    );
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -840,7 +862,12 @@ fn run_after_parsing(
             // Report both footprints alongside indirect SH for comparison.
             let post_compression = section.atlas.len();
             let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-            let indirect_atlas = sh_volume_section.to_bytes().len();
+            let indirect_atlas = sh_volume_section
+                .try_to_bytes()
+                .map_err(|error| {
+                    anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+                })?
+                .len();
             log::info!(
                 "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
                  (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
@@ -994,13 +1021,44 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
+    // The three delta bakes meet at one owned compiler-only seam. Task-local
+    // policy can transform or reject these sections here before packing without
+    // changing their dense runtime representation or the PRL wire format.
+    let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
+        &map_data.lights,
+        membership_manifest.as_ref(),
+        &raw_slot_for_map_light,
+        animated_baked_lights.len(),
+    );
+    let mut delta_sections = delta_sections::PostBakeDeltaSections::new(
+        args.delta_section_config,
+        delta_sh_volumes_section,
+        entity_shadow_lights_section,
+        direct_sh_delta_volumes_section,
+        animated_direct_sh_delta_volumes_section,
+    );
+    debug_assert_eq!(
+        delta_sections.config, args.delta_section_config,
+        "the post-bake delta handoff must retain the resolved compiler configuration"
+    );
+    delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
+    if let (Some(selection), Some(deltas)) = (
+        delta_sections.entity_shadow_lights.as_ref(),
+        delta_sections.direct.as_ref(),
+    ) {
+        anyhow::ensure!(
+            pack::direct_sh_delta_covers_selection(deltas, selection.light_indices.len()),
+            "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
+        );
+    }
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     // Shadowmask layers now bake charts in parallel. They must share the live
     // governor, but not the completed LightmapBake progress stage: that stage
     // has already finished and its published total covers different work.
     let shadowmask_progress = StageProgress::indeterminate();
     let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
-    let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
+    let shadowmask_atlas_section = if delta_sections.entity_shadow_lights.is_some() {
         let shared = lightmap_layer::SharedAtlas {
             charts: &face_charts,
             placements: &face_placements,
@@ -1008,7 +1066,7 @@ fn run_after_parsing(
             atlas_height,
         };
         shadowmask_bake::bake_shadowmask_atlas_cached(
-            entity_shadow_lights_section.as_ref(),
+            delta_sections.entity_shadow_lights.as_ref(),
             &alpha_lights_ns,
             &shared,
             &bvh,
@@ -1300,15 +1358,15 @@ fn run_after_parsing(
         &light_influence_section,
         &sh_volume_section,
         direct_sh_volume_section.as_ref(),
-        entity_shadow_lights_section.as_ref(),
-        direct_sh_delta_volumes_section.as_ref(),
+        delta_sections.entity_shadow_lights.as_ref(),
+        delta_sections.direct.as_ref(),
         shadowmask_atlas_section.as_ref(),
         &lightmap_section,
         &chunk_light_list_section,
         animated_light_chunks_section.as_ref(),
         animated_light_weight_maps_section.as_ref(),
         light_tags_section.as_ref(),
-        delta_sh_volumes_section.as_ref(),
+        delta_sections.indirect.as_ref(),
         data_script_section.as_ref(),
         map_entities_section.as_ref(),
         &fog_volumes_section,
@@ -1318,7 +1376,7 @@ fn run_after_parsing(
         kinematic_geometry_section.as_ref(),
         trigger_volumes_section.as_ref(),
         cell_draw_index_bytes,
-        animated_direct_sh_delta_volumes_section.as_ref(),
+        delta_sections.animated_direct.as_ref(),
     )?;
     finish_stage(
         &mut timings,

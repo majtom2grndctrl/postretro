@@ -13,6 +13,8 @@ pub mod cache;
 pub mod cell_draw_index_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
+pub mod delta_drop_policy;
+pub mod delta_sections;
 pub mod delta_sh_bake;
 pub mod direct_sh_bake;
 pub mod entity_shadow_select;
@@ -42,6 +44,7 @@ pub mod sdf_bake;
 pub mod sh_bake;
 pub mod sh_group;
 pub mod shadowmask_bake;
+pub mod size_options;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;
@@ -522,6 +525,10 @@ struct Args {
     /// this at build start (oldest-used entries first). Defaults to
     /// `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
     cache_max_bytes: u64,
+    /// Maximum aggregate raw payload size for the three baked delta sections.
+    /// This compiler-only setting is enforced by the post-bake delta policy;
+    /// it has no PRL, FGD, loader, or runtime representation.
+    delta_section_config: delta_sections::DeltaSectionConfig,
     /// When true, bypass cache reads and writes entirely.
     no_cache: bool,
     /// When true, produce a shippable map: the exact ship path (exact monolithic
@@ -570,6 +577,7 @@ fn help_text() -> String {
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
+         --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
@@ -579,14 +587,10 @@ fn help_text() -> String {
         samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         probe_floor = lightmap_bake::SOFT_PROBE_SAMPLES,
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
-        cache_max = format_size_gib(cache::DEFAULT_MAX_BYTES),
+        cache_max = size_options::format_size_for_help(cache::DEFAULT_MAX_BYTES),
+        delta_max = size_options::format_size_for_help(delta_sections::DEFAULT_MAX_PAYLOAD_BYTES),
         jobs = default_jobs(),
     )
-}
-
-/// Render a byte budget as a `GiB` string for help text (e.g. `2 GiB`).
-fn format_size_gib(bytes: u64) -> String {
-    format!("{} GiB", bytes / (1024 * 1024 * 1024))
 }
 
 fn parse_args_from<I>(mut args: I) -> anyhow::Result<Args>
@@ -603,6 +607,7 @@ where
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
+    let mut delta_section_config = delta_sections::DeltaSectionConfig::default();
     let mut no_cache = false;
     let mut release = false;
     let mut uncompressed_irradiance = false;
@@ -716,7 +721,14 @@ where
                 let size_str = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--cache-max-size requires a value"))?;
-                cache_max_bytes = parse_size(&size_str)?;
+                cache_max_bytes = size_options::parse_size("--cache-max-size", &size_str)?;
+            }
+            "--sh-delta-max-size" => {
+                let size_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--sh-delta-max-size requires a value"))?;
+                delta_section_config.max_payload_bytes =
+                    size_options::parse_size("--sh-delta-max-size", &size_str)?;
             }
             "--no-cache" => {
                 no_cache = true;
@@ -740,7 +752,7 @@ where
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--no-cache] [--release]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -758,47 +770,13 @@ where
         voxel_size,
         cache_dir,
         cache_max_bytes,
+        delta_section_config,
         no_cache,
         release,
         uncompressed_irradiance,
         jobs,
         tui,
     })
-}
-
-/// Parse a `--cache-max-size` value into a byte count. Accepts a plain integer
-/// (bytes) or a decimal value with a binary unit suffix: `B`, `KiB`, `MiB`,
-/// `GiB`, `TiB` (case-insensitive; a bare `K`/`M`/`G`/`T` is treated as the
-/// binary unit). Examples: `2GiB`, `1536MiB`, `2147483648`.
-fn parse_size(raw: &str) -> anyhow::Result<u64> {
-    let s = raw.trim();
-    if s.is_empty() {
-        anyhow::bail!("--cache-max-size requires a value");
-    }
-    // Split the numeric prefix from an optional unit suffix.
-    let split = s
-        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .unwrap_or(s.len());
-    let (num_str, unit_str) = s.split_at(split);
-    let value: f64 = num_str.parse().map_err(|_| {
-        anyhow::anyhow!(
-            "--cache-max-size: '{raw}' is not a valid size (e.g. 2GiB, 512MiB, or a byte count)"
-        )
-    })?;
-    if !value.is_finite() || value < 0.0 {
-        anyhow::bail!("--cache-max-size must be a non-negative size");
-    }
-    let multiplier: u64 = match unit_str.trim().to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kib" => 1024,
-        "m" | "mib" => 1024 * 1024,
-        "g" | "gib" => 1024 * 1024 * 1024,
-        "t" | "tib" => 1024u64 * 1024 * 1024 * 1024,
-        other => {
-            anyhow::bail!("--cache-max-size: unknown unit '{other}' (use B, KiB, MiB, GiB, or TiB)")
-        }
-    };
-    Ok((value * multiplier as f64) as u64)
 }
 
 /// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn
@@ -1525,6 +1503,10 @@ mod tests {
         assert_eq!(parsed.format, MapFormat::IdTech2);
         assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
         assert_eq!(parsed.voxel_size, sdf_bake::DEFAULT_VOXEL_SIZE_METERS);
+        assert_eq!(
+            parsed.delta_section_config.max_payload_bytes,
+            delta_sections::DEFAULT_MAX_PAYLOAD_BYTES
+        );
         assert_eq!(parsed.jobs, default_jobs());
         assert_eq!(parsed.tui, TuiPreference::Auto);
     }
@@ -1632,6 +1614,7 @@ mod tests {
         assert!(help.contains("-j, --jobs <N>"));
         assert!(help.contains("--tui"));
         assert!(help.contains("--no-tui"));
+        assert!(help.contains("--sh-delta-max-size <SIZE>"));
     }
 
     #[test]
@@ -1921,22 +1904,48 @@ mod tests {
     }
 
     #[test]
-    fn parse_size_handles_units_and_bytes() {
-        assert_eq!(parse_size("2147483648").unwrap(), 2 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size("2GiB").unwrap(), 2 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size("2gib").unwrap(), 2 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size("1536MiB").unwrap(), 1536 * 1024 * 1024);
-        assert_eq!(parse_size("1.5GiB").unwrap(), 1536 * 1024 * 1024);
-        assert_eq!(parse_size("4G").unwrap(), 4u64 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size("0").unwrap(), 0);
+    fn parse_args_sh_delta_max_size_defaults_to_256_mib() {
+        let parsed = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
+
+        assert_eq!(
+            parsed.delta_section_config.max_payload_bytes,
+            256 * 1024 * 1024
+        );
     }
 
     #[test]
-    fn parse_size_rejects_garbage_and_unknown_units() {
-        assert!(parse_size("").is_err());
-        assert!(parse_size("abc").is_err());
-        assert!(parse_size("12XB").is_err());
-        assert!(parse_size("-5GiB").is_err());
+    fn parse_args_sh_delta_max_size_accepts_existing_size_syntax() {
+        let parsed = parse_args_from(
+            ["input.map", "--sh-delta-max-size", "1.5GiB"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed.delta_section_config.max_payload_bytes,
+            1536 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn parse_args_sh_delta_max_size_requires_a_valid_value() {
+        assert!(
+            parse_args_from(
+                ["input.map", "--sh-delta-max-size"]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_args_from(
+                ["input.map", "--sh-delta-max-size", "12XB"]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .is_err()
+        );
     }
 
     #[test]

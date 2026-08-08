@@ -19,6 +19,11 @@ pub struct ComposeGridParams {
     pub tiles_per_layer: u32,
     pub atlas_layer_count: u32,
     pub affinity_dims: [u32; 3],
+    /// Compact id-34 base-atlas tile geometry. These reuse the two std140 tail
+    /// words that used to be padding; dense atlas fields above remain the
+    /// composed-output and sampler contract.
+    pub compact_atlas_tiles_per_row: u32,
+    pub compact_atlas_tiles_per_layer: u32,
 }
 
 /// Development-only description of the storage buffers bound by an SH compose
@@ -323,6 +328,8 @@ pub fn build_compose_grid_bytes(params: ComposeGridParams) -> [u8; COMPOSE_GRID_
     bytes[44..48].copy_from_slice(&params.atlas_tiles_per_row.to_ne_bytes());
     bytes[48..52].copy_from_slice(&params.tiles_per_layer.to_ne_bytes());
     bytes[52..56].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
+    bytes[56..60].copy_from_slice(&params.compact_atlas_tiles_per_row.to_ne_bytes());
+    bytes[60..64].copy_from_slice(&params.compact_atlas_tiles_per_layer.to_ne_bytes());
     bytes
 }
 
@@ -575,6 +582,8 @@ mod tests {
             tiles_per_layer: 400,
             atlas_layer_count: 3,
             affinity_dims: [1, 2, 3],
+            compact_atlas_tiles_per_row: 7,
+            compact_atlas_tiles_per_layer: 49,
         });
 
         let word = |offset: usize| {
@@ -590,7 +599,7 @@ mod tests {
         assert_eq!(word(44), 20);
         assert_eq!(word(48), 400);
         assert_eq!(word(52), 3);
-        assert_eq!(word(56), 0);
-        assert_eq!(word(60), 0);
+        assert_eq!(word(56), 7);
+        assert_eq!(word(60), 49);
     }
 }

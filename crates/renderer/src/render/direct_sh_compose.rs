@@ -403,6 +403,10 @@ fn build_promotion_pass(
             tiles_per_layer: layout.tiles_per_layer,
             atlas_layer_count: layout.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
+            // Direct compose retains the dense base-atlas geometry, so the
+            // compact id-34 tail words are intentionally unused here.
+            compact_atlas_tiles_per_row: 0,
+            compact_atlas_tiles_per_layer: 0,
         }),
         usage: wgpu::BufferUsages::UNIFORM,
     });

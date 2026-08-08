@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::logger::LogSink;
-use crate::pipeline::StageId;
+use crate::stage::StageId;
 
 /// Shared, display-only progress state for one quantifiable stage.
 ///

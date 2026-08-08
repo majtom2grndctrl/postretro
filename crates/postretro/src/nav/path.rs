@@ -56,11 +56,13 @@ impl Deref for NavPath {
     }
 }
 
-/// One-shot path query: A* over regions + funnel string-pull. Resolves the
-/// regions containing `start` and `goal`, runs A* over the region graph (edge
-/// cost = XZ distance between portal-segment midpoints, heuristic = XZ distance
-/// between region centroids), reconstructs the exact portal corridor A* chose,
-/// then funnels it to the tightest waypoint list within the corridor.
+/// One-shot path query: A* over portal crossings + funnel string-pull. Resolves
+/// the regions containing `start` and `goal`, runs A* over directed portal
+/// crossings anchored on the true `start`/`goal` (edge cost = XZ distance
+/// between portal-segment midpoints, seeded/closed on the real endpoints,
+/// heuristic = straight-line XZ distance to `goal`), reconstructs the exact
+/// portal corridor A* chose, then funnels it to the tightest waypoint list
+/// within the corridor.
 ///
 /// Endpoint resolution tolerates the eroded wall margin: each endpoint resolves
 /// via [`NavGraph::resolve_region_at`], so a capsule legitimately standing
@@ -105,7 +107,7 @@ pub(crate) fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Nav
         return Some(NavPath::direct(start, goal));
     }
 
-    let corridor = astar_corridor(graph, start_region, goal_region)?;
+    let corridor = astar_corridor(graph, start, goal, start_region, goal_region)?;
     let portals = oriented_portals(graph, &corridor);
     // The start/goal guard above does not cover the corridor's own geometry: a
     // corrupt baked portal endpoint (NaN/inf) makes the funnel's area tests false
@@ -137,19 +139,6 @@ struct CorridorHop {
     from_region: usize,
 }
 
-/// Centroid of a region's XZ footprint as a world position (Y left at 0 — the
-/// funnel and costs are XZ-only).
-fn region_centroid(graph: &NavGraph, region: usize) -> Vec3 {
-    let r = graph
-        .region(region)
-        .expect("region index from graph traversal is in range");
-    Vec3::new(
-        0.5 * (r.world_min_xz[0] + r.world_max_xz[0]),
-        0.0,
-        0.5 * (r.world_min_xz[1] + r.world_max_xz[1]),
-    )
-}
-
 /// Midpoint of a portal's segment as a world position.
 fn portal_midpoint(portal: &NavPortal) -> Vec3 {
     let l = Vec3::from_array(portal.left);
@@ -158,8 +147,9 @@ fn portal_midpoint(portal: &NavPortal) -> Vec3 {
 }
 
 /// Priority-queue entry: min-heap on `f = g + h` via `Reverse`-style ordering.
+/// `node` is a *directed portal crossing* (see [`astar_corridor`]).
 struct Frontier {
-    region: usize,
+    node: usize,
     f: f32,
 }
 
@@ -182,66 +172,106 @@ impl Ord for Frontier {
     }
 }
 
-/// A* over the region graph. Returns the ordered corridor of hops from
-/// `start_region` to `goal_region`, each hop naming the exact portal crossed —
-/// carried through `came_from` so a region pair joined by two distinct portals
-/// uses the one A* costed, not the first match. `None` when disconnected.
+/// A* over *directed portal crossings*, anchored on the true `start`/`goal`
+/// positions (not region centroids). Each search node is one directed crossing
+/// of a portal — encoded `2 * portal_index + dir`, `dir = 0` crossing
+/// `region_a → region_b` (arriving in `region_b`), `dir = 1` the reverse. The
+/// start expands to every portal of `start_region` at cost
+/// `distance_xz(start, portal_mid)`; a crossing expands to the other portals of
+/// the region it arrived in at portal-mid → portal-mid cost; a crossing arriving
+/// in `goal_region` closes with the admissible straight-line heuristic
+/// `distance_xz(portal_mid, goal)`, which is the exact remaining cost there, so
+/// the first goal-region node popped is optimal.
+///
+/// Anchoring on the real endpoints (not centroids) is what lets two agents in
+/// one large region pick *different* doorways toward the goal by where they
+/// actually stand — the centroid metric charged both from the same region
+/// center and mis-picked. Returns the ordered corridor of hops, each naming the
+/// exact portal and the region it was left through (so a region pair joined by
+/// two distinct portals resolves to the one A* costed). `None` when
+/// disconnected.
 fn astar_corridor(
     graph: &NavGraph,
+    start: Vec3,
+    goal: Vec3,
     start_region: usize,
     goal_region: usize,
 ) -> Option<Vec<CorridorHop>> {
-    let goal_centroid = region_centroid(graph, goal_region);
-    let heuristic = |region: usize| distance_xz(region_centroid(graph, region), goal_centroid);
-
-    let region_count = graph.region_count();
-    let mut g_score = vec![f32::INFINITY; region_count];
-    // `came_from[r] = (previous_region, portal_index_crossed)`.
-    let mut came_from: Vec<Option<(usize, usize)>> = vec![None; region_count];
-
-    g_score[start_region] = 0.0;
-    let mut open = BinaryHeap::new();
-    open.push(Frontier {
-        region: start_region,
-        f: heuristic(start_region),
-    });
-
-    // The per-region adjacency yields portal indices touching `region`, so we
-    // both restrict the scan to real neighbors and record the exact portal A*
-    // relaxed an edge through (Fix A: two portals may join the same region pair).
     let portals = graph.portals();
+    let mid = |portal_index: usize| portal_midpoint(&portals[portal_index]);
+    // The region a directed node arrives in, and the region it was left through.
+    let arrived_region = |node: usize| -> usize {
+        let p = &portals[node / 2];
+        if node % 2 == 0 {
+            p.region_b as usize
+        } else {
+            p.region_a as usize
+        }
+    };
+    let from_region = |node: usize| -> usize {
+        let p = &portals[node / 2];
+        if node % 2 == 0 {
+            p.region_a as usize
+        } else {
+            p.region_b as usize
+        }
+    };
+    // The directed node that leaves `region` through portal `portal_index`, or
+    // `None` when the portal does not touch `region`.
+    let directed_leaving = |portal_index: usize, region: usize| -> Option<usize> {
+        let p = &portals[portal_index];
+        if p.region_a as usize == region {
+            Some(2 * portal_index)
+        } else if p.region_b as usize == region {
+            Some(2 * portal_index + 1)
+        } else {
+            None
+        }
+    };
 
-    while let Some(Frontier { region, .. }) = open.pop() {
+    let node_count = portals.len() * 2;
+    let mut g_score = vec![f32::INFINITY; node_count];
+    // `came_from[node] = Some(previous_node)`, or `None` when reached from the
+    // virtual start (the first crossing out of `start_region`).
+    let mut came_from: Vec<Option<usize>> = vec![None; node_count];
+    let mut open = BinaryHeap::new();
+
+    // Seed: cross each portal of the start region, costed from the true start.
+    for &portal_index in graph.region_portal_indices(start_region) {
+        let Some(node) = directed_leaving(portal_index, start_region) else {
+            continue;
+        };
+        let g = distance_xz(start, mid(portal_index));
+        if g < g_score[node] {
+            g_score[node] = g;
+            came_from[node] = None;
+            open.push(Frontier {
+                node,
+                f: g + distance_xz(mid(portal_index), goal),
+            });
+        }
+    }
+
+    while let Some(Frontier { node, .. }) = open.pop() {
+        let region = arrived_region(node);
         if region == goal_region {
-            return Some(reconstruct(&came_from, start_region, goal_region));
+            return Some(reconstruct(&came_from, &from_region, node));
         }
 
         for &portal_index in graph.region_portal_indices(region) {
-            let portal = &portals[portal_index];
-            let neighbor = if portal.region_a as usize == region {
-                portal.region_b as usize
-            } else if portal.region_b as usize == region {
-                portal.region_a as usize
-            } else {
+            if portal_index == node / 2 {
+                continue; // don't immediately re-cross the portal just crossed
+            }
+            let Some(next) = directed_leaving(portal_index, region) else {
                 continue;
             };
-            if neighbor >= region_count {
-                continue;
-            }
-
-            // Edge cost: XZ distance from this region's centroid to the portal
-            // midpoint plus the portal midpoint to the neighbor's centroid — a
-            // stable per-edge cost anchored on the portal A* would cross.
-            let mid = portal_midpoint(portal);
-            let step = distance_xz(region_centroid(graph, region), mid)
-                + distance_xz(mid, region_centroid(graph, neighbor));
-            let tentative = g_score[region] + step;
-            if tentative < g_score[neighbor] {
-                g_score[neighbor] = tentative;
-                came_from[neighbor] = Some((region, portal_index));
+            let tentative = g_score[node] + distance_xz(mid(node / 2), mid(portal_index));
+            if tentative < g_score[next] {
+                g_score[next] = tentative;
+                came_from[next] = Some(node);
                 open.push(Frontier {
-                    region: neighbor,
-                    f: tentative + heuristic(neighbor),
+                    node: next,
+                    f: tentative + distance_xz(mid(portal_index), goal),
                 });
             }
         }
@@ -250,22 +280,22 @@ fn astar_corridor(
     None
 }
 
-/// Walk `came_from` back from the goal to build the forward-ordered corridor.
+/// Walk `came_from` back from the closing crossing to build the forward-ordered
+/// corridor. Each directed node is one `CorridorHop` (its portal plus the region
+/// it was left through).
 fn reconstruct(
-    came_from: &[Option<(usize, usize)>],
-    start_region: usize,
-    goal_region: usize,
+    came_from: &[Option<usize>],
+    from_region: &impl Fn(usize) -> usize,
+    end_node: usize,
 ) -> Vec<CorridorHop> {
     let mut hops = Vec::new();
-    let mut current = goal_region;
-    while current != start_region {
-        let (prev, portal_index) =
-            came_from[current].expect("every region between start and goal has a predecessor");
+    let mut current = Some(end_node);
+    while let Some(node) = current {
         hops.push(CorridorHop {
-            portal_index,
-            from_region: prev,
+            portal_index: node / 2,
+            from_region: from_region(node),
         });
-        current = prev;
+        current = came_from[node];
     }
     hops.reverse();
     hops
@@ -1371,6 +1401,73 @@ mod tests {
         );
         assert!(approx_xz(path[0], start));
         assert!(approx_xz(*path.last().unwrap(), goal));
+    }
+
+    #[test]
+    fn find_path_exits_the_doorway_nearest_the_start_from_one_large_region() {
+        // AC6: one large region offers TWO doorways toward the goal region. Each
+        // agent must leave through the doorway beside where it actually stands —
+        // the true-start-anchored A*'s discriminating case. The old
+        // centroid-anchored cost charged both starts from the same region center,
+        // so it would send one of them across the room to the wrong doorway.
+        //
+        // region 0 (large room) [0,8) x [0,4); region 1 (goal room) [0,8) x [4,8).
+        // Two doorways at z=4: door A over x in [0,2], door B over x in [6,8].
+        let make_graph = || {
+            NavGraph::from_section(&section(
+                vec![region(0, 0, 8, 4), region(0, 4, 8, 8)],
+                vec![
+                    // Door A (near x=1).
+                    NavPortal {
+                        region_a: 0,
+                        region_b: 1,
+                        left: [0.0, 0.0, 4.0],
+                        right: [2.0, 0.0, 4.0],
+                    },
+                    // Door B (near x=7).
+                    NavPortal {
+                        region_a: 0,
+                        region_b: 1,
+                        left: [6.0, 0.0, 4.0],
+                        right: [8.0, 0.0, 4.0],
+                    },
+                ],
+            ))
+        };
+        let goal = Vec3::new(4.0, 0.0, 6.0); // centered in the goal room
+
+        // Where does the path cross the z=4 doorway line?
+        let crossing_x = |path: &NavPath| -> f32 {
+            path.windows(2)
+                .find_map(|seg| {
+                    let dz = seg[1].z - seg[0].z;
+                    if dz.abs() <= EPS {
+                        return None;
+                    }
+                    let t = (4.0 - seg[0].z) / dz;
+                    (t >= -EPS && t <= 1.0 + EPS)
+                        .then_some(seg[0].x + t * (seg[1].x - seg[0].x))
+                })
+                .expect("path must cross the z=4 doorway line")
+        };
+
+        // Start beside door A → exit through door A (x in [0,2] band).
+        let graph = make_graph();
+        let path_a = find_path(&graph, Vec3::new(1.0, 0.0, 2.0), goal).expect("routes via door A");
+        let xa = crossing_x(&path_a);
+        assert!(
+            xa <= 2.0 + EPS,
+            "agent beside door A must exit through it (x<=2), crossed at x={xa}: {path_a:?}"
+        );
+
+        // Start beside door B → exit through door B (x in [6,8] band). The
+        // centroid metric would send this one through the same door as start A.
+        let path_b = find_path(&graph, Vec3::new(7.0, 0.0, 2.0), goal).expect("routes via door B");
+        let xb = crossing_x(&path_b);
+        assert!(
+            xb >= 6.0 - EPS,
+            "agent beside door B must exit through it (x>=6), crossed at x={xb}: {path_b:?}"
+        );
     }
 
     #[test]

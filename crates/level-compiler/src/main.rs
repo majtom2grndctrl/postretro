@@ -45,6 +45,7 @@ pub mod sh_bake;
 pub mod sh_group;
 pub mod shadowmask_bake;
 pub mod size_options;
+pub mod stage;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;

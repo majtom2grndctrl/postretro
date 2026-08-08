@@ -3668,6 +3668,7 @@ dependencies = [
  "parry3d",
  "postretro-entities",
  "postretro-foundation",
+ "postretro-level-compiler",
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-lighting",

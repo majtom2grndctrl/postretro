@@ -22,6 +22,18 @@ pub struct NavRegion {
 /// are the world-space endpoints of the portal segment (the funnel constraint
 /// for path smoothing). `region_a < region_b` and both index the section's
 /// final sorted `regions` array.
+///
+/// Handedness convention: `left`/`right` are oriented for `region_a → region_b`
+/// traversal — an agent crossing that way has `left` on its left in the XZ
+/// funnel projection (X east, Z north). Equivalently: a constant-X portal
+/// crossed toward +X stores `left` at the greater-Z endpoint; a constant-Z
+/// portal crossed toward +Z stores `left` at the lesser-X endpoint. Crossing
+/// `region_b → region_a` swaps the two (the runtime `oriented_portals` swap).
+/// The bake emits endpoints in this order and the runtime funnel's turn tests
+/// depend on it; a section that violates it string-pulls to the wrong portal
+/// jamb. The `NAVMESH_VERSION` bump to 2 pins this convention — sections baked
+/// under version 1 carried unconditionally z-ascending constant-X endpoints and
+/// are rejected by `from_bytes`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavPortal {
     pub region_a: u32,
@@ -78,7 +90,14 @@ pub struct NavMeshSection {
 }
 
 /// Current section-internal version emitted by [`NavMeshSection::to_bytes`].
-pub const NAVMESH_VERSION: u16 = 1;
+///
+/// Version 2 pins the [`NavPortal`] handedness convention. Version 1 emitted
+/// constant-X portal endpoints in a fixed z-ascending order regardless of
+/// `region_a`, so its portals disagree with the runtime funnel on which jamb is
+/// "left"; `from_bytes` rejects any version other than the current one so a
+/// stale section degrades loudly (warn-and-ignore → no navigation) rather than
+/// pathing on wrong-handed portals.
+pub const NAVMESH_VERSION: u16 = 2;
 
 /// Header bytes before the region array: version(2) + origin(12) + cell_size(4)
 /// + dim_x(4) + dim_z(4) + agent params(16) + region_count(4).
@@ -144,6 +163,15 @@ impl NavMeshSection {
         }
 
         let version = u16::from_le_bytes([data[0], data[1]]);
+        // Version is the first semantic gate: a stale section (e.g. version 1's
+        // wrong-handed constant-X portals) must report the version mismatch, not
+        // a downstream structural error. The runtime loader turns this rejection
+        // into warn-and-ignore → no navigation, the intended loud degradation.
+        if version != NAVMESH_VERSION {
+            return Err(invalid(format!(
+                "navmesh section version {version}, expected {NAVMESH_VERSION} — recompile the map"
+            )));
+        }
         let origin = read_vec3(data, 2);
         let cell_size = read_f32(data, 14);
         let dim_x = read_u32(data, 18);
@@ -335,11 +363,35 @@ mod tests {
     }
 
     #[test]
-    fn navmesh_version_unchanged_by_erosion_bake_change() {
+    fn navmesh_version_pins_portal_handedness_convention() {
+        // Bumped 1 → 2 when the constant-X portal handedness convention was
+        // pinned on `NavPortal`. Version-1 sections carried wrong-handed portals
+        // and must be rejected on load rather than pathed on.
         assert_eq!(
-            NAVMESH_VERSION, 1,
-            "erosion changes the bake, not the serialized navmesh layout"
+            NAVMESH_VERSION, 2,
+            "version pins the NavPortal handedness convention"
         );
+    }
+
+    #[test]
+    fn from_bytes_rejects_stale_section_version() {
+        // Regression: a section carrying the previous version (1) has
+        // wrong-handed constant-X portals. Loading it must report the version
+        // mismatch (loud degradation), not silently path on inverted portals.
+        let mut bytes = stacked_region_section().to_bytes();
+        // version is the u16 at offset 0.
+        bytes[0..2].copy_from_slice(&1u16.to_le_bytes());
+        let err = NavMeshSection::from_bytes(&bytes).unwrap_err();
+        match &err {
+            FormatError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    io.to_string().contains("version"),
+                    "message names the version mismatch: {io}"
+                );
+            }
+            other => panic!("expected InvalidData version error, got {other:?}"),
+        }
     }
 
     #[test]

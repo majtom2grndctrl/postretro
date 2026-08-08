@@ -1920,6 +1920,52 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_sh_analyze_defaults_off() {
+        let parsed = parse_args_from(vec!["input.map".to_string()].into_iter()).unwrap();
+        assert!(!parsed.sh_analyze);
+        assert!(parsed.sh_analyze_out.is_none());
+        assert!(parsed.sh_protect_aabbs.is_empty());
+    }
+
+    #[test]
+    fn parse_args_sh_analyze_flags() {
+        let args = vec![
+            "input.map".to_string(),
+            "--sh-analyze".to_string(),
+            "--sh-analyze-out".to_string(),
+            "/tmp/out.json".to_string(),
+            "--sh-protect-aabb".to_string(),
+            "-1,-2,-3,4,5,6".to_string(),
+            "--sh-protect-aabb".to_string(),
+            "10,10,10,20,20,20".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.sh_analyze);
+        assert_eq!(parsed.sh_analyze_out, Some(PathBuf::from("/tmp/out.json")));
+        assert_eq!(parsed.sh_protect_aabbs.len(), 2);
+        assert_eq!(parsed.sh_protect_aabbs[0], [-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(parsed.sh_protect_aabbs[1], [10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
+    }
+
+    #[test]
+    fn parse_protect_aabb_rejects_bad_field_count() {
+        assert!(parse_protect_aabb("1,2,3").is_err());
+        assert!(parse_protect_aabb("1,2,3,4,5,6,7").is_err());
+    }
+
+    #[test]
+    fn parse_protect_aabb_rejects_inverted_bounds() {
+        // max.x < min.x.
+        let err = parse_protect_aabb("5,0,0,1,10,10").unwrap_err();
+        assert!(err.to_string().contains("must be >="), "got: {err}");
+    }
+
+    #[test]
+    fn parse_protect_aabb_rejects_non_number() {
+        assert!(parse_protect_aabb("1,2,x,4,5,6").is_err());
+    }
+
+    #[test]
     fn parse_args_no_cache_flag() {
         let args = vec!["input.map".to_string(), "--no-cache".to_string()];
         let parsed = parse_args_from(args.into_iter()).unwrap();

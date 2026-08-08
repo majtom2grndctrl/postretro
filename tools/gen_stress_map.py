@@ -65,12 +65,15 @@ The stress skeleton doubles as a gameplay playground. All of the following are
 off by default so the bare `stress-warren.map` stays a pure geometry/BVH probe;
 `--preset warren` turns the whole set on at a grid size that fits the leaf cap.
 
-* `--arenas N` carves N large open-area rooms. Each arena is a 2x2-cell block,
-  two storeys tall, with solid perimeter walls holding four ground-level
-  entryways (one per side, into the neighbouring rooms), a walkable staircase
-  from the floor up to a mezzanine ledge, and a wide central gap in that ledge
-  the player can jump down through to the lower floor. Arena cells are reserved
-  out of the maze lattice, so they replace rooms rather than adding to them.
+* `--arenas N` carves N large open-area rooms. Each arena is a multi-cell block
+  sized so its interior is never smaller than a regulation NFL football field
+  (360 ft x 160 ft incl. end zones == 4320 x 1920 world units; at the stock
+  PITCH_XY that is a 4x2-cell footprint -- see `arena_cell_span`), two storeys
+  tall, with solid perimeter walls holding four ground-level entryways (one per
+  side, into the neighbouring rooms), a walkable staircase from the floor up to
+  a mezzanine ledge, and a wide central gap in that ledge the player can jump
+  down through to the lower floor. Arena cells are reserved out of the maze
+  lattice, so they replace rooms rather than adding to them.
 * `--enemies N` pre-places N `reference_enemy` AI enemies (globally registered
   by the dev mod) across the rooms.
 * `--weapons N` pre-places N wieldable weapon pickups (the dev mod's reference
@@ -83,11 +86,20 @@ off by default so the bare `stress-warren.map` stays a pure geometry/BVH probe;
   scattered baked lights animate: half are KVP-driven (an authored
   `brightness_curve`, baked entirely at compile time) and half are
   script-driven (tagged `warren_script_pulse` and pulsed by the companion data
-  script `content/dev/scripts/stress-warren.ts` via `setLightAnimation`). Every
-  lit room additionally gets one high-brightness `_bake_only` fixture. Bake a
+  script `content/dev/scripts/stress-warren.ts` via `setLightAnimation`). Bake a
   map with animated lights at `--lightmap-density 0.25`: the warren's large
   faces collapse animated chunks into overlapping weight-map atlas rects at the
   coarser 0.5 and the packer aborts (0.25 clears it, under the atlas cap).
+* Light promotability. A baked light is either *promotable* (`_bake_only 0` --
+  kept as a runtime entity, so a script/gameplay can drive it) or *bake-only*
+  (`_bake_only 1` -- folded into the lightmap with no runtime entity). Each lit
+  room's single high-brightness fixture is promotable; its steady coverage
+  lights are bake-only. Animated coverage lights stay promotable (a
+  script-driven one *must* keep a runtime entity for `setLightAnimation` to
+  reach it). The net per-room invariant is at least one and at most three
+  promotable lights (`MAX_PROMOTABLE_PER_ROOM`); arenas follow the same rule.
+  (Runtime `--lights dynamic` lights are a separate, always-runtime axis and are
+  not part of this baked-light accounting.)
 
 Usage
 -----
@@ -170,6 +182,7 @@ light type -- drives the atlas overflow. Every preset value is overridable.
 """
 
 import argparse
+import math
 import os
 import random
 import sys
@@ -511,24 +524,54 @@ def emit_walk_stairs(brushes, base_x, base_y, axis, sign, cross_half, zf, climb,
 ARENA_MEZZ_WALK = 384   # width of the mezzanine walkway ring around the gap
 ARENA_STAIR_HALF = 128  # half-width of the arena staircase run
 
+# Arena minimum footprint: a regulation NFL football field. The engine's world
+# unit is one inch (1 map unit = 0.0254 m, exact; build_pipeline.md "Unit
+# scale"), and this generator emits map/Quake units, so 1 emitted unit == 1 inch.
+# An NFL field including both end zones is 360 ft x 160 ft (120 yd x 53.33 yd)
+# == 4320 in x 1920 in. An arena must be no smaller than that; we measure the
+# floor on the arena's INTERIOR (playable) footprint -- the walkable area inside
+# the perimeter walls -- so the player really does get a field-sized space.
+NFL_FIELD_LONG_U = 360 * 12    # 4320 world units (inches): length incl. end zones
+NFL_FIELD_SHORT_U = 160 * 12   # 1920 world units (inches): width
+
+
+def arena_cell_span():
+    """(aw, ah) cells an arena must span so its INTERIOR clears an NFL field.
+
+    Interior extent along an axis is `span * PITCH_XY - WALL_T` (the perimeter
+    walls eat WALL_T total). Solving `span * PITCH_XY - WALL_T >= field_dim` for
+    the two field dimensions and rounding up gives the minimum cell span; the
+    long field axis maps to X (`aw`), the short axis to Y (`ah`). At the stock
+    PITCH_XY=1280 this is 4 x 2 cells (5120 x 2560 u outer, 4864 x 2304 u
+    interior -- both clear 4320 x 1920). A coarser PITCH_XY needs fewer cells,
+    a finer one more; either way the interior is guaranteed >= the field. The
+    floor of 2 keeps the two-storey mezzanine/staircase geometry well-formed.
+    """
+    aw = max(2, math.ceil((NFL_FIELD_LONG_U + WALL_T) / PITCH_XY))
+    ah = max(2, math.ceil((NFL_FIELD_SHORT_U + WALL_T) / PITCH_XY))
+    return aw, ah
+
 
 def plan_arenas(nx, ny, nz, n_arenas, spawn_cell):
-    """Reserve up to `n_arenas` non-overlapping 2x2xN-cell arena footprints.
+    """Reserve up to `n_arenas` non-overlapping arena footprints.
 
-    Every arena stays fully interior (its 2x2 footprint and a one-cell frame
-    around it are inside the grid) so all four side walls face a neighbouring
-    room -- never the exterior -- and never covers the player spawn cell. Arenas
-    are anchored at the ground layer and span `alayers` storeys (2 by default,
-    clamped to the grid height). Returns a list of arena dicts.
+    Each footprint is `aw x ah` cells (see `arena_cell_span`) sized so the
+    arena interior is never smaller than a regulation NFL football field. Every
+    arena stays fully interior (its footprint and a one-cell frame around it are
+    inside the grid) so all four side walls face a neighbouring room -- never
+    the exterior -- and never covers the player spawn cell. Arenas are anchored
+    at the ground layer and span `alayers` storeys (2 by default, clamped to the
+    grid height). Returns a list of arena dicts. Grids too small to seat one
+    field-sized arena (plus its frame) yield an empty list -- the caller warns.
     """
     if n_arenas <= 0:
         return []
-    aw, ah = 2, 2
+    aw, ah = arena_cell_span()
     alayers = min(2, nz)
     arenas = []
     reserved = set()
-    # Candidate lower-left corners keeping the 2x2 footprint one cell off every
-    # grid edge (interior neighbours on all four sides).
+    # Candidate lower-left corners keeping the aw x ah footprint one cell off
+    # every grid edge (interior neighbours on all four sides).
     cands = [(i0, j0)
              for j0 in range(1, ny - ah)
              for i0 in range(1, nx - aw)]
@@ -618,6 +661,14 @@ def emit_arena(brushes, X, Y, Z, arena, rng):
 # --- Scattered ceiling lights ----------------------------------------------
 LIGHT_MARGIN = 192          # keep scattered lights this far off the interior walls
 LIGHT_CRATE_CLEARANCE = 200 # keep a light at least this far (manhattan) from a crate
+
+# Per-room cap on *promotable* baked lights -- lights kept as runtime entities
+# (`_bake_only 0`) rather than folded into the lightmap (`_bake_only 1`). A
+# promotable light is heavier (it loads as a runtime light and can be driven by
+# a script), so a lit room keeps a small, bounded set: exactly one guaranteed
+# (the bright ceiling fixture) and never more than three total (fixture + up to
+# two animated coverage lights). See emit_room_lights.
+MAX_PROMOTABLE_PER_ROOM = 3
 
 
 def scatter_light_xy(lx0, lx1, ly0, ly1, crate_bases, rng):
@@ -1108,11 +1159,22 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
     Lights near the ceiling, SCATTERED across the room rather than one central
     fixture, so coverage is even and crate faces are lit (and shadowed) from
     several directions. Every Nth light (by GLOBAL count, so spot_frac holds
-    across the whole map) is a downward spotlight. Every lit room also gets one
-    high-brightness `_bake_only` fixture. When lights are baked (static/mixed),
-    a share (`animated_frac`) of the scattered lights animate -- half via an
-    authored `brightness_curve` (KVP-driven) and half via the `warren_script_pulse`
-    tag the data script pulses (script-driven).
+    across the whole map) is a downward spotlight. When lights are baked
+    (static/mixed), a share (`animated_frac`) of the scattered lights animate --
+    half via an authored `brightness_curve` (KVP-driven) and half via the
+    `warren_script_pulse` tag the data script pulses (script-driven).
+
+    Promotability. A baked light is either *promotable* (`_bake_only 0` -- kept
+    as a runtime entity) or *bake-only* (`_bake_only 1` -- no runtime entity).
+    Each lit room gets exactly one guaranteed promotable light: the bright
+    ceiling fixture (now promotable, not bake-only). Its steady coverage lights
+    are bake-only. Animated coverage lights stay promotable -- a script-driven
+    one MUST keep a runtime entity for `setLightAnimation` to reach it (bake-only
+    lights are dropped from the compiler's script light table), and KVP-driven
+    ones are kept promotable for uniformity. The count of promotable lights is
+    held in [1, MAX_PROMOTABLE_PER_ROOM]: the fixture guarantees >= 1, and once
+    the cap is reached the remaining coverage lights bake only (so an animated
+    one is downgraded to a steady bake-only light rather than breaking the cap).
     """
     cz = zc - 24
     lx0, lx1 = x0i + LIGHT_MARGIN, x1i - LIGHT_MARGIN
@@ -1120,17 +1182,20 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
     n_script = 0
     nlit = global_idx
     added = 0
+    promotable = 0    # runtime-present (`_bake_only 0`) baked lights this room
 
-    # One high-brightness bake-only fixture per room (steady, near ceiling
-    # centre). A `_bake_only` light is a baked-tier light, so it only belongs on
-    # maps that already bake: skip it under `--lights dynamic`, whose whole point
-    # is a bake-free runtime-light stress (adding a static light would force the
-    # lightmap/SH bake it deliberately avoids).
+    # One high-brightness fixture per room (steady, near ceiling centre). It is
+    # PROMOTABLE (`_bake_only 0`): the room's guaranteed runtime-present light,
+    # which satisfies the ">= 1 promotable per room" floor. A baked-tier light,
+    # so it only belongs on maps that already bake: skip it under
+    # `--lights dynamic`, whose whole point is a bake-free runtime-light stress
+    # (adding a static light would force the lightmap/SH bake it avoids).
     if lights_mode in ("static", "mixed"):
         bx, by = (x0i + x1i) // 2, (y0i + y1i) // 2
         out.append(light_entity("static", (bx, by, cz), (255, 244, 214),
                                 1800, 600, False, rng, animate=None,
-                                bake_only=True))
+                                bake_only=False))
+        promotable += 1
         added += 1
     per = max(1, lights_per_room)
     for s in range(per):
@@ -1143,27 +1208,44 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
             this_mode = "static" if rng.random() < static_frac else "dynamic"
         else:
             this_mode = lights_mode
-        # Animation applies only to baked lights; alternate kvp/script so both
-        # baked-animation paths are exercised. Bounded by the shared animation
-        # budget (the compiler's animated weight-map packer limit -- see
-        # ANIMATED_LIGHT_CAP).
+        # Baked coverage lights: steady ones are BAKE-ONLY; an animated one is
+        # PROMOTABLE (it keeps a runtime entity) but only while under the
+        # promotable cap. Animation is a baked-light feature bounded by the
+        # shared animation budget (the compiler's animated weight-map packer
+        # limit -- see ANIMATED_LIGHT_CAP). Dynamic lights are runtime already;
+        # `_bake_only` does not apply to them (light_entity ignores it).
         animate = None
-        if (this_mode == "static" and animated_frac > 0 and anim_budget[0] > 0
-                and rng.random() < animated_frac):
-            anim_budget[0] -= 1
-            # Alternate KVP/script across the animated set (by consumed count,
-            # not nlit parity) so a map with >= 2 animated lights always has both
-            # a KVP-driven and a script-driven one.
-            used = ANIMATED_LIGHT_CAP - anim_budget[0]
-            if used % 2 == 1:
-                animate = "kvp"
+        bake_only = False
+        if this_mode == "static":
+            want_animate = (animated_frac > 0 and anim_budget[0] > 0
+                            and rng.random() < animated_frac)
+            if want_animate and promotable < MAX_PROMOTABLE_PER_ROOM:
+                anim_budget[0] -= 1
+                # Alternate KVP/script across the animated set (by consumed
+                # count, not nlit parity) so a map with >= 2 animated lights
+                # always has both a KVP-driven and a script-driven one.
+                used = ANIMATED_LIGHT_CAP - anim_budget[0]
+                if used % 2 == 1:
+                    animate = "kvp"
+                else:
+                    animate = "script"
+                    n_script += 1
+                promotable += 1       # animated coverage light is runtime-present
             else:
-                animate = "script"
-                n_script += 1
+                bake_only = True      # steady (or cap-reached) coverage: bake only
         out.append(light_entity(this_mode, (px, py, cz), color, falloff,
-                                intensity, spot, rng, animate=animate))
+                                intensity, spot, rng, animate=animate,
+                                bake_only=bake_only))
         nlit += 1
         added += 1
+    # Invariant: a baked (static/mixed) space keeps between one and
+    # MAX_PROMOTABLE_PER_ROOM promotable (`_bake_only 0`) lights -- the bright
+    # fixture guarantees the floor, the loop's cap guarantees the ceiling. Pure
+    # `--lights dynamic` bakes nothing, so the baked-promotable rule is moot.
+    if lights_mode in ("static", "mixed"):
+        assert 1 <= promotable <= MAX_PROMOTABLE_PER_ROOM, (
+            f"promotable light count {promotable} outside "
+            f"[1, {MAX_PROMOTABLE_PER_ROOM}]")
     return added, n_script
 
 
@@ -1236,7 +1318,10 @@ def main(argv):
             light_every=1, door_prob=0.4, shaft_prob=1.0, lights_per_room=3,
         ),
         "warren": dict(
-            grid=[5, 5, 3], lights="mixed", spot_frac=0.3, light_every=1,
+            # 6x5x3: nx >= aw+2 and ny >= ah+2 so one NFL-field arena (4x2 cells
+            # at the stock pitch, see arena_cell_span) plus its one-cell frame
+            # fits interior; still well under the 4096 BSP-leaf cap.
+            grid=[6, 5, 3], lights="mixed", spot_frac=0.3, light_every=1,
             door_prob=0.3, shaft_prob=0.6, lights_per_room=2, crates=1,
             arenas=1, enemies=12, weapons=6, doors=6, lifts=2,
             animated_frac=0.4,
@@ -1313,9 +1398,13 @@ def main(argv):
                     help="number of arenas: large open two-storey rooms with "
                          "four entryways, a walkable staircase to a mezzanine "
                          "ledge, and a wide central gap the player can jump down "
-                         "through. Each is a 2x2-cell block reserved out of the "
-                         "maze lattice. Arenas spend BSP leaves, so a map with "
-                         "arenas needs a smaller grid. (default 0)")
+                         "through. Each is sized so its interior is never smaller "
+                         "than a regulation NFL field (360x160 ft = 4320x1920 u; "
+                         "a 4x2-cell block at the stock pitch), reserved out of "
+                         "the maze lattice. Arenas spend BSP leaves and need a "
+                         "grid with room for the footprint plus a one-cell frame, "
+                         "so a map with arenas needs a larger grid than the "
+                         "footprint but fewer free rooms. (default 0)")
     ap.add_argument("--enemies", type=int, default=None, metavar="N",
                     help="number of reference_enemy AI enemies pre-placed across "
                          "the rooms (default 0)")
@@ -1390,10 +1479,16 @@ def main(argv):
         args.arenas, args.enemies, args.weapons, args.doors, args.lifts,
         args.animated_frac)
     write_map(args.out, brushes, spawn, nx, ny, nz, entities, data_script)
+    if args.arenas > 0 and narenas < args.arenas:
+        print(f"warning: requested {args.arenas} arena(s) but only seated "
+              f"{narenas}; grid {nx}x{ny}x{nz} is too small to fit an NFL-field "
+              f"arena ({'x'.join(map(str, arena_cell_span()))} cells) plus its "
+              f"one-cell frame. Enlarge --grid.", file=sys.stderr)
     nspot = sum(1 for L in lights if "spot" in L[1])
     ndyn = sum(1 for L in lights if "dynamic" in L[1])
     nstat = len(lights) - ndyn
     nbake_only = sum(1 for L in lights if '"_bake_only" "1"' in L)
+    npromote = sum(1 for L in lights if '"_bake_only" "0"' in L)
     nanim = sum(1 for L in lights
                 if any("brightness_curve" in ln or SCRIPT_LIGHT_TAG in ln for ln in L))
     nenem = sum(1 for e in entities if e[1] == f'"classname" "{ENEMY_CLASS}"')
@@ -1404,7 +1499,7 @@ def main(argv):
           f"{nstairs} stair steps)")
     print(f"lights: {len(lights)} {args.lights} "
           f"({nstat} static, {ndyn} dynamic; {nspot} spot, {len(lights)-nspot} point; "
-          f"{nbake_only} bake-only bright, {nanim} animated)")
+          f"{npromote} promotable, {nbake_only} bake-only, {nanim} animated)")
     print(f"gameplay: {nenem} enemies, {nweap} weapons, {ndoors} doors, "
           f"{nlifts} lifts"
           + (f"; data_script {data_script}" if data_script else ""))

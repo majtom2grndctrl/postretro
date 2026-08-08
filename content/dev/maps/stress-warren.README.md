@@ -39,18 +39,29 @@ python3 tools/gen_stress_map.py --preset warren -o content/dev/maps/stress-warre
 
 All of these are **off by default**, so the bare `stress-warren.map` stays a
 pure geometry/BVH probe. `--preset warren` turns the whole set on at a
-leaf-cap-safe grid (`5×5×3`). Everything relies on the **dev mod** (the maps set
-`_tb_mod "dev"`), which globally registers the enemy and weapon archetypes in
+leaf-cap-safe grid (`6×5×3`, sized so one NFL-field arena plus its frame fits —
+see below). Everything relies on the **dev mod** (the maps set `_tb_mod "dev"`),
+which globally registers the enemy and weapon archetypes in
 `content/dev/start-script.ts`.
 
-- **`--arenas N`** carves N large open-area rooms. Each arena is a 2×2-cell block
-  reserved out of the maze lattice (so it *replaces* rooms rather than adding to
-  the leaf count), two storeys tall, with solid perimeter walls holding **four
-  ground-level entryways** (one per side, into the neighbouring rooms), a
+- **`--arenas N`** carves N large open-area rooms. Each arena is a multi-cell
+  block reserved out of the maze lattice (so it *replaces* rooms rather than
+  adding to the leaf count), two storeys tall, with solid perimeter walls holding
+  **four ground-level entryways** (one per side, into the neighbouring rooms), a
   **walkable staircase** from the floor up to a **mezzanine ledge**, and a **wide
   central gap** in that ledge the player can jump down through. Arenas stay fully
   interior (never on the grid edge) and never cover the player spawn cell.
-  Arenas spend BSP leaves, so a map with arenas needs a smaller grid.
+  **Minimum size.** An arena's *interior* is never smaller than a regulation NFL
+  football field — 360 ft × 160 ft including end zones (120 yd × 53.33 yd). The
+  engine's world unit is one inch (1 map unit = 0.0254 m, exact — see
+  `build_pipeline.md` "Unit scale"), and the generator emits map units, so that
+  floor is **4320 × 1920 world units**. The arena's cell span is sized up from
+  the configured `PITCH_XY` so the interior clears the field in both dimensions;
+  at the stock pitch that is a **4×2-cell footprint** (5120 × 2560 u outer,
+  4864 × 2304 u interior). Because the footprint (plus a one-cell frame) must fit
+  inside the grid, a map with arenas needs a grid at least `aw+2 × ah+2` cells
+  and spends BSP leaves on the arena shell — the generator prints a warning and
+  seats fewer arenas if the grid is too small.
 - **`--enemies N`** pre-places N `reference_enemy` AI enemies across the rooms.
 - **`--weapons N`** pre-places N wieldable weapon pickups (the reference
   pistol/shotgun and the two fixture wieldables), touchable world items.
@@ -59,12 +70,30 @@ leaf-cap-safe grid (`5×5×3`). Everything relies on the **dev mod** (the maps s
 - **`--lifts N`** replaces the jump-stairs in N shafts with a ping-pong lift
   platform that carries the player between the two layers.
 
-## Animated lights (`--animated-frac`) and the bake-only room fixture
+## Light promotability (`_bake_only`) and per-room promotable budget
+
+A baked light is either **promotable** (`_bake_only 0` — kept as a runtime
+entity, so a script or gameplay can drive it) or **bake-only** (`_bake_only 1` —
+folded into the lightmap with no runtime entity; the compiler drops it from the
+script light table entirely). Both bake into the lightmap the same way; the flag
+only decides whether a *runtime* light also exists.
 
 Whenever lights are enabled, **every lit room (and arena) gets one
-high-brightness `_bake_only` fixture** near its ceiling. On top of that, a share
-`--animated-frac` of the baked (static) coverage lights animate, split evenly
-between two paths:
+high-brightness fixture** near its ceiling. That fixture is now **promotable**
+(not bake-only): it is each room's guaranteed runtime-present light. Its steady
+coverage lights are **bake-only**. Animated coverage lights stay promotable —
+a script-driven one *must* keep a runtime entity for `setLightAnimation` to reach
+it, and KVP-driven ones are kept promotable for uniformity. The net per-room
+invariant is **at least one and at most three promotable lights** (the fixture
+guarantees the floor; the generator caps the ceiling, downgrading any extra
+animated light to a steady bake-only one). Arenas follow the same rule. Runtime
+`--lights dynamic` lights are a separate, always-runtime axis and are not part of
+this baked-light accounting.
+
+## Animated lights (`--animated-frac`)
+
+On top of the promotable/bake-only split, a share `--animated-frac` of the baked
+(static) coverage lights animate, split evenly between two paths:
 
 - **KVP-driven** — an authored `brightness_curve` + `period_ms`, resampled and
   baked entirely at compile time (no script).

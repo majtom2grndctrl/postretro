@@ -17,7 +17,8 @@ permanent in player save data).
 - Mod-derived namespaces: the engine qualifies store and impact-event
   identities with the mod's identity; no declaration retypes it.
 - Durable identity separate from the authored name: a per-mod identity ledger
-  mapping authored slot names to minted opaque keys; persistence and the
+  mapping authored slot names to opaque keys, minted by the author's
+  toolchain and only ever read by the engine; persistence and the
   replicated-slot schema key by the durable form.
 - The `scripts-build` binding-derived-name pass (TypeScript only, per source
   file, pre-bundle).
@@ -111,27 +112,25 @@ colon segment is mandatory, `data_script.ts:435-440`).
 - Pre-stable: breaking changes move all call sites and tests together
   (`index.md:6`). The impact-id grammar change and `state.json` v2 rely on
   this.
-- **Divergence, named: the namespace root is `ModManifest.id`, not the mod
-  folder name.** The settled direction said "the mod folder IS mod
-  identity." Source disagrees: the manifest `id` is required, gates
-  multiplayer admission, and the first committed id stays active across
-  staged reloads (`scripting.md:51`); the folder is the install-local boot
-  selection handle (`--mod <path>`, `boot_sequence.md:19`), and the dev mod
-  already demonstrates the split — folder `content/dev/`, id
-  `postretro.dev` (`content/dev/start-script.ts:26`). Data keyed by folder
-  name is orphaned by reinstalling the same mod into a different folder —
-  the exact defect this spec exists to remove. Deriving from `id` keeps
-  every property the folder was chosen for: mod-level, unique per session by
-  construction, stable under any internal file reorganization, and not the
-  filename. Everything the settled direction rejected stays rejected.
+- **Mod identity is `ModManifest.id`, and the namespace root derives from
+  it.** The id is required, gates multiplayer admission, and the first
+  committed id stays active across staged reloads (`scripting.md:51`); the
+  folder is the install-local boot selection handle (`--mod <path>`,
+  `boot_sequence.md:19`), and the dev mod already demonstrates the split —
+  folder `content/dev/`, id `postretro.dev`
+  (`content/dev/start-script.ts:26`). The id carries every property the
+  namespace root needs: mod-level, unique per session by construction,
+  stable under any internal file reorganization, and not the filename.
+  Filename- and folder-derivation are rejected below.
 
 **Alternatives rejected.**
 - *Filename-derived namespaces* — rejected before this spec and recorded
   here: two mods can each ship `combat.ts`, and moving a file inside a mod
   would move the namespace. The wrong axis entirely.
-- *Folder-derived namespaces* — rejected above: the folder is chosen by the
-  installer, not the author, so it is mutable exactly where identity must
-  not be.
+- *Folder-derived namespaces* — the folder is chosen by the installer, not
+  the author, so it is mutable exactly where identity must not be:
+  reinstalling the same mod into a different folder would orphan its data,
+  the defect this spec exists to remove.
 - *Keep the authored string as identity, document "never rename."* The
   strongest rival: zero new mechanism. Rejected because it is unenforceable
   by construction — the compiler cannot see names that exist only in saved
@@ -181,27 +180,56 @@ are in-memory composition and logs, both rebuilt every install.
 
 **Durable identity — the ledger.** A mod ships
 `<mod_root>/identity.json`: `{ "version": 1, "stores": { "<authored dotted
-slot name>": "<durable key>" } }`. A durable key is minted for every
+slot name>": "<durable key>" } }`. A durable key exists for every
 mod-declared slot that has a durable consumer — `persist: true` or
 `network != None` (`slot_table.rs:43-60`) — and for no other slot (a
 local-only ephemeral slot has no reader that outlives the process; no
 consumer, no entry). Keys are `k` + 16 lowercase hex chars from the OS RNG,
-opaque, never derived from the name or schema. Minting happens at the first
-successful mod-init commit **in dev (debug) builds only**: the engine
-appends the entry and rewrites the file before the commit completes; a
-failed ledger write rejects the commit (an unrecorded key is a key that
-changes next run). Release builds never write a mod; a persist/replicated
-slot without an entry rejects the whole staged result with a diagnostic
-naming the slot and the remedy (run once under a dev build). The **durable
-form** of a slot is `<modId>:<durableKey>`.
+opaque, never derived from the name or schema. The **durable form** of a
+slot is `<modId>:<durableKey>`.
+
+**The author's toolchain mints; the engine only reads.** Minting lives in
+`scripts-build`: the start-script compile — where every committed
+`defineStore` already flows, since store declarations arrive only as
+manifest data (`scripting.md:49`) and `setupLevel` bundles carry behavior
+only (`scripting.md:35`) —
+gains a `--mod-root` flag under which the compiler reconciles
+`identity.json` after the sugar pass: append an entry for each statically
+visible durable slot missing one, never modify or delete an existing line,
+fail the compile if the file cannot be written. The engine, dev and release
+alike, reads the ledger at mod-init commit and rejects the whole staged
+result on a missing entry, with a diagnostic naming the slot and printing a
+ready-to-paste entry carrying a freshly generated key — the remedy for
+declarations the compiler cannot see statically (Luau mods pass through
+`scripts-build` unchanged, `scripting.md:259`; a helper-computed schema has
+no literal to read). The ledger is author-owned JSON; hand-editing it is a
+first-class path, not a fallback. The engine never writes into a mod root.
+
+Why the mint cannot be per-install: both peers build the replicated-slot
+schema from their own slot tables and "a fingerprint match is the
+cross-peer agreement gate" (`netcode/state_slots.rs:78-79`). Two installs
+of the same mod holding independently minted keys would compute different
+fingerprints — the same mod divergent against itself — and per
+`networking.md:81-83` that surfaces as a content-parity diagnostic to a
+still-connected, non-participating peer, not a disconnect: quiet, and
+therefore worse than a crash. So a key is minted once, by the author, and
+ships with the mod. Build-time minting also costs authors nothing —
+`scripts-build` is already the mandatory sidecar (`scripting.md:257`:
+xtask builds it first) and already walks the bundled source set — and it
+gives dev and release one read-only runtime path, so no dev/release
+divergence class exists here. It also makes identity independent of
+whether mods eventually ship compiled output or raw sources to players:
+that ship-format question stays open elsewhere and never becomes an input
+to identity.
 
 **Rename and discard.** A rename is: change the name in the script *and*
 edit the ledger entry's authored-name side, keeping the key. Deleting a
-ledger entry is the explicit "discard that data" gesture — the next dev run
+ledger entry is the explicit "discard that data" gesture — the next build
 mints a fresh key and old durable rows go unmatched. An accidental rename
-(script changed, ledger not) is loud, not silent: the dev build mints a new
-key for the new name *and* warns that the old entry matches no declared
-slot, so the recovery (merge the two lines) is visible before any release.
+(script changed, ledger not) is loud, not silent: the next build appends a
+new key for the new name *and* the commit warns that the old entry matches
+no declared slot, so the recovery (merge the two lines) is visible before
+any release.
 
 **Where the durable form is used.** Exactly two seams:
 1. *Persistence.* `state.json` becomes version 2; slot keys are the durable
@@ -245,11 +273,11 @@ form in Luau — sanctioned syntax asymmetry per `scripting.md:243-245`.
 
 | # | Scenario / ordering | Expected outcome |
 |---|---|---|
-| 1 | First commit of a new persist slot, dev build | Key minted and written to ledger *before* commit completes; overlay (which runs after first successful commit, once per process) sees the ledger already complete. |
-| 2 | Ledger write fails (read-only mod root), dev build | Whole staged result rejected; diagnostic names the ledger path. No in-memory-only keys ever commit. |
-| 3 | Release build, persist/replicated slot missing ledger entry | Whole staged result rejected; diagnostic names slot and remedy. |
+| 1 | Author adds a durable slot; next start-script compile runs with `--mod-root` | Entry appended during the compile, which always precedes mod-init evaluation (`scripting.md:259`: debug auto-compile runs before the engine loads the script); the commit reads a complete ledger. Recompiling appends nothing — mint once. |
+| 2 | Ledger write fails during reconcile (read-only mod root) | Compile fails naming the ledger path; the engine never sees a half-minted ledger. An unwritable key would be a key that changes next build. |
+| 3 | Persist/replicated slot missing a ledger entry at commit — any build type | Whole staged result rejected; diagnostic names the slot and prints a ready-to-paste entry with a fresh key (the hand-edit remedy for Luau mods and helper-computed schemas). |
 | 4 | Authored rename with ledger entry updated, across restart | v2 save row (durable key unchanged) overlays into the renamed slot; fingerprint unchanged. |
-| 5 | Authored rename in script only (ledger untouched), dev build | New key minted for new name + warning that the old entry matches no slot. Old save row goes unmatched (warned, retained in file until next save). |
+| 5 | Authored rename in script only (ledger untouched) | Next compile appends a new key for the new name; commit warns that the old entry matches no slot. Old save row goes unmatched (warned, retained in file until next save). Recovery: merge the two ledger lines. |
 | 6 | Ledger entry deleted, save row still present | Row is an unknown durable key at overlay: warn, ignore, slot starts at default. The documented discard gesture. |
 | 7 | Mid-session staged reload renames a committed namespace | Reconciler sees delete+add by authored name: new namespace commits at defaults, removed one keeps values (`scripting.md:127` behavior, unchanged). Durable identity protects data across process runs, not across an in-session rename; overlay never re-runs (once per process). |
 | 8 | Staged reload changes the durable key of a committed slot | Reject whole staged result (identity change on live state), same class as `IncompatibleSchema`. |
@@ -258,6 +286,9 @@ form in Luau — sanctioned syntax asymmetry per `scripting.md:243-245`.
 | 11 | Two same-name `defineImpactEvent`s in one mod | Unchanged from today: last-registered wins per composition rules (`scripting.md:43`) — qualification adds the same prefix to both, so it neither creates nor masks the collision. |
 | 12 | Sugar target shadows an SDK global (`const world = defineStore({…})`) | Rewrite fires on the binding name like any other; name validity is the SDK validator's job, not the compiler's. |
 | 13 | v1 `state.json` read by the new engine | Ignored with the existing version-gate warning (`state_persistence.rs:109-114`); next clean exit writes v2. |
+| 14 | Reconcile appends to `identity.json` while the hot-reload watcher is live | The mod root is watched non-recursively (`watcher.rs:328-338`), so the write emits an event — but reload classification is membership in the tracked mod-init dependency set (`staged_manifest/transfer.rs:59-64`), and the ledger is never a script dependency. No reload triggers. |
+| 15 | Two branches each add the same new slot, then merge | Distinct keys minted per branch. A clean merge keeping both lines is a duplicate authored name — ledger parse rejects it; a resolved merge keeps one key and the losing branch's dev `state.json` rows go unmatched (dev-only loss, warned at overlay). |
+| 16 | Two dev peers co-op the same mod with ledgers that have drifted | Different fingerprints; content parity holds the client below participating with a divergence diagnostic (`networking.md:81-83`). The fix is content, not netcode: commit one ledger. |
 
 ## Acceptance criteria
 
@@ -281,10 +312,15 @@ form in Luau — sanctioned syntax asymmetry per `scripting.md:243-245`.
   rename with preserved durable key, and changed by a durable-key change
   with preserved authored name (both directions asserted — the drift-guard
   pair).
-- [ ] Dev-build first commit of a new persisted slot mints a key and rewrites
-  `identity.json`; a release-build commit of the same mod without that entry
-  rejects the whole staged result naming the slot. A failed ledger write in
-  a dev build also rejects.
+- [ ] Compiling a start-script that declares a new durable slot appends
+  exactly one `identity.json` entry; recompiling appends nothing; existing
+  lines are never modified or deleted; an unwritable ledger fails the
+  compile. A commit — dev and release alike — with a durable slot missing
+  its entry rejects the whole staged result, naming the slot and printing a
+  ready-to-paste entry.
+- [ ] With a complete ledger and a read-only mod root, dev and release
+  engine builds load the mod identically; the engine writes nothing into
+  the mod root.
 - [ ] A v1 `state.json` is ignored via the version gate with a warning; a
   clean exit writes v2 with keys of the form `<modId>:<durableKey>`; a
   duplicate durable key in the ledger rejects the staged result.
@@ -297,28 +333,32 @@ form in Luau — sanctioned syntax asymmetry per `scripting.md:243-245`.
 
 ## Tasks
 
-### Task 1: Thin slice — ledger, mint, and durable-key persistence
+### Task 1: Thin slice — engine-side ledger read and durable-key persistence
 
-Build the identity ledger end to end for the store-persistence seam only.
-New module beside `crates/postretro/src/scripting/state_persistence.rs`
-(e.g. `store_identity.rs`): parse/serialize `<mod_root>/identity.json`
-(`{version: 1, stores: {authoredDottedSlotName: durableKey}}`), validate
-(unique keys, key grammar `k[0-9a-f]{16}`), and mint (OS RNG). Hook the
-mod-init commit path in the binary: after staged validation succeeds and
-before the commit is reported successful, every mod slot with
-`persist: true` or `network != ReplicationScope::None` must hold a ledger
-entry — dev builds mint+append+write (write failure rejects the commit),
-release builds reject with a slot-naming diagnostic. Bump
+Build the read-only engine half end to end for the store-persistence seam,
+driven by a hand-authored ledger (hand-editing is a first-class authoring
+path, so the slice needs no compiler work). New module beside
+`crates/postretro/src/scripting/state_persistence.rs` (e.g.
+`store_identity.rs`): parse `<mod_root>/identity.json`
+(`{version: 1, stores: {authoredDottedSlotName: durableKey}}`) and validate
+it — unique authored names, unique keys, key grammar `k[0-9a-f]{16}`. Hook
+the mod-init commit path in the binary: after staged validation succeeds,
+every mod slot with `persist: true` or
+`network != ReplicationScope::None` must hold a ledger entry; a missing
+entry rejects the whole staged result in every build type, with a
+diagnostic naming the slot and printing a ready-to-paste entry carrying a
+freshly generated key. The engine never writes the ledger. Bump
 `CURRENT_STATE_VERSION` to 2; `collect_persisted_state` writes keys as
 `<modId>:<durableKey>` resolved through the ledger, `overlay_persisted_state`
 resolves them back to authored dotted names; unknown durable keys warn and
 are ignored (Orderings 6). The mod id reaches this code from the committed
 manifest (the same value `scripting.md:51` pins across staged reloads).
-Tests: mint-once stability across two commits; rename-with-preserved-key
-restores across a simulated restart; deleted-entry discard; duplicate-key
-rejection; v1 file ignored. This slice falsifies the commit-ordering
-assumption (mint before overlay; overlay once per process) before anything
-fans out.
+Tests: rename-with-preserved-key restores across a simulated restart;
+deleted-entry discard; missing-entry rejection with the paste-able
+diagnostic; duplicate-name and duplicate-key rejection; v1 file ignored;
+read-only mod root loads clean. This slice falsifies the commit-ordering
+assumption (ledger validated at commit, before the once-per-process
+overlay) before anything fans out.
 
 ### Task 2: SDK authored-name validation, both runtimes
 
@@ -336,7 +376,7 @@ still carries its authored `id`. Update the generated-typedef fixtures if
 signatures surface there. Tests: TS/Luau twin parity for every new
 rejection (same input class → same outcome), per `scripting.md:17`.
 
-### Task 3: scripts-build binding-derived-name pass
+### Task 3: scripts-build binding-derived-name pass and ledger reconcile
 
 In `crates/script-compiler/src/lib.rs`, add a per-file AST visitor (pattern:
 `ExportToGlobal`, `lib.rs:476+`) that runs on each parsed source module
@@ -352,9 +392,25 @@ shadowed or re-exported `defineStore` identifier still matches, which is
 acceptable because the SDK symbols are ambient globals in script mode
 (`scripting.md:236`) and the rewrite is observable in the bundle. Applies to
 mod-init and data-script compilation alike (both flow through
-`bundle_with_dependencies`). Tests: direct-assignment rewrite; export-const
-rewrite; helper-internal call NOT rewritten; explicit-name call NOT
-rewritten; rewrite lands per source file before bundling merges files.
+`bundle_with_dependencies`).
+
+Second half: a `--mod-root <path>` flag under which the compiler, after the
+sugar pass, collects every `defineStore` call in the bundled module set
+whose name is a string literal and whose schema literal marks a durable
+slot (`persist: true` or a `network` value), and reconciles
+`<mod_root>/identity.json`: append an entry with a fresh OS-RNG key for
+each durable slot missing one; never modify or delete an existing line;
+fail the compile if the file cannot be written. Statically invisible
+declarations (computed schemas, computed names) are simply not appended —
+the engine's Task 1 diagnostic covers them. The engine's own sidecar
+invocations (debug startup auto-compile and TS hot reload,
+`scripting.md:259`; `staged_manifest.rs:239`) pass `--mod-root`, so the
+normal dev loop mints without a separate step while the writer remains the
+toolchain, never the engine process. Tests: direct-assignment rewrite;
+export-const rewrite; helper-internal call NOT rewritten; explicit-name
+call NOT rewritten; rewrite lands per source file before bundling merges
+files; reconcile appends once and is idempotent on recompile; existing
+lines survive byte-for-byte; unwritable ledger fails the compile.
 
 ### Task 4: Mod-id qualification for impact events and name grammar
 
@@ -394,16 +450,20 @@ baselines exactly as today (`networking.md:56-59` behavior unchanged).
 ### Task 6: Ledger validation joins staged whole-attempt validation
 
 Extend the staged-commit gate so identity defects reject the whole staged
-result, symmetric with `plan_reconcile` (`slot_table.rs:255-299`): duplicate
-durable keys; a changed durable key for an already-committed slot (Orderings
-8); missing entries per build type (dev mints here — Task 1's hook is this
-gate's first half); orphan ledger entries and stale entries for
-non-durable slots warn without rejecting (Orderings 5, 10). Order of checks:
-schema reconcile first (its rejections are the ones authors see most), then
-identity. Hot-reload semantics otherwise unchanged: identical redeclare
-preserves values, new namespaces commit, overlap rejects — the ledger adds
-no new pass over live values. Tests: each rejection class; a staged reload
-carrying a renamed namespace behaves per Orderings 7.
+result, symmetric with `plan_reconcile` (`slot_table.rs:255-299`): a
+changed durable key for an already-committed slot (Orderings 8); the
+missing-entry and duplicate rejections from Task 1's hook, re-checked on
+every staged attempt, not only first commit; orphan ledger entries and
+stale entries for non-durable slots warn without rejecting (Orderings 5,
+10). The gate only reads — the reject diagnostics carry the paste-able
+remedy, and no build type writes the ledger from engine code. Order of
+checks: schema reconcile first (its rejections are the ones authors see
+most), then identity. Hot-reload semantics otherwise unchanged: identical
+redeclare preserves values, new namespaces commit, overlap rejects — the
+ledger adds no new pass over live values. Tests: each rejection class; a
+staged reload carrying a renamed namespace behaves per Orderings 7; a
+ledger append landing between two staged attempts is picked up by the
+second (the file is re-read per attempt).
 
 ### Task 7: Content migration and dev-mod ledger
 
@@ -412,8 +472,9 @@ Migrate `content/dev`: `coop-two-button-puzzles.ts:23` and
 favor of the binding sugar (bindings already carry the right names);
 `combat-lifecycle.ts:18,56,81` drop the hand-typed `dev:` prefixes (the
 `.override` at `:97` needs no change — the handle carries the base id,
-`data_script.ts:400-408`). Commit the minted `content/dev/identity.json`
-produced by a dev run (the `coopPuzzles` slots are the only
+`data_script.ts:400-408`). Commit the `content/dev/identity.json` produced
+by a start-script compile with `--mod-root` — one `xtask` dev launch or a
+direct `scripts-build` invocation (the `coopPuzzles` slots are the only
 persist/replicated candidates today — verify against their schemas at
 migration time). Update every fixture and doc-adjacent test that asserts
 the old colon-mandatory impact-id grammar or old `defineStore` arity,
@@ -423,12 +484,12 @@ sites and tests move in this one change, per `index.md:6`.
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — thin slice; falsifies the
-mint/commit/overlay ordering assumptions at the persistence seam before
+ledger-read/commit/overlay ordering assumptions at the persistence seam before
 anything fans out.
 **Phase 2 (concurrent):** Task 2 (SDK), Task 3 (compiler), Task 4
 (qualification) — independent files; Task 5 (schema keys) — consumes Task
 1's ledger module.
-**Phase 3 (sequential):** Task 6 — consumes Task 1's mint hook and Task 4's
+**Phase 3 (sequential):** Task 6 — consumes Task 1's validation hook and Task 4's
 grammar; owns the unified staged gate.
 **Phase 4 (sequential):** Task 7 — migration; consumes every earlier task's
 surface.
@@ -443,24 +504,29 @@ surface.
 | Qualified impact id | composition/diagnostic key | in-memory + logs only | never authored | never authored | `<modId>:<authoredId>` |
 | Durable key | ledger value | `identity.json` `stores` values | never visible | never visible | `k[0-9a-f]{16}` |
 | Durable slot form | persistence + schema key | `state.json` v2 keys; schema fingerprint stream | never visible | never visible | `<modId>:<durableKey>` |
-| Ledger file | new module in `postretro` binary | `<mod_root>/identity.json`, `{version, stores}` | n/a | n/a | mod content; ships with the mod |
+| Ledger file | written by `script-compiler` (`--mod-root` reconcile); read by `postretro` (`store_identity.rs`) | `<mod_root>/identity.json`, `{version, stores}` | n/a | n/a | mod content; ships with the mod; author-owned, hand-editable |
 
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| A durable key is never derived from anything mutable (random mint, recorded once, reused never) | Task 1 (mint) | dev re-mint on unmatched name (Orderings 5); ledger hand-edits | AC 1, 5, 6 |
-| Authored ⇄ durable is injective per mod at every successful commit | Task 1, Task 6 | manual ledger merges; branch merges duplicating keys | AC 7 (duplicate-key rejection) |
-| In-memory addressing stays authored-dotted-name-based; durable form appears only at persistence and replication seams | Task 1, Task 5 | any future consumer tempted to key UI/IR by durable form | AC 9; Task 5 apply-mapping tests |
+| A durable key is never derived from anything mutable (random mint, recorded once, reused never) | Task 3 (reconcile mint), Task 1 (grammar validation) | re-mint on unmatched name (Orderings 5); ledger hand-edits | AC 1, 5, 6 |
+| The ledger's only writer is the author's toolchain; the engine — every build type — only reads | Task 1 (no engine write path), Task 3 (reconcile in `scripts-build`) | any future engine-side "convenience" mint; the co-op fingerprint gate is what it protects (Orderings 16) | AC 7 (read-only mod root) |
+| Authored ⇄ durable is injective per mod at every successful commit | Task 1, Task 6 | manual ledger merges; branch merges duplicating keys (Orderings 15) | AC 8 (duplicate-key rejection) |
+| In-memory addressing stays authored-dotted-name-based; durable form appears only at persistence and replication seams | Task 1, Task 5 | any future consumer tempted to key UI/IR by durable form | AC 10; Task 5 apply-mapping tests |
 | Explicit-name form legal at every call site; sugar fires only on direct assignment | Task 2, Task 3 | helper-built descriptors; Luau (no compiler pass) | AC 2 |
 | TS/Luau twin validation — same input class, same outcome (`scripting.md:17`) | Task 2 | the TS-only compile sugar (syntax, exempt per `scripting.md:243-245`) | AC 2, 3 |
-| Whole-attempt staged validation: any identity defect rejects everything, mutates nothing (`scripting.md:127`) | Task 6 | mint-write ordering (Orderings 1-2) | AC 6, 8 |
-| Engine-catalog slots carry no ledger entries and are byte-identical in schema and persistence | Task 1 (mint filter), Task 5 (keying carve-out) | schema-builder substitution | AC 9 |
+| Whole-attempt staged validation: any identity defect rejects everything, mutates nothing (`scripting.md:127`) | Task 6 | compile-vs-commit ordering (Orderings 1-2) | AC 6, 9 |
+| Engine-catalog slots carry no ledger entries and are byte-identical in schema and persistence | Task 1 (entry-requirement carve-out), Task 3 (reconcile sees only mod sources), Task 5 (keying carve-out) | schema-builder substitution | AC 10 |
 
 ## Rough sketch
 
-- Ledger: `crates/postretro/src/scripting/store_identity.rs`; serde_json like
-  `state_persistence.rs`; `BTreeMap` for stable file diffs.
+- Ledger reader: `crates/postretro/src/scripting/store_identity.rs`;
+  serde_json like `state_persistence.rs`. Writer: the reconcile step in
+  `crates/script-compiler` (`BTreeMap` for stable file diffs; append-only).
+  One writer, one reader, two crates — pin the format with a shared fixture
+  a test on each side parses, the drift-guard shape from
+  `networking.md:48-50`.
 - Compiler pass: new `VisitMut` in `crates/script-compiler/src/lib.rs`
   applied where each module is parsed inside `bundle_with_dependencies`,
   before `StripModuleGlue`.
@@ -496,7 +562,7 @@ local progression = defineStore("progression", {
 ```
 
 ```json
-// <mod_root>/identity.json — minted by a dev-build run, shipped with the mod
+// <mod_root>/identity.json — minted by the start-script compile, shipped with the mod
 {
   "version": 1,
   "stores": {
@@ -507,10 +573,6 @@ local progression = defineStore("progression", {
 
 ## Open questions
 
-- Should an `xtask mint-identity` command exist for authors who never run
-  dev engine builds, or is "run once under a dev build" sufficient for the
-  foreseeable modder workflow? Owner call; the release-build rejection
-  diagnostic can name either remedy.
 - `identity.json` filename: any collision risk with a future mod-metadata
   file the owner has planned for the mod root? Rename is free until Task 1
   lands.

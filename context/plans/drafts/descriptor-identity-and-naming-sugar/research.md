@@ -62,18 +62,18 @@ does not need. Everything here was read this session.
 
 ```mermaid
 sequenceDiagram
+    participant B as scripts-build (--mod-root)
+    participant L as identity ledger (mod root)
     participant S as start-script (VM)
     participant C as mod-init commit
-    participant L as identity ledger (mod root)
     participant T as SlotTable (memory)
     participant P as state.json
 
+    B->>L: reconcile: append keys for new durable slots<br/>(append-only; write failure fails the compile)
     S->>C: ModManifest.stores (authored names)
-    C->>L: read ledger
-    alt persist/replicated slot has no entry (dev build)
-        C->>L: mint random key, append, write file
-    else missing entry (release build)
-        C-->>S: reject whole staged result
+    C->>L: read + validate (engine never writes)
+    alt persist/replicated slot has no entry (any build type)
+        C-->>S: reject whole staged result,<br/>print paste-able entry
     end
     C->>T: commit slots keyed by authored dotted name
     Note over C,P: once per process, after first successful commit
@@ -84,16 +84,58 @@ sequenceDiagram
 
 Read call sites for every arrow: staged commit (`scripting-core/src/staged_manifest.rs` drain), overlay/save (`state_persistence.rs:68-99`, `:105+`; gating `StateStoreLifecycle` `:20-36`), replication schema build (`netcode/state_slots.rs:89-126`).
 
+## Owner rulings (2026-08-08) — verification
+
+Two rulings folded into the spec; both relayed citations re-verified here
+rather than taken on trust.
+
+1. **Folder → `ModManifest.id` reversal ratified.** Spec keeps the id-rooted
+   namespace; filename- and folder-derivation both stay recorded as rejected
+   with reasons.
+2. **Minting moved to the author's toolchain (`scripts-build`); the engine
+   only reads the ledger, every build type.** Load-bearing argument
+   verified: `crates/postretro/src/netcode/state_slots.rs:78-79` — "Both
+   peers build this identically from their own slot tables; a fingerprint
+   match is the cross-peer agreement gate" — so per-install minting lets the
+   same mod diverge against itself; and `context/lib/networking.md:81-83` —
+   "a parity mismatch **never closes the connection**… Content divergence is
+   a diagnostic to a still-connected peer, not a disconnect" — so the
+   failure is quiet, which is worse. Supporting claims verified:
+   `scripting.md:257` (xtask builds the sidecar first — mandatory build
+   step) and `scripting.md:35` (store declarations reach the engine only via
+   the manifest, i.e. the start-script bundle — so the start-script compile
+   sees every durable declaration that is statically visible).
+
+**Watcher self-trigger hazard, resolved precisely.** The hazard does not
+disappear at the watch layer — the mod root is watched non-recursively
+(`crates/scripting-core/src/watcher.rs:328-338`), so a ledger append does
+emit an event. It disappears at the classification layer: reload
+classification is membership in the tracked mod-init dependency set
+(`crates/scripting-core/src/staged_manifest/transfer.rs:59-64`; dependencies
+collected from the TS compile's dependency report,
+`staged_manifest.rs:228-297`), and `identity.json` is never a script
+dependency. Pinned as Orderings row 14. Secondary containment: reconcile
+writes only when a new durable slot appeared, i.e. when a script edit
+already triggered the reload in progress.
+
+**Limit stated honestly in the spec:** `scripts-build` never sees Luau
+sources (`scripting.md:259` — Luau passes through unchanged) and cannot
+read computed schemas, so build-time minting covers statically visible TS
+declarations only; the engine's paste-able missing-entry diagnostic plus
+hand-editing (the ledger is author-owned JSON) covers the rest.
+
 ## Direction questions worked (draft-plan §5b)
 
 1. **Cause:** one string is both the author's reference and the durable key,
    so a rename is a data migration and the compiler cannot see it. Observed
    at: `state.json` keys, replicated-schema fingerprint input, and every
    hand-typed `dev:` prefix.
-2. **Level:** identity is minted at the mod-init commit seam (engine), sugar
-   at the compile seam (scripts-build), validation at the SDK seam — each
-   where the respective information exists. Not per-feature: doing this
-   inside `E16--per-player-currency` would retrofit currency later.
+2. **Level:** identity is minted at the author-build seam (scripts-build,
+   where binding names and schema literals exist), read and enforced at the
+   mod-init commit seam (engine), validated at the SDK seam — each where
+   the respective information exists, and the engine never a content
+   mutator. Not per-feature: doing this inside `E16--per-player-currency`
+   would retrofit currency later.
 3. **Forecloses:** the ledger file becomes mod content with a format
    contract; `state.json` v2 key format; single-segment authored impact ids.
    All pre-stable and cheap to revise until real player data persists.

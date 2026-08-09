@@ -12,7 +12,7 @@ use crate::map_data::NavParams;
 /// stage cache key so a stale on-disk entry from a prior version is a miss on
 /// the first build after the bump and a hit on the second (matches the SDF and
 /// SH stage pattern).
-pub const NAVMESH_STAGE_VERSION: u32 = 3;
+pub const NAVMESH_STAGE_VERSION: u32 = 4;
 
 /// Tolerance on every `step_height` comparison. A floor delta exactly equal to
 /// `step_height` must count as a climbable step (a one-step riser is reachable),
@@ -686,10 +686,15 @@ fn shared_vertical_edge(
     region_b: u32,
     step: f32,
 ) -> Option<NavPortal> {
-    let (edge_x, left_region, right_region) = if ra.x1 == rb.x0 {
-        (ra.x1, ra, rb)
+    // `ra` is `regions[region_a]`, `rb` is `regions[region_b]` with
+    // `region_a < region_b`, so `region_a → region_b` traversal leaves `ra`. When
+    // `ra` is the geometrically west region the crossing is +X; when it is the
+    // east region the crossing is −X. The stored `left`/`right` order depends on
+    // that crossing direction (see the emit below and the `NavPortal` convention).
+    let (edge_x, left_region, right_region, ra_is_west) = if ra.x1 == rb.x0 {
+        (ra.x1, ra, rb, true)
     } else if rb.x1 == ra.x0 {
-        (rb.x1, rb, ra)
+        (rb.x1, rb, ra, false)
     } else {
         return None;
     };
@@ -722,11 +727,24 @@ fn shared_vertical_edge(
     let world_z0 = grid.origin.z + z_lo as f32 * grid.cell_size;
     let world_z1 = grid.origin.z + z_hi as f32 * grid.cell_size;
 
+    let z_lo_endpoint = [world_x, seg_y, world_z0];
+    let z_hi_endpoint = [world_x, seg_y, world_z1];
+    // Orient for `region_a → region_b` (the `NavPortal` convention). When `ra` is
+    // the west region the crossing is +X, so `left` is the greater-Z endpoint;
+    // when `ra` is the east region the crossing is −X and `left` is the lesser-Z
+    // endpoint. (Version-1 bakes emitted z-lo-first unconditionally, so their
+    // west-`region_a` portals were wrong-handed — the bug this fixes.)
+    let (left, right) = if ra_is_west {
+        (z_hi_endpoint, z_lo_endpoint)
+    } else {
+        (z_lo_endpoint, z_hi_endpoint)
+    };
+
     Some(NavPortal {
         region_a,
         region_b,
-        left: [world_x, seg_y, world_z0],
-        right: [world_x, seg_y, world_z1],
+        left,
+        right,
     })
 }
 
@@ -774,6 +792,12 @@ fn shared_horizontal_edge(
     let world_x0 = grid.origin.x + x_lo as f32 * grid.cell_size;
     let world_x1 = grid.origin.x + x_hi as f32 * grid.cell_size;
 
+    // Unlike the vertical case this needs no orientation branch: two Z-abutting
+    // regions cannot share a z0 (the south region's z0 < its z1 == the north's
+    // z0), so the south region always sorts first under the (z0, …) region sort
+    // and is therefore always `region_a`. `region_a → region_b` is thus always
+    // +Z travel, and the `NavPortal` convention (crossed toward +Z → `left` is
+    // the lesser-X endpoint) is satisfied by emitting `left = x_lo` outright.
     Some(NavPortal {
         region_a,
         region_b,

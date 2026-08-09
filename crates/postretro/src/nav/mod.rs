@@ -8,6 +8,14 @@ mod path;
 // and combat positioning (`combat_positioning`) also queries it.
 pub(crate) use path::find_path;
 
+// Bake→runtime funnel contract tests: bake fixture floors with the real
+// `navmesh_bake::bake_navmesh`, then run the real `find_path` over the result.
+// The bake and the funnel meet in CI for the first time here (they held
+// self-consistent but disagreeing handedness conventions before). Kept in its
+// own sibling module (not `path.rs`) so it stays disjoint from the query code.
+#[cfg(test)]
+mod bake_contract_tests;
+
 use glam::Vec3;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
 
@@ -155,6 +163,7 @@ impl NavGraph {
         self.agent
     }
 
+    #[cfg(test)]
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }

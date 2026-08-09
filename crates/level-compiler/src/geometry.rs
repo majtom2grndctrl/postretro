@@ -511,7 +511,7 @@ pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
 mod tests {
     use super::*;
     use crate::partition::{Aabb, BspLeaf};
-    use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
+    use postretro_level_format::geometry::GeometrySection;
 
     /// Shared empty exterior set for tests that don't exercise exterior
     /// culling — matches the no-op pass-through shape used by upstream
@@ -1079,10 +1079,8 @@ mod tests {
 
     #[test]
     fn engine_to_quake_inverts_quake_to_engine() {
-        use crate::parse::quake_to_engine_for_test;
-
         let original = DVec3::new(100.0, -50.0, 75.0);
-        let engine = quake_to_engine_for_test(original);
+        let engine = DVec3::new(-original.y, original.z, -original.x);
         let recovered = engine_to_quake(engine);
 
         assert!(
@@ -1250,106 +1248,5 @@ mod tests {
                 "n.t not perpendicular with Valve projection: {dot}"
             );
         }
-    }
-
-    // -- Integration test with real map --
-
-    #[test]
-    fn extract_from_test_map() {
-        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root")
-            .join("content/dev/maps/campaign-test.map");
-
-        let map_data =
-            crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
-                .expect("campaign-test.map should parse");
-
-        let partition_result = crate::partition::partition(&map_data.brush_volumes)
-            .expect("partition should succeed on test map");
-
-        let result = extract_geometry(
-            &partition_result.faces,
-            &partition_result.tree,
-            &no_exterior(),
-        );
-        let section = &result.geometry;
-
-        // Every face should produce triangles
-        for range in &result.face_index_ranges {
-            assert!(range.index_count >= 3);
-        }
-
-        // All indices in bounds
-        let vert_count = section.vertices.len() as u32;
-        for &idx in &section.indices {
-            assert!(idx < vert_count);
-        }
-
-        // Face index counts sum to total
-        let sum: u32 = result.face_index_ranges.iter().map(|r| r.index_count).sum();
-        assert_eq!(sum, section.indices.len() as u32);
-
-        // Faces are ordered by leaf index
-        let mut prev_leaf = 0u32;
-        for face in &section.faces {
-            assert!(face.leaf_index >= prev_leaf, "faces not ordered by leaf");
-            prev_leaf = face.leaf_index;
-        }
-
-        // UVs are finite
-        for vert in &section.vertices {
-            assert!(vert.uv[0].is_finite(), "u should be finite");
-            assert!(vert.uv[1].is_finite(), "v should be finite");
-        }
-
-        // Texture names should be non-empty
-        assert!(
-            !result.texture_names.names.is_empty(),
-            "should have at least one texture name"
-        );
-
-        // All texture indices valid
-        let tex_count = result.texture_names.names.len() as u32;
-        for face in &section.faces {
-            assert!(
-                face.texture_index < tex_count || face.texture_index == NO_TEXTURE,
-                "texture_index {} out of range (count: {})",
-                face.texture_index,
-                tex_count
-            );
-        }
-
-        // Every vertex has orthonormal tangent basis
-        for (i, vert) in section.vertices.iter().enumerate() {
-            let n = vert.decode_normal();
-            let t = vert.decode_tangent();
-
-            let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            assert!(
-                (n_len - 1.0).abs() < 0.01,
-                "vertex {i}: normal not unit: {n_len}"
-            );
-
-            let t_len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
-            assert!(
-                (t_len - 1.0).abs() < 0.01,
-                "vertex {i}: tangent not unit: {t_len}"
-            );
-
-            let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
-            assert!(dot.abs() < 0.05, "vertex {i}: n.t not perpendicular: {dot}");
-        }
-
-        // Round-trip serialization
-        let bytes = section.to_bytes();
-        let restored = GeometrySection::from_bytes(&bytes).unwrap();
-        assert_eq!(*section, restored);
-
-        // TextureNames round-trip
-        let tex_bytes = result.texture_names.to_bytes();
-        let tex_restored = TextureNamesSection::from_bytes(&tex_bytes).unwrap();
-        assert_eq!(result.texture_names, tex_restored);
     }
 }

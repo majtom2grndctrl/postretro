@@ -195,6 +195,12 @@ SLAB_T = 128      # floor/ceiling slab thickness (>= 256-tall rooms)
 
 DOOR_W = 256      # doorway opening width
 DOOR_H = 192      # doorway opening height (leaves a solid lintel under the ceiling)
+# Half-depth of a door's touch trigger along the passage normal. The shut leaf
+# occupies +/-WALL_T/2 (128 u) of the wall, so the trigger must reach well past
+# that into BOTH rooms or only one approach touches it. 384 leaves ~256 u of
+# touch zone inside each room -- comfortably less than the 1024 u interior, so it
+# never crosses to the far wall -- and the player opens the door from either side.
+DOOR_TRIGGER_REACH = 384
 SHAFT = 384       # vertical shaft opening (square hole in interior slabs)
 
 # Textures from the bundled "50-free-textures" collection. Each diffuse has a
@@ -670,6 +676,15 @@ LIGHT_CRATE_CLEARANCE = 200 # keep a light at least this far (manhattan) from a 
 # two animated coverage lights). See emit_room_lights.
 MAX_PROMOTABLE_PER_ROOM = 3
 
+# Brightness tiers so the promotable ceiling fixture is unambiguously the room's
+# high point of light and bake-only fill reads as dimmer. The fixture peaks well
+# above any coverage light; promotable (dynamic or animated) coverage sits at the
+# coverage base; bake-only coverage is dimmed below that base.
+FIXTURE_INTENSITY = 600      # promotable ceiling fixture -- the room's high point
+COVERAGE_INTENSITY = 200     # coverage base (point); spotlights add COVERAGE_SPOT_BONUS
+COVERAGE_SPOT_BONUS = 20     # spotlights read a touch brighter than point coverage
+BAKE_ONLY_DIM = 0.55         # bake-only coverage intensity as a fraction of its base
+
 
 def scatter_light_xy(lx0, lx1, ly0, ly1, crate_bases, rng):
     """Pick a ceiling-light xy inside the inset rect, biased away from crate
@@ -758,17 +773,20 @@ def door_entities(idx, axis, line, dcenter, zf, tag):
 
     Returns a list of entity blocks: the `kinematic_mover` door leaf (authored
     shut, sliding up out of the opening), its two waypoints, and a touch
-    `trigger_volume` in the passage that opens it (`auto_close_ms` shuts it).
+    `trigger_volume` in the passage that opens it (`auto_close_ms` shuts it). The
+    trigger reaches DOOR_TRIGGER_REACH into BOTH rooms the door joins, so the
+    player opens it approaching from either side.
     axis 'x' => wall on X=line, opening in Y at dcenter; 'y' => the transpose.
     """
     h = WALL_T // 2
     d0, d1 = dcenter - DOOR_W // 2, dcenter + DOOR_W // 2
+    r = DOOR_TRIGGER_REACH
     if axis == "x":
         bx0, by0, bx1, by1 = line - h, d0, line + h, d1
-        tx0, ty0, tx1, ty1 = line - 160, d0, line + 160, d1
+        tx0, ty0, tx1, ty1 = line - r, d0, line + r, d1
     else:
         bx0, by0, bx1, by1 = d0, line - h, d1, line + h
-        tx0, ty0, tx1, ty1 = d0, line - 160, d1, line + 160
+        tx0, ty0, tx1, ty1 = d0, line - r, d1, line + r
     cz = zf + DOOR_H // 2
     cx, cy = (bx0 + bx1) // 2, (by0 + by1) // 2
     shut = f"warren_door_{idx}_shut"
@@ -1175,6 +1193,11 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
     held in [1, MAX_PROMOTABLE_PER_ROOM]: the fixture guarantees >= 1, and once
     the cap is reached the remaining coverage lights bake only (so an animated
     one is downgraded to a steady bake-only light rather than breaking the cap).
+
+    Brightness. The promotable fixture is the room's high point of light
+    (FIXTURE_INTENSITY); coverage lights sit at COVERAGE_INTENSITY; and bake-only
+    fill is dimmed by BAKE_ONLY_DIM below that, so every promotable light reads
+    brighter than the baked fill around it.
     """
     cz = zc - 24
     lx0, lx1 = x0i + LIGHT_MARGIN, x1i - LIGHT_MARGIN
@@ -1193,7 +1216,7 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
     if lights_mode in ("static", "mixed"):
         bx, by = (x0i + x1i) // 2, (y0i + y1i) // 2
         out.append(light_entity("static", (bx, by, cz), (255, 244, 214),
-                                1800, 600, False, rng, animate=None,
+                                1800, FIXTURE_INTENSITY, False, rng, animate=None,
                                 bake_only=False))
         promotable += 1
         added += 1
@@ -1203,7 +1226,7 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
         color = LIGHT_COLORS[nlit % len(LIGHT_COLORS)]
         spot = (spot_stride > 0 and nlit % spot_stride == 0)
         falloff = 1600 if spot else 1400
-        intensity = 220 if spot else 200
+        intensity = COVERAGE_INTENSITY + (COVERAGE_SPOT_BONUS if spot else 0)
         if lights_mode == "mixed":
             this_mode = "static" if rng.random() < static_frac else "dynamic"
         else:
@@ -1233,6 +1256,11 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
                 promotable += 1       # animated coverage light is runtime-present
             else:
                 bake_only = True      # steady (or cap-reached) coverage: bake only
+        # Bake-only fill is dimmed below the coverage base so every promotable
+        # light (the fixture especially) reads brighter than the baked fill --
+        # the fixture stays the room's high point of light.
+        if bake_only:
+            intensity = int(intensity * BAKE_ONLY_DIM)
         out.append(light_entity(this_mode, (px, py, cz), color, falloff,
                                 intensity, spot, rng, animate=animate,
                                 bake_only=bake_only))

@@ -66,7 +66,9 @@ which globally registers the enemy and weapon archetypes in
 - **`--weapons N`** pre-places N wieldable weapon pickups (the reference
   pistol/shotgun and the two fixture wieldables), touchable world items.
 - **`--doors N`** upgrades N maze doorways to automatic sliding `kinematic_mover`
-  doors — a touch `trigger_volume` opens them and `auto_close_ms` shuts them.
+  doors — a touch `trigger_volume` opens them and `auto_close_ms` shuts them. The
+  trigger reaches into **both** rooms the door joins (`DOOR_TRIGGER_REACH`), so
+  the player opens the door approaching from either side.
 - **`--lifts N`** replaces the jump-stairs in N shafts with a ping-pong lift
   platform that carries the player between the two layers.
 
@@ -89,6 +91,12 @@ guarantees the floor; the generator caps the ceiling, downgrading any extra
 animated light to a steady bake-only one). Arenas follow the same rule. Runtime
 `--lights dynamic` lights are a separate, always-runtime axis and are not part of
 this baked-light accounting.
+
+**Brightness tiers.** The promotable fixture is the room's **high point of
+light** (`FIXTURE_INTENSITY`, 600); coverage lights sit at `COVERAGE_INTENSITY`
+(200, spots a touch more); and **bake-only fill is dimmed** (`BAKE_ONLY_DIM`, to
+~110–120) below the coverage base — so every promotable light, and the fixture
+most of all, reads brighter than the baked fill around it.
 
 ## Animated lights (`--animated-frac`)
 

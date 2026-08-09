@@ -26,7 +26,7 @@ This directly contradicts the task's paraphrase ("a 64 MB cap that fits them by 
 
 From the just-completed `--sh-analyze` spike (`crates/level-compiler/src/sh_analyze.rs`, JSON + log summary). The instrument already emits, per section, three independent byte lines: `(a)compacted` (valid-probes-only — this spec's lever), `(b)exact-zero-drop`, and `(c)all-L1/all-L2` coarsening. Attribution is deliberately separate — compaction, exact-zero drop, and density coarsening are distinct levers, which is itself evidence for separability.
 
-- `stress-warren-showcase.map` @ 2 m SH spacing: 115,200 probes, 67,838 valid (59%). id 41 raw dense ~347 MB → valid-probe-compacted ~190 MB (0.55×); id 27/id 45 ~0.51–0.54×.
+- `stress-warren-showcase.map` @ 2 m SH spacing: 115,200 probes, 67,838 valid (59%). Measured on the **emitted/shipped delta set** (post static-light selection + exact-zero drop; the `--sh-analyze` tool was corrected from a ~4.6× inflated pre-filter superset — 22,608 → 4,940 entries): id 41 47.9 → 26.4 MB (0.55×); id 27 22.3 → 11.8 MB (0.53×); id 45 20.9 → 11.3 MB (0.54×); total deltas 126.4 → 69.0 MB (0.55×). All well under the 256 MiB cap, so the cut is real bandwidth/VRAM.
 - Base atlas (id 34) is already valid-probe-compacted at rest (the shipped precedent). The delta sections are the remaining uncompacted probe payload.
 
 These are the anchors Task 5 re-derives before trusting the before→after ratios. Confirm the anchor map: `content/dev/maps/stress-warren-showcase.map` exists; the stopped successor cited a different stress map (`stress-warren-maze-crates.map`, also present) — the spec uses `showcase` per the task's evidence.

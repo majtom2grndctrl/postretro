@@ -125,6 +125,7 @@ impl ShComposeResources {
         #[cfg(feature = "dev-tools")]
         let footprint = ComposeStorageFootprint {
             delta_subblocks_bytes: subblock_bytes.len(),
+            delta_compaction_meta_bytes: 0,
             affinity_offsets_bytes: offsets_bytes.len(),
             affinity_lights_bytes: lights_bytes.len(),
             animation_descriptor_indices_bytes: descriptor_index_bytes.len(),

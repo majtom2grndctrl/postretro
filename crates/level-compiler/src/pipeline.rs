@@ -1039,9 +1039,9 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
-    // The three delta bakes meet at one owned compiler-only seam. Task-local
-    // policy can transform or reject these sections here before packing without
-    // changing their dense runtime representation or the PRL wire format.
+    // The three delta bakes meet at one owned compiler-only seam. Exact-zero
+    // drop observes the dense bake output; valid-probe compaction then rewrites
+    // id 41 to the id-34-valid local tiles before the payload cap is applied.
     let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
         &map_data.lights,
         membership_manifest.as_ref(),
@@ -1060,6 +1060,8 @@ fn run_after_parsing(
         "the post-bake delta handoff must retain the resolved compiler configuration"
     );
     delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
+    delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
+    delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
         delta_sections.entity_shadow_lights.as_ref(),
         delta_sections.direct.as_ref(),

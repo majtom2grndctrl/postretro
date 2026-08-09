@@ -659,6 +659,7 @@ pub(crate) fn validate_direct_sh_layout(
 pub(crate) fn validate_direct_sh_delta(
     section: &DirectShDeltaVolumesSection,
     direct: &DirectShVolumeSection,
+    base: &OctahedralShVolumeSection,
     selected_light_count: usize,
 ) -> Result<(), PrlLoadError> {
     if section.affinity_factor != AFFINITY_FACTOR {
@@ -689,6 +690,38 @@ pub(crate) fn validate_direct_sh_delta(
         });
     }
 
+    let affinity_cell_count = section.affinity_cell_count();
+    if section.valid_probe_masks.len() != affinity_cell_count {
+        return Err(section_validation(
+            "DirectShDeltaVolumes",
+            format!(
+                "valid_probe_masks has length {}, expected {affinity_cell_count}",
+                section.valid_probe_masks.len()
+            ),
+        ));
+    }
+    if base.probes.len() != base.total_probes() {
+        return Err(section_validation(
+            "DirectShDeltaVolumes",
+            format!(
+                "OctahedralShVolume has {} probe metadata records for {} grid probes",
+                base.probes.len(),
+                base.total_probes(),
+            ),
+        ));
+    }
+    for (cell, &stored_mask) in section.valid_probe_masks.iter().enumerate() {
+        let expected_mask = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
+        if stored_mask != expected_mask {
+            return Err(section_validation(
+                "DirectShDeltaVolumes",
+                format!(
+                    "valid_probe_masks[{cell}] {stored_mask:#018x} disagrees with OctahedralShVolume (id 34) validity {expected_mask:#018x}; recompile the .prl with the current `prl-build`"
+                ),
+            ));
+        }
+    }
+
     for (entry, &selection_index) in section.affinity_lights.iter().enumerate() {
         if selection_index as usize >= selected_light_count {
             return Err(section_validation(
@@ -717,6 +750,46 @@ pub(crate) fn validate_direct_sh_delta(
     }
 
     Ok(())
+}
+
+fn valid_probe_mask_for_affinity_cell(
+    base: &OctahedralShVolumeSection,
+    affinity_dims: [u32; 3],
+    cell_index: usize,
+) -> u64 {
+    let cell_index = cell_index as u32;
+    let cell_x = cell_index % affinity_dims[0];
+    let cell_y = (cell_index / affinity_dims[0]) % affinity_dims[1];
+    let cell_z = cell_index / (affinity_dims[0] * affinity_dims[1]);
+    let factor = AFFINITY_FACTOR as u32;
+    let mut mask = 0u64;
+    for local_z in 0..factor {
+        for local_y in 0..factor {
+            for local_x in 0..factor {
+                let probe = [
+                    cell_x * factor + local_x,
+                    cell_y * factor + local_y,
+                    cell_z * factor + local_z,
+                ];
+                if probe[0] >= base.grid_dimensions[0]
+                    || probe[1] >= base.grid_dimensions[1]
+                    || probe[2] >= base.grid_dimensions[2]
+                {
+                    continue;
+                }
+                let probe_index = probe[0] as usize
+                    + probe[1] as usize * base.grid_dimensions[0] as usize
+                    + probe[2] as usize
+                        * base.grid_dimensions[0] as usize
+                        * base.grid_dimensions[1] as usize;
+                if base.probes[probe_index].validity != 0 {
+                    let local = local_x + local_y * factor + local_z * factor * factor;
+                    mask |= 1u64 << local;
+                }
+            }
+        }
+    }
+    mask
 }
 
 pub(crate) fn validate_entity_shadow_light_selection(
@@ -2176,10 +2249,13 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 } else {
                     match DirectShDeltaVolumesSection::from_bytes(&data) {
                         Ok(section) => {
-                            if let Some(direct) = direct_sh_volume.as_ref() {
+                            if let (Some(direct), Some(base)) =
+                                (direct_sh_volume.as_ref(), sh_volume.as_ref())
+                            {
                                 match validate_direct_sh_delta(
                                     &section,
                                     direct,
+                                    base,
                                     entity_shadow_lights.len(),
                                 ) {
                                     Ok(()) => {
@@ -2204,7 +2280,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                                 }
                             } else {
                                 log::warn!(
-                                    "[PRL] DirectShDeltaVolumes present without DirectShVolume; clearing {} selected static light(s)",
+                                    "[PRL] DirectShDeltaVolumes present without DirectShVolume or OctahedralShVolume; clearing {} selected static light(s)",
                                     entity_shadow_lights.len()
                                 );
                                 entity_shadow_lights.clear();

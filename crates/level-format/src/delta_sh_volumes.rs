@@ -15,7 +15,7 @@ use crate::octahedral::{
 /// Section-internal version, written as the first byte of the payload. Bumped
 /// whenever the on-disk layout changes so the loader can reject stale `.prl`
 /// files instead of silently misreading them.
-pub const DELTA_SH_VOLUMES_VERSION: u8 = 3;
+pub const DELTA_SH_VOLUMES_VERSION: u8 = 4;
 
 /// Affinity cell edge length in base SH probes. An affinity cell is a 4×4×4
 /// cube of base probes. Locked to the compose pass `@workgroup_size(4,4,4)`.
@@ -26,6 +26,11 @@ pub const AFFINITY_FACTOR: u8 = 4;
 
 /// Number of base probes in one affinity cell sub-block: 4 × 4 × 4.
 pub const PROBES_PER_CELL: usize = 64;
+
+/// Canonical dense descriptor for a 4×4×4 affinity cell. Phase 1 producers
+/// still emit this mask; the post-bake compaction pass will later replace it
+/// with the exact id-34 valid-probe mask for every cell.
+pub const ALL_VALID_PROBE_MASK: u64 = u64::MAX;
 
 /// Number of f16 channels per octahedral irradiance texel: RGBA16F.
 pub const DELTA_TILE_TEXEL_F16_COUNT: usize = 4;
@@ -39,35 +44,40 @@ pub const DEFAULT_DELTA_PROBE_F16_STRIDE: usize = (DEFAULT_IRRADIANCE_TILE_DIMEN
 /// Default byte stride of one serialized probe tile.
 pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 
-/// Delta SH volumes section (ID 27), version 3.
+/// Delta SH volumes section (ID 27), version 4.
 ///
 /// Sparse CSR layout keyed by affinity cell. An affinity cell is a 4×4×4 cube
 /// of base SH probes (`affinity_factor`). `affinity_dims = ceil(base_dims / 4)`
 /// and `affinity_cell_count = affinity_dims.x * affinity_dims.y *
 /// affinity_dims.z`. For each affinity cell, `affinity_offsets` gives the range
 /// of entries in `affinity_lights` (the flat list of animated-light indices
-/// influencing that cell). `delta_subblocks` holds one dense 64-probe sub-block
-/// per CSR entry, index-parallel to `affinity_lights`. In-cell probe order is
-/// x-fastest: `local = lx + ly*4 + lz*16`. Each probe payload is one row-major
-/// octahedral tile using the same `tile_dimension`, `tile_border`, interior
-/// mapping, and wrap-border convention as `OctahedralShVolume`.
+/// influencing that cell). `valid_probe_masks` self-describes the valid local
+/// probes for every affinity cell. `delta_subblocks` holds only the tiles for
+/// each entry's valid probes, index-parallel to `affinity_lights`; its entry
+/// length is `popcount(valid_probe_masks[cell]) × tile_stride`. In-cell probe
+/// order is x-fastest, filtered to valid probes: `local = lx + ly*4 + lz*16`.
+/// Each probe payload is one row-major octahedral tile using the same
+/// `tile_dimension`, `tile_border`, interior mapping, and wrap-border
+/// convention as `OctahedralShVolume`.
 ///
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 3)
+///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 4)
 ///   u8       affinity_factor            (= AFFINITY_FACTOR = 4)
 ///   u32 × 3  affinity_dims              (affinity cells along x/y/z)
 ///   u32      animated_light_count
 ///   u32      tile_dimension             (default 6, border included)
 ///   u32      tile_border                (default 1)
 ///   u32 × animated_light_count          animation_descriptor_indices
+///   u64 × affinity_cell_count            valid_probe_masks
 ///   u32 × (affinity_cell_count + 1)     affinity_offsets (CSR; last = list len)
 ///   u32 × affinity_offsets[-1]          affinity_lights (flat light indices)
-///   f16 × affinity_offsets[-1] × 64 × tile_dimension × tile_dimension × 4
-///                                       delta_subblocks (one 64-probe sub-block
-///                                       per CSR entry; each probe = one RGBA16F
-///                                       octahedral irradiance tile)
+///   f16 × Σ(entry e) popcount(valid_probe_masks[cell(e)])
+///       × tile_dimension × tile_dimension × 4
+///                                       delta_subblocks (one compact valid-probe
+///                                       sub-block per CSR entry; each probe = one
+///                                       RGBA16F octahedral irradiance tile)
 /// ```
 ///
 /// Empty animated-light case: `affinity_offsets = [0; affinity_cell_count + 1]`,
@@ -83,21 +93,25 @@ pub struct DeltaShVolumesSection {
     pub affinity_dims: [u32; 3],
     /// Full octahedral tile dimension, including border texels.
     pub tile_dimension: u32,
-    /// Octahedral wrap border width. Version 3 bakes with the committed value 1.
+    /// Octahedral wrap border width. Version 4 bakes with the committed value 1.
     pub tile_border: u32,
     /// One entry per animated light: index into the SH section's
     /// `animation_descriptors` array. `u32::MAX` means "no descriptor".
     pub animation_descriptor_indices: Vec<u32>,
+    /// One 64-bit valid-probe descriptor per affinity cell. Bit `local` is the
+    /// canonical x-fastest local probe `lx + ly * 4 + lz * 16`; payload tiles
+    /// retain only set bits in that order.
+    pub valid_probe_masks: Vec<u64>,
     /// CSR offsets, one per affinity cell plus a trailing total. Cell `c`'s
     /// light range is `affinity_offsets[c]..affinity_offsets[c + 1]`.
     pub affinity_offsets: Vec<u32>,
     /// Flat list of animated-light indices, grouped by affinity cell. Each value
     /// must be `< animation_descriptor_indices.len()`.
     pub affinity_lights: Vec<u32>,
-    /// Flat probe payload, length `affinity_lights.len() * 64 *
-    /// tile_dimension * tile_dimension * 4`. One dense 64-probe sub-block per
-    /// CSR entry, index-parallel to `affinity_lights`, stored as row-major
-    /// RGBA16F octahedral tiles.
+    /// Flat probe payload, length `Σ(entry e) popcount(valid_probe_masks[cell(e)])
+    /// * tile_dimension * tile_dimension * 4`. One compact valid-probe
+    /// sub-block per CSR entry, index-parallel to `affinity_lights`, stored as
+    /// row-major RGBA16F octahedral tiles.
     pub delta_subblocks: Vec<u16>,
 }
 
@@ -113,11 +127,22 @@ impl DeltaShVolumesSection {
         delta_probe_f16_stride(self.tile_dimension)
     }
 
+    /// Expected compact payload length in f16 halves, derived from the CSR
+    /// entry-to-cell mapping and the section's self-validating descriptors.
+    pub fn expected_delta_subblock_f16_count(&self) -> Option<usize> {
+        valid_probe_mask_payload_f16_count(
+            &self.affinity_offsets,
+            &self.valid_probe_masks,
+            self.delta_probe_f16_stride(),
+        )
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
+        debug_assert_eq!(self.valid_probe_masks.len(), self.affinity_cell_count());
         debug_assert_eq!(
-            self.delta_subblocks.len(),
-            self.affinity_lights.len() * PROBES_PER_CELL * self.delta_probe_f16_stride()
+            self.expected_delta_subblock_f16_count(),
+            Some(self.delta_subblocks.len())
         );
 
         let mut buf = Vec::new();
@@ -134,6 +159,9 @@ impl DeltaShVolumesSection {
         buf.extend_from_slice(&self.tile_border.to_le_bytes());
         for idx in &self.animation_descriptor_indices {
             buf.extend_from_slice(&idx.to_le_bytes());
+        }
+        for mask in &self.valid_probe_masks {
+            buf.extend_from_slice(&mask.to_le_bytes());
         }
 
         for offset in &self.affinity_offsets {
@@ -215,6 +243,23 @@ impl DeltaShVolumesSection {
             o += 4;
         }
 
+        let masks_bytes = affinity_cell_count.checked_mul(8).ok_or_else(|| {
+            invalid_data(format!(
+                "delta sh volumes valid_probe_masks length {affinity_cell_count} overflow: \
+                 table size exceeds usize"
+            ))
+        })?;
+        if o.checked_add(masks_bytes)
+            .is_none_or(|end| data.len() < end)
+        {
+            return Err(truncated("valid probe mask table"));
+        }
+        let mut valid_probe_masks = Vec::with_capacity(affinity_cell_count);
+        for _ in 0..affinity_cell_count {
+            valid_probe_masks.push(read_u64(data, o));
+            o += 8;
+        }
+
         // CSR offsets: one per cell plus a trailing total.
         let offsets_len = affinity_cell_count + 1;
         let offsets_bytes = offsets_len.checked_mul(4).ok_or_else(|| {
@@ -247,6 +292,13 @@ impl DeltaShVolumesSection {
             }
         }
 
+        if affinity_offsets.first().copied() != Some(0) {
+            return Err(invalid_data(format!(
+                "delta sh volumes affinity_offsets[0] ({}) must be 0",
+                affinity_offsets[0],
+            )));
+        }
+
         // The trailing offset is the total CSR entry count = affinity_lights len.
         let list_len = *affinity_offsets
             .last()
@@ -275,16 +327,18 @@ impl DeltaShVolumesSection {
             o += 4;
         }
 
-        let subblock_count = list_len
-            .checked_mul(PROBES_PER_CELL)
-            .and_then(|n| n.checked_mul(probe_f16_stride))
-            .ok_or_else(|| {
-                invalid_data(format!(
-                    "delta sh volumes delta_subblocks count overflow: \
-                     {list_len} entries × {PROBES_PER_CELL} probes × \
-                     {probe_f16_stride} halves exceeds usize"
-                ))
-            })?;
+        let subblock_count = valid_probe_mask_payload_f16_count(
+            &affinity_offsets,
+            &valid_probe_masks,
+            probe_f16_stride,
+        )
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "delta sh volumes delta_subblocks count overflow: \
+                     CSR entries × valid probe counts × {probe_f16_stride} halves \
+                     exceeds usize"
+            ))
+        })?;
         let subblock_bytes = subblock_count.checked_mul(2).ok_or_else(|| {
             invalid_data("delta sh volumes delta_subblocks byte size exceeds usize".to_string())
         })?;
@@ -296,6 +350,12 @@ impl DeltaShVolumesSection {
             delta_subblocks.push(read_u16(data, o));
             o += 2;
         }
+        if o != data.len() {
+            return Err(invalid_data(format!(
+                "delta sh volumes has {} trailing byte(s)",
+                data.len() - o
+            )));
+        }
 
         Ok(Self {
             affinity_factor,
@@ -303,6 +363,7 @@ impl DeltaShVolumesSection {
             tile_dimension,
             tile_border,
             animation_descriptor_indices,
+            valid_probe_masks,
             affinity_offsets,
             affinity_lights,
             delta_subblocks,
@@ -312,6 +373,31 @@ impl DeltaShVolumesSection {
 
 pub fn delta_probe_f16_stride(tile_dimension: u32) -> usize {
     tile_dimension as usize * tile_dimension as usize * DELTA_TILE_TEXEL_F16_COUNT
+}
+
+/// Compute the compact payload size from CSR entry ranges and one valid-probe
+/// descriptor per cell. This is the shared on-disk identity for all three
+/// sparse delta sections.
+pub fn valid_probe_mask_payload_f16_count(
+    affinity_offsets: &[u32],
+    valid_probe_masks: &[u64],
+    probe_f16_stride: usize,
+) -> Option<usize> {
+    if affinity_offsets.len().checked_sub(1)? != valid_probe_masks.len() {
+        return None;
+    }
+
+    affinity_offsets.windows(2).zip(valid_probe_masks).try_fold(
+        0usize,
+        |total, (offsets, &mask)| {
+            let entry_count = usize::try_from(offsets[1].checked_sub(offsets[0])?).ok()?;
+            let valid_probe_count = mask.count_ones() as usize;
+            let cell_payload_count = entry_count
+                .checked_mul(valid_probe_count)?
+                .checked_mul(probe_f16_stride)?;
+            total.checked_add(cell_payload_count)
+        },
+    )
 }
 
 fn delta_probe_f16_stride_checked(tile_dimension: u32) -> crate::Result<usize> {
@@ -365,6 +451,19 @@ fn read_u16(data: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([data[at], data[at + 1]])
 }
 
+fn read_u64(data: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes([
+        data[at],
+        data[at + 1],
+        data[at + 2],
+        data[at + 3],
+        data[at + 4],
+        data[at + 5],
+        data[at + 6],
+        data[at + 7],
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,9 +471,13 @@ mod tests {
     /// Build one affinity cell's 64-probe octahedral tile payload with
     /// deterministic contents derived from `seed`.
     fn sample_subblock(seed: u16) -> Vec<u16> {
+        sample_probe_tiles(seed, PROBES_PER_CELL)
+    }
+
+    fn sample_probe_tiles(seed: u16, probe_count: usize) -> Vec<u16> {
         let stride = DEFAULT_DELTA_PROBE_F16_STRIDE;
-        let mut out = Vec::with_capacity(PROBES_PER_CELL * stride);
-        for probe in 0..PROBES_PER_CELL {
+        let mut out = Vec::with_capacity(probe_count * stride);
+        for probe in 0..probe_count {
             for half_index in 0..stride {
                 let half = seed.wrapping_add((probe * stride + half_index) as u16);
                 out.push(half);
@@ -391,6 +494,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK; cell_count],
             affinity_offsets: vec![0; cell_count + 1],
             affinity_lights: Vec::new(),
             delta_subblocks: Vec::new(),
@@ -418,6 +522,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![7],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: sample_subblock(100),
@@ -425,6 +530,40 @@ mod tests {
         let bytes = section.to_bytes();
         let restored = DeltaShVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
+        assert_eq!(
+            restored.expected_delta_subblock_f16_count(),
+            Some(PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE),
+            "an all-valid descriptor retains the legacy dense-64 payload length"
+        );
+    }
+
+    #[test]
+    fn valid_probe_masks_compact_mixed_cells_and_allow_all_invalid_entries() {
+        // Cell 0 retains locals 0, 5, and 63 in canonical x-fastest order;
+        // cell 1 has a retained CSR entry but no valid probes, so it carries no
+        // payload tiles at all.
+        let mixed_mask = (1u64 << 0) | (1u64 << 5) | (1u64 << 63);
+        let payload = sample_probe_tiles(400, mixed_mask.count_ones() as usize);
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [2, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![mixed_mask, 0],
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 0],
+            delta_subblocks: payload.clone(),
+        };
+
+        let restored = DeltaShVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored, section);
+        assert_eq!(
+            restored.expected_delta_subblock_f16_count(),
+            Some(3 * DEFAULT_DELTA_PROBE_F16_STRIDE)
+        );
+        assert_eq!(restored.delta_subblocks, payload);
     }
 
     #[test]
@@ -443,6 +582,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0, 3, u32::MAX],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK; 3],
             affinity_offsets: vec![0, 2, 2, 3],
             affinity_lights: vec![0, 2, 1],
             delta_subblocks,
@@ -478,6 +618,43 @@ mod tests {
         let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("version"), "expected version error: {msg}");
+        assert!(
+            msg.contains("recompile the .prl"),
+            "expected named recompile error: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_valid_probe_mask_table() {
+        let mut bytes = empty_section([1, 1, 1]).to_bytes();
+        // Fixed header ends immediately before the one required u64 mask.
+        bytes.truncate(1 + 1 + 12 + 4 + 4 + 4);
+
+        let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
+
+        assert!(err.to_string().contains("valid probe mask table"));
+    }
+
+    #[test]
+    fn rejects_mask_driven_payload_length_mismatch() {
+        let mask = (1u64 << 1) | (1u64 << 4);
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![mask],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_probe_tiles(12, mask.count_ones() as usize),
+        };
+        let mut bytes = section.to_bytes();
+        bytes.truncate(bytes.len() - 2);
+
+        let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
+
+        assert!(err.to_string().contains("delta subblock probe data"));
     }
 
     #[test]
@@ -488,6 +665,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: sample_subblock(5),
@@ -524,6 +702,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK; 3],
             // Valid monotonic offsets: cell 0 → [0,1), cells 1&2 → empty.
             affinity_offsets: vec![0, 1, 1, 1],
             affinity_lights: vec![0],
@@ -536,7 +715,7 @@ mod tests {
         // Fixed header: version(1) + affinity_factor(1) + affinity_dims(12) +
         // animated_light_count(4) + tile_dimension(4) + tile_border(4) +
         // animation_descriptor_indices(4×1) = 30 bytes.
-        let offsets_start = 1 + 1 + 12 + 4 + 4 + 4 + 4;
+        let offsets_start = 1 + 1 + 12 + 4 + 4 + 4 + 4 + 3 * 8;
         // offsets[1] lives at offsets_start + 1×4; write a value larger than offsets[2].
         let corrupt_offset: u32 = 99;
         let off = offsets_start + 4;
@@ -559,6 +738,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![5],
             delta_subblocks: sample_subblock(9),

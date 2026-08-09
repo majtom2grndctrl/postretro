@@ -628,6 +628,7 @@ mod tests {
             affinity_dims: [1, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![u64::MAX],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],

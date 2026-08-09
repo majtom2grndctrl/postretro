@@ -1134,6 +1134,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1154,6 +1155,7 @@ mod tests {
             affinity_dims,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![u64::MAX; cell_count],
             affinity_offsets: offsets,
             delta_subblocks: vec![
                 0u16;
@@ -1181,6 +1183,7 @@ mod tests {
             // The runtime no-op sentinel must not require an external
             // descriptor-resolution check during level load.
             animation_descriptor_indices: vec![u32::MAX],
+            valid_probe_masks: vec![u64::MAX; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],

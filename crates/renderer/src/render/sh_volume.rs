@@ -1666,6 +1666,7 @@ mod tests {
                 affinity_dims: [1, 1, 1],
                 tile_dimension: 6,
                 tile_border: 1,
+                valid_probe_masks: vec![u64::MAX],
                 affinity_offsets: vec![0, 0],
                 affinity_lights: Vec::new(),
                 delta_subblocks: Vec::new(),
@@ -1705,6 +1706,7 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![

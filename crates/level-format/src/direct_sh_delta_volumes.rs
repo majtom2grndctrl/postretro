@@ -3,26 +3,28 @@
 
 use crate::FormatError;
 use crate::delta_sh_volumes::{
-    DELTA_TILE_TEXEL_F16_COUNT, PROBES_PER_CELL, delta_probe_f16_stride,
+    DELTA_TILE_TEXEL_F16_COUNT, delta_probe_f16_stride, valid_probe_mask_payload_f16_count,
 };
 use crate::octahedral::{DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION};
 
 /// Section-internal version, written as the first byte of the payload.
-pub const DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 1;
+pub const DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 2;
 
-/// Direct SH delta volumes section (ID 41), version 1.
+/// Direct SH delta volumes section (ID 41), version 2.
 ///
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   u8       version                    (= DIRECT_SH_DELTA_VOLUMES_VERSION = 1)
+///   u8       version                    (= DIRECT_SH_DELTA_VOLUMES_VERSION = 2)
 ///   u8       affinity_factor            (= AFFINITY_FACTOR = 4)
 ///   u32 × 3  affinity_dims              (affinity cells along x/y/z)
 ///   u32      tile_dimension             (default 6, border included)
 ///   u32      tile_border                (default 1)
+///   u64 × affinity_cell_count            valid_probe_masks
 ///   u32 × (affinity_cell_count + 1)     affinity_offsets (CSR; last = list len)
 ///   u32 × affinity_offsets[-1]          affinity_lights (selection indices)
-///   f16 × affinity_offsets[-1] × 64 × tile_dimension × tile_dimension × 4
+///   f16 × Σ(entry e) popcount(valid_probe_masks[cell(e)])
+///       × tile_dimension × tile_dimension × 4
 ///                                       delta_subblocks
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +33,10 @@ pub struct DirectShDeltaVolumesSection {
     pub affinity_dims: [u32; 3],
     pub tile_dimension: u32,
     pub tile_border: u32,
+    /// One 64-bit valid-probe descriptor per affinity cell. Bit `local` is the
+    /// canonical x-fastest local probe; entry payload tiles retain only set
+    /// bits in that order.
+    pub valid_probe_masks: Vec<u64>,
     /// CSR offsets, one per affinity cell plus a trailing total.
     pub affinity_offsets: Vec<u32>,
     /// Flat selected-light indices, grouped by affinity cell. Values index the
@@ -40,8 +46,8 @@ pub struct DirectShDeltaVolumesSection {
     /// these indices; bounds checking is the loader's job (see
     /// `validate_direct_sh_delta` in `crates/level-loader/src/prl_loader.rs`).
     pub affinity_lights: Vec<u32>,
-    /// Flat probe payload, one dense 64-probe RGBA16F octahedral tile sub-block
-    /// per CSR entry, index-parallel to `affinity_lights`.
+    /// Flat probe payload, one compact valid-probe RGBA16F octahedral tile
+    /// sub-block per CSR entry, index-parallel to `affinity_lights`.
     pub delta_subblocks: Vec<u16>,
 }
 
@@ -56,11 +62,22 @@ impl DirectShDeltaVolumesSection {
         delta_probe_f16_stride(self.tile_dimension)
     }
 
+    /// Expected compact payload length in f16 halves, derived from the CSR
+    /// entry-to-cell mapping and the section's valid-probe descriptors.
+    pub fn expected_delta_subblock_f16_count(&self) -> Option<usize> {
+        valid_probe_mask_payload_f16_count(
+            &self.affinity_offsets,
+            &self.valid_probe_masks,
+            self.delta_probe_f16_stride(),
+        )
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
+        debug_assert_eq!(self.valid_probe_masks.len(), self.affinity_cell_count());
         debug_assert_eq!(
-            self.delta_subblocks.len(),
-            self.affinity_lights.len() * PROBES_PER_CELL * self.delta_probe_f16_stride()
+            self.expected_delta_subblock_f16_count(),
+            Some(self.delta_subblocks.len())
         );
 
         let mut buf = Vec::new();
@@ -71,6 +88,9 @@ impl DirectShDeltaVolumesSection {
         }
         buf.extend_from_slice(&self.tile_dimension.to_le_bytes());
         buf.extend_from_slice(&self.tile_border.to_le_bytes());
+        for mask in &self.valid_probe_masks {
+            buf.extend_from_slice(&mask.to_le_bytes());
+        }
         for offset in &self.affinity_offsets {
             buf.extend_from_slice(&offset.to_le_bytes());
         }
@@ -124,6 +144,22 @@ impl DirectShDeltaVolumesSection {
         validate_tile_geometry(tile_dimension, tile_border)?;
         let probe_f16_stride = delta_probe_f16_stride_checked(tile_dimension)?;
 
+        let masks_bytes = affinity_cell_count.checked_mul(8).ok_or_else(|| {
+            invalid_data(format!(
+                "direct sh delta volumes valid_probe_masks length {affinity_cell_count} overflow"
+            ))
+        })?;
+        if o.checked_add(masks_bytes)
+            .is_none_or(|end| data.len() < end)
+        {
+            return Err(truncated("valid probe mask table"));
+        }
+        let mut valid_probe_masks = Vec::with_capacity(affinity_cell_count);
+        for _ in 0..affinity_cell_count {
+            valid_probe_masks.push(read_u64(data, o));
+            o += 8;
+        }
+
         let offsets_len = affinity_cell_count + 1;
         let offsets_bytes = offsets_len.checked_mul(4).ok_or_else(|| {
             invalid_data(format!(
@@ -175,16 +211,18 @@ impl DirectShDeltaVolumesSection {
             o += 4;
         }
 
-        let subblock_count = list_len
-            .checked_mul(PROBES_PER_CELL)
-            .and_then(|n| n.checked_mul(probe_f16_stride))
-            .ok_or_else(|| {
-                invalid_data(format!(
-                    "direct sh delta volumes delta_subblocks count overflow: \
-                     {list_len} entries × {PROBES_PER_CELL} probes × \
-                     {probe_f16_stride} halves exceeds usize"
-                ))
-            })?;
+        let subblock_count = valid_probe_mask_payload_f16_count(
+            &affinity_offsets,
+            &valid_probe_masks,
+            probe_f16_stride,
+        )
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "direct sh delta volumes delta_subblocks count overflow: \
+                     CSR entries × valid probe counts × {probe_f16_stride} halves \
+                     exceeds usize"
+            ))
+        })?;
         let subblock_bytes = subblock_count.checked_mul(2).ok_or_else(|| {
             invalid_data("direct sh delta volumes delta_subblocks byte size exceeds usize".into())
         })?;
@@ -208,6 +246,7 @@ impl DirectShDeltaVolumesSection {
             affinity_dims,
             tile_dimension,
             tile_border,
+            valid_probe_masks,
             affinity_offsets,
             affinity_lights,
             delta_subblocks,
@@ -264,18 +303,36 @@ fn read_u16(data: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([data[at], data[at + 1]])
 }
 
+fn read_u64(data: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes([
+        data[at],
+        data[at + 1],
+        data[at + 2],
+        data[at + 3],
+        data[at + 4],
+        data[at + 5],
+        data[at + 6],
+        data[at + 7],
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::SectionId;
     use crate::delta_sh_volumes::{
-        AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_BYTES, DEFAULT_DELTA_PROBE_F16_STRIDE,
+        AFFINITY_FACTOR, ALL_VALID_PROBE_MASK, DEFAULT_DELTA_PROBE_BYTES,
+        DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
     use crate::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
 
     fn sample_subblock(seed: u16) -> Vec<u16> {
-        let mut out = Vec::with_capacity(PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE);
-        for i in 0..PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE {
+        sample_probe_tiles(seed, PROBES_PER_CELL)
+    }
+
+    fn sample_probe_tiles(seed: u16, probe_count: usize) -> Vec<u16> {
+        let mut out = Vec::with_capacity(probe_count * DEFAULT_DELTA_PROBE_F16_STRIDE);
+        for i in 0..probe_count * DEFAULT_DELTA_PROBE_F16_STRIDE {
             out.push(seed.wrapping_add(i as u16));
         }
         out
@@ -291,6 +348,7 @@ mod tests {
             affinity_dims: [2, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK; 2],
             affinity_offsets: vec![0, 2, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks,
@@ -303,6 +361,99 @@ mod tests {
             DEFAULT_DELTA_PROBE_BYTES,
             DEFAULT_DELTA_PROBE_F16_STRIDE * 2
         );
+        assert_eq!(
+            restored.expected_delta_subblock_f16_count(),
+            Some(2 * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE),
+            "all-valid descriptors retain the legacy dense-64 payload length"
+        );
+    }
+
+    #[test]
+    fn valid_probe_masks_compact_mixed_cells_and_allow_all_invalid_entries() {
+        let mixed_mask = (1u64 << 2) | (1u64 << 7) | (1u64 << 63);
+        let payload = sample_probe_tiles(200, mixed_mask.count_ones() as usize);
+        let section = DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [2, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![mixed_mask, 0],
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 1],
+            delta_subblocks: payload.clone(),
+        };
+
+        let restored = DirectShDeltaVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored, section);
+        assert_eq!(
+            restored.expected_delta_subblock_f16_count(),
+            Some(3 * DEFAULT_DELTA_PROBE_F16_STRIDE)
+        );
+        assert_eq!(restored.delta_subblocks, payload);
+    }
+
+    #[test]
+    fn direct_sh_delta_volumes_rejects_mismatched_section_version() {
+        let mut bytes = DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
+            affinity_offsets: vec![0, 0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        }
+        .to_bytes();
+        bytes[0] = DIRECT_SH_DELTA_VOLUMES_VERSION - 1;
+
+        let err = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
+
+        assert!(err.to_string().contains("recompile the .prl"));
+    }
+
+    #[test]
+    fn direct_sh_delta_volumes_rejects_truncated_valid_probe_mask_table() {
+        let bytes = vec![DIRECT_SH_DELTA_VOLUMES_VERSION, AFFINITY_FACTOR]
+            .into_iter()
+            .chain(
+                [
+                    1u32,
+                    1,
+                    1,
+                    DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                    DEFAULT_IRRADIANCE_TILE_BORDER,
+                ]
+                .into_iter()
+                .flat_map(u32::to_le_bytes),
+            )
+            .collect::<Vec<_>>();
+
+        let err = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
+
+        assert!(err.to_string().contains("valid probe mask table"));
+    }
+
+    #[test]
+    fn direct_sh_delta_volumes_rejects_mask_driven_payload_length_mismatch() {
+        let mask = (1u64 << 3) | (1u64 << 9);
+        let section = DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![mask],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_probe_tiles(30, mask.count_ones() as usize),
+        };
+        let mut bytes = section.to_bytes();
+        bytes.truncate(bytes.len() - 2);
+
+        let err = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
+
+        assert!(err.to_string().contains("delta subblock probe data"));
     }
 
     #[test]
@@ -312,12 +463,13 @@ mod tests {
             affinity_dims: [2, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK; 2],
             affinity_offsets: vec![0, 1, 1],
             affinity_lights: vec![0],
             delta_subblocks: sample_subblock(7),
         };
         let mut bytes = section.to_bytes();
-        let second_offset = 1 + 1 + 12 + 4 + 4 + 4;
+        let second_offset = 1 + 1 + 12 + 4 + 4 + 2 * 8 + 4;
         bytes[second_offset..second_offset + 4].copy_from_slice(&2u32.to_le_bytes());
 
         let err = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
@@ -335,12 +487,13 @@ mod tests {
             affinity_dims: [1, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: sample_subblock(9),
         };
         let mut bytes = section.to_bytes();
-        let first_offset = 1 + 1 + 12 + 4 + 4;
+        let first_offset = 1 + 1 + 12 + 4 + 4 + 8;
         bytes[first_offset..first_offset + 4].copy_from_slice(&1u32.to_le_bytes());
 
         let err = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();

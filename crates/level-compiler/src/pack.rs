@@ -23,9 +23,7 @@ use postretro_level_format::cells::{
 };
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL,
-};
+use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -226,12 +224,7 @@ pub(crate) fn direct_sh_delta_has_valid_csr_shape(section: &DirectShDeltaVolumes
         return false;
     }
 
-    section
-        .affinity_lights
-        .len()
-        .checked_mul(PROBES_PER_CELL)
-        .and_then(|n| n.checked_mul(section.delta_probe_f16_stride()))
-        == Some(section.delta_subblocks.len())
+    section.expected_delta_subblock_f16_count() == Some(section.delta_subblocks.len())
 }
 
 pub(crate) fn direct_sh_delta_is_usable_for_selection(
@@ -1380,6 +1373,7 @@ mod tests {
             affinity_dims: [1, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![u64::MAX],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1387,7 +1381,9 @@ mod tests {
     }
 
     fn minimal_animated_direct_sh_delta_volumes() -> AnimatedDirectShDeltaVolumesSection {
-        use postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
+        use postretro_level_format::delta_sh_volumes::{
+            DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+        };
 
         AnimatedDirectShDeltaVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
@@ -1395,10 +1391,31 @@ mod tests {
             tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
         }
+    }
+
+    #[test]
+    fn direct_delta_csr_shape_uses_the_per_cell_valid_probe_masks() {
+        use postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
+
+        let mut section = minimal_direct_sh_delta_volumes();
+        section.affinity_dims = [2, 1, 1];
+        section.valid_probe_masks = vec![(1u64 << 1) | (1u64 << 63), 0];
+        section.affinity_offsets = vec![0, 1, 2];
+        section.affinity_lights = vec![0, 0];
+        section.delta_subblocks = vec![0; 2 * DEFAULT_DELTA_PROBE_F16_STRIDE];
+
+        assert!(direct_sh_delta_has_valid_csr_shape(&section));
+
+        section.delta_subblocks.push(0);
+        assert!(
+            !direct_sh_delta_has_valid_csr_shape(&section),
+            "the pack guard must reject a dense-64 payload when the descriptor stores only two tiles"
+        );
     }
 
     fn placeholder_lightmap() -> LightmapSection {

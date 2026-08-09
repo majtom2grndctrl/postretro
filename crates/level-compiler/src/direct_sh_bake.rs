@@ -414,6 +414,7 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         affinity_dims,
         tile_dimension: TILE_DIMENSION,
         tile_border: TILE_BORDER,
+        valid_probe_masks: vec![u64::MAX; affinity_cell_count],
         affinity_offsets,
         affinity_lights,
         delta_subblocks,

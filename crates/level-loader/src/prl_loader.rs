@@ -435,6 +435,38 @@ pub(crate) fn validate_delta_sh(
         });
     }
 
+    let affinity_cell_count = section.affinity_cell_count();
+    if section.valid_probe_masks.len() != affinity_cell_count {
+        return Err(section_validation(
+            "DeltaShVolumes",
+            format!(
+                "valid_probe_masks has length {}, expected {affinity_cell_count}",
+                section.valid_probe_masks.len()
+            ),
+        ));
+    }
+    if base.probes.len() != base.total_probes() {
+        return Err(section_validation(
+            "DeltaShVolumes",
+            format!(
+                "OctahedralShVolume (id 34) has {} probe metadata records for {} grid probes",
+                base.probes.len(),
+                base.total_probes(),
+            ),
+        ));
+    }
+    for (cell, &stored_mask) in section.valid_probe_masks.iter().enumerate() {
+        let expected_mask = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
+        if stored_mask != expected_mask {
+            return Err(section_validation(
+                "DeltaShVolumes",
+                format!(
+                    "valid_probe_masks[{cell}] {stored_mask:#018x} disagrees with OctahedralShVolume (id 34) validity {expected_mask:#018x}; recompile the .prl with the current `prl-build`"
+                ),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -752,7 +784,7 @@ pub(crate) fn validate_direct_sh_delta(
     Ok(())
 }
 
-fn valid_probe_mask_for_affinity_cell(
+pub(crate) fn valid_probe_mask_for_affinity_cell(
     base: &OctahedralShVolumeSection,
     affinity_dims: [u32; 3],
     cell_index: usize,

@@ -123,11 +123,11 @@ impl PostBakeDeltaSections {
         Ok(())
     }
 
-    /// Losslessly compact direct-SH delta payloads to the id-34-valid probes
-    /// in each affinity cell. The base volume is the sole validity authority;
-    /// the section's own masks are replaced rather than consulted.
+    /// Losslessly compact delta payloads to the id-34-valid probes in each
+    /// affinity cell. The base volume is the sole validity authority; each
+    /// section's own masks are replaced rather than consulted.
     ///
-    /// The direct bake remains dense so exact-zero dropping above observes its
+    /// The delta bakes remain dense so exact-zero dropping above observes their
     /// original 64-probe records. This pass then rewrites each post-drop CSR
     /// entry in canonical cell order, retaining valid local tiles only in
     /// x-fastest order.
@@ -135,6 +135,24 @@ impl PostBakeDeltaSections {
         &mut self,
         base: &OctahedralShVolumeSection,
     ) -> anyhow::Result<()> {
+        if let Some(section) = self.indirect.take() {
+            let input_payload_bytes = payload_bytes(&section.delta_subblocks);
+            let compacted = compact_indirect_valid_probes(&section, base)?;
+            let compacted_payload_bytes = payload_bytes(&compacted.delta_subblocks);
+            let valid_probe_count: u64 = compacted
+                .valid_probe_masks
+                .iter()
+                .map(|mask| u64::from(mask.count_ones()))
+                .sum();
+            log::info!(
+                "[Compiler] DeltaShVolumes valid-probe compaction: {} CSR entr(y/ies), \
+                 {valid_probe_count} valid affinity-local probe(s), {input_payload_bytes} -> \
+                 {compacted_payload_bytes} raw payload bytes",
+                compacted.affinity_lights.len(),
+            );
+            self.indirect = Some(compacted);
+        }
+
         let Some(section) = self.direct.take() else {
             return Ok(());
         };
@@ -193,100 +211,151 @@ impl PostBakeDeltaSections {
     }
 }
 
+fn compact_indirect_valid_probes(
+    section: &DeltaShVolumesSection,
+    base: &OctahedralShVolumeSection,
+) -> anyhow::Result<DeltaShVolumesSection> {
+    let compacted = compact_dense_valid_probe_payload(
+        "DeltaShVolumes",
+        section.affinity_factor,
+        section.affinity_dims,
+        &section.affinity_offsets,
+        &section.affinity_lights,
+        &section.delta_subblocks,
+        section.delta_probe_f16_stride(),
+        base,
+    )?;
+
+    Ok(DeltaShVolumesSection {
+        affinity_factor: section.affinity_factor,
+        affinity_dims: section.affinity_dims,
+        tile_dimension: section.tile_dimension,
+        tile_border: section.tile_border,
+        animation_descriptor_indices: section.animation_descriptor_indices.clone(),
+        valid_probe_masks: compacted.valid_probe_masks,
+        affinity_offsets: section.affinity_offsets.clone(),
+        affinity_lights: section.affinity_lights.clone(),
+        delta_subblocks: compacted.delta_subblocks,
+    })
+}
+
 fn compact_direct_valid_probes(
     section: &DirectShDeltaVolumesSection,
     base: &OctahedralShVolumeSection,
 ) -> anyhow::Result<DirectShDeltaVolumesSection> {
-    let affinity_cell_count = section.affinity_cell_count();
-    anyhow::ensure!(
-        section.affinity_factor == AFFINITY_FACTOR,
-        "DirectShDeltaVolumes affinity factor {} does not match the valid-probe compaction factor {AFFINITY_FACTOR}",
+    let compacted = compact_dense_valid_probe_payload(
+        "DirectShDeltaVolumes",
         section.affinity_factor,
-    );
-    anyhow::ensure!(
-        section.affinity_offsets.len() == affinity_cell_count.saturating_add(1)
-            && section.affinity_offsets.first().copied() == Some(0)
-            && section
-                .affinity_offsets
-                .windows(2)
-                .all(|pair| pair[0] <= pair[1])
-            && section.affinity_offsets.last().copied()
-                == u32::try_from(section.affinity_lights.len()).ok(),
-        "DirectShDeltaVolumes has an invalid CSR shape before valid-probe compaction"
-    );
-    anyhow::ensure!(
-        section.affinity_dims
-            == affinity_dims_for_grid(base.grid_dimensions, section.affinity_factor),
-        "DirectShDeltaVolumes affinity dims {:?} do not match OctahedralShVolume grid {:?} for valid-probe compaction",
         section.affinity_dims,
-        base.grid_dimensions,
-    );
-    anyhow::ensure!(
-        base.probes.len() == base.total_probes(),
-        "OctahedralShVolume probe metadata length {} does not match its grid volume {} during DirectShDeltaVolumes compaction",
-        base.probes.len(),
-        base.total_probes(),
-    );
-
-    let probe_stride = section.delta_probe_f16_stride();
-    let dense_entry_stride = PROBES_PER_CELL
-        .checked_mul(probe_stride)
-        .ok_or_else(|| anyhow::anyhow!("DirectShDeltaVolumes dense entry stride overflow"))?;
-    let expected_dense_payload = section
-        .affinity_lights
-        .len()
-        .checked_mul(dense_entry_stride)
-        .ok_or_else(|| anyhow::anyhow!("DirectShDeltaVolumes dense payload length overflow"))?;
-    anyhow::ensure!(
-        section.delta_subblocks.len() == expected_dense_payload,
-        "DirectShDeltaVolumes must retain dense 64-probe payloads until valid-probe compaction"
-    );
-
-    let valid_probe_masks: Vec<u64> = (0..affinity_cell_count)
-        .map(|cell| valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell))
-        .collect();
-    let compact_tile_count = (0..affinity_cell_count).try_fold(0usize, |total, cell| {
-        let entry_count =
-            (section.affinity_offsets[cell + 1] - section.affinity_offsets[cell]) as usize;
-        let cell_tiles = entry_count
-            .checked_mul(valid_probe_masks[cell].count_ones() as usize)
-            .ok_or_else(|| anyhow::anyhow!("DirectShDeltaVolumes compact tile count overflow"))?;
-        total
-            .checked_add(cell_tiles)
-            .ok_or_else(|| anyhow::anyhow!("DirectShDeltaVolumes compact tile count overflow"))
-    })?;
-    let capacity = compact_tile_count
-        .checked_mul(probe_stride)
-        .ok_or_else(|| anyhow::anyhow!("DirectShDeltaVolumes compact payload length overflow"))?;
-    let mut delta_subblocks = Vec::with_capacity(capacity);
-
-    for cell in 0..affinity_cell_count {
-        let mask = valid_probe_masks[cell];
-        let start = section.affinity_offsets[cell] as usize;
-        let end = section.affinity_offsets[cell + 1] as usize;
-        for entry in start..end {
-            let dense_entry = &section.delta_subblocks
-                [entry * dense_entry_stride..(entry + 1) * dense_entry_stride];
-            for local_probe in 0..PROBES_PER_CELL {
-                if mask & (1u64 << local_probe) == 0 {
-                    continue;
-                }
-                let tile_start = local_probe * probe_stride;
-                delta_subblocks
-                    .extend_from_slice(&dense_entry[tile_start..tile_start + probe_stride]);
-            }
-        }
-    }
+        &section.affinity_offsets,
+        &section.affinity_lights,
+        &section.delta_subblocks,
+        section.delta_probe_f16_stride(),
+        base,
+    )?;
 
     Ok(DirectShDeltaVolumesSection {
         affinity_factor: section.affinity_factor,
         affinity_dims: section.affinity_dims,
         tile_dimension: section.tile_dimension,
         tile_border: section.tile_border,
-        valid_probe_masks,
+        valid_probe_masks: compacted.valid_probe_masks,
         affinity_offsets: section.affinity_offsets.clone(),
         affinity_lights: section.affinity_lights.clone(),
-        delta_subblocks,
+        delta_subblocks: compacted.delta_subblocks,
+    })
+}
+
+struct CompactedDeltaPayload {
+    valid_probe_masks: Vec<u64>,
+    delta_subblocks: Vec<u16>,
+}
+
+fn compact_dense_valid_probe_payload(
+    section_name: &str,
+    affinity_factor: u8,
+    affinity_dims: [u32; 3],
+    affinity_offsets: &[u32],
+    affinity_lights: &[u32],
+    delta_subblocks: &[u16],
+    probe_stride: usize,
+    base: &OctahedralShVolumeSection,
+) -> anyhow::Result<CompactedDeltaPayload> {
+    let affinity_cell_count =
+        affinity_dims[0] as usize * affinity_dims[1] as usize * affinity_dims[2] as usize;
+    anyhow::ensure!(
+        affinity_factor == AFFINITY_FACTOR,
+        "{section_name} affinity factor {affinity_factor} does not match the valid-probe compaction factor {AFFINITY_FACTOR}",
+    );
+    anyhow::ensure!(
+        affinity_offsets.len() == affinity_cell_count.saturating_add(1)
+            && affinity_offsets.first().copied() == Some(0)
+            && affinity_offsets.windows(2).all(|pair| pair[0] <= pair[1])
+            && affinity_offsets.last().copied() == u32::try_from(affinity_lights.len()).ok(),
+        "{section_name} has an invalid CSR shape before valid-probe compaction"
+    );
+    anyhow::ensure!(
+        affinity_dims == affinity_dims_for_grid(base.grid_dimensions, affinity_factor),
+        "{section_name} affinity dims {affinity_dims:?} do not match OctahedralShVolume grid {:?} for valid-probe compaction",
+        base.grid_dimensions,
+    );
+    anyhow::ensure!(
+        base.probes.len() == base.total_probes(),
+        "OctahedralShVolume probe metadata length {} does not match its grid volume {} during {section_name} compaction",
+        base.probes.len(),
+        base.total_probes(),
+    );
+
+    let dense_entry_stride = PROBES_PER_CELL
+        .checked_mul(probe_stride)
+        .ok_or_else(|| anyhow::anyhow!("{section_name} dense entry stride overflow"))?;
+    let expected_dense_payload = affinity_lights
+        .len()
+        .checked_mul(dense_entry_stride)
+        .ok_or_else(|| anyhow::anyhow!("{section_name} dense payload length overflow"))?;
+    anyhow::ensure!(
+        delta_subblocks.len() == expected_dense_payload,
+        "{section_name} must retain dense 64-probe payloads until valid-probe compaction"
+    );
+
+    let valid_probe_masks: Vec<u64> = (0..affinity_cell_count)
+        .map(|cell| valid_probe_mask_for_affinity_cell(base, affinity_dims, cell))
+        .collect();
+    let compact_tile_count = (0..affinity_cell_count).try_fold(0usize, |total, cell| {
+        let entry_count = (affinity_offsets[cell + 1] - affinity_offsets[cell]) as usize;
+        let cell_tiles = entry_count
+            .checked_mul(valid_probe_masks[cell].count_ones() as usize)
+            .ok_or_else(|| anyhow::anyhow!("{section_name} compact tile count overflow"))?;
+        total
+            .checked_add(cell_tiles)
+            .ok_or_else(|| anyhow::anyhow!("{section_name} compact tile count overflow"))
+    })?;
+    let capacity = compact_tile_count
+        .checked_mul(probe_stride)
+        .ok_or_else(|| anyhow::anyhow!("{section_name} compact payload length overflow"))?;
+    let mut compacted_subblocks = Vec::with_capacity(capacity);
+
+    for cell in 0..affinity_cell_count {
+        let mask = valid_probe_masks[cell];
+        let start = affinity_offsets[cell] as usize;
+        let end = affinity_offsets[cell + 1] as usize;
+        for entry in start..end {
+            let dense_entry =
+                &delta_subblocks[entry * dense_entry_stride..(entry + 1) * dense_entry_stride];
+            for local_probe in 0..PROBES_PER_CELL {
+                if mask & (1u64 << local_probe) == 0 {
+                    continue;
+                }
+                let tile_start = local_probe * probe_stride;
+                compacted_subblocks
+                    .extend_from_slice(&dense_entry[tile_start..tile_start + probe_stride]);
+            }
+        }
+    }
+
+    Ok(CompactedDeltaPayload {
+        valid_probe_masks,
+        delta_subblocks: compacted_subblocks,
     })
 }
 
@@ -689,6 +758,42 @@ mod tests {
     }
 
     #[test]
+    fn indirect_valid_probe_compaction_copies_only_id34_valid_tiles_in_x_fastest_order() {
+        let mut section = indirect(vec![0, 0], [dense_entry(100), dense_entry(1_000)].concat());
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 2];
+        section.valid_probe_masks = vec![u64::MAX];
+        let base = base_with_valid_locals(&[1, 6, 32]);
+
+        let compacted = compact_indirect_valid_probes(&section, &base)
+            .expect("a dense post-drop indirect section should compact");
+        let expected_mask = (1u64 << 1) | (1u64 << 6) | (1u64 << 32);
+        assert_eq!(compacted.valid_probe_masks, vec![expected_mask]);
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            2 * 3 * DEFAULT_DELTA_PROBE_F16_STRIDE,
+            "two CSR entries retain exactly the three id-34-valid tiles"
+        );
+
+        for (rank, local_probe) in [1usize, 6, 32].into_iter().enumerate() {
+            let first_start = rank * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            let second_start = (3 + rank) * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            assert!(
+                compacted.delta_subblocks
+                    [first_start..first_start + DEFAULT_DELTA_PROBE_F16_STRIDE]
+                    .iter()
+                    .all(|&half| half == 100 + local_probe as u16)
+            );
+            assert!(
+                compacted.delta_subblocks
+                    [second_start..second_start + DEFAULT_DELTA_PROBE_F16_STRIDE]
+                    .iter()
+                    .all(|&half| half == 1_000 + local_probe as u16)
+            );
+        }
+    }
+
+    #[test]
     fn direct_drop_then_compaction_caps_the_compacted_payload_and_preserves_drop_set() {
         let zero = block([0.0; 3]);
         let nonzero = block([0.25, 0.0, 0.0]);
@@ -719,6 +824,54 @@ mod tests {
             .apply_valid_probe_compaction(&base_with_valid_locals(&[0, 2]))
             .expect("valid-probe compaction should follow exact-zero dropping");
         let compacted = sections.direct.as_ref().unwrap();
+        assert_eq!(compacted.affinity_lights, vec![0]);
+        assert_eq!(compacted.valid_probe_masks, vec![(1u64 << 0) | (1u64 << 2)]);
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            2 * DEFAULT_DELTA_PROBE_F16_STRIDE
+        );
+
+        let error = sections
+            .enforce_payload_cap()
+            .expect_err("the cap must count the compacted survivor only");
+        let message = error.to_string();
+        assert!(message.contains("id 27"));
+        assert!(message.contains("id 41"));
+        assert!(message.contains("id 45"));
+        assert!(message.contains("by 1 bytes"));
+    }
+
+    #[test]
+    fn indirect_drop_then_compaction_caps_the_compacted_payload_and_preserves_drop_set() {
+        let zero = block([0.0; 3]);
+        let nonzero = block([0.25, 0.0, 0.0]);
+        let compacted_bytes =
+            u64::try_from(2 * DEFAULT_DELTA_PROBE_F16_STRIDE * size_of::<u16>()).unwrap();
+        let mut indirect_section = indirect(vec![0, 0], [zero, nonzero].concat());
+        indirect_section.affinity_dims = [1, 1, 1];
+        indirect_section.affinity_offsets = vec![0, 2];
+        indirect_section.valid_probe_masks = vec![u64::MAX];
+        let mut sections = PostBakeDeltaSections::new(
+            DeltaSectionConfig {
+                max_payload_bytes: compacted_bytes - 1,
+            },
+            Some(indirect_section),
+            None,
+            None,
+            None,
+        );
+
+        sections
+            .apply_exact_zero_drop_policy(&ScriptMutableDescriptorSlots::empty(1))
+            .expect("the cap is intentionally delayed until compaction");
+        let dense_after_drop = sections.indirect.as_ref().unwrap();
+        assert_eq!(dense_after_drop.affinity_lights, vec![0]);
+        assert_eq!(dense_after_drop.delta_subblocks.len(), ENTRY_STRIDE);
+
+        sections
+            .apply_valid_probe_compaction(&base_with_valid_locals(&[0, 2]))
+            .expect("valid-probe compaction should follow exact-zero dropping");
+        let compacted = sections.indirect.as_ref().unwrap();
         assert_eq!(compacted.affinity_lights, vec![0]);
         assert_eq!(compacted.valid_probe_masks, vec![(1u64 << 0) | (1u64 << 2)]);
         assert_eq!(

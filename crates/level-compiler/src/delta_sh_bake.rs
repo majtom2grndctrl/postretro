@@ -194,14 +194,8 @@ pub fn bake_delta_sh_volumes_controlled(
         })
         .collect();
 
-    debug_assert_eq!(
-        delta_subblocks.len(),
-        affinity_lights.len() * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE
-    );
-
     let animation_descriptor_indices: Vec<u32> = (0..animated_light_count as u32).collect();
-
-    Some(DeltaShVolumesSection {
+    let section = DeltaShVolumesSection {
         affinity_factor: FORMAT_AFFINITY_FACTOR,
         affinity_dims,
         tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -211,7 +205,14 @@ pub fn bake_delta_sh_volumes_controlled(
         affinity_offsets,
         affinity_lights,
         delta_subblocks,
-    })
+    };
+    debug_assert_eq!(
+        section.expected_delta_subblock_f16_count(),
+        Some(section.delta_subblocks.len()),
+        "the dense bake must still satisfy the section's descriptor-driven payload identity"
+    );
+
+    Some(section)
 }
 
 /// Log emitted-cell vs full-AABB probe counts per animated light (AC #2). The
@@ -582,8 +583,9 @@ mod tests {
 
         // Index-parallel: payload length = entries × 64 × one octahedral tile.
         assert_eq!(
-            section.delta_subblocks.len(),
-            section.affinity_lights.len() * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE
+            section.expected_delta_subblock_f16_count(),
+            Some(section.delta_subblocks.len()),
+            "the dense bake must satisfy the descriptor-driven payload identity"
         );
         assert!(!section.affinity_lights.is_empty());
         assert_eq!(section.tile_dimension, DEFAULT_IRRADIANCE_TILE_DIMENSION);
@@ -632,9 +634,24 @@ mod tests {
 
         // The CSR entry for cell 0 must exist (the light reaches it).
         assert!(section.affinity_offsets[1] > section.affinity_offsets[0]);
-        let entry = section.affinity_offsets[0] as usize;
+        let cell = 0usize;
+        let entry = section.affinity_offsets[cell] as usize;
         let local = 21usize;
-        let slot = (entry * PROBES_PER_CELL + local) * DEFAULT_DELTA_PROBE_F16_STRIDE;
+        let entry_base = section.affinity_offsets[..cell]
+            .windows(2)
+            .zip(&section.valid_probe_masks[..cell])
+            .map(|(offsets, &mask)| {
+                (offsets[1] - offsets[0]) as usize
+                    * mask.count_ones() as usize
+                    * DEFAULT_DELTA_PROBE_F16_STRIDE
+            })
+            .sum::<usize>()
+            + (entry - section.affinity_offsets[cell] as usize)
+                * section.valid_probe_masks[cell].count_ones() as usize
+                * DEFAULT_DELTA_PROBE_F16_STRIDE;
+        let within_cell_rank =
+            (section.valid_probe_masks[cell] & ((1u64 << local) - 1)).count_ones() as usize;
+        let slot = entry_base + within_cell_rank * DEFAULT_DELTA_PROBE_F16_STRIDE;
 
         // Recompute the reference indirect-only SH at this probe and pack it
         // through the same octahedral tile path the base bake uses, then compare

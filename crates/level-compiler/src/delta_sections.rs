@@ -153,25 +153,44 @@ impl PostBakeDeltaSections {
             self.indirect = Some(compacted);
         }
 
-        let Some(section) = self.direct.take() else {
-            return Ok(());
-        };
+        if let Some(section) = self.direct.take() {
+            let input_payload_bytes = payload_bytes(&section.delta_subblocks);
+            let compacted = compact_direct_valid_probes(&section, base)?;
+            let compacted_payload_bytes = payload_bytes(&compacted.delta_subblocks);
+            let valid_probe_count: u64 = compacted
+                .valid_probe_masks
+                .iter()
+                .map(|mask| u64::from(mask.count_ones()))
+                .sum();
+            log::info!(
+                "[Compiler] DirectShDeltaVolumes valid-probe compaction: {} CSR entr(y/ies), \
+                 {valid_probe_count} valid affinity-local probe(s), {input_payload_bytes} -> \
+                 {compacted_payload_bytes} raw payload bytes",
+                compacted.affinity_lights.len(),
+            );
+            self.direct = Some(compacted);
+        }
 
-        let input_payload_bytes = payload_bytes(&section.delta_subblocks);
-        let compacted = compact_direct_valid_probes(&section, base)?;
-        let compacted_payload_bytes = payload_bytes(&compacted.delta_subblocks);
-        let valid_probe_count: u64 = compacted
-            .valid_probe_masks
-            .iter()
-            .map(|mask| u64::from(mask.count_ones()))
-            .sum();
-        log::info!(
-            "[Compiler] DirectShDeltaVolumes valid-probe compaction: {} CSR entr(y/ies), \
-             {valid_probe_count} valid affinity-local probe(s), {input_payload_bytes} -> \
-             {compacted_payload_bytes} raw payload bytes",
-            compacted.affinity_lights.len(),
-        );
-        self.direct = Some(compacted);
+        if let Some(section) = self.animated_direct.take() {
+            let input_payload_bytes = payload_bytes(&section.delta_subblocks);
+            let compacted = compact_animated_direct_valid_probes(&section, base)?;
+            let compacted_payload_bytes = payload_bytes(&compacted.delta_subblocks);
+            let valid_probe_count: u64 = compacted
+                .valid_probe_masks
+                .iter()
+                .map(|mask| u64::from(mask.count_ones()))
+                .sum();
+            log::info!(
+                "[Compiler] AnimatedDirectShDeltaVolumes valid-probe compaction: {} CSR entr(y/ies), \
+                 {valid_probe_count} valid affinity-local probe(s), {input_payload_bytes} -> \
+                 {compacted_payload_bytes} raw payload bytes",
+                compacted.affinity_lights.len(),
+            );
+            // Exact-zero drop owns id 45's optional-section normalization.
+            // Compaction preserves post-drop CSR entries, including a retained
+            // script-mutable zero-length entry in an all-invalid cell.
+            self.animated_direct = Some(compacted);
+        }
         Ok(())
     }
 
@@ -259,6 +278,34 @@ fn compact_direct_valid_probes(
         affinity_dims: section.affinity_dims,
         tile_dimension: section.tile_dimension,
         tile_border: section.tile_border,
+        valid_probe_masks: compacted.valid_probe_masks,
+        affinity_offsets: section.affinity_offsets.clone(),
+        affinity_lights: section.affinity_lights.clone(),
+        delta_subblocks: compacted.delta_subblocks,
+    })
+}
+
+fn compact_animated_direct_valid_probes(
+    section: &AnimatedDirectShDeltaVolumesSection,
+    base: &OctahedralShVolumeSection,
+) -> anyhow::Result<AnimatedDirectShDeltaVolumesSection> {
+    let compacted = compact_dense_valid_probe_payload(
+        "AnimatedDirectShDeltaVolumes",
+        section.affinity_factor,
+        section.affinity_dims,
+        &section.affinity_offsets,
+        &section.affinity_lights,
+        &section.delta_subblocks,
+        section.delta_probe_f16_stride(),
+        base,
+    )?;
+
+    Ok(AnimatedDirectShDeltaVolumesSection {
+        affinity_factor: section.affinity_factor,
+        affinity_dims: section.affinity_dims,
+        tile_dimension: section.tile_dimension,
+        tile_border: section.tile_border,
+        animation_descriptor_indices: section.animation_descriptor_indices.clone(),
         valid_probe_masks: compacted.valid_probe_masks,
         affinity_offsets: section.affinity_offsets.clone(),
         affinity_lights: section.affinity_lights.clone(),
@@ -626,6 +673,9 @@ mod tests {
         sections
             .apply_exact_zero_drop_policy(&ScriptMutableDescriptorSlots::empty(1))
             .expect("zero payloads fit the default cap");
+        sections
+            .apply_valid_probe_compaction(&base_with_valid_locals(&[]))
+            .expect("compaction must preserve id 45's absent spelling");
 
         let indirect = sections
             .indirect
@@ -755,6 +805,123 @@ mod tests {
                     .all(|&half| half == 1_000 + local_probe as u16)
             );
         }
+    }
+
+    #[test]
+    fn animated_direct_valid_probe_compaction_copies_only_id34_valid_tiles_in_x_fastest_order() {
+        let mut section =
+            animated_direct(vec![0, 0], [dense_entry(100), dense_entry(1_000)].concat());
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 2];
+        section.valid_probe_masks = vec![u64::MAX];
+        let base = base_with_valid_locals(&[1, 6, 32]);
+
+        let compacted = compact_animated_direct_valid_probes(&section, &base)
+            .expect("a dense post-drop animated-direct section should compact");
+        let expected_mask = (1u64 << 1) | (1u64 << 6) | (1u64 << 32);
+        assert_eq!(
+            compacted.animation_descriptor_indices,
+            section.animation_descriptor_indices
+        );
+        assert_eq!(compacted.valid_probe_masks, vec![expected_mask]);
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            2 * 3 * DEFAULT_DELTA_PROBE_F16_STRIDE,
+            "two CSR entries retain exactly the three id-34-valid tiles"
+        );
+
+        for (rank, local_probe) in [1usize, 6, 32].into_iter().enumerate() {
+            let first_start = rank * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            let second_start = (3 + rank) * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            assert!(
+                compacted.delta_subblocks
+                    [first_start..first_start + DEFAULT_DELTA_PROBE_F16_STRIDE]
+                    .iter()
+                    .all(|&half| half == 100 + local_probe as u16)
+            );
+            assert!(
+                compacted.delta_subblocks
+                    [second_start..second_start + DEFAULT_DELTA_PROBE_F16_STRIDE]
+                    .iter()
+                    .all(|&half| half == 1_000 + local_probe as u16)
+            );
+        }
+    }
+
+    #[test]
+    fn animated_direct_compaction_keeps_script_mutable_zero_length_entry() {
+        let mut section = animated_direct(vec![0], block([0.0; 3]));
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 1];
+        let mut mutable = ScriptMutableDescriptorSlots::empty(1);
+        mutable.animated_direct[0] = true;
+        let mut sections = PostBakeDeltaSections::new(
+            DeltaSectionConfig::default(),
+            None,
+            None,
+            None,
+            Some(section),
+        );
+
+        sections
+            .apply_exact_zero_drop_policy(&mutable)
+            .expect("a script-mutable zero entry must survive drop");
+        sections
+            .apply_valid_probe_compaction(&base_with_valid_locals(&[]))
+            .expect("an all-invalid retained entry has a zero-length compact payload");
+
+        let compacted = sections
+            .animated_direct
+            .expect("a retained script-mutable entry keeps id 45 present");
+        assert_eq!(compacted.affinity_offsets, vec![0, 1]);
+        assert_eq!(compacted.affinity_lights, vec![0]);
+        assert_eq!(compacted.valid_probe_masks, vec![0]);
+        assert!(compacted.delta_subblocks.is_empty());
+    }
+
+    #[test]
+    fn animated_direct_drop_then_compaction_caps_the_compacted_payload() {
+        let zero = block([0.0; 3]);
+        let nonzero = block([0.25, 0.0, 0.0]);
+        let compacted_bytes =
+            u64::try_from(2 * DEFAULT_DELTA_PROBE_F16_STRIDE * size_of::<u16>()).unwrap();
+        let mut section = animated_direct(vec![0, 0], [zero, nonzero].concat());
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 2];
+        section.valid_probe_masks = vec![u64::MAX];
+        let mut sections = PostBakeDeltaSections::new(
+            DeltaSectionConfig {
+                max_payload_bytes: compacted_bytes - 1,
+            },
+            None,
+            None,
+            None,
+            Some(section),
+        );
+
+        sections
+            .apply_exact_zero_drop_policy(&ScriptMutableDescriptorSlots::empty(1))
+            .expect("the payload cap runs after id-45 compaction");
+        let dense_after_drop = sections.animated_direct.as_ref().unwrap();
+        assert_eq!(dense_after_drop.affinity_lights, vec![0]);
+        assert_eq!(dense_after_drop.delta_subblocks.len(), ENTRY_STRIDE);
+
+        sections
+            .apply_valid_probe_compaction(&base_with_valid_locals(&[0, 2]))
+            .expect("id-45 compaction follows exact-zero dropping");
+        let compacted = sections.animated_direct.as_ref().unwrap();
+        assert_eq!(compacted.affinity_lights, vec![0]);
+        assert_eq!(compacted.valid_probe_masks, vec![(1u64 << 0) | (1u64 << 2)]);
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            2 * DEFAULT_DELTA_PROBE_F16_STRIDE
+        );
+
+        let error = sections
+            .enforce_payload_cap()
+            .expect_err("the cap must count id-45's compacted survivor only");
+        assert!(error.to_string().contains("id 45"));
+        assert!(error.to_string().contains("by 1 bytes"));
     }
 
     #[test]

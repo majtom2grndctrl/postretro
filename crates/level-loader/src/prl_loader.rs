@@ -18,9 +18,7 @@ use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL,
-};
+use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -516,12 +514,7 @@ pub(crate) fn validate_animated_direct_sh_delta(
         ));
     }
 
-    let affinity_cell_count = (section.affinity_dims[0] as usize)
-        .checked_mul(section.affinity_dims[1] as usize)
-        .and_then(|count| count.checked_mul(section.affinity_dims[2] as usize))
-        .ok_or_else(|| {
-            section_validation(SECTION, "affinity_dims overflow the runtime cell count")
-        })?;
+    let affinity_cell_count = section.affinity_cell_count();
     let expected_offsets_len = affinity_cell_count
         .checked_add(1)
         .ok_or_else(|| section_validation(SECTION, "affinity offset count overflows usize"))?;
@@ -533,6 +526,35 @@ pub(crate) fn validate_animated_direct_sh_delta(
                 section.affinity_offsets.len()
             ),
         ));
+    }
+    if section.valid_probe_masks.len() != affinity_cell_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "valid_probe_masks has length {}, expected {affinity_cell_count}",
+                section.valid_probe_masks.len()
+            ),
+        ));
+    }
+    if base.probes.len() != base.total_probes() {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "OctahedralShVolume (id 34) has {} probe metadata records for {} grid probes",
+                base.probes.len(),
+                base.total_probes(),
+            ),
+        ));
+    }
+    for (cell, &found) in section.valid_probe_masks.iter().enumerate() {
+        let expected = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
+        if found != expected {
+            return Err(PrlLoadError::AnimatedDirectShDeltaValidityMismatch {
+                cell,
+                found,
+                expected,
+            });
+        }
     }
     if section.affinity_offsets.first().copied() != Some(0) {
         return Err(section_validation(
@@ -581,10 +603,7 @@ pub(crate) fn validate_animated_direct_sh_delta(
         }
     }
     let expected_subblock_len = section
-        .affinity_lights
-        .len()
-        .checked_mul(PROBES_PER_CELL)
-        .and_then(|count| count.checked_mul(section.delta_probe_f16_stride()))
+        .expected_delta_subblock_f16_count()
         .ok_or_else(|| section_validation(SECTION, "delta_subblocks length overflows usize"))?;
     if section.delta_subblocks.len() != expected_subblock_len {
         return Err(section_validation(
@@ -2121,8 +2140,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
-    // Optional — malformed or stale animated-direct deltas disable only this
-    // additive term. They must never prevent the rest of the level from loading.
+    // Optional — malformed animated-direct deltas disable only this additive
+    // term. An id-45/id-34 valid-probe descriptor disagreement is different:
+    // it would make compact payload offsets address the wrong tiles, so reject
+    // the complete load before any renderer buffers are built.
     let animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
         match prl_format::read_section_data(
             &mut cursor,
@@ -2149,6 +2170,9 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                                 section.delta_subblocks.len(),
                             );
                             Some(section)
+                        }
+                        Err(err @ PrlLoadError::AnimatedDirectShDeltaValidityMismatch { .. }) => {
+                            return Err(err);
                         }
                         Err(err) => {
                             log::warn!(

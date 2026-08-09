@@ -220,11 +220,15 @@ fn bake_direct_subblock(
 }
 
 pub fn log_stats(section: &AnimatedDirectShDeltaVolumesSection) {
+    let emitted_probe_count = section
+        .expected_delta_subblock_f16_count()
+        .map(|halves| halves / section.delta_probe_f16_stride())
+        .expect("compiler-owned animated-direct section must have a representable payload size");
     log::info!(
         "[Compiler] AnimatedDirectShDeltaVolumes: {} animated light(s), {} CSR entries, {} emitted probes, affinity_dims {}x{}x{}",
         section.animation_descriptor_indices.len(),
         section.affinity_lights.len(),
-        section.affinity_lights.len() * PROBES_PER_CELL,
+        emitted_probe_count,
         section.affinity_dims[0],
         section.affinity_dims[1],
         section.affinity_dims[2],

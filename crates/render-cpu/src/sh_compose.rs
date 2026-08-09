@@ -400,6 +400,27 @@ pub fn resolve_direct_delta_f16_offset(
     )
 }
 
+/// Resolve an animated-direct delta tile's f16-half offset from its post-drop
+/// CSR entry and affinity-local probe. The animated compose pass must skip an
+/// invalid local before calling its compact payload reader.
+pub fn resolve_animated_direct_delta_f16_offset(
+    valid_probe_masks: &[u64],
+    entry_offsets: &[u32],
+    entry: usize,
+    cell: usize,
+    local_probe: u32,
+    tile_f16_stride: u32,
+) -> Option<u32> {
+    resolve_delta_f16_offset(
+        valid_probe_masks,
+        entry_offsets,
+        entry,
+        cell,
+        local_probe,
+        tile_f16_stride,
+    )
+}
+
 /// Resolve a compact delta tile's f16-half offset from its post-drop CSR entry
 /// and affinity-local probe. `None` is the invalid-local result; the direct
 /// compose shader must skip before reading, while indirect compose is already
@@ -825,6 +846,70 @@ mod tests {
         assert_eq!(buffers.animation_descriptor_indices, vec![7]);
         assert_eq!(buffers.affinity_lights, vec![0]);
         assert_eq!(buffers.delta_subblocks, subblocks);
+        assert_eq!(buffers.valid_probe_masks, vec![u64::MAX]);
+        assert_eq!(buffers.entry_offsets, vec![0]);
+        assert_eq!(
+            buffers.compaction_meta_words(),
+            vec![u32::MAX, u32::MAX, 0],
+            "the animated pass receives mask words followed by post-drop f16 offsets"
+        );
+    }
+
+    #[test]
+    fn animated_direct_delta_resolver_uses_rank_and_preserves_zero_length_entries() {
+        let stride = DEFAULT_DELTA_PROBE_F16_STRIDE as u32;
+        let mixed = (1u64 << 1) | (1u64 << 5) | (1u64 << 31);
+        let tail = (1u64 << 2) | (1u64 << 4);
+        let section = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0, 1, 2],
+            valid_probe_masks: vec![mixed, 0, tail],
+            affinity_offsets: vec![0, 1, 2, 3],
+            affinity_lights: vec![0, 1, 2],
+            delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        };
+        let buffers = build_animated_direct_delta_buffers(Some(&section), [12, 1, 1]);
+
+        assert_eq!(buffers.entry_offsets, vec![0, 3 * stride, 3 * stride]);
+        assert_eq!(
+            resolve_animated_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                0,
+                0,
+                5,
+                stride,
+            ),
+            Some(stride),
+            "local 5 is rank one in the first compact cell"
+        );
+        assert_eq!(
+            resolve_animated_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                1,
+                1,
+                0,
+                stride,
+            ),
+            None,
+            "an all-invalid retained animated entry reads no payload"
+        );
+        assert_eq!(
+            resolve_animated_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                2,
+                2,
+                4,
+                stride,
+            ),
+            Some(4 * stride),
+            "the entry after a zero-length cell shares its predecessor's base offset"
+        );
     }
 
     #[test]

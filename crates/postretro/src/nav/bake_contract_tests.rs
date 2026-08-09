@@ -111,6 +111,49 @@ fn l_corridor_triangles() -> Vec<[[f32; 3]; 3]> {
     tris
 }
 
+/// Mirror of `l_corridor_triangles`: the full-width bottom bar joins a right
+/// column, so the walkable set omits the top-left quadrant. Its inner corner is
+/// at world (4, 2).
+fn mirrored_l_corridor_triangles() -> Vec<[[f32; 3]; 3]> {
+    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    tris.extend_from_slice(&floor_quad(0.0, 0.0, 6.0, 2.0, 0.0)); // bottom bar
+    tris.extend_from_slice(&floor_quad(4.0, 2.0, 6.0, 6.0, 0.0)); // right column
+    tris
+}
+
+#[derive(Clone, Copy)]
+struct FloorRect {
+    x0: f32,
+    z0: f32,
+    x1: f32,
+    z1: f32,
+}
+
+impl FloorRect {
+    const fn new(x0: f32, z0: f32, x1: f32, z1: f32) -> Self {
+        Self { x0, z0, x1, z1 }
+    }
+}
+
+const EW_FLOOR: [FloorRect; 3] = [
+    FloorRect::new(0.0, 0.0, 4.0, 8.0),
+    FloorRect::new(5.0, 0.0, 9.0, 8.0),
+    FloorRect::new(4.0, 3.5, 5.0, 4.5),
+];
+
+const NS_FLOOR: [FloorRect; 3] = [
+    FloorRect::new(0.0, 0.0, 8.0, 4.0),
+    FloorRect::new(0.0, 5.0, 8.0, 9.0),
+    FloorRect::new(3.5, 4.0, 4.5, 5.0),
+];
+
+const L_FLOOR: [FloorRect; 2] = [
+    FloorRect::new(0.0, 0.0, 6.0, 2.0),
+    FloorRect::new(0.0, 2.0, 2.0, 6.0),
+];
+
+const MIRRORED_L_FLOOR: [FloorRect; 2] = [L_FLOOR[0], FloorRect::new(4.0, 2.0, 6.0, 6.0)];
+
 const EPS: f32 = 1.0e-3;
 
 /// The funnel inset off a raw portal endpoint for the zero-erosion fixtures
@@ -121,6 +164,57 @@ fn inset() -> f32 {
 
 fn approx(a: f32, b: f32) -> bool {
     (a - b).abs() <= EPS
+}
+
+/// Assert that every XZ path leg is covered continuously by the fixture's
+/// walkable floor rectangles. Clipping each leg and merging its covered
+/// parameter intervals catches a path that leaves the floor between valid
+/// waypoints.
+fn assert_path_stays_on_floor(path: &[Vec3], floor: &[FloorRect]) {
+    for leg in path.windows(2) {
+        let start = leg[0];
+        let delta = leg[1] - start;
+        let mut intervals = Vec::new();
+
+        for rect in floor {
+            let mut enter = 0.0_f32;
+            let mut exit = 1.0_f32;
+            for (origin, direction, min, max) in [
+                (start.x, delta.x, rect.x0 - EPS, rect.x1 + EPS),
+                (start.z, delta.z, rect.z0 - EPS, rect.z1 + EPS),
+            ] {
+                if direction.abs() <= EPS {
+                    if origin < min || origin > max {
+                        enter = 1.0;
+                        exit = 0.0;
+                        break;
+                    }
+                    continue;
+                }
+                let t0 = (min - origin) / direction;
+                let t1 = (max - origin) / direction;
+                enter = enter.max(t0.min(t1));
+                exit = exit.min(t0.max(t1));
+            }
+            if enter <= exit + EPS && exit >= 0.0 && enter <= 1.0 {
+                intervals.push((enter.max(0.0), exit.min(1.0)));
+            }
+        }
+
+        intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut covered_until = 0.0;
+        for (begin, end) in intervals {
+            if begin > covered_until + EPS {
+                break;
+            }
+            covered_until = covered_until.max(end);
+        }
+        assert!(
+            covered_until >= 1.0 - EPS,
+            "path leg {start:?} -> {:?} leaves the walkable fixture floor: {path:?}",
+            leg[1]
+        );
+    }
 }
 
 /// Regression: the baked constant-X (east-west doorway) portals were emitted
@@ -142,6 +236,7 @@ fn baked_ew_doorway_funnels_at_near_jamb_both_directions() {
         (Vec3::new(7.0, 0.1, 7.0), Vec3::new(2.0, 0.1, 7.0)),
     ] {
         let path = find_path(&graph, start, goal).expect("baked EW doorway routes");
+        assert_path_stays_on_floor(&path, &EW_FLOOR);
         assert!(
             path.len() >= 3,
             "a doorway off the straight line must bend: {path:?}"
@@ -174,6 +269,7 @@ fn baked_ns_doorway_funnels_at_near_jamb_both_directions() {
         (Vec3::new(1.0, 0.1, 7.0), Vec3::new(1.0, 0.1, 2.0)),
     ] {
         let path = find_path(&graph, start, goal).expect("baked NS doorway routes");
+        assert_path_stays_on_floor(&path, &NS_FLOOR);
         assert!(
             path.len() >= 3,
             "a doorway off the straight line must bend: {path:?}"
@@ -203,6 +299,7 @@ fn baked_l_corridor_bends_at_inner_corner_both_directions() {
         (Vec3::new(1.0, 0.1, 5.0), Vec3::new(5.0, 0.1, 1.0)),
     ] {
         let path = find_path(&graph, start, goal).expect("baked L corridor routes");
+        assert_path_stays_on_floor(&path, &L_FLOOR);
         assert!(
             path.len() >= 3,
             "the L must introduce an interior bend: {path:?}"
@@ -212,12 +309,41 @@ fn baked_l_corridor_bends_at_inner_corner_both_directions() {
         assert!(approx(last.x, goal.x) && approx(last.z, goal.z));
         // Some interior waypoint sits within a small radius of the inner corner
         // (inset by SKIN_DISTANCE off the raw endpoint), not off at a far wall.
-        let bends_at_corner = path[1..path.len() - 1].iter().any(|w| {
-            (w.x - inner_corner.x).hypot(w.z - inner_corner.z) <= 3.0 * inset() + EPS
-        });
+        let bends_at_corner = path[1..path.len() - 1]
+            .iter()
+            .any(|w| (w.x - inner_corner.x).hypot(w.z - inner_corner.z) <= 3.0 * inset() + EPS);
         assert!(
             bends_at_corner,
             "expected a bend at the inner corner {inner_corner:?}: {path:?}"
+        );
+    }
+}
+
+/// AC1's opposite L chirality must preserve both its near-corner bend and
+/// walkable legs in either traversal direction.
+#[test]
+fn baked_mirrored_l_corridor_bends_at_inner_corner_both_directions() {
+    let graph = baked_graph(&mirrored_l_corridor_triangles());
+    let inner_corner = Vec3::new(4.0, 0.0, 2.0);
+    for (start, goal) in [
+        (Vec3::new(1.0, 0.1, 1.0), Vec3::new(5.0, 0.1, 5.0)),
+        (Vec3::new(5.0, 0.1, 5.0), Vec3::new(1.0, 0.1, 1.0)),
+    ] {
+        let path = find_path(&graph, start, goal).expect("baked mirrored L corridor routes");
+        assert_path_stays_on_floor(&path, &MIRRORED_L_FLOOR);
+        assert!(
+            path.len() >= 3,
+            "the mirrored L must introduce an interior bend: {path:?}"
+        );
+        assert!(approx(path[0].x, start.x) && approx(path[0].z, start.z));
+        let last = *path.last().unwrap();
+        assert!(approx(last.x, goal.x) && approx(last.z, goal.z));
+        let bends_at_corner = path[1..path.len() - 1]
+            .iter()
+            .any(|w| (w.x - inner_corner.x).hypot(w.z - inner_corner.z) <= 3.0 * inset() + EPS);
+        assert!(
+            bends_at_corner,
+            "expected a bend at the mirrored inner corner {inner_corner:?}: {path:?}"
         );
     }
 }
@@ -231,6 +357,7 @@ fn baked_straight_line_through_doorways_collapses_to_two_points() {
     let start = Vec3::new(2.0, 0.1, 4.0);
     let goal = Vec3::new(7.0, 0.1, 4.0);
     let path = find_path(&graph, start, goal).expect("straight route exists");
+    assert_path_stays_on_floor(&path, &EW_FLOOR);
     assert_eq!(
         path.len(),
         2,

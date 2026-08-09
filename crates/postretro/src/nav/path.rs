@@ -1359,14 +1359,12 @@ mod tests {
     #[test]
     fn find_path_follows_cheaper_of_two_doorways_between_same_region_pair() {
         // Region 0 and region 1 are joined by TWO distinct portals at different X
-        // offsets. A* must select the cheaper doorway (by centroid/midpoint
-        // metric) and the funnel must pull through THAT doorway — the one A*
+        // offsets. A* must select the doorway cheaper from the true start and
+        // goal, and the funnel must pull through THAT doorway — the one A*
         // costed — not whichever appears first in the portal array.
         //
-        // region 0 [4,8) x [0,4) → centroid (6,2); region 1 [0,8) x [4,8) →
-        // centroid (4,6). The near doorway [6,8] (mid (7,4)) costs ~5.8 by the
-        // centroid→mid→centroid metric; the far doorway [0,2] (mid (1,4)) ~9.0.
-        // Region 0's centroid sits near the near doorway, so A* picks it.
+        // Both endpoints sit at x=6. The near doorway [6,8] is cheaper from
+        // those endpoint anchors than the far doorway [0,2], so A* picks it.
         let graph = NavGraph::from_section(&section(
             vec![region(4, 0, 8, 4), region(0, 4, 8, 8)],
             vec![
@@ -1445,8 +1443,7 @@ mod tests {
                         return None;
                     }
                     let t = (4.0 - seg[0].z) / dz;
-                    (t >= -EPS && t <= 1.0 + EPS)
-                        .then_some(seg[0].x + t * (seg[1].x - seg[0].x))
+                    (t >= -EPS && t <= 1.0 + EPS).then_some(seg[0].x + t * (seg[1].x - seg[0].x))
                 })
                 .expect("path must cross the z=4 doorway line")
         };

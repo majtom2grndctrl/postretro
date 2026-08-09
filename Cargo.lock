@@ -3768,6 +3768,7 @@ dependencies = [
  "log",
  "postretro-level-format",
  "postretro-render-data",
+ "postretro-test-log-capture",
  "thiserror 2.0.18",
 ]
 

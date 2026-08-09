@@ -163,6 +163,7 @@ impl NavGraph {
         self.agent
     }
 
+    #[cfg(test)]
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }

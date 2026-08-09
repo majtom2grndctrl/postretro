@@ -45,7 +45,7 @@ pub struct NavPortal {
 /// NavMesh section: one navigation graph per map, baked for the canonical agent.
 ///
 /// On-disk layout (all little-endian), in body order:
-///   u16 version                (section-internal; starts at 1)
+///   u16 version                (section-internal; current version 2)
 ///   f32 origin[3]              (grid min corner, world space)
 ///   f32 cell_size
 ///   u32 dim_x
@@ -70,9 +70,9 @@ pub struct NavPortal {
 /// rejects a present-but-region-less section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NavMeshSection {
-    /// Section-internal format version (the body's first field, distinct from
-    /// the container `SectionEntry` version). Bumped when this body layout
-    /// changes.
+    /// Section-internal serialized-version gate (the body's first field,
+    /// distinct from the container `SectionEntry` version). Bump it when the
+    /// body layout or a serialized-data semantic contract changes.
     pub version: u16,
     /// World-space minimum corner of the navigation grid.
     pub origin: [f32; 3],

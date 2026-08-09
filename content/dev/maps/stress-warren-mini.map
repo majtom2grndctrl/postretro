@@ -2464,7 +2464,7 @@
 {
 "classname" "light_spot"
 "origin" "-3098 -1666 296"
-"light" "220"
+"light" "121"
 "_color" "0 255 200"
 "_falloff_range" "1600"
 "delay" "0"
@@ -2503,7 +2503,7 @@
 {
 "classname" "light_spot"
 "origin" "-1235 -1816 296"
-"light" "220"
+"light" "121"
 "_color" "40 160 255"
 "_falloff_range" "1600"
 "delay" "0"
@@ -2519,7 +2519,7 @@
 {
 "classname" "light"
 "origin" "-962 -1613 296"
-"light" "200"
+"light" "110"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
@@ -2563,7 +2563,7 @@
 {
 "classname" "light"
 "origin" "808 -1979 296"
-"light" "200"
+"light" "110"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
@@ -2602,7 +2602,7 @@
 {
 "classname" "light"
 "origin" "2527 -1985 296"
-"light" "200"
+"light" "110"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
@@ -2641,7 +2641,7 @@
 {
 "classname" "light"
 "origin" "3692 -896 296"
-"light" "200"
+"light" "110"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
@@ -2667,7 +2667,7 @@
 {
 "classname" "light_spot"
 "origin" "-4136 -641 296"
-"light" "220"
+"light" "121"
 "_color" "120 220 255"
 "_falloff_range" "1600"
 "delay" "0"
@@ -2683,7 +2683,7 @@
 {
 "classname" "light"
 "origin" "-3968 -696 296"
-"light" "200"
+"light" "110"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
@@ -2749,7 +2749,7 @@
 {
 "classname" "light_spot"
 "origin" "-3632 1243 296"
-"light" "220"
+"light" "121"
 "_color" "0 255 120"
 "_falloff_range" "1600"
 "delay" "0"
@@ -2905,7 +2905,7 @@
 {
 "classname" "light_spot"
 "origin" "1992 2111 296"
-"light" "220"
+"light" "121"
 "_color" "255 0 200"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3002,7 +3002,7 @@
 {
 "classname" "light"
 "origin" "-2295 -1689 680"
-"light" "200"
+"light" "110"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3028,7 +3028,7 @@
 {
 "classname" "light_spot"
 "origin" "-904 -2124 680"
-"light" "220"
+"light" "121"
 "_color" "255 160 40"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3067,7 +3067,7 @@
 {
 "classname" "light_spot"
 "origin" "1288 -2200 680"
-"light" "220"
+"light" "121"
 "_color" "0 255 120"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3083,7 +3083,7 @@
 {
 "classname" "light"
 "origin" "1088 -1891 680"
-"light" "200"
+"light" "110"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3145,7 +3145,7 @@
 {
 "classname" "light_spot"
 "origin" "3566 -545 680"
-"light" "220"
+"light" "121"
 "_color" "40 160 255"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3161,7 +3161,7 @@
 {
 "classname" "light"
 "origin" "4148 -867 680"
-"light" "200"
+"light" "110"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3200,7 +3200,7 @@
 {
 "classname" "light"
 "origin" "-2959 -529 680"
-"light" "200"
+"light" "110"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3262,7 +3262,7 @@
 {
 "classname" "light_spot"
 "origin" "-2558 525 680"
-"light" "220"
+"light" "121"
 "_color" "180 0 255"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3278,7 +3278,7 @@
 {
 "classname" "light"
 "origin" "-2555 401 680"
-"light" "200"
+"light" "110"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3304,7 +3304,7 @@
 {
 "classname" "light_spot"
 "origin" "3840 1136 680"
-"light" "220"
+"light" "121"
 "_color" "120 220 255"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3379,7 +3379,7 @@
 {
 "classname" "light_spot"
 "origin" "1385 1914 680"
-"light" "220"
+"light" "121"
 "_color" "0 255 120"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3418,7 +3418,7 @@
 {
 "classname" "light_spot"
 "origin" "-868 582 680"
-"light" "220"
+"light" "121"
 "_color" "0 255 200"
 "_falloff_range" "1600"
 "delay" "0"
@@ -3434,7 +3434,7 @@
 {
 "classname" "light"
 "origin" "1176 -495 680"
-"light" "200"
+"light" "110"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3447,7 +3447,7 @@
 {
 "classname" "light"
 "origin" "913 -876 680"
-"light" "200"
+"light" "110"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
@@ -3533,12 +3533,12 @@
 "fire_mode" "multiple"
 "rearm_ms" "3000"
 {
-( -3552 160 64 ) ( -3552 -160 256 ) ( -3552 -160 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3552 -160 64 ) ( -3296 -160 256 ) ( -3296 -160 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3552 -160 64 ) ( -3296 160 64 ) ( -3552 160 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3552 160 256 ) ( -3296 -160 256 ) ( -3552 -160 256 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3296 160 64 ) ( -3552 160 256 ) ( -3552 160 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3296 -160 64 ) ( -3296 160 256 ) ( -3296 160 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 384 64 ) ( -3552 -384 256 ) ( -3552 -384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 -384 64 ) ( -3296 -384 256 ) ( -3296 -384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 -384 64 ) ( -3296 384 64 ) ( -3552 384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 384 256 ) ( -3296 -384 256 ) ( -3552 -384 256 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3296 384 64 ) ( -3552 384 256 ) ( -3552 384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3296 -384 64 ) ( -3296 384 256 ) ( -3296 384 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 }
 }
 // entity 88
@@ -3582,12 +3582,12 @@
 "fire_mode" "multiple"
 "rearm_ms" "3000"
 {
-( -3552 160 448 ) ( -3552 -160 640 ) ( -3552 -160 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3552 -160 448 ) ( -3296 -160 640 ) ( -3296 -160 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3552 -160 448 ) ( -3296 160 448 ) ( -3552 160 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3552 160 640 ) ( -3296 -160 640 ) ( -3552 -160 640 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3296 160 448 ) ( -3552 160 640 ) ( -3552 160 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( -3296 -160 448 ) ( -3296 160 640 ) ( -3296 160 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 384 448 ) ( -3552 -384 640 ) ( -3552 -384 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 -384 448 ) ( -3296 -384 640 ) ( -3296 -384 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 -384 448 ) ( -3296 384 448 ) ( -3552 384 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3552 384 640 ) ( -3296 -384 640 ) ( -3552 -384 640 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3296 384 448 ) ( -3552 384 640 ) ( -3552 384 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( -3296 -384 448 ) ( -3296 384 640 ) ( -3296 384 448 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 }
 }
 // entity 92

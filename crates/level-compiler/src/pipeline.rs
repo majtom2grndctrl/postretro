@@ -1039,22 +1039,6 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
-    // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs after
-    // base + all three delta bakes are available and BEFORE the sections are
-    // moved into the packing seam, reading captured pre-BC6H base tiles plus the
-    // owned delta sections. Measurement only — it reads, never mutates, so the
-    // emitted `.prl` stays byte-identical to a run without the flag.
-    if args.sh_analyze {
-        run_sh_analysis(
-            args,
-            sh_analyze_base_indirect.as_ref(),
-            sh_analyze_base_direct.as_ref(),
-            delta_sh_volumes_section.as_ref(),
-            direct_sh_delta_volumes_section.as_ref(),
-            animated_direct_sh_delta_volumes_section.as_ref(),
-        );
-    }
-
     // The three delta bakes meet at one owned compiler-only seam. Task-local
     // policy can transform or reject these sections here before packing without
     // changing their dense runtime representation or the PRL wire format.
@@ -1083,6 +1067,27 @@ fn run_after_parsing(
         anyhow::ensure!(
             pack::direct_sh_delta_covers_selection(deltas, selection.light_indices.len()),
             "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
+        );
+    }
+
+    // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs AFTER
+    // the delta sections are finalized — post EntityShadowLights static-light
+    // selection AND post exact-zero-drop policy (and post payload-cap enforcement,
+    // which either passed above or failed the build) — so both the delta byte
+    // accounting and the composed-receiver error reflect the EMITTED delta set
+    // rather than a pre-filter superset. The dense pre-BC6H base tiles were
+    // captured earlier (before base compaction / BC6H re-encode) and are threaded
+    // in unchanged. Measurement only — it reads the finalized owned sections,
+    // never mutates, so the emitted `.prl` stays byte-identical to a run without
+    // the flag.
+    if args.sh_analyze {
+        run_sh_analysis(
+            args,
+            sh_analyze_base_indirect.as_ref(),
+            sh_analyze_base_direct.as_ref(),
+            delta_sections.indirect.as_ref(),
+            delta_sections.direct.as_ref(),
+            delta_sections.animated_direct.as_ref(),
         );
     }
 
@@ -1426,8 +1431,9 @@ fn run_after_parsing(
 }
 
 /// Drive the output-preserving SH coarsenability analysis and emit its summary
-/// + JSON. Reads captured pre-BC6H base tiles and the three owned delta sections;
-/// mutates nothing that reaches the packer.
+/// + JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
+/// sections (post static-light selection + exact-zero-drop, i.e. the emitted
+/// set); mutates nothing that reaches the packer.
 fn run_sh_analysis(
     args: &Args,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,

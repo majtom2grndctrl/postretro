@@ -43,7 +43,7 @@ The task constraint: reuse the base-atlas indirection-word infra; do not build a
 - `is_valid(local) = (mask >> local) & 1u`
 - `within_cell_rank(local) = countOneBits(mask & ((1u64 << local) - 1u))` (WGSL `countOneBits` over the two u32 halves)
 - `valid_count(cell) = countOneBits(mask)`
-- entry payload base = prefix-sum of `valid_count(cell(e)) × stride` over entries `< e` (entries within one cell share `valid_count`, so the prefix is a pure function of the CSR + descriptor).
+- entry payload base = prefix-sum of `valid_count(cell(e)) × stride` over entries `< e` (entries within one cell share `valid_count`, so the prefix is a pure function of the CSR + descriptor). Materialized at LOAD (CPU) into a per-entry offset array the shader indexes as `offset[entry]` — not summed in-shader; derived from the final **post-drop** CSR in entry order (== payload write order). See index.md Direction (per-entry-offset Alternative).
 
 The mask is one artifact serving three roles: section self-validation (popcount fixes payload length), compose-time resolver, and loader cross-check target against id-34. That is strictly less machinery than a per-entry offset table plus a separate validity source, and it is a sibling built by the reused infrastructure rather than a parallel invention.
 

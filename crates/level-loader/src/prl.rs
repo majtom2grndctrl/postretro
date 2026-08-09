@@ -1084,8 +1084,9 @@ mod tests {
     use super::*;
     use crate::load_prl;
     use crate::prl_loader::{
-        convert_alpha_lights, expected_affinity_dims, validate_cell_draw_index, validate_delta_sh,
-        validate_direct_sh_delta, validate_entity_shadow_light_selection,
+        convert_alpha_lights, expected_affinity_dims, valid_probe_mask_for_affinity_cell,
+        validate_cell_draw_index, validate_delta_sh, validate_direct_sh_delta,
+        validate_entity_shadow_light_selection,
     };
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
@@ -1263,9 +1264,36 @@ mod tests {
     #[test]
     fn validate_delta_sh_accepts_matching_dims() {
         let base_dims = [8u32, 5, 1];
-        let section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
-        let base = base_octahedral_section(base_dims);
+        let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        let mut base = base_octahedral_section(base_dims);
+        for probe in &mut base.probes {
+            probe.validity = 1;
+        }
+        section.valid_probe_masks = (0..section.affinity_cell_count())
+            .map(|cell| valid_probe_mask_for_affinity_cell(&base, section.affinity_dims, cell))
+            .collect();
         assert!(validate_delta_sh(&section, Some(&base)).is_ok());
+    }
+
+    #[test]
+    fn validate_delta_sh_rejects_descriptor_that_disagrees_with_id34_validity() {
+        let base_dims = [4u32, 4, 4];
+        let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        // The descriptor and payload agree with one another (one compact tile),
+        // but not with the all-valid id-34 metadata. This must fail before any
+        // renderer buffer sizing can derive a tail from the wrong mask.
+        section.valid_probe_masks = vec![1];
+        section.delta_subblocks = vec![0; DEFAULT_DELTA_PROBE_F16_STRIDE];
+        let mut base = base_octahedral_section(base_dims);
+        for probe in &mut base.probes {
+            probe.validity = 1;
+        }
+
+        let error = validate_delta_sh(&section, Some(&base)).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("DeltaShVolumes"));
+        assert!(message.contains("id 34"));
+        assert!(message.contains("recompile"));
     }
 
     #[test]

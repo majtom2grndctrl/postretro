@@ -45,12 +45,14 @@ pub mod sh_bake;
 pub mod sh_group;
 pub mod shadowmask_bake;
 pub mod size_options;
-pub mod stage;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;
 pub mod tui;
 pub mod visibility;
+
+#[cfg(test)]
+mod binary_tests;
 
 use std::collections::HashSet;
 use std::fmt::Display;

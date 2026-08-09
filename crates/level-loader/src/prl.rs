@@ -554,10 +554,9 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub fog_cell_masks: Option<Vec<u32>>,
     /// Baked navigation graph (PRL section 36). `None` for maps without a
-    /// navmesh bake; the engine builds its runtime nav query surface only
-    /// when this is present. A malformed section warns and decodes to
-    /// `None` rather than failing the load. Read only by the dev-tools nav graph
-    /// build today, so allowed dead in shipping builds until pathfinding lands.
+    /// navmesh bake. Startup builds a runtime `NavGraph` from this section;
+    /// pathfinding and the dev-tools overlay consume that graph. A malformed
+    /// section warns and decodes to `None` rather than failing the load.
     #[cfg(feature = "load-prl")]
     #[allow(dead_code)]
     pub navmesh: Option<NavMeshSection>,

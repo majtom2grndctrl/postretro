@@ -13,7 +13,7 @@ does not need. Everything here was read this session.
 | `defineStore` builds refs as `Object.freeze({ slot })`, returns `Object.freeze({ declaration, state })` | `sdk/lib/data_script.ts:774`, `:776-779` | Confirmed exactly. Namespace is the first positional arg (`:759-762`); Luau twin `data_script.luau:984`. |
 | Slots keyed by stable dotted names; table never cleared | `crates/entities/src/slot_table.rs:181-189` (struct doc), `context/lib/scripting.md:110` | Confirmed. |
 | Local-only slot receives no `StateSlotId`, excluded from fingerprint | `crates/entities/src/slot_table.rs:43-60` (`ReplicationScope`, `None` variant doc at `:53`) | Confirmed. |
-| Replicated schema entries sorted by dotted name, dense `StateSlotId` from 0, 32-byte fingerprint is the cross-peer gate | `crates/postretro/src/netcode/state_slots.rs:89-90`, `:113`, `:123`, `:305-307` | Confirmed. Schema maps `StateSlotId` back to dotted name for the apply path (`:64-68`). |
+| Replicated schema entries sorted by dotted name, dense `StateSlotId` from 0, 32-byte fingerprint is the cross-peer gate | `crates/postretro/src/netcode/state_slots.rs:106`, `:113`, `:123`, `:305-307` | Confirmed. Schema maps `StateSlotId` back to dotted name for the apply path (`:64-68`). |
 | `u16` wire discriminant numeric-equal to engine `ComponentKind`, drift-guarded both sides | `context/lib/networking.md:48-50`; constants `crates/net/src/wire.rs:101-110`; engine side `crates/entities/src/registry.rs:202` | Confirmed. The transferable shape: both sides independently assert one mapping; a pinning test fails on divergence. |
 | Declaration attempts validate as a whole; changed schemas / duplicates / overlap reject the staged result | `context/lib/scripting.md:127`; `crates/entities/src/slot_table.rs:255-299` (`plan_reconcile`) | Confirmed. Overlap = equality or dotted-prefix (`slot_table.rs:431-439`). |
 | `@`-prefixed names reserved, store declarations reject them | `context/lib/scripting.md:114`; `slot_table.rs:412-416` | Confirmed. Note: engine namespace validation checks only empty and `@` — no charset rule, so `:` is currently legal in a namespace (`slot_table.rs:405-429`). |
@@ -74,8 +74,8 @@ sequenceDiagram
     B->>L: append keys for new durable slots<br/>(append-only; temp-then-rename; write failure exits non-zero)
     S->>C: ModManifest.stores (authored names)
     C->>L: read + validate (engine never writes)
-    alt persist/replicated slot has no entry (any build type)
-        C-->>S: reject whole staged result,<br/>print paste-able entry
+    alt persist/replicated slot has no entry
+        C-->>S: fatal at boot (either build type),<br/>staged rejection on a debug reload;<br/>print paste-able entry
     end
     C->>T: commit slots keyed by authored dotted name
     Note over C,P: once per process, after first successful commit
@@ -84,7 +84,7 @@ sequenceDiagram
     Note over T,P: clean exit: collect persisted mod slots,<br/>write v2 keys via ledger
 ```
 
-Read call sites for every arrow: staged commit (`scripting-core/src/staged_manifest.rs` drain), overlay/save (`state_persistence.rs:68-99`, `:105+`; gating `StateStoreLifecycle` `:20-36`), replication schema build (`netcode/state_slots.rs:89-126`).
+Read call sites for every arrow: staged commit (`scripting-core/src/staged_manifest.rs` drain), overlay/save (`state_persistence.rs:68-99`, `:105+`; gating `StateStoreLifecycle` `:20-36`), replication schema build (`netcode/state_slots.rs:91-126`).
 
 ## Owner rulings — verification
 
@@ -122,7 +122,9 @@ than taken on trust.
      `gen-script-types` (`crates/postretro/Cargo.toml:144-146`;
      `crates/postretro/src/bin/gen_script_types.rs`) builds `ScriptCtx`,
      `PrimitiveRegistry`, and `register_all` with no renderer and no session.
-   - `xtask` links no engine crate; every subcommand spawns `cargo run`
+   - `xtask` links no engine *runtime* crate — its only deps are
+     `postretro-level-compiler` and `postretro-level-format`
+     (`crates/xtask/Cargo.toml`); every subcommand spawns `cargo run`
      (`crates/xtask/src/main.rs:169-197`, `:227-259`, `:330-357`).
    - **Consequence found while working this through:** `run_mod_init` is the
      same call the Task 1 identity gate sits inside, so the mint would be
@@ -152,7 +154,14 @@ than taken on trust.
    `player_options.md:28-29` documents the atomic-write and
    corruption-fallback patterns to copy. Recorded in the spec as an intended
    behavior change: old working-directory saves are abandoned, not migrated,
-   and the v1 → v2 bump is the natural moment.
+   and the v1 → v2 bump is the natural moment. **Two corrections from the
+   re-review:** `settings_path` is at `options/mod.rs:227-228`, and it builds
+   `config_dir()`, which `player_options.md:24` documents as the config
+   directory — save data using `data_dir()` is a deliberate divergence from
+   that convention, not the same convention. And `ProjectDirs::from("", "",
+   "postretro")` already puts `postretro` at the end of `data_dir()`, so the
+   path is `data_dir().join(<modId>).join("state.json")`; the earlier
+   `<data dir>/postretro/<modId>/` form double-nested.
 
 **Superseded remedy.** An earlier revision had save *carry unmatched durable
 rows forward*, to protect a co-tenant mod's rows in the shared file. Per-mod
@@ -162,13 +171,18 @@ discard gesture already meant. Orderings rows 5, 6, and 15 reflect that.
 
 **Watcher self-trigger hazard, resolved precisely.** The hazard does not
 disappear at the watch layer — the mod root is watched non-recursively
-(`crates/scripting-core/src/watcher.rs:328-338`), so a ledger write does
+(`crates/scripting-core/src/watcher.rs:332-338`), so a ledger write does
 emit an event. It disappears at the classification layer: reload
-classification is membership in the tracked mod-init dependency set
-(`crates/scripting-core/src/staged_manifest/transfer.rs:59-64`; dependencies
+classification is exact-path membership in the active mod-init dependency
+set, or in the start-script candidate set when no start-script is active
+(`changed_paths_affect_mod_init`, `crates/scripting-core/src/runtime/types.rs:217-254`;
+membership check at `:242`, candidates at `:255-256`, `:277`; dependencies
 collected from the TS compile's dependency report,
 `staged_manifest.rs:228-297`), and `identity.json` is never a script
-dependency. Pinned as Orderings row 14.
+dependency. Pinned as Orderings row 14. **Consequence:** a hand-edit of the
+ledger mid-session is equally invisible, so the committed ledger must be a
+snapshot the runtime retains rather than a file re-read at save time —
+Orderings row 23.
 
 **Coverage, stated honestly.** Execution-based minting has no static blind
 spot: computed schemas, computed names, and Luau start-scripts all mint,
@@ -178,14 +192,34 @@ the *binding-name sugar*, a syntax asymmetry sanctioned by
 stays as the backstop for hand-edited ledgers and for authors who forget to
 re-run the mint.
 
+## Re-review verification (second pass)
+
+| Claim under review | Source | Status |
+|---|---|---|
+| `ScriptRuntimeConfig` derives `Default` and every workspace construction is `::default()` | `runtime/types.rs:347`; shipping path `build_scripting_core` (`session/mod.rs:658`); tests at `startup/lifecycle.rs:1522`, `scripting/entity_world_primitives.rs:792`, `:833`, `main.rs:9385`, `runtime/core.rs:857`, `:913`, `:976`, `:1003`; stored verbatim at `runtime/core.rs:156` | Confirmed — nine `::default()` sites (one shipping, eight test), no other constructor. Forces negative flag polarity (`skip_identity_enforcement`), or the shipping engine derives the gate off. Fields are `pub` and the type is re-exported (`runtime/mod.rs:13`), so containment is convention plus a test, not a guarantee. |
+| Debug boot's `run_mod_init` failure is logged and continued | `startup/splash_lifecycle.rs:266-267` (`compile_stale_scripts` at `:265`) | Confirmed. No staged attempt exists at boot, so the "reject the staged result" remedy does not apply there. Owner ruling: fatal, non-zero exit, same as release. |
+| `is_persisted_mod_slot` has three conjuncts | `state_persistence.rs:171-175` (`persist && !readonly && ownership == SlotOwnership::Mod`) | Confirmed. Earlier spec text wrote two and claimed equivalence. |
+| `validateImpactEventId` allows 128 bytes and requires ≥1 colon | `sdk/lib/data_script.ts:435-437`, diagnostic `:433`; Luau twin `data_script.luau:751-754`, diagnostic `:749` | Confirmed. Task 2 is therefore a colon inversion **and** a halving to 64. Both diagnostic constants are rewritten. |
+| `defineStore` takes 2 args, `defineImpactEvent` 3 | `data_script.ts:759-762`, `:442-446` | Confirmed. Arity is a sound sugar discriminator; "first arg is not a string literal" is not — it rewrites `defineStore(computedName, schema)`. |
+| Schema builder line map | `state_slots.rs:91-104` (iterate live table), `:106` (sort), `:113` (dense id), `:118` (`wire_shape` from name), `:123` (fingerprint), `:226` (`entries.len()` hashed first) | Confirmed. The earlier `:89-90` citation was the doc comment. `wire_shape` is a name-derived fingerprint input that must keep the authored name. |
+| Staged commit mutates before `apply_reconcile_plan` | `runtime/core.rs:403-407` (`plan_reconcile`), `:425-434` (`deferred_mesh_descriptors`), `:453-458` (`apply_descriptor_refresh_plan` under `registry.borrow_mut()`), `:474` (apply) | Confirmed. "Before `apply_reconcile_plan`" permits a gate after two mutations; the gate must sit at the `plan_reconcile` site. |
+| Shared identifier charset admits `.`, so `..` and `.` are valid mod ids | `foundation/src/data_descriptors/validate/foundation.rs:45-47` | Confirmed. The id becomes a path component under the data dir; all-dots ids must be rejected at validation. |
+| Debug builds write into the mod root today | `runtime/mod_init.rs:91-100` (recompile, error naming the `.ts` path at `:95-97`); `startup/splash_lifecycle.rs:265` → `runtime/compile.rs:79-108` (mod root walked one level); sidecar `--out` at `watcher.rs:456-467` | Confirmed. "The engine writes nothing into the mod root, in any build type" is false; the true claim is that it writes no *identity* artifact. A read-only-root test reaches the ledger only when the `.js` is current or the mod is Luau. |
+| Headless `run_mod_init` precedent | `crates/postretro/src/observability/driver.rs:111-124`, `run_mod_init` at `:122` | Confirmed. Stronger precedent than `gen-script-types`, which never builds a `ScriptRuntime`. It also checks the `scripts-build` sidecar — so the mint needs the sidecar *discoverable*, not merely built (`TsCompilerPath::detect`). |
+| Level impact events compose with no committed manifest | `runtime/mod_init.rs:110-116` (`mod_manifest = None`, still `Ok`), `runtime/core.rs:146` (`committed_mod_identity = None`), `impact_policy.rs:113-121` → `:160-168` | Confirmed. Qualification needs a rule for the no-mod-id case: ids stay unqualified, never a bare `":"`. |
+| `xtask` links no engine crate | `crates/xtask/Cargo.toml` | **Refuted.** It depends on `postretro-level-compiler` and `postretro-level-format`. The true claim is "no engine *runtime* crate". |
+
 ## Direction questions worked (draft-plan §5b)
 
 1. **Cause:** one string is both the author's reference and the durable key,
    so a rename is a data migration and the compiler cannot see it. Observed
    at: `state.json` keys, replicated-schema fingerprint input, and every
    hand-typed `dev:` prefix.
-2. **Level:** identity is minted at the author-build seam (scripts-build,
-   where binding names and schema literals exist), read and enforced at the
+2. **Level:** identity is minted at the author's-toolchain seam — a separate
+   `mint-identity` bin that runs the mod's real mod-init, *not* the
+   `scripts-build` seam an earlier revision assumed (see owner ruling 3:
+   `scripts-build` cannot link `scripting-core`, and a static scan cannot see
+   computed names, computed schemas, or Luau mods). Read and enforced at the
    mod-init commit seam (engine), validated at the SDK seam — each where
    the respective information exists, and the engine never a content
    mutator. Not per-feature: doing this inside `E16--per-player-currency`

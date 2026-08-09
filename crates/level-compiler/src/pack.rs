@@ -55,10 +55,23 @@ use crate::map_data::{FalloffModel, LightType, ShadowType};
 use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
+// PRL table and NavMesh body versions are independent domains.
+const NAVMESH_CONTAINER_VERSION: u16 = 1;
+
 #[path = "pack_sections.rs"]
 mod pack_sections;
 
 use pack_sections::{append_optional_section, serialize_bvh_with_chunk_ranges};
+
+fn append_navmesh_section(sections: &mut Vec<SectionBlob>, data: Option<&[u8]>) {
+    if let Some(bytes) = data {
+        sections.push(SectionBlob {
+            section_id: SectionId::NavMesh as u32,
+            version: NAVMESH_CONTAINER_VERSION,
+            data: bytes.to_vec(),
+        });
+    }
+}
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves; the direct lighting path uses the static
@@ -789,16 +802,7 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
-    if let Some(ref bytes) = navmesh_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::NavMesh as u32,
-            // Container SectionEntry.version reuses NAVMESH_VERSION (body
-            // constant). Conceptually distinct — container vs. body version —
-            // but coupled at 1 for now.
-            version: postretro_level_format::navmesh::NAVMESH_VERSION,
-            data: bytes.clone(),
-        });
-    }
+    append_navmesh_section(&mut sections, navmesh_bytes.as_deref());
     append_optional_section(
         &mut sections,
         SectionId::KinematicGeometry as u32,
@@ -1413,6 +1417,50 @@ mod tests {
 
     fn placeholder_chunk_light_list() -> ChunkLightListSection {
         ChunkLightListSection::placeholder()
+    }
+
+    // Regression: changing the NavMesh body epoch accidentally changed the PRL table epoch.
+    #[test]
+    fn packed_navmesh_keeps_container_version_one_and_body_version_two() {
+        let navmesh = NavMeshSection {
+            version: postretro_level_format::navmesh::NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 0.25,
+            dim_x: 1,
+            dim_z: 1,
+            agent_radius: 0.4,
+            agent_height: 1.8,
+            step_height: 0.5,
+            max_slope_deg: 45.0,
+            regions: vec![postretro_level_format::navmesh::NavRegion {
+                x0: 0,
+                z0: 0,
+                x1: 1,
+                z1: 1,
+                floor_y_min: 0.0,
+                floor_y_max: 0.0,
+            }],
+            portals: Vec::new(),
+        };
+        let navmesh_bytes = navmesh.to_bytes();
+        let mut sections = Vec::new();
+        append_navmesh_section(&mut sections, Some(&navmesh_bytes));
+
+        let mut prl_bytes = Vec::new();
+        write_prl(&mut prl_bytes, &sections).expect("navmesh PRL should serialize");
+
+        let mut cursor = Cursor::new(&prl_bytes);
+        let meta = read_container(&mut cursor).expect("navmesh PRL table should decode");
+        let entry = meta
+            .find_section(SectionId::NavMesh as u32)
+            .expect("navmesh table entry should exist");
+        assert_eq!(entry.version, 1, "E10 must not change the PRL table epoch");
+
+        let body = read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)
+            .expect("navmesh body should be readable")
+            .expect("navmesh body should exist");
+        let decoded = NavMeshSection::from_bytes(&body).expect("navmesh v2 body should decode");
+        assert_eq!(decoded.version, 2, "E10 must pin portal handedness at v2");
     }
 
     #[test]

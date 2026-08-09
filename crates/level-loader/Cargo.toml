@@ -13,6 +13,9 @@ postretro-level-format = { workspace = true, optional = true }
 postretro-render-data = { workspace = true, optional = true }
 thiserror.workspace = true
 
+[dev-dependencies]
+postretro-test-log-capture.workspace = true
+
 [features]
 default = ["load-prl"]
 dev-tools = []

@@ -554,10 +554,9 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub fog_cell_masks: Option<Vec<u32>>,
     /// Baked navigation graph (PRL section 36). `None` for maps without a
-    /// navmesh bake; the engine builds its runtime nav query surface only
-    /// when this is present. A malformed section warns and decodes to
-    /// `None` rather than failing the load. Read only by the dev-tools nav graph
-    /// build today, so allowed dead in shipping builds until pathfinding lands.
+    /// navmesh bake. Startup builds a runtime `NavGraph` from this section;
+    /// pathfinding and the dev-tools overlay consume that graph. A malformed
+    /// section warns and decodes to `None` rather than failing the load.
     #[cfg(feature = "load-prl")]
     #[allow(dead_code)]
     pub navmesh: Option<NavMeshSection>,
@@ -1107,8 +1106,10 @@ mod tests {
     };
     use postretro_level_format::geometry::NO_TEXTURE;
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::navmesh::{NAVMESH_VERSION, NavRegion};
     use postretro_level_format::portals::{PortalRecord, PortalsSection};
     use postretro_render_data::geometry::BvhLeaf;
+    use postretro_test_log_capture::LogCapture;
 
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::delta_sh_volumes::{
@@ -2049,6 +2050,61 @@ mod tests {
                 back: FormatCellLocatorChild::Cell(1),
             }],
         }
+    }
+
+    // Regression: version-1 navmesh portals used the wrong handedness at runtime.
+    #[test]
+    fn load_prl_stale_navmesh_version_warns_and_disables_navigation() {
+        const STALE_NAVMESH_VERSION: u16 = 1;
+
+        let stale_navmesh = NavMeshSection {
+            version: STALE_NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 0.25,
+            dim_x: 1,
+            dim_z: 1,
+            agent_radius: 0.4,
+            agent_height: 1.8,
+            step_height: 0.5,
+            max_slope_deg: 45.0,
+            regions: vec![NavRegion {
+                x0: 0,
+                z0: 0,
+                x1: 1,
+                z1: 1,
+                floor_y_min: 0.0,
+                floor_y_max: 0.0,
+            }],
+            portals: Vec::new(),
+        };
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::NavMesh as u32,
+                version: 1,
+                data: stale_navmesh.to_bytes(),
+            },
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_navmesh_version.prl");
+        let capture = LogCapture::start();
+
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("stale navmesh must degrade without failing the level load");
+
+        assert!(
+            world.navmesh.is_none(),
+            "stale navmesh must not reach runtime navigation"
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            &format!(
+                "navmesh section version {STALE_NAVMESH_VERSION}, expected {NAVMESH_VERSION} — recompile the map"
+            ),
+        );
+        std::fs::remove_file(&tmp).ok();
     }
 
     #[test]

@@ -52,6 +52,9 @@ pub mod trigger_volumes;
 pub mod tui;
 pub mod visibility;
 
+#[cfg(test)]
+mod binary_tests;
+
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::io::IsTerminal as _;

@@ -127,6 +127,12 @@ postretro-net = { workspace = true, features = ["dev-tools"] }
 # the audio module are confined to `#[cfg(test)]`, so the non-test crate never
 # names mock even though it ships in the kira dependency.
 
+# Bake navmesh fixtures in-process for the bake→runtime nav contract tests
+# (`nav/` sibling test module). Exposes `navmesh_bake::bake_navmesh` and its
+# geometry input types via the level-compiler's lib target. `postretro` is
+# bin-only, but `#[cfg(test)]` modules under `src/` see dev-dependencies.
+postretro-level-compiler = { workspace = true }
+
 # Property-based testing for binary simulation determinism invariants.
 proptest = { workspace = true }
 

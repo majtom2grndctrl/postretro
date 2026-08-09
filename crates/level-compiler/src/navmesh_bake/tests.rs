@@ -455,6 +455,75 @@ fn climbable_step_yields_a_portal() {
 }
 
 #[test]
+fn vertical_portal_oriented_left_z_hi_when_region_a_is_west() {
+    // AC2: two rooms abutting on a constant-X edge, region_a forced onto the
+    // WEST side (both share z0, so the smaller-x0 west room sorts first). The
+    // `region_a → region_b` crossing is +X, so the emitted `left` must be the
+    // greater-Z endpoint and `right` the lesser-Z one (the `NavPortal`
+    // convention). A small (< step_height) step keeps the two as distinct
+    // regions joined by a portal instead of merging into one rectangle.
+    //
+    // Regression: the version-1 bake emitted z-ascending order unconditionally,
+    // so this west-region_a portal was wrong-handed.
+    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    tris.extend_from_slice(&floor_quad(0.0, 0.0, 1.0, 1.0, 0.0)); // west room, y=0
+    tris.extend_from_slice(&floor_quad(1.0, 0.0, 2.0, 1.0, 0.1)); // east room, +0.1 step
+    let geo = geo_from_triangles(&tris);
+    let section = bake_navmesh(&geo, &no_erode_params()).expect("stepped rooms must bake");
+
+    assert_eq!(section.regions.len(), 2, "the step splits into two regions");
+    assert_eq!(section.portals.len(), 1, "one vertical portal joins them");
+    let p = &section.portals[0];
+    assert_eq!((p.region_a, p.region_b), (0, 1));
+    // region_a (west) sorts first; crossing is +X → left is greater-Z (z=1.0).
+    assert!((p.left[0] - 1.0).abs() < 1.0e-4 && (p.right[0] - 1.0).abs() < 1.0e-4);
+    assert!(
+        (p.left[2] - 1.0).abs() < 1.0e-4,
+        "left must be the greater-Z endpoint, got {:?}",
+        p.left
+    );
+    assert!(
+        (p.right[2] - 0.0).abs() < 1.0e-4,
+        "right must be the lesser-Z endpoint, got {:?}",
+        p.right
+    );
+}
+
+#[test]
+fn vertical_portal_oriented_left_z_lo_when_region_a_is_east() {
+    // AC2, mirror: the same constant-X abutment with region_a forced onto the
+    // EAST side. Stacking the east room lower in Z makes its z0 sort first, so
+    // the east room is region_a and the `region_a → region_b` crossing is −X —
+    // the order the version-1 bake got right by accident. `left` must be the
+    // lesser-Z endpoint here.
+    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    // East room (region_a): x in [1,2], z in [0,2], y=0. Its z0 is smaller.
+    tris.extend_from_slice(&floor_quad(1.0, 0.0, 2.0, 2.0, 0.0));
+    // West room (region_b): x in [0,1], z in [1,3], y=0.1. Overlaps in z [1,2].
+    tris.extend_from_slice(&floor_quad(0.0, 1.0, 1.0, 3.0, 0.1));
+    let geo = geo_from_triangles(&tris);
+    let section = bake_navmesh(&geo, &no_erode_params()).expect("stepped rooms must bake");
+
+    assert_eq!(section.regions.len(), 2, "the step splits into two regions");
+    assert_eq!(section.portals.len(), 1, "one vertical portal joins them");
+    let p = &section.portals[0];
+    assert_eq!((p.region_a, p.region_b), (0, 1));
+    // region_a is the east room; crossing is −X → left is lesser-Z. The shared
+    // run overlaps in z [1,2] (world).
+    assert!((p.left[0] - 1.0).abs() < 1.0e-4 && (p.right[0] - 1.0).abs() < 1.0e-4);
+    assert!(
+        (p.left[2] - 1.0).abs() < 1.0e-4,
+        "left must be the lesser-Z endpoint (z=1.0), got {:?}",
+        p.left
+    );
+    assert!(
+        (p.right[2] - 2.0).abs() < 1.0e-4,
+        "right must be the greater-Z endpoint (z=2.0), got {:?}",
+        p.right
+    );
+}
+
+#[test]
 fn tall_ledge_yields_no_portal() {
     // Two floor halves separated by a drop larger than step_height. They are
     // distinct regions but share no traversable edge → no portal.

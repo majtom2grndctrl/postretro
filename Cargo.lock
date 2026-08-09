@@ -3668,6 +3668,7 @@ dependencies = [
  "parry3d",
  "postretro-entities",
  "postretro-foundation",
+ "postretro-level-compiler",
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-lighting",
@@ -3767,6 +3768,7 @@ dependencies = [
  "log",
  "postretro-level-format",
  "postretro-render-data",
+ "postretro-test-log-capture",
  "thiserror 2.0.18",
 ]
 

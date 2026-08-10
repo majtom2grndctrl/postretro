@@ -50,6 +50,11 @@ Byte-layout tests to update: `frame_uniforms.rs:277-505` (CPU offsets), `shader_
 
 Both ComboBoxes live in `DiagnosticsTab::Lighting` → `CollapsingHeader "Lighting systems"` (`debug_ui/mod.rs:320-323`), inside `draw_lighting_tab`. Order: Ambient Floor + Indirect Scale sliders; Dynamic Direct Scale slider → "Dynamic Direct Isolation" ComboBox (`:356`); Direct SH Delta / Animated Direct SH Delta override blocks; Probe Occlusion checkbox; "Lighting Isolation" ComboBox (`:460`). Renderer state: `renderer_state.rs:48-57` (`set/get lighting_isolation`), `:221-228` (`set/get dynamic_direct_isolation`); fields at `renderer_types.rs:812`, `:817`.
 
-## Overlap: in-progress `emissive-surfaces-bloom`
+## Emissive (landed)
 
-`context/plans/in-progress/emissive-surfaces-bloom` concurrently edits `forward.wgsl` and `kinematic_brush.wgsl` (adds an additive emissive term), moves scene targets to `Rgba16Float` + tonemap, and consumes the final (16th) forward sampled-texture slot. Emissive is not a lighting term that exists in shader source on any path until that plan lands.
+`emissive-surfaces-bloom` code is merged (the plan folder is still in `in-progress/` — a bookkeeping lag; demo content ships as `content/dev/maps/combat-demo.map`). Emissive is a **material** term, present on world + mover only:
+- `forward.wgsl`: `emissive_texture` at group 1 binding 1 (`:77`), `material.emissive_strength` (`:88`), added as `base_color.rgb * total_light + emissive * material.emissive_strength` (`:1284`).
+- `kinematic_brush.wgsl`: same term (6 refs).
+- `skinned_mesh.wgsl` and `billboard.wgsl`: **no** emissive (models consume the diffuse slot only; sprites have no emissive).
+
+Group 1 now carries 4 sampled textures (diffuse, emissive, specular, normal), which is what raises the forward count to the 16-texture ceiling. Owner decision (2026-08-10): emissive is kept OUT of the isolation instrument — it is material self-emission, not a light term. Bit 7 stays reserved.

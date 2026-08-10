@@ -30,11 +30,14 @@ default (all terms on) renders identically to today.
 
 ### Out of scope
 
-- **Emissive term isolation.** The emissive term is introduced by in-progress
-  `emissive-surfaces-bloom`; it does not exist in shader source on any path
-  until that plan lands, so it cannot be gated against current source. Bit 7 is
-  reserved and unwired so the mask vocabulary need not be reopened when emissive
-  arrives.
+- **Emissive term isolation.** Owner decision (2026-08-10): emissive is kept out
+  of the instrument. It is landed — `forward.wgsl` and `kinematic_brush.wgsl`
+  sample `emissive_texture` × `material.emissive_strength` (world + mover only;
+  absent on entity/sprite) and it is demoable in `combat-demo.map` — so this is a
+  scope choice, not a source foreclosure: emissive is material self-emission,
+  categorically not a light term (its own scope: not a light source, no
+  double-count). Bit 7 stays reserved and unwired so the mask vocabulary need not
+  be reopened if that decision changes.
 - **The SDF-shadow instruments** (`sdf_shadow_mode`, `sdf_force_visibility_one`,
   `sdf_shadow_flags`). They occupy separate uniform fields (`FrameUniforms`
   bytes 96..108) and their own UI controls, and gate shadow *visibility*, not
@@ -76,7 +79,8 @@ looking the same — the observation that produced this plan.
   the 3 states (`Combined`/`DirectOnly`/`IndirectOnly`) are expressible as
   {indirect bits} × {direct bits} in the new mask.
 - *Sampled-texture ceiling.* `REQUIRED_SAMPLED_TEXTURES = 16` is Metal's hard
-  ceiling and is fully consumed once emissive lands (research.md). This
+  ceiling and is fully consumed (group 1 now carries diffuse, emissive, specular,
+  normal; forward totals 16 with cube-array support — research.md). This
   forecloses binding a static base atlas alongside the composed atlas; SH
   static/animated separation must happen at compose time, where base and delta
   are still distinct inputs.
@@ -120,7 +124,7 @@ material else.
   the pre-change build on the world path (the group-0 128-byte stride is
   unchanged) and visually unchanged on the entity/mover/sprite paths — verified
   by the existing group-0 stride/offset tests plus a manual GPU A/B on a map with
-  static, animated, and dynamic lights.
+  static, animated, dynamic, and emissive content (`combat-demo.map`).
 - [ ] In a dev-tools build, toggling **Dynamic direct** off dims dynamic-lit
   world surfaces AND entities AND movers AND sprites; toggling it back on
   restores them.
@@ -294,22 +298,19 @@ against the integrated result.
   2 is set. Mask arrives via the existing compose params uniform.
 - Compose gate (direct): mirror in `direct_sh_compose.wgsl` (bit 3) and the
   `animated_direct_sh_compose` add pass (bit 4), per Task 4.
-- UI: a horizontal-wrap of `ui.checkbox` bound to mask bits, replacing the two
-  ComboBoxes in the "Lighting systems" header (`debug_ui/mod.rs:320-323`).
-  Consider retaining a couple of one-click presets ("All", "Indirect only") as
-  buttons that set bit combos — convenience, decide during implementation.
+- UI: a set of `ui.checkbox` bound to mask bits, replacing the two ComboBoxes in
+  the "Lighting systems" header (`debug_ui/mod.rs:320-323`). Checkboxes only, no
+  presets (owner decision: with ≤8 terms, independent checkboxes make each term's
+  contribution directly visible; presets would be overkill).
 - The `POSTRETRO_*` env seeding pattern the old modes used (if any) maps to a
   default-`ALL` mask; a headless run keeps every term on.
 
-## Open questions
+## Resolved decisions
 
-- **Preset buttons.** Keep a small set of one-click presets (All / Indirect only
-  / Direct only / Dynamic only) alongside the checkboxes, or checkboxes alone?
-  Convenience only; no contract impact. Recommend: checkboxes plus an "All" reset
-  button.
-- **Sequencing vs `emissive-surfaces-bloom`.** That in-progress plan edits
-  `forward.wgsl` and `kinematic_brush.wgsl` and consumes the last forward
-  sampled-texture slot. Recommend orchestrating this plan after emissive merges
-  to avoid churn in the two shared shaders; bit 7 is reserved for the emissive
-  term regardless of order. Owner decision: block on emissive, or rebase around
-  it.
+- **Checkboxes only, no presets** (owner, 2026-08-10). ≤8 terms; presets overkill.
+- **Emissive stays out** (owner, 2026-08-10). Bit 7 reserved; see Out of scope.
+- **Emissive has landed.** `emissive-surfaces-bloom` code is merged (the plan
+  folder is still in `in-progress/`, a bookkeeping lag), so this plan is not
+  blocked on it. Both edit `forward.wgsl` + `kinematic_brush.wgsl`, but emissive
+  is already in the current source this plan is grounded against — no ordering
+  dependency remains.

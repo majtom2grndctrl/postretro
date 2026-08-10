@@ -291,12 +291,12 @@ fn define_store_emits_returned_declaration_and_state_refs() {
     register_all(&mut r, ScriptCtx::new());
     let ts = generate_typescript(&r);
 
-    // The generic declaration that returns declaration + state refs.
+    // TypeScript supports both binding-name sugar and the explicit namespace.
     assert!(
         ts.contains(
-            "export function defineStore<const S extends Record<string, StoreSlotSchema>>("
+            "export function defineStore<const S extends Record<string, StoreSlotSchema>>(\n    schema: S,\n  ): StoreDefinition<S>;\n  export function defineStore<const S extends Record<string, StoreSlotSchema>>(\n    namespace: string,\n    schema: S,"
         ),
-        "ts missing generic defineStore declaration:\n{ts}"
+        "ts defineStore must expose both binding-sugar and explicit-name arities:\n{ts}"
     );
     assert!(
         ts.contains("readonly declaration: StoreDeclaration;"),

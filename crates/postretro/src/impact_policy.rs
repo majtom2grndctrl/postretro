@@ -1597,7 +1597,7 @@ mod tests {
     fn engine_binding_rejects_tagless_override_descriptors() {
         let ctx = ScriptCtx::new();
         let scope = EntityScope::impact(ctx);
-        let mut descriptor = override_event("salvage:base", "elite", Vec::new());
+        let mut descriptor = override_event("base", "elite", Vec::new());
         descriptor.filter_tag = None;
 
         assert_eq!(

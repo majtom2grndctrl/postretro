@@ -20,6 +20,7 @@ import {
   combatZombieLifecycle,
   enemyDeath,
 } from "./scripts/combat-lifecycle";
+import { runCounter } from "./scripts/run-counter";
 
 export default defineMod({
   name: "dev",
@@ -59,6 +60,7 @@ export default defineMod({
   // an override registered before its base is dropped as targeting an unknown
   // event.
   events: [combatDummyLifecycle, enemyDeath, ammoOnKill, combatZombieLifecycle],
+  stores: [runCounter.declaration],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

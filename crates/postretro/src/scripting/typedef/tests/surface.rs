@@ -520,8 +520,12 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     let luau = generate_luau(&registry);
 
     assert!(
-        ts.contains("export function defineImpactEvent(\n    id: string,"),
-        "TypeScript defineImpactEvent must require an author id"
+        ts.contains(
+            "export function defineImpactEvent(\n    filter: ImpactEventFilter,\n    build: (impact: Impact) => readonly EffectOrGroup[],"
+        ) && ts.contains(
+            "export function defineImpactEvent(\n    id: string,\n    filter: ImpactEventFilter,\n    build: (impact: Impact) => readonly EffectOrGroup[],"
+        ),
+        "TypeScript defineImpactEvent must expose both binding-sugar and explicit-id arities"
     );
     assert!(
         luau.contains("declare function defineImpactEvent(id: string,"),

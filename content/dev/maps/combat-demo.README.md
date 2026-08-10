@@ -172,7 +172,7 @@ to reach you.
   `defineImpactEvent` registered from `start-script.ts`. `target_dummy` is
   exclusive to combat-demo, so it works when the map is opened from the catalog
   or directly by CLI while still composing with the level-local progress reactions.
-  Its `dev:ammo-on-kill` policy is reference content: it pays the damager 8
+  Its `ammo-on-kill` policy is reference content: it pays the damager 8
   `shells.buck` on a dummy kill edge, but a mod replaces the policy wholesale.
 - `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
@@ -276,7 +276,7 @@ policies; they exercise two distinct recipient paths.
 
 1. **Kill payout — impact source.** At the point-blank distance above, shoot a
    `target_dummy` twice with the reference shotgun. The second full-connect shell
-   crosses from positive health to below zero, so `dev:ammo-on-kill` grants the
+   crosses from positive health to below zero, so `ammo-on-kill` grants the
    damager **8 `shells.buck`**. This is a kill edge, not a corpse-hit level gate.
    `combatDummyLifecycle` resurrects a merely downed dummy after three seconds,
    so downing it again earns another 8-ammo payout. A third full-connect shell

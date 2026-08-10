@@ -19,7 +19,7 @@ const RESURRECT_DELAY_MS = 3_000;
 const FINISHER_OVERSHOOT = -3;
 
 export const combatDummyLifecycle = defineImpactEvent(
-  "dev:combat-dummy-lifecycle",
+  "combat-dummy-lifecycle",
   // `target_dummy` is currently exclusive to combat-demo. Do not use a
   // catalog-level filter here: direct CLI map loads intentionally have no
   // catalog tags, and the walkthrough must work through that normal dev path.
@@ -57,7 +57,7 @@ const CORPSE_LINGER_MS = 4_000;
 // and its base's tag are present — so a specialization is always a strict subset
 // of this policy's reach, and where it applies this one does not run at all.
 export const enemyDeath = defineImpactEvent(
-  "dev:enemy-death",
+  "enemy-death",
   // Deliberately mod-global with no `levels`: a level-gated base never lands its
   // filter, and its overrides are then dropped as targeting an unknown event.
   { tag: "enemy" },
@@ -82,7 +82,7 @@ export const enemyDeath = defineImpactEvent(
 // dummy kill. It is one possible economy policy, not engine behavior; a real
 // mod replaces it with its own policy.
 export const ammoOnKill = defineImpactEvent(
-  "dev:ammo-on-kill",
+  "ammo-on-kill",
   { tag: "dummy" },
   (impact) => {
     const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
@@ -92,7 +92,7 @@ export const ammoOnKill = defineImpactEvent(
 );
 
 // The combat-demo zombie keeps getting back up, which is the point of that
-// walkthrough. Authored as an override of `dev:enemy-death` rather than as its
+// walkthrough. Authored as an override of `enemy-death` rather than as its
 // own event: a separate id would not evict the base, so the zombie would be
 // despawned by the default policy AND resurrected by this one on the same hit.
 //

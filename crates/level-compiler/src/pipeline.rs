@@ -761,12 +761,13 @@ fn run_after_parsing(
     // RGBA16F precision — capture the compact section BEFORE the lossy BC6H
     // re-encode below. Cloned only under `--sh-analyze`; changes no emitted
     // bytes (the clone is read, never packed).
-    let sh_analyze_base_indirect: Option<postretro_level_format::sh_volume::OctahedralShVolumeSection> =
-        if args.sh_analyze {
-            Some(sh_volume_section.clone())
-        } else {
-            None
-        };
+    let sh_analyze_base_indirect: Option<
+        postretro_level_format::sh_volume::OctahedralShVolumeSection,
+    > = if args.sh_analyze {
+        Some(sh_volume_section.clone())
+    } else {
+        None
+    };
     sh_volume_section =
         sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
     let total_probes = sh_volume_section.total_probes();
@@ -1433,7 +1434,7 @@ fn run_after_parsing(
 }
 
 /// Drive the output-preserving SH coarsenability analysis and emit its summary
-/// + JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
+/// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
 /// sections (post static-light selection + exact-zero-drop, i.e. the emitted
 /// set); mutates nothing that reaches the packer.
 fn run_sh_analysis(

@@ -2,6 +2,8 @@
 // “Animated direct SH for dynamic receivers”; separate from promotion composition so section-45 resources and bindings stay isolated from legacy Case 1.
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+#[cfg(feature = "dev-tools")]
+use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
     ComposeGridParams, build_animated_direct_delta_buffers, build_compose_grid_bytes,
     pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
@@ -54,6 +56,8 @@ const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
 /// offset per post-drop CSR entry. Binding 26 is the pass-B debug override.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
+#[cfg(feature = "dev-tools")]
+const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-add @group(1)";
 
 pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) pipeline: wgpu::ComputePipeline,
@@ -79,6 +83,16 @@ pub(super) fn build_animated_direct_pass(
     let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
     let descriptor_indices_bytes =
         pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
+
+    #[cfg(feature = "dev-tools")]
+    ComposeStorageFootprint {
+        delta_subblocks_bytes: subblock_bytes.len(),
+        delta_compaction_meta_bytes: compaction_meta_bytes.len(),
+        affinity_offsets_bytes: offsets_bytes.len(),
+        affinity_lights_bytes: lights_bytes.len(),
+        animation_descriptor_indices_bytes: descriptor_indices_bytes.len(),
+    }
+    .log(ANIMATED_DIRECT_FOOTPRINT_LABEL);
 
     use wgpu::util::DeviceExt;
     let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

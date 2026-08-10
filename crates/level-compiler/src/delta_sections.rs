@@ -39,7 +39,7 @@ impl Default for DeltaSectionConfig {
 ///
 /// This is intentionally an owned handoff. The next compiler-only policy can
 /// inspect or replace these sections before packing while the pipeline and
-/// runtime continue to consume the established dense section contracts.
+/// runtime consume compact variable-stride contracts for ids 27, 41, and 45.
 pub(crate) struct PostBakeDeltaSections {
     pub config: DeltaSectionConfig,
     pub indirect: Option<DeltaShVolumesSection>,
@@ -195,8 +195,9 @@ impl PostBakeDeltaSections {
     }
 
     /// Enforce the explicit desktop budget on raw emitted delta blocks only.
-    /// Id 41 has completed valid-probe compaction before this call; header,
-    /// descriptor, and CSR bytes remain intentionally out of budget.
+    /// Ids 27, 41, and 45 have completed valid-probe compaction before this
+    /// call. Header, descriptor, and CSR bytes remain intentionally out of
+    /// budget.
     pub(crate) fn enforce_payload_cap(&self) -> anyhow::Result<()> {
         let indirect = self
             .indirect
@@ -235,13 +236,15 @@ fn compact_indirect_valid_probes(
     base: &OctahedralShVolumeSection,
 ) -> anyhow::Result<DeltaShVolumesSection> {
     let compacted = compact_dense_valid_probe_payload(
-        "DeltaShVolumes",
-        section.affinity_factor,
-        section.affinity_dims,
-        &section.affinity_offsets,
-        &section.affinity_lights,
-        &section.delta_subblocks,
-        section.delta_probe_f16_stride(),
+        DenseDeltaPayload {
+            section_name: "DeltaShVolumes",
+            affinity_factor: section.affinity_factor,
+            affinity_dims: section.affinity_dims,
+            affinity_offsets: &section.affinity_offsets,
+            affinity_lights: &section.affinity_lights,
+            delta_subblocks: &section.delta_subblocks,
+            probe_stride: section.delta_probe_f16_stride(),
+        },
         base,
     )?;
 
@@ -263,13 +266,15 @@ fn compact_direct_valid_probes(
     base: &OctahedralShVolumeSection,
 ) -> anyhow::Result<DirectShDeltaVolumesSection> {
     let compacted = compact_dense_valid_probe_payload(
-        "DirectShDeltaVolumes",
-        section.affinity_factor,
-        section.affinity_dims,
-        &section.affinity_offsets,
-        &section.affinity_lights,
-        &section.delta_subblocks,
-        section.delta_probe_f16_stride(),
+        DenseDeltaPayload {
+            section_name: "DirectShDeltaVolumes",
+            affinity_factor: section.affinity_factor,
+            affinity_dims: section.affinity_dims,
+            affinity_offsets: &section.affinity_offsets,
+            affinity_lights: &section.affinity_lights,
+            delta_subblocks: &section.delta_subblocks,
+            probe_stride: section.delta_probe_f16_stride(),
+        },
         base,
     )?;
 
@@ -290,13 +295,15 @@ fn compact_animated_direct_valid_probes(
     base: &OctahedralShVolumeSection,
 ) -> anyhow::Result<AnimatedDirectShDeltaVolumesSection> {
     let compacted = compact_dense_valid_probe_payload(
-        "AnimatedDirectShDeltaVolumes",
-        section.affinity_factor,
-        section.affinity_dims,
-        &section.affinity_offsets,
-        &section.affinity_lights,
-        &section.delta_subblocks,
-        section.delta_probe_f16_stride(),
+        DenseDeltaPayload {
+            section_name: "AnimatedDirectShDeltaVolumes",
+            affinity_factor: section.affinity_factor,
+            affinity_dims: section.affinity_dims,
+            affinity_offsets: &section.affinity_offsets,
+            affinity_lights: &section.affinity_lights,
+            delta_subblocks: &section.delta_subblocks,
+            probe_stride: section.delta_probe_f16_stride(),
+        },
         base,
     )?;
 
@@ -318,16 +325,29 @@ struct CompactedDeltaPayload {
     delta_subblocks: Vec<u16>,
 }
 
-fn compact_dense_valid_probe_payload(
-    section_name: &str,
+struct DenseDeltaPayload<'a> {
+    section_name: &'static str,
     affinity_factor: u8,
     affinity_dims: [u32; 3],
-    affinity_offsets: &[u32],
-    affinity_lights: &[u32],
-    delta_subblocks: &[u16],
+    affinity_offsets: &'a [u32],
+    affinity_lights: &'a [u32],
+    delta_subblocks: &'a [u16],
     probe_stride: usize,
+}
+
+fn compact_dense_valid_probe_payload(
+    payload: DenseDeltaPayload<'_>,
     base: &OctahedralShVolumeSection,
 ) -> anyhow::Result<CompactedDeltaPayload> {
+    let DenseDeltaPayload {
+        section_name,
+        affinity_factor,
+        affinity_dims,
+        affinity_offsets,
+        affinity_lights,
+        delta_subblocks,
+        probe_stride,
+    } = payload;
     let affinity_cell_count =
         affinity_dims[0] as usize * affinity_dims[1] as usize * affinity_dims[2] as usize;
     anyhow::ensure!(

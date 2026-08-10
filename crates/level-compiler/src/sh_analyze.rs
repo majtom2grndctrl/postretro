@@ -4,7 +4,7 @@
 //! (design intent ONLY — its surface-distance classifier and seam proxy are
 //! ABANDONED). This module classifies coarsenability from **composed receiver
 //! error**, measures seams as **actual shared-face reconstruction differences**,
-//! attributes compaction / exact-zero delta dropping / density coarsening
+//! attributes valid-probe payload compaction / exact-zero delta dropping / density coarsening
 //! **separately**, and reports savings both with and without a protection
 //! stand-in — never touching a single emitted `.prl` byte.
 //!
@@ -59,18 +59,16 @@ use crate::sh_bake::f16_bits_to_f32;
 const AF: usize = AFFINITY_FACTOR as usize; // 4
 const PROBES_PER_CELL: usize = AF * AF * AF; // 64
 
-/// Exact-zero drop oracle epsilon: a delta entry counts as an exact-zero drop
-/// candidate when every stored half is bit-zero. A wider near-zero fraction is
-/// reported separately at [`NEAR_ZERO_EPS`].
+/// A wider near-zero fraction is reported separately from the bit-zero entry
+/// fraction at [`NEAR_ZERO_EPS`].
 const NEAR_ZERO_EPS: f32 = 1.0e-4;
 
 /// Default composed-error thresholds swept in the histogram/savings table.
 /// Irradiance units; seeded to bracket the plausible coarsenability band from
 /// near-lossless (0.005) up past the observed per-brick composed-L2 max on the
 /// stress map (~3.4) so the histogram actually discriminates L0 vs L2.
-pub const DEFAULT_THRESHOLDS: [f32; 11] = [
-    0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0,
-];
+pub const DEFAULT_THRESHOLDS: [f32; 11] =
+    [0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
 
 // ---------------------------------------------------------------------------
 // Public inputs
@@ -93,6 +91,9 @@ struct DeltaView<'a> {
     /// Starting f16 offset for every CSR entry, in the final compact payload
     /// order. The trailing value is the total payload length.
     entry_payload_offsets: Vec<usize>,
+    /// Id 41 must retain the final canonical record for each selected light so
+    /// loader coverage survives even when that record is bit-zero.
+    exact_zero_drop_exempt: Vec<bool>,
 }
 
 impl<'a> DeltaView<'a> {
@@ -106,13 +107,22 @@ impl<'a> DeltaView<'a> {
         )
     }
     fn from_direct(s: &'a DirectShDeltaVolumesSection) -> Self {
-        Self::new(
+        let mut view = Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
             &s.valid_probe_masks,
             &s.affinity_offsets,
             &s.delta_subblocks,
-        )
+        );
+        view.exact_zero_drop_exempt = vec![false; s.affinity_lights.len()];
+        let mut final_entry_for_light = std::collections::BTreeMap::new();
+        for (entry, &light) in s.affinity_lights.iter().enumerate() {
+            final_entry_for_light.insert(light, entry);
+        }
+        for entry in final_entry_for_light.into_values() {
+            view.exact_zero_drop_exempt[entry] = true;
+        }
+        view
     }
     fn from_anim_direct(s: &'a AnimatedDirectShDeltaVolumesSection) -> Self {
         Self::new(
@@ -151,6 +161,7 @@ impl<'a> DeltaView<'a> {
             offsets,
             subblocks,
             entry_payload_offsets,
+            exact_zero_drop_exempt: Vec::new(),
         }
     }
 
@@ -175,6 +186,14 @@ impl<'a> DeltaView<'a> {
     fn valid_probe_mask(&self, cell: usize) -> Option<u64> {
         self.valid_probe_masks.get(cell).copied()
     }
+    fn is_exact_zero_drop_candidate(&self, entry: usize, exact_zero: bool) -> bool {
+        exact_zero
+            && !self
+                .exact_zero_drop_exempt
+                .get(entry)
+                .copied()
+                .unwrap_or(false)
+    }
     /// Resolve a probe tile through the compact section's per-cell validity
     /// descriptor and its entry-order payload prefix. Invalid probes have no
     /// stored tile; valid probes use their x-fastest rank among set mask bits.
@@ -193,9 +212,9 @@ impl<'a> DeltaView<'a> {
             return None;
         }
         let within_cell_rank = (valid_probe_mask & (local_bit - 1)).count_ones() as usize;
-        self.entry_payload_range(entry)?.start.checked_add(
-            within_cell_rank.checked_mul(self.probe_f16_stride())?,
-        )
+        self.entry_payload_range(entry)?
+            .start
+            .checked_add(within_cell_rank.checked_mul(self.probe_f16_stride())?)
     }
 }
 
@@ -418,8 +437,11 @@ fn weighted_percentile(values: &[f32], weights: &[f32], p: f32) -> f32 {
     if values.is_empty() {
         return 0.0;
     }
-    let mut pairs: Vec<(f32, f32)> =
-        values.iter().copied().zip(weights.iter().copied()).collect();
+    let mut pairs: Vec<(f32, f32)> = values
+        .iter()
+        .copied()
+        .zip(weights.iter().copied())
+        .collect();
     pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     let total: f32 = pairs.iter().map(|(_, w)| *w).sum();
     if total <= 0.0 {
@@ -490,10 +512,11 @@ pub struct SectionBytes {
     /// Current uniform-density baseline (dense: every grid probe / every entry's
     /// full 64-probe subblock).
     pub uniform_bytes: u64,
-    /// Line (a): after atlas compaction (dropping invalid probes).
+    /// Line (a): after valid-probe payload compaction.
     pub compacted_bytes: u64,
-    /// Line (b): bytes recoverable by dropping exact-zero delta entries
-    /// (delta sections only; 0 for id 34).
+    /// Line (b): bytes recoverable by dropping eligible exact-zero delta
+    /// entries (delta sections only; 0 for id 34). Id 41 coverage fallbacks are
+    /// not eligible.
     pub exact_zero_dropped_bytes: u64,
     /// Line (c) bound: every non-empty brick coarsened to all-L1.
     pub coarsen_all_l1_bytes: u64,
@@ -566,8 +589,8 @@ pub struct AnalysisReport {
     pub section_bytes: Vec<SectionBytes>,
     pub composed_atlas: SectionBytes,
 
-    /// Exact-zero delta entry fraction, aggregated across the three delta
-    /// sections (drop oracle).
+    /// Bit-zero delta entry fraction in the finalized sections, aggregated
+    /// across all three sections. Coverage fallbacks are included.
     pub exact_zero_entry_fraction: f32,
     pub near_zero_entry_fraction: f32,
     pub near_zero_eps: f32,
@@ -596,10 +619,7 @@ enum Level {
 fn stored_tiles(level: Level, valid_mask: &[bool; PROBES_PER_CELL]) -> usize {
     match level {
         Level::L0 => valid_mask.iter().filter(|&&v| v).count(),
-        Level::L1 => corner_locals()
-            .iter()
-            .filter(|&&l| valid_mask[l])
-            .count(),
+        Level::L1 => corner_locals().iter().filter(|&&l| valid_mask[l]).count(),
         Level::L2 => {
             if valid_mask.iter().any(|&v| v) {
                 1
@@ -725,7 +745,7 @@ fn accumulate_delta_for_cell(
     let start = view.offsets[cell] as usize;
     let end = view.offsets[cell + 1] as usize;
     for entry in start..end {
-        for local in 0..PROBES_PER_CELL {
+        for (local, accumulated_tile) in acc.iter_mut().enumerate() {
             let Some(probe_base) = view.resolve_probe_f16_offset(cell, entry, local) else {
                 continue;
             };
@@ -739,7 +759,7 @@ fn accumulate_delta_for_cell(
                     let r = f16_bits_to_f32(view.subblocks[idx]);
                     let g = f16_bits_to_f32(view.subblocks[idx + 1]);
                     let b = f16_bits_to_f32(view.subblocks[idx + 2]);
-                    acc[local][iy * interior + ix] += Vec3::new(r, g, b);
+                    accumulated_tile[iy * interior + ix] += Vec3::new(r, g, b);
                 }
             }
         }
@@ -811,16 +831,28 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     let weights = solid_angle_weights(interior);
 
     // Affinity grid (bricks). ceil(dims/4).
-    let ax = (nx + AF - 1) / AF;
-    let ay = (ny + AF - 1) / AF;
-    let az = (nz + AF - 1) / AF;
+    let ax = nx.div_ceil(AF);
+    let ay = ny.div_ceil(AF);
+    let az = nz.div_ceil(AF);
     let brick_count = ax * ay * az;
     report.brick_count = brick_count as u64;
 
     let expected_affinity = [ax as u32, ay as u32, az as u32];
-    let delta_indirect = check_delta(inputs.delta_indirect.map(DeltaView::from_indirect), expected_affinity, "id27");
-    let delta_direct = check_delta(inputs.delta_direct.map(DeltaView::from_direct), expected_affinity, "id41");
-    let delta_anim = check_delta(inputs.delta_anim_direct.map(DeltaView::from_anim_direct), expected_affinity, "id45");
+    let delta_indirect = check_delta(
+        inputs.delta_indirect.map(DeltaView::from_indirect),
+        expected_affinity,
+        "id27",
+    );
+    let delta_direct = check_delta(
+        inputs.delta_direct.map(DeltaView::from_direct),
+        expected_affinity,
+        "id41",
+    );
+    let delta_anim = check_delta(
+        inputs.delta_anim_direct.map(DeltaView::from_anim_direct),
+        expected_affinity,
+        "id45",
+    );
 
     // Aggregate accumulators.
     let mut base_l1_agg = AggAcc::default();
@@ -856,9 +888,9 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     let mut delta_near_zero_entries = 0u64;
     let mut delta_total_entries = 0u64;
 
-    // Per-section entry totals for exact-zero byte line.
+    // Per-section entry totals for the exact-zero candidate byte line.
     let mut per_section_entries: [u64; 3] = [0; 3];
-    let mut per_section_exact_zero: [u64; 3] = [0; 3];
+    let mut per_section_exact_zero_candidates: [u64; 3] = [0; 3];
 
     // Seam cache: per brick, store per-local composed truth + reconstructed
     // (L1,L2) tiles ONLY for boundary layers, plus the brick's per-threshold
@@ -877,7 +909,8 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // Per-brick composed max error at L1/L2 for the sweep gate.
     let mut brick_comp_l1_max: Vec<f32> = vec![f32::INFINITY; brick_count];
     let mut brick_comp_l2_max: Vec<f32> = vec![f32::INFINITY; brick_count];
-    let mut brick_valid_masks: Vec<[bool; PROBES_PER_CELL]> = vec![[false; PROBES_PER_CELL]; brick_count];
+    let mut brick_valid_masks: Vec<[bool; PROBES_PER_CELL]> =
+        vec![[false; PROBES_PER_CELL]; brick_count];
     let mut brick_protected: Vec<bool> = vec![false; brick_count];
     let mut brick_nonempty: Vec<bool> = vec![false; brick_count];
 
@@ -895,8 +928,22 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
             for cx in 0..ax {
                 let cell_lin = cx + cy * ax + cz * ax * ay;
                 let bt = build_brick_tiles(
-                    inputs, base, tile_dim, interior, border, &valid_rank, dims, cell_lin, cx, cy,
-                    cz, ax, ay, &delta_indirect, &delta_direct, &delta_anim,
+                    inputs,
+                    base,
+                    tile_dim,
+                    interior,
+                    border,
+                    &valid_rank,
+                    dims,
+                    cell_lin,
+                    cx,
+                    cy,
+                    cz,
+                    ax,
+                    ay,
+                    &delta_indirect,
+                    &delta_direct,
+                    &delta_anim,
                 );
                 let valid_probes = bt.valid_mask.iter().filter(|&&v| v).count() as u32;
                 let in_bounds = bt.in_bounds.iter().filter(|&&v| v).count() as u32;
@@ -940,8 +987,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 base_l2_tiles += stored_tiles(Level::L2, &bt.valid_mask) as u64;
 
                 // --- Seam cache (boundary layers) ---
-                seam_bricks[cell_lin] =
-                    build_seam_brick(&bt, texels, interior, &weights);
+                seam_bricks[cell_lin] = build_seam_brick(&bt, texels, interior, &weights);
 
                 // --- Per-brick record ---
                 report.bricks.push(BrickRecord {
@@ -961,7 +1007,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
         }
     }
 
-    // --- Delta byte lines + exact-zero oracle (aggregate over 3 sections) ---
+    // --- Delta byte lines + exact-zero classification (aggregate over 3 sections) ---
     for (si, view) in [&delta_indirect, &delta_direct, &delta_anim]
         .into_iter()
         .enumerate()
@@ -972,9 +1018,10 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
         per_section_entries[si] = entries;
         delta_uniform_tiles += entries * PROBES_PER_CELL as u64;
 
-        // Walk each cell's entries: exact-zero oracle + per-level compacted
-        // stored tiles. The section descriptor is the emitted compact payload
-        // identity, so do not infer this count from the dense base-grid model.
+        // Walk each cell's finalized entries: exact-zero classification plus
+        // per-level compacted stored tiles. The section descriptor is the
+        // emitted compact payload identity, so do not infer this count from the
+        // dense base-grid model.
         for c in 0..view.offsets.len().saturating_sub(1) {
             let valid_probe_mask = view.valid_probe_mask(c).unwrap_or(0);
             let l0 = stored_delta_tiles(Level::L0, valid_probe_mask) as u64;
@@ -984,23 +1031,25 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
             let end = view.offsets[c + 1] as usize;
             for entry in start..end {
                 let (exact_zero, near_zero) = entry_zeroness(view, entry);
+                let exact_zero_drop_candidate =
+                    view.is_exact_zero_drop_candidate(entry, exact_zero);
                 if exact_zero {
                     delta_exact_zero_entries += 1;
-                    per_section_exact_zero[si] += 1;
+                }
+                if exact_zero_drop_candidate {
+                    per_section_exact_zero_candidates[si] += 1;
                 }
                 if near_zero {
                     delta_near_zero_entries += 1;
                 }
-                // Compacted (L0) / coarsen bounds accumulate only for retained
-                // (non-exact-zero) entries.
-                if !exact_zero {
-                    delta_compacted_tiles += l0;
-                    delta_l1_tiles += l1;
-                    delta_l2_tiles += l2;
-                    brick_delta_l0_tiles[c] += l0;
-                    brick_delta_l1_tiles[c] += l1;
-                    brick_delta_l2_tiles[c] += l2;
-                }
+                // Density coarsening is independent from exact-zero dropping:
+                // project every entry present in the finalized section.
+                delta_compacted_tiles += l0;
+                delta_l1_tiles += l1;
+                delta_l2_tiles += l2;
+                brick_delta_l0_tiles[c] += l0;
+                brick_delta_l1_tiles[c] += l1;
+                brick_delta_l2_tiles[c] += l2;
             }
         }
     }
@@ -1043,12 +1092,14 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // Delta sections preserve a dense-64 baseline for counterfactual reports,
     // but line (a) is the actual compact emitted payload. Its length must come
     // from the final variable-stride section rather than a base-grid estimate.
-    let delta_ids = [(27u32, &delta_indirect), (41, &delta_direct), (45, &delta_anim)];
+    let delta_ids = [
+        (27u32, &delta_indirect),
+        (41, &delta_direct),
+        (45, &delta_anim),
+    ];
     for (id, view) in delta_ids {
         let Some(view) = view else { continue };
-        let uniform_f16_count = view
-            .entry_count()
-            .saturating_mul(view.subblock_stride());
+        let uniform_f16_count = view.entry_count().saturating_mul(view.subblock_stride());
         let mut l1 = 0u64;
         let mut l2 = 0u64;
         let mut exact_zero_f16_count = 0usize;
@@ -1060,12 +1111,11 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
             let end = view.offsets[c + 1] as usize;
             for entry in start..end {
                 let (exact_zero, _) = entry_zeroness(view, entry);
-                if exact_zero {
+                if view.is_exact_zero_drop_candidate(entry, exact_zero) {
                     exact_zero_f16_count += view.entry_payload_f16_count(entry);
-                } else {
-                    l1 += sl1;
-                    l2 += sl2;
                 }
+                l1 += sl1;
+                l2 += sl2;
             }
         }
         let uniform_bytes = uniform_f16_count as u64 * 2;
@@ -1091,7 +1141,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
         delta_l1_tiles,
         delta_l2_tiles,
         per_section_entries,
-        per_section_exact_zero,
+        per_section_exact_zero_candidates,
     );
 
     // Composed atlas projection (dense per stored probe; same geometry as base).
@@ -1261,8 +1311,7 @@ fn build_brick_tiles(
     let mut in_bounds = [false; PROBES_PER_CELL];
 
     // Delta contributions accumulated per local probe (zero tiles for all 64).
-    let mut delta_acc: [Tile; PROBES_PER_CELL] =
-        std::array::from_fn(|_| zero_tile(texels));
+    let mut delta_acc: [Tile; PROBES_PER_CELL] = std::array::from_fn(|_| zero_tile(texels));
     let cell_for_section = cell_lin; // same affinity grid
     if let Some(v) = delta_indirect {
         accumulate_delta_for_cell(v, cell_for_section, interior, border, &mut delta_acc);
@@ -1291,7 +1340,9 @@ fn build_brick_tiles(
             continue;
         }
         let base_ind = decode_base_indirect_tile(base, valid_rank[probe_index], interior, border);
-        let Some(base_ind_tile) = base_ind else { continue };
+        let Some(base_ind_tile) = base_ind else {
+            continue;
+        };
 
         // Composed = base indirect + base direct + Σ deltas.
         let mut comp = base_ind_tile.clone();
@@ -1589,10 +1640,8 @@ fn build_seam_brick(
                 let (valid, l1r, l2r, l1c, l2c) = if let Some(truth) = truth {
                     let l1 = l1_recon[local].clone().unwrap_or_else(|| zero_tile(texels));
                     let l2 = l2_recon[local].clone().unwrap_or_else(|| zero_tile(texels));
-                    let l1res: Vec<Vec3> =
-                        l1.iter().zip(&truth).map(|(r, t)| *r - *t).collect();
-                    let l2res: Vec<Vec3> =
-                        l2.iter().zip(&truth).map(|(r, t)| *r - *t).collect();
+                    let l1res: Vec<Vec3> = l1.iter().zip(&truth).map(|(r, t)| *r - *t).collect();
+                    let l2res: Vec<Vec3> = l2.iter().zip(&truth).map(|(r, t)| *r - *t).collect();
                     (true, l1res, l2res, l1, l2)
                 } else {
                     (false, Vec::new(), Vec::new(), Vec::new(), Vec::new())
@@ -1693,10 +1742,21 @@ fn compute_seams(
             }
         }
     }
-    stats.residual_mean = if res_n > 0 { (res_sum / res_n as f64) as f32 } else { 0.0 };
-    stats.raw_mean = if raw_n > 0 { (raw_sum / raw_n as f64) as f32 } else { 0.0 };
-    stats.cross_level_residual_mean =
-        if cl_n > 0 { (cl_sum / cl_n as f64) as f32 } else { 0.0 };
+    stats.residual_mean = if res_n > 0 {
+        (res_sum / res_n as f64) as f32
+    } else {
+        0.0
+    };
+    stats.raw_mean = if raw_n > 0 {
+        (raw_sum / raw_n as f64) as f32
+    } else {
+        0.0
+    };
+    stats.cross_level_residual_mean = if cl_n > 0 {
+        (cl_sum / cl_n as f64) as f32
+    } else {
+        0.0
+    };
     stats
 }
 
@@ -1704,7 +1764,7 @@ fn compute_seams(
 /// L0 reconstructs exactly (residual 0, recon = truth); we reconstruct truth by
 /// residual+recon consistency: for L0 the residual is zero and the reconstructed
 /// value equals truth, which we recover as `l1_recon - l1_residual` (= truth).
-fn residual_for_level<'a>(pos: &'a FacePos, level: Level) -> (Vec<Vec3>, Vec<Vec3>) {
+fn residual_for_level(pos: &FacePos, level: Level) -> (Vec<Vec3>, Vec<Vec3>) {
     match level {
         Level::L0 => {
             // truth = l1_recon - l1_residual (exact); residual zero.
@@ -1774,8 +1834,14 @@ pub fn log_summary(report: &AnalysisReport) {
     log::info!("[sh-analyze] === composed-receiver error (metric 2, PRIMARY) ===");
     agg("composed L1 (unweighted)", &report.composed_l1_aggregate);
     agg("composed L2 (unweighted)", &report.composed_l2_aggregate);
-    agg("composed L1 (cosine-weighted)", &report.composed_l1_weighted_aggregate);
-    agg("composed L2 (cosine-weighted)", &report.composed_l2_weighted_aggregate);
+    agg(
+        "composed L1 (cosine-weighted)",
+        &report.composed_l1_weighted_aggregate,
+    );
+    agg(
+        "composed L2 (cosine-weighted)",
+        &report.composed_l2_weighted_aggregate,
+    );
 
     log::info!("[sh-analyze] === shared-face seam error (metric 3) ===");
     log::info!(
@@ -1818,14 +1884,16 @@ pub fn log_summary(report: &AnalysisReport) {
         c.coarsen_all_l2_ratio,
     );
     log::info!(
-        "[sh-analyze] delta entries {} — exact-zero fraction {:.4} (drop oracle), near-zero(<{:.0e}) fraction {:.4}",
+        "[sh-analyze] finalized delta entries {} — bit-zero fraction {:.4}, near-zero(<{:.0e}) fraction {:.4}",
         report.total_delta_entries,
         report.exact_zero_entry_fraction,
         report.near_zero_eps,
         report.near_zero_entry_fraction,
     );
 
-    log::info!("[sh-analyze] === threshold sweep (composed-error gate; L0/L1/L2 histogram + projected savings) ===");
+    log::info!(
+        "[sh-analyze] === threshold sweep (composed-error gate; L0/L1/L2 histogram + projected savings) ==="
+    );
     for row in &report.sweep {
         log::info!(
             "[sh-analyze] t={:.4}: L0/L1/L2 {}/{}/{} | proj {} B ({:.3}x) | +protect L0/L1/L2 {}/{}/{} proj {} B ({:.3}x)",
@@ -1922,9 +1990,7 @@ mod tests {
 
         assert_all_valid_payload_uses_dense_offsets(&DeltaView::from_indirect(&indirect));
         assert_all_valid_payload_uses_dense_offsets(&DeltaView::from_direct(&direct));
-        assert_all_valid_payload_uses_dense_offsets(&DeltaView::from_anim_direct(
-            &animated_direct,
-        ));
+        assert_all_valid_payload_uses_dense_offsets(&DeltaView::from_anim_direct(&animated_direct));
     }
 
     #[test]
@@ -1960,8 +2026,70 @@ mod tests {
     }
 
     #[test]
+    fn analysis_keeps_valid_cell_zero_direct_fallback_in_l1_l2_projections() {
+        // Regression: a selected all-zero id 41 fallback was counted as dropped
+        // even though the finalized CSR retains it to preserve light coverage.
+        let mut base = OctahedralShVolumeSection::placeholder();
+        base.grid_dimensions = [1, 1, 1];
+        base.tile_dimension = 1;
+        base.tile_border = 0;
+        base.atlas_dimensions = [1, 1];
+        base.layer_count = 1;
+        base.tiles_per_layer = 1;
+        base.atlas_tiles_per_row = 1;
+        base.compact_atlas_dimensions = [1, 1];
+        base.compact_atlas_tiles_per_row = 1;
+        base.compact_atlas_tiles_per_layer = 1;
+        base.compact_atlas_layer_count = 1;
+        base.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+        base.compact_atlas = vec![0; 8];
+
+        let direct = DirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 1,
+            tile_border: 0,
+            valid_probe_masks: vec![1],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0; 4],
+        };
+        let validity = [1];
+        let thresholds = [0.0];
+        let report = run_analysis(&AnalyzeInputs {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dims: [1, 1, 1],
+            validity: &validity,
+            base_indirect: &base,
+            base_direct: None,
+            delta_indirect: None,
+            delta_direct: Some(&direct),
+            delta_anim_direct: None,
+            protect_aabbs: &[],
+            thresholds: &thresholds,
+        });
+
+        let direct_bytes = report
+            .section_bytes
+            .iter()
+            .find(|section| section.id == 41)
+            .expect("id 41 accounting must be present");
+        assert_eq!(direct_bytes.compacted_bytes, 8);
+        assert_eq!(direct_bytes.exact_zero_dropped_bytes, 0);
+        assert_eq!(direct_bytes.coarsen_all_l1_bytes, 8);
+        assert_eq!(direct_bytes.coarsen_all_l2_bytes, 8);
+        assert_eq!(report.exact_zero_entry_fraction, 1.0);
+        assert_eq!(report.sweep[0].projected_bytes, 24);
+    }
+
+    #[test]
     fn delta_view_prefixes_each_entry_after_variable_length_cells() {
-        let masks = [(1u64 << 0) | (1u64 << 3), 0, (1u64 << 1) | (1u64 << 4) | (1u64 << 7)];
+        let masks = [
+            (1u64 << 0) | (1u64 << 3),
+            0,
+            (1u64 << 1) | (1u64 << 4) | (1u64 << 7),
+        ];
         let offsets = [0, 2, 3, 4];
         let payload = vec![0; 28];
         let view = DeltaView::new([3, 1, 1], 1, &masks, &offsets, &payload);
@@ -2008,7 +2136,11 @@ mod tests {
             );
         }
         let err = level_errors(&tiles, LevelKind::L1, texels, 2, &vec![1.0; texels]);
-        assert!(err.max < 1e-4, "linear ramp L1 error must be ~0, got {}", err.max);
+        assert!(
+            err.max < 1e-4,
+            "linear ramp L1 error must be ~0, got {}",
+            err.max
+        );
     }
 
     #[test]
@@ -2024,7 +2156,10 @@ mod tests {
         for c in corner_locals() {
             sum += trilinear_weight((1, 1, 1), local_xyz(c));
         }
-        assert!((sum - 1.0).abs() < 1e-5, "trilinear weights must partition unity");
+        assert!(
+            (sum - 1.0).abs() < 1e-5,
+            "trilinear weights must partition unity"
+        );
     }
 
     #[test]
@@ -2097,6 +2232,9 @@ mod tests {
                 max_seam = max_seam.max(seam);
             }
         }
-        assert!(max_seam > 0.1, "L0|L2 seam on a gradient must be non-zero, got {max_seam}");
+        assert!(
+            max_seam > 0.1,
+            "L0|L2 seam on a gradient must be non-zero, got {max_seam}"
+        );
     }
 }

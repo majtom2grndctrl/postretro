@@ -192,13 +192,12 @@ fn entry_delta_f16_offset(entry: u32) -> u32 {
 
 fn read_delta_texel(
     entry: u32,
-    cell: u32,
-    local_probe: u32,
+    probe_rank: u32,
     tile_texel: vec2<u32>,
 ) -> vec4<f32> {
     let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
     let half_base = entry_delta_f16_offset(entry)
-        + within_cell_rank(cell, local_probe) * grid.delta_probe_f16_stride
+        + probe_rank * grid.delta_probe_f16_stride
         + texel_index * 4u;
     let word_base = half_base / 2u;
     let rg = unpack2x16float(delta_subblocks[word_base]);
@@ -265,6 +264,7 @@ fn compose_main(
         textureStore(sh_total_atlas, p, layer, vec4<f32>(base.rgb, 1.0));
         return;
     }
+    let probe_rank = within_cell_rank(affinity.cell_index, affinity.local_probe);
 
     let start = affinity_offsets[affinity.cell_index];
     let end = affinity_offsets[affinity.cell_index + 1u];
@@ -274,8 +274,7 @@ fn compose_main(
         let scale = animated_light_scale(light_index);
         let delta = read_delta_texel(
             entry,
-            affinity.cell_index,
-            affinity.local_probe,
+            probe_rank,
             atlas_mapping.tile_texel,
         );
         accum = accum + delta.rgb * scale;

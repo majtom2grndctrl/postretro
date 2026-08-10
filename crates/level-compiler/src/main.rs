@@ -836,7 +836,10 @@ fn parse_protect_aabb(spec: &str) -> anyhow::Result<[f32; 6]> {
     let mut v = [0.0f32; 6];
     for (i, part) in parts.iter().enumerate() {
         let parsed: f32 = part.trim().parse().map_err(|_| {
-            anyhow::anyhow!("--sh-protect-aabb field {} is not a number: {part:?}", i + 1)
+            anyhow::anyhow!(
+                "--sh-protect-aabb field {} is not a number: {part:?}",
+                i + 1
+            )
         })?;
         if !parsed.is_finite() {
             anyhow::bail!("--sh-protect-aabb field {} must be finite", i + 1);
@@ -1946,8 +1949,14 @@ mod tests {
         assert!(parsed.sh_analyze);
         assert_eq!(parsed.sh_analyze_out, Some(PathBuf::from("/tmp/out.json")));
         assert_eq!(parsed.sh_protect_aabbs.len(), 2);
-        assert_eq!(parsed.sh_protect_aabbs[0], [-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]);
-        assert_eq!(parsed.sh_protect_aabbs[1], [10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
+        assert_eq!(
+            parsed.sh_protect_aabbs[0],
+            [-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]
+        );
+        assert_eq!(
+            parsed.sh_protect_aabbs[1],
+            [10.0, 10.0, 10.0, 20.0, 20.0, 20.0]
+        );
     }
 
     #[test]

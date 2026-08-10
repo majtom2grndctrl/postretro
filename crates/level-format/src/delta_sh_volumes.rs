@@ -108,8 +108,8 @@ pub struct DeltaShVolumesSection {
     /// Flat list of animated-light indices, grouped by affinity cell. Each value
     /// must be `< animation_descriptor_indices.len()`.
     pub affinity_lights: Vec<u32>,
-    /// Flat probe payload, length `Σ(entry e) popcount(valid_probe_masks[cell(e)])
-    /// * tile_dimension * tile_dimension * 4`. One compact valid-probe
+    /// Flat probe payload, length `Σ(entry e) popcount(valid_probe_masks[cell(e)]) ×
+    /// tile_dimension × tile_dimension × 4`. One compact valid-probe
     /// sub-block per CSR entry, index-parallel to `affinity_lights`, stored as
     /// row-major RGBA16F octahedral tiles.
     pub delta_subblocks: Vec<u16>,

@@ -1154,9 +1154,20 @@ today** — no `persist` or `network` appears anywhere under it, and the two
 outside the bundle whose bindings (`puzzles`, `opts`) differ from their store
 names, so adopting the sugar there would silently rename the stores. They keep
 their explicit-name form and stay where they are. Author one new reference
-durable slot instead — e.g. a persisted run counter in a small `scripts/`
-module the start-script imports — giving AC 1, AC 2, AC 10, and AC 17 a
-subject in shipped dev content. **Importing the `defineStore` is not enough:**
+durable slot instead — a run counter in a small `scripts/` module the
+start-script imports — declared **`persist: true` and `network: "shared"`
+together**, giving AC 1, AC 2, AC 10, and AC 17 a subject in shipped dev
+content. Both keys are needed and neither is decoration: `persist` alone
+carries the save/restore criteria, while the fingerprint drift-guard (AC 10)
+only sees slots with a replication scope — a `ReplicationScope::None` slot
+"never affects the replicated-slot schema or its fingerprint"
+(`crates/entities/src/slot_table.rs:45-47`). `"shared"` is the one scope a mod
+slot may declare today; `"ownerPrivate"` is still rejected for mod stores
+(`crates/scripting-core/src/store_bridge.rs:505`) until
+`E16--per-player-currency` supplies the per-player namespace. A slot carrying
+both keys is also the shape that spec will build on, so the drift-guard is
+exercised against content that ships rather than a synthetic fixture.
+**Importing the `defineStore` is not enough:**
 a declaration the engine never sees does nothing. Its `declaration` must be
 returned from `defineMod` via a `stores` field, and
 `content/dev/start-script.ts:24-30` has none today — add it. Without that edit

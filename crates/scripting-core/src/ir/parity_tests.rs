@@ -981,7 +981,7 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
     );
     assert_eq!(
         typescript["storeBindingSugar"],
-        "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct const assignment"
+        "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
     );
     assert_eq!(
         typescript["storeBindingSugar"], typescript["impactBindingSugar"],

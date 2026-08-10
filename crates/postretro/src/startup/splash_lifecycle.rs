@@ -330,12 +330,12 @@ impl App {
                     .state_store_lifecycle
                     .should_restore_after_mod_init(has_manifest)
                 {
-                    let manifest = session
+                    let mod_id = session
                         .scripting
                         .script_runtime
-                        .mod_manifest()
+                        .committed_mod_identity()
+                        .map(|(id, _)| id.to_owned())
                         .expect("restore only runs after a committed manifest");
-                    let mod_id = manifest.id.clone();
                     let identity = session.scripting.script_runtime.store_identity().cloned();
                     if let Some(state_path) = state_path(&mod_id) {
                         match load_persisted_state(&state_path) {

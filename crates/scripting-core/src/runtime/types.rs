@@ -373,8 +373,8 @@ pub struct ScriptRuntime {
     /// declaration commit. Persistence and replicated-schema consumers must use
     /// this snapshot rather than re-reading `identity.json` mid-session.
     pub(super) store_identity: Option<crate::store_identity::StoreIdentityLedger>,
-    /// The first successfully committed mod identity. Admission has no
-    /// recovery path, so hot reload must not replace this value.
+    /// The first successfully committed mod identity. Admission, persistence,
+    /// and replication keep this process-scoped value across later init attempts.
     pub(super) committed_mod_identity: Option<(String, String)>,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.

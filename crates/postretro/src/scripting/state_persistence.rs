@@ -13,7 +13,7 @@ use serde_json::Value;
 use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
 use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
-/// Current on-disk state format. Increment only with a defined migration path.
+/// Current on-disk state format. Increment only with an explicit migration or invalidation policy.
 pub(crate) const CURRENT_STATE_VERSION: u32 = 2;
 const STATE_FILENAME: &str = "state.json";
 

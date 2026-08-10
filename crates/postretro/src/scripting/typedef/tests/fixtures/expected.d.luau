@@ -660,7 +660,7 @@ export type SwitchingDescriptor = {
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
   name: string,
-  --- Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. Declared identity is not a security mechanism.
+  --- Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. Declared identity is not a security mechanism.
   id: string,
   --- Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.
   version: string,
@@ -1384,9 +1384,9 @@ export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: Entity
 declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must
---- declare the same id to connect. Must be non-empty ASCII, at most 64
---- bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not
---- enforced. `version` is displayed and never compared; neither field is a
+--- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
+--- `:` is not allowed, and the id may not consist entirely of dots.
+--- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest

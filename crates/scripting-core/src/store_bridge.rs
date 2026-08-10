@@ -326,6 +326,12 @@ fn validate_dense_lua_array(table: &LuaTable, field_name: &str) -> Result<usize,
 }
 
 pub fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
+    if namespace.contains(':') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: namespace `{namespace}` must not contain `:`"),
+        });
+    }
+
     let inputs: BTreeMap<String, SlotSchemaInput> =
         serde_json::from_value(schema).map_err(|error| invalid_schema(None, error))?;
 
@@ -928,5 +934,17 @@ mod tests {
 
         assert!(matches!(error, ScriptError::InvalidArgument { .. }));
         assert!(error.to_string().contains("bad:name"));
+    }
+
+    #[test]
+    fn store_declaration_rejects_colon_in_namespace_before_reconciliation() {
+        let error = store_declaration(
+            "bad:namespace",
+            serde_json::json!({ "value": { "type": "number", "default": 0.0 } }),
+        )
+        .expect_err("descriptor parsing must reject a colon-bearing namespace");
+
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+        assert!(error.to_string().contains("bad:namespace"));
     }
 }

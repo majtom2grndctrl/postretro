@@ -643,7 +643,7 @@ impl ScriptRuntime {
     }
 
     /// Returns the id and version from the first committed manifest. Identity
-    /// is frozen across staged hot reloads because admission is terminal.
+    /// stays frozen across staged reloads and resume-time mod-init reruns.
     pub fn committed_mod_identity(&self) -> Option<(&str, &str)> {
         self.committed_mod_identity
             .as_ref()
@@ -1355,7 +1355,9 @@ mod tests {
     }
 
     #[test]
-    fn run_mod_init_seeds_committed_mod_identity() {
+    fn repeated_run_mod_init_keeps_first_committed_identity() {
+        // Regression: platform resume reruns mod-init, but process-scoped
+        // persistence and replication identity must remain on the first id.
         let mod_root = temp_mod_root("initial_identity");
         fs::write(
             mod_root.join("start-script.js"),
@@ -1374,6 +1376,26 @@ mod tests {
         assert_eq!(
             runtime.committed_mod_identity(),
             Some(("initial.mod", "display build"))
+        );
+
+        fs::write(
+            mod_root.join("start-script.js"),
+            "globalThis.__postretroModManifest = { name: 'Changed', id: 'changed.mod', version: '2' };",
+        )
+        .expect("changed manifest should be written");
+        runtime
+            .run_mod_init(&mod_root)
+            .expect("repeated manifest should commit");
+
+        assert_eq!(
+            runtime.mod_manifest().map(|manifest| manifest.id.as_str()),
+            Some("changed.mod"),
+            "the latest manifest remains mutable across resume-style init",
+        );
+        assert_eq!(
+            runtime.committed_mod_identity(),
+            Some(("initial.mod", "display build")),
+            "process-scoped consumers must keep using the first committed id",
         );
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }

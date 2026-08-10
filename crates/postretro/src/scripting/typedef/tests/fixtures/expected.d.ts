@@ -661,7 +661,7 @@ declare module "postretro" {
   export type ModManifest = {
     /** Human-readable mod name used for diagnostics and UI. Required. */
     name: string;
-    /** Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. Declared identity is not a security mechanism. */
+    /** Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. Declared identity is not a security mechanism. */
     id: string;
     /** Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid. */
     version: string;
@@ -1245,7 +1245,7 @@ declare module "postretro" {
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
 
-  /** Define a pure impact-policy descriptor. Omit `id` only for TypeScript direct-const binding-name sugar; the compiler supplies that binding's name. Register it only by returning it through `events`. */
+  /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
   export function defineImpactEvent(
     filter: ImpactEventFilter,
     build: (impact: Impact) => readonly EffectOrGroup[],
@@ -1348,7 +1348,7 @@ declare module "postretro" {
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Omit `namespace` only for TypeScript direct-const binding-name sugar; the compiler supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  /** Build a state-store declaration. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     schema: S,
   ): StoreDefinition<S>;
@@ -1394,7 +1394,7 @@ declare module "postretro" {
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

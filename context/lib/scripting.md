@@ -109,6 +109,8 @@ Primitive closures access engine state through a shared handle (`ScriptCtx`) cap
 
 The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces.
 
+Authored dotted names are in-memory addresses, not durable identity. The author-owned `identity.json` snapshot maps durable slots to opaque keys; the engine only reads and validates that snapshot. Persistence uses the bare durable key. Replicated schemas use the mod-qualified durable identity.
+
 `defineStore` is a pure SDK builder. It returns `declaration` data for `ModManifest.stores` and a `state` reference tree keyed by schema field. Calling it performs no FFI and changes no engine state. Unreturned declarations disappear when the short-lived setup VM drops.
 
 Names beginning with `@` are reserved for ephemeral dispatch inputs (§12). Store declarations reject a namespace or slot name beginning with `@`.

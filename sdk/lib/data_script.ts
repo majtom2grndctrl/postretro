@@ -433,7 +433,7 @@ function assertDenseImpactArray(values: readonly unknown[], context: string): vo
 }
 
 const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id";
-const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct const assignment";
+const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
 
 function validateImpactEventId(id: string): void {
   const valid = id.length > 0
@@ -442,7 +442,7 @@ function validateImpactEventId(id: string): void {
   if (!valid) throw new TypeError(IMPACT_EVENT_ID_DIAGNOSTIC);
 }
 
-/** Define a pure impact-policy descriptor. The engine prefixes its single-segment authored id with the mod id. Omit `id` only for TypeScript direct-const binding-name sugar. Registration occurs only through a manifest's `events`. */
+/** Define a pure impact-policy descriptor. The engine prefixes its single-segment authored id with the mod id. Omit `id` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Registration occurs only through a manifest's `events`. */
 export function defineImpactEvent(
   filter: ImpactEventFilter,
   build: (impact: Impact) => readonly EffectOrGroup[],
@@ -770,7 +770,7 @@ function cloneAndFreeze<T>(
   return Object.freeze(clone) as T;
 }
 
-/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only for TypeScript direct-const binding-name sugar. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
+/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   schema: S,
 ): StoreDefinition<S>;

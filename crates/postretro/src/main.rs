@@ -3909,8 +3909,8 @@ impl ApplicationHandler for App {
                 .session
                 .as_mut()
                 .expect("session installed at clean exit");
-            if let Some(manifest) = session.scripting.script_runtime.mod_manifest() {
-                let mod_id = manifest.id.clone();
+            if let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() {
+                let mod_id = mod_id.to_owned();
                 let identity = session.scripting.script_runtime.store_identity().cloned();
                 let script_ctx = session.scripting.script_ctx.clone();
                 if let Some(state_path) = state_path(&mod_id) {
@@ -5211,8 +5211,8 @@ impl App {
                 session.scripting.script_ctx.clone(),
                 netcode::ReplicatedSlotIdentity::new(
                     script_runtime
-                        .mod_manifest()
-                        .map(|manifest| manifest.id.clone()),
+                        .committed_mod_identity()
+                        .map(|(id, _)| id.to_owned()),
                     script_runtime.store_identity().cloned(),
                 ),
             )
@@ -5894,8 +5894,8 @@ impl App {
                 session.scripting.script_ctx.clone(),
                 netcode::ReplicatedSlotIdentity::new(
                     script_runtime
-                        .mod_manifest()
-                        .map(|manifest| manifest.id.clone()),
+                        .committed_mod_identity()
+                        .map(|(id, _)| id.to_owned()),
                     script_runtime.store_identity().cloned(),
                 ),
             )

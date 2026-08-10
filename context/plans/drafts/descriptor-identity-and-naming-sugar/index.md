@@ -189,8 +189,9 @@ already validated by `validate_mod_manifest_id`
 charset **includes** `:`. The change is a colon *subtraction*, applied in
 `validate_mod_manifest_id` only — not in the shared helper, which also
 serves ammo-type and weapon-credit identifiers (`impact_policy.rs:436`,
-`combat.rs:143`, `:204`, the js/lua reaction parsers) whose grammar keeps
-`:`. Impact events use the qualified id for composition and diagnostics:
+`crates/foundation/src/data_descriptors/types/combat.rs:143`, `:204`, the
+js/lua reaction parsers) whose grammar keeps `:`. Impact events use the
+qualified id for composition and diagnostics:
 base-filter inheritance keys by it (`impact_policy.rs:178-186`), per-dispatch
 same-id eviction compares it (`impact_policy.rs:219-234` — `BoundPolicy.id`
 carries the qualified form, which is what AC 9's override eviction runs on),
@@ -550,9 +551,10 @@ diff, because the property is the absence of code and nothing executes it.
 - [ ] **AC 12.** A mint whose ledger write fails exits non-zero naming the
   ledger path and leaves the existing ledger byte-identical. Realize the
   failure by putting a directory at `identity.json` or at its `.tmp` sibling —
-  never `chmod`: CI and the dev container run as root, where `chmod 0555`
-  does not deny writes. A stale `.ts` in an unwritable mod root fails earlier,
-  in the recompile (row 2a), and does not exercise this.
+  never `chmod`: the dev container runs as root (and root-run CI would behave
+  the same), where `chmod 0555` does not deny writes. A stale `.ts` in an
+  unwritable mod root fails earlier, in the recompile (row 2a), and does not
+  exercise this.
 - [ ] **AC 13.** The mint writes `identity.json` through a sibling `.tmp` and
   a rename, leaving no `.tmp` behind on success or on failure.
 - [ ] **AC 14.** A durable slot missing its ledger entry is a fatal,
@@ -640,7 +642,10 @@ commit paths, which live in that crate, not the binary. Parse
 it. The ledger type, its parser, and its serializer are `pub` and re-exported
 from `scripting-core`: the mint bin (Task 4) links this crate and writes
 through this module, and Task 6 reads through it, so there is never a second
-serializer to drift from this one. Duplicate authored names must be detected
+serializer to drift from this one. The module also exports the key generator
+— `k` followed by 16 lowercase hex digits from the OS RNG — so the mint has
+one source for the shape rather than its own copy. Duplicate authored names
+must be detected
 **at the deserializer** — a plain map deserialization collapses duplicate JSON
 keys last-wins before any validator runs — so parse the `slots` object through
 a sequence-of-pairs intermediate; then check unique keys and key grammar
@@ -653,8 +658,11 @@ The identity gate sits **at the `plan_reconcile` site**, in both commit paths �
 `run_mod_init` (`crates/scripting-core/src/runtime/mod_init.rs:149-156`) and
 the staged commit twin (`crates/scripting-core/src/runtime/core.rs:404-407`) —
 so an identity defect rejects before *any* mutation, not merely before
-`apply_reconcile_plan` (`:474`); see Task 7 for the two intervening mutations
-that make the looser placement wrong. A gate in the binary would fire after
+`apply_reconcile_plan` (`:474`); the staged path assigns
+`self.deferred_mesh_descriptors` at
+`crates/scripting-core/src/runtime/core.rs:425-434` and applies the refresh
+plan at `:453-458`, both before `apply_reconcile_plan` at `:474`. A gate in
+the binary would fire after
 `run_mod_init` has already applied. The staged path does not receive a mod root
 as a parameter — `commit_staged_manifest_result`
 (`crates/scripting-core/src/runtime/core.rs:289-294`) takes only the result,
@@ -668,7 +676,10 @@ slots would wedge every attempt after a rename or a discard until restart. A
 durable slot — `ownership == SlotOwnership::Mod && ((persist && !readonly) ||
 network != ReplicationScope::None)`, all three conjuncts written out — missing
 its entry rejects with a diagnostic naming the slot and printing a
-ready-to-paste entry carrying a freshly generated key. `SlotOwnership`
+ready-to-paste entry carrying a freshly generated key. A ledger entry matching
+no declared slot is the opposite case: warn and retain it, never reject,
+because removing `persist` and later restoring it must not re-mint the key.
+`SlotOwnership`
 (`crates/entities/src/slot_table.rs:38`), `ReplicationScope` (`:52`), and
 `SlotSchema.network` (`:73`) all come from `postretro_entities::slot_table`.
 The persist half is exactly the binary's `is_persisted_mod_slot`
@@ -736,7 +747,9 @@ and an unmutated table; a runtime built from `ScriptRuntimeConfig::default()`
 rejects a durable slot with no entry (the polarity pin — this test fails if the
 flag ever inverts); attempt-scoped gating (a live-but-undeclared slot does not
 reject); duplicate-name and duplicate-key rejection, including a duplicate name
-that a map parse would have collapsed; unparseable and wrong-version rejection;
+that a map parse would have collapsed; an orphan ledger entry matching no
+declared slot is retained with a warning, not rejected; unparseable and
+wrong-version rejection;
 absent-file legality both ways; v1 file ignored; two mod ids resolve to distinct
 paths and neither save touches the other's file; the resolved path contains
 exactly one `postretro` component; a completed save leaves no `.tmp` sibling and
@@ -893,7 +906,8 @@ Reconcile `<mod_root>/identity.json` from those declarations **through Task 1's
 serializer are `pub` and re-exported from `scripting-core`, and this bin links
 that crate exactly as the engine does. Do not write a second serializer; a
 second serializer is the drift this design exists to prevent. Append an entry
-with a fresh OS-RNG key for each durable slot — the same predicate Task 1 uses,
+with a fresh OS-RNG key — `k` followed by 16 lowercase hex digits,
+`k[0-9a-f]{16}` — for each durable slot — the same predicate Task 1 uses,
 `ownership == SlotOwnership::Mod && ((persist && !readonly) || network !=
 ReplicationScope::None)`, all three conjuncts — that has none; never modify or
 delete an existing line; serialize the whole file to a sibling `.tmp` and
@@ -946,8 +960,9 @@ the grammar it already enforces via the shared
 charset `[A-Za-z0-9_.:-]`, ≤64 bytes, non-empty). Do **not** narrow the shared
 helper: it also validates ammo-type and weapon-credit identifiers
 (`crates/postretro/src/impact_policy.rs:436`,
-`crates/postretro/src/combat.rs:143`, `:204`, the js/lua reaction parsers),
-whose grammar keeps `:`. The same function gains a second subtraction, for a
+`crates/foundation/src/data_descriptors/types/combat.rs:143`, `:204`, the
+js/lua reaction parsers), whose grammar keeps `:`. The same function gains a
+second subtraction, for a
 different reason: **reject an id made entirely of `.` characters.** The shared
 charset admits `.` (`foundation.rs:45-47`), so `..` and `.` are valid ids
 today, and this spec turns the id into a path component under the data
@@ -1028,20 +1043,29 @@ content and both peers reach it identically.
 Plumbing is the bulk of this task, because nothing on the build chain carries a
 `ScriptRuntime` today. `ReplicatedSlotSchema::build` (`:91`) is reached only
 through private `fn schema(&mut self, slot_table)` on two structs — host at
-`:332`, client at `:751` — via `fingerprint()` (`:338`), `net_schema()`
-(`:757`), and `ensure_built()` (`:762`). Every one of those signatures gains
-the mod id and the validated ledger, as does the direct
-`ReplicatedSlotSchema::build` call in the client-side test at
-`crates/postretro/src/netcode/endpoint.rs:906`. The external caller that must
-supply them is `crates/postretro/src/netcode/host.rs:153`
-(`state_slots.fingerprint(slot_table)`), reached from the same session state
-that already hands the builder its `SlotTable`. The internal callers that must
+`:332`, client at `:751` — via `fingerprint()` (`:339`), `net_schema()`
+(`:757`), and `ensure_built()` (`:762`). The chain the compiler will walk
+starts at those three signatures, each of which gains the mod id and the
+validated ledger, as does the direct `ReplicatedSlotSchema::build` call in the
+client-side test at `crates/postretro/src/netcode/endpoint.rs:906`. The
+external caller that must supply them is
+`crates/postretro/src/netcode/host.rs:153`
+(`state_slots.fingerprint(slot_table)`), which sits inside `host_replicate`
+(`crates/postretro/src/netcode/host.rs:107`), whose production caller is
+`crates/postretro/src/main.rs:5873`; the client side has its own external
+entry, `apply_snapshot_state`
+(`crates/postretro/src/netcode/state_slots.rs:787`), called at
+`crates/postretro/src/netcode/mod.rs:870`. The internal callers that must
 thread them through are `state_slots.rs:462` (host entry snapshot), `:801`
-(client batch validation), and `:907` (`write_for`). Source them from the
-`ScriptRuntime` accessor Task 1 adds beside `ScriptRuntime::mod_manifest`
+(client batch validation), and `:907` (`write_for`). `state_slots.rs`'s own
+test module holds a further 13 direct `ReplicatedSlotSchema::build` calls that
+will also need updating. Source them from the `ScriptRuntime` accessor Task 1
+adds beside `ScriptRuntime::mod_manifest`
 (`crates/scripting-core/src/runtime/core.rs:588`), reading the ledger through
 Task 1's `crates/scripting-core/src/store_identity.rs` — never by reading
-`identity.json` here, and never with a second parser.
+`identity.json` here, and never with a second parser. Every one of these is a
+compile-site change: an omitted call site fails the build, not the test suite,
+so nothing here is silent.
 
 Bump `FINGERPRINT_STREAM_VERSION` (`state_slots.rs:13-16`) since the canonical
 byte stream changes. Drift-guard tests, mirroring the `networking.md:48-50`
@@ -1147,7 +1171,8 @@ needs no commit here — but a stale artifact on an existing working copy would
 mint against the old grammar, so delete it (or recompile) before step 4.
 Nothing is committed.
 
-**4. Mint `content/dev/identity.json`** with Task 4's tool and commit it, so the
+**4. Mint `content/dev/identity.json`** with Task 4's tool
+(`cargo run -p xtask -- mint-identity <mod-root>`) and commit it, so the
 first checked-in ledger comes from the same path authors use.
 
 Update every fixture and doc-adjacent test that asserts the old
@@ -1192,7 +1217,7 @@ surface, and needs Task 4 to mint the dev mod's ledger.
 | Persisted state is scoped per mod id under the platform data dir; nothing writes `state.json` to the working directory | Task 1 (path resolver) | a `None` from `ProjectDirs` inviting a cwd fallback (Orderings 21) | AC 18, 20, 21 |
 | Explicit-name form legal at every call site; sugar fires only on direct assignment | Task 2, Task 3 | helper-built descriptors; Luau (no compiler pass) | AC 3, 4, 5 |
 | TS/Luau twin validation — same input class, same outcome (`scripting.md:17`) | Task 2 | the TS-only compile sugar (syntax, exempt per `scripting.md:243-245`) | AC 4, 6 |
-| Whole-attempt validation: any identity defect rejects at the `plan_reconcile` site, mutating nothing — not the slot table, the entity registry, or the deferred-mesh snapshot (`scripting.md:127`) | Task 1 (gate at the `plan_reconcile` site in both commit paths), Task 7 (staged matrix) | a gate placed binary-side would fire after `run_mod_init` has applied; a gate merely "before `apply_reconcile_plan`" lands after two mutations (Task 7); the mint's own enforcement-off construction (Task 4) | AC 15, 16, 24 |
+| Whole-attempt validation: any identity defect rejects at the `plan_reconcile` site, mutating nothing — not the slot table, the entity registry, or the deferred-mesh snapshot (`scripting.md:127`) | Task 1 (gate at the `plan_reconcile` site in both commit paths), Task 7 (staged matrix) | a gate placed binary-side would fire after `run_mod_init` has applied; a gate merely "before `apply_reconcile_plan`" lands after two mutations (Task 7); the mint's own enforcement-off construction (Task 4) | AC 14, 15, 16, 24 |
 | The identity gate scopes to the attempt's declarations, never the live table | Task 1, Task 7 | rename/discard mid-session (Orderings 7, 17) — live-table gating wedges every later attempt | AC 24; Task 7 tests |
 | Engine-catalog slots carry no ledger entries, keep dotted-name identity strings, and keep today's persistence filtering | Task 1 (entry-requirement carve-out), Task 4 (mint sees only mod-declared slots), Task 6 (keying carve-out) | schema-builder substitution | AC 25 |
 | Identity enforcement is on in every construction that is not the mint — pinned by negative polarity (`skip_identity_enforcement`, `Default` = enforcing) plus a test, not by convention alone; the field is `pub` and re-exported (`runtime/mod.rs:13`) | Task 1 (field and default), Task 4 (sole caller that sets it) | any new `ScriptRuntimeConfig` construction; a future polarity flip | AC 29 |
@@ -1228,8 +1253,9 @@ surface, and needs Task 4 to mint the dev mod's ledger.
   `ScriptCtx` + `PrimitiveRegistry` + `register_all`, then `run_mod_init`,
   then reconcile through `store_identity.rs`. Driven by an `xtask` subcommand
   that calls the existing `build_scripts_sidecar` and shells out.
-- Qualification: mod id threading follows the path that already delivers
-  `active_level_tags` to `impact_policy.rs::rebuild`.
+- Qualification: mod id is a registry field set once alongside
+  `replace_global_events` / `replace_level_events` — it cannot ride the
+  per-level tags parameter (Task 5).
 - Schema: extend `ReplicatedSlotSchemaEntry` with the identity string; sort,
   fingerprint (`compute_fingerprint`, `state_slots.rs:223+`), and
   `id_for`/`entry_for` lookups use it; apply path and `wire_shape` keep the

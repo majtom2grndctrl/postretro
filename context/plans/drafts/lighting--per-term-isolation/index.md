@@ -30,14 +30,17 @@ default (all terms on) renders identically to today.
 
 ### Out of scope
 
-- **Emissive term isolation.** Owner decision (2026-08-10): emissive is kept out
-  of the instrument. It is landed — `forward.wgsl` and `kinematic_brush.wgsl`
-  sample `emissive_texture` × `material.emissive_strength` (world + mover only;
-  absent on entity/sprite) and it is demoable in `combat-demo.map` — so this is a
-  scope choice, not a source foreclosure: emissive is material self-emission,
-  categorically not a light term (its own scope: not a light source, no
-  double-count). Bit 7 stays reserved and unwired so the mask vocabulary need not
-  be reopened if that decision changes.
+- **Emissive term isolation.** Owner decision (2026-08-10): emissive is kept out.
+  The instrument isolates terms that *light the scene* — every gated term is
+  light a surface receives (ambient, indirect, baked/animated direct, dynamic,
+  specular). An emissive surface lights **only itself**: it injects no light onto
+  neighbors and does no GI (`emissive-surfaces-bloom` scope; the no-double-count
+  boundary). So emissive is categorically outside the light-term set, not deferred
+  work. It is landed and wire-able — the `_e.png` 4th material slot; `forward.wgsl`
+  + `kinematic_brush.wgsl` add `emissive × material.emissive_strength` on world +
+  mover only (absent on entity/sprite); demoable in `combat-demo.map` — but it
+  belongs to a different category. Bit 7 stays reserved should that judgment
+  change.
 - **The SDF-shadow instruments** (`sdf_shadow_mode`, `sdf_force_visibility_one`,
   `sdf_shadow_flags`). They occupy separate uniform fields (`FrameUniforms`
   bytes 96..108) and their own UI controls, and gate shadow *visibility*, not

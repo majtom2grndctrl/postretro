@@ -57,4 +57,6 @@ Both ComboBoxes live in `DiagnosticsTab::Lighting` → `CollapsingHeader "Lighti
 - `kinematic_brush.wgsl`: same term (6 refs).
 - `skinned_mesh.wgsl` and `billboard.wgsl`: **no** emissive (models consume the diffuse slot only; sprites have no emissive).
 
-Group 1 now carries 4 sampled textures (diffuse, emissive, specular, normal), which is what raises the forward count to the 16-texture ceiling. Owner decision (2026-08-10): emissive is kept OUT of the isolation instrument — it is material self-emission, not a light term. Bit 7 stays reserved.
+Convention: emissive is the `_e.png` sibling, resolved alongside `_s`/`_n` (`texture_mips/resolution.rs:30`, `["", "_s", "_n", "_e"]`), 4th material slot, sRGB (unlike linear `_s`/`_n`; `texture_validation.rs:180`), dimension-matched to diffuse. Assets exist: `content/dev/textures/neon/neon_{dim,glow}_panel_e.png`.
+
+Group 1 now carries 4 sampled textures (diffuse, emissive, specular, normal), which is what raises the forward count to the 16-texture ceiling. Owner decision (2026-08-10): emissive is kept OUT of the isolation instrument. The instrument isolates terms that light the scene; an emissive surface lights only itself (no injection onto neighbors, no GI — the no-double-count boundary), so it is a different category, not a light term. Bit 7 stays reserved.

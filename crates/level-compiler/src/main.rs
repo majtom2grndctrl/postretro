@@ -43,6 +43,7 @@ pub mod script_light_membership;
 pub mod sdf_bake;
 pub mod sh_analyze;
 pub mod sh_bake;
+pub mod sh_coarsen;
 pub mod sh_group;
 pub mod shadowmask_bake;
 pub mod size_options;

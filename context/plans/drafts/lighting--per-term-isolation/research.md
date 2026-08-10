@@ -44,7 +44,7 @@ Whether a shader can gate static vs animated baked light independently, per fami
 
 CPU mirror owner: `postretro-render-cpu` (`crates/render-cpu/src/frame_uniforms.rs`). `build_uniform_data` serializes group-0 (128 B). `DynamicDirectParams` bytes: `render-cpu/src/sh_volume.rs:46` (`build_dynamic_direct_params_bytes(scale, isolation, has_direct)`, 16 B).
 
-Byte-layout tests to update: `frame_uniforms.rs:277-505` (CPU offsets), `shader_tests.rs:135` (group-0 stride) + `:152` (billboard loop-bound), `mesh_pass.rs:2093`/`:2106`, `kinematic_brush.rs:1120`/`:1140`, `sh_volume.rs:1775` (DynamicDirectParams layout).
+Byte-layout tests to update (cite by name — line numbers drift): `frame_uniforms.rs` CPU-offset tests, `shader_tests.rs` group-0 stride (`Uniforms` span == `UNIFORM_SIZE`) + billboard loop-bound, `crates/renderer/src/render/mesh_pass.rs` (`mesh_light_params_is_sixteen_bytes`, `write_light_params_places_ambient_floor_at_bytes_twelve_to_sixteen`), `kinematic_brush.rs` (byte + WGSL-layout tests), `crates/render-cpu/src/sh_volume.rs` `dynamic_direct_params_pack_layout`. (Note: `MeshLightParams` lives in `crates/renderer/src/render/mesh_pass.rs`, not the render-cpu `mesh_pass.rs`.)
 
 ## Debug UI
 

@@ -3,10 +3,12 @@
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL,
+    AFFINITY_FACTOR, DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection, PROBES_PER_CELL,
 };
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
+use postretro_level_format::lightmap::f32_to_f16_bits;
+use postretro_level_format::sh_reconstruct::{Level, kept_mask, reconstruct_l2_tile};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::delta_drop_policy::{
@@ -242,6 +244,7 @@ fn compact_indirect_valid_probes(
             affinity_dims: section.affinity_dims,
             affinity_offsets: &section.affinity_offsets,
             affinity_lights: &section.affinity_lights,
+            cell_levels: &section.cell_levels,
             delta_subblocks: &section.delta_subblocks,
             probe_stride: section.delta_probe_f16_stride(),
         },
@@ -273,6 +276,7 @@ fn compact_direct_valid_probes(
             affinity_dims: section.affinity_dims,
             affinity_offsets: &section.affinity_offsets,
             affinity_lights: &section.affinity_lights,
+            cell_levels: &section.cell_levels,
             delta_subblocks: &section.delta_subblocks,
             probe_stride: section.delta_probe_f16_stride(),
         },
@@ -303,6 +307,7 @@ fn compact_animated_direct_valid_probes(
             affinity_dims: section.affinity_dims,
             affinity_offsets: &section.affinity_offsets,
             affinity_lights: &section.affinity_lights,
+            cell_levels: &section.cell_levels,
             delta_subblocks: &section.delta_subblocks,
             probe_stride: section.delta_probe_f16_stride(),
         },
@@ -334,6 +339,7 @@ struct DenseDeltaPayload<'a> {
     affinity_dims: [u32; 3],
     affinity_offsets: &'a [u32],
     affinity_lights: &'a [u32],
+    cell_levels: &'a [u8],
     delta_subblocks: &'a [u16],
     probe_stride: usize,
 }
@@ -348,6 +354,7 @@ fn compact_dense_valid_probe_payload(
         affinity_dims,
         affinity_offsets,
         affinity_lights,
+        cell_levels,
         delta_subblocks,
         probe_stride,
     } = payload;
@@ -391,10 +398,34 @@ fn compact_dense_valid_probe_payload(
     let valid_probe_masks: Vec<u64> = (0..affinity_cell_count)
         .map(|cell| valid_probe_mask_for_affinity_cell(base, affinity_dims, cell))
         .collect();
+    // Each cell's stored (kept) probe set is derived from its coarsening level
+    // and full validity. At L0 `kept_mask == validity`, so this is byte-for-byte
+    // identical to the pre-coarsening path; L1/L2 store a coarser lattice while
+    // the emitted `valid_probe_masks` remains full validity.
+    let levels: Vec<Level> = (0..affinity_cell_count)
+        .map(|cell| {
+            let byte = *cell_levels.get(cell).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{section_name} cell_levels length {} is shorter than affinity cell count {affinity_cell_count} during valid-probe compaction",
+                    cell_levels.len(),
+                )
+            })?;
+            Level::from_u8(byte).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{section_name} cell level byte {byte} is out of range during valid-probe compaction"
+                )
+            })
+        })
+        .collect::<anyhow::Result<Vec<Level>>>()?;
+    let kept_masks: Vec<u64> = levels
+        .iter()
+        .zip(&valid_probe_masks)
+        .map(|(&level, &validity)| kept_mask(level, validity))
+        .collect();
     let compact_tile_count = (0..affinity_cell_count).try_fold(0usize, |total, cell| {
         let entry_count = (affinity_offsets[cell + 1] - affinity_offsets[cell]) as usize;
         let cell_tiles = entry_count
-            .checked_mul(valid_probe_masks[cell].count_ones() as usize)
+            .checked_mul(kept_masks[cell].count_ones() as usize)
             .ok_or_else(|| anyhow::anyhow!("{section_name} compact tile count overflow"))?;
         total
             .checked_add(cell_tiles)
@@ -406,19 +437,37 @@ fn compact_dense_valid_probe_payload(
     let mut compacted_subblocks = Vec::with_capacity(capacity);
 
     for cell in 0..affinity_cell_count {
-        let mask = valid_probe_masks[cell];
+        let validity = valid_probe_masks[cell];
+        let level = levels[cell];
+        let kept = kept_masks[cell];
         let start = affinity_offsets[cell] as usize;
         let end = affinity_offsets[cell + 1] as usize;
         for entry in start..end {
             let dense_entry =
                 &delta_subblocks[entry * dense_entry_stride..(entry + 1) * dense_entry_stride];
-            for local_probe in 0..PROBES_PER_CELL {
-                if mask & (1u64 << local_probe) == 0 {
-                    continue;
+            match level {
+                // L0/L1 copy each kept probe's raw dense tile in x-fastest order.
+                // The copy loop is identical to the pre-coarsening path except
+                // that it is gated by `kept` (which equals validity at L0).
+                Level::L0 | Level::L1 => {
+                    for local_probe in 0..PROBES_PER_CELL {
+                        if kept & (1u64 << local_probe) == 0 {
+                            continue;
+                        }
+                        let tile_start = local_probe * probe_stride;
+                        compacted_subblocks
+                            .extend_from_slice(&dense_entry[tile_start..tile_start + probe_stride]);
+                    }
                 }
-                let tile_start = local_probe * probe_stride;
-                compacted_subblocks
-                    .extend_from_slice(&dense_entry[tile_start..tile_start + probe_stride]);
+                // L2 stores exactly one synthesized brick-mean tile at the
+                // representative kept slot, over this entry's own valid probes.
+                Level::L2 => {
+                    if kept == 0 {
+                        continue;
+                    }
+                    let mean_tile = synthesize_l2_mean_tile(dense_entry, validity, probe_stride);
+                    compacted_subblocks.extend_from_slice(&mean_tile);
+                }
             }
         }
     }
@@ -427,6 +476,45 @@ fn compact_dense_valid_probe_payload(
         valid_probe_masks,
         delta_subblocks: compacted_subblocks,
     })
+}
+
+/// Synthesize the L2 brick-mean tile for one dense delta entry, encoded as an
+/// f16 RGBA tile. The mean is taken over the entry's own VALID probe tiles using
+/// [`reconstruct_l2_tile`] — the exact definition the classifier measured L2
+/// error against and the render-cpu golden reads back — not a per-channel average
+/// rolled here. The caller guarantees `validity != 0`, so the mean is defined.
+fn synthesize_l2_mean_tile(dense_entry: &[u16], validity: u64, probe_stride: usize) -> Vec<u16> {
+    let tile_texels = probe_stride / DELTA_TILE_TEXEL_F16_COUNT;
+    let mut valid_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] =
+        std::array::from_fn(|_| None);
+    let mut remaining = validity;
+    while remaining != 0 {
+        let local = remaining.trailing_zeros() as usize;
+        remaining &= remaining - 1;
+        let base = local * probe_stride;
+        let tile: Vec<glam::Vec3> = (0..tile_texels)
+            .map(|texel| {
+                let i = base + texel * DELTA_TILE_TEXEL_F16_COUNT;
+                glam::Vec3::new(
+                    crate::sh_bake::f16_bits_to_f32(dense_entry[i]),
+                    crate::sh_bake::f16_bits_to_f32(dense_entry[i + 1]),
+                    crate::sh_bake::f16_bits_to_f32(dense_entry[i + 2]),
+                )
+            })
+            .collect();
+        valid_tiles[local] = Some(tile);
+    }
+    let mean = reconstruct_l2_tile(&valid_tiles, tile_texels)
+        .expect("a non-empty valid probe set yields an L2 brick mean");
+    let valid_alpha = f32_to_f16_bits(1.0);
+    let mut encoded = Vec::with_capacity(probe_stride);
+    for texel in mean {
+        encoded.push(f32_to_f16_bits(texel.x));
+        encoded.push(f32_to_f16_bits(texel.y));
+        encoded.push(f32_to_f16_bits(texel.z));
+        encoded.push(valid_alpha);
+    }
+    encoded
 }
 
 fn affinity_dims_for_grid(grid_dimensions: [u32; 3], affinity_factor: u8) -> [u32; 3] {
@@ -519,7 +607,7 @@ mod tests {
     use super::*;
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::delta_sh_volumes::{
-        DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+        DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL, valid_probe_mask_payload_f16_count,
     };
     use postretro_level_format::lightmap::f32_to_f16_bits;
     use postretro_level_format::octahedral::{
@@ -1083,5 +1171,250 @@ mod tests {
         assert!(message.contains("id 41"));
         assert!(message.contains("id 45"));
         assert!(message.contains("by 1 bytes"));
+    }
+
+    /// A dense delta entry whose named local probe tiles carry a constant RGB
+    /// (alpha 1.0); every other probe tile is left zero. Lets an L2 test pin
+    /// known distinct per-probe values.
+    fn dense_entry_with_probe_rgb(values: &[(usize, [f32; 3])]) -> Vec<u16> {
+        let mut payload = vec![0u16; ENTRY_STRIDE];
+        let alpha = f32_to_f16_bits(1.0);
+        for &(local, rgb) in values {
+            let base = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            for texel in 0..DEFAULT_DELTA_PROBE_F16_STRIDE / 4 {
+                let i = base + texel * 4;
+                payload[i] = f32_to_f16_bits(rgb[0]);
+                payload[i + 1] = f32_to_f16_bits(rgb[1]);
+                payload[i + 2] = f32_to_f16_bits(rgb[2]);
+                payload[i + 3] = alpha;
+            }
+        }
+        payload
+    }
+
+    /// P1 / AC1: an L1 cell stores only its valid corner tiles — fewer than the
+    /// full valid set — while `valid_probe_masks` still carries full validity and
+    /// the payload length matches the level-aware wire identity.
+    #[test]
+    fn l1_coarsening_stores_only_valid_corner_tiles() {
+        // Validity spans corners {0, 3} and non-corner interiors {1, 6}.
+        let base = base_with_valid_locals(&[0, 1, 3, 6]);
+        let validity = (1u64 << 0) | (1u64 << 1) | (1u64 << 3) | (1u64 << 6);
+        let mut section = direct(vec![0], dense_entry(100));
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 1];
+        section.cell_levels = vec![Level::L1.to_u8()];
+
+        let compacted =
+            compact_direct_valid_probes(&section, &base).expect("an L1 cell compacts");
+
+        // Emitted validity is unchanged full validity (Option B).
+        assert_eq!(compacted.valid_probe_masks, vec![validity]);
+        assert_eq!(compacted.cell_levels, vec![Level::L1.to_u8()]);
+
+        // Only the valid corners {0, 3} are stored: 2 tiles < 4 valid probes.
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            2 * DEFAULT_DELTA_PROBE_F16_STRIDE
+        );
+        assert!(2 < validity.count_ones());
+
+        // The two stored tiles are exactly corners 0 and 3 in x-fastest order.
+        for (rank, local) in [0usize, 3].into_iter().enumerate() {
+            let start = rank * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            assert!(
+                compacted.delta_subblocks[start..start + DEFAULT_DELTA_PROBE_F16_STRIDE]
+                    .iter()
+                    .all(|&half| half == 100 + local as u16)
+            );
+        }
+
+        // Payload length equals the level-aware wire identity.
+        let expected = valid_probe_mask_payload_f16_count(
+            &compacted.affinity_offsets,
+            &compacted.valid_probe_masks,
+            &compacted.cell_levels,
+            section.delta_probe_f16_stride(),
+        )
+        .expect("the level-aware identity is defined for an L1 cell");
+        assert_eq!(compacted.delta_subblocks.len(), expected);
+    }
+
+    /// P2: an L2 cell emits exactly one synthesized tile at the representative
+    /// slot, equal to `reconstruct_l2_tile` over the entry's valid probe tiles —
+    /// the brick mean, not any single copied probe.
+    #[test]
+    fn l2_coarsening_stores_synthesized_brick_mean_tile() {
+        let values = [
+            (1usize, [0.1f32, 0.2, 0.3]),
+            (5, [0.4, 0.5, 0.6]),
+            (9, [0.7, 0.8, 0.9]),
+        ];
+        let base = base_with_valid_locals(&[1, 5, 9]);
+        let validity = (1u64 << 1) | (1u64 << 5) | (1u64 << 9);
+        let mut section = direct(vec![0], dense_entry_with_probe_rgb(&values));
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 1];
+        section.cell_levels = vec![Level::L2.to_u8()];
+
+        let compacted =
+            compact_direct_valid_probes(&section, &base).expect("an L2 cell compacts");
+
+        assert_eq!(compacted.valid_probe_masks, vec![validity]);
+        // Exactly one stored tile (the representative slot = lowest valid bit).
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            DEFAULT_DELTA_PROBE_F16_STRIDE,
+            "L2 stores exactly one tile"
+        );
+
+        // Golden brick mean via the shared reconstruction, over the same tiles.
+        let tile_texels = DEFAULT_DELTA_PROBE_F16_STRIDE / 4;
+        let mut valid_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] =
+            std::array::from_fn(|_| None);
+        for &(local, rgb) in &values {
+            valid_tiles[local] = Some(vec![glam::Vec3::from(rgb); tile_texels]);
+        }
+        let golden = reconstruct_l2_tile(&valid_tiles, tile_texels)
+            .expect("a non-empty valid set has a brick mean");
+
+        // Decode the emitted representative tile and compare to the mean.
+        for texel in 0..tile_texels {
+            let i = texel * 4;
+            let rgb = glam::Vec3::new(
+                crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i]),
+                crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i + 1]),
+                crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i + 2]),
+            );
+            assert!(
+                (rgb - golden[texel]).abs().max_element() < 1e-2,
+                "emitted L2 tile must equal reconstruct_l2_tile: got {rgb:?} expected {:?}",
+                golden[texel]
+            );
+        }
+        // The mean [0.4, 0.5, 0.6] is not any single copied probe value.
+        let emitted0 = glam::Vec3::new(
+            crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[0]),
+            crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[1]),
+            crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[2]),
+        );
+        for &(_, rgb) in &values {
+            let probe = glam::Vec3::from(rgb);
+            if (probe - glam::Vec3::new(0.4, 0.5, 0.6)).abs().max_element() > 1e-3 {
+                assert!(
+                    (emitted0 - probe).abs().max_element() > 1e-3,
+                    "the L2 tile must be the mean, not a copied probe {probe:?}"
+                );
+            }
+        }
+    }
+
+    /// AC2: a section this producer emits with an L2 cell round-trips through the
+    /// existing loader unchanged.
+    #[test]
+    fn l2_produced_section_round_trips() {
+        let values = [
+            (1usize, [0.1f32, 0.2, 0.3]),
+            (5, [0.4, 0.5, 0.6]),
+            (9, [0.7, 0.8, 0.9]),
+        ];
+        let base = base_with_valid_locals(&[1, 5, 9]);
+        let mut section = direct(vec![0], dense_entry_with_probe_rgb(&values));
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 1];
+        section.cell_levels = vec![Level::L2.to_u8()];
+
+        let compacted =
+            compact_direct_valid_probes(&section, &base).expect("an L2 cell compacts");
+        let decoded = DirectShDeltaVolumesSection::from_bytes(&compacted.to_bytes())
+            .expect("a producer-emitted L2 section uses the existing loader format");
+        assert_eq!(decoded, compacted);
+    }
+
+    /// The all-L0 path is byte-identical to the pre-coarsening "copy every valid
+    /// tile" behavior for a mixed, multi-cell section.
+    #[test]
+    fn all_l0_mixed_section_is_byte_identical_to_copy_all_valid() {
+        // Two affinity cells along x: cell 0 (x 0..3), cell 1 (x 4..7).
+        let mut base = OctahedralShVolumeSection::placeholder();
+        base.grid_dimensions = [8, 4, 4];
+        base.probes = vec![OctahedralShProbe::default(); 8 * 4 * 4];
+        let global = |cell_x_base: u32, local: usize| -> usize {
+            let (lx, ly, lz) = (local % 4, (local / 4) % 4, local / 16);
+            (cell_x_base as usize + lx) + ly * 8 + lz * 32
+        };
+        for &local in &[1usize, 6, 32] {
+            base.probes[global(0, local)].validity = 1;
+        }
+        for &local in &[0usize, 3] {
+            base.probes[global(4, local)].validity = 1;
+        }
+
+        let payload = [dense_entry(100), dense_entry(1_000)].concat();
+        let mut section = direct(vec![0, 0], payload);
+        section.affinity_dims = [2, 1, 1];
+        section.affinity_offsets = vec![0, 1, 2];
+        section.valid_probe_masks = vec![u64::MAX; 2];
+        section.cell_levels = vec![Level::L0.to_u8(); 2];
+
+        let compacted =
+            compact_direct_valid_probes(&section, &base).expect("an all-L0 section compacts");
+
+        assert_eq!(
+            compacted.valid_probe_masks,
+            vec![
+                (1u64 << 1) | (1u64 << 6) | (1u64 << 32),
+                (1u64 << 0) | (1u64 << 3),
+            ]
+        );
+
+        // Hand-built expected = copy every valid tile, x-fastest, per entry.
+        let entry0 = dense_entry(100);
+        let entry1 = dense_entry(1_000);
+        let mut expected = Vec::new();
+        for &local in &[1usize, 6, 32] {
+            let s = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            expected.extend_from_slice(&entry0[s..s + DEFAULT_DELTA_PROBE_F16_STRIDE]);
+        }
+        for &local in &[0usize, 3] {
+            let s = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            expected.extend_from_slice(&entry1[s..s + DEFAULT_DELTA_PROBE_F16_STRIDE]);
+        }
+        assert_eq!(compacted.delta_subblocks, expected);
+    }
+
+    /// P12: the payload cap still hard-errors exactly once on a coarsened section,
+    /// with no drop-to-fit / coarsening retry.
+    #[test]
+    fn coarsened_payload_still_hard_fails_the_cap_without_retry() {
+        let base = base_with_valid_locals(&[0, 1, 3, 6]);
+        let mut section = indirect(vec![0], dense_entry(100));
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 1];
+        section.cell_levels = vec![Level::L1.to_u8()];
+
+        let compacted =
+            compact_indirect_valid_probes(&section, &base).expect("an L1 cell compacts");
+        let compacted_bytes = payload_bytes(&compacted.delta_subblocks);
+        let mut sections = PostBakeDeltaSections::new(
+            DeltaSectionConfig {
+                max_payload_bytes: compacted_bytes - 1,
+            },
+            Some(compacted),
+            None,
+            None,
+            None,
+        );
+
+        let error = sections
+            .enforce_payload_cap()
+            .expect_err("a coarsened payload over the cap hard-fails");
+        assert!(error.to_string().contains("exceeds cap"));
+        // No retry: the section is untouched and a second call fails identically.
+        assert!(sections.indirect.is_some());
+        let error_again = sections
+            .enforce_payload_cap()
+            .expect_err("the cap does not coarsen-to-fit; it fails again");
+        assert_eq!(error.to_string(), error_again.to_string());
     }
 }

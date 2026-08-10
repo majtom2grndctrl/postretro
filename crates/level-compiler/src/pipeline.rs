@@ -17,8 +17,8 @@ use crate::{
     cell_draw_index_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
     lightmap_bake, lightmap_layer, map_data, navmesh_bake, pack, parse, partition, portals,
-    sdf_bake, sh_analyze, sh_bake, sh_group, shadowmask_bake, texture_mips, texture_validation,
-    trigger_volumes, visibility,
+    sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_group, shadowmask_bake, texture_mips,
+    texture_validation, trigger_volumes, visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -757,13 +757,14 @@ fn run_after_parsing(
     // the same compact RGBA16F v9 section. Keep group-cache records lossless and
     // format-independent; the emitted base atlas defaults to BC6H here.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
-    // Output-preserving SH analysis needs the base indirect tiles at full
-    // RGBA16F precision — capture the compact section BEFORE the lossy BC6H
-    // re-encode below. Cloned only under `--sh-analyze`; changes no emitted
-    // bytes (the clone is read, never packed).
+    // Output-preserving SH analysis and the coarsening classifier both need the
+    // base indirect tiles at full RGBA16F precision — capture the compact
+    // section BEFORE the lossy BC6H re-encode below. Cloned only under
+    // `--sh-analyze` or `--sh-coarsen`; changes no emitted bytes (the clone is
+    // read, never packed).
     let sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
-    > = if args.sh_analyze {
+    > = if args.sh_analyze || args.sh_coarsen {
         Some(sh_volume_section.clone())
     } else {
         None
@@ -866,7 +867,7 @@ fn run_after_parsing(
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
         direct_sh_present = raw.grid_dimensions != [0, 0, 0];
-        if args.sh_analyze {
+        if args.sh_analyze || args.sh_coarsen {
             sh_analyze_base_direct = Some(raw.clone());
         }
         // Re-encode the uncompressed RGBA16F bake output into the production
@@ -1061,6 +1062,20 @@ fn run_after_parsing(
         "the post-bake delta handoff must retain the resolved compiler configuration"
     );
     delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
+    // Delta-SH probe coarsening (`--sh-coarsen`): classify each 4×4×4 brick to a
+    // per-section coarsening level and stamp it onto each section's
+    // `cell_levels` while the payloads are still DENSE — so the single
+    // valid-probe compaction below emits the coarsened (kept) tile set. Default
+    // off ⇒ every level stays L0 ⇒ compaction is byte-identical to the
+    // non-coarsened path.
+    if args.sh_coarsen {
+        apply_coarsen_classification(
+            args,
+            sh_analyze_base_indirect.as_ref(),
+            sh_analyze_base_direct.as_ref(),
+            &mut delta_sections,
+        );
+    }
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
     delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
@@ -1437,6 +1452,88 @@ fn run_after_parsing(
 /// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
 /// sections (post static-light selection + exact-zero-drop, i.e. the emitted
 /// set); mutates nothing that reaches the packer.
+/// Classify per-section coarsening levels and stamp them onto each delta
+/// section's `cell_levels`, in place, before valid-probe compaction consumes the
+/// dense payloads. Reads the pre-BC6H base indirect (RGBA16F) for composed
+/// magnitude + the sole probe-validity authority; each section is classified
+/// independently (its own reconstruction error over the shared composed
+/// magnitude). No-op when the base grid is absent/degenerate.
+fn apply_coarsen_classification(
+    args: &Args,
+    base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+    base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    delta_sections: &mut delta_sections::PostBakeDeltaSections,
+) {
+    let Some(base) = base_indirect else {
+        log::warn!("[sh-coarsen] no base SH volume produced; coarsening skipped (uniform L0)");
+        return;
+    };
+    if base.grid_dimensions == [0, 0, 0] {
+        log::warn!("[sh-coarsen] degenerate SH grid; coarsening skipped (uniform L0)");
+        return;
+    }
+    let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
+    let grid = sh_coarsen::SectionGrid {
+        grid_origin: base.grid_origin,
+        cell_size: base.cell_size,
+        grid_dims: base.grid_dimensions,
+        validity: &validity,
+    };
+    let params = sh_coarsen::CoarsenParams::default();
+
+    // Compute all three per-section level arrays under shared immutable borrows
+    // of the (still dense) delta sections, then stamp them in a second mutable
+    // pass — the classifier reads all three sections for the composed magnitude
+    // while producing one section's levels.
+    let (indirect_levels, direct_levels, anim_levels) = {
+        let all = sh_coarsen::DeltaSectionsRef {
+            indirect: delta_sections.indirect.as_ref(),
+            direct: delta_sections.direct.as_ref(),
+            anim_direct: delta_sections.animated_direct.as_ref(),
+        };
+        let classify = |target| {
+            sh_coarsen::classify_section_levels(
+                base,
+                base_direct,
+                all,
+                target,
+                grid,
+                &args.sh_protect_aabbs,
+                &params,
+            )
+        };
+        (
+            delta_sections
+                .indirect
+                .as_ref()
+                .map(|_| classify(sh_coarsen::TargetDeltaSection::Indirect)),
+            delta_sections
+                .direct
+                .as_ref()
+                .map(|_| classify(sh_coarsen::TargetDeltaSection::Direct)),
+            delta_sections
+                .animated_direct
+                .as_ref()
+                .map(|_| classify(sh_coarsen::TargetDeltaSection::AnimatedDirect)),
+        )
+    };
+
+    let mut sections = 0u32;
+    if let (Some(section), Some(levels)) = (delta_sections.indirect.as_mut(), indirect_levels) {
+        section.cell_levels = levels;
+        sections += 1;
+    }
+    if let (Some(section), Some(levels)) = (delta_sections.direct.as_mut(), direct_levels) {
+        section.cell_levels = levels;
+        sections += 1;
+    }
+    if let (Some(section), Some(levels)) = (delta_sections.animated_direct.as_mut(), anim_levels) {
+        section.cell_levels = levels;
+        sections += 1;
+    }
+    log::info!("[sh-coarsen] classified coarsening levels for {sections} delta section(s)");
+}
+
 fn run_sh_analysis(
     args: &Args,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,

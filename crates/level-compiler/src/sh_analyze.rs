@@ -86,8 +86,8 @@ pub struct ProtectAabb {
 
 /// A field-level view over one of the three delta sections (ids 27/41/45),
 /// which share the affinity-CSR layout.
-struct DeltaView<'a> {
-    affinity_dims: [u32; 3],
+pub(crate) struct DeltaView<'a> {
+    pub(crate) affinity_dims: [u32; 3],
     tile_dimension: usize,
     valid_probe_masks: &'a [u64],
     offsets: &'a [u32],
@@ -101,7 +101,7 @@ struct DeltaView<'a> {
 }
 
 impl<'a> DeltaView<'a> {
-    fn from_indirect(s: &'a DeltaShVolumesSection) -> Self {
+    pub(crate) fn from_indirect(s: &'a DeltaShVolumesSection) -> Self {
         Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
@@ -110,7 +110,7 @@ impl<'a> DeltaView<'a> {
             &s.delta_subblocks,
         )
     }
-    fn from_direct(s: &'a DirectShDeltaVolumesSection) -> Self {
+    pub(crate) fn from_direct(s: &'a DirectShDeltaVolumesSection) -> Self {
         let mut view = Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
@@ -128,7 +128,7 @@ impl<'a> DeltaView<'a> {
         }
         view
     }
-    fn from_anim_direct(s: &'a AnimatedDirectShDeltaVolumesSection) -> Self {
+    pub(crate) fn from_anim_direct(s: &'a AnimatedDirectShDeltaVolumesSection) -> Self {
         Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
@@ -187,7 +187,7 @@ impl<'a> DeltaView<'a> {
         self.entry_payload_range(entry)
             .map_or(0, |range| range.len())
     }
-    fn valid_probe_mask(&self, cell: usize) -> Option<u64> {
+    pub(crate) fn valid_probe_mask(&self, cell: usize) -> Option<u64> {
         self.valid_probe_masks.get(cell).copied()
     }
     fn is_exact_zero_drop_candidate(&self, entry: usize, exact_zero: bool) -> bool {
@@ -631,7 +631,7 @@ fn decode_base_direct_tile(
 /// Accumulate one delta section's contribution for a whole brick into a
 /// per-local-probe tile array (adds onto `acc`). `cell` is the affinity-cell
 /// linear index in the SECTION's own affinity grid.
-fn accumulate_delta_for_cell(
+pub(crate) fn accumulate_delta_for_cell(
     view: &DeltaView<'_>,
     cell: usize,
     interior: usize,
@@ -670,9 +670,9 @@ fn accumulate_delta_for_cell(
 // Per-brick working set
 // ---------------------------------------------------------------------------
 
-struct BrickTiles {
+pub(crate) struct BrickTiles {
     /// Composed truth tile per local probe (Some iff in-bounds AND valid).
-    composed: [Option<Tile>; PROBES_PER_CELL],
+    pub(crate) composed: [Option<Tile>; PROBES_PER_CELL],
     /// Base-indirect truth tile per local probe.
     base: [Option<Tile>; PROBES_PER_CELL],
     valid_mask: [bool; PROBES_PER_CELL],
@@ -1184,7 +1184,7 @@ fn check_delta<'a>(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-fn build_brick_tiles(
+pub(crate) fn build_brick_tiles(
     inputs: &AnalyzeInputs<'_>,
     base: &OctahedralShVolumeSection,
     tile_dim: usize,
@@ -1271,7 +1271,7 @@ fn build_brick_tiles(
     }
 }
 
-fn brick_world_aabb(
+pub(crate) fn brick_world_aabb(
     inputs: &AnalyzeInputs<'_>,
     dims: [u32; 3],
     cx: usize,
@@ -1308,18 +1308,18 @@ fn intersects_any(aabbs: &[ProtectAabb], wmin: Vec3, wmax: Vec3) -> bool {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum LevelKind {
+pub(crate) enum LevelKind {
     L1,
     L2,
 }
 
-struct LevelErr {
-    max: f32,
+pub(crate) struct LevelErr {
+    pub(crate) max: f32,
     mean: f32,
-    p95: f32,
+    pub(crate) p95: f32,
     weighted_mean: f32,
     weighted_p95: f32,
-    texel_samples: u64,
+    pub(crate) texel_samples: u64,
 }
 
 impl LevelErr {
@@ -1346,7 +1346,7 @@ impl LevelErr {
     }
 }
 
-fn level_errors(
+pub(crate) fn level_errors(
     tiles: &[Option<Tile>; PROBES_PER_CELL],
     kind: LevelKind,
     texels: usize,
@@ -1394,7 +1394,7 @@ fn level_errors(
 /// `error / magnitude` compares like with like. Absent (invalid) probes are
 /// skipped, exactly as `level_errors` skips them. Returns a zeroed record when
 /// the brick has no valid probe tiles.
-fn tile_magnitude(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usize) -> MagnitudeStats {
+pub(crate) fn tile_magnitude(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usize) -> MagnitudeStats {
     let mut acc = ErrAccum::default();
     for tile in tiles.iter() {
         let Some(truth) = tile else { continue };

@@ -10,7 +10,21 @@
 //! that is a separate later slice. Everything here is std-only apart from the
 //! shared [`Level`] type and is unit-testable with hand-built inputs.
 
-use postretro_level_format::sh_reconstruct::Level;
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::sh_reconstruct::{local_xyz, zero_tile, Level, Tile};
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+
+use crate::affinity_grid::AFFINITY_FACTOR;
+use crate::sh_analyze::{
+    accumulate_delta_for_cell, brick_world_aabb, build_brick_tiles, level_errors, tile_magnitude,
+    AnalyzeInputs, DeltaView, LevelKind,
+};
+
+const AF: usize = AFFINITY_FACTOR as usize; // 4
+const PROBES_PER_CELL: usize = AF * AF * AF; // 64
 
 /// Tunable gate parameters — the precommitted operating point.
 pub(crate) struct CoarsenParams {
@@ -232,6 +246,227 @@ fn demote_one(level: Level) -> Level {
         Level::L1 => Level::L0,
         Level::L0 => Level::L0,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Composed-tile → classification provider (slice G3-δ)
+// ---------------------------------------------------------------------------
+//
+// Turns raw pre-BC6H SH sections into the pure [`BrickClass`] inputs the α gate
+// consumes, then runs the gate. Classification is PER SECTION: coarsening one
+// delta section perturbs only that section's contribution to the composed
+// receiver, so by linearity the induced composed-receiver error equals that
+// section's own reconstruction error. The magnitude denominator and the
+// map-wide darkness floor, however, are the COMPOSED brightness (base indirect +
+// base direct + Σ all three delta sections), shared across sections. All
+// tile-decode / accumulate / reconstruction math is reused verbatim from
+// `sh_analyze` so the numbers match the measurement pass exactly.
+
+/// Which of the three affinity-CSR delta sections (ids 27/41/45) a run targets.
+#[derive(Clone, Copy)]
+pub(crate) enum TargetDeltaSection {
+    /// Indirect delta (id 27).
+    Indirect,
+    /// Direct delta (id 41).
+    Direct,
+    /// Animated-direct delta (id 45).
+    AnimatedDirect,
+}
+
+/// Borrowed handles to the three delta sections. All present sections feed the
+/// SHARED composed magnitude; [`TargetDeltaSection`] selects which one's own
+/// reconstruction error becomes the per-section numerator.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DeltaSectionsRef<'a> {
+    pub indirect: Option<&'a DeltaShVolumesSection>,
+    pub direct: Option<&'a DirectShDeltaVolumesSection>,
+    pub anim_direct: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+}
+
+/// Probe-grid geometry: enough to place bricks in the world (AABB) and map
+/// probes to affinity cells. `validity` is per base probe (len ==
+/// product(`grid_dims`)), x-fastest, non-zero ⇒ valid.
+#[derive(Clone, Copy)]
+pub(crate) struct SectionGrid<'a> {
+    pub grid_origin: [f32; 3],
+    pub cell_size: [f32; 3],
+    pub grid_dims: [u32; 3],
+    pub validity: &'a [u8],
+}
+
+/// Classify one delta section's per-cell coarsening levels from the composed
+/// receiver. `magnitude` is the COMPOSED brightness (shared across sections);
+/// `error` is THIS section's own reconstruction error (per-section, by
+/// linearity = the composed error it induces). Returns per-cell Level-as-u8,
+/// x-fastest, length == affinity_cell_count.
+pub(crate) fn classify_section_levels(
+    base_indirect: &OctahedralShVolumeSection,   // pre-BC6H RGBA16F id34
+    base_direct: Option<&DirectShVolumeSection>, // pre-BC6H id35 (may be absent)
+    all_deltas: DeltaSectionsRef<'_>,            // the three sections (for composed magnitude)
+    target: TargetDeltaSection,                  // which section's levels to produce
+    grid: SectionGrid<'_>,                       // affinity dims + origin + spacing + validity
+    protect_aabbs: &[[f32; 6]],
+    params: &CoarsenParams,
+) -> Vec<u8> {
+    let base = base_indirect;
+    let tile_dim = base.tile_dimension as usize;
+    let border = base.tile_border as usize;
+    let interior = tile_dim.saturating_sub(2 * border);
+    let texels = interior * interior;
+
+    let dims = grid.grid_dims;
+    let (nx, ny, nz) = (dims[0] as usize, dims[1] as usize, dims[2] as usize);
+    let total_probes = nx * ny * nz;
+
+    // Affinity grid = ceil(dims / AF), x-fastest — the same derivation
+    // `run_analysis` uses, and the layout `classify_levels` expects.
+    let ax = nx.div_ceil(AF);
+    let ay = ny.div_ceil(AF);
+    let az = nz.div_ceil(AF);
+    let brick_count = ax * ay * az;
+    let affinity_dims = [ax as u32, ay as u32, az as u32];
+
+    // Degenerate geometry: nothing to classify (mirrors run_analysis' guard).
+    if total_probes == 0 || interior == 0 || brick_count == 0 {
+        return vec![Level::L0.to_u8(); brick_count];
+    }
+
+    // Per-probe compact-atlas rank (x-fastest), identical to run_analysis so the
+    // reused base-indirect decoder resolves the right compact slot.
+    let mut valid_rank = vec![-1i64; total_probes];
+    let mut rank = 0i64;
+    for (i, r) in valid_rank.iter_mut().enumerate() {
+        if grid.validity.get(i).copied().unwrap_or(0) != 0 {
+            *r = rank;
+            rank += 1;
+        }
+    }
+
+    // Unweighted metric (cosine weighting dropped — operating-point.md): pass an
+    // all-ones weight vector so `level_errors` / the magnitude take the
+    // unweighted path, matching how `run_analysis` reports the unweighted stats.
+    let weights = vec![1.0f32; texels];
+
+    // CSR views over every PRESENT delta section, dropping any whose affinity
+    // grid disagrees with this probe grid (same guard as run_analysis'
+    // `check_delta`) — a misaligned section cannot be indexed by this grid's
+    // linear cell id, so it is excluded from the composed sum here too.
+    fn guard<'a>(view: Option<DeltaView<'a>>, expected: [u32; 3]) -> Option<DeltaView<'a>> {
+        view.filter(|v| v.affinity_dims == expected)
+    }
+    let dv_ind = guard(all_deltas.indirect.map(DeltaView::from_indirect), affinity_dims);
+    let dv_dir = guard(all_deltas.direct.map(DeltaView::from_direct), affinity_dims);
+    let dv_anim = guard(
+        all_deltas.anim_direct.map(DeltaView::from_anim_direct),
+        affinity_dims,
+    );
+
+    // The target section's own view. Absent (or affinity-mismatched) ⇒ nothing
+    // to classify: every brick stays L0.
+    let target_view = match target {
+        TargetDeltaSection::Indirect => dv_ind.as_ref(),
+        TargetDeltaSection::Direct => dv_dir.as_ref(),
+        TargetDeltaSection::AnimatedDirect => dv_anim.as_ref(),
+    };
+    let Some(target_view) = target_view else {
+        return vec![Level::L0.to_u8(); brick_count];
+    };
+
+    // Inputs for the reused brick assembly / world-AABB helpers. `build_brick_tiles`
+    // reads only `base_direct`; `brick_world_aabb` reads only origin/cell_size;
+    // neither touches `protect_aabbs`/`thresholds`, so empty slices suffice. The
+    // provider applies its own `protect_aabbs` downstream via `classify_levels`.
+    let inputs = AnalyzeInputs {
+        grid_origin: grid.grid_origin,
+        cell_size: grid.cell_size,
+        grid_dims: dims,
+        validity: grid.validity,
+        base_indirect: base,
+        base_direct,
+        delta_indirect: all_deltas.indirect,
+        delta_direct: all_deltas.direct,
+        delta_anim_direct: all_deltas.anim_direct,
+        protect_aabbs: &[],
+        thresholds: &[],
+    };
+
+    let mut bricks: Vec<BrickClass> = Vec::with_capacity(brick_count);
+    for cz in 0..az {
+        for cy in 0..ay {
+            for cx in 0..ax {
+                let cell_lin = cx + cy * ax + cz * ax * ay;
+
+                // COMPOSED receiver tiles (shared across sections) = base
+                // indirect + base direct + Σ all three delta sections. This is
+                // exactly `build_brick_tiles`' `composed` output, so the
+                // magnitude denominator + darkness floor are identical no matter
+                // which section is the target.
+                let bt = build_brick_tiles(
+                    &inputs, base, tile_dim, interior, border, &valid_rank, dims, cell_lin, cx, cy,
+                    cz, ax, ay, &dv_ind, &dv_dir, &dv_anim,
+                );
+                let mag = tile_magnitude(&bt.composed, texels);
+
+                // THE TARGET SECTION'S OWN delta tiles for this brick: seed an
+                // all-zero accumulator, fold in ONLY the target section, then
+                // expose Some(tile) exactly at the target's in-bounds valid
+                // probes (its `valid_probe_mask`). Reconstruction error over
+                // these dense tiles is, by linearity, the composed error that
+                // coarsening THIS section would induce.
+                let mut acc: [Tile; PROBES_PER_CELL] = std::array::from_fn(|_| zero_tile(texels));
+                accumulate_delta_for_cell(target_view, cell_lin, interior, border, &mut acc);
+
+                // Scored valid set = BASE validity (the sole validity authority,
+                // and exactly the mask valid-probe compaction will emit for this
+                // section). The dense, pre-compaction section carries an all-ones
+                // `valid_probe_mask`, so scoring from the section mask would wrongly
+                // include in-solid probes. Base validity is section-agnostic, so all
+                // three sections share the same valid set — hence α computes one
+                // consistent map-wide darkness floor across sections.
+                const NONE_TILE: Option<Tile> = None;
+                let mut s_tiles: [Option<Tile>; PROBES_PER_CELL] = [NONE_TILE; PROBES_PER_CELL];
+                let mut any_valid = false;
+                for local in 0..PROBES_PER_CELL {
+                    let (lx, ly, lz) = local_xyz(local);
+                    let (px, py, pz) = (cx * AF + lx, cy * AF + ly, cz * AF + lz);
+                    if px >= nx || py >= ny || pz >= nz {
+                        continue;
+                    }
+                    let probe_index = px + py * nx + pz * nx * ny;
+                    if grid.validity.get(probe_index).copied().unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    any_valid = true;
+                    s_tiles[local] = Some(std::mem::take(&mut acc[local]));
+                }
+
+                let l1 = level_errors(&s_tiles, LevelKind::L1, texels, interior, &weights);
+                let l2 = level_errors(&s_tiles, LevelKind::L2, texels, interior, &weights);
+
+                let (wmin, wmax) = brick_world_aabb(&inputs, dims, cx, cy, cz);
+
+                bricks.push(BrickClass {
+                    // Shared composed brightness.
+                    mag_p95: mag.p95,
+                    mag_max: mag.max,
+                    // Per-section (target-only) reconstruction error.
+                    l1_p95: l1.p95,
+                    l1_max: l1.max,
+                    l1_evaluable: l1.texel_samples > 0,
+                    l2_p95: l2.p95,
+                    l2_max: l2.max,
+                    l2_evaluable: l2.texel_samples > 0,
+                    // ≥1 base-valid probe in this brick (section-agnostic).
+                    has_any_valid: any_valid,
+                    // Shared world AABB.
+                    world_min: [wmin.x, wmin.y, wmin.z],
+                    world_max: [wmax.x, wmax.y, wmax.z],
+                });
+            }
+        }
+    }
+
+    classify_levels(&bricks, affinity_dims, protect_aabbs, params)
 }
 
 #[cfg(test)]
@@ -504,5 +739,227 @@ mod tests {
         ];
         let out = classify_levels(&bricks, [3, 1, 1], &[], &CoarsenParams::default());
         assert_eq!(out, vec![L1, L0, L1]);
+    }
+
+    // ---- Provider wiring (classify_section_levels) ----
+    //
+    // These prove the PROVIDER wiring (composed magnitude vs per-section error),
+    // not α's gate (which is covered above). Fixtures use a single 4×4×4 brick
+    // (grid [4,4,4] → one affinity cell, all 64 probes valid) with 1×1 tiles
+    // (tile_dimension 1, border 0 → 1 interior texel).
+
+    use postretro_level_format::lightmap::{f32_to_f16_bits, IRRADIANCE_FORMAT_RGBA16F};
+
+    /// Base indirect (id 34) whose every probe decodes to a uniform RGB
+    /// `value` — a bright, dense composed floor to test the coarsener against.
+    fn bright_base_indirect(dims: [u32; 3], value: f32) -> OctahedralShVolumeSection {
+        let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
+        let mut base = OctahedralShVolumeSection::placeholder();
+        base.grid_origin = [0.0; 3];
+        base.cell_size = [1.0; 3];
+        base.grid_dimensions = dims;
+        base.tile_dimension = 1;
+        base.tile_border = 0;
+        base.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+        base.compact_atlas_dimensions = [total as u32, 1];
+        base.compact_atlas_tiles_per_row = total as u32;
+        base.compact_atlas_tiles_per_layer = total as u32;
+        base.compact_atlas_layer_count = 1;
+        let [lo, hi] = f32_to_f16_bits(value).to_le_bytes();
+        let mut atlas = vec![0u8; total * 8];
+        for r in 0..total {
+            let b = r * 8;
+            // R, G, B channels; A left at 0.
+            atlas[b] = lo;
+            atlas[b + 1] = hi;
+            atlas[b + 2] = lo;
+            atlas[b + 3] = hi;
+            atlas[b + 4] = lo;
+            atlas[b + 5] = hi;
+        }
+        base.compact_atlas = atlas;
+        base
+    }
+
+    /// Direct-delta section (id 41) for a single all-valid affinity cell whose
+    /// per-local-probe RGB delta is `f(local)`.
+    fn direct_delta_from(f: impl Fn(usize) -> f32) -> DirectShDeltaVolumesSection {
+        let mut sub = vec![0u16; PROBES_PER_CELL * 4];
+        for local in 0..PROBES_PER_CELL {
+            let h = f32_to_f16_bits(f(local));
+            sub[local * 4] = h; // R
+            sub[local * 4 + 1] = h; // G
+            sub[local * 4 + 2] = h; // B
+                                    // A left at 0.
+        }
+        DirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 1,
+            tile_border: 0,
+            valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sub,
+        }
+    }
+
+    fn all_valid(dims: [u32; 3]) -> Vec<u8> {
+        vec![1u8; dims[0] as usize * dims[1] as usize * dims[2] as usize]
+    }
+
+    fn grid_ref<'a>(dims: [u32; 3], validity: &'a [u8]) -> SectionGrid<'a> {
+        SectionGrid {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dims: dims,
+            validity,
+        }
+    }
+
+    /// High-frequency parity pattern: not reproducible by an L2 mean or an L1
+    /// trilinear-from-corners blend, so it forces high per-section error.
+    fn parity(local: usize, amp: f32) -> f32 {
+        let (lx, ly, lz) = local_xyz(local);
+        if (lx + ly + lz) % 2 == 0 {
+            amp
+        } else {
+            -amp
+        }
+    }
+
+    #[test]
+    fn provider_uniform_target_over_bright_composed_coarsens() {
+        // Bright composed (base 10) + a spatially-uniform target delta (0.5) →
+        // the target's own reconstruction error is ~0, so it coarsens to L2.
+        let dims = [4, 4, 4];
+        let validity = all_valid(dims);
+        let base = bright_base_indirect(dims, 10.0);
+        let delta = direct_delta_from(|_| 0.5);
+        let deltas = DeltaSectionsRef {
+            direct: Some(&delta),
+            ..Default::default()
+        };
+        let out = classify_section_levels(
+            &base,
+            None,
+            deltas,
+            TargetDeltaSection::Direct,
+            grid_ref(dims, &validity),
+            &[],
+            &CoarsenParams::default(),
+        );
+        assert_eq!(out, vec![L2], "uniform target vs bright composed must coarsen to L2");
+    }
+
+    #[test]
+    fn provider_high_variance_target_stays_l0() {
+        // Same bright composed, but a high-variance target delta (±8): the
+        // target's own L1/L2 reconstruction error is large relative to the
+        // (bright) composed magnitude, so it must stay dense (L0).
+        let dims = [4, 4, 4];
+        let validity = all_valid(dims);
+        let base = bright_base_indirect(dims, 10.0);
+        let delta = direct_delta_from(|l| parity(l, 8.0));
+        let deltas = DeltaSectionsRef {
+            direct: Some(&delta),
+            ..Default::default()
+        };
+        let out = classify_section_levels(
+            &base,
+            None,
+            deltas,
+            TargetDeltaSection::Direct,
+            grid_ref(dims, &validity),
+            &[],
+            &CoarsenParams::default(),
+        );
+        assert_eq!(out, vec![L0], "high-variance target must stay L0 despite bright composed");
+    }
+
+    #[test]
+    fn provider_magnitude_denominator_is_composed_not_target() {
+        // The denominator (local brightness) must be the COMPOSED receiver, not
+        // the target section alone. Bright base (100) + a small high-variance
+        // target delta (±1, magnitude ~1): the L2 relative error is
+        // 1/101 ≈ 0.01 against the composed receiver → coarsens (L2). Were the
+        // magnitude taken from the target section alone (~1), the relative error
+        // would be 1/1 = 1.0 and the gate would force L0. L2 proves the
+        // denominator is base + all deltas, so a near-zero-vs-base target brick
+        // is NOT mistaken for a dark brick.
+        let dims = [4, 4, 4];
+        let validity = all_valid(dims);
+        let base = bright_base_indirect(dims, 100.0);
+        let delta = direct_delta_from(|l| parity(l, 1.0));
+        let deltas = DeltaSectionsRef {
+            direct: Some(&delta),
+            ..Default::default()
+        };
+        let out = classify_section_levels(
+            &base,
+            None,
+            deltas,
+            TargetDeltaSection::Direct,
+            grid_ref(dims, &validity),
+            &[],
+            &CoarsenParams::default(),
+        );
+        assert_eq!(
+            out,
+            vec![L2],
+            "coarsening must key off the bright composed magnitude, not the dim target section"
+        );
+    }
+
+    #[test]
+    fn provider_absent_target_is_all_l0() {
+        // No target section present → nothing to classify → every cell L0.
+        // Grid [8,4,4] → 2 affinity cells along x, so the all-L0 vector length
+        // is exercised too.
+        let dims = [8, 4, 4];
+        let validity = all_valid(dims);
+        let base = bright_base_indirect(dims, 10.0);
+        let out = classify_section_levels(
+            &base,
+            None,
+            DeltaSectionsRef::default(),
+            TargetDeltaSection::Direct,
+            grid_ref(dims, &validity),
+            &[],
+            &CoarsenParams::default(),
+        );
+        assert_eq!(out, vec![L0, L0], "absent target section ⇒ all cells L0");
+    }
+
+    #[test]
+    fn provider_base_invalid_brick_is_l0_despite_dense_mask() {
+        // A brick with NO base-valid probes must stay L0 (non-participating),
+        // even though the dense pre-compaction section carries an all-ones
+        // `valid_probe_mask` and a spatially-uniform delta that would otherwise
+        // gate to L2. This pins the fix: scoring uses base validity, not the
+        // section's dense mask.
+        let dims = [4, 4, 4];
+        let validity = vec![0u8; 4 * 4 * 4]; // every base probe in-solid
+        let base = bright_base_indirect(dims, 10.0);
+        let delta = direct_delta_from(|_| 0.5); // uniform ⇒ would be L2 if scored
+        let deltas = DeltaSectionsRef {
+            direct: Some(&delta),
+            ..Default::default()
+        };
+        let out = classify_section_levels(
+            &base,
+            None,
+            deltas,
+            TargetDeltaSection::Direct,
+            grid_ref(dims, &validity),
+            &[],
+            &CoarsenParams::default(),
+        );
+        assert_eq!(
+            out,
+            vec![L0],
+            "a base-invalid brick must be L0 regardless of the dense section mask"
+        );
     }
 }

@@ -84,7 +84,11 @@ pub(crate) fn classify_levels(
     } else {
         valid_mags.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = valid_mags.len();
-        let idx = ((n - 1) as f32 * 0.95).round() as usize;
+        // Truncated p95 index, matching the operating-point selector
+        // `relerr_opmap.py` (`int(0.95 * (len - 1))`) exactly — `round()` would
+        // pick a different order statistic for most small/medium n and shift
+        // the darkness floor.
+        let idx = ((n - 1) as f32 * 0.95).floor() as usize;
         valid_mags[idx]
     };
     let floor = f32::max(params.darkness_frac * map_p95, 1e-6);
@@ -104,8 +108,16 @@ pub(crate) fn classify_levels(
         participating.push(true);
 
         let level = if b.mag_p95 < floor {
-            // Darkness bypass: pick the coarsest evaluable level, skip the
-            // relative comparison entirely.
+            // Darkness bypass (spec AC5 / pin P8): a sub-floor brick takes the
+            // coarsest evaluable level, skipping the relative comparison
+            // entirely. This is stronger than the operating-point selector
+            // `relerr_opmap.py`, which clamps the denominator (`err/max(mag,
+            // floor)`) but still gates. The two agree on physical data: a
+            // brick below the floor has near-zero-magnitude probes, so its
+            // reconstruction error is bounded near zero and thus imperceptible
+            // — dense storage there buys nothing. The bypass is the deliberate
+            // spec choice; the clamp only diverges for non-physical dark
+            // bricks with large absolute error.
             if b.l2_evaluable {
                 Level::L2
             } else if b.l1_evaluable {

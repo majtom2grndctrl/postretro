@@ -50,6 +50,10 @@ use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
+use postretro_level_format::sh_reconstruct::{
+    local_xyz, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles, stored_tiles,
+    zero_tile, Level, Tile,
+};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use serde::Serialize;
 
@@ -236,17 +240,6 @@ pub struct AnalyzeInputs<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Tile primitives
-// ---------------------------------------------------------------------------
-
-/// An octahedral interior tile: `interior*interior` RGB texels.
-type Tile = Vec<Vec3>;
-
-fn zero_tile(texels: usize) -> Tile {
-    vec![Vec3::ZERO; texels]
-}
-
-// ---------------------------------------------------------------------------
 // Solid-angle weights (metric 2b)
 // ---------------------------------------------------------------------------
 
@@ -284,90 +277,9 @@ fn solid_angle_weights(interior: usize) -> Vec<f32> {
     w
 }
 
-// ---------------------------------------------------------------------------
-// Reconstruction math (unit-tested)
-// ---------------------------------------------------------------------------
-
-/// The 8 corner local indices of a 4×4×4 brick: local ∈ {0,3}³, x-fastest.
-fn corner_locals() -> [usize; 8] {
-    let mut out = [0usize; 8];
-    let mut k = 0;
-    for &cz in &[0usize, AF - 1] {
-        for &cy in &[0usize, AF - 1] {
-            for &cx in &[0usize, AF - 1] {
-                out[k] = cx + cy * AF + cz * AF * AF;
-                k += 1;
-            }
-        }
-    }
-    out
-}
-
-fn local_xyz(local: usize) -> (usize, usize, usize) {
-    (local % AF, (local / AF) % AF, local / (AF * AF))
-}
-
-/// Trilinear weight of corner `(cx,cy,cz)∈{0,3}³` for a target at local
-/// `(tx,ty,tz)`, per-axis weight = position along the 0..3 span.
-fn trilinear_weight(target: (usize, usize, usize), corner: (usize, usize, usize)) -> f32 {
-    let axis = |t: usize, c: usize| -> f32 {
-        let f = t as f32 / (AF - 1) as f32; // 0..1 along the brick span
-        if c == AF - 1 { f } else { 1.0 - f }
-    };
-    axis(target.0, corner.0) * axis(target.1, corner.1) * axis(target.2, corner.2)
-}
-
-/// L1 reconstruction of the tile at `target_local` from the brick's valid corner
-/// tiles. Corners that are absent/invalid are dropped and the surviving weights
-/// renormalized. Returns `None` when no valid corner exists.
-fn reconstruct_l1_tile(
-    tiles: &[Option<Tile>; PROBES_PER_CELL],
-    target_local: usize,
-    texels: usize,
-) -> Option<Tile> {
-    let target = local_xyz(target_local);
-    let mut acc = zero_tile(texels);
-    let mut wsum = 0.0f32;
-    for corner_local in corner_locals() {
-        if let Some(tile) = &tiles[corner_local] {
-            let w = trilinear_weight(target, local_xyz(corner_local));
-            if w <= 0.0 {
-                continue;
-            }
-            for (a, t) in acc.iter_mut().zip(tile.iter()) {
-                *a += *t * w;
-            }
-            wsum += w;
-        }
-    }
-    if wsum <= 0.0 {
-        return None;
-    }
-    for a in acc.iter_mut() {
-        *a /= wsum;
-    }
-    Some(acc)
-}
-
-/// L2 brick-mean tile over valid probes. `None` when the brick has no valid
-/// probe.
-fn reconstruct_l2_tile(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usize) -> Option<Tile> {
-    let mut acc = zero_tile(texels);
-    let mut n = 0u32;
-    for tile in tiles.iter().flatten() {
-        for (a, t) in acc.iter_mut().zip(tile.iter()) {
-            *a += *t;
-        }
-        n += 1;
-    }
-    if n == 0 {
-        return None;
-    }
-    for a in acc.iter_mut() {
-        *a /= n as f32;
-    }
-    Some(acc)
-}
+// Reconstruction math (`corner_locals` / `local_xyz` / `trilinear_weight` /
+// `reconstruct_l1_tile` / `reconstruct_l2_tile`) now lives in the shared
+// `postretro_level_format::sh_reconstruct` module, imported above.
 
 fn texel_error(recon: &Vec3, truth: &Vec3) -> f32 {
     (recon.x - truth.x)
@@ -628,40 +540,8 @@ pub struct AnalysisReport {
 // Byte model
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Level {
-    L0,
-    L1,
-    L2,
-}
-
-/// Stored tile count for a brick at a given level, intersected with validity.
-fn stored_tiles(level: Level, valid_mask: &[bool; PROBES_PER_CELL]) -> usize {
-    match level {
-        Level::L0 => valid_mask.iter().filter(|&&v| v).count(),
-        Level::L1 => corner_locals().iter().filter(|&&l| valid_mask[l]).count(),
-        Level::L2 => {
-            if valid_mask.iter().any(|&v| v) {
-                1
-            } else {
-                0
-            }
-        }
-    }
-}
-
-/// Stored tile count for a delta entry at a candidate level. Unlike the base
-/// model, this reads the delta section's self-describing compact probe set.
-fn stored_delta_tiles(level: Level, valid_probe_mask: u64) -> usize {
-    match level {
-        Level::L0 => valid_probe_mask.count_ones() as usize,
-        Level::L1 => corner_locals()
-            .iter()
-            .filter(|&&local| valid_probe_mask & (1u64 << local) != 0)
-            .count(),
-        Level::L2 => usize::from(valid_probe_mask != 0),
-    }
-}
+// `Level`, `stored_tiles`, and `stored_delta_tiles` now live in the shared
+// `postretro_level_format::sh_reconstruct` module, imported above.
 
 // ---------------------------------------------------------------------------
 // Tile decoding
@@ -2217,24 +2097,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn l1_weight_endpoints() {
-        // Corner (0,0,0) at target (0,0,0) → weight 1.
-        assert!((trilinear_weight((0, 0, 0), (0, 0, 0)) - 1.0).abs() < 1e-6);
-        // Corner (3,3,3) at target (3,3,3) → weight 1.
-        assert!((trilinear_weight((3, 3, 3), (3, 3, 3)) - 1.0).abs() < 1e-6);
-        // Corner (3,0,0) at target (0,0,0) → weight 0.
-        assert!(trilinear_weight((0, 0, 0), (3, 0, 0)).abs() < 1e-6);
-        // Midpoint target (weights sum to 1 across corners).
-        let mut sum = 0.0;
-        for c in corner_locals() {
-            sum += trilinear_weight((1, 1, 1), local_xyz(c));
-        }
-        assert!(
-            (sum - 1.0).abs() < 1e-5,
-            "trilinear weights must partition unity"
-        );
-    }
+    // The pure trilinear-weight / corner-index tests moved with the math into
+    // `postretro_level_format::sh_reconstruct` (task G1).
 
     #[test]
     fn seam_residual_zero_when_both_bricks_l0() {

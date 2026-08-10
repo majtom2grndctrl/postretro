@@ -32,6 +32,7 @@ pub mod octahedral;
 pub mod portals;
 pub mod prm;
 pub mod sdf_atlas;
+pub mod sh_reconstruct;
 pub mod sh_volume;
 pub mod shadowmask_atlas;
 pub mod texture_cache_keys;

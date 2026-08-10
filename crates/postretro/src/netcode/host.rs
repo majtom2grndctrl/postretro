@@ -653,7 +653,7 @@ mod tests {
         });
         health.current = 31.0;
         registry.set_component(pawn, health).unwrap();
-        seats.bind_pawn(seat, pawn);
+        seats.bind_pawn(&mut registry, seat, pawn);
 
         host_handle_lifecycle(
             &mut registry,
@@ -732,7 +732,7 @@ mod tests {
         let old_pawn = slot_pawns
             .pawn_for(ORIGINAL_CLIENT)
             .expect("participating client owns a pawn");
-        seats.bind_pawn(seat, old_pawn);
+        seats.bind_pawn(&mut registry, seat, old_pawn);
 
         // Suspend demotes the connection and resets level-scoped endpoint maps
         // before the resumed transport poll can report its disconnect.
@@ -759,7 +759,10 @@ mod tests {
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
         );
-        assert_eq!(seats.hold_disconnected_client(ORIGINAL_CLIENT), Some(seat));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut registry, ORIGINAL_CLIENT),
+            Some(seat)
+        );
         assert!(
             !registry.exists(old_pawn),
             "disconnect cleanup reaches the pawn through its durable seat binding"
@@ -779,7 +782,7 @@ mod tests {
         let new_pawn = slot_pawns
             .pawn_for(REJOINED_CLIENT)
             .expect("reclaimed seat materializes one replacement pawn");
-        seats.bind_pawn(seat, new_pawn);
+        seats.bind_pawn(&mut registry, seat, new_pawn);
 
         assert_ne!(new_pawn, old_pawn);
         assert!(registry.exists(new_pawn));

@@ -294,11 +294,27 @@ impl SeatTable {
             .find_map(|(seat, bound)| (*bound == client_id).then_some(*seat))
     }
 
-    #[must_use]
-    pub(crate) fn seat_for_pawn(&self, pawn: EntityId) -> Option<Seat> {
-        self.pawn_bindings
-            .iter()
-            .find_map(|(seat, bound)| (*bound == pawn).then_some(*seat))
+    /// The one write path for the pawn/seat relationship.
+    ///
+    /// The seat-keyed map here and the registry's pawn-keyed reverse index are
+    /// two views of one fact, so they are written together and nowhere else:
+    /// every other mention of `pawn_bindings` is a read. `None` unbinds. A
+    /// rebind clears the outgoing pawn's entry first, because the reverse index
+    /// is many-to-one and an overwrite alone would leave two pawns resolving to
+    /// the same seat.
+    fn set_pawn_binding(
+        &mut self,
+        registry: &mut EntityRegistry,
+        seat: Seat,
+        pawn: Option<EntityId>,
+    ) {
+        if let Some(previous) = self.pawn_bindings.remove(&seat) {
+            registry.clear_pawn_seat(previous);
+        }
+        if let Some(pawn) = pawn {
+            self.pawn_bindings.insert(seat, pawn);
+            registry.bind_pawn_seat(pawn, seat);
+        }
     }
 
     /// Resolve the durable pawn binding while its connection is still live.
@@ -317,13 +333,19 @@ impl SeatTable {
     /// This deliberately does not harvest: lifecycle cleanup owns pawn
     /// destruction and harvests immediately before it. A drop while demoted or
     /// Loading can have no lifecycle event, but still reaches this transport edge.
-    pub(crate) fn hold_disconnected_client(&mut self, client_id: u64) -> Option<Seat> {
+    pub(crate) fn hold_disconnected_client(
+        &mut self,
+        registry: &mut EntityRegistry,
+        client_id: u64,
+    ) -> Option<Seat> {
         let seat = self.seat_for_client(client_id)?;
         self.client_bindings.remove(&seat);
         // The caller resolves and tears down this binding before starting the
         // hold. Retaining it after that edge can only leave a stale pawn id;
-        // the carried record retains the durable rejoin state instead.
-        self.pawn_bindings.remove(&seat);
+        // the carried record retains the durable rejoin state instead. A held
+        // seat has no live owner, so a pawn that outlives the hold edge must
+        // resolve to nothing rather than to an unoccupied seat.
+        self.set_pawn_binding(registry, seat, None);
         let deadline = self.hold_clock.saturating_add(HOLD_WINDOW);
         self.hold_deadlines.insert(seat, HoldDeadline(deadline));
         let order = self.next_hold_order;
@@ -351,7 +373,13 @@ impl SeatTable {
         debug_assert_ne!(seat, Seat(0), "the local seat is never held or released");
         self.carried.remove(&seat);
         self.client_bindings.remove(&seat);
-        self.pawn_bindings.remove(&seat);
+        // A seat only reaches release from a hold, and `hold_disconnected_client`
+        // unbinds the pawn on that edge. Asserting instead of removing keeps
+        // `set_pawn_binding` the sole write path — release has no registry.
+        debug_assert!(
+            !self.pawn_bindings.contains_key(&seat),
+            "a held seat has already had its pawn binding cleared"
+        );
         self.placement_assignments.remove(&seat);
         self.connect_claims.remove(&seat);
         self.hold_deadlines.remove(&seat);
@@ -403,9 +431,13 @@ impl SeatTable {
     }
 
     /// Associate a newly spawned pawn with its durable seat.
-    pub(crate) fn bind_pawn(&mut self, seat: Seat, pawn: EntityId) {
+    ///
+    /// A seat this table never minted binds nothing at all — the reverse index
+    /// stays in lockstep with that no-op rather than gaining an owner the seat
+    /// ledger does not know about.
+    pub(crate) fn bind_pawn(&mut self, registry: &mut EntityRegistry, seat: Seat, pawn: EntityId) {
         if self.carried.contains_key(&seat) {
-            self.pawn_bindings.insert(seat, pawn);
+            self.set_pawn_binding(registry, seat, Some(pawn));
             if let Some(placement) = self.level_spawn_placements.get(&pawn).copied() {
                 self.placement_assignments.insert(seat, placement);
             }
@@ -423,7 +455,7 @@ impl SeatTable {
     /// Lookup is by pawn identity, not current client binding: a same-poll
     /// disconnect/rebind cannot make the old dying pawn write into the new one.
     pub(crate) fn harvest_pawn(&mut self, registry: &EntityRegistry, pawn: EntityId) {
-        let Some(seat) = self.seat_for_pawn(pawn) else {
+        let Some(seat) = registry.seat_for_pawn(pawn) else {
             return;
         };
         let health_current = registry
@@ -516,8 +548,17 @@ impl SeatTable {
     /// Reset live-pawn identity and level-scoped placement after actual level
     /// unload. Suspension does not call this: its world and pawn bindings remain
     /// live on resume.
-    pub(crate) fn clear_pawn_bindings_for_level_unload(&mut self) {
-        self.pawn_bindings.clear();
+    ///
+    /// The registry's reverse index is already empty by the time this runs:
+    /// `EntityRegistry::clear_for_level_unload` despawns every live entity, and
+    /// `despawn` drops the pawn's seat entry. Unbinding through the one write
+    /// path anyway covers the reverse order and any seat whose pawn was never
+    /// despawned — entity indices are recycled, so a surviving entry could later
+    /// be matched by an unrelated entity.
+    pub(crate) fn clear_pawn_bindings_for_level_unload(&mut self, registry: &mut EntityRegistry) {
+        for seat in self.pawn_bindings.keys().copied().collect::<Vec<_>>() {
+            self.set_pawn_binding(registry, seat, None);
+        }
         self.placement_assignments.clear();
         self.level_spawn_placements.clear();
     }
@@ -803,7 +844,12 @@ mod tests {
         seat
     }
 
-    fn hold_closed_relay_client(client_id: u64, server: &mut NetServer, seats: &mut SeatTable) {
+    fn hold_closed_relay_client(
+        client_id: u64,
+        server: &mut NetServer,
+        seats: &mut SeatTable,
+        registry: &mut EntityRegistry,
+    ) {
         assert!(matches!(
             server.close_relay_connection(client_id, CloseCause::Disconnect),
             Some(SlotEvent::Closed {
@@ -813,7 +859,10 @@ mod tests {
         ));
         let poll = server.poll_handshakes();
         assert_eq!(poll.disconnects, vec![client_id]);
-        assert_eq!(seats.hold_disconnected_client(client_id), Some(Seat(1)));
+        assert_eq!(
+            seats.hold_disconnected_client(registry, client_id),
+            Some(Seat(1))
+        );
         finish_host_poll(server, seats);
     }
 
@@ -840,7 +889,7 @@ mod tests {
         old_level
             .set_component(old_pawn, reserve)
             .expect("fixture pawn accepts reserve");
-        seats.bind_pawn(original_seat, old_pawn);
+        seats.bind_pawn(&mut old_level, original_seat, old_pawn);
 
         // A host level change only demotes the connection. Its seat must survive
         // while the old pawn is harvested and the world retires its entity ids.
@@ -855,7 +904,7 @@ mod tests {
         ));
         seats.harvest_bound_pawns(&old_level);
         old_level.clear_for_level_unload();
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut old_level);
         let carried = seats
             .carried_state(original_seat)
             .expect("level harvest leaves a carried record");
@@ -875,7 +924,7 @@ mod tests {
         assert_eq!(seats.seat_for_client(FIRST_CLIENT), Some(original_seat));
         finish_host_poll(&mut server, &mut seats);
 
-        hold_closed_relay_client(FIRST_CLIENT, &mut server, &mut seats);
+        hold_closed_relay_client(FIRST_CLIENT, &mut server, &mut seats, &mut old_level);
         assert_eq!(seats.seat_for_client(FIRST_CLIENT), None);
         assert!(
             seats.carried_state(original_seat).is_some(),
@@ -912,6 +961,7 @@ mod tests {
         let (mut server, mut client, server_addr) =
             relay_pair(FIRST_CLIENT, Some(encode_connect_claim(&asserted_claim)));
         let mut seats = SeatTable::from_test_session_id([0x52; 16]);
+        let mut registry = EntityRegistry::new();
         let expired_seat = admit_relay_client(FIRST_CLIENT, &mut client, &mut server, &mut seats);
         seats.carried.insert(
             expired_seat,
@@ -921,7 +971,7 @@ mod tests {
             }),
         );
 
-        hold_closed_relay_client(FIRST_CLIENT, &mut server, &mut seats);
+        hold_closed_relay_client(FIRST_CLIENT, &mut server, &mut seats, &mut registry);
         seats.advance_hold_clock(HOLD_WINDOW);
         finish_host_poll(&mut server, &mut seats);
         assert_eq!(seats.carried_state(expired_seat), None);
@@ -976,6 +1026,7 @@ mod tests {
         let (mut demoted_server, mut demoted_client, _) =
             relay_pair(DEMOTED_CLIENT, Some(encode_connect_claim(&demoted_claim)));
         let mut demoted_seats = SeatTable::from_test_session_id([0x63; 16]);
+        let mut registry = EntityRegistry::new();
         let demoted_seat = admit_relay_client(
             DEMOTED_CLIENT,
             &mut demoted_client,
@@ -1000,7 +1051,7 @@ mod tests {
             vec![DEMOTED_CLIENT]
         );
         assert_eq!(
-            demoted_seats.hold_disconnected_client(DEMOTED_CLIENT),
+            demoted_seats.hold_disconnected_client(&mut registry, DEMOTED_CLIENT),
             Some(demoted_seat)
         );
 
@@ -1031,7 +1082,7 @@ mod tests {
             vec![ADMITTED_CLIENT]
         );
         assert_eq!(
-            admitted_seats.hold_disconnected_client(ADMITTED_CLIENT),
+            admitted_seats.hold_disconnected_client(&mut registry, ADMITTED_CLIENT),
             Some(admitted_seat)
         );
     }
@@ -1042,11 +1093,12 @@ mod tests {
         const REJOINED_CLIENT: u64 = 72;
         let player_claim = claim([0x71; 16], "Terminal Runner");
         let mut seats = SeatTable::from_test_session_id([0x71; 16]);
+        let mut registry = EntityRegistry::new();
         let original_seat = seats
             .admit_or_reclaim(CLOSED_CLIENT, Some(player_claim.clone()), false)
             .expect("seat namespace has room");
         assert_eq!(
-            seats.hold_disconnected_client(CLOSED_CLIENT),
+            seats.hold_disconnected_client(&mut registry, CLOSED_CLIENT),
             Some(original_seat)
         );
 
@@ -1092,11 +1144,11 @@ mod tests {
         old_registry
             .set_component(old_pawn, health(100.0, 37.5))
             .unwrap();
-        seats.bind_pawn(Seat(0), old_pawn);
+        seats.bind_pawn(&mut old_registry, Seat(0), old_pawn);
 
         seats.harvest_bound_pawns(&old_registry);
         old_registry.clear_for_level_unload();
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut old_registry);
 
         let mut new_registry = EntityRegistry::new();
         let new_pawn = new_registry.spawn(Transform::default());
@@ -1104,7 +1156,7 @@ mod tests {
             .set_component(new_pawn, health(100.0, 100.0))
             .unwrap();
         restore_carried_health(seats.carried_state(Seat(0)), &mut new_registry, new_pawn);
-        seats.bind_pawn(Seat(0), new_pawn);
+        seats.bind_pawn(&mut new_registry, Seat(0), new_pawn);
 
         assert_health_eq(
             new_registry
@@ -1145,13 +1197,13 @@ mod tests {
         registry
             .set_component(first_pawn, health(100.0, 42.0))
             .unwrap();
-        seats.bind_pawn(Seat(0), first_pawn);
+        seats.bind_pawn(&mut registry, Seat(0), first_pawn);
         seats.harvest_pawn(&registry, first_pawn);
         registry.despawn(first_pawn).unwrap();
 
         seats.harvest_bound_pawns(&registry);
         registry.clear_for_level_unload();
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut registry);
 
         assert_health_eq(
             seats
@@ -1200,11 +1252,11 @@ mod tests {
             ..Inventory::default()
         };
         registry.set_component(pawn, inventory).unwrap();
-        seats.bind_pawn(Seat(0), pawn);
+        seats.bind_pawn(&mut registry, Seat(0), pawn);
 
         seats.harvest_pawn(&registry, pawn);
         registry.clear_for_level_unload();
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut registry);
 
         let carried = seats
             .carried_state_for_test(Seat(0))
@@ -1229,7 +1281,7 @@ mod tests {
         old_registry
             .set_component(old_pawn, health(100.0, 0.0))
             .unwrap();
-        seats.bind_pawn(Seat(0), old_pawn);
+        seats.bind_pawn(&mut old_registry, Seat(0), old_pawn);
         seats.harvest_pawn(&old_registry, old_pawn);
 
         let mut new_registry = EntityRegistry::new();
@@ -1252,8 +1304,9 @@ mod tests {
     fn level_unload_clears_placement_even_without_a_live_pawn() {
         let mut seats = SeatTable::from_test_session_id([12; 16]);
         seats.placement_assignments.insert(Seat(0), 3);
+        let mut registry = EntityRegistry::new();
 
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut registry);
 
         assert_eq!(seats.placement_assignments.get(&Seat(0)), None);
         assert_eq!(seats.carried_state_for_test(Seat(0)), None);
@@ -1317,7 +1370,10 @@ mod tests {
         assert_eq!(roster.your_seat, Some(remote.0));
         assert_eq!(roster.open_seats, crate::netcode::MAX_CLIENTS as u32 - 1);
 
-        assert_eq!(seats.hold_disconnected_client(44), Some(remote));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 44),
+            Some(remote)
+        );
         assert!(seats.take_roster_dirty());
         assert!(
             !seats.roster_entries()[1].connected,
@@ -1344,7 +1400,10 @@ mod tests {
         // An admitted peer can disconnect mid-load without ever producing a
         // participation lifecycle event. Its transport unbind still starts the
         // hold and makes the roster status disconnected.
-        assert_eq!(seats.hold_disconnected_client(41), Some(released));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(released)
+        );
         seats.advance_hold_clock(HOLD_WINDOW);
         seats.release_expired_holds();
 
@@ -1375,7 +1434,10 @@ mod tests {
             .expect("seat namespace has room");
         let _ = seats.take_roster_dirty();
 
-        assert_eq!(seats.hold_disconnected_client(41), Some(original));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(original)
+        );
         seats.advance_hold_clock(HOLD_WINDOW);
 
         let reclaimed = seats
@@ -1401,7 +1463,10 @@ mod tests {
         let expired = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
             .expect("seat namespace has room");
-        assert_eq!(seats.hold_disconnected_client(41), Some(expired));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(expired)
+        );
         seats.advance_hold_clock(HOLD_WINDOW.saturating_add(Duration::from_millis(1)));
 
         // Admission runs before the post-poll expiry sweep. A strictly overdue
@@ -1422,7 +1487,10 @@ mod tests {
         let original = seats
             .admit_or_reclaim(41, Some(original_claim.clone()), false)
             .expect("seat namespace has room");
-        assert_eq!(seats.hold_disconnected_client(41), Some(original));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(original)
+        );
 
         let mut nearly_matching_id = [0x15; 16];
         nearly_matching_id[7] = 0x16;
@@ -1468,7 +1536,10 @@ mod tests {
         let stale = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
             .expect("seat namespace has room");
-        assert_eq!(seats.hold_disconnected_client(41), Some(stale));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(stale)
+        );
 
         // Build the pre-existing duplicate-hold state this recovery rule must
         // tolerate. Normal admissions cannot create it because the first hold
@@ -1477,7 +1548,10 @@ mod tests {
             .admit_or_reclaim(42, Some(claim([0x18; 16], "Other")), false)
             .expect("seat namespace has room");
         seats.connect_claims.insert(recent, player_claim.clone());
-        assert_eq!(seats.hold_disconnected_client(42), Some(recent));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 42),
+            Some(recent)
+        );
 
         let reclaimed = seats
             .admit_or_reclaim(43, Some(player_claim), false)
@@ -1529,7 +1603,10 @@ mod tests {
             Some(1),
             "a live pawn at index zero keeps a new seat away from it"
         );
-        assert_eq!(seats.hold_disconnected_client(41), Some(first));
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(first)
+        );
         assert_eq!(
             seats.assign_placement(third, 3, [1]),
             Some(2),
@@ -1541,7 +1618,7 @@ mod tests {
             "a fresh connection can recover the placement through its durable seat"
         );
 
-        seats.clear_pawn_bindings_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut EntityRegistry::new());
         let post_level_admission = seats
             .admit_or_reclaim(44, None, false)
             .expect("a post-level admission mints a fresh seat");
@@ -1584,5 +1661,125 @@ mod tests {
         assert_eq!(seats.admit_or_reclaim(99, None, false), None);
         assert!(seats.take_roster_dirty());
         assert_eq!(seats.roster_message_for(99).your_seat, None);
+    }
+
+    /// Registry slot index of an id. The reverse index is keyed by whole
+    /// `EntityId`, so index reuse is the case a stale entry could be matched by.
+    fn slot_index(id: EntityId) -> u32 {
+        id.to_raw() & 0xffff
+    }
+
+    #[test]
+    fn rebinding_a_seat_leaves_the_outgoing_live_pawn_without_an_owner() {
+        let mut seats = SeatTable::from_test_session_id([20; 16]);
+        let mut registry = EntityRegistry::new();
+        let seat = seats
+            .admit_or_reclaim(41, None, false)
+            .expect("seat namespace has room");
+        let old_pawn = registry.spawn(Transform::default());
+        let new_pawn = registry.spawn(Transform::default());
+
+        seats.bind_pawn(&mut registry, seat, old_pawn);
+        // A demotion without a lifecycle cleanup event leaves the old pawn live
+        // while its seat re-promotes onto a freshly materialized one.
+        seats.bind_pawn(&mut registry, seat, new_pawn);
+
+        assert_eq!(registry.seat_for_pawn(old_pawn), None);
+        assert_eq!(registry.seat_for_pawn(new_pawn), Some(seat));
+        assert_eq!(
+            [old_pawn, new_pawn]
+                .into_iter()
+                .filter(|pawn| registry.seat_for_pawn(*pawn) == Some(seat))
+                .count(),
+            1,
+            "the reverse index is many-to-one; exactly one pawn may own a seat"
+        );
+    }
+
+    #[test]
+    fn binding_a_pawn_to_an_unminted_seat_records_no_owner() {
+        let mut seats = SeatTable::from_test_session_id([21; 16]);
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+
+        seats.bind_pawn(&mut registry, Seat(9), pawn);
+
+        assert_eq!(
+            registry.seat_for_pawn(pawn),
+            None,
+            "the seat-keyed no-op and the reverse index stay in lockstep"
+        );
+    }
+
+    #[test]
+    fn holding_a_disconnected_client_clears_its_still_live_pawns_owner() {
+        let mut seats = SeatTable::from_test_session_id([22; 16]);
+        let mut registry = EntityRegistry::new();
+        let seat = seats
+            .admit_or_reclaim(41, Some(claim([0x22; 16], "Runner")), false)
+            .expect("seat namespace has room");
+        let pawn = registry.spawn(Transform::default());
+        seats.bind_pawn(&mut registry, seat, pawn);
+
+        // A drop while demoted reaches the transport edge with no lifecycle
+        // cleanup, so the pawn outlives the hold.
+        assert_eq!(
+            seats.hold_disconnected_client(&mut registry, 41),
+            Some(seat)
+        );
+
+        assert!(registry.exists(pawn));
+        assert_eq!(
+            registry.seat_for_pawn(pawn),
+            None,
+            "a held seat has no live owner to address"
+        );
+    }
+
+    #[test]
+    fn reclaiming_a_held_seat_gives_its_replacement_pawn_the_owner_again() {
+        let mut seats = SeatTable::from_test_session_id([23; 16]);
+        let mut registry = EntityRegistry::new();
+        let player_claim = claim([0x23; 16], "Runner");
+        let seat = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room");
+        let old_pawn = registry.spawn(Transform::default());
+        seats.bind_pawn(&mut registry, seat, old_pawn);
+        assert_eq!(
+            seats.hold_disconnected_client(&mut registry, 41),
+            Some(seat)
+        );
+
+        let reclaimed = seats
+            .admit_or_reclaim(42, Some(player_claim), false)
+            .expect("the exact player identity reclaims its held seat");
+        let new_pawn = registry.spawn(Transform::default());
+        seats.bind_pawn(&mut registry, reclaimed, new_pawn);
+
+        assert_eq!(reclaimed, seat);
+        assert_eq!(registry.seat_for_pawn(new_pawn), Some(seat));
+        assert_eq!(registry.seat_for_pawn(old_pawn), None);
+    }
+
+    #[test]
+    fn level_unload_leaves_no_owner_for_an_entity_reusing_the_recycled_index() {
+        let mut seats = SeatTable::from_test_session_id([24; 16]);
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        seats.bind_pawn(&mut registry, Seat(0), pawn);
+
+        registry.clear_for_level_unload();
+        seats.clear_pawn_bindings_for_level_unload(&mut registry);
+
+        let recycled = registry.spawn(Transform::default());
+        assert_eq!(
+            slot_index(recycled),
+            slot_index(pawn),
+            "the unloaded pawn's slot index returns to circulation"
+        );
+        assert_ne!(recycled, pawn);
+        assert_eq!(registry.seat_for_pawn(recycled), None);
+        assert_eq!(registry.seat_for_pawn(pawn), None);
     }
 }

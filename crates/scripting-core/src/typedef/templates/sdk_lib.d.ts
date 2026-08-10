@@ -392,7 +392,11 @@
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
 
-  /** Define a pure impact-policy descriptor. Register it only by returning it through `events`. */
+  /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
+  export function defineImpactEvent(
+    filter: ImpactEventFilter,
+    build: (impact: Impact) => readonly EffectOrGroup[],
+  ): ImpactEvent;
   export function defineImpactEvent(
     id: string,
     filter: ImpactEventFilter,
@@ -461,7 +465,7 @@
   export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
   export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
 
-  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. */
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
     | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
     | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
@@ -491,7 +495,10 @@
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  /** Build a state-store declaration. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest and required durable identities validate. */
+  export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+    schema: S,
+  ): StoreDefinition<S>;
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     namespace: string,
     schema: S,
@@ -735,7 +742,7 @@
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

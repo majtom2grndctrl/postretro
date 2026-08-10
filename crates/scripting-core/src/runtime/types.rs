@@ -2,7 +2,6 @@
 // result types, and the hot-reload dependency classifier.
 // See: context/lib/scripting.md
 
-#[cfg(debug_assertions)]
 use std::collections::BTreeSet;
 #[cfg(debug_assertions)]
 use std::ffi::OsString;
@@ -357,6 +356,9 @@ impl From<Which> for LuauWhich {
 pub struct ScriptRuntimeConfig {
     pub quickjs: QuickJsConfig,
     pub luau: LuauConfig,
+    /// Authoring tools may bypass the read-only identity gate while discovering
+    /// declarations to mint. The default is deliberately enforcing.
+    pub skip_identity_enforcement: bool,
 }
 
 pub struct ScriptRuntime {
@@ -366,8 +368,16 @@ pub struct ScriptRuntime {
     /// `None` until `run_mod_init` succeeds; in debug builds may also remain
     /// `None` if no `start-script.{js,luau}` was found at the mod root.
     pub(super) mod_manifest: Option<ModManifestResult>,
-    /// The first successfully committed mod identity. Admission has no
-    /// recovery path, so hot reload must not replace this value.
+    /// Validated author-owned identity ledger captured by the latest successful
+    /// declaration commit. Persistence and replicated-schema consumers must use
+    /// this snapshot rather than re-reading `identity.json` mid-session.
+    pub(super) store_identity: Option<crate::store_identity::StoreIdentityLedger>,
+    /// Authored dotted slot names from the latest successful declaration
+    /// commit. Kept separately because the live slot table retains removed
+    /// declarations and the ledger deliberately retains orphan entries.
+    pub(super) committed_store_slots: BTreeSet<String>,
+    /// The first successfully committed mod identity. Admission, persistence,
+    /// and replication keep this process-scoped value across later init attempts.
     pub(super) committed_mod_identity: Option<(String, String)>,
     /// Dev-mode hot-reload watcher. Debug builds only; release builds omit
     /// the field so `drain_reload_requests` is a no-op with no extra code.
@@ -386,11 +396,21 @@ pub struct ScriptRuntime {
     pub(super) cfg: ScriptRuntimeConfig,
 }
 
-/// Validate the stable identifier that a mod declares for connection
-/// admission. This intentionally shares the authored identifier contract used
-/// by ammo resources and weapon credit sources.
+/// Validate the stable identifier that a mod declares for connection admission.
+///
+/// The shared identifier helper deliberately remains broader: ammo resources
+/// and weapon credit sources retain `:` in their grammar. Mod ids are also a
+/// platform-data path component, so `.`-only values are unsafe here.
 pub(crate) fn validate_mod_manifest_id(value: &str) -> Result<(), String> {
-    postretro_foundation::validate_ascii_identifier("id", value).map_err(|error| error.to_string())
+    postretro_foundation::validate_ascii_identifier("id", value)
+        .map_err(|error| error.to_string())?;
+    if value.contains(':') {
+        return Err("`id` must not contain `:`".to_string());
+    }
+    if value.bytes().all(|byte| byte == b'.') {
+        return Err("`id` must not contain only `.`".to_string());
+    }
+    Ok(())
 }
 
 /// Versions are display and diagnostic data only, so every non-empty string is

@@ -656,11 +656,11 @@ export type SwitchingDescriptor = {
   blockDuringReload: boolean,
 }
 
---- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.
+--- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
   name: string,
-  --- Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. Declared identity is not a security mechanism.
+  --- Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. Declared identity is not a security mechanism.
   id: string,
   --- Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid.
   version: string,
@@ -670,7 +670,7 @@ export type ModManifest = {
   movers: MoverDefaults?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
-  --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.
+  --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
@@ -692,7 +692,7 @@ export type ModManifest = {
   triggerEvents: {TriggerEventDescriptor}?,
   --- Trigger-volume arming pools. Optional; compose by level tags.
   triggerPools: {TriggerPoolDescriptor}?,
-  --- Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.
+  --- Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.
   stores: {StoreDeclaration}?,
 }
 
@@ -1384,9 +1384,9 @@ export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: Entity
 declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name`, `config.id`, and `config.version` are required. Peers must
---- declare the same id to connect. Must be non-empty ASCII, at most 64
---- bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not
---- enforced. `version` is displayed and never compared; neither field is a
+--- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
+--- `:` is not allowed, and the id may not consist entirely of dots.
+--- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest
@@ -1416,7 +1416,11 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
 --- script writes. `network = "shared"` replicates the slot to every connected
---- client (server-authoritative); omitted means local-only.
+--- client (server-authoritative); omitted means local-only. A mod-owned
+--- persisted writable or replicated slot requires a minted
+--- `<mod-root>/identity.json` entry; run
+--- `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key
+--- across renames.
 export type StoreSlotSchema = (
   { type: "number", readonly: boolean?, network: "shared"?, accumulate: nil? }
   | { type: "number", readonly: false?, network: "shared"?, accumulate: (TickParams) -> RuntimeValue }
@@ -1437,7 +1441,8 @@ export type StoreDefinition = {
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
 --- no engine state. `namespace` prefixes returned refs as `namespace.slotName`;
 --- `schema` declares slot names and validation rules. Returned declarations
---- commit atomically only after the mod manifest succeeds.
+--- commit atomically only after the mod manifest and required durable identities
+--- validate.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 --- Build an additive write for a writable Number store slot.

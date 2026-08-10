@@ -126,7 +126,7 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
-/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. */
+/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when renaming the store or slot. */
 export type StoreSlotSchema = (
   | { type: "number"; readonly?: boolean; accumulate?: never }
   | { type: "number"; readonly?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
@@ -432,24 +432,37 @@ function assertDenseImpactArray(values: readonly unknown[], context: string): vo
   }
 }
 
-const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes";
+const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id";
+const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
 
 function validateImpactEventId(id: string): void {
   const valid = id.length > 0
-    && id.length <= 128
-    && /^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)+$/.test(id);
+    && id.length <= 64
+    && /^[A-Za-z0-9_.-]+$/.test(id);
   if (!valid) throw new TypeError(IMPACT_EVENT_ID_DIAGNOSTIC);
 }
 
-/** Define a pure impact-policy descriptor. Registration occurs only through a manifest's `events`. */
+/** Define a pure impact-policy descriptor. The engine prefixes its single-segment authored id with the mod id. Omit `id` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Registration occurs only through a manifest's `events`. */
+export function defineImpactEvent(
+  filter: ImpactEventFilter,
+  build: (impact: Impact) => readonly EffectOrGroup[],
+): ImpactEvent;
 export function defineImpactEvent(
   id: string,
   filter: ImpactEventFilter,
   build: (impact: Impact) => readonly EffectOrGroup[],
+): ImpactEvent;
+export function defineImpactEvent(
+  idOrFilter: string | ImpactEventFilter,
+  filterOrBuild: ImpactEventFilter | ((impact: Impact) => readonly EffectOrGroup[]),
+  build?: (impact: Impact) => readonly EffectOrGroup[],
 ): ImpactEvent {
+  if (arguments.length === 2) throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const id = idOrFilter as string;
+  const filter = filterOrBuild as ImpactEventFilter;
   validateImpactEventId(id);
   const eventFilter = Object.freeze({ tag: filter.tag });
-  const policy = lowerImpactPolicy(build(IMPACT));
+  const policy = lowerImpactPolicy(build!(IMPACT));
   return impactEvent(id, eventFilter, policy, filter.levels, false);
 }
 
@@ -757,13 +770,25 @@ function cloneAndFreeze<T>(
   return Object.freeze(clone) as T;
 }
 
-/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName`; `schema` declares the slot names and validation rules. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
+/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
+export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+  schema: S,
+): StoreDefinition<S>;
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   namespace: string,
   schema: S,
+): StoreDefinition<S>;
+export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+  namespaceOrSchema: string | S,
+  schema?: S,
 ): StoreDefinition<S> {
+  if (arguments.length === 1) throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const namespace = namespaceOrSchema as string;
+  const namedSchema = schema!;
+  if (namespace.includes(":")) throw new TypeError("defineStore `namespace` must not contain `:`");
   const tracedSchema: Record<string, StoreSlotSchema> = Object.create(null);
-  for (const [slot, input] of Object.entries(schema)) {
+  for (const [slot, input] of Object.entries(namedSchema)) {
+    if (slot.includes(":")) throw new TypeError(`defineStore slot name ${JSON.stringify(slot)} must not contain \`:\``);
     if (input !== null && typeof input === "object" && typeof input.accumulate === "function") {
       tracedSchema[slot] = { ...input, accumulate: input.accumulate(DISPATCH_PARAMS) } as StoreSlotSchema;
     } else {

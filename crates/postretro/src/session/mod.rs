@@ -774,6 +774,10 @@ impl ScriptingCore {
     /// that case up front via [`require_headless_mod_manifest`].
     /// See: context/lib/boot_sequence.md §3, context/lib/scripting.md §2.
     pub(crate) fn drain_manifest_registrations(&mut self) {
+        let mod_id = self
+            .script_runtime
+            .committed_mod_identity()
+            .map(|(id, _)| id.to_string());
         let events = {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
@@ -796,6 +800,7 @@ impl ScriptingCore {
             data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
             std::mem::take(&mut manifest.events)
         };
+        self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
     }
 }

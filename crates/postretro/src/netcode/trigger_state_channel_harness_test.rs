@@ -43,7 +43,7 @@ use postretro_net::wire::{self, ClientMessage, RawSnapshotMessage, SNAPSHOT_VERS
 
 use super::command_queue::{MovementOwners, WeaponOwners};
 use super::frame_order::{self, ReplicatedStateFrame};
-use super::state_slots::{ClientStateApply, HostStateReplication};
+use super::state_slots::{ClientStateApply, HostStateReplication, ReplicatedSlotIdentity};
 use super::{ClientPrediction, ClientReplication, client_receive_and_apply};
 use crate::collision::CollisionWorld;
 use crate::kinematic_mover::MoverTickStateTable;
@@ -70,6 +70,7 @@ use postretro_entities::{
     TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::HealthDescriptor;
+use postretro_scripting_core::StoreIdentityLedger;
 use postretro_scripting_core::data_descriptors::{
     CrossingCondition, CrossingDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
 };
@@ -121,6 +122,19 @@ fn atmosphere_slots() -> SlotTable {
         )
         .expect("fixture namespace is unique");
     table
+}
+
+fn atmosphere_replication_identity() -> ReplicatedSlotIdentity<'static> {
+    ReplicatedSlotIdentity::new(
+        Some("test.atmosphere".to_string()),
+        Some(StoreIdentityLedger {
+            version: 1,
+            slots: [(BLACKOUT_SLOT.to_string(), "k0123456789abcdef".to_string())]
+                .into_iter()
+                .collect(),
+        }),
+        [BLACKOUT_SLOT.to_string()].into_iter().collect(),
+    )
 }
 
 /// Minimal level-script manifest. `triggerBlackout` has the requested direct
@@ -244,6 +258,7 @@ struct PersistentAtmosphereHarness {
     host_trigger_bridge: TriggerVolumeBridge,
     host_bindings: TriggerBindingTable,
     host_state: HostStateReplication,
+    replication_identity: ReplicatedSlotIdentity<'static>,
     host_remote_pawn: EntityId,
     host_local_pawn: EntityId,
     host_owners: MovementOwners,
@@ -408,6 +423,7 @@ impl PersistentAtmosphereHarness {
             host_trigger_bridge,
             host_bindings,
             host_state: HostStateReplication::new(),
+            replication_identity: atmosphere_replication_identity(),
             host_remote_pawn,
             host_local_pawn,
             host_owners,
@@ -546,9 +562,16 @@ impl PersistentAtmosphereHarness {
         let weapon_owners = WeaponOwners::new();
         let slots = self.host_ctx.slot_table.borrow();
         let registry = self.host_ctx.registry.borrow();
-        self.host_state
-            .ingest_frame(&slots, &registry, &self.host_owners, &weapon_owners);
-        let fingerprint = self.host_state.fingerprint(&slots);
+        self.host_state.ingest_frame(
+            &slots,
+            &self.replication_identity,
+            &registry,
+            &self.host_owners,
+            &weapon_owners,
+        );
+        let fingerprint = self
+            .host_state
+            .fingerprint(&slots, &self.replication_identity);
         let records = self
             .host_state
             .produce_for_client(CLIENT_ID, sequence)
@@ -754,6 +777,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
             let _ = client_receive_and_apply(
                 &mut registry,
                 &mut slots,
+                &self.replication_identity,
                 &mut self.client,
                 &mut self.client_replication,
                 &mut self.client_state,

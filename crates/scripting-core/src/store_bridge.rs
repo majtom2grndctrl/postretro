@@ -326,6 +326,12 @@ fn validate_dense_lua_array(table: &LuaTable, field_name: &str) -> Result<usize,
 }
 
 pub fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
+    if namespace.contains(':') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: namespace `{namespace}` must not contain `:`"),
+        });
+    }
+
     let inputs: BTreeMap<String, SlotSchemaInput> =
         serde_json::from_value(schema).map_err(|error| invalid_schema(None, error))?;
 
@@ -376,6 +382,11 @@ fn validate_slot_schema(
             reason: format!(
                 "defineStore: slot name `{slot_name}` must not start with reserved `@`"
             ),
+        });
+    }
+    if slot_name.contains(':') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: slot name `{slot_name}` must not contain `:`"),
         });
     }
     if accumulate.is_some() && slot_type != "number" {
@@ -911,5 +922,29 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn store_declaration_rejects_colon_in_slot_name_before_reconciliation() {
+        let error = store_declaration(
+            "test",
+            serde_json::json!({ "bad:name": { "type": "number", "default": 0.0 } }),
+        )
+        .expect_err("descriptor parsing must reject a colon-bearing slot name");
+
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+        assert!(error.to_string().contains("bad:name"));
+    }
+
+    #[test]
+    fn store_declaration_rejects_colon_in_namespace_before_reconciliation() {
+        let error = store_declaration(
+            "bad:namespace",
+            serde_json::json!({ "value": { "type": "number", "default": 0.0 } }),
+        )
+        .expect_err("descriptor parsing must reject a colon-bearing namespace");
+
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+        assert!(error.to_string().contains("bad:namespace"));
     }
 }

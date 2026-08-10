@@ -62,6 +62,26 @@ registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
 The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
+**Durable store identity.** A mod-owned slot with writable `persist: true` or
+`network: "shared"` must have an entry in `<mod-root>/identity.json`:
+
+```json
+{
+  "version": 1,
+  "slots": {
+    "options.master": "k0123456789abcdef"
+  }
+}
+```
+
+After adding such a slot, run
+`cargo run -p xtask -- mint-identity <mod-root>` and ship the updated file with
+the mod. When renaming a store or slot, rename the dotted key in this file but
+keep its opaque value; that retains saved data and replication identity. Missing
+or invalid durable identity rejects mod initialization. This is stricter than an
+ordinary missing, malformed, or incompatible saved value, which warns and leaves
+the declared default active.
+
 **Render profile.** The optional `render.bloom` block picks the mod's bloom look
 once, for the whole mod:
 
@@ -1414,7 +1434,9 @@ source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
 
 ### Impact policies
 
-`defineImpactEvent("namespace:id", filter, build)` declares what an in-tick hit means. IDs are portable ASCII addresses: colon-separated non-empty segments using letters, digits, `_`, `.`, or `-`, up to 128 bytes. An override must add a `tag`; it can only narrow the base target set.
+`defineImpactEvent("reward", filter, build)` declares what an in-tick hit means. The authored ID is one portable ASCII segment: 1–64 bytes using only letters, digits, `_`, `.`, or `-`. Do not include `:`: when the event is composed, the engine qualifies it as `<modId>:<authoredId>`.
+
+TypeScript also supports binding-name sugar for a direct top-level identifier declaration: `const reward = defineImpactEvent(filter, build)` uses `reward` as the authored ID. Use the explicit form inside helpers and other expression positions. Luau always requires the explicit ID argument. An override must add a `tag`; it can only narrow the base target set.
 
 Every fire evaluates gates and effect operands from one pre-effect snapshot, then applies the selected effects. `healthAfter` is the unfloored result and may be negative even though stored health floors at zero. Unset `target.state(name)` reads `0`. `playAnim(name)` requires that name in the target mesh's declared animation states. `despawn` and `setHealth` accept `{ afterMs }`; omitting it is immediate, while `{ afterMs: 0 }` still enters the deferred queue.
 

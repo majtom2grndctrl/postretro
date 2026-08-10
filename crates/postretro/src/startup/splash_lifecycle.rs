@@ -2,14 +2,12 @@
 //! handoff, deferred mod init, and the boot-map / frontend transition.
 //! See: context/lib/boot_sequence.md §1 (Splash state machine)
 
-use std::path::Path;
-
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
 use crate::render;
 use crate::scripting::state_persistence::{
-    STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
+    load_persisted_state, overlay_persisted_state, state_path,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
 
@@ -146,7 +144,9 @@ impl App {
         if !self.finish_renderer_full_init(event_loop) {
             return false;
         }
-        self.run_deferred_mod_init();
+        if !self.run_deferred_mod_init(event_loop) {
+            return false;
+        }
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());
 
@@ -224,13 +224,14 @@ impl App {
     /// Run `mod_init` and commit its validated manifest into the engine-global
     /// `DataRegistry`, install the manifest's UI theme/fonts and bloom render
     /// profile, overlay persisted state once, and start the hot-reload watcher.
-    /// Records `mod_init` into `mod_timings`. Errors log and leave the engine in
-    /// a blank-mod state so the splash flow still completes.
+    /// Records `mod_init` into `mod_timings`. A mod-init failure is fatal: a
+    /// running engine with rejected declarations would otherwise silently boot
+    /// without the content that owns its durable state.
     ///
     /// This is also the resume seam: suspend drops the renderer, and the resumed
     /// splash loop replays this after `finish_renderer_full_init`, so the
     /// recreated renderer re-receives the committed profile.
-    fn run_deferred_mod_init(&mut self) {
+    fn run_deferred_mod_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
         // Mod init runs before the worker spawns so declarations and entity
         // descriptors commit together, then persistence overlays defaults once
         // before any level work begins.
@@ -248,13 +249,11 @@ impl App {
         // `&mut self`, which the session borrow below forbids. A failed mod init
         // leaves this `None` and therefore makes NO setter call, so the renderer
         // keeps its active profile.
-        let mut committed_render_profile: Option<
-            postretro_scripting_core::runtime::ModRenderProfile,
-        > = None;
+        let committed_render_profile: postretro_scripting_core::runtime::ModRenderProfile;
         // Switching is App-owned input policy, so lift it out of the runtime
         // manifest before the registry drain mutably borrows the session.
-        let mut committed_switching: Option<postretro_foundation::SwitchingDescriptor> = None;
-        let mut committed_mover_auto_close_ms: Option<f32> = None;
+        let committed_switching: postretro_foundation::SwitchingDescriptor;
+        let committed_mover_auto_close_ms: f32;
         {
             let session = self
                 .session
@@ -266,6 +265,9 @@ impl App {
                 .compile_stale_scripts(&script_root, &content_root);
             if let Err(err) = session.scripting.script_runtime.run_mod_init(&content_root) {
                 log::error!("[Scripting] mod_init failed: {err}");
+                self.exit_result = Err(anyhow::anyhow!("mod_init failed: {err}"));
+                event_loop.exit();
+                return false;
             } else {
                 let has_manifest = session.scripting.script_runtime.mod_manifest().is_some();
                 // Read the render profile before anything drains or `take`s the
@@ -273,30 +275,24 @@ impl App {
                 // read and cannot be invalidated by the later mutations. A
                 // successful init with no start script commits the default,
                 // matching the staged `NoStartScript` rule.
-                committed_render_profile = Some(
-                    session
-                        .scripting
-                        .script_runtime
-                        .mod_manifest()
-                        .map(|manifest| manifest.render)
-                        .unwrap_or_default(),
-                );
-                committed_switching = Some(
-                    session
-                        .scripting
-                        .script_runtime
-                        .mod_manifest()
-                        .map(|manifest| manifest.switching)
-                        .unwrap_or_default(),
-                );
-                committed_mover_auto_close_ms = Some(
-                    session
-                        .scripting
-                        .script_runtime
-                        .mod_manifest()
-                        .map(|manifest| manifest.movers.auto_close_ms)
-                        .unwrap_or(crate::runtime_movers::ENGINE_AUTO_CLOSE_MS),
-                );
+                committed_render_profile = session
+                    .scripting
+                    .script_runtime
+                    .mod_manifest()
+                    .map(|manifest| manifest.render)
+                    .unwrap_or_default();
+                committed_switching = session
+                    .scripting
+                    .script_runtime
+                    .mod_manifest()
+                    .map(|manifest| manifest.switching)
+                    .unwrap_or_default();
+                committed_mover_auto_close_ms = session
+                    .scripting
+                    .script_runtime
+                    .mod_manifest()
+                    .map(|manifest| manifest.movers.auto_close_ms)
+                    .unwrap_or(crate::runtime_movers::ENGINE_AUTO_CLOSE_MS);
                 // Drain the manifest's engine-global `DataRegistry` registrations
                 // (entity types, maps, global reactions/crossings) through the
                 // shared extractor also used by the headless observability path, so
@@ -334,26 +330,45 @@ impl App {
                     .state_store_lifecycle
                     .should_restore_after_mod_init(has_manifest)
                 {
-                    let state_path = Path::new(STATE_FILE_PATH);
-                    match load_persisted_state(state_path) {
-                        Ok(Some(persisted)) => {
-                            let warnings = overlay_persisted_state(
-                                &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                                &persisted,
-                            );
-                            for warning in warnings {
-                                log::warn!("[State] {warning}");
+                    let mod_id = session
+                        .scripting
+                        .script_runtime
+                        .committed_mod_identity()
+                        .map(|(id, _)| id.to_owned())
+                        .expect("restore only runs after a committed manifest");
+                    let identity = session.scripting.script_runtime.store_identity().cloned();
+                    let committed_store_slots = session
+                        .scripting
+                        .script_runtime
+                        .committed_store_slots()
+                        .clone();
+                    if let Some(state_path) = state_path(&mod_id) {
+                        match load_persisted_state(&state_path) {
+                            Ok(Some(persisted)) => {
+                                let warnings = overlay_persisted_state(
+                                    &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                                    &persisted,
+                                    identity.as_ref(),
+                                    &committed_store_slots,
+                                );
+                                for warning in warnings {
+                                    log::warn!("[State] {warning}");
+                                }
+                                log::info!(
+                                    "[State] restored persistent slots from {}",
+                                    state_path.display()
+                                );
                             }
-                            log::info!(
-                                "[State] restored persistent slots from {}",
+                            Ok(None) => {}
+                            Err(error) => log::warn!(
+                                "[State] failed to load persistent slots from {}: {error}; using declared defaults",
                                 state_path.display()
-                            );
+                            ),
                         }
-                        Ok(None) => {}
-                        Err(error) => log::warn!(
-                            "[State] failed to load persistent slots from {}: {error}; using declared defaults",
-                            state_path.display()
-                        ),
+                    } else if session.state_store_lifecycle.disable_persistence() {
+                        log::warn!(
+                            "[State] platform data directory is unavailable; persistent state is disabled for this run"
+                        );
                     }
                     session.state_store_lifecycle.mark_restore_completed();
                 }
@@ -372,21 +387,16 @@ impl App {
         if let Some((mod_theme, mod_fonts)) = deferred_theme_fonts {
             self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
-        if let Some(render_profile) = committed_render_profile {
-            self.apply_mod_bloom_render_profile(render_profile);
-        }
-        if let Some(switching) = committed_switching {
-            self.switching = switching;
-        }
-        if let Some(mover_auto_close_ms) = committed_mover_auto_close_ms
-            && let Some(session) = self.session.as_mut()
-        {
-            session.scripting.mover_auto_close_ms = mover_auto_close_ms;
+        self.apply_mod_bloom_render_profile(committed_render_profile);
+        self.switching = committed_switching;
+        if let Some(session) = self.session.as_mut() {
+            session.scripting.mover_auto_close_ms = committed_mover_auto_close_ms;
         }
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.
         self.install_network_mod_content();
         self.mod_timings.record("mod_init");
+        true
     }
 
     /// Swap the splash texture if a mod override was staged. Mod-side override

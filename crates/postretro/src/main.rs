@@ -95,7 +95,9 @@ static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::Countin
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -118,7 +120,7 @@ use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
-    STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
+    collect_persisted_state, save_persisted_state, state_path,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -3903,26 +3905,44 @@ impl ApplicationHandler for App {
             .as_ref()
             .is_some_and(|session| session.state_store_lifecycle.can_save());
         if should_save_persisted_state(can_save, self.is_connected_client()) {
-            let state_path = Path::new(STATE_FILE_PATH);
-            let script_ctx = self
+            let session = self
                 .session
-                .as_ref()
-                .expect("session installed at clean exit")
-                .scripting
-                .script_ctx
-                .clone();
-            let collected = collect_persisted_state(&script_ctx.slot_table.borrow());
-            for warning in collected.warnings {
-                log::warn!("[State] {warning}");
-            }
-            match save_persisted_state(state_path, &collected.state) {
-                Ok(()) => {
-                    log::info!("[State] saved persistent slots to {}", state_path.display())
+                .as_mut()
+                .expect("session installed at clean exit");
+            if let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() {
+                let mod_id = mod_id.to_owned();
+                let identity = session.scripting.script_runtime.store_identity().cloned();
+                let committed_store_slots = session
+                    .scripting
+                    .script_runtime
+                    .committed_store_slots()
+                    .clone();
+                let script_ctx = session.scripting.script_ctx.clone();
+                if let Some(state_path) = state_path(&mod_id) {
+                    let collected = collect_persisted_state(
+                        &script_ctx.slot_table.borrow(),
+                        identity.as_ref(),
+                        &committed_store_slots,
+                    );
+                    for warning in collected.warnings {
+                        log::warn!("[State] {warning}");
+                    }
+                    match save_persisted_state(&state_path, &collected.state) {
+                        Ok(()) => {
+                            log::info!("[State] saved persistent slots to {}", state_path.display())
+                        }
+                        Err(error) => log::warn!(
+                            "[State] failed to save persistent slots to {}: {error}",
+                            state_path.display()
+                        ),
+                    }
+                } else if session.state_store_lifecycle.disable_persistence() {
+                    log::warn!(
+                        "[State] platform data directory is unavailable; persistent state is disabled for this run"
+                    );
                 }
-                Err(error) => log::warn!(
-                    "[State] failed to save persistent slots to {}: {error}",
-                    state_path.display()
-                ),
+            } else {
+                log::warn!("[State] no committed mod manifest; skipping persistent-state save");
             }
         }
 
@@ -5263,6 +5283,12 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
+        let script_runtime = &session.scripting.script_runtime;
+        let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
+            script_runtime.committed_mod_identity().map(|(id, _)| id),
+            script_runtime.store_identity(),
+            script_runtime.committed_store_slots(),
+        );
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -5618,6 +5644,7 @@ impl App {
                     netcode::client_receive_and_apply(
                         &mut registry,
                         &mut slot_table,
+                        &replication_identity,
                         client,
                         replication,
                         state_slots,
@@ -5878,6 +5905,12 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return Vec::new();
         };
+        let script_runtime = &session.scripting.script_runtime;
+        let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
+            script_runtime.committed_mod_identity().map(|(id, _)| id),
+            script_runtime.store_identity(),
+            script_runtime.committed_store_slots(),
+        );
         let mesh_clip_tables = &session.mesh_clip_tables;
         let hit_zone_store = &session.hit_zone_store;
         let Some(netcode::NetEndpoint::Host {
@@ -5945,6 +5978,7 @@ impl App {
             netcode::host_replicate(
                 &registry,
                 &slot_table,
+                &replication_identity,
                 server,
                 allocator,
                 replication,

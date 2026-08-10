@@ -909,6 +909,34 @@ mod tests {
                 "`id` invalid",
             ),
             (
+                "colon id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'mod:dev', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = 'mod:dev', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "single-dot id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '.', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '.', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "double-dot id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '..', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '..', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "three-dot id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '...', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '...', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
                 "empty version",
                 "globalThis.__postretroModManifest = { name: 'Dev', id: 'dev', version: '' };"
                     .to_string(),
@@ -998,7 +1026,7 @@ mod tests {
                     version: "1",
                     events: [{
                         kind: "impact",
-                        id: "salvage:crate-break",
+                        id: "crate-break",
                         isOverride: false,
                         levels: ["campaign"],
                         filter: { tag: "crate" },
@@ -1022,7 +1050,7 @@ mod tests {
                     version = "1",
                     events = {{
                         kind = "impact",
-                        id = "salvage:crate-break",
+                        id = "crate-break",
                         isOverride = false,
                         levels = { "campaign" },
                         filter = { tag = "crate" },
@@ -1042,7 +1070,7 @@ mod tests {
         assert_eq!(js_manifest.events, luau_manifest.events);
         assert_eq!(js_manifest.events.len(), 1);
         let event = &js_manifest.events[0];
-        assert_eq!(event.id, "salvage:crate-break");
+        assert_eq!(event.id, "crate-break");
         assert!(!event.is_override);
         assert_eq!(event.levels, ["campaign"]);
         assert_eq!(event.filter_tag.as_deref(), Some("crate"));

@@ -23,6 +23,9 @@ use crate::impact_effects::{ImpactEffect, apply_effect};
 /// impact fire observes exactly one state/store/fact snapshot.
 pub(crate) struct ImpactPolicyRuntime {
     ctx: ScriptCtx,
+    /// Process-scoped mod identity. Impact descriptors retain their authored
+    /// ids on the wire; this is only the internal composition/logging prefix.
+    mod_id: Option<String>,
     global_events: Vec<ImpactEventDescriptor>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
@@ -92,12 +95,28 @@ impl ImpactPolicyRuntime {
         Self {
             scope: EntityScope::impact(ctx.clone()),
             ctx,
+            mod_id: None,
             global_events: Vec::new(),
             level_events: Vec::new(),
             active_level_tags: Vec::new(),
             policies: Vec::new(),
             consequential: Vec::new(),
             presentation: Vec::new(),
+        }
+    }
+
+    /// Capture the first committed mod id for impact-policy composition.
+    ///
+    /// The scripting runtime freezes this identity across staged reloads. An
+    /// absent manifest remains absent, which intentionally leaves level event
+    /// ids unqualified rather than producing a bare `:` prefix.
+    pub(crate) fn set_mod_id(&mut self, mod_id: Option<String>) {
+        let Some(mod_id) = mod_id else {
+            return;
+        };
+        if self.mod_id.is_none() {
+            self.mod_id = Some(mod_id);
+            self.rebuild();
         }
     }
 
@@ -167,29 +186,29 @@ impl ImpactPolicyRuntime {
             .filter(|descriptor| levels_match(&descriptor.levels, &self.active_level_tags))
             .chain(&self.level_events)
         {
+            let id = qualified_impact_event_id(self.mod_id.as_deref(), &descriptor.id);
             let base_filter_tag = if descriptor.is_override {
                 if descriptor.filter_tag.is_none() {
                     log::warn!(
                         "[Impact] override `{}` was skipped: override filter requires `tag`",
-                        descriptor.id
+                        id
                     );
                     continue;
                 }
-                let Some(filter) = base_filters.get(&descriptor.id).cloned() else {
-                    log::warn!("[Impact] {}", unknown_override_diagnostic(&descriptor.id));
+                let Some(filter) = base_filters.get(&id).cloned() else {
+                    log::warn!("[Impact] {}", unknown_override_diagnostic(&id));
                     continue;
                 };
                 filter
             } else {
-                base_filters.insert(descriptor.id.clone(), descriptor.filter_tag.clone());
+                base_filters.insert(id.clone(), descriptor.filter_tag.clone());
                 descriptor.filter_tag.clone()
             };
-            match bind_policy(descriptor, base_filter_tag, &scope) {
+            match bind_policy(descriptor, &id, base_filter_tag, &scope) {
                 Ok(policy) => policies.push(policy),
-                Err(error) => log::warn!(
-                    "[Impact] policy `{}` was skipped during bind: {error}",
-                    descriptor.id
-                ),
+                Err(error) => {
+                    log::warn!("[Impact] policy `{}` was skipped during bind: {error}", id)
+                }
             }
         }
         self.scope = scope;
@@ -329,6 +348,7 @@ fn unknown_override_diagnostic(id: &str) -> String {
 
 fn bind_policy(
     descriptor: &ImpactEventDescriptor,
+    id: &str,
     base_filter_tag: Option<String>,
     scope: &EntityScope,
 ) -> Result<BoundImpactPolicy, String> {
@@ -340,11 +360,18 @@ fn bind_policy(
         groups.push(bind_group(entry, scope)?);
     }
     Ok(BoundImpactPolicy {
-        id: descriptor.id.clone(),
+        id: id.to_string(),
         base_filter_tag,
         filter_tag: descriptor.filter_tag.clone(),
         groups,
     })
+}
+
+fn qualified_impact_event_id(mod_id: Option<&str>, authored_id: &str) -> String {
+    match mod_id {
+        Some(mod_id) => format!("{mod_id}:{authored_id}"),
+        None => authored_id.to_string(),
+    }
 }
 
 fn bind_group(entry: &Value, scope: &EntityScope) -> Result<BoundGroup, String> {
@@ -1047,6 +1074,7 @@ mod tests {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate", "reinforced"]);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("combat-demo".to_string()));
         runtime.replace_global_events(vec![event(
             "same",
             "crate",
@@ -1059,6 +1087,16 @@ mod tests {
                 vec![state_write("variant", number(3.0))],
             )],
             &[],
+        );
+
+        assert_eq!(
+            runtime
+                .policies
+                .iter()
+                .map(|policy| policy.id.as_str())
+                .collect::<Vec<_>>(),
+            ["combat-demo:same", "combat-demo:same"],
+            "base-filter inheritance and dispatch eviction must share the qualified id",
         );
 
         hit(&ctx, target, DamageProducer::InTick);
@@ -1392,6 +1430,7 @@ mod tests {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             runtime.replace_global_events(vec![
                 event(
@@ -1413,7 +1452,7 @@ mod tests {
         assert_eq!(state(&ctx, target, "sibling_runs"), 1.0);
         assert!(captured.iter().any(|(level, message)| {
             *level == log::Level::Warn
-                && message.contains("policy `invalid-pool` was skipped during bind")
+                && message.contains("policy `postretro.dev:invalid-pool` was skipped during bind")
                 && message.contains("`grantAmmo.type` must match [A-Za-z0-9_.:-]")
         }));
     }
@@ -1558,22 +1597,79 @@ mod tests {
     fn engine_binding_rejects_tagless_override_descriptors() {
         let ctx = ScriptCtx::new();
         let scope = EntityScope::impact(ctx);
-        let mut descriptor = override_event("salvage:base", "elite", Vec::new());
+        let mut descriptor = override_event("base", "elite", Vec::new());
         descriptor.filter_tag = None;
 
         assert_eq!(
-            bind_policy(&descriptor, Some("crate".to_string()), &scope)
-                .err()
-                .unwrap(),
+            bind_policy(
+                &descriptor,
+                "postretro.dev:salvage",
+                Some("crate".to_string()),
+                &scope,
+            )
+            .err()
+            .unwrap(),
             "impact override filter requires `tag`"
         );
     }
 
     #[test]
-    fn unknown_override_diagnostic_names_author_id_in_documented_form() {
+    fn unknown_override_diagnostic_names_composition_id() {
         assert_eq!(
-            unknown_override_diagnostic("salvage:crate-break"),
-            "override targets unknown event \"salvage:crate-break\""
+            unknown_override_diagnostic("postretro.dev:salvage"),
+            "override targets unknown event \"postretro.dev:salvage\""
+        );
+    }
+
+    #[test]
+    fn impact_policy_bind_and_override_diagnostics_use_qualified_mod_id() {
+        let ctx = ScriptCtx::new();
+        let mut runtime = ImpactPolicyRuntime::new(ctx);
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_global_events(vec![event(
+                "bad-bind",
+                "crate",
+                vec![grant_ammo("not valid", number(1.0))],
+            )]);
+            runtime.replace_level_events(vec![override_event("unknown", "crate", Vec::new())], &[]);
+        });
+
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("policy `postretro.dev:bad-bind` was skipped during bind")
+        }));
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("override targets unknown event \"postretro.dev:unknown\"")
+        }));
+    }
+
+    #[test]
+    fn level_events_without_a_committed_mod_id_stay_unqualified() {
+        let ctx = ScriptCtx::new();
+        let mut runtime = ImpactPolicyRuntime::new(ctx);
+        runtime.replace_global_events(vec![event("base", "crate", Vec::new())]);
+        assert_eq!(runtime.policies[0].id, "base");
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_level_events(vec![override_event("unknown", "crate", Vec::new())], &[]);
+        });
+
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("override targets unknown event \"unknown\"")
+                && !message.contains(":unknown")
+        }));
+    }
+
+    #[test]
+    fn ammo_pool_identifiers_retain_colon_support() {
+        let scope = EntityScope::impact(ScriptCtx::new());
+        assert!(
+            bind_effect(&grant_ammo("mods:cells", number(1.0)), &scope).is_ok(),
+            "mod id validation must not narrow the shared ammo identifier grammar",
         );
     }
 

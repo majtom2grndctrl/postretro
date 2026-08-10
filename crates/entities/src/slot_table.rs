@@ -414,11 +414,21 @@ fn validate_namespace_records(
             namespace: namespace.to_string(),
         });
     }
+    if namespace.contains(':') {
+        return Err(NamespaceInsertError::NamespaceContainsColon {
+            namespace: namespace.to_string(),
+        });
+    }
 
     let mut pending = HashSet::with_capacity(records.len());
     for (slot_name, _) in records {
         if slot_name.is_empty() {
             return Err(NamespaceInsertError::InvalidSlotName);
+        }
+        if slot_name.contains(':') {
+            return Err(NamespaceInsertError::SlotNameContainsColon {
+                slot_name: slot_name.to_string(),
+            });
         }
         let full_name = format!("{namespace}.{slot_name}");
         if !pending.insert(full_name.clone()) {
@@ -460,8 +470,12 @@ pub enum NamespaceInsertError {
     InvalidNamespace,
     #[error("state-store namespace `{namespace}` must not start with reserved `@`")]
     ReservedNamespace { namespace: String },
+    #[error("state-store namespace `{namespace}` must not contain `:`")]
+    NamespaceContainsColon { namespace: String },
     #[error("state-store slot name must not be empty")]
     InvalidSlotName,
+    #[error("state-store slot name `{slot_name}` must not contain `:`")]
+    SlotNameContainsColon { slot_name: String },
     #[error("state-store namespace `{namespace}` collides with registered namespace `{existing}`")]
     NamespaceCollision { namespace: String, existing: String },
     #[error("state slot `{name}` is already defined")]
@@ -709,6 +723,31 @@ mod tests {
             }
         );
         assert!(table.get("@tick.value").is_none());
+    }
+
+    #[test]
+    fn namespace_insert_rejects_colons_in_authored_names() {
+        let mut table = SlotTable::new();
+
+        let namespace_error = table
+            .insert_namespace("mod:state", vec![("value".to_string(), number_slot(0.0))])
+            .expect_err("a namespace colon must be rejected");
+        assert_eq!(
+            namespace_error,
+            NamespaceInsertError::NamespaceContainsColon {
+                namespace: "mod:state".to_string(),
+            }
+        );
+
+        let slot_error = table
+            .insert_namespace("mod", vec![("state:value".to_string(), number_slot(0.0))])
+            .expect_err("a slot-name colon must be rejected");
+        assert_eq!(
+            slot_error,
+            NamespaceInsertError::SlotNameContainsColon {
+                slot_name: "state:value".to_string(),
+            }
+        );
     }
 
     #[test]

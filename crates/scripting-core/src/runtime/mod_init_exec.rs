@@ -909,6 +909,34 @@ mod tests {
                 "`id` invalid",
             ),
             (
+                "colon id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: 'mod:dev', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = 'mod:dev', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "single-dot id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '.', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '.', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "double-dot id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '..', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '..', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
+                "three-dot id",
+                "globalThis.__postretroModManifest = { name: 'Dev', id: '...', version: '1' };"
+                    .to_string(),
+                "return { name = 'Dev', id = '...', version = '1' }".to_string(),
+                "`id` invalid",
+            ),
+            (
                 "empty version",
                 "globalThis.__postretroModManifest = { name: 'Dev', id: 'dev', version: '' };"
                     .to_string(),

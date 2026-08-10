@@ -393,11 +393,21 @@ pub struct ScriptRuntime {
     pub(super) cfg: ScriptRuntimeConfig,
 }
 
-/// Validate the stable identifier that a mod declares for connection
-/// admission. This intentionally shares the authored identifier contract used
-/// by ammo resources and weapon credit sources.
+/// Validate the stable identifier that a mod declares for connection admission.
+///
+/// The shared identifier helper deliberately remains broader: ammo resources
+/// and weapon credit sources retain `:` in their grammar. Mod ids are also a
+/// platform-data path component, so `.`-only values are unsafe here.
 pub(crate) fn validate_mod_manifest_id(value: &str) -> Result<(), String> {
-    postretro_foundation::validate_ascii_identifier("id", value).map_err(|error| error.to_string())
+    postretro_foundation::validate_ascii_identifier("id", value)
+        .map_err(|error| error.to_string())?;
+    if value.contains(':') {
+        return Err("`id` must not contain `:`".to_string());
+    }
+    if value.bytes().all(|byte| byte == b'.') {
+        return Err("`id` must not contain only `.`".to_string());
+    }
+    Ok(())
 }
 
 /// Versions are display and diagnostic data only, so every non-empty string is

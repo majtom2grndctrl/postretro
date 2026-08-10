@@ -378,6 +378,11 @@ fn validate_slot_schema(
             ),
         });
     }
+    if slot_name.contains(':') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: slot name `{slot_name}` must not contain `:`"),
+        });
+    }
     if accumulate.is_some() && slot_type != "number" {
         return Err(ScriptError::InvalidArgument {
             reason: format!(
@@ -911,5 +916,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn store_declaration_rejects_colon_in_slot_name_before_reconciliation() {
+        let error = store_declaration(
+            "test",
+            serde_json::json!({ "bad:name": { "type": "number", "default": 0.0 } }),
+        )
+        .expect_err("descriptor parsing must reject a colon-bearing slot name");
+
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+        assert!(error.to_string().contains("bad:name"));
     }
 }

@@ -108,6 +108,12 @@ impl App {
                     StagedManifestBuildStatus::Failed => Vec::new(),
                 };
                 if let Some(session) = self.session.as_mut() {
+                    let mod_id = session
+                        .scripting
+                        .script_runtime
+                        .committed_mod_identity()
+                        .map(|(id, _)| id.to_string());
+                    session.scripting.impact_policy_runtime.set_mod_id(mod_id);
                     session
                         .scripting
                         .impact_policy_runtime

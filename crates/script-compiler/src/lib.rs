@@ -539,7 +539,7 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
                 spread: None,
                 expr: Box::new(Expr::Lit(swc_ecma_ast::Lit::Str(swc_ecma_ast::Str {
                     span: id.span,
-                    value: id.sym.clone(),
+                    value: id.sym.clone().into(),
                     raw: None,
                 }))),
             },

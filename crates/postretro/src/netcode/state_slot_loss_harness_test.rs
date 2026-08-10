@@ -22,7 +22,7 @@ use postretro_net::wire::{
     self, ClientMessage, RawSnapshotMessage, SNAPSHOT_VERSION, StateBaselineRefreshRequest,
 };
 
-use super::state_slots::{ClientStateApply, HostStateReplication};
+use super::state_slots::{ClientStateApply, HostStateReplication, ReplicatedSlotIdentity};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
@@ -34,6 +34,7 @@ use postretro_foundation::{
     AmmoResource, FireMode, HealthDescriptor, IrNode, ReloadStyle, ResolutionMode,
     WeaponDescriptor, WeaponResource,
 };
+use postretro_scripting_core::StoreIdentityLedger;
 
 use crate::scripting_systems::slot_accumulators::{
     SlotAccumulatorBindings, evaluate_slot_accumulators,
@@ -100,6 +101,18 @@ fn harness_table(accumulate: Option<IrNode>) -> SlotTable {
         )
         .unwrap();
     table
+}
+
+fn harness_replication_identity() -> ReplicatedSlotIdentity {
+    ReplicatedSlotIdentity::new(
+        Some("test.state-slot-loss".to_string()),
+        Some(StoreIdentityLedger {
+            version: 1,
+            slots: [("net.objective".to_string(), "k0123456789abcdef".to_string())]
+                .into_iter()
+                .collect(),
+        }),
+    )
 }
 
 /// Spawn an owned pawn carrying a descriptor-materialized `HealthComponent` for
@@ -170,6 +183,7 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
 /// [`Self::step`].
 struct StateSlotHarness {
     host: HostStateReplication,
+    replication_identity: ReplicatedSlotIdentity,
     host_ctx: ScriptCtx,
     registry: EntityRegistry,
     owners: MovementOwners,
@@ -224,10 +238,12 @@ impl StateSlotHarness {
             .get_mut("net.objective")
             .unwrap()
             .value = Some(SlotValue::Number(0.0));
-        let fingerprint = host.fingerprint(&host_ctx.slot_table.borrow());
+        let replication_identity = harness_replication_identity();
+        let fingerprint = host.fingerprint(&host_ctx.slot_table.borrow(), &replication_identity);
 
         Self {
             host,
+            replication_identity,
             host_ctx,
             registry,
             owners,
@@ -323,7 +339,10 @@ impl StateSlotHarness {
         self.host.reset_schema_for_clients([self.client_id]);
         self.client.reset_schema();
         self.client_table = harness_table(None);
-        self.fingerprint = self.host.fingerprint(&self.host_ctx.slot_table.borrow());
+        self.fingerprint = self.host.fingerprint(
+            &self.host_ctx.slot_table.borrow(),
+            &self.replication_identity,
+        );
     }
 
     /// A rejoin drops the old participation baseline and creates a fresh client apply
@@ -348,6 +367,7 @@ impl StateSlotHarness {
         // client's records and wrap them in the real envelope.
         self.host.ingest_frame(
             &self.host_ctx.slot_table.borrow(),
+            &self.replication_identity,
             &self.registry,
             &self.owners,
             &self.weapon_owners,
@@ -370,6 +390,7 @@ impl StateSlotHarness {
             };
             let outcome = self.client.apply_snapshot_state(
                 &mut self.client_table,
+                &self.replication_identity,
                 snapshot.sequence,
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,

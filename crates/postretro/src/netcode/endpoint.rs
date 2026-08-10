@@ -903,7 +903,8 @@ mod tests {
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
         let mut slot_table = SlotTable::new();
-        let schema = state_slots::ReplicatedSlotSchema::build(&slot_table);
+        let replication_identity = state_slots::ReplicatedSlotIdentity::default();
+        let schema = state_slots::ReplicatedSlotSchema::build(&slot_table, &replication_identity);
         let slot_id = schema
             .id_for("player.health")
             .expect("built-in health slot is replicated");
@@ -920,7 +921,13 @@ mod tests {
         let NetEndpoint::Client { state_slots, .. } = &mut endpoint else {
             panic!("connect role must construct a client endpoint");
         };
-        let applied = state_slots.apply_snapshot_state(&mut slot_table, 1, &fingerprint, &[record]);
+        let applied = state_slots.apply_snapshot_state(
+            &mut slot_table,
+            &replication_identity,
+            1,
+            &fingerprint,
+            &[record],
+        );
         assert_eq!(applied.slot_baselines, vec![(slot_id.0, 7)]);
         assert!(!state_slots.is_reset());
 

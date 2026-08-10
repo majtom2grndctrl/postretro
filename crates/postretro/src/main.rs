@@ -5205,11 +5205,18 @@ impl App {
         // registry/data-registry/gravity reads borrow nothing of `self`; the
         // `session` re-borrow for `net_endpoint` happens after these owned/disjoint
         // captures. See: context/lib/boot_sequence.md §1.
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
+        let Some((script_ctx, replication_identity)) = self.session.as_ref().map(|session| {
+            let script_runtime = &session.scripting.script_runtime;
+            (
+                session.scripting.script_ctx.clone(),
+                netcode::ReplicatedSlotIdentity::new(
+                    script_runtime
+                        .mod_manifest()
+                        .map(|manifest| manifest.id.clone()),
+                    script_runtime.store_identity().cloned(),
+                ),
+            )
+        }) else {
             return;
         };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
@@ -5630,6 +5637,7 @@ impl App {
                     netcode::client_receive_and_apply(
                         &mut registry,
                         &mut slot_table,
+                        &replication_identity,
                         client,
                         replication,
                         state_slots,
@@ -5880,11 +5888,18 @@ impl App {
         let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
+        let Some((script_ctx, replication_identity)) = self.session.as_ref().map(|session| {
+            let script_runtime = &session.scripting.script_runtime;
+            (
+                session.scripting.script_ctx.clone(),
+                netcode::ReplicatedSlotIdentity::new(
+                    script_runtime
+                        .mod_manifest()
+                        .map(|manifest| manifest.id.clone()),
+                    script_runtime.store_identity().cloned(),
+                ),
+            )
+        }) else {
             return Vec::new();
         };
         let Some(session) = self.session.as_mut() else {
@@ -5957,6 +5972,7 @@ impl App {
             netcode::host_replicate(
                 &registry,
                 &slot_table,
+                &replication_identity,
                 server,
                 allocator,
                 replication,

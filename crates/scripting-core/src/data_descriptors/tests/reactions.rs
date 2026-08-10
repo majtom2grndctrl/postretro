@@ -477,18 +477,18 @@ fn sparse_and_malformed_impact_events_keep_valid_siblings_in_both_vms() {
     let js = eval_js(
         r#"(() => {
             const events = [];
-            events[0] = { kind: "impact", id: "salvage:first", filter: {}, policy: [] };
+            events[0] = { kind: "impact", id: "salvage-first", filter: {}, policy: [] };
             events[2] = 42;
-            events[3] = { kind: "impact", id: "salvage:last", filter: {}, policy: [] };
+            events[3] = { kind: "impact", id: "salvage-last", filter: {}, policy: [] };
             return { events };
         })()"#,
         |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
     );
     let lua = eval_lua(
         r#"return { events = {
-            [1] = { kind = "impact", id = "salvage:first", filter = {}, policy = {} },
+            [1] = { kind = "impact", id = "salvage-first", filter = {}, policy = {} },
             [3] = 42,
-            [4] = { kind = "impact", id = "salvage:last", filter = {}, policy = {} },
+            [4] = { kind = "impact", id = "salvage-last", filter = {}, policy = {} },
         } }"#,
         |value| LevelManifest::from_lua_value(value).unwrap(),
     );
@@ -499,34 +499,34 @@ fn sparse_and_malformed_impact_events_keep_valid_siblings_in_both_vms() {
             .iter()
             .map(|event| event.id.as_str())
             .collect::<Vec<_>>(),
-        ["salvage:first", "salvage:last"]
+        ["salvage-first", "salvage-last"]
     );
 }
 
 #[test]
-fn impact_event_ids_require_namespaced_portable_strings_in_both_vms() {
+fn impact_event_ids_require_single_segment_portable_strings_in_both_vms() {
     let js = eval_js(
         r#"({ events: [
-            { kind: "impact", id: "salvage:valid-id", filter: {}, policy: [] },
-            { kind: "impact", id: "not-namespaced", filter: {}, policy: [] },
-            { kind: "impact", id: ":missing", filter: {}, policy: [] },
-            { kind: "impact", id: "bad space:id", filter: {}, policy: [] }
+            { kind: "impact", id: "valid-id", filter: {}, policy: [] },
+            { kind: "impact", id: "salvage:invalid", filter: {}, policy: [] },
+            { kind: "impact", id: "bad space", filter: {}, policy: [] },
+            { kind: "impact", id: "x".repeat(65), filter: {}, policy: [] }
         ] })"#,
         |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
     );
     let lua = eval_lua(
         r#"return { events = {
-            { kind = "impact", id = "salvage:valid-id", filter = {}, policy = {} },
-            { kind = "impact", id = "not-namespaced", filter = {}, policy = {} },
-            { kind = "impact", id = ":missing", filter = {}, policy = {} },
-            { kind = "impact", id = "bad space:id", filter = {}, policy = {} },
+            { kind = "impact", id = "valid-id", filter = {}, policy = {} },
+            { kind = "impact", id = "salvage:invalid", filter = {}, policy = {} },
+            { kind = "impact", id = "bad space", filter = {}, policy = {} },
+            { kind = "impact", id = string.rep("x", 65), filter = {}, policy = {} },
         } }"#,
         |value| LevelManifest::from_lua_value(value).unwrap(),
     );
 
     assert_eq!(js.events, lua.events);
     assert_eq!(js.events.len(), 1);
-    assert_eq!(js.events[0].id, "salvage:valid-id");
+    assert_eq!(js.events[0].id, "valid-id");
 }
 
 // Regression: Luau's empty `do = {}` converted to an object and caused the
@@ -535,7 +535,7 @@ fn impact_event_ids_require_namespaced_portable_strings_in_both_vms() {
 fn empty_impact_group_and_valid_effect_parse_identically_in_both_vms() {
     let js = eval_js(
         r#"({ events: [{
-            kind: "impact", id: "salvage:empty-group", filter: { tag: "crate" },
+            kind: "impact", id: "empty-group", filter: { tag: "crate" },
             policy: [
                 { when: { op: "const", value: true }, do: [] },
                 { primitive: "despawn", target: "@impact.target", args: {} }
@@ -545,7 +545,7 @@ fn empty_impact_group_and_valid_effect_parse_identically_in_both_vms() {
     );
     let lua = eval_lua(
         r#"return { events = {{
-            kind = "impact", id = "salvage:empty-group", filter = { tag = "crate" },
+            kind = "impact", id = "empty-group", filter = { tag = "crate" },
             policy = {
                 { when = { op = "const", value = true }, ["do"] = {} },
                 { primitive = "despawn", target = "@impact.target", args = {} },
@@ -567,40 +567,40 @@ fn sparse_impact_policy_arrays_skip_the_event_in_both_vms() {
             const policy = [];
             policy[1] = { primitive: "despawn", target: "@impact.target", args: {} };
             return { events: [
-                { kind: "impact", id: "salvage:sparse", filter: { tag: "crate" }, policy },
-                { kind: "impact", id: "salvage:valid", filter: { tag: "crate" }, policy: [] }
+                { kind: "impact", id: "sparse", filter: { tag: "crate" }, policy },
+                { kind: "impact", id: "valid", filter: { tag: "crate" }, policy: [] }
             ] };
         })()"#,
         |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
     );
     let lua = eval_lua(
         r#"return { events = {
-            { kind = "impact", id = "salvage:sparse", filter = { tag = "crate" }, policy = {
+            { kind = "impact", id = "sparse", filter = { tag = "crate" }, policy = {
                 [2] = { primitive = "despawn", target = "@impact.target", args = {} },
             } },
-            { kind = "impact", id = "salvage:valid", filter = { tag = "crate" }, policy = {} },
+            { kind = "impact", id = "valid", filter = { tag = "crate" }, policy = {} },
         } }"#,
         |value| LevelManifest::from_lua_value(value).unwrap(),
     );
 
     assert_eq!(js.events, lua.events);
     assert_eq!(js.events.len(), 1);
-    assert_eq!(js.events[0].id, "salvage:valid");
+    assert_eq!(js.events[0].id, "valid");
 }
 
 #[test]
 fn tagless_impact_overrides_are_skipped_in_both_vms() {
     let js = eval_js(
         r#"({ events: [
-            { kind: "impact", id: "salvage:base", isOverride: true, filter: {}, policy: [] },
-            { kind: "impact", id: "salvage:base", isOverride: true, filter: { tag: "elite" }, policy: [] }
+            { kind: "impact", id: "base", isOverride: true, filter: {}, policy: [] },
+            { kind: "impact", id: "base", isOverride: true, filter: { tag: "elite" }, policy: [] }
         ] })"#,
         |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
     );
     let lua = eval_lua(
         r#"return { events = {
-            { kind = "impact", id = "salvage:base", isOverride = true, filter = {}, policy = {} },
-            { kind = "impact", id = "salvage:base", isOverride = true, filter = { tag = "elite" }, policy = {} },
+            { kind = "impact", id = "base", isOverride = true, filter = {}, policy = {} },
+            { kind = "impact", id = "base", isOverride = true, filter = { tag = "elite" }, policy = {} },
         } }"#,
         |value| LevelManifest::from_lua_value(value).unwrap(),
     );

@@ -59,9 +59,9 @@ struct GridFrame {
 
 @group(1) @binding(18) var<uniform> grid: GridDims;
 @group(1) @binding(19) var<uniform> grid_frame: GridFrame;
-// Sparse delta payload: one 64-probe octahedral-tile sub-block per CSR entry,
-// RGBA16F texels packed two f16 halves per `u32`; `unpack2x16float` returns
-// `(low, high)` matching the bake's even/odd channel order.
+// Sparse delta payload: valid-probe octahedral tiles per CSR entry, RGBA16F
+// texels packed two f16 halves per `u32`; `unpack2x16float` returns `(low,
+// high)` matching the bake's even/odd channel order.
 @group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
 // CSR offsets into `affinity_lights`, indexed by affinity-cell linear index;
 // length is `affinity_cell_count + 1` (trailing total).
@@ -77,10 +77,14 @@ struct GridFrame {
 // Dense-grid probe index -> compact id-34 tile slot. The sentinel means the
 // metadata record is invalid and no base-atlas fetch may occur.
 @group(1) @binding(26) var<storage, read> probe_indirection: array<u32>;
+// Two u32 words per affinity-cell valid-probe mask, followed by one f16-half
+// payload base offset per post-drop CSR entry. Binding 26 remains the base
+// global-slot mapping and invalid-probe guard; this binding resolves only the
+// delta's within-cell compact slot.
+@group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
 
-// Probes per affinity cell (4×4×4). Matches `PROBES_PER_CELL` in the bake.
+// Affinity cells are 4×4×4 base probes. Matches the compiler bake.
 const AFFINITY_FACTOR: u32 = 4u;
-const PROBES_PER_CELL: u32 = 64u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
 const INVALID_PROBE_INDIRECTION: u32 = 0xffffffffu;
 
@@ -166,9 +170,34 @@ fn map_probe_to_affinity(probe: vec3<u32>) -> AffinityMapping {
     return AffinityMapping(cell_index, local, true);
 }
 
-fn read_delta_texel(entry: u32, local_probe: u32, tile_texel: vec2<u32>) -> vec4<f32> {
+fn compaction_meta_offset_base() -> u32 {
+    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 2u;
+}
+
+fn valid_probe_mask_word(cell: u32, word: u32) -> u32 {
+    return delta_compaction_meta[cell * 2u + word];
+}
+
+fn within_cell_rank(cell: u32, local_probe: u32) -> u32 {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    let prior_words = select(0u, countOneBits(valid_probe_mask_word(cell, 0u)), word == 1u);
+    let earlier_in_word = countOneBits(valid_probe_mask_word(cell, word) & ((1u << bit) - 1u));
+    return prior_words + earlier_in_word;
+}
+
+fn entry_delta_f16_offset(entry: u32) -> u32 {
+    return delta_compaction_meta[compaction_meta_offset_base() + entry];
+}
+
+fn read_delta_texel(
+    entry: u32,
+    probe_rank: u32,
+    tile_texel: vec2<u32>,
+) -> vec4<f32> {
     let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
-    let half_base = (entry * PROBES_PER_CELL + local_probe) * grid.delta_probe_f16_stride
+    let half_base = entry_delta_f16_offset(entry)
+        + probe_rank * grid.delta_probe_f16_stride
         + texel_index * 4u;
     let word_base = half_base / 2u;
     let rg = unpack2x16float(delta_subblocks[word_base]);
@@ -235,6 +264,7 @@ fn compose_main(
         textureStore(sh_total_atlas, p, layer, vec4<f32>(base.rgb, 1.0));
         return;
     }
+    let probe_rank = within_cell_rank(affinity.cell_index, affinity.local_probe);
 
     let start = affinity_offsets[affinity.cell_index];
     let end = affinity_offsets[affinity.cell_index + 1u];
@@ -242,7 +272,11 @@ fn compose_main(
     for (var entry: u32 = start; entry < end; entry = entry + 1u) {
         let light_index = affinity_lights[entry];
         let scale = animated_light_scale(light_index);
-        let delta = read_delta_texel(entry, affinity.local_probe, atlas_mapping.tile_texel);
+        let delta = read_delta_texel(
+            entry,
+            probe_rank,
+            atlas_mapping.tile_texel,
+        );
         accum = accum + delta.rgb * scale;
     }
 

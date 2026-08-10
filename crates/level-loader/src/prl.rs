@@ -140,6 +140,14 @@ pub enum PrlLoadError {
         base_dimension: u32,
         base_border: u32,
     },
+    #[error(
+        "AnimatedDirectShDeltaVolumes valid_probe_masks[{cell}] {found:#018x} disagrees with OctahedralShVolume (id 34) validity {expected:#018x} — recompile the .prl with the current `prl-build`"
+    )]
+    AnimatedDirectShDeltaValidityMismatch {
+        cell: usize,
+        found: u64,
+        expected: u64,
+    },
 }
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
@@ -1084,8 +1092,9 @@ mod tests {
     use super::*;
     use crate::load_prl;
     use crate::prl_loader::{
-        convert_alpha_lights, expected_affinity_dims, validate_cell_draw_index, validate_delta_sh,
-        validate_direct_sh_delta, validate_entity_shadow_light_selection,
+        convert_alpha_lights, expected_affinity_dims, valid_probe_mask_for_affinity_cell,
+        validate_cell_draw_index, validate_delta_sh, validate_direct_sh_delta,
+        validate_entity_shadow_light_selection,
     };
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
@@ -1134,6 +1143,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1154,13 +1164,11 @@ mod tests {
             affinity_dims,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            // The shared fixture base volume marks every probe invalid, so
+            // retained zero-length entries are the matching id-41 spelling.
+            valid_probe_masks: vec![0; cell_count],
             affinity_offsets: offsets,
-            delta_subblocks: vec![
-                0u16;
-                affinity_lights.len()
-                    * PROBES_PER_CELL
-                    * DEFAULT_DELTA_PROBE_F16_STRIDE
-            ],
+            delta_subblocks: Vec::new(),
             affinity_lights,
         }
     }
@@ -1178,12 +1186,13 @@ mod tests {
             affinity_dims,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-            // The runtime no-op sentinel must not require an external
-            // descriptor-resolution check during level load.
+            // The shared fixture base volume marks every probe invalid, so a
+            // retained zero-length id-45 entry is its matching compact form.
             animation_descriptor_indices: vec![u32::MAX],
+            valid_probe_masks: vec![0; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
-            delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+            delta_subblocks: Vec::new(),
         }
     }
 
@@ -1263,31 +1272,60 @@ mod tests {
     #[test]
     fn validate_delta_sh_accepts_matching_dims() {
         let base_dims = [8u32, 5, 1];
-        let section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
-        let base = base_octahedral_section(base_dims);
+        let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        let mut base = base_octahedral_section(base_dims);
+        for probe in &mut base.probes {
+            probe.validity = 1;
+        }
+        section.valid_probe_masks = (0..section.affinity_cell_count())
+            .map(|cell| valid_probe_mask_for_affinity_cell(&base, section.affinity_dims, cell))
+            .collect();
         assert!(validate_delta_sh(&section, Some(&base)).is_ok());
     }
 
     #[test]
+    fn validate_delta_sh_rejects_descriptor_that_disagrees_with_id34_validity() {
+        let base_dims = [4u32, 4, 4];
+        let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        // The descriptor and payload agree with one another (one compact tile),
+        // but not with the all-valid id-34 metadata. This must fail before any
+        // renderer buffer sizing can derive a tail from the wrong mask.
+        section.valid_probe_masks = vec![1];
+        section.delta_subblocks = vec![0; DEFAULT_DELTA_PROBE_F16_STRIDE];
+        let mut base = base_octahedral_section(base_dims);
+        for probe in &mut base.probes {
+            probe.validity = 1;
+        }
+
+        let error = validate_delta_sh(&section, Some(&base)).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("DeltaShVolumes"));
+        assert!(message.contains("id 34"));
+        assert!(message.contains("recompile"));
+    }
+
+    #[test]
     fn validate_direct_sh_delta_accepts_selection_indices() {
-        let base = minimal_direct_sh_volume_section();
+        let direct = minimal_direct_sh_volume_section();
         let section = direct_delta_section_for(
-            expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR),
+            expected_affinity_dims(direct.grid_dimensions, AFFINITY_FACTOR),
             vec![0, 1],
         );
+        let base = base_octahedral_section_for_direct(&direct);
 
-        assert!(validate_direct_sh_delta(&section, &base, 2).is_ok());
+        assert!(validate_direct_sh_delta(&section, &direct, &base, 2).is_ok());
     }
 
     #[test]
     fn validate_direct_sh_delta_rejects_alpha_light_indices() {
-        let base = minimal_direct_sh_volume_section();
+        let direct = minimal_direct_sh_volume_section();
         let section = direct_delta_section_for(
-            expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR),
+            expected_affinity_dims(direct.grid_dimensions, AFFINITY_FACTOR),
             vec![0, 2],
         );
+        let base = base_octahedral_section_for_direct(&direct);
 
-        let err = validate_direct_sh_delta(&section, &base, 2).unwrap_err();
+        let err = validate_direct_sh_delta(&section, &direct, &base, 2).unwrap_err();
 
         assert!(
             err.to_string().contains("selection index 2 out of range"),
@@ -1297,13 +1335,14 @@ mod tests {
 
     #[test]
     fn validate_direct_sh_delta_rejects_missing_selected_light_coverage() {
-        let base = minimal_direct_sh_volume_section();
+        let direct = minimal_direct_sh_volume_section();
         let section = direct_delta_section_for(
-            expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR),
+            expected_affinity_dims(direct.grid_dimensions, AFFINITY_FACTOR),
             vec![0],
         );
+        let base = base_octahedral_section_for_direct(&direct);
 
-        let err = validate_direct_sh_delta(&section, &base, 2).unwrap_err();
+        let err = validate_direct_sh_delta(&section, &direct, &base, 2).unwrap_err();
 
         assert!(
             err.to_string()
@@ -5033,6 +5072,44 @@ mod tests {
     }
 
     #[test]
+    fn load_prl_rejects_animated_direct_delta_descriptor_that_disagrees_with_id34() {
+        let base_dims = [1, 1, 1];
+        let mut section =
+            animated_direct_delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        section.valid_probe_masks[0] = 1;
+        section.delta_subblocks = vec![0; DEFAULT_DELTA_PROBE_F16_STRIDE];
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base_octahedral_section(base_dims)),
+            animated_direct_sh_delta_blob(section),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_direct_sh_delta_validity_mismatch.prl",
+        );
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("an id-45/id-34 descriptor mismatch must reject the entire load");
+
+        assert!(
+            matches!(
+                error,
+                PrlLoadError::AnimatedDirectShDeltaValidityMismatch {
+                    cell: 0,
+                    found: 1,
+                    expected: 0,
+                }
+            ),
+            "expected the named id-45 validity mismatch error, got {error:?}"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn load_prl_treats_empty_animated_direct_sh_delta_csr_as_absent() {
         let base_dims = [1, 1, 1];
         let mut section =
@@ -5093,8 +5170,10 @@ mod tests {
     #[test]
     fn load_prl_soft_drops_partial_animated_direct_sh_deltas() {
         let base_dims = [1, 1, 1];
-        let section =
+        let mut section =
             animated_direct_delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        section.valid_probe_masks[0] = 1;
+        section.delta_subblocks = vec![0; DEFAULT_DELTA_PROBE_F16_STRIDE];
         let mut partial_data = section.to_bytes();
         partial_data.truncate(partial_data.len() - 2);
         let sections = vec![
@@ -5208,6 +5287,56 @@ mod tests {
         assert_eq!(loaded.layer_count, 2);
         assert_eq!(loaded.channels, shadowmask.channels);
         assert_eq!(loaded.data, shadowmask.data);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_clears_direct_selection_set_when_id41_validity_disagrees_with_id34() {
+        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+            width: 2,
+            height: 1,
+            layer_count: 2,
+            channels: vec![0],
+            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        };
+        let direct_sh = minimal_direct_sh_volume_section();
+        let mut direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        // The section validates its own compact length, but id 34 marks every
+        // fixture probe invalid. This must clear 40 + 41 + 42 before renderer
+        // buffer construction rather than letting the mask misalign later CSR entries.
+        direct_sh_delta.valid_probe_masks[0] = 1;
+        direct_sh_delta.delta_subblocks = vec![0; DEFAULT_DELTA_PROBE_F16_STRIDE];
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            lightmap_blob(2, 1, 2),
+            shadowmask_blob(shadowmask),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_direct_delta_validity_mismatch.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("an id-41/id-34 validity mismatch should degrade only promotion");
+
+        assert!(world.entity_shadow_lights.is_empty());
+        assert!(world.direct_sh_delta_volumes.is_none());
+        assert!(world.shadowmask_atlas.is_none());
 
         std::fs::remove_file(&tmp).ok();
     }

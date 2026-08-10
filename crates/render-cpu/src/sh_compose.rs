@@ -32,6 +32,7 @@ pub struct ComposeGridParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeStorageFootprint {
     pub delta_subblocks_bytes: usize,
+    pub delta_compaction_meta_bytes: usize,
     pub affinity_offsets_bytes: usize,
     pub affinity_lights_bytes: usize,
     pub animation_descriptor_indices_bytes: usize,
@@ -41,6 +42,7 @@ pub struct ComposeStorageFootprint {
 impl ComposeStorageFootprint {
     pub fn total_bytes(&self) -> usize {
         self.delta_subblocks_bytes
+            + self.delta_compaction_meta_bytes
             + self.affinity_offsets_bytes
             + self.affinity_lights_bytes
             + self.animation_descriptor_indices_bytes
@@ -50,11 +52,13 @@ impl ComposeStorageFootprint {
         let mib = |b: usize| b as f64 / (1024.0 * 1024.0);
         log::info!(
             "[Renderer] {log_label} storage footprint: \
-             delta_subblocks {:.2} MiB ({} B), affinity_offsets {:.2} MiB ({} B), \
+             delta_subblocks {:.2} MiB ({} B), delta_compaction_meta {:.2} MiB ({} B), affinity_offsets {:.2} MiB ({} B), \
              affinity_lights {:.2} MiB ({} B), animation_descriptor_indices {:.2} MiB ({} B) \
              - total {:.2} MiB ({} B)",
             mib(self.delta_subblocks_bytes),
             self.delta_subblocks_bytes,
+            mib(self.delta_compaction_meta_bytes),
+            self.delta_compaction_meta_bytes,
             mib(self.affinity_offsets_bytes),
             self.affinity_offsets_bytes,
             mib(self.affinity_lights_bytes),
@@ -74,7 +78,30 @@ pub struct DeltaComposeBuffers {
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     pub animation_descriptor_indices: Vec<u32>,
+    /// One id-34-cross-checked valid-probe descriptor per affinity cell.
+    pub valid_probe_masks: Vec<u64>,
+    /// Base f16-half offset for every post-drop CSR entry. Unlike
+    /// `affinity_offsets`, this is indexed by entry rather than cell.
+    pub entry_offsets: Vec<u32>,
     pub affinity_dims: [u32; 3],
+}
+
+impl DeltaComposeBuffers {
+    /// Pack the id-27 descriptor and post-drop entry offset table into one
+    /// storage-buffer word stream: low/high words per cell mask, followed by
+    /// one f16-half offset per CSR entry. The compose shader derives the split
+    /// from `grid.affinity_dims`, so this contains no separately mutable length
+    /// field.
+    pub fn compaction_meta_words(&self) -> Vec<u32> {
+        let mut words =
+            Vec::with_capacity(self.valid_probe_masks.len() * 2 + self.entry_offsets.len());
+        for &mask in &self.valid_probe_masks {
+            words.push(mask as u32);
+            words.push((mask >> 32) as u32);
+        }
+        words.extend_from_slice(&self.entry_offsets);
+        words
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,7 +109,30 @@ pub struct DirectDeltaComposeBuffers {
     pub delta_subblocks: Vec<u16>,
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
+    /// One id-34-cross-checked valid-probe descriptor per affinity cell.
+    pub valid_probe_masks: Vec<u64>,
+    /// Base f16-half offset for every post-drop CSR entry. Unlike
+    /// `affinity_offsets`, this is indexed by entry rather than cell.
+    pub entry_offsets: Vec<u32>,
     pub affinity_dims: [u32; 3],
+}
+
+impl DirectDeltaComposeBuffers {
+    /// Pack the id-41 descriptor and post-drop entry offset table into one
+    /// storage-buffer word stream: low/high words per cell mask, followed by
+    /// one f16-half offset per CSR entry. The direct compose shader derives the
+    /// split from `grid.affinity_dims`, so this contains no separately mutable
+    /// length field.
+    pub fn compaction_meta_words(&self) -> Vec<u32> {
+        let mut words =
+            Vec::with_capacity(self.valid_probe_masks.len() * 2 + self.entry_offsets.len());
+        for &mask in &self.valid_probe_masks {
+            words.push(mask as u32);
+            words.push((mask >> 32) as u32);
+        }
+        words.extend_from_slice(&self.entry_offsets);
+        words
+    }
 }
 
 /// CPU-side source of truth for the animated-direct compose scale. The Pass-B
@@ -239,6 +289,8 @@ pub fn build_delta_buffers(
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
+            entry_offsets: Vec::new(),
             affinity_dims,
         };
     };
@@ -248,6 +300,15 @@ pub fn build_delta_buffers(
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
+        valid_probe_masks: delta.valid_probe_masks.clone(),
+        entry_offsets: delta_entry_offsets(
+            delta.affinity_cell_count(),
+            &delta.affinity_offsets,
+            &delta.valid_probe_masks,
+            delta.delta_probe_f16_stride(),
+            delta.delta_subblocks.len(),
+            "indirect SH delta",
+        ),
         affinity_dims: delta.affinity_dims,
     }
 }
@@ -262,6 +323,8 @@ pub fn build_direct_delta_buffers(
             delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
+            valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
+            entry_offsets: Vec::new(),
             affinity_dims,
         };
     };
@@ -269,8 +332,118 @@ pub fn build_direct_delta_buffers(
         delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
+        valid_probe_masks: delta.valid_probe_masks.clone(),
+        entry_offsets: delta_entry_offsets(
+            delta.affinity_cell_count(),
+            &delta.affinity_offsets,
+            &delta.valid_probe_masks,
+            delta.delta_probe_f16_stride(),
+            delta.delta_subblocks.len(),
+            "direct SH delta",
+        ),
         affinity_dims: delta.affinity_dims,
     }
+}
+
+fn delta_entry_offsets(
+    affinity_cell_count: usize,
+    affinity_offsets: &[u32],
+    valid_probe_masks: &[u64],
+    delta_probe_f16_stride: usize,
+    payload_len: usize,
+    label: &str,
+) -> Vec<u32> {
+    let stride = u32::try_from(delta_probe_f16_stride)
+        .unwrap_or_else(|_| panic!("{label} tile stride must fit shader u32 indexing"));
+    let entry_count = affinity_offsets.last().copied().unwrap_or_default() as usize;
+    let mut offsets = Vec::with_capacity(entry_count);
+    let mut next_offset = 0u32;
+    for cell in 0..affinity_cell_count {
+        let entry_count = affinity_offsets[cell + 1] - affinity_offsets[cell];
+        let cell_f16_len = valid_probe_masks[cell]
+            .count_ones()
+            .checked_mul(stride)
+            .unwrap_or_else(|| panic!("{label} compact cell length must fit shader u32 indexing"));
+        for _ in 0..entry_count {
+            offsets.push(next_offset);
+            next_offset = next_offset
+                .checked_add(cell_f16_len)
+                .unwrap_or_else(|| panic!("{label} payload must fit shader u32 indexing"));
+        }
+    }
+    debug_assert_eq!(
+        usize::try_from(next_offset).ok(),
+        Some(payload_len),
+        "entry offsets must cover the compact {label} payload exactly"
+    );
+    offsets
+}
+
+/// Resolve a direct-delta tile's f16-half offset from its post-drop CSR entry
+/// and affinity-local probe. `None` is the required invalid-local result: the
+/// compose shader must skip before reading any delta words.
+pub fn resolve_direct_delta_f16_offset(
+    valid_probe_masks: &[u64],
+    entry_offsets: &[u32],
+    entry: usize,
+    cell: usize,
+    local_probe: u32,
+    tile_f16_stride: u32,
+) -> Option<u32> {
+    resolve_delta_f16_offset(
+        valid_probe_masks,
+        entry_offsets,
+        entry,
+        cell,
+        local_probe,
+        tile_f16_stride,
+    )
+}
+
+/// Resolve an animated-direct delta tile's f16-half offset from its post-drop
+/// CSR entry and affinity-local probe. The animated compose pass must skip an
+/// invalid local before calling its compact payload reader.
+pub fn resolve_animated_direct_delta_f16_offset(
+    valid_probe_masks: &[u64],
+    entry_offsets: &[u32],
+    entry: usize,
+    cell: usize,
+    local_probe: u32,
+    tile_f16_stride: u32,
+) -> Option<u32> {
+    resolve_delta_f16_offset(
+        valid_probe_masks,
+        entry_offsets,
+        entry,
+        cell,
+        local_probe,
+        tile_f16_stride,
+    )
+}
+
+/// Resolve a compact delta tile's f16-half offset from its post-drop CSR entry
+/// and affinity-local probe. `None` is the invalid-local result; the direct
+/// compose shader must skip before reading, while indirect compose is already
+/// protected by the base probe-indirection invalid sentinel.
+pub fn resolve_delta_f16_offset(
+    valid_probe_masks: &[u64],
+    entry_offsets: &[u32],
+    entry: usize,
+    cell: usize,
+    local_probe: u32,
+    tile_f16_stride: u32,
+) -> Option<u32> {
+    if local_probe >= 64 {
+        return None;
+    }
+    let mask = *valid_probe_masks.get(cell)?;
+    if mask & (1u64 << local_probe) == 0 {
+        return None;
+    }
+    let rank = (mask & ((1u64 << local_probe) - 1)).count_ones();
+    entry_offsets
+        .get(entry)?
+        .checked_add(rank.checked_mul(tile_f16_stride)?)
 }
 
 pub fn build_animated_direct_delta_buffers(
@@ -285,6 +458,8 @@ pub fn build_animated_direct_delta_buffers(
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
+            entry_offsets: Vec::new(),
             affinity_dims,
         };
     };
@@ -294,6 +469,15 @@ pub fn build_animated_direct_delta_buffers(
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
+        valid_probe_masks: delta.valid_probe_masks.clone(),
+        entry_offsets: delta_entry_offsets(
+            delta.affinity_cell_count(),
+            &delta.affinity_offsets,
+            &delta.valid_probe_masks,
+            delta.delta_probe_f16_stride(),
+            delta.delta_subblocks.len(),
+            "animated direct SH delta",
+        ),
         affinity_dims: delta.affinity_dims,
     }
 }
@@ -420,6 +604,8 @@ mod tests {
         assert!(b.delta_subblocks.is_empty());
         assert_eq!(b.affinity_dims, [2, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
+        assert_eq!(b.valid_probe_masks, vec![0, 0]);
+        assert!(b.entry_offsets.is_empty());
     }
 
     #[test]
@@ -432,6 +618,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![4, u32::MAX],
+            valid_probe_masks: vec![u64::MAX; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks: subblocks.clone(),
@@ -444,6 +631,81 @@ mod tests {
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.animation_descriptor_indices, vec![4, u32::MAX]);
         assert_eq!(b.delta_subblocks, subblocks);
+        assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
+        assert_eq!(
+            b.entry_offsets,
+            vec![0, (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32]
+        );
+        assert_eq!(
+            b.compaction_meta_words(),
+            vec![
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                0,
+                (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32,
+            ]
+        );
+    }
+
+    #[test]
+    fn indirect_delta_resolver_uses_within_cell_rank_and_retains_zero_length_entries() {
+        let stride = DEFAULT_DELTA_PROBE_F16_STRIDE as u32;
+        let mixed = (1u64 << 1) | (1u64 << 5) | (1u64 << 31);
+        let tail = (1u64 << 2) | (1u64 << 4);
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0, 1, 2],
+            valid_probe_masks: vec![mixed, 0, tail],
+            affinity_offsets: vec![0, 1, 2, 3],
+            affinity_lights: vec![0, 1, 2],
+            delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        };
+        let buffers = build_delta_buffers(Some(&section), [12, 1, 1]);
+
+        assert_eq!(buffers.entry_offsets, vec![0, 3 * stride, 3 * stride]);
+        assert_eq!(
+            resolve_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                0,
+                0,
+                5,
+                stride,
+            ),
+            Some(stride),
+            "local 5 is rank one in the first cell, not global probe rank five"
+        );
+        assert_eq!(
+            resolve_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                1,
+                1,
+                0,
+                stride,
+            ),
+            None,
+            "an all-invalid retained entry reads no delta payload"
+        );
+        assert_eq!(
+            resolve_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                2,
+                2,
+                4,
+                stride,
+            ),
+            Some(4 * stride),
+            "the entry after a zero-length cell shares its predecessor's base offset"
+        );
     }
 
     #[test]
@@ -453,6 +715,8 @@ mod tests {
         assert_eq!(b.affinity_dims, [2, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
         assert!(b.affinity_lights.is_empty());
+        assert_eq!(b.valid_probe_masks, vec![0, 0]);
+        assert!(b.entry_offsets.is_empty());
     }
 
     #[test]
@@ -464,6 +728,7 @@ mod tests {
             affinity_dims: [3, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![u64::MAX; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks: subblocks.clone(),
@@ -474,6 +739,92 @@ mod tests {
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.delta_subblocks, subblocks);
+        assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
+        assert_eq!(
+            b.entry_offsets,
+            vec![0, (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32]
+        );
+        assert_eq!(
+            b.compaction_meta_words(),
+            vec![
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                0,
+                (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32,
+            ]
+        );
+    }
+
+    #[test]
+    fn direct_delta_resolver_uses_within_cell_rank_and_retains_zero_length_entries() {
+        let stride = DEFAULT_DELTA_PROBE_F16_STRIDE as u32;
+        let mixed = (1u64 << 1) | (1u64 << 5) | (1u64 << 31);
+        let tail = (1u64 << 2) | (1u64 << 4);
+        let section = DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![mixed, 0, tail],
+            affinity_offsets: vec![0, 1, 2, 3],
+            affinity_lights: vec![0, 1, 2],
+            delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        };
+        let buffers = build_direct_delta_buffers(Some(&section), [12, 1, 1]);
+
+        assert_eq!(buffers.entry_offsets, vec![0, 3 * stride, 3 * stride]);
+        assert_eq!(
+            resolve_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                0,
+                0,
+                5,
+                stride,
+            ),
+            Some(stride),
+            "local 5 is rank one in the first cell, not global probe rank five"
+        );
+        assert_eq!(
+            resolve_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                1,
+                1,
+                0,
+                stride,
+            ),
+            None,
+            "an all-invalid retained entry reads no delta payload"
+        );
+        assert_eq!(
+            resolve_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                2,
+                2,
+                4,
+                stride,
+            ),
+            Some(4 * stride),
+            "the entry after a zero-length cell shares its predecessor's base offset"
+        );
+        assert_eq!(
+            resolve_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                0,
+                0,
+                3,
+                stride,
+            ),
+            None,
+            "invalid locals never alias the adjacent compact tile"
+        );
     }
 
     #[test]
@@ -485,6 +836,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![7],
+            valid_probe_masks: vec![u64::MAX],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: subblocks.clone(),
@@ -494,6 +846,70 @@ mod tests {
         assert_eq!(buffers.animation_descriptor_indices, vec![7]);
         assert_eq!(buffers.affinity_lights, vec![0]);
         assert_eq!(buffers.delta_subblocks, subblocks);
+        assert_eq!(buffers.valid_probe_masks, vec![u64::MAX]);
+        assert_eq!(buffers.entry_offsets, vec![0]);
+        assert_eq!(
+            buffers.compaction_meta_words(),
+            vec![u32::MAX, u32::MAX, 0],
+            "the animated pass receives mask words followed by post-drop f16 offsets"
+        );
+    }
+
+    #[test]
+    fn animated_direct_delta_resolver_uses_rank_and_preserves_zero_length_entries() {
+        let stride = DEFAULT_DELTA_PROBE_F16_STRIDE as u32;
+        let mixed = (1u64 << 1) | (1u64 << 5) | (1u64 << 31);
+        let tail = (1u64 << 2) | (1u64 << 4);
+        let section = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0, 1, 2],
+            valid_probe_masks: vec![mixed, 0, tail],
+            affinity_offsets: vec![0, 1, 2, 3],
+            affinity_lights: vec![0, 1, 2],
+            delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        };
+        let buffers = build_animated_direct_delta_buffers(Some(&section), [12, 1, 1]);
+
+        assert_eq!(buffers.entry_offsets, vec![0, 3 * stride, 3 * stride]);
+        assert_eq!(
+            resolve_animated_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                0,
+                0,
+                5,
+                stride,
+            ),
+            Some(stride),
+            "local 5 is rank one in the first compact cell"
+        );
+        assert_eq!(
+            resolve_animated_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                1,
+                1,
+                0,
+                stride,
+            ),
+            None,
+            "an all-invalid retained animated entry reads no payload"
+        );
+        assert_eq!(
+            resolve_animated_direct_delta_f16_offset(
+                &buffers.valid_probe_masks,
+                &buffers.entry_offsets,
+                2,
+                2,
+                4,
+                stride,
+            ),
+            Some(4 * stride),
+            "the entry after a zero-length cell shares its predecessor's base offset"
+        );
     }
 
     #[test]

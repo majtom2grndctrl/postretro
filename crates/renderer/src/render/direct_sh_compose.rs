@@ -25,6 +25,7 @@ pub(super) const BIND_AFFINITY_LIGHTS: u32 = 24;
 pub(super) const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_SELECTION_WEIGHTS: u32 = 26;
 const BIND_DEBUG_OVERRIDE: u32 = 27;
+pub(super) const BIND_DELTA_COMPACTION_META: u32 = 28;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
 #[cfg(feature = "dev-tools")]
 const DIRECT_PROMOTION_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-41 promotion @group(0)";
@@ -89,6 +90,7 @@ pub(super) struct DirectComposeLayout {
 struct DirectPromotionStorage {
     buffers: DirectDeltaComposeBuffers,
     subblock_bytes: Vec<u8>,
+    compaction_meta_bytes: Vec<u8>,
     offsets_bytes: Vec<u8>,
     lights_bytes: Vec<u8>,
 }
@@ -97,11 +99,14 @@ impl DirectPromotionStorage {
     fn new(delta: Option<&DirectShDeltaVolumesSection>, grid_dimensions: [u32; 3]) -> Self {
         let buffers = build_direct_delta_buffers(delta, grid_dimensions);
         let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+        let compaction_meta_bytes =
+            pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
         let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
         let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
         Self {
             buffers,
             subblock_bytes,
+            compaction_meta_bytes,
             offsets_bytes,
             lights_bytes,
         }
@@ -111,6 +116,7 @@ impl DirectPromotionStorage {
     fn footprint(&self) -> ComposeStorageFootprint {
         ComposeStorageFootprint {
             delta_subblocks_bytes: self.subblock_bytes.len(),
+            delta_compaction_meta_bytes: self.compaction_meta_bytes.len(),
             affinity_offsets_bytes: self.offsets_bytes.len(),
             affinity_lights_bytes: self.lights_bytes.len(),
             // The id-41 promotion pass has no descriptor-index binding. Case
@@ -371,6 +377,7 @@ fn build_promotion_pass(
     let DirectPromotionStorage {
         buffers,
         subblock_bytes,
+        compaction_meta_bytes,
         offsets_bytes,
         lights_bytes,
     } = storage;
@@ -381,6 +388,12 @@ fn build_promotion_pass(
         contents: &subblock_bytes,
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let delta_compaction_meta_buffer =
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Direct SH Compose Delta Compaction Meta"),
+            contents: &compaction_meta_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
     let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Affinity Offsets"),
         contents: &offsets_bytes,
@@ -466,6 +479,10 @@ fn build_promotion_pass(
                 resource: delta_subblocks_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
+                binding: BIND_DELTA_COMPACTION_META,
+                resource: delta_compaction_meta_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
                 binding: BIND_AFFINITY_OFFSETS,
                 resource: affinity_offsets_buffer.as_entire_binding(),
             },
@@ -520,6 +537,7 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_texture_bgl_entry(1),
         uniform_bgl_entry(18),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
+        storage_bgl_entry(BIND_DELTA_COMPACTION_META),
         storage_bgl_entry(BIND_AFFINITY_OFFSETS),
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
         storage_bgl_entry(BIND_SELECTION_WEIGHTS),
@@ -628,6 +646,7 @@ mod tests {
             affinity_dims: [1, 1, 1],
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![u64::MAX],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -666,6 +685,7 @@ mod tests {
             storage.footprint(),
             ComposeStorageFootprint {
                 delta_subblocks_bytes: 18_432,
+                delta_compaction_meta_bytes: 12,
                 affinity_offsets_bytes: 8,
                 affinity_lights_bytes: 4,
                 animation_descriptor_indices_bytes: 0,
@@ -692,6 +712,7 @@ mod tests {
             storage.footprint(),
             ComposeStorageFootprint {
                 delta_subblocks_bytes: 4,
+                delta_compaction_meta_bytes: 16,
                 affinity_offsets_bytes: 12,
                 affinity_lights_bytes: 4,
                 animation_descriptor_indices_bytes: 0,
@@ -703,7 +724,7 @@ mod tests {
 
         capture.assert_logged_once(
             Level::Info,
-            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), affinity_offsets 0.00 MiB (12 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (20 B)",
+            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (16 B), affinity_offsets 0.00 MiB (12 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (36 B)",
         );
     }
 
@@ -724,6 +745,40 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "compose_main"
                     && entry.stage == naga::ShaderStage::Compute)
+        );
+    }
+
+    #[test]
+    fn direct_compose_binds_one_combined_delta_compaction_meta_buffer() {
+        let entries = promotion_compose_bgl_entries();
+        assert!(entries.iter().any(|entry| {
+            entry.binding == BIND_DELTA_COMPACTION_META
+                && matches!(
+                    &entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    }
+                )
+        }));
+    }
+
+    #[test]
+    fn direct_compose_skips_invalid_local_probe_before_delta_read() {
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+        let guard = source
+            .find("if (!local_probe_is_valid(affinity.cell_index, affinity.local_probe))")
+            .expect("the direct compose shader must guard invalid locals");
+        let read = source
+            .find("let delta = read_delta_texel(")
+            .expect("the direct compose shader must read selected delta tiles");
+        assert!(
+            guard < read,
+            "invalid affinity locals must return before any direct delta payload read"
+        );
+        assert!(
+            !source.contains("enable f16"),
+            "direct delta payloads remain Rgba16Float read through f32 unpacking"
         );
     }
 }

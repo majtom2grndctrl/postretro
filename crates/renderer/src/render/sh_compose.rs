@@ -27,6 +27,7 @@ use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolume
 //     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
 //     25     animation descriptor indices `u32` delta-light index → descriptor slot
 //     26     probe indirection (storage)  compact valid-probe slot, or invalid sentinel
+//     27     delta compaction metadata (storage)  cell masks + post-drop entry offsets
 //
 // 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair.
 // 24 is numbered after the shared 22/23 so adding `affinity_lights` doesn't
@@ -37,6 +38,7 @@ const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
 const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_PROBE_INDIRECTION: u32 = 26;
+const BIND_DELTA_COMPACTION_META: u32 = 27;
 const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
 const INVALID_PROBE_INDIRECTION: u32 = u32::MAX;
 /// GPU-side compose pass. Always present — levels without an SH section get
@@ -83,6 +85,8 @@ impl ShComposeResources {
         let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
         let descriptor_index_bytes =
             pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
+        let compaction_meta_bytes =
+            pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
         // This one word per dense-grid probe maps it to its compact id-34 tile
         // slot. Unlike `pad_storage_bytes`, the required empty buffer value is
         // the invalid sentinel, not zero (zero would incorrectly fetch slot 0).
@@ -118,6 +122,12 @@ impl ShComposeResources {
                 contents: &probe_indirection_bytes,
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let delta_compaction_meta_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("SH Compose Delta Compaction Meta"),
+                contents: &compaction_meta_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         // Report per-binding byte sizes only in development builds. The CSR
         // form should keep this well under the storage-buffer binding floor
@@ -125,6 +135,7 @@ impl ShComposeResources {
         #[cfg(feature = "dev-tools")]
         let footprint = ComposeStorageFootprint {
             delta_subblocks_bytes: subblock_bytes.len(),
+            delta_compaction_meta_bytes: compaction_meta_bytes.len(),
             affinity_offsets_bytes: offsets_bytes.len(),
             affinity_lights_bytes: lights_bytes.len(),
             animation_descriptor_indices_bytes: descriptor_index_bytes.len(),
@@ -261,6 +272,10 @@ impl ShComposeResources {
             wgpu::BindGroupEntry {
                 binding: BIND_PROBE_INDIRECTION,
                 resource: probe_indirection_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_DELTA_COMPACTION_META,
+                resource: delta_compaction_meta_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 22,
@@ -422,10 +437,21 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             count: None,
         },
         // Binding 26: dense-probe index -> compact id-34 tile slot, or the
-        // invalid sentinel. This is the seventh compute-visible storage buffer
-        // (bindings 20 through 26), within the downlevel ceiling of eight.
+        // invalid sentinel. Binding 27 packs id-27 valid-probe masks and
+        // post-drop entry offsets. Together they are the eighth compute-visible
+        // storage buffer, exactly at the downlevel ceiling.
         wgpu::BindGroupLayoutEntry {
             binding: BIND_PROBE_INDIRECTION,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_DELTA_COMPACTION_META,
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -562,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_layout_keeps_seven_compute_storage_buffers_and_local_sampler() {
+    fn compose_layout_keeps_eight_compute_storage_buffers_and_local_sampler() {
         let entries = compose_bgl_entries();
         let storage_bindings: Vec<_> = entries
             .iter()
@@ -577,8 +603,8 @@ mod tests {
                 .then_some(entry.binding)
             })
             .collect();
-        assert_eq!(storage_bindings, vec![20, 21, 24, 25, 26, 22, 23]);
-        assert_eq!(storage_bindings.len(), 7);
+        assert_eq!(storage_bindings, vec![20, 21, 24, 25, 26, 27, 22, 23]);
+        assert_eq!(storage_bindings.len(), 8);
 
         let sampler = entries
             .iter()

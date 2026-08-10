@@ -761,12 +761,13 @@ fn run_after_parsing(
     // RGBA16F precision — capture the compact section BEFORE the lossy BC6H
     // re-encode below. Cloned only under `--sh-analyze`; changes no emitted
     // bytes (the clone is read, never packed).
-    let sh_analyze_base_indirect: Option<postretro_level_format::sh_volume::OctahedralShVolumeSection> =
-        if args.sh_analyze {
-            Some(sh_volume_section.clone())
-        } else {
-            None
-        };
+    let sh_analyze_base_indirect: Option<
+        postretro_level_format::sh_volume::OctahedralShVolumeSection,
+    > = if args.sh_analyze {
+        Some(sh_volume_section.clone())
+    } else {
+        None
+    };
     sh_volume_section =
         sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
     let total_probes = sh_volume_section.total_probes();
@@ -1039,9 +1040,9 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
-    // The three delta bakes meet at one owned compiler-only seam. Task-local
-    // policy can transform or reject these sections here before packing without
-    // changing their dense runtime representation or the PRL wire format.
+    // The three delta bakes meet at one owned compiler-only seam. Exact-zero
+    // drop observes the dense bake output; valid-probe compaction then rewrites
+    // id 41 to the id-34-valid local tiles before the payload cap is applied.
     let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
         &map_data.lights,
         membership_manifest.as_ref(),
@@ -1060,6 +1061,8 @@ fn run_after_parsing(
         "the post-bake delta handoff must retain the resolved compiler configuration"
     );
     delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
+    delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
+    delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
         delta_sections.entity_shadow_lights.as_ref(),
         delta_sections.direct.as_ref(),
@@ -1431,7 +1434,7 @@ fn run_after_parsing(
 }
 
 /// Drive the output-preserving SH coarsenability analysis and emit its summary
-/// + JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
+/// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
 /// sections (post static-light selection + exact-zero-drop, i.e. the emitted
 /// set); mutates nothing that reaches the packer.
 fn run_sh_analysis(

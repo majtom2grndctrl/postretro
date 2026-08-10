@@ -18,9 +18,7 @@ use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL,
-};
+use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -435,6 +433,38 @@ pub(crate) fn validate_delta_sh(
         });
     }
 
+    let affinity_cell_count = section.affinity_cell_count();
+    if section.valid_probe_masks.len() != affinity_cell_count {
+        return Err(section_validation(
+            "DeltaShVolumes",
+            format!(
+                "valid_probe_masks has length {}, expected {affinity_cell_count}",
+                section.valid_probe_masks.len()
+            ),
+        ));
+    }
+    if base.probes.len() != base.total_probes() {
+        return Err(section_validation(
+            "DeltaShVolumes",
+            format!(
+                "OctahedralShVolume (id 34) has {} probe metadata records for {} grid probes",
+                base.probes.len(),
+                base.total_probes(),
+            ),
+        ));
+    }
+    for (cell, &stored_mask) in section.valid_probe_masks.iter().enumerate() {
+        let expected_mask = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
+        if stored_mask != expected_mask {
+            return Err(section_validation(
+                "DeltaShVolumes",
+                format!(
+                    "valid_probe_masks[{cell}] {stored_mask:#018x} disagrees with OctahedralShVolume (id 34) validity {expected_mask:#018x}; recompile the .prl with the current `prl-build`"
+                ),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -484,12 +514,7 @@ pub(crate) fn validate_animated_direct_sh_delta(
         ));
     }
 
-    let affinity_cell_count = (section.affinity_dims[0] as usize)
-        .checked_mul(section.affinity_dims[1] as usize)
-        .and_then(|count| count.checked_mul(section.affinity_dims[2] as usize))
-        .ok_or_else(|| {
-            section_validation(SECTION, "affinity_dims overflow the runtime cell count")
-        })?;
+    let affinity_cell_count = section.affinity_cell_count();
     let expected_offsets_len = affinity_cell_count
         .checked_add(1)
         .ok_or_else(|| section_validation(SECTION, "affinity offset count overflows usize"))?;
@@ -501,6 +526,35 @@ pub(crate) fn validate_animated_direct_sh_delta(
                 section.affinity_offsets.len()
             ),
         ));
+    }
+    if section.valid_probe_masks.len() != affinity_cell_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "valid_probe_masks has length {}, expected {affinity_cell_count}",
+                section.valid_probe_masks.len()
+            ),
+        ));
+    }
+    if base.probes.len() != base.total_probes() {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "OctahedralShVolume (id 34) has {} probe metadata records for {} grid probes",
+                base.probes.len(),
+                base.total_probes(),
+            ),
+        ));
+    }
+    for (cell, &found) in section.valid_probe_masks.iter().enumerate() {
+        let expected = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
+        if found != expected {
+            return Err(PrlLoadError::AnimatedDirectShDeltaValidityMismatch {
+                cell,
+                found,
+                expected,
+            });
+        }
     }
     if section.affinity_offsets.first().copied() != Some(0) {
         return Err(section_validation(
@@ -549,10 +603,7 @@ pub(crate) fn validate_animated_direct_sh_delta(
         }
     }
     let expected_subblock_len = section
-        .affinity_lights
-        .len()
-        .checked_mul(PROBES_PER_CELL)
-        .and_then(|count| count.checked_mul(section.delta_probe_f16_stride()))
+        .expected_delta_subblock_f16_count()
         .ok_or_else(|| section_validation(SECTION, "delta_subblocks length overflows usize"))?;
     if section.delta_subblocks.len() != expected_subblock_len {
         return Err(section_validation(
@@ -659,6 +710,7 @@ pub(crate) fn validate_direct_sh_layout(
 pub(crate) fn validate_direct_sh_delta(
     section: &DirectShDeltaVolumesSection,
     direct: &DirectShVolumeSection,
+    base: &OctahedralShVolumeSection,
     selected_light_count: usize,
 ) -> Result<(), PrlLoadError> {
     if section.affinity_factor != AFFINITY_FACTOR {
@@ -689,6 +741,38 @@ pub(crate) fn validate_direct_sh_delta(
         });
     }
 
+    let affinity_cell_count = section.affinity_cell_count();
+    if section.valid_probe_masks.len() != affinity_cell_count {
+        return Err(section_validation(
+            "DirectShDeltaVolumes",
+            format!(
+                "valid_probe_masks has length {}, expected {affinity_cell_count}",
+                section.valid_probe_masks.len()
+            ),
+        ));
+    }
+    if base.probes.len() != base.total_probes() {
+        return Err(section_validation(
+            "DirectShDeltaVolumes",
+            format!(
+                "OctahedralShVolume has {} probe metadata records for {} grid probes",
+                base.probes.len(),
+                base.total_probes(),
+            ),
+        ));
+    }
+    for (cell, &stored_mask) in section.valid_probe_masks.iter().enumerate() {
+        let expected_mask = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
+        if stored_mask != expected_mask {
+            return Err(section_validation(
+                "DirectShDeltaVolumes",
+                format!(
+                    "valid_probe_masks[{cell}] {stored_mask:#018x} disagrees with OctahedralShVolume (id 34) validity {expected_mask:#018x}; recompile the .prl with the current `prl-build`"
+                ),
+            ));
+        }
+    }
+
     for (entry, &selection_index) in section.affinity_lights.iter().enumerate() {
         if selection_index as usize >= selected_light_count {
             return Err(section_validation(
@@ -717,6 +801,46 @@ pub(crate) fn validate_direct_sh_delta(
     }
 
     Ok(())
+}
+
+pub(crate) fn valid_probe_mask_for_affinity_cell(
+    base: &OctahedralShVolumeSection,
+    affinity_dims: [u32; 3],
+    cell_index: usize,
+) -> u64 {
+    let cell_index = cell_index as u32;
+    let cell_x = cell_index % affinity_dims[0];
+    let cell_y = (cell_index / affinity_dims[0]) % affinity_dims[1];
+    let cell_z = cell_index / (affinity_dims[0] * affinity_dims[1]);
+    let factor = AFFINITY_FACTOR as u32;
+    let mut mask = 0u64;
+    for local_z in 0..factor {
+        for local_y in 0..factor {
+            for local_x in 0..factor {
+                let probe = [
+                    cell_x * factor + local_x,
+                    cell_y * factor + local_y,
+                    cell_z * factor + local_z,
+                ];
+                if probe[0] >= base.grid_dimensions[0]
+                    || probe[1] >= base.grid_dimensions[1]
+                    || probe[2] >= base.grid_dimensions[2]
+                {
+                    continue;
+                }
+                let probe_index = probe[0] as usize
+                    + probe[1] as usize * base.grid_dimensions[0] as usize
+                    + probe[2] as usize
+                        * base.grid_dimensions[0] as usize
+                        * base.grid_dimensions[1] as usize;
+                if base.probes[probe_index].validity != 0 {
+                    let local = local_x + local_y * factor + local_z * factor * factor;
+                    mask |= 1u64 << local;
+                }
+            }
+        }
+    }
+    mask
 }
 
 pub(crate) fn validate_entity_shadow_light_selection(
@@ -2016,8 +2140,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
-    // Optional — malformed or stale animated-direct deltas disable only this
-    // additive term. They must never prevent the rest of the level from loading.
+    // Optional — malformed animated-direct deltas disable only this additive
+    // term. An id-45/id-34 valid-probe descriptor disagreement is different:
+    // it would make compact payload offsets address the wrong tiles, so reject
+    // the complete load before any renderer buffers are built.
     let animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
         match prl_format::read_section_data(
             &mut cursor,
@@ -2044,6 +2170,9 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                                 section.delta_subblocks.len(),
                             );
                             Some(section)
+                        }
+                        Err(err @ PrlLoadError::AnimatedDirectShDeltaValidityMismatch { .. }) => {
+                            return Err(err);
                         }
                         Err(err) => {
                             log::warn!(
@@ -2176,10 +2305,13 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 } else {
                     match DirectShDeltaVolumesSection::from_bytes(&data) {
                         Ok(section) => {
-                            if let Some(direct) = direct_sh_volume.as_ref() {
+                            if let (Some(direct), Some(base)) =
+                                (direct_sh_volume.as_ref(), sh_volume.as_ref())
+                            {
                                 match validate_direct_sh_delta(
                                     &section,
                                     direct,
+                                    base,
                                     entity_shadow_lights.len(),
                                 ) {
                                     Ok(()) => {
@@ -2204,7 +2336,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                                 }
                             } else {
                                 log::warn!(
-                                    "[PRL] DirectShDeltaVolumes present without DirectShVolume; clearing {} selected static light(s)",
+                                    "[PRL] DirectShDeltaVolumes present without DirectShVolume or OctahedralShVolume; clearing {} selected static light(s)",
                                     entity_shadow_lights.len()
                                 );
                                 entity_shadow_lights.clear();

@@ -12,12 +12,15 @@ use std::time::SystemTime;
 /// bound is what stops the cache from growing without limit.
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Length-of-payload prefix (u32 little endian) preceding the integrity hash.
-const LENGTH_PREFIX_BYTES: usize = 4;
+/// Cache-entry format marker. Entries without this marker predate the 64-bit
+/// payload length and are treated as cache misses.
+const ENTRY_MAGIC: [u8; 4] = *b"PRC2";
+/// Length-of-payload prefix (u64 little endian) preceding the integrity hash.
+const LENGTH_PREFIX_BYTES: usize = 8;
 /// blake3 digest length.
 const HASH_BYTES: usize = 32;
 /// Combined header size in front of the payload on disk.
-const HEADER_BYTES: usize = LENGTH_PREFIX_BYTES + HASH_BYTES;
+const HEADER_BYTES: usize = ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES + HASH_BYTES;
 
 /// Identifier for a single cache entry. Hashes `(stage_id, stage_version,
 /// input_hash)` so unrelated stages and incompatible bakers never collide on
@@ -49,7 +52,7 @@ impl CacheKey {
 }
 
 /// Directory-backed cache. `put` writes atomically; `get` validates the
-/// length prefix and blake3 digest before returning the payload.
+/// format marker, length prefix, and blake3 digest before returning the payload.
 pub struct StageCache {
     dir: PathBuf,
 }
@@ -92,11 +95,52 @@ impl StageCache {
             return None;
         }
 
-        let declared_len =
-            u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        let stored_hash: [u8; HASH_BYTES] = header[LENGTH_PREFIX_BYTES..]
+        if header[..ENTRY_MAGIC.len()] != ENTRY_MAGIC {
+            log::warn!(
+                "[cache] entry {} uses an obsolete header, rebuilding",
+                path.display()
+            );
+            return None;
+        }
+
+        let length_start = ENTRY_MAGIC.len();
+        let length_end = length_start + LENGTH_PREFIX_BYTES;
+        let declared_len = u64::from_le_bytes(
+            header[length_start..length_end]
+                .try_into()
+                .expect("header length slice is exactly u64 wide"),
+        );
+        let stored_hash: [u8; HASH_BYTES] = header[length_end..]
             .try_into()
             .expect("header slice is exactly HASH_BYTES wide");
+
+        let actual_len = match file.metadata() {
+            Ok(metadata) => metadata.len().saturating_sub(HEADER_BYTES as u64),
+            Err(err) => {
+                log::warn!(
+                    "[cache] entry {} metadata read failed: {err}",
+                    path.display()
+                );
+                return None;
+            }
+        };
+        if actual_len != declared_len {
+            log::warn!(
+                "[cache] entry {} length mismatch: header={declared_len} actual={actual_len}",
+                path.display(),
+            );
+            return None;
+        }
+        let declared_len = match usize::try_from(declared_len) {
+            Ok(length) => length,
+            Err(_) => {
+                log::warn!(
+                    "[cache] entry {} length exceeds this platform's address space",
+                    path.display()
+                );
+                return None;
+            }
+        };
 
         let mut payload = Vec::with_capacity(declared_len);
         if let Err(err) = file.read_to_end(&mut payload) {
@@ -256,14 +300,10 @@ impl StageCache {
 
     fn write_entry(&self, tmp_path: &Path, bytes: &[u8]) -> io::Result<()> {
         let hash = blake3::hash(bytes);
-        let len = u32::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cache payload exceeds u32 length prefix",
-            )
-        })?;
+        let len = bytes.len() as u64;
 
         let mut file = fs::File::create(tmp_path)?;
+        file.write_all(&ENTRY_MAGIC)?;
         file.write_all(&len.to_le_bytes())?;
         file.write_all(hash.as_bytes())?;
         file.write_all(bytes)?;
@@ -380,6 +420,32 @@ mod tests {
         fs::write(&entry_path, b"not a valid cache entry payload").expect("write garbage");
 
         assert!(cache.get(&key).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_uses_a_u64_payload_length_and_rejects_legacy_entries() {
+        let dir = fresh_temp_dir("u64_length");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let key = CacheKey::new("shadowmask_atlas", 1, b"large-entry");
+        let path = dir.join(key.as_filename());
+
+        // A pre-v2 `u32 length + hash + payload` entry must be a safe miss,
+        // rather than being decoded as a huge u64 payload length.
+        fs::write(&path, [0u8; 4 + HASH_BYTES]).expect("write legacy header");
+        assert!(cache.get(&key).is_none());
+
+        cache.put(&key, b"payload");
+        let encoded = fs::read(&path).expect("read v2 entry");
+        assert_eq!(&encoded[..ENTRY_MAGIC.len()], ENTRY_MAGIC);
+        let length_start = ENTRY_MAGIC.len();
+        let length_end = length_start + LENGTH_PREFIX_BYTES;
+        assert_eq!(
+            u64::from_le_bytes(encoded[length_start..length_end].try_into().unwrap()),
+            7
+        );
+        assert_eq!(cache.get(&key), Some(b"payload".to_vec()));
 
         let _ = fs::remove_dir_all(&dir);
     }

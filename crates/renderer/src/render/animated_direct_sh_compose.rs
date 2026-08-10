@@ -2,6 +2,8 @@
 // “Animated direct SH for dynamic receivers”; separate from promotion composition so section-45 resources and bindings stay isolated from legacy Case 1.
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+#[cfg(feature = "dev-tools")]
+use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
     ComposeGridParams, build_animated_direct_delta_buffers, build_compose_grid_bytes,
     pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
@@ -50,7 +52,12 @@ impl AnimatedDirectShDebugOverride {
 }
 
 const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
+/// Combined low/high valid-probe mask words followed by one f16-half payload
+/// offset per post-drop CSR entry. Binding 26 is the pass-B debug override.
+const BIND_DELTA_COMPACTION_META: u32 = 27;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
+#[cfg(feature = "dev-tools")]
+const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-add @group(1)";
 
 pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) pipeline: wgpu::ComputePipeline,
@@ -70,10 +77,22 @@ pub(super) fn build_animated_direct_pass(
 ) -> AnimatedDirectShComposePipeline {
     let buffers = build_animated_direct_delta_buffers(Some(animated_delta), layout.grid_dimensions);
     let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+    let compaction_meta_bytes =
+        pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
     let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
     let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
     let descriptor_indices_bytes =
         pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
+
+    #[cfg(feature = "dev-tools")]
+    ComposeStorageFootprint {
+        delta_subblocks_bytes: subblock_bytes.len(),
+        delta_compaction_meta_bytes: compaction_meta_bytes.len(),
+        affinity_offsets_bytes: offsets_bytes.len(),
+        affinity_lights_bytes: lights_bytes.len(),
+        animation_descriptor_indices_bytes: descriptor_indices_bytes.len(),
+    }
+    .log(ANIMATED_DIRECT_FOOTPRINT_LABEL);
 
     use wgpu::util::DeviceExt;
     let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -81,6 +100,12 @@ pub(super) fn build_animated_direct_pass(
         contents: &subblock_bytes,
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let delta_compaction_meta_buffer =
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Animated Direct SH Compose Delta Compaction Meta"),
+            contents: &compaction_meta_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
     let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Affinity Offsets"),
         contents: &offsets_bytes,
@@ -175,6 +200,10 @@ pub(super) fn build_animated_direct_pass(
                 resource: delta_subblocks_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
+                binding: BIND_DELTA_COMPACTION_META,
+                resource: delta_compaction_meta_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
                 binding: BIND_AFFINITY_OFFSETS,
                 resource: affinity_offsets_buffer.as_entire_binding(),
             },
@@ -216,6 +245,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_texture_bgl_entry(1),
         uniform_bgl_entry(18),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
+        storage_bgl_entry(BIND_DELTA_COMPACTION_META),
         storage_bgl_entry(BIND_AFFINITY_OFFSETS),
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTORS),
         storage_bgl_entry(BIND_ANIMATION_SAMPLES),
@@ -230,7 +260,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn animated_pass_uses_exactly_six_storage_buffers() {
+    fn animated_pass_binds_compaction_metadata_as_its_seventh_storage_buffer() {
         let storage_bindings: Vec<u32> = animated_compose_bgl_entries()
             .into_iter()
             .filter_map(|entry| {
@@ -248,6 +278,7 @@ mod tests {
             storage_bindings,
             vec![
                 BIND_DELTA_SUBBLOCKS,
+                BIND_DELTA_COMPACTION_META,
                 BIND_AFFINITY_OFFSETS,
                 BIND_ANIMATION_DESCRIPTORS,
                 BIND_ANIMATION_SAMPLES,
@@ -265,6 +296,37 @@ mod tests {
                     }
                 )
         }));
+        assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
+            entry.binding == BIND_DELTA_COMPACTION_META
+                && matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    }
+                )
+        }));
+        assert_eq!(BIND_DELTA_COMPACTION_META, 27);
+    }
+
+    #[test]
+    fn animated_shader_skips_invalid_locals_before_delta_reads() {
+        let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
+        let guard = source
+            .find("if (!local_probe_is_valid(affinity.cell_index, affinity.local_probe))")
+            .expect("animated compose must guard invalid locals");
+        let read = source
+            .find("let delta = read_delta_texel(")
+            .expect("animated compose must read compact delta tiles");
+
+        assert!(
+            guard < read,
+            "the invalid-local guard must run before every compact payload read"
+        );
+        assert!(
+            !source.contains("enable f16"),
+            "animated-direct delta payloads remain Rgba16Float read through f32 unpacking"
+        );
     }
 
     #[test]

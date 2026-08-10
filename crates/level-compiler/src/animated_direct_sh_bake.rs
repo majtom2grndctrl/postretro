@@ -142,6 +142,7 @@ pub fn bake_animated_direct_sh_delta_volumes_controlled(
         tile_dimension: TILE_DIMENSION,
         tile_border: TILE_BORDER,
         animation_descriptor_indices: (0..animated_light_count as u32).collect(),
+        valid_probe_masks: vec![u64::MAX; decomposition.affinity_cell_count()],
         affinity_offsets,
         affinity_lights,
         delta_subblocks,
@@ -219,11 +220,15 @@ fn bake_direct_subblock(
 }
 
 pub fn log_stats(section: &AnimatedDirectShDeltaVolumesSection) {
+    let emitted_probe_count = section
+        .expected_delta_subblock_f16_count()
+        .map(|halves| halves / section.delta_probe_f16_stride())
+        .expect("compiler-owned animated-direct section must have a representable payload size");
     log::info!(
         "[Compiler] AnimatedDirectShDeltaVolumes: {} animated light(s), {} CSR entries, {} emitted probes, affinity_dims {}x{}x{}",
         section.animation_descriptor_indices.len(),
         section.affinity_lights.len(),
-        section.affinity_lights.len() * PROBES_PER_CELL,
+        emitted_probe_count,
         section.affinity_dims[0],
         section.affinity_dims[1],
         section.affinity_dims[2],

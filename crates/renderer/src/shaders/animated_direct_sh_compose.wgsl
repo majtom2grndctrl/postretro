@@ -64,9 +64,12 @@ struct DebugOverride {
 // Pass-B-only uniform: `light_index` is an AnimatedBakedLights index, unlike
 // Pass A's binding-27 promotion-selection override.
 @group(1) @binding(26) var<uniform> debug_override: DebugOverride;
+// Low/high u32 words for every affinity-cell valid-probe mask, followed by one
+// f16-half payload offset for every post-drop CSR entry. Pass B has no base
+// probe-indirection binding, so this descriptor guards invalid-local reads.
+@group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
 
 const AFFINITY_FACTOR: u32 = 4u;
-const PROBES_PER_CELL: u32 = 64u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
 
 struct AtlasTexelMapping {
@@ -127,9 +130,40 @@ fn map_probe_to_affinity(probe: vec3<u32>) -> AffinityMapping {
     return AffinityMapping(cell_index, local, true);
 }
 
-fn read_delta_texel(entry: u32, local_probe: u32, tile_texel: vec2<u32>) -> vec4<f32> {
+fn compaction_meta_offset_base() -> u32 {
+    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 2u;
+}
+
+fn valid_probe_mask_word(cell: u32, word: u32) -> u32 {
+    return delta_compaction_meta[cell * 2u + word];
+}
+
+fn local_probe_is_valid(cell: u32, local_probe: u32) -> bool {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    return (valid_probe_mask_word(cell, word) & (1u << bit)) != 0u;
+}
+
+fn within_cell_rank(cell: u32, local_probe: u32) -> u32 {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    let prior_words = select(0u, countOneBits(valid_probe_mask_word(cell, 0u)), word == 1u);
+    let earlier_in_word = countOneBits(valid_probe_mask_word(cell, word) & ((1u << bit) - 1u));
+    return prior_words + earlier_in_word;
+}
+
+fn entry_delta_f16_offset(entry: u32) -> u32 {
+    return delta_compaction_meta[compaction_meta_offset_base() + entry];
+}
+
+fn read_delta_texel(
+    entry: u32,
+    probe_rank: u32,
+    tile_texel: vec2<u32>,
+) -> vec4<f32> {
     let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
-    let half_base = (entry * PROBES_PER_CELL + local_probe) * grid.delta_probe_f16_stride
+    let half_base = entry_delta_f16_offset(entry)
+        + probe_rank * grid.delta_probe_f16_stride
         + texel_index * 4u;
     let word_base = half_base / 2u;
     let rg = unpack2x16float(delta_subblocks[word_base]);
@@ -205,13 +239,23 @@ fn animated_compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    if (!local_probe_is_valid(affinity.cell_index, affinity.local_probe)) {
+        textureStore(direct_composed_atlas, p, layer, intermediate);
+        return;
+    }
+    let probe_rank = within_cell_rank(affinity.cell_index, affinity.local_probe);
+
     let start = affinity_offsets[affinity.cell_index];
     let end = affinity_offsets[affinity.cell_index + 1u];
     var accum = intermediate.rgb;
     for (var entry: u32 = start; entry < end; entry = entry + 1u) {
         let light_index = affinity_lights[entry];
         let scale = animated_light_scale(light_index);
-        let delta = read_delta_texel(entry, affinity.local_probe, atlas_mapping.tile_texel);
+        let delta = read_delta_texel(
+            entry,
+            probe_rank,
+            atlas_mapping.tile_texel,
+        );
         accum = accum + delta.rgb * scale;
     }
     textureStore(

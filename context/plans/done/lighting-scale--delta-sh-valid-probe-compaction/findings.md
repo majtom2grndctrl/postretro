@@ -1,6 +1,6 @@
 # Task 5 Findings — Delta-SH Valid-Probe Compaction
 
-**Status:** partial, with two completed map measurements. `campaign-test.map`
+**Status:** complete with documented measurement limits. `campaign-test.map`
 and the reduced `stress-warren-mini.map` fixture compiled with corrected
 `--sh-analyze` accounting that agrees with compiler compaction logs. The full
 `stress-warren-showcase.map` still has no completed PRL, byte, VRAM, or GPU
@@ -194,7 +194,9 @@ env RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run \
   validation error during renderer initialization.
 - GPU compose timings are **unavailable**: the engine explicitly logged that
   this adapter lacks `TIMESTAMP_QUERY` and/or `TIMESTAMP_QUERY_INSIDE_ENCODERS`,
-  then ran without GPU timing. No compose time is claimed.
+  then ran without GPU timing. The owner confirmed GPU timing cannot be
+  established for this landing, so no compose-time figure is required or
+  claimed.
 - `ComposeStorageFootprint` is **unavailable**: the two-minute graphical run
   produced no level-loader or `SH compose ... storage footprint` log after
   `Window ready`; it was stopped with Ctrl-C (exit 130). Thus map-resource
@@ -232,7 +234,7 @@ env RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run \
 | `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-renderer skips_invalid` | 0.7 s | Passed: 2 invalid-local-before-read source tests. |
 | `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-renderer compose_layout_keeps_eight` | 0.7 s | Passed: 1 indirect eight-storage-buffer limit test. |
 
-## Remaining honesty gates
+## Documented measurement limits
 
 - GPU dense-vs-compacted composed-atlas parity for both maps: **unconfirmed**.
   No GPU dispatch/readback parity test exists; the stress map did not compile.

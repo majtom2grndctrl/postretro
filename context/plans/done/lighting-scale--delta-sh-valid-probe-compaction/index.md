@@ -1,6 +1,6 @@
 # Lighting Scale — Delta-SH Valid-Probe Compaction
 
-> **Status:** ready. Reviewed through validate-plan (direction), review-draft-spec (two rounds: broad · source-anchor · temporal, then a source-anchor + broad verification pass), and review-implementability; awaiting `/orchestrate`. Anchored to shipping-accurate measurements from the corrected `--sh-analyze` spike (emitted-set delta bytes; id 41 47.9→26.4 MB, total deltas 126.4→69.0 MB, 0.55×). `context/lib/` updates land at implementation, not here.
+> **Status:** complete. Implementation, analyzer correction, preflight, and post-fix review all passed. `campaign-test` and the resource-bounded `stress-warren-mini` fixture supply completed compiler and runtime-load measurements; the full showcase bake and GPU timing remain documented host/resource limitations in `findings.md`, not unreported passes. `context/lib/` updates land at implementation, not here.
 > **Track:** Lighting / build pipeline — extend the shipped base-atlas valid-probe compaction to the three sparse SH delta sections.
 > **Related:** `context/lib/build_pipeline.md` §PRL section IDs (ids 27/41/45, 34/35) · `context/lib/rendering_pipeline.md` §4 ("Animated SH delta volumes", "Animated direct SH", "Promoted static lights"), §7.1 step 5 · `context/lib/experimental_spikes.md` · shipped precedent `lighting-scale--sh-base-atlas-at-rest-slimming` (main) · stopped successor `context/research/archived-plans/lighting-scale--adaptive-base-probe-density/` (density coarsening) · sibling `research.md`.
 

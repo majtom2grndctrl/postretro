@@ -1138,11 +1138,14 @@ returned from `defineMod` via a `stores` field, and
 `content/dev/start-script.ts:24-30` has none today — add it. Without that edit
 the new slot never commits and the ledger has nothing to mint.
 
-**3. Regenerate `content/dev/start-script.js` and commit it.** It is a tracked
-file (tracked despite matching a `.gitignore` pattern) and it carries the old
-colon ids at `:993`, `:1016`, and `:1040`. A release engine reads the committed
-`.js` as-is, so migrating only the `.ts` leaves the shipped mod on the old
-grammar.
+**3. Discard the stale `content/dev/start-script.js`.** It is a build artifact,
+not source: `*.js` is ignored (`.gitignore:59`), nothing under `content/` is
+tracked as `.js`, and the working copy carries the old colon ids at `:993`,
+`:1016`, and `:1040`. A debug engine regenerates it from the `.ts`
+(`crates/scripting-core/src/runtime/mod_init.rs:91-100`), so the migration
+needs no commit here — but a stale artifact on an existing working copy would
+mint against the old grammar, so delete it (or recompile) before step 4.
+Nothing is committed.
 
 **4. Mint `content/dev/identity.json`** with Task 4's tool and commit it, so the
 first checked-in ledger comes from the same path authors use.
@@ -1280,3 +1283,12 @@ local progression = defineStore("progression", {
   parity sees it (`mod_digest.rs:20-33`, `net/transport.rs:485-497`).
   Promoting it to a parity domain would name the divergence to the player.
   Separate spec; this one only inherits the current behavior.
+- How does a released mod ship its compiled `start-script.js`? Nothing under
+  `content/` is tracked as `.js` (`.gitignore:59`), and a release build never
+  compiles (`crates/scripting-core/src/runtime/mod_init.rs:91-100` is
+  debug-only), so a distributed mod must carry an artifact produced at package
+  time by something that does not exist yet. Pre-existing and out of scope
+  here, but this spec leans on it twice: the mint runs a debug build and
+  recompiles from `.ts`, while a release engine must load a `.js` whose ids
+  already match the migrated grammar. Whatever packages a mod has to run the
+  mint and the compile together, or the two artifacts can disagree.

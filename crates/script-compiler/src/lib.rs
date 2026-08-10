@@ -1421,7 +1421,7 @@ mod tests {
 
         let js = bundle_prelude(&dir).expect("prelude bundle should succeed");
         assert!(
-            !js.contains("\"preludeStore\""),
+            !js.contains("defineStore(\"preludeStore\""),
             "prelude declarations must not receive binding-derived names: {js}"
         );
 

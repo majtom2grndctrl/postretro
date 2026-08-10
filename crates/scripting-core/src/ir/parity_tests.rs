@@ -799,8 +799,8 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             base_id, independent_id,
             "independent author ids must remain distinct"
         );
-        assert_eq!(base_id, "salvage:crate-break");
-        assert_eq!(independent_id, "salvage:vase-break");
+        assert_eq!(base_id, "crate-break");
+        assert_eq!(independent_id, "vase-break");
     }
 
     assert_eq!(

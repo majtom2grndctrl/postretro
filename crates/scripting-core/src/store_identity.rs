@@ -208,11 +208,13 @@ pub fn validate_attempt(
 ) -> Result<ValidatedStoreIdentity, StoreIdentityError> {
     let mut declared_names = BTreeSet::new();
     let mut durable_names = Vec::new();
+    let mut durable_name_set = BTreeSet::new();
     for declaration in declarations.iter() {
         for (slot_name, record) in &declaration.records {
             let name = format!("{}.{}", declaration.namespace, slot_name);
             if requires_durable_key(record) {
                 durable_names.push(name.clone());
+                durable_name_set.insert(name.clone());
             }
             declared_names.insert(name);
         }
@@ -254,7 +256,15 @@ pub fn validate_attempt(
         }
 
         for name in ledger.slots.keys() {
-            if !declared_names.contains(name) {
+            if durable_name_set.contains(name) {
+                continue;
+            }
+
+            if declared_names.contains(name) {
+                warnings.push(format!(
+                    "identity ledger entry for non-durable state slot `{name}` is retained"
+                ));
+            } else {
                 warnings.push(format!(
                     "identity ledger entry for undeclared state slot `{name}` is retained"
                 ));
@@ -415,6 +425,45 @@ mod tests {
             .expect("a live-but-undeclared durable slot must not gate a new attempt");
         assert_eq!(validated.warnings.len(), 1);
         assert!(validated.warnings[0].contains("old.score"));
+    }
+
+    #[test]
+    fn gate_warns_for_declared_slots_that_no_longer_need_durable_identity() {
+        let mut declarations = StoreDeclarationSet::default();
+        let mut non_durable = durable_record();
+        non_durable.schema.persist = false;
+        declarations
+            .add(StoreDeclaration {
+                namespace: "story".to_string(),
+                records: vec![("temporary".to_string(), non_durable)],
+            })
+            .unwrap();
+        let ledger = StoreIdentityLedger {
+            version: IDENTITY_VERSION,
+            slots: BTreeMap::from([
+                (
+                    "story.temporary".to_string(),
+                    "k0123456789abcdef".to_string(),
+                ),
+                ("old.score".to_string(), "kfedcba9876543210".to_string()),
+            ]),
+        };
+
+        let validated = validate_attempt(Some(ledger), &declarations, &SlotTable::new(), None)
+            .expect("orphan and stale durable entries must be warnings, not rejection");
+        assert_eq!(validated.warnings.len(), 2);
+        assert!(
+            validated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("non-durable state slot `story.temporary`"))
+        );
+        assert!(
+            validated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("undeclared state slot `old.score`"))
+        );
     }
 
     #[test]

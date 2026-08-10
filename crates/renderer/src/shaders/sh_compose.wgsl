@@ -77,56 +77,28 @@ struct GridFrame {
 // Dense-grid probe index -> compact id-34 tile slot. The sentinel means the
 // metadata record is invalid and no base-atlas fetch may occur.
 @group(1) @binding(26) var<storage, read> probe_indirection: array<u32>;
-// Two u32 words per affinity-cell valid-probe mask, followed by one f16-half
-// payload base offset per post-drop CSR entry. Binding 26 remains the base
-// global-slot mapping and invalid-probe guard; this binding resolves only the
-// delta's within-cell compact slot.
+// Two u32 words per affinity-cell valid-probe mask, followed by one widened
+// coarsening level per cell, then one f16-half payload base offset per post-drop
+// CSR entry. Binding 26 remains the base global-slot mapping and invalid-probe
+// guard; this binding resolves only the delta's within-cell compact slot.
 @group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
 
 // Affinity cells are 4×4×4 base probes. Matches the compiler bake.
 const AFFINITY_FACTOR: u32 = 4u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
 const INVALID_PROBE_INDIRECTION: u32 = 0xffffffffu;
+// PRL validation pins the runtime tile dimension to 6. Keeping the shared
+// lattice fixed-size makes one brick workgroup fit well below the 16 KiB
+// WebGPU workgroup-storage floor.
+const RUNTIME_TILE_DIMENSION: u32 = 6u;
+const TILE_TEXEL_COUNT: u32 = RUNTIME_TILE_DIMENSION * RUNTIME_TILE_DIMENSION;
+const MAX_KEPT_TILES: u32 = 8u;
 
-struct AtlasTexelMapping {
-    probe: vec3<u32>,
-    probe_index: u32,
-    tile_texel: vec2<u32>,
-    in_grid: bool,
-};
-
-fn map_atlas_texel(atlas_texel: vec3<u32>) -> AtlasTexelMapping {
-    let tile_dim = max(grid.tile_dimension, 1u);
-    let tile = atlas_texel.xy / vec2<u32>(tile_dim);
-    let tile_texel = atlas_texel.xy % vec2<u32>(tile_dim);
-
-    let total_probes = grid.grid_dimensions.x * grid.grid_dimensions.y * grid.grid_dimensions.z;
-    let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
-    let tiles_per_layer = max(grid.tiles_per_layer, 1u);
-    let tile_slot = tile.x + tile.y * tiles_per_row;
-    let probe_index = atlas_texel.z * tiles_per_layer + tile_slot;
-    if (
-        total_probes == 0u
-        || atlas_texel.z >= grid.atlas_layer_count
-        || tile.x >= tiles_per_row
-        || tile_slot >= tiles_per_layer
-        || probe_index >= total_probes
-        || grid.grid_dimensions.x == 0u
-        || grid.grid_dimensions.y == 0u
-    ) {
-        return AtlasTexelMapping(vec3<u32>(0u), 0u, tile_texel, false);
-    }
-
-    let xy = grid.grid_dimensions.x * grid.grid_dimensions.y;
-    let z = probe_index / xy;
-    let rem = probe_index - z * xy;
-    let probe = vec3<u32>(
-        rem % grid.grid_dimensions.x,
-        rem / grid.grid_dimensions.x,
-        z,
-    );
-    return AtlasTexelMapping(probe, probe_index, tile_texel, true);
-}
+// L1 stores at most its eight local corners; L2 stores one synthesized mean.
+// The workgroup loads each stored tile once per CSR entry, then all 64 dense
+// output probes reconstruct from this brick-local lattice.
+var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
+var<workgroup> shared_kept_present: array<u32, 8>;
 
 fn sample_compact_base_atlas(compact_slot: u32, tile_texel: vec2<u32>) -> vec4<f32> {
     let compact_tiles_per_row = max(grid.compact_atlas_tiles_per_row, 1u);
@@ -149,40 +121,73 @@ fn sample_compact_base_atlas(compact_slot: u32, tile_texel: vec2<u32>) -> vec4<f
     );
 }
 
-struct AffinityMapping {
-    cell_index: u32,
-    local_probe: u32,
-    in_range: bool,
-};
-
-fn map_probe_to_affinity(probe: vec3<u32>) -> AffinityMapping {
-    let cell = probe / vec3<u32>(AFFINITY_FACTOR);
-    if (any(cell >= grid.affinity_dims)) {
-        return AffinityMapping(0u, 0u, false);
-    }
-    let local_coord = probe - cell * vec3<u32>(AFFINITY_FACTOR);
-    let local = local_coord.x
-        + local_coord.y * AFFINITY_FACTOR
-        + local_coord.z * AFFINITY_FACTOR * AFFINITY_FACTOR;
-    let cell_index = cell.x
-        + cell.y * grid.affinity_dims.x
-        + cell.z * grid.affinity_dims.x * grid.affinity_dims.y;
-    return AffinityMapping(cell_index, local, true);
-}
-
 fn compaction_meta_offset_base() -> u32 {
-    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 2u;
+    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
 }
 
 fn valid_probe_mask_word(cell: u32, word: u32) -> u32 {
     return delta_compaction_meta[cell * 2u + word];
 }
 
+fn cell_level(cell: u32) -> u32 {
+    let cell_count = grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z;
+    return delta_compaction_meta[cell_count * 2u + cell];
+}
+
+fn l1_corner_mask_word(word: u32) -> u32 {
+    return select(0x00009009u, 0x90090000u, word == 1u);
+}
+
+fn l2_representative_local(cell: u32) -> u32 {
+    let low = valid_probe_mask_word(cell, 0u);
+    if (low != 0u) {
+        return firstTrailingBit(low);
+    }
+    let high = valid_probe_mask_word(cell, 1u);
+    if (high != 0u) {
+        return 32u + firstTrailingBit(high);
+    }
+    return 0u;
+}
+
+fn kept_probe_mask_word(cell: u32, word: u32) -> u32 {
+    let valid = valid_probe_mask_word(cell, word);
+    let level = cell_level(cell);
+    if (level == 1u) {
+        return valid & l1_corner_mask_word(word);
+    }
+    if (level == 2u) {
+        if (valid_probe_mask_word(cell, 0u) == 0u && valid_probe_mask_word(cell, 1u) == 0u) {
+            return 0u;
+        }
+        let representative = l2_representative_local(cell);
+        if (representative / 32u == word) {
+            return 1u << (representative % 32u);
+        }
+        return 0u;
+    }
+    // The loader rejects levels outside 0..=2. Treat an impossible value as
+    // L0 rather than indexing a non-existent compact tile.
+    return valid;
+}
+
+fn local_probe_is_valid(cell: u32, local_probe: u32) -> bool {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    return (valid_probe_mask_word(cell, word) & (1u << bit)) != 0u;
+}
+
+fn local_probe_is_kept(cell: u32, local_probe: u32) -> bool {
+    let word = local_probe / 32u;
+    let bit = local_probe % 32u;
+    return (kept_probe_mask_word(cell, word) & (1u << bit)) != 0u;
+}
+
 fn within_cell_rank(cell: u32, local_probe: u32) -> u32 {
     let word = local_probe / 32u;
     let bit = local_probe % 32u;
-    let prior_words = select(0u, countOneBits(valid_probe_mask_word(cell, 0u)), word == 1u);
-    let earlier_in_word = countOneBits(valid_probe_mask_word(cell, word) & ((1u << bit) - 1u));
+    let prior_words = select(0u, countOneBits(kept_probe_mask_word(cell, 0u)), word == 1u);
+    let earlier_in_word = countOneBits(kept_probe_mask_word(cell, word) & ((1u << bit) - 1u));
     return prior_words + earlier_in_word;
 }
 
@@ -203,6 +208,72 @@ fn read_delta_texel(
     let rg = unpack2x16float(delta_subblocks[word_base]);
     let ba = unpack2x16float(delta_subblocks[word_base + 1u]);
     return vec4<f32>(rg.x, rg.y, ba.x, ba.y);
+}
+
+fn local_probe_coord(local_probe: u32) -> vec3<u32> {
+    return vec3<u32>(
+        local_probe % AFFINITY_FACTOR,
+        (local_probe / AFFINITY_FACTOR) % AFFINITY_FACTOR,
+        local_probe / (AFFINITY_FACTOR * AFFINITY_FACTOR),
+    );
+}
+
+fn atlas_tile_origin(probe: vec3<u32>) -> vec3<u32> {
+    let probe_index = probe.x
+        + probe.y * grid.grid_dimensions.x
+        + probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+    let tiles_per_layer = max(grid.tiles_per_layer, 1u);
+    let tile_slot = probe_index % tiles_per_layer;
+    let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
+    return vec3<u32>(
+        (tile_slot % tiles_per_row) * grid.tile_dimension,
+        (tile_slot / tiles_per_row) * grid.tile_dimension,
+        probe_index / tiles_per_layer,
+    );
+}
+
+fn l1_shared_slot(local_probe: u32) -> u32 {
+    let local = local_probe_coord(local_probe);
+    return (local.x / (AFFINITY_FACTOR - 1u))
+        + (local.y / (AFFINITY_FACTOR - 1u)) * 2u
+        + (local.z / (AFFINITY_FACTOR - 1u)) * 4u;
+}
+
+fn l1_corner_local(slot: u32) -> u32 {
+    let local = vec3<u32>(
+        select(0u, AFFINITY_FACTOR - 1u, (slot & 1u) != 0u),
+        select(0u, AFFINITY_FACTOR - 1u, (slot & 2u) != 0u),
+        select(0u, AFFINITY_FACTOR - 1u, (slot & 4u) != 0u),
+    );
+    return local.x + local.y * AFFINITY_FACTOR + local.z * AFFINITY_FACTOR * AFFINITY_FACTOR;
+}
+
+fn l1_corner_weight(target_local: u32, corner_local: u32) -> f32 {
+    let target_coord = local_probe_coord(target_local);
+    let corner = local_probe_coord(corner_local);
+    let t = vec3<f32>(target_coord) / f32(AFFINITY_FACTOR - 1u);
+    let wx = select(1.0 - t.x, t.x, corner.x == AFFINITY_FACTOR - 1u);
+    let wy = select(1.0 - t.y, t.y, corner.y == AFFINITY_FACTOR - 1u);
+    let wz = select(1.0 - t.z, t.z, corner.z == AFFINITY_FACTOR - 1u);
+    return wx * wy * wz;
+}
+
+fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32> {
+    var accum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var slot = 0u; slot < MAX_KEPT_TILES; slot = slot + 1u) {
+        if (shared_kept_present[slot] != 0u) {
+            let weight = l1_corner_weight(target_local, l1_corner_local(slot));
+            if (weight > 0.0) {
+                accum = accum + shared_kept_tiles[slot * TILE_TEXEL_COUNT + texel_index].rgb * weight;
+                weight_sum = weight_sum + weight;
+            }
+        }
+    }
+    if (weight_sum > 0.0) {
+        return accum / weight_sum;
+    }
+    return vec3<f32>(0.0);
 }
 
 fn animated_light_scale(light_index: u32) -> vec3<f32> {
@@ -235,50 +306,142 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(
-    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) brick: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
-    if (
-        gid.x >= grid.atlas_dimensions.x
-        || gid.y >= grid.atlas_dimensions.y
-        || gid.z >= grid.atlas_layer_count
-    ) {
-        return;
+    // One workgroup owns one 4×4×4 affinity brick. Its 64 invocations each
+    // write one scattered dense-atlas probe tile, rather than assuming atlas
+    // neighbors are brick neighbors.
+    let local_probe = local_id.x + local_id.y * 8u;
+    let cell_index = brick.x
+        + brick.y * grid.affinity_dims.x
+        + brick.z * grid.affinity_dims.x * grid.affinity_dims.y;
+    let probe = brick * AFFINITY_FACTOR + local_probe_coord(local_probe);
+    let in_grid = !any(probe >= grid.grid_dimensions);
+    let probe_index = probe.x
+        + probe.y * grid.grid_dimensions.x
+        + probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+    var compact_slot = INVALID_PROBE_INDIRECTION;
+    if (in_grid) {
+        compact_slot = probe_indirection[probe_index];
     }
-    let p = vec2<i32>(i32(gid.x), i32(gid.y));
-    let layer = i32(gid.z);
+    let output_is_valid = in_grid && compact_slot != INVALID_PROBE_INDIRECTION;
+    let tile_origin = atlas_tile_origin(probe);
 
-    let atlas_mapping = map_atlas_texel(gid);
-    if (!atlas_mapping.in_grid) {
-        textureStore(sh_total_atlas, p, layer, vec4<f32>(0.0));
-        return;
-    }
-    let compact_slot = probe_indirection[atlas_mapping.probe_index];
-    if (compact_slot == INVALID_PROBE_INDIRECTION) {
-        textureStore(sh_total_atlas, p, layer, vec4<f32>(0.0));
-        return;
-    }
-    let base = sample_compact_base_atlas(compact_slot, atlas_mapping.tile_texel);
-
-    let affinity = map_probe_to_affinity(atlas_mapping.probe);
-    if (!affinity.in_range) {
-        textureStore(sh_total_atlas, p, layer, vec4<f32>(base.rgb, 1.0));
-        return;
-    }
-    let probe_rank = within_cell_rank(affinity.cell_index, affinity.local_probe);
-
-    let start = affinity_offsets[affinity.cell_index];
-    let end = affinity_offsets[affinity.cell_index + 1u];
-    var accum = base.rgb;
-    for (var entry: u32 = start; entry < end; entry = entry + 1u) {
-        let light_index = affinity_lights[entry];
-        let scale = animated_light_scale(light_index);
-        let delta = read_delta_texel(
-            entry,
-            probe_rank,
-            atlas_mapping.tile_texel,
-        );
-        accum = accum + delta.rgb * scale;
+    // Keeping the accumulator private lets one shared kept lattice serve all
+    // 64 output tiles without a second global delta read. The runtime tile
+    // geometry is fixed at 6×6 by PRL validation.
+    var accum: array<vec3<f32>, 36>;
+    for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+        if (output_is_valid) {
+            let tile_texel = vec2<u32>(
+                texel_index % RUNTIME_TILE_DIMENSION,
+                texel_index / RUNTIME_TILE_DIMENSION,
+            );
+            accum[texel_index] = sample_compact_base_atlas(compact_slot, tile_texel).rgb;
+        } else {
+            accum[texel_index] = vec3<f32>(0.0);
+        }
     }
 
-    textureStore(sh_total_atlas, p, layer, vec4<f32>(accum, 1.0));
+    let level = cell_level(cell_index);
+    let start = affinity_offsets[cell_index];
+    let end = affinity_offsets[cell_index + 1u];
+
+    if (level == 0u) {
+        // Dense L0 has no dropped probes, so keep its direct compact-payload
+        // reads and do not spend shared memory loading 64 tiles.
+        if (output_is_valid) {
+            let probe_rank = within_cell_rank(cell_index, local_probe);
+            for (var entry = start; entry < end; entry = entry + 1u) {
+                let scale = animated_light_scale(affinity_lights[entry]);
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    let tile_texel = vec2<u32>(
+                        texel_index % RUNTIME_TILE_DIMENSION,
+                        texel_index / RUNTIME_TILE_DIMENSION,
+                    );
+                    accum[texel_index] = accum[texel_index]
+                        + read_delta_texel(entry, probe_rank, tile_texel).rgb * scale;
+                }
+            }
+        }
+    } else {
+        // Coarsened L1/L2 cells load only their kept lattice into workgroup
+        // memory. A load happens once per (brick, CSR entry, tile texel), then
+        // every dropped-valid output probe reconstructs from those values.
+        for (var entry = start; entry < end; entry = entry + 1u) {
+            if (local_probe < MAX_KEPT_TILES) {
+                shared_kept_present[local_probe] = 0u;
+            }
+            workgroupBarrier();
+
+            if (level == 1u && local_probe_is_kept(cell_index, local_probe)) {
+                let slot = l1_shared_slot(local_probe);
+                let probe_rank = within_cell_rank(cell_index, local_probe);
+                shared_kept_present[slot] = 1u;
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    let tile_texel = vec2<u32>(
+                        texel_index % RUNTIME_TILE_DIMENSION,
+                        texel_index / RUNTIME_TILE_DIMENSION,
+                    );
+                    shared_kept_tiles[slot * TILE_TEXEL_COUNT + texel_index] = read_delta_texel(
+                        entry,
+                        probe_rank,
+                        tile_texel,
+                    );
+                }
+            }
+            if (level == 2u) {
+                let representative = l2_representative_local(cell_index);
+                if (local_probe == representative && local_probe_is_kept(cell_index, local_probe)) {
+                    let probe_rank = within_cell_rank(cell_index, local_probe);
+                    shared_kept_present[0] = 1u;
+                    for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                        let tile_texel = vec2<u32>(
+                            texel_index % RUNTIME_TILE_DIMENSION,
+                            texel_index / RUNTIME_TILE_DIMENSION,
+                        );
+                        shared_kept_tiles[texel_index] = read_delta_texel(
+                            entry,
+                            probe_rank,
+                            tile_texel,
+                        );
+                    }
+                }
+            }
+            workgroupBarrier();
+
+            if (output_is_valid) {
+                let scale = animated_light_scale(affinity_lights[entry]);
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    var delta = vec3<f32>(0.0);
+                    if (level == 2u) {
+                        delta = shared_kept_tiles[texel_index].rgb
+                            * f32(shared_kept_present[0]);
+                    } else {
+                        delta = reconstruct_l1_shared_texel(local_probe, texel_index);
+                    }
+                    accum[texel_index] = accum[texel_index] + delta * scale;
+                }
+            }
+            // No invocation may start loading the next entry until every
+            // invocation has consumed this entry's shared lattice.
+            workgroupBarrier();
+        }
+    }
+
+    if (in_grid) {
+        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+            let tile_texel = vec2<u32>(
+                texel_index % RUNTIME_TILE_DIMENSION,
+                texel_index / RUNTIME_TILE_DIMENSION,
+            );
+            textureStore(
+                sh_total_atlas,
+                vec2<i32>(tile_origin.xy + tile_texel),
+                i32(tile_origin.z),
+                vec4<f32>(accum[texel_index], select(0.0, 1.0, output_is_valid)),
+            );
+        }
+    }
 }

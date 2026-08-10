@@ -94,17 +94,19 @@ pub struct DeltaComposeBuffers {
 
 impl DeltaComposeBuffers {
     /// Pack the id-27 descriptor and post-drop entry offset table into one
-    /// storage-buffer word stream: low/high words per cell mask, followed by
-    /// one f16-half offset per CSR entry. The compose shader derives the split
-    /// from `grid.affinity_dims`, so this contains no separately mutable length
-    /// field.
+    /// storage-buffer word stream: low/high words per cell validity mask, one
+    /// widened coarsening level per cell, then one f16-half offset per CSR
+    /// entry. The indirect and animated-direct compose shaders derive both
+    /// splits from `grid.affinity_dims`, so this contains no separately mutable
+    /// length field.
     pub fn compaction_meta_words(&self) -> Vec<u32> {
         let mut words =
-            Vec::with_capacity(self.valid_probe_masks.len() * 2 + self.entry_offsets.len());
+            Vec::with_capacity(self.valid_probe_masks.len() * 3 + self.entry_offsets.len());
         for &mask in &self.valid_probe_masks {
             words.push(mask as u32);
             words.push((mask >> 32) as u32);
         }
+        words.extend(self.cell_levels.iter().map(|&level| u32::from(level)));
         words.extend_from_slice(&self.entry_offsets);
         words
     }
@@ -494,8 +496,8 @@ pub fn reconstruct_delta_probe_tile(
     entry: usize,
     cell: usize,
     local_probe: u32,
-    tile_texels: usize,    // interior RGB texel count per tile
-    tile_f16_stride: u32,  // f16 stride per probe tile (texels*4 for RGBA16F)
+    tile_texels: usize,   // interior RGB texel count per tile
+    tile_f16_stride: u32, // f16 stride per probe tile (texels*4 for RGBA16F)
 ) -> Option<Vec<glam::Vec3>> {
     if local_probe >= PROBES_PER_CELL as u32 {
         return None;
@@ -533,8 +535,7 @@ pub fn reconstruct_delta_probe_tile(
 
     // Dropped-valid: gather the brick's kept tiles into a local lattice and
     // reconstruct intra-brick.
-    let mut kept_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] =
-        std::array::from_fn(|_| None);
+    let mut kept_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
     let mut remaining = kept;
     while remaining != 0 {
         let k = remaining.trailing_zeros();
@@ -759,8 +760,32 @@ mod tests {
                 u32::MAX,
                 u32::MAX,
                 0,
+                0,
+                0,
+                0,
                 (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32,
             ]
+        );
+    }
+
+    #[test]
+    fn delta_compaction_meta_places_cell_levels_before_entry_offsets() {
+        let buffers = DeltaComposeBuffers {
+            animated_light_count: 0,
+            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 1],
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
+            cell_levels: vec![1, 2],
+            entry_offsets: vec![144, 180],
+            affinity_dims: [2, 1, 1],
+        };
+
+        assert_eq!(
+            buffers.compaction_meta_words(),
+            vec![0x0000_9009, 0, 0, 0x9009_0000, 1, 2, 144, 180,],
+            "id-27/id-45 shaders derive their entry-offset base after two mask words and one level word per cell",
         );
     }
 
@@ -974,8 +999,8 @@ mod tests {
         assert_eq!(buffers.entry_offsets, vec![0]);
         assert_eq!(
             buffers.compaction_meta_words(),
-            vec![u32::MAX, u32::MAX, 0],
-            "the animated pass receives mask words followed by post-drop f16 offsets"
+            vec![u32::MAX, u32::MAX, 0, 0],
+            "the animated pass receives mask words and a cell level before post-drop f16 offsets"
         );
     }
 

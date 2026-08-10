@@ -27,7 +27,7 @@ use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolume
 //     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
 //     25     animation descriptor indices `u32` delta-light index → descriptor slot
 //     26     probe indirection (storage)  compact valid-probe slot, or invalid sentinel
-//     27     delta compaction metadata (storage)  cell masks + post-drop entry offsets
+//     27     delta compaction metadata (storage)  cell masks + levels + post-drop entry offsets
 //
 // 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair.
 // 24 is numbered after the shared 22/23 so adding `affinity_lights` doesn't
@@ -48,8 +48,8 @@ const INVALID_PROBE_INDIRECTION: u32 = u32::MAX;
 pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    /// Atlas dimensions. Drives the dispatch shape — one thread per atlas
-    /// texel, rounded up to the shader's 8×8 workgroup size.
+    /// Affinity-cell dimensions. One 8×8 workgroup reconstructs and writes the
+    /// 4×4×4 probe tiles belonging to one brick.
     dispatch_dimensions: [u32; 3],
 }
 
@@ -309,11 +309,7 @@ impl ShComposeResources {
         Self {
             pipeline,
             bind_group,
-            dispatch_dimensions: [
-                sh.atlas_dimensions[0],
-                sh.atlas_dimensions[1],
-                sh.atlas_layer_count,
-            ],
+            dispatch_dimensions: buffers.affinity_dims,
         }
     }
 
@@ -333,8 +329,8 @@ impl ShComposeResources {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, uniform_bind_group, &[]);
         pass.set_bind_group(1, &self.bind_group, &[]);
-        let wg_x = self.dispatch_dimensions[0].div_ceil(8).max(1);
-        let wg_y = self.dispatch_dimensions[1].div_ceil(8).max(1);
+        let wg_x = self.dispatch_dimensions[0].max(1);
+        let wg_y = self.dispatch_dimensions[1].max(1);
         let wg_z = self.dispatch_dimensions[2].max(1);
         pass.dispatch_workgroups(wg_x, wg_y, wg_z);
     }
@@ -542,6 +538,32 @@ mod tests {
             .iter()
             .any(|ep| ep.name == "compose_main" && ep.stage == naga::ShaderStage::Compute);
         assert!(has_compose, "compose_main entry point missing");
+    }
+
+    #[test]
+    fn coarsened_compose_uses_one_brick_workgroup_and_kept_shared_tiles() {
+        let source = include_str!("../shaders/sh_compose.wgsl");
+
+        assert!(
+            source.contains("@builtin(workgroup_id) brick"),
+            "one workgroup must own one affinity brick rather than an atlas texel block"
+        );
+        assert!(
+            source.contains("var<workgroup> shared_kept_tiles"),
+            "L1/L2 reconstruction must reuse a workgroup-local kept lattice"
+        );
+        assert!(
+            source.contains("if (level == 0u)"),
+            "dense L0 cells must keep their direct-read path instead of loading 64 shared tiles"
+        );
+        assert!(
+            source.contains("if (level == 1u && local_probe_is_kept"),
+            "L1 must load only kept local corners"
+        );
+        assert!(
+            source.contains("if (level == 2u)"),
+            "L2 must load its single synthesized mean tile"
+        );
     }
 
     #[test]

@@ -65,8 +65,10 @@ struct DebugOverride {
 // Pass A's binding-27 promotion-selection override.
 @group(1) @binding(26) var<uniform> debug_override: DebugOverride;
 // Low/high u32 words for every affinity-cell valid-probe mask, followed by one
-// f16-half payload offset for every post-drop CSR entry. Pass B has no base
-// probe-indirection binding, so this descriptor guards invalid-local reads.
+// widened coarsening level per cell, then one f16-half payload offset for every
+// post-drop CSR entry. Pass B has no base probe-indirection binding, so this
+// descriptor guards invalid-local reads. B1 updates this shared id-27/id-45
+// layout; B2 adds id-45 reconstruction.
 @group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
 
 const AFFINITY_FACTOR: u32 = 4u;
@@ -131,11 +133,19 @@ fn map_probe_to_affinity(probe: vec3<u32>) -> AffinityMapping {
 }
 
 fn compaction_meta_offset_base() -> u32 {
-    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 2u;
+    return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
 }
 
 fn valid_probe_mask_word(cell: u32, word: u32) -> u32 {
     return delta_compaction_meta[cell * 2u + word];
+}
+
+// Kept here in lockstep with `sh_compose.wgsl` even though Pass B still uses
+// its pre-B2 dense-local compose path. Without this accessor/layout update its
+// CSR entry offsets would point into the newly inserted level words.
+fn cell_level(cell: u32) -> u32 {
+    let cell_count = grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z;
+    return delta_compaction_meta[cell_count * 2u + cell];
 }
 
 fn local_probe_is_valid(cell: u32, local_probe: u32) -> bool {

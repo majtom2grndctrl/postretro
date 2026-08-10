@@ -52,8 +52,9 @@ impl AnimatedDirectShDebugOverride {
 }
 
 const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
-/// Combined low/high valid-probe mask words followed by one f16-half payload
-/// offset per post-drop CSR entry. Binding 26 is the pass-B debug override.
+/// Combined low/high valid-probe mask words, one coarsening level per cell,
+/// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
+/// pass-B debug override.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
 #[cfg(feature = "dev-tools")]

@@ -1,0 +1,116 @@
+# Lighting Scale — Delta-SH Probe Coarsening
+
+> **Status:** draft. Measurement-first v2 of the stopped adaptive-density work. This is the spec the archived `context/research/archived-plans/lighting-scale--adaptive-base-probe-density/` and superseded `context/plans/drafts/lighting-scale--adaptive-sh-probe-density/` both point to. It replaces both. The go/no-go gating spike is complete; evidence and the precommitted operating point live in `context/research/coarsening-gating-spike/` (`README.md`, `operating-point.md`).
+> **Track:** Lighting / build pipeline — the storage-density lever behind the SH delta payload's at-rest size and 256 MiB cap.
+> **Builds on:** `context/plans/done/lighting-scale--delta-sh-valid-probe-compaction/` (merged) — the variable-stride compact delta substrate this generalizes.
+> **Related:** `context/lib/rendering_pipeline.md` §4 (Animated SH delta volumes / Baked direct for dynamic receivers / Animated direct SH), §7.1 step 5 (SH compose passes) · `context/lib/build_pipeline.md` §PRL section IDs (27/34/35/41/45).
+
+## Goal
+
+Cut the baked SH delta payload by dropping **valid** probes in low-variance 4×4×4 bricks and reconstructing them by trilinear interpolation from a coarser kept lattice (L0 = 64 dense / L1 = 8 corners / L2 = 1 representative), chosen per brick from composed-receiver reconstruction error. This is lossy, unlike the merged valid-probe compaction (which only dropped in-solid invalid probes).
+
+Two wins are **certain** (structural / measured): the at-rest delta payload shrinks (measured 12% at 8 m bricks to ~65% at 6 m bricks on top of compaction, density-dependent — `operating-point.md`), and that shrinkage drops the raw payload under the 256 MiB `--sh-delta-max-size` cap, so denser bakes that currently hard-fail can ship. One win is a **measured target, not a given**: the per-frame compose read bandwidth (see Direction — the compose dispatch would re-read kept corners per texel unless restructured).
+
+## Scope
+
+### In scope
+- Per-brick level classifier (L0/L1/L2) in the compiler, keyed on composed-receiver reconstruction error relative to local irradiance magnitude, at the precommitted operating point (`operating-point.md`).
+- Coarsening the three delta sections' stored probe set from "valid" to "valid ∧ on-level-lattice", via the mask predicate in `delta_sections.rs`.
+- A per-probe descriptor that distinguishes three states — **invalid** (skip), **kept** (read by rank), **dropped-valid** (reconstruct) — for all three delta consumers.
+- Trilinear reconstruction of dropped-valid probes in the three GPU compose passes (`sh_compose.wgsl`, `direct_sh_compose.wgsl`, `animated_direct_sh_compose.wgsl`) and the CPU reference (`render-cpu/src/sh_compose.rs`), writing the **existing dense composed atlas**.
+- Mapper-authored **protection volumes** (brush entity → world AABB) that force intersecting bricks to L0.
+- **Per-map uniform-grid fallback**: if coarsening does not clear the cap, fail the build with a diagnostic — never silently coarsen harder to fit.
+- **One-level seam-smoothing rule**: a brick may not be more than one level coarser than any face-adjacent neighbor.
+- GPU measurement of per-frame compose read bandwidth / dispatch time, before → after, on the arena map.
+
+### Out of scope
+- **Composed-atlas compaction and forward/billboard/fog sampler rework.** The composed atlas stays dense; forward samples it unchanged. Deferred — see Direction and Open Questions. This is the win on composed-atlas VRAM and forward-sample bandwidth; it is a separate spec.
+- **Base-atlas (id 34 / id 35) coarsening** and activating the reserved `OctahedralShProbe.density_level` field. The base atlas stays dense-composed / compact-at-rest as compaction left it.
+- **Visual A/B calibration** of the error threshold. The owner chose metric-only; the operating point is data-selected with a Weber rationale (`operating-point.md`), ratifiable but not gated on a rendered comparison.
+- Host-RAM bake cost at shipping density (a known, separate concern).
+
+## Direction
+
+**Problem.** Uniform SH delta density stores one probe tile per valid `(brick, light)` cell even where the delta is nearly flat — dense probes buy no image quality in low-variance regions (open air, uniformly-lit volumes). Compaction removed the *invalid* (in-solid) probes losslessly; the *valid but redundant* probes remain, and at shipping density they dominate the payload and push it into the 256 MiB cap that hard-fails the bake. The cause is density, not encoding: the gating spike measured that low-composed-variance bricks reconstruct within a conservative perceptual bound from a coarse lattice (`operating-point.md`).
+
+**Prior commitments this touches.**
+- **The compaction substrate (merged).** The delta payload length and a probe's in-cell rank are pure `popcount(valid_probe_masks[cell])` (`delta_sh_volumes.rs:valid_probe_mask_payload_f16_count`, rank via `sh_analyze.rs:DeltaView::resolve_probe_f16_offset`). A coarser mask (fewer set bits) therefore yields a correctly shorter payload with correct ranks and **no wire-format change to the payload itself** — coarsening reuses the compaction copy loop (`delta_sections.rs:compact_dense_valid_probe_payload`) with a reduced mask. This is a work-eliminating claim; its warrant is that the copy loop and length function read only the mask's set bits, verified this session in both files.
+- **The stopped surface-distance plan.** This spec classifies from **composed-receiver reconstruction error**, never surface distance, and measures seams as **actual shared-face reconstruction differences** — the two things the archived plan got wrong. Carried forward from it by reference only: the three-level rescope (vs two-level / octree), the f16-at-rest / f32-arithmetic contract, and the industry survey. Its classifier and seam evidence are discarded.
+- **The handoff's "rework every SH sampler" framing — this spec diverges, deliberately.** The composed atlas the forward/billboard/fog samplers read is **dense** and written by the compose passes; the indirect compose already reads a *compact* base via `probe_indirection` and writes the dense `sh_total_atlas` (`sh_compose.wgsl:compose_main`). Coarsening therefore lands entirely in the **three compose passes + CPU reference**, which reconstruct dropped probes into the existing dense composed atlas — the forward samplers are untouched. Compacting the composed atlas too (the full-blast-radius version) is a separate, deferrable win on atlas VRAM; it is not required for the payload/cap/bandwidth levers and is out of scope here.
+- **The per-frame bandwidth win is not free, and the spec says so.** Each compose pass dispatches per composed-atlas texel at `@workgroup_size(8,8,1)` (verified in all three shaders), which does not map to a 4×4×4 brick. A dropped probe reconstructs from up to 8 kept lattice corners; under the current per-texel dispatch those corners are re-fetched from global memory per texel, so payload shrinkage alone does **not** guarantee less per-frame read traffic. Realizing the read-bandwidth win needs a compose access-pattern change (brick-local workgroup + shared-memory lattice load) whose payoff is unmeasured — the container gating spike is CPU-only. This is why per-frame bandwidth is a measured target (Task 8), not an acceptance guarantee, and why the certain wins (at-rest storage, cap relief) lead the Goal.
+
+**Alternatives rejected.**
+- **Compact the composed atlas now (full blast radius).** Wins atlas VRAM and forward-sample bandwidth, but reworks every downstream SH sampler (forward, billboard, fog) and their bind groups. Rejected as this spec's scope: the payload/cap/bandwidth levers land without it, and folding it in couples a large sampler migration to the classifier's first landing. Deferred to a follow-on that can be priced against measured atlas-VRAM pressure.
+- **Two-level (dense / drop) instead of three.** L2 (single representative) captures the large uniformly-lit volumes that dominate the arena win; the sweep shows L2 taking the majority of coarsenable bricks at the operating point (`operating-point.md`). Two levels leave that on the table.
+- **Per-probe octree / arbitrary lattice.** The 4×4×4 affinity cell is locked to `AFFINITY_FACTOR = 4` and the compose addressing; L0/L1/L2 are the sub-lattices that fall out of it with trilinear-exact corners. An arbitrary tree needs new addressing for no measured gain.
+
+## Acceptance criteria
+
+- [ ] A bake with coarsening enabled emits delta sections whose raw payload is smaller than the compaction-only baseline on the arena map (`content/dev/maps/` warren-preset arena), by a margin consistent with the recorded operating point at the baked density. Verified by the compiler's payload accounting log, no GPU.
+- [ ] Every emitted delta section round-trips: `to_bytes` → `from_bytes` accepts it, and the payload-length invariant (`valid_probe_mask_payload_f16_count`) holds for the coarsened masks. (CPU test.)
+- [ ] The CPU reference compose (`render-cpu/src/sh_compose.rs`) reconstructs a dropped-valid probe's composed value as the trilinear blend of its kept lattice corners, matching `sh_analyze.rs:reconstruct_l1_tile` / `reconstruct_l2_tile` within f16 tolerance, and skips invalid probes (contributes zero delta). (CPU test — the CI-enforceable value proxy for the GPU path.)
+- [ ] Invalid, kept, and dropped-valid probes are distinguished correctly by each of the three consumers: an invalid probe contributes zero delta; a kept probe reads its payload tile by rank; a dropped-valid probe is reconstructed. Verified per consumer by CPU test asserting the three states on a constructed section. (Direct/animated-direct have no base `probe_indirection`; this AC is where their validity signal is proven.)
+- [ ] A brick intersecting a protection volume is L0 (all valid probes kept) regardless of its error. Verified by a compiler test feeding a protection AABB and asserting the brick's mask is unchanged from compaction.
+- [ ] When the coarsened payload still exceeds `--sh-delta-max-size`, the build fails with a diagnostic naming the cap and the overage — it does not coarsen further to fit. (Compiler test.)
+- [ ] No brick is more than one level coarser than a face-adjacent neighbor after classification. (Compiler test on a constructed error field that would otherwise place adjacent L0/L2.)
+- [ ] Per-frame compose read bandwidth and dispatch time are recorded before → after on the arena map, at a baked density where coarsening is active, with the measurement method and result written to findings. This AC is a measurement, not a threshold — it reports whether the per-frame lever materialized under the chosen compose access pattern. (Local/dev GPU, self-skips in headless CI.)
+
+## Tasks
+
+### Task 1: Thin slice — classifier + id-27 reconstruction, end to end
+Falsifies the descriptor and reconstruction boundary before any fan-out. In the compiler, add a per-brick level classifier that computes composed-receiver reconstruction error per candidate level (reuse `sh_analyze.rs:reconstruct_l1_tile`/`reconstruct_l2_tile`/`corner_locals`/`trilinear_weight` as the reference math), applies the precommitted gate (relative p95 ≤ 10% and relative max ≤ 25% of local composed-irradiance magnitude, darkness floor at 2% of the map's p95 brick magnitude — see `operating-point.md`), and refines the id-27 `valid_probe_masks` predicate in `delta_sections.rs:valid_probe_mask_for_affinity_cell` from "valid" to "valid ∧ on-chosen-level-lattice". Wire the descriptor so the id-27 consumer can distinguish the three probe states: for id 27, base-atlas validity comes from `probe_indirection` (`sh_compose.rs:build_probe_indirection_words`), so a probe with a valid base slot but a clear delta-mask bit is dropped-valid → reconstruct; a probe with an invalid base slot is skipped. Implement reconstruction in `sh_compose.wgsl:compose_main`: for a dropped-valid probe, resolve its kept lattice corners (each with its own `cell`/`local_probe`/`within_cell_rank`/`entry_delta_f16_offset`, crossing affinity-cell boundaries where the corner is in a neighbor cell), read each corner's delta via `read_delta_texel`, and trilinear-blend into the dense `sh_total_atlas`. Mirror the resolution in `render-cpu/src/sh_compose.rs:resolve_delta_f16_offset` and add the CPU reconstruction path. Bake the arena map at 2 m with coarsening on; confirm payload shrinks and the CPU reference matches the analyzer's reconstruction. Do **not** touch id 41/45 or the forward samplers in this task.
+
+### Task 2: Extend reconstruction to id 41 (direct) and id 45 (animated direct)
+Generalize the Task 1 descriptor and reconstruction to `direct_sh_compose.wgsl` and `animated_direct_sh_compose.wgsl` (+ their `render-cpu` resolvers). These passes have **no** base `probe_indirection`; their delta `valid_probe_mask` is currently their sole invalidity signal, so a clear bit is ambiguous between invalid and dropped-valid. Carry a per-cell signal that recovers validity independent of the coarsened kept-set — either the per-cell level (from which kept = validity ∧ lattice(level)) or the pre-coarsening validity mask alongside the kept mask — versioned via each section's existing `*_VERSION` gate (`DIRECT_SH_DELTA_VOLUMES_VERSION`, `ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION`). Pin the encoding in the Wire Format section; keep the payload-length function (`valid_probe_mask_payload_f16_count`) consistent with whichever mask sizes the payload. Storage-slot budget for any new runtime meta buffer: id 41 has 3 free storage slots, id 45 has 1 free, id 27 has **0** free (pack into `delta_compaction_meta`). Reconstruction is the same 8-corner trilinear blend, subtracting (id 41) or adding (id 45) as those passes already do.
+
+### Task 3: Protection volumes force L0
+Add a mapper-authored protection-volume brush entity parsed to a world AABB, following `trigger_volumes.rs:resolve_trigger_volume` (shambler brush hulls → `aabb_min`/`aabb_max` via `quake_to_engine`). Feed the resulting AABBs into the classifier so any brick intersecting one (with an authored dilation margin) is forced to L0 — reuse the `sh_analyze.rs:ProtectAabb`/`intersects_any` intersection already used by the measurement stand-in, promoted from CLI-only to the emitted path. The `--sh-protect-aabb` CLI flag stays as a bake-time override. An FGD entry defines the entity for TrenchBroom.
+
+### Task 4: Uniform-grid fallback and cap integration
+After classification and compaction, compute the coarsened payload the way `delta_sections.rs:enforce_payload_cap` sums it. If it clears `--sh-delta-max-size`, emit. If it does not, fail the build with a diagnostic naming the cap and overage — never re-run the classifier at a harsher threshold to fit. A `--sh-coarsen` off switch bakes the uniform (compaction-only) grid unchanged, so a map author can always fall back to the lossless baseline per map. The classifier's threshold is a fixed constant from the operating point, not a knob the cap tunes.
+
+### Task 5: One-level seam-smoothing pass
+After per-brick level assignment and before mask refinement, run a smoothing pass: while any brick is more than one level coarser than a face-adjacent neighbor, demote it toward the finer neighbor (L2→L1→L0), to convergence. Adjacency is over the affinity-cell grid (`affinity_grid.rs` x-fastest linearization). This bounds the cross-level shared-face residual the gating spike measured small in aggregate but did not bound per-assignment (`operating-point.md`).
+
+### Task 6: Wire the classifier into the emitted pipeline behind `--sh-coarsen`
+Integrate Tasks 1–5 into `delta_sections.rs`/`pipeline.rs` so coarsening runs after exact-zero-drop and valid-probe-compaction and before `enforce_payload_cap`, gated by a `--sh-coarsen` flag (default off until this lands and is measured). The `--sh-analyze` measurement pass stays unchanged and output-preserving.
+
+### Task 7: FGD + docs + context capture
+Define the protection-volume entity in the FGD, document it for mappers in `docs/`, and (at promotion, not now) capture the durable coarsening contract in `context/lib/build_pipeline.md` (delta sections gain a per-brick level; payload = kept-probe count) and `rendering_pipeline.md` (compose reconstructs dropped-valid probes into the dense composed atlas).
+
+### Task 8: GPU per-frame bandwidth measurement
+On a GPU host (self-skips headless), run the arena map before → after coarsening at a density where coarsening is active. Record compose dispatch time (`POSTRETRO_GPU_TIMING=1`, passes `sh_compose`/`direct_sh_compose`/`animated_direct_sh_compose`) and, where measurable, delta read volume. Write method + result to findings. If the per-texel dispatch re-reads corners badly enough that per-frame read does not drop, record that and scope the brick-local compose rework as a follow-on — the at-rest and cap wins stand regardless.
+
+## Sequencing
+
+**Phase 1 (sequential):** Task 1 — thin slice through classifier → mask → id-27 compose reconstruction → CPU reference → one bake; falsifies the descriptor and reconstruction-boundary assumptions while rewrites are cheap.
+**Phase 2 (concurrent):** Task 2 (extend to id 41/45), Task 3 (protection volumes), Task 5 (seam smoothing) — independent once the id-27 descriptor and classifier exist.
+**Phase 3 (sequential):** Task 4 (fallback + cap) — consumes the final coarsened payload from Task 2; Task 6 (pipeline wiring) — consumes Tasks 1–5.
+**Phase 4 (concurrent):** Task 7 (FGD/docs/context), Task 8 (GPU measurement) — consume the wired pipeline.
+
+## Wire format
+
+Coarsening changes the **meaning** of the stored probe set, not the payload encoding. Pin per section:
+
+- **Payload (all three ids):** unchanged encoding. `delta_subblocks` stores one tile per **kept** probe (valid ∧ on-level-lattice), x-fastest by kept rank. Length stays `Σ_cell (entries_in_cell × popcount(kept_mask[cell]) × probe_f16_stride)` via `valid_probe_mask_payload_f16_count` — the function is reused, fed the kept mask.
+- **id 27 (DeltaShVolumes):** may store the kept mask directly in `valid_probe_masks` with no new field — the indirect compose recovers validity from base `probe_indirection`, so kept-clear ∧ base-valid = dropped-valid and kept-clear ∧ base-invalid = invalid. If a per-cell level is stored anyway for uniformity, bump `DELTA_SH_VOLUMES_VERSION`.
+- **id 41 / id 45:** must convey validity **and** the kept set, since there is no base `probe_indirection`. The implementer picks one encoding — a per-cell level byte (kept = validity ∧ lattice(level)), or a second per-cell mask — and bumps `DIRECT_SH_DELTA_VOLUMES_VERSION` / `ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION`. Stale sections are rejected by the existing version gate. Whichever mask sizes the payload must be the one `valid_probe_mask_payload_f16_count` receives; keep `validate_wire_contract` (id 45) consistent.
+- **Constraint, not layout:** do not pin byte offsets here. The constraint is: the three probe states are recoverable per consumer, the payload is kept-probe-sized, and the per-brick level is recoverable at load. Runtime meta packs into `delta_compaction_meta` where a consumer has no free storage slot (id 27: 0 free; id 41: 3; id 45: 1).
+
+## Invariants
+
+| Invariant | Established by | Preserved / threatened at | Verified by |
+|---|---|---|---|
+| Payload holds exactly the kept (valid ∧ on-lattice) probes, kept-rank order | Task 1 (id 27 mask refine), Task 2 (id 41/45) | `valid_probe_mask_payload_f16_count` must receive the kept mask, not validity; a mismatch truncates or over-reads | AC 2 |
+| A probe resolves to exactly one of invalid / kept / dropped-valid at every consumer | Task 1 (id 27 via probe_indirection), Task 2 (id 41/45 carried signal) | id 41/45 have no base validity source — a clear bit is ambiguous without the carried signal | AC 4 |
+| Reconstruction of a dropped-valid probe equals trilinear over its kept lattice corners | Task 1 (compose + CPU), Task 2 (id 41/45) | corners crossing affinity-cell boundaries resolve to a neighbor cell's rank/offset | AC 3 |
+| Protected bricks are L0 | Task 3 | classifier must apply protection before mask refinement and before seam smoothing can demote-around it | AC 5 |
+| No brick > 1 level coarser than a face-adjacent neighbor | Task 5 | smoothing runs after level assignment, before mask refinement | AC 7 |
+| Coarsening never silently coarsens harder to clear the cap | Task 4 | fallback fails the build instead of re-thresholding | AC 6 |
+
+## Open questions
+
+- **Per-frame compose bandwidth realization.** Whether the per-texel `@workgroup_size(8,8,1)` dispatch re-reads kept corners badly enough to erase the read-bandwidth win. If so, a brick-local compose rework (per-brick workgroup, shared-memory lattice load) is the follow-on. Task 8 measures; it does not commit the rework. Owner input welcome on whether the at-rest + cap wins alone justify landing before that measurement.
+- **Composed-atlas + base-atlas compaction (deferred).** The atlas-VRAM and forward-sample-bandwidth win. Reserved id-34 `OctahedralShProbe.density_level` is the base-atlas slot (v9→v10). A separate spec, priced against measured atlas-VRAM pressure.
+- **Shipping-density headline (≤1.5 m) with magnitude anchoring.** The in-container ceiling is ~2 m; the ~65% figure at 1.5 m uses a magnitude proxy for the banked showcase. A magnitude-enabled bake at ≤1.5 m on a longer-lived host confirms it exactly — not a blocker (the gate passes at the pessimistic 2 m floor), but the number that firms the Goal.
+- **Protection-volume dilation margin.** The authored margin (world units) that a protection AABB dilates before brick intersection. Pick a default at implementation; expose as an entity KVP.

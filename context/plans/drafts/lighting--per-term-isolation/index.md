@@ -4,10 +4,11 @@
 
 Replace the two disjoint dev-tools lighting-debug dropdowns with one per-term
 checkbox instrument (a bitmask) that gates each lighting term independently on
-**every** draw path — world, entity, mover, sprite. Toggling a term shows
-exactly which paths sample it, so designers and developers can see each term's
-contribution to a scene directly instead of inferring it. Dev-tools only; the
-default (all terms on) renders identically to today.
+**every** draw path — world, entity, mover, sprite — and in the volumetric fog
+pass for the terms fog samples. Toggling a term shows exactly which paths sample
+it, so designers and developers can see each term's contribution to a scene
+directly instead of inferring it. Dev-tools only; the default (all terms on)
+renders identically to today.
 
 ## Scope
 
@@ -23,6 +24,10 @@ default (all terms on) renders identically to today.
   - Indirect SH static vs animated — gated at compose time (`sh_compose`).
   - Baked direct SH static vs animated (entity/mover/sprite) — gated at compose
     time (`direct_sh_compose` / `animated_direct_sh_compose`).
+- Fog volumetric scatter participates in the terms it samples: dynamic spot-beam
+  and point-light scatter gated by the Dynamic-direct bit (threaded into
+  `FogParams`); ambient scatter already tracks the indirect bits via the composed
+  SH atlas (no fog change needed for those).
 - Debug-UI checkbox group replacing both ComboBoxes, in the existing "Lighting
   systems" header of the Lighting tab.
 - Byte-layout assertion, gating, and parity tests; `rendering_pipeline.md`
@@ -49,9 +54,10 @@ default (all terms on) renders identically to today.
   `indirect_scale` and `dynamic_direct_scale` sliders stay as independent
   controls; this plan removes only the mode-coupled `indirect_scale`→1.0 forcing
   (see Rough sketch), not the sliders.
-- **Fog-specific term gates.** Fog inherits the compose-isolated indirect atlas
-  (it samples the composed SH total for ambient scatter) but gains no
-  fog-specific checkboxes.
+- **Fog gates for terms fog does not sample.** Fog scatter is ambient (indirect)
+  plus dynamic spot/point beams; it carries no ambient-floor, baked-direct, or
+  specular term, so those bits have no fog effect. Fog's indirect and dynamic
+  terms ARE gated (see In scope) — this bullet only marks the absent terms.
 - **New PRL section or persisted state.** The mask is runtime dev-tools state;
   it is not baked, saved, or replicated. It lives in per-init renderer state
   (`full`), so a level reload, renderer full-init, or surface recreation resets
@@ -130,12 +136,12 @@ material else.
 - [ ] With all term bits set (the default), a scene renders byte-identical to
   the pre-change build on the world path (the group-0 128-byte stride is
   unchanged) and visually unchanged on the entity/mover/sprite paths — verified
-  by the group-0 stride/offset tests (updated for the bitmask field in Task 5)
+  by the group-0 stride/offset tests (updated for the bitmask field in Task 6)
   plus a manual GPU A/B on a map with static, animated, dynamic, and emissive
   content (`combat-demo.map`).
 - [ ] In a dev-tools build, toggling **Dynamic direct** off dims dynamic-lit
-  world surfaces AND entities AND movers AND sprites; toggling it back on
-  restores them.
+  world surfaces AND entities AND movers AND sprites AND fog spot-beam +
+  point-light scatter; toggling it back on restores them.
 - [ ] Toggling **Indirect — static** off removes the static SH indirect
   contribution on all four paths; **Indirect — animated** off removes the
   animated SH indirect contribution; fog ambient scatter reads the composed
@@ -289,7 +295,24 @@ only when the **Dynamic direct** bit (5) is also set — with dynamic isolated o
 the compensated-for runtime term is absent, so the static-direct bit shows the
 full un-subtracted baked direct.
 
-### Task 5: Enum retirement, tests, docs
+### Task 5: Fog dynamic-scatter gate
+
+Gate the fog raymarch's dynamic spot-beam and point-light scatter by the
+Dynamic-direct bit (5). The fog raymarch (`fog_volume.wgsl`) binds groups 3/5/6
+but NOT group-0, so it cannot read the mask from the group-0 uniform the other
+in-shader gates use — thread the bit through `FogParams` instead: add it to the
+`FogParams` struct (`crates/render-cpu/src/fx/fog_volume.rs`; update the
+`FOG_PARAMS_SIZE == 112` const assertion and the WGSL `FogParams` declaration in
+`fog_volume.wgsl`), and write it each frame in `FogPass::upload_params`
+(`crates/renderer/src/render/fog_pass.rs`), before the raymarch dispatch. In the
+shader, gate the spot loop (`fog.spot_count`) and point loop (`fog.point_count`)
+by the bit — force the loop bound to 0 when it is off, mirroring forward's
+`select(0u, count, use_dynamic)` — so the beams contribute nothing. Fog ambient
+scatter (indirect) is untouched: it reads the composed `sh_total_atlas` (group 3),
+so bits 1/2 already reach it at compose time. No dirty-tracking is needed — the
+fog raymarch runs per frame and reads the freshly-written `FogParams`.
+
+### Task 6: Enum retirement, tests, docs
 
 After all consumers are on the mask, delete the `LightingIsolation` and
 `DynamicDirectIsolation` enums, their `ALL_VARIANTS`/`cycle`/`label`, and the
@@ -300,20 +323,24 @@ tail is now pad), the `shader_tests.rs` group-0 stride test (`Uniforms` span ==
 `UNIFORM_SIZE`) and its billboard loop-bound test, `mesh_pass.rs`
 (`mesh_light_params_is_sixteen_bytes`,
 `write_light_params_places_ambient_floor_at_bytes_twelve_to_sixteen`),
-`kinematic_brush.rs` (its byte-layout + WGSL-layout tests), and
-`sh_volume.rs` `dynamic_direct_params_pack_layout` (`crates/render-cpu/src/sh_volume.rs`).
-Add behavioral gating tests — each bit clears its term's contribution on the
-applicable paths, and all-bits-on equals the pre-change composition (parity) —
-run headless via the Epic-20 frame-capture path (`rendering_pipeline.md` §7.8):
-one capture-A/B per bit. Add a compose-gate test that a mask change dirties the
-direct-SH re-dispatch, and one that a return-to-`ALL` recomposes the direct atlas
-back to base (the `last_composed_mask` inequality, per Task 4). The test task
-covers the ordering-scenario rows T1–T9 (see Ordering scenarios); reference the
-rows rather than restating them. Update `rendering_pipeline.md` §4 (retire the
-"10 lighting isolation modes" sentence and the `DynamicDirectIsolation`
-description; describe the unified per-term mask and its compose-time vs in-shader
-gate split), §7.1 step 5 (the compose passes honor the mask), and §9 (the mesh
-group-2/group-4 params carry the mask, not the two isolation enums).
+`kinematic_brush.rs` (its byte-layout + WGSL-layout tests),
+`sh_volume.rs` `dynamic_direct_params_pack_layout` (`crates/render-cpu/src/sh_volume.rs`),
+and the `FOG_PARAMS_SIZE` const assertion (`crates/render-cpu/src/fx/fog_volume.rs`,
+grown by the Task 5 mask field). Add behavioral gating tests — each bit clears its
+term's contribution on the applicable paths (including the Dynamic-direct bit
+clearing fog spot/point scatter), and all-bits-on equals the pre-change
+composition (parity) — run headless via the Epic-20 frame-capture path
+(`rendering_pipeline.md` §7.8): one capture-A/B per bit. Add a compose-gate test
+that a mask change dirties the direct-SH re-dispatch, and one that a
+return-to-`ALL` recomposes the direct atlas back to base (the
+`last_composed_mask` inequality, per Task 4). The test task covers the
+ordering-scenario rows T1–T9 (see Ordering scenarios); reference the rows rather
+than restating them. Update `rendering_pipeline.md` §4 (retire the "10 lighting
+isolation modes" sentence and the `DynamicDirectIsolation` description; describe
+the unified per-term mask and its compose-time vs in-shader gate split), §7.1
+step 5 (the compose passes honor the mask), §7.5 (fog dynamic scatter honors the
+Dynamic-direct bit via `FogParams`), and §9 (the mesh group-2/group-4 params
+carry the mask, not the two isolation enums).
 
 ## Sequencing
 
@@ -321,12 +348,13 @@ group-2/group-4 params carry the mask, not the two isolation enums).
 assumptions (bit vocabulary, `u32` stride preservation, UI→state→group-0+compose
 flow, compose-time indirect gating, in-shader gating). Blocks everything.
 
-**Phase 2 (concurrent):** Task 2, Task 3, Task 4 — independent consumers of the
-Phase 1 contract. Task 2 owns group-2 (mesh/kinematic) + group-4; Task 3 owns
-the group-0 tail; Task 4 owns the direct-SH compose. No shared files across the
-three.
+**Phase 2 (concurrent):** Task 2, Task 3, Task 4, Task 5 — independent consumers
+of the Phase 1 contract. Task 2 owns group-2 (mesh/kinematic) + group-4; Task 3
+owns the group-0 tail; Task 4 owns the direct-SH compose; Task 5 owns the fog
+pass (`fog_volume.wgsl` / `FogParams` / `fog_pass.rs`). No shared files across the
+four.
 
-**Phase 3 (sequential):** Task 5 — consumes the completed migration; removes the
+**Phase 3 (sequential):** Task 6 — consumes the completed migration; removes the
 enums only once no consumer references them, and lands the test + doc sweep
 against the integrated result.
 
@@ -342,7 +370,7 @@ against the integrated result.
 
 ## Ordering scenarios
 
-Rows the direct-SH compose gate (Task 4) and the test task (Task 5) must satisfy.
+Rows the direct-SH compose gate (Task 4) and the test task (Task 6) must satisfy.
 Test task cites these rows; do not restate them in prose.
 
 | # | Scenario | Ordering | Expected outcome |
@@ -382,23 +410,11 @@ Test task cites these rows; do not restate them in prose.
 - The `POSTRETRO_*` env seeding pattern the old modes used (if any) maps to a
   default-`ALL` mask; a headless run keeps every term on.
 
-## Open questions
-
-- **Fog dynamic (spot/point) scatter — gate it, or ship the hole?** Fog *indirect*
-  ambient scatter is foreclosed (fog reads the composed indirect atlas, so bits
-  1/2 gate it — AC 3). But fog's dynamic spot-beam and point-light scatter run in
-  a separate raymarch pass (`rendering_pipeline.md` §7.5) that does not read the
-  mask, so toggling **Dynamic direct** (bit 5) leaves fog light-shafts fully lit.
-  Reachable in any map with a fog volume + dynamic light; nothing in source
-  forecloses it. Owner decision: (a) accept it — document that fog dynamic scatter
-  is intentionally ungated and note it beside AC 2; or (b) extend bit 5 into the
-  fog raymarch params (adds a small Task 6 threading the mask into `FogParams`).
-  Recommend (a) for v1 — the instrument's headline is the four surface paths, and
-  fog is a separate volumetric pass — with (b) as a fast follow if the blackout
-  gap proves confusing in use.
-
 ## Resolved decisions
 
+- **Fog dynamic scatter is gated** (owner, 2026-08-10). Bit 5 reaches fog's
+  spot/point beam scatter via `FogParams` (Task 5) — it helps humans read what's
+  happening at runtime, and it closes the blackout gap the review found.
 - **Checkboxes only, no presets** (owner, 2026-08-10). ≤8 terms; presets overkill.
 - **Emissive stays out** (owner, 2026-08-10). Bit 7 reserved; see Out of scope.
 - **Emissive has landed.** `emissive-surfaces-bloom` code is merged (the plan

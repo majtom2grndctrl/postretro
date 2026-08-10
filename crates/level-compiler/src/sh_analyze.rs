@@ -478,6 +478,18 @@ pub struct LevelErrStats {
 }
 
 #[derive(Serialize, Clone, Default)]
+pub struct MagnitudeStats {
+    /// Max over interior texels of max-per-channel `|truth|` (linear irradiance).
+    pub max: f32,
+    /// Texel-count mean of max-per-channel `|truth|`.
+    pub mean: f32,
+    /// 95th percentile of per-texel max-per-channel `|truth|`.
+    pub p95: f32,
+    /// Interior texels sampled across the brick's valid probe tiles.
+    pub texel_samples: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
 pub struct BrickRecord {
     pub cell: [u32; 3],
     pub linear_cell: u32,
@@ -490,6 +502,14 @@ pub struct BrickRecord {
     /// Composed-receiver reconstruction error (metric 2, PRIMARY).
     pub composed_l1: LevelErrStats,
     pub composed_l2: LevelErrStats,
+    /// Composed-receiver irradiance magnitude over the brick's valid probe
+    /// tiles, measured with the same max-per-channel reduction `texel_error`
+    /// uses. `composed_l*.{stat}` divided by the matching magnitude is a
+    /// like-for-like relative (Weber) deviation, which the raw absolute-error
+    /// metric alone cannot express — this is what lets a metric-only threshold
+    /// be stated as a percentage of local brightness rather than an absolute
+    /// irradiance value with no perceptual anchor.
+    pub composed_magnitude: MagnitudeStats,
     pub world_min: [f32; 3],
     pub world_max: [f32; 3],
 }
@@ -969,6 +989,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 let base_l2 = level_errors(&bt.base, LevelKind::L2, texels, interior, &weights);
                 let comp_l1 = level_errors(&bt.composed, LevelKind::L1, texels, interior, &weights);
                 let comp_l2 = level_errors(&bt.composed, LevelKind::L2, texels, interior, &weights);
+                let comp_magnitude = tile_magnitude(&bt.composed, texels);
 
                 base_l1_agg.push(&base_l1);
                 base_l2_agg.push(&base_l2);
@@ -1000,6 +1021,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                     base_l2: base_l2.to_stats(),
                     composed_l1: comp_l1.to_stats(),
                     composed_l2: comp_l2.to_stats(),
+                    composed_magnitude: comp_magnitude,
                     world_min: [wmin.x, wmin.y, wmin.z],
                     world_max: [wmax.x, wmax.y, wmax.z],
                 });
@@ -1487,6 +1509,32 @@ fn level_errors(
     }
 }
 
+/// Composed-receiver irradiance magnitude over a brick's valid probe tiles.
+/// Uses the max-per-channel reduction `texel_error` applies to differences, so
+/// `error / magnitude` compares like with like. Absent (invalid) probes are
+/// skipped, exactly as `level_errors` skips them. Returns a zeroed record when
+/// the brick has no valid probe tiles.
+fn tile_magnitude(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usize) -> MagnitudeStats {
+    let mut acc = ErrAccum::default();
+    for tile in tiles.iter() {
+        let Some(truth) = tile else { continue };
+        for texel in 0..texels {
+            let v = &truth[texel];
+            let m = v.x.abs().max(v.y.abs()).max(v.z.abs());
+            acc.push(m, 1.0);
+        }
+    }
+    if acc.is_empty() {
+        return MagnitudeStats::default();
+    }
+    MagnitudeStats {
+        max: acc.max(),
+        mean: acc.mean(),
+        p95: acc.p95(),
+        texel_samples: acc.values.len() as u64,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Aggregate accumulator
 // ---------------------------------------------------------------------------
@@ -1922,6 +1970,32 @@ mod tests {
 
     fn const_tiles(value: f32, texels: usize) -> [Option<Tile>; PROBES_PER_CELL] {
         std::array::from_fn(|_| Some(vec![Vec3::splat(value); texels]))
+    }
+
+    #[test]
+    fn tile_magnitude_uses_max_per_channel_and_skips_invalid() {
+        let texels = 4;
+        // A constant field: magnitude equals the per-channel value everywhere.
+        let stats = tile_magnitude(&const_tiles(2.0, texels), texels);
+        assert_eq!(stats.max, 2.0);
+        assert_eq!(stats.mean, 2.0);
+        assert_eq!(stats.p95, 2.0);
+        assert_eq!(stats.texel_samples, (PROBES_PER_CELL * texels) as u64);
+
+        // Anisotropic channels: magnitude is the max-per-channel reduction, and
+        // the same reduction `texel_error` applies to differences, so the two
+        // are directly comparable as a relative deviation.
+        let mut tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        tiles[0] = Some(vec![Vec3::new(0.1, 3.0, -0.2); texels]);
+        let stats = tile_magnitude(&tiles, texels);
+        assert_eq!(stats.max, 3.0);
+        assert_eq!(stats.texel_samples, texels as u64);
+
+        // No valid probes → zeroed record, never a spurious magnitude.
+        let empty: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        let stats = tile_magnitude(&empty, texels);
+        assert_eq!(stats.texel_samples, 0);
+        assert_eq!(stats.max, 0.0);
     }
 
     fn all_valid_payload(entries: usize, probe_f16_stride: usize) -> Vec<u16> {

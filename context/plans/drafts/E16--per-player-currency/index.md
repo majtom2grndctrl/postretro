@@ -12,6 +12,7 @@ Session-scoped. Saving a per-player value to disk and carrying it into someone e
 - **`E16--resource-grant-chokepoint`** (shipped) — established source-addressed effect application: a planned command carries the token it addresses rather than assuming the dispatch target, and the bind guard becomes an expected-token checker. The owner-addressed `slot.add` here is the second consumer of both.
 - **Epic 15 Phase 3.5** (shipped) — the owner-private replication scope, whose wire tracker already keys values by slot and owner, and which rejects `ownerPrivate` for mod stores today with the diagnostic "not supported for mod stores yet (no per-player authoring namespace exists)." This is that namespace.
 - **`E16--impact-policy-substrate`** (shipped) — the `slot.add` effect this gives a target token, and the evaluate-then-apply snapshot model its reads obey.
+- **`descriptor-identity-and-naming-sugar`** (shipped) — reserved the colon in authored impact-event ids for engine mod-qualification, and split a descriptor's durable identity from its authored name so a rename stops orphaning saved data. This spec's `defineImpactEvent` uses the single-segment authored id that change requires, and its new `perOwner` slots are declared through the final authoring surface that spec settled — so currency is authored once here, not migrated when identity lands.
 
 ## Scope
 
@@ -180,7 +181,7 @@ const { state: progression } = defineStore("progression", {
   teamKills: { type: "number", default: 0 },
 });
 
-const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
+const reward = defineImpactEvent("reward", { tag: "enemy" }, (impact) => {
   const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   const bonus = impact.target.healthAfter.le(-40).select(50, 25);
   return [

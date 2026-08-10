@@ -46,7 +46,7 @@ directories.workspace = true
 
 # Device-local player identity generation at session build. Kept out of net so
 # the transport remains a dependency-minimal, registry-blind courier.
-getrandom = "0.3"
+getrandom.workspace = true
 
 # Scripting runtimes (embedded)
 rquickjs.workspace = true

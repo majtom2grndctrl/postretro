@@ -4,26 +4,29 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
+use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
 /// Current on-disk state format. Increment only with a defined migration path.
-pub(crate) const CURRENT_STATE_VERSION: u32 = 1;
-pub(crate) const STATE_FILE_PATH: &str = "state.json";
+pub(crate) const CURRENT_STATE_VERSION: u32 = 2;
+const STATE_FILENAME: &str = "state.json";
 
 /// Process-lifetime gate for the one-time restore and clean-exit save.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StateStoreLifecycle {
     restore_completed: bool,
+    persistence_disabled: bool,
 }
 
 impl StateStoreLifecycle {
     pub(crate) fn should_restore_after_mod_init(&self, has_manifest: bool) -> bool {
-        has_manifest && !self.restore_completed
+        has_manifest && !self.restore_completed && !self.persistence_disabled
     }
 
     pub(crate) fn mark_restore_completed(&mut self) {
@@ -31,8 +34,29 @@ impl StateStoreLifecycle {
     }
 
     pub(crate) fn can_save(&self) -> bool {
-        self.restore_completed
+        self.restore_completed && !self.persistence_disabled
     }
+
+    /// Disable persistence for the remainder of this process. Returns whether
+    /// this call changed state so callers can emit the unavailable-path warning
+    /// exactly once.
+    pub(crate) fn disable_persistence(&mut self) -> bool {
+        let was_enabled = !self.persistence_disabled;
+        self.persistence_disabled = true;
+        was_enabled
+    }
+}
+
+/// Resolve one mod's state file under the platform data directory. The project
+/// name is already the final `postretro` component of `data_dir`; do not add it
+/// again here.
+pub(crate) fn state_path(mod_id: &str) -> Option<PathBuf> {
+    let project_dirs = ProjectDirs::from("", "", "postretro");
+    state_path_from_data_dir(project_dirs.as_ref().map(|dirs| dirs.data_dir()), mod_id)
+}
+
+fn state_path_from_data_dir(data_dir: Option<&Path>, mod_id: &str) -> Option<PathBuf> {
+    data_dir.map(|data_dir| data_dir.join(mod_id).join(STATE_FILENAME))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,7 +89,10 @@ pub(crate) struct CollectedState {
 }
 
 /// Build the save document without performing filesystem I/O.
-pub(crate) fn collect_persisted_state(table: &SlotTable) -> CollectedState {
+pub(crate) fn collect_persisted_state(
+    table: &SlotTable,
+    identity: Option<&StoreIdentityLedger>,
+) -> CollectedState {
     let mut slots = BTreeMap::new();
     let mut warnings = Vec::new();
 
@@ -81,9 +108,16 @@ pub(crate) fn collect_persisted_state(table: &SlotTable) -> CollectedState {
             continue;
         };
 
+        let Some(durable_key) = identity.and_then(|ledger| ledger.durable_key(name)) else {
+            warnings.push(format!(
+                "persistent state slot `{name}` has no durable identity; omitting it"
+            ));
+            continue;
+        };
+
         match value_for_save(name, record, value) {
             Ok(value) => {
-                slots.insert(name.to_string(), value);
+                slots.insert(durable_key.to_string(), value);
             }
             Err(warning) => warnings.push(warning),
         }
@@ -105,6 +139,7 @@ pub(crate) fn collect_persisted_state(table: &SlotTable) -> CollectedState {
 pub(crate) fn overlay_persisted_state(
     table: &mut SlotTable,
     persisted: &PersistedState,
+    identity: Option<&StoreIdentityLedger>,
 ) -> Vec<String> {
     if persisted.version != CURRENT_STATE_VERSION {
         return vec![format!(
@@ -113,11 +148,27 @@ pub(crate) fn overlay_persisted_state(
         )];
     }
 
+    let authored_by_key = identity
+        .map(|ledger| {
+            ledger
+                .slots
+                .iter()
+                .map(|(name, key)| (key.as_str(), name.as_str()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
     let mut warnings = Vec::new();
-    for (name, persisted_value) in &persisted.slots {
+    for (durable_key, persisted_value) in &persisted.slots {
+        let Some(name) = authored_by_key.get(durable_key.as_str()).copied() else {
+            warnings.push(format!(
+                "state file contains unknown durable key `{durable_key}`; ignoring it"
+            ));
+            continue;
+        };
         let Some(record) = table.get_mut(name) else {
             warnings.push(format!(
-                "state file contains unknown slot `{name}`; ignoring it"
+                "state file durable key `{durable_key}` targets unavailable slot `{name}`; ignoring it"
             ));
             continue;
         };
@@ -164,8 +215,25 @@ pub(crate) fn save_persisted_state(
     state: &PersistedState,
 ) -> Result<(), PersistenceError> {
     let bytes = serde_json::to_vec_pretty(state)?;
-    fs::write(path, bytes)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = tmp_path_for(path);
+    if let Err(error) = fs::write(&tmp_path, bytes) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.into());
+    }
+    if let Err(error) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.into());
+    }
     Ok(())
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 fn is_persisted_mod_slot(record: &SlotRecord) -> bool {
@@ -367,6 +435,19 @@ mod tests {
             .unwrap();
     }
 
+    fn fixture_identity() -> StoreIdentityLedger {
+        StoreIdentityLedger {
+            version: 1,
+            slots: BTreeMap::from([
+                ("game.score".to_string(), "k0000000000000001".to_string()),
+                ("game.mode".to_string(), "k0000000000000002".to_string()),
+                ("game.enabled".to_string(), "k0000000000000003".to_string()),
+                ("game.label".to_string(), "k0000000000000004".to_string()),
+                ("game.curve".to_string(), "k0000000000000005".to_string()),
+            ]),
+        }
+    }
+
     #[test]
     fn persisted_slots_roundtrip_over_fresh_declarations() {
         let dir = tempdir().unwrap();
@@ -374,6 +455,7 @@ mod tests {
 
         let mut source = SlotTable::new();
         declare_fixture(&mut source);
+        let identity = fixture_identity();
         source.get_mut("game.score").unwrap().value = Some(SlotValue::Number(42.0));
         source.get_mut("game.mode").unwrap().value = Some(SlotValue::Enum("hard".to_string()));
         source.get_mut("game.enabled").unwrap().value = Some(SlotValue::Boolean(true));
@@ -382,10 +464,10 @@ mod tests {
         source.get_mut("game.curve").unwrap().value = Some(SlotValue::Array(vec![0.25, 0.75, 1.0]));
         source.get_mut("game.scratch").unwrap().value = Some(SlotValue::Boolean(true));
 
-        let collected = collect_persisted_state(&source);
+        let collected = collect_persisted_state(&source, Some(&identity));
         assert!(collected.warnings.is_empty());
         assert_eq!(
-            collected.state.slots.get("game.mode"),
+            collected.state.slots.get("k0000000000000002"),
             Some(&PersistedValue::String("hard".to_string()))
         );
         assert!(!collected.state.slots.contains_key("game.scratch"));
@@ -394,7 +476,7 @@ mod tests {
         let mut fresh = SlotTable::new();
         declare_fixture(&mut fresh);
         let loaded = load_persisted_state(&path).unwrap().unwrap();
-        assert!(overlay_persisted_state(&mut fresh, &loaded).is_empty());
+        assert!(overlay_persisted_state(&mut fresh, &loaded, Some(&identity)).is_empty());
 
         assert_eq!(
             fresh.get("game.score").unwrap().value,
@@ -426,22 +508,23 @@ mod tests {
     fn overlay_ignores_unknown_mismatched_and_invalid_enum_entries() {
         let mut table = SlotTable::new();
         declare_fixture(&mut table);
+        let identity = fixture_identity();
         let persisted = PersistedState {
             version: CURRENT_STATE_VERSION,
             slots: BTreeMap::from([
                 (
-                    "game.score".to_string(),
+                    "k0000000000000001".to_string(),
                     PersistedValue::String("many".into()),
                 ),
                 (
-                    "game.mode".to_string(),
+                    "k0000000000000002".to_string(),
                     PersistedValue::String("nightmare".into()),
                 ),
-                ("missing.value".to_string(), PersistedValue::Number(1.0)),
+                ("kffffffffffffffff".to_string(), PersistedValue::Number(1.0)),
             ]),
         };
 
-        let warnings = overlay_persisted_state(&mut table, &persisted);
+        let warnings = overlay_persisted_state(&mut table, &persisted, Some(&identity));
         assert_eq!(warnings.len(), 3);
         assert_eq!(
             table.get("game.score").unwrap().value,
@@ -457,11 +540,18 @@ mod tests {
     fn overlay_ignores_bad_version_and_non_finite_rust_values() {
         let mut table = SlotTable::new();
         declare_fixture(&mut table);
+        let identity = fixture_identity();
         let bad_version = PersistedState {
             version: CURRENT_STATE_VERSION + 1,
-            slots: BTreeMap::from([("game.score".to_string(), PersistedValue::Number(99.0))]),
+            slots: BTreeMap::from([(
+                "k0000000000000001".to_string(),
+                PersistedValue::Number(99.0),
+            )]),
         };
-        assert_eq!(overlay_persisted_state(&mut table, &bad_version).len(), 1);
+        assert_eq!(
+            overlay_persisted_state(&mut table, &bad_version, Some(&identity)).len(),
+            1
+        );
         assert_eq!(
             table.get("game.score").unwrap().value,
             Some(SlotValue::Number(10.0))
@@ -469,9 +559,15 @@ mod tests {
 
         let non_finite = PersistedState {
             version: CURRENT_STATE_VERSION,
-            slots: BTreeMap::from([("game.score".to_string(), PersistedValue::Number(f64::NAN))]),
+            slots: BTreeMap::from([(
+                "k0000000000000001".to_string(),
+                PersistedValue::Number(f64::NAN),
+            )]),
         };
-        assert_eq!(overlay_persisted_state(&mut table, &non_finite).len(), 1);
+        assert_eq!(
+            overlay_persisted_state(&mut table, &non_finite, Some(&identity)).len(),
+            1
+        );
         assert_eq!(
             table.get("game.score").unwrap().value,
             Some(SlotValue::Number(10.0))
@@ -480,12 +576,12 @@ mod tests {
         let non_finite_array = PersistedState {
             version: CURRENT_STATE_VERSION,
             slots: BTreeMap::from([(
-                "game.curve".to_string(),
+                "k0000000000000005".to_string(),
                 PersistedValue::Array(vec![0.0, f64::INFINITY]),
             )]),
         };
         assert_eq!(
-            overlay_persisted_state(&mut table, &non_finite_array).len(),
+            overlay_persisted_state(&mut table, &non_finite_array, Some(&identity)).len(),
             1
         );
         assert_eq!(
@@ -499,7 +595,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("missing.json");
         let table = SlotTable::new();
-        let collected = collect_persisted_state(&table);
+        let collected = collect_persisted_state(&table, None);
 
         assert!(collected.state.slots.is_empty());
         assert!(load_persisted_state(&path).unwrap().is_none());
@@ -514,12 +610,16 @@ mod tests {
     fn overlay_clamps_finite_out_of_range_numbers() {
         let mut table = SlotTable::new();
         declare_fixture(&mut table);
+        let identity = fixture_identity();
         let persisted = PersistedState {
             version: CURRENT_STATE_VERSION,
-            slots: BTreeMap::from([("game.score".to_string(), PersistedValue::Number(500.0))]),
+            slots: BTreeMap::from([(
+                "k0000000000000001".to_string(),
+                PersistedValue::Number(500.0),
+            )]),
         };
 
-        let warnings = overlay_persisted_state(&mut table, &persisted);
+        let warnings = overlay_persisted_state(&mut table, &persisted, Some(&identity));
         assert_eq!(warnings.len(), 1);
         assert_eq!(
             table.get("game.score").unwrap().value,
@@ -531,6 +631,7 @@ mod tests {
     fn save_and_overlay_reject_readonly_or_non_persistent_targets() {
         let mut table = SlotTable::new();
         declare_fixture(&mut table);
+        let mut identity = fixture_identity();
         table
             .insert(
                 "game.locked".to_string(),
@@ -547,7 +648,16 @@ mod tests {
             )
             .unwrap();
 
-        let collected = collect_persisted_state(&table);
+        identity
+            .slots
+            .insert("game.locked".to_string(), "k0000000000000006".to_string());
+        identity
+            .slots
+            .insert("game.scratch".to_string(), "k0000000000000007".to_string());
+        identity
+            .slots
+            .insert("player.health".to_string(), "k0000000000000008".to_string());
+        let collected = collect_persisted_state(&table, Some(&identity));
         assert!(!collected.state.slots.contains_key("game.locked"));
         assert!(!collected.state.slots.contains_key("game.scratch"));
 
@@ -555,14 +665,17 @@ mod tests {
             version: CURRENT_STATE_VERSION,
             slots: BTreeMap::from([
                 (
-                    "game.locked".to_string(),
+                    "k0000000000000006".to_string(),
                     PersistedValue::String("changed".to_string()),
                 ),
-                ("game.scratch".to_string(), PersistedValue::Boolean(true)),
-                ("player.health".to_string(), PersistedValue::Number(1.0)),
+                (
+                    "k0000000000000007".to_string(),
+                    PersistedValue::Boolean(true),
+                ),
+                ("k0000000000000008".to_string(), PersistedValue::Number(1.0)),
             ]),
         };
-        let warnings = overlay_persisted_state(&mut table, &persisted);
+        let warnings = overlay_persisted_state(&mut table, &persisted, Some(&identity));
 
         assert_eq!(warnings.len(), 3);
         assert_eq!(
@@ -574,5 +687,153 @@ mod tests {
             Some(SlotValue::Boolean(false))
         );
         assert_eq!(table.get("player.health").unwrap().value, None);
+    }
+
+    #[test]
+    fn preserved_durable_key_restores_after_an_authored_slot_rename() {
+        let mut before_rename = SlotTable::new();
+        before_rename
+            .insert_namespace(
+                "story",
+                vec![(
+                    "old_score".to_string(),
+                    mod_slot(SlotType::Number, SlotValue::Number(0.0), true, None),
+                )],
+            )
+            .unwrap();
+        before_rename.get_mut("story.old_score").unwrap().value = Some(SlotValue::Number(42.0));
+        let before_identity = StoreIdentityLedger {
+            version: 1,
+            slots: BTreeMap::from([(
+                "story.old_score".to_string(),
+                "k0123456789abcdef".to_string(),
+            )]),
+        };
+        let persisted = collect_persisted_state(&before_rename, Some(&before_identity)).state;
+
+        let mut after_rename = SlotTable::new();
+        after_rename
+            .insert_namespace(
+                "story",
+                vec![(
+                    "score".to_string(),
+                    mod_slot(SlotType::Number, SlotValue::Number(0.0), true, None),
+                )],
+            )
+            .unwrap();
+        let renamed_identity = StoreIdentityLedger {
+            version: 1,
+            slots: BTreeMap::from([("story.score".to_string(), "k0123456789abcdef".to_string())]),
+        };
+
+        assert!(
+            overlay_persisted_state(&mut after_rename, &persisted, Some(&renamed_identity))
+                .is_empty()
+        );
+        assert_eq!(
+            after_rename.get("story.score").unwrap().value,
+            Some(SlotValue::Number(42.0))
+        );
+    }
+
+    #[test]
+    fn deleted_ledger_entry_discards_saved_value_by_its_durable_key() {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace(
+                "story",
+                vec![(
+                    "score".to_string(),
+                    mod_slot(SlotType::Number, SlotValue::Number(0.0), true, None),
+                )],
+            )
+            .unwrap();
+        let persisted = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::from([(
+                "k0123456789abcdef".to_string(),
+                PersistedValue::Number(42.0),
+            )]),
+        };
+
+        let warnings = overlay_persisted_state(&mut table, &persisted, None);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("k0123456789abcdef"));
+        assert_eq!(
+            table.get("story.score").unwrap().value,
+            Some(SlotValue::Number(0.0))
+        );
+    }
+
+    #[test]
+    fn v1_document_is_ignored_after_the_durable_key_format_bump() {
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        let warnings = overlay_persisted_state(
+            &mut table,
+            &PersistedState {
+                version: 1,
+                slots: BTreeMap::from([("game.score".to_string(), PersistedValue::Number(42.0))]),
+            },
+            Some(&fixture_identity()),
+        );
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("version 1"));
+        assert_eq!(
+            table.get("game.score").unwrap().value,
+            Some(SlotValue::Number(10.0))
+        );
+    }
+
+    #[test]
+    fn platform_state_paths_are_per_mod_without_double_nesting_postretro() {
+        let data_dir = Path::new("/tmp/postretro-test-data/postretro");
+        let first = state_path_from_data_dir(Some(data_dir), "first.mod").unwrap();
+        let second = state_path_from_data_dir(Some(data_dir), "second.mod").unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(first, data_dir.join("first.mod/state.json"));
+        assert_eq!(
+            first
+                .components()
+                .filter(|component| component.as_os_str() == "postretro")
+                .count(),
+            1
+        );
+        assert!(
+            state_path_from_data_dir(None, "first.mod").is_none(),
+            "an unavailable platform data directory must not fall back to cwd"
+        );
+    }
+
+    #[test]
+    fn save_uses_a_sibling_temp_file_and_retained_snapshot_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        fs::write(&path, b"old-state").unwrap();
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        table.get_mut("game.score").unwrap().value = Some(SlotValue::Number(7.0));
+        let snapshot = fixture_identity();
+        let mut hand_edited = snapshot.clone();
+        hand_edited
+            .slots
+            .insert("game.score".to_string(), "kffffffffffffffff".to_string());
+
+        let collected = collect_persisted_state(&table, Some(&snapshot));
+        assert!(collected.state.slots.contains_key("k0000000000000001"));
+        assert!(
+            !collected
+                .state
+                .slots
+                .contains_key(hand_edited.durable_key("game.score").unwrap())
+        );
+        save_persisted_state(&path, &collected.state).unwrap();
+
+        assert!(!tmp_path_for(&path).exists());
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["slots"]["k0000000000000001"], 7.0);
     }
 }

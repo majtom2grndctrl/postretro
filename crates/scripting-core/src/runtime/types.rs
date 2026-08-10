@@ -357,6 +357,9 @@ impl From<Which> for LuauWhich {
 pub struct ScriptRuntimeConfig {
     pub quickjs: QuickJsConfig,
     pub luau: LuauConfig,
+    /// Authoring tools may bypass the read-only identity gate while discovering
+    /// declarations to mint. The default is deliberately enforcing.
+    pub skip_identity_enforcement: bool,
 }
 
 pub struct ScriptRuntime {
@@ -366,6 +369,10 @@ pub struct ScriptRuntime {
     /// `None` until `run_mod_init` succeeds; in debug builds may also remain
     /// `None` if no `start-script.{js,luau}` was found at the mod root.
     pub(super) mod_manifest: Option<ModManifestResult>,
+    /// Validated author-owned identity ledger captured by the latest successful
+    /// declaration commit. Persistence and replicated-schema consumers must use
+    /// this snapshot rather than re-reading `identity.json` mid-session.
+    pub(super) store_identity: Option<crate::store_identity::StoreIdentityLedger>,
     /// The first successfully committed mod identity. Admission has no
     /// recovery path, so hot reload must not replace this value.
     pub(super) committed_mod_identity: Option<(String, String)>,

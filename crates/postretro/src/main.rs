@@ -95,7 +95,9 @@ static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::Countin
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -118,7 +120,7 @@ use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
-    STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
+    collect_persisted_state, save_persisted_state, state_path,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -3903,26 +3905,36 @@ impl ApplicationHandler for App {
             .as_ref()
             .is_some_and(|session| session.state_store_lifecycle.can_save());
         if should_save_persisted_state(can_save, self.is_connected_client()) {
-            let state_path = Path::new(STATE_FILE_PATH);
-            let script_ctx = self
+            let session = self
                 .session
-                .as_ref()
-                .expect("session installed at clean exit")
-                .scripting
-                .script_ctx
-                .clone();
-            let collected = collect_persisted_state(&script_ctx.slot_table.borrow());
-            for warning in collected.warnings {
-                log::warn!("[State] {warning}");
-            }
-            match save_persisted_state(state_path, &collected.state) {
-                Ok(()) => {
-                    log::info!("[State] saved persistent slots to {}", state_path.display())
+                .as_mut()
+                .expect("session installed at clean exit");
+            if let Some(manifest) = session.scripting.script_runtime.mod_manifest() {
+                let mod_id = manifest.id.clone();
+                let identity = session.scripting.script_runtime.store_identity().cloned();
+                let script_ctx = session.scripting.script_ctx.clone();
+                if let Some(state_path) = state_path(&mod_id) {
+                    let collected =
+                        collect_persisted_state(&script_ctx.slot_table.borrow(), identity.as_ref());
+                    for warning in collected.warnings {
+                        log::warn!("[State] {warning}");
+                    }
+                    match save_persisted_state(&state_path, &collected.state) {
+                        Ok(()) => {
+                            log::info!("[State] saved persistent slots to {}", state_path.display())
+                        }
+                        Err(error) => log::warn!(
+                            "[State] failed to save persistent slots to {}: {error}",
+                            state_path.display()
+                        ),
+                    }
+                } else if session.state_store_lifecycle.disable_persistence() {
+                    log::warn!(
+                        "[State] platform data directory is unavailable; persistent state is disabled for this run"
+                    );
                 }
-                Err(error) => log::warn!(
-                    "[State] failed to save persistent slots to {}: {error}",
-                    state_path.display()
-                ),
+            } else {
+                log::warn!("[State] no committed mod manifest; skipping persistent-state save");
             }
         }
 

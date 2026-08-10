@@ -78,7 +78,10 @@ pub mod sequence;
 pub mod staged_manifest;
 pub mod state_crossings;
 pub mod store_bridge;
+pub mod store_identity;
 pub mod typedef;
+
+pub use store_identity::{StoreIdentityLedger, generate_durable_key};
 
 #[cfg(debug_assertions)]
 pub mod watcher;

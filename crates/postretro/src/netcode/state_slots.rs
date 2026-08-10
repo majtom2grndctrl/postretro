@@ -1,6 +1,9 @@
 // Authoritative state-slot replication projects each owner's component state and applies validated client slot updates.
 // See: context/lib/networking.md §Game-logic-owned apply invariant · context/lib/scripting.md §5
 
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+
 use postretro_net::state_slots::{
     NumericRange as WireNumericRange, ReplicationScope as WireReplicationScope, SlotValueType,
     StateSchema, StateSlotDescriptor, StateSlotId,
@@ -61,19 +64,42 @@ impl ReplicatedWireShape {
     }
 }
 
-/// The committed runtime inputs that establish a mod slot's replication identity.
+/// The committed runtime inputs that establish mod-slot schema membership and
+/// replication identity.
 ///
 /// This is deliberately a snapshot passed from `ScriptRuntime` callers, never a
 /// path that reads `identity.json` while building a network schema.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ReplicatedSlotIdentity {
-    mod_id: Option<String>,
-    ledger: Option<StoreIdentityLedger>,
+pub(crate) struct ReplicatedSlotIdentity<'a> {
+    mod_id: Option<Cow<'a, str>>,
+    ledger: Option<Cow<'a, StoreIdentityLedger>>,
+    committed_store_slots: Cow<'a, BTreeSet<String>>,
 }
 
-impl ReplicatedSlotIdentity {
-    pub(crate) fn new(mod_id: Option<String>, ledger: Option<StoreIdentityLedger>) -> Self {
-        Self { mod_id, ledger }
+impl<'a> ReplicatedSlotIdentity<'a> {
+    #[cfg(test)]
+    pub(crate) fn new(
+        mod_id: Option<String>,
+        ledger: Option<StoreIdentityLedger>,
+        committed_store_slots: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            mod_id: mod_id.map(Cow::Owned),
+            ledger: ledger.map(Cow::Owned),
+            committed_store_slots: Cow::Owned(committed_store_slots),
+        }
+    }
+
+    pub(crate) fn borrowed(
+        mod_id: Option<&'a str>,
+        ledger: Option<&'a StoreIdentityLedger>,
+        committed_store_slots: &'a BTreeSet<String>,
+    ) -> Self {
+        Self {
+            mod_id: mod_id.map(Cow::Borrowed),
+            ledger: ledger.map(Cow::Borrowed),
+            committed_store_slots: Cow::Borrowed(committed_store_slots),
+        }
     }
 
     fn mod_id(&self) -> Option<&str> {
@@ -82,8 +108,12 @@ impl ReplicatedSlotIdentity {
 
     fn durable_key(&self, authored_name: &str) -> Option<&str> {
         self.ledger
-            .as_ref()
+            .as_deref()
             .and_then(|ledger| ledger.durable_key(authored_name))
+    }
+
+    fn is_committed(&self, authored_name: &str) -> bool {
+        self.committed_store_slots.contains(authored_name)
     }
 }
 
@@ -117,12 +147,13 @@ impl ReplicatedSlotSchema {
     /// Build the schema from the slot table. Includes only replicated slots
     /// (`SharedGlobal` / `OwnerPrivatePlayer`); `None`/local-only slots get no
     /// `StateSlotId` and do not affect the fingerprint. Engine-catalog slots retain
-    /// their dotted name as identity. Mod slots sort by `<modId>:<durableKey>` and
-    /// require an entry in the committed identity snapshot; a live unkeyed slot left
-    /// behind by a sanctioned declaration discard is excluded deterministically.
+    /// their dotted name as identity. Currently declared mod slots sort by
+    /// `<modId>:<durableKey>` and require an entry in the committed identity
+    /// snapshot. Retained live slots absent from current declaration membership are
+    /// excluded before the ledger is consulted.
     pub(crate) fn build(
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
     ) -> Self {
         let mut replicated: Vec<(
             String,
@@ -141,6 +172,9 @@ impl ReplicatedSlotSchema {
                 let identity = match record.schema.ownership {
                     SlotOwnership::Engine => name.to_string(),
                     SlotOwnership::Mod => {
+                        if !replication_identity.is_committed(name) {
+                            return None;
+                        }
                         let Some(mod_id) = replication_identity.mod_id() else {
                             log::warn!(
                                 "[Net] excluding replicated mod state slot `{name}` from schema: committed mod identity is unavailable"
@@ -396,7 +430,7 @@ impl HostStateReplication {
     fn schema(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
     ) -> &ReplicatedSlotSchema {
         self.schema
             .get_or_insert_with(|| ReplicatedSlotSchema::build(slot_table, replication_identity))
@@ -407,7 +441,7 @@ impl HostStateReplication {
     pub(crate) fn fingerprint(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
     ) -> [u8; 32] {
         *self.schema(slot_table, replication_identity).fingerprint()
     }
@@ -507,7 +541,7 @@ impl HostStateReplication {
     pub(crate) fn ingest_frame(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         registry: &EntityRegistry,
         owners: &MovementOwners,
         weapon_owners: &WeaponOwners,
@@ -526,7 +560,7 @@ impl HostStateReplication {
     pub(crate) fn ingest_frame_and_collect_sampled_weapons(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         registry: &EntityRegistry,
         owners: &MovementOwners,
         weapon_owners: &WeaponOwners,
@@ -826,7 +860,7 @@ impl ClientStateApply {
     fn schema(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
     ) -> &ReplicatedSlotSchema {
         self.ensure_built(slot_table, replication_identity);
         self.schema.as_ref().expect("schema built above")
@@ -836,7 +870,7 @@ impl ClientStateApply {
     fn net_schema(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
     ) -> &StateSchema {
         self.ensure_built(slot_table, replication_identity);
         self.net_schema.as_ref().expect("net schema built above")
@@ -845,7 +879,7 @@ impl ClientStateApply {
     fn ensure_built(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
     ) {
         if self.schema.is_none() {
             let schema = ReplicatedSlotSchema::build(slot_table, replication_identity);
@@ -874,7 +908,7 @@ impl ClientStateApply {
     pub(crate) fn apply_snapshot_state(
         &mut self,
         slot_table: &mut SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         snapshot_sequence: u32,
         snapshot_fingerprint: &[u8; 32],
         records: &[RawStateSlotRecord],
@@ -989,7 +1023,7 @@ impl ClientStateApply {
     fn write_for(
         &mut self,
         slot_table: &SlotTable,
-        replication_identity: &ReplicatedSlotIdentity,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         slot_id: StateSlotId,
         value: &WireSlotValue,
     ) -> Result<Option<PendingSlotWrite>, String> {
@@ -1142,7 +1176,7 @@ mod tests {
 
     const TEST_MOD_ID: &str = "test.descriptor-identity";
 
-    fn test_replication_identity() -> ReplicatedSlotIdentity {
+    fn test_replication_identity() -> ReplicatedSlotIdentity<'static> {
         replication_identity(
             TEST_MOD_ID,
             &[
@@ -1157,7 +1191,22 @@ mod tests {
         )
     }
 
-    fn replication_identity(mod_id: &str, entries: &[(&str, &str)]) -> ReplicatedSlotIdentity {
+    fn replication_identity(
+        mod_id: &str,
+        entries: &[(&str, &str)],
+    ) -> ReplicatedSlotIdentity<'static> {
+        let committed_store_slots = entries
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        replication_identity_with_membership(mod_id, entries, committed_store_slots)
+    }
+
+    fn replication_identity_with_membership(
+        mod_id: &str,
+        entries: &[(&str, &str)],
+        committed_store_slots: BTreeSet<String>,
+    ) -> ReplicatedSlotIdentity<'static> {
         let mut slots = std::collections::BTreeMap::new();
         for (name, durable_key) in entries {
             slots.insert((*name).to_string(), (*durable_key).to_string());
@@ -1165,12 +1214,35 @@ mod tests {
         ReplicatedSlotIdentity::new(
             Some(mod_id.to_string()),
             Some(StoreIdentityLedger { version: 1, slots }),
+            committed_store_slots,
         )
     }
 
     fn build_test_schema(slot_table: &SlotTable) -> ReplicatedSlotSchema {
         let replication_identity = test_replication_identity();
         ReplicatedSlotSchema::build(slot_table, &replication_identity)
+    }
+
+    // Regression: frame replication cloned the full committed ledger and membership
+    // map before it knew whether a snapshot would be sent or applied.
+    #[test]
+    fn borrowed_replication_identity_keeps_runtime_snapshots_borrowed() {
+        let mod_id = String::from(TEST_MOD_ID);
+        let ledger = StoreIdentityLedger {
+            version: 1,
+            slots: [("net.alpha".to_string(), "k0000000000000000".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        let committed = ["net.alpha".to_string()].into_iter().collect();
+
+        let identity =
+            ReplicatedSlotIdentity::borrowed(Some(mod_id.as_str()), Some(&ledger), &committed);
+
+        assert!(matches!(&identity.mod_id, Some(Cow::Borrowed(_))));
+        assert!(matches!(&identity.ledger, Some(Cow::Borrowed(_))));
+        assert!(matches!(&identity.committed_store_slots, Cow::Borrowed(_)));
+        assert_eq!(identity.durable_key("net.alpha"), Some("k0000000000000000"));
     }
 
     #[test]
@@ -1373,6 +1445,44 @@ mod tests {
         );
     }
 
+    // Regression: a hot-reloaded host retained a removed live slot and built a
+    // different schema than a fresh client running the same current content.
+    #[test]
+    fn hot_reload_host_and_fresh_client_match_when_ledger_retains_removed_slot() {
+        let mut host_table = one_mod_slot_table("old", "objective", ReplicationScope::SharedGlobal);
+        host_table
+            .insert_namespace(
+                "current",
+                vec![replicated_number(
+                    "current.objective",
+                    ReplicationScope::SharedGlobal,
+                )],
+            )
+            .unwrap();
+        let fresh_client_table =
+            one_mod_slot_table("current", "objective", ReplicationScope::SharedGlobal);
+        let identity = replication_identity_with_membership(
+            "test.reload",
+            &[
+                ("old.objective", "k0123456789abcdef"),
+                ("current.objective", "kfedcba9876543210"),
+            ],
+            BTreeSet::from(["current.objective".to_string()]),
+        );
+
+        let host_schema = ReplicatedSlotSchema::build(&host_table, &identity);
+        let client_schema = ReplicatedSlotSchema::build(&fresh_client_table, &identity);
+
+        assert_eq!(host_schema.fingerprint(), client_schema.fingerprint());
+        assert_eq!(host_schema.entries(), client_schema.entries());
+        assert!(
+            host_schema
+                .entries()
+                .iter()
+                .all(|entry| entry.name != "old.objective")
+        );
+    }
+
     #[test]
     fn engine_catalog_slots_keep_dotted_schema_identity_without_a_ledger() {
         let table = SlotTable::new();
@@ -1392,8 +1502,11 @@ mod tests {
         let keyed =
             replication_identity("test.unkeyed", &[("story.objective", "k0123456789abcdef")]);
         let keyed_schema = ReplicatedSlotSchema::build(&table, &keyed);
-        let unkeyed_identity =
-            replication_identity("test.unkeyed", &[("story.other", "k0123456789abcdef")]);
+        let unkeyed_identity = replication_identity_with_membership(
+            "test.unkeyed",
+            &[("story.other", "k0123456789abcdef")],
+            BTreeSet::from(["story.objective".to_string()]),
+        );
 
         let logs = crate::scripting::reactions::log_capture::capture(|| {
             let unkeyed_schema = ReplicatedSlotSchema::build(&table, &unkeyed_identity);

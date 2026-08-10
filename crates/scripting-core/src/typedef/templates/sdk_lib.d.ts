@@ -465,7 +465,7 @@
   export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
   export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
 
-  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. */
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
     | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
     | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
@@ -495,7 +495,7 @@
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  /** Build a state-store declaration. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest and required durable identities validate. */
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     schema: S,
   ): StoreDefinition<S>;

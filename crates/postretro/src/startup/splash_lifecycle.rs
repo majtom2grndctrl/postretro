@@ -337,6 +337,11 @@ impl App {
                         .map(|(id, _)| id.to_owned())
                         .expect("restore only runs after a committed manifest");
                     let identity = session.scripting.script_runtime.store_identity().cloned();
+                    let committed_store_slots = session
+                        .scripting
+                        .script_runtime
+                        .committed_store_slots()
+                        .clone();
                     if let Some(state_path) = state_path(&mod_id) {
                         match load_persisted_state(&state_path) {
                             Ok(Some(persisted)) => {
@@ -344,6 +349,7 @@ impl App {
                                     &mut session.scripting.script_ctx.slot_table.borrow_mut(),
                                     &persisted,
                                     identity.as_ref(),
+                                    &committed_store_slots,
                                 );
                                 for warning in warnings {
                                     log::warn!("[State] {warning}");

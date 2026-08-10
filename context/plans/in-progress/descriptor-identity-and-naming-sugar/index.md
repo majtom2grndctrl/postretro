@@ -261,7 +261,10 @@ staged key-change rejection never fires on a bare file edit, and without a
 pinned snapshot the exit save and the commit would disagree about what the
 ledger says — a disagreement whose symptom is silent data loss. A ledger edit
 takes effect at the next commit attempt (a staged reload triggered by a script
-change) or the next process.
+change) or the next process. The runtime separately retains authored slot
+membership from the latest successful commit. Persistence and replicated
+schemas filter the add-only live table through that membership while the full
+ledger remains available for key-change protection.
 
 **Why execution, not a static scan.** Reading `defineStore` calls out of
 source would be a second implementation of declaration parsing, and it could
@@ -420,15 +423,12 @@ any release.
    nothing about their ledgers, which is precisely the drift Orderings 16
    describes and no machine check catches.
 
-   The builder iterates the live slot table (`state_slots.rs:91-104`), not
-   an attempt's declarations, so it can reach a mod-declared replicated slot
-   with no ledger entry — the sanctioned discard gesture produces exactly
-   that (delete the entry, remove the declaration; the slot stays live
-   because removed declarations do not clear committed stores,
-   `scripting.md:127`, and the attempt-scoped gate has nothing to reject).
-   The rule: **a mod-declared replicated slot with no ledger entry is
-   excluded from the schema**, mirroring the save-skip row (Orderings 7),
-   and warns once per rebuild. Excluding is not free — `entries.len()` is
+   The builder iterates the live slot table (`state_slots.rs:91-104`) and
+   filters mod slots through the latest committed declaration membership.
+   Removed declarations stay live but leave the schema even when their ledger
+   entries remain. A currently declared replicated slot with no ledger entry
+   is also excluded, mirroring the save-skip row, and warns once per rebuild.
+   Excluding is not free — `entries.len()` is
    hashed first (`state_slots.rs:226`), so an exclusion moves the
    fingerprint — but it is the only option that is *deterministic from
    content*: two peers holding the same ledger and the same scripts exclude
@@ -669,10 +669,12 @@ as a parameter — `commit_staged_manifest_result`
 the `ScriptCtx`, and the sequence registry — so read it off `result.mod_root`,
 as the dependency-classifier construction already does (`:326`, `:356`).
 
-The requirement is scoped to slots **declared in the attempt being validated**,
-never to the whole live table: `apply_reconcile_plan` only inserts, and removed
-declarations do not clear committed stores (`scripting.md:127`), so gating live
-slots would wedge every attempt after a rename or a discard until restart. A
+Missing-entry requirements are scoped to slots **declared in the attempt being
+validated**. Key-change protection compares every fresh mapping that still
+names a live slot against the retained snapshot, even when the attempt no
+longer declares that slot. An absent fresh mapping remains the explicit discard
+gesture. `apply_reconcile_plan` only inserts, and removed declarations do not
+clear committed stores (`scripting.md:127`). A
 durable slot — `ownership == SlotOwnership::Mod && ((persist && !readonly) ||
 network != ReplicationScope::None)`, all three conjuncts written out — missing
 its entry rejects with a diagnostic naming the slot and printing a
@@ -1029,13 +1031,12 @@ and it feeds the fingerprint, so substituting the identity string there would
 change wire shapes as a side effect of a rename — the opposite of this task's
 point.
 
-The builder iterates the live slot table (`:91-104`), so it can meet a
-mod-declared replicated slot with no ledger entry: the sanctioned discard
-gesture produces exactly that — delete the ledger entry, remove the
-declaration, and the slot stays live because removed declarations do not clear
-committed stores (`scripting.md:127`), with nothing attempt-scoped left to
-reject. **Exclude it from the schema** — mirroring the save-skip rule — and
-warn once per rebuild. Do not fall back to the dotted name and do not panic.
+The builder iterates the live slot table (`:91-104`). Filter mod slots through
+the latest committed declaration membership so add-only slots removed by hot
+reload match a fresh peer's schema, even when the ledger retains their entries.
+A currently declared replicated slot with no ledger entry is excluded too —
+mirroring the save-skip rule — and warns once per rebuild. Do not fall back to
+the dotted name and do not panic.
 Note that exclusion moves the fingerprint, since `entries.len()` is hashed
 first (`:226`); that is accepted, because exclusion is deterministic from
 content and both peers reach it identically.
@@ -1091,9 +1092,10 @@ retained at the last successful commit. On the staged path (`:404-421`):
 
 - A **changed durable key for an already-committed slot rejects.** "Changed"
   means the freshly read ledger disagrees with the **retained snapshot** for a
-  slot already in the live `SlotTable`. Compare fresh read against snapshot —
-  comparing a fresh read against another fresh read writes a check that can
-  never fire.
+  slot already in the live `SlotTable`, whether or not the fresh attempt still
+  declares it. Compare fresh read against snapshot — comparing a fresh read
+  against another fresh read writes a check that can never fire. A missing
+  fresh mapping is the explicit discard gesture and does not reject.
 - The missing-entry, file-rule, and duplicate rejections re-check on every
   staged attempt, always scoped to the attempt's declarations, never the live
   table. Gating live slots would wedge every attempt after a rename or a
@@ -1229,10 +1231,10 @@ surface, and needs Task 4 to mint the dev mod's ledger.
 | Explicit-name form legal at every call site; sugar fires only on direct assignment | Task 2, Task 3 | helper-built descriptors; Luau (no compiler pass) | AC 3, 4, 5 |
 | TS/Luau twin validation — same input class, same outcome (`scripting.md:17`) | Task 2 | the TS-only compile sugar (syntax, exempt per `scripting.md:243-245`) | AC 4, 6 |
 | Whole-attempt validation: any identity defect rejects at the `plan_reconcile` site, mutating nothing — not the slot table, the entity registry, or the deferred-mesh snapshot (`scripting.md:127`) | Task 1 (gate at the `plan_reconcile` site in both commit paths), Task 7 (staged matrix) | a gate placed binary-side would fire after `run_mod_init` has applied; a gate merely "before `apply_reconcile_plan`" lands after two mutations (Task 7); the mint's own enforcement-off construction (Task 4) | AC 14, 15, 16, 24 |
-| The identity gate scopes to the attempt's declarations, never the live table | Task 1, Task 7 | rename/discard mid-session (Orderings 7, 17) — live-table gating wedges every later attempt | AC 24; Task 7 tests |
+| Missing-entry identity checks scope to the attempt; changed fresh mappings are protected for every matching live slot, while an absent mapping discards | Task 1, Task 7 | staged removal and absent-start commits; rename/discard mid-session (Orderings 7, 17) | AC 24; Task 7 tests |
 | Engine-catalog slots carry no ledger entries, keep dotted-name identity strings, and keep today's persistence filtering | Task 1 (entry-requirement carve-out), Task 4 (mint sees only mod-declared slots), Task 6 (keying carve-out) | schema-builder substitution | AC 25 |
 | Identity enforcement is on in every construction that is not the mint — pinned by negative polarity (`skip_identity_enforcement`, `Default` = enforcing) plus a test, not by convention alone; the field is `pub` and re-exported (`runtime/mod.rs:13`) | Task 1 (field and default), Task 4 (sole caller that sets it) | any new `ScriptRuntimeConfig` construction; a future polarity flip | AC 29 |
-| The committed ledger is a snapshot: read once per commit attempt, retained on `ScriptRuntime`, and the only thing the exit save and schema builder resolve through | Task 1 (retention + accessor), Task 6 (consumer) | a mid-session hand-edit that no reload classifies (Orderings 14, 23); any consumer tempted to re-read the file | AC 18, 24; Task 1 snapshot test |
+| The committed ledger and declaration membership are snapshots retained on `ScriptRuntime`; exit save and schema building consume both without re-reading content | Task 1 (retention + accessors), Task 6 (consumer) | a mid-session hand-edit that no reload classifies (Orderings 14, 23); add-only live slots removed from current content | AC 18, 24; Task 1 snapshot test |
 
 ## Rough sketch
 

@@ -126,7 +126,7 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
-/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. */
+/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when renaming the store or slot. */
 export type StoreSlotSchema = (
   | { type: "number"; readonly?: boolean; accumulate?: never }
   | { type: "number"; readonly?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }

@@ -103,7 +103,7 @@ fn harness_table(accumulate: Option<IrNode>) -> SlotTable {
     table
 }
 
-fn harness_replication_identity() -> ReplicatedSlotIdentity {
+fn harness_replication_identity() -> ReplicatedSlotIdentity<'static> {
     ReplicatedSlotIdentity::new(
         Some("test.state-slot-loss".to_string()),
         Some(StoreIdentityLedger {
@@ -112,6 +112,7 @@ fn harness_replication_identity() -> ReplicatedSlotIdentity {
                 .into_iter()
                 .collect(),
         }),
+        ["net.objective".to_string()].into_iter().collect(),
     )
 }
 
@@ -183,7 +184,7 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
 /// [`Self::step`].
 struct StateSlotHarness {
     host: HostStateReplication,
-    replication_identity: ReplicatedSlotIdentity,
+    replication_identity: ReplicatedSlotIdentity<'static>,
     host_ctx: ScriptCtx,
     registry: EntityRegistry,
     owners: MovementOwners,

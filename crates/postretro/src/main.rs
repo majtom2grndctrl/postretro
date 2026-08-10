@@ -3912,10 +3912,18 @@ impl ApplicationHandler for App {
             if let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() {
                 let mod_id = mod_id.to_owned();
                 let identity = session.scripting.script_runtime.store_identity().cloned();
+                let committed_store_slots = session
+                    .scripting
+                    .script_runtime
+                    .committed_store_slots()
+                    .clone();
                 let script_ctx = session.scripting.script_ctx.clone();
                 if let Some(state_path) = state_path(&mod_id) {
-                    let collected =
-                        collect_persisted_state(&script_ctx.slot_table.borrow(), identity.as_ref());
+                    let collected = collect_persisted_state(
+                        &script_ctx.slot_table.borrow(),
+                        identity.as_ref(),
+                        &committed_store_slots,
+                    );
                     for warning in collected.warnings {
                         log::warn!("[State] {warning}");
                     }
@@ -5205,18 +5213,11 @@ impl App {
         // registry/data-registry/gravity reads borrow nothing of `self`; the
         // `session` re-borrow for `net_endpoint` happens after these owned/disjoint
         // captures. See: context/lib/boot_sequence.md §1.
-        let Some((script_ctx, replication_identity)) = self.session.as_ref().map(|session| {
-            let script_runtime = &session.scripting.script_runtime;
-            (
-                session.scripting.script_ctx.clone(),
-                netcode::ReplicatedSlotIdentity::new(
-                    script_runtime
-                        .committed_mod_identity()
-                        .map(|(id, _)| id.to_owned()),
-                    script_runtime.store_identity().cloned(),
-                ),
-            )
-        }) else {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
             return;
         };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
@@ -5282,6 +5283,12 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
+        let script_runtime = &session.scripting.script_runtime;
+        let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
+            script_runtime.committed_mod_identity().map(|(id, _)| id),
+            script_runtime.store_identity(),
+            script_runtime.committed_store_slots(),
+        );
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -5888,23 +5895,22 @@ impl App {
         let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
-        let Some((script_ctx, replication_identity)) = self.session.as_ref().map(|session| {
-            let script_runtime = &session.scripting.script_runtime;
-            (
-                session.scripting.script_ctx.clone(),
-                netcode::ReplicatedSlotIdentity::new(
-                    script_runtime
-                        .committed_mod_identity()
-                        .map(|(id, _)| id.to_owned()),
-                    script_runtime.store_identity().cloned(),
-                ),
-            )
-        }) else {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
             return Vec::new();
         };
         let Some(session) = self.session.as_mut() else {
             return Vec::new();
         };
+        let script_runtime = &session.scripting.script_runtime;
+        let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
+            script_runtime.committed_mod_identity().map(|(id, _)| id),
+            script_runtime.store_identity(),
+            script_runtime.committed_store_slots(),
+        );
         let mesh_clip_tables = &session.mesh_clip_tables;
         let hit_zone_store = &session.hit_zone_store;
         let Some(netcode::NetEndpoint::Host {

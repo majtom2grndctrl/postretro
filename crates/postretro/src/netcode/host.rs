@@ -107,7 +107,7 @@ pub(crate) fn host_drive_demo_mover(
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
     slot_table: &SlotTable,
-    replication_identity: &state_slots::ReplicatedSlotIdentity,
+    replication_identity: &state_slots::ReplicatedSlotIdentity<'_>,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
     replication: &mut ServerReplication,

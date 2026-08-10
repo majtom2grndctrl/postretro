@@ -804,7 +804,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
     slot_table: &mut SlotTable,
-    replication_identity: &ReplicatedSlotIdentity,
+    replication_identity: &ReplicatedSlotIdentity<'_>,
     client: &mut NetClient,
     replication: &mut ClientReplication,
     state_slots: &mut state_slots::ClientStateApply,

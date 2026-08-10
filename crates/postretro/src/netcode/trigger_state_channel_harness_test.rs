@@ -124,7 +124,7 @@ fn atmosphere_slots() -> SlotTable {
     table
 }
 
-fn atmosphere_replication_identity() -> ReplicatedSlotIdentity {
+fn atmosphere_replication_identity() -> ReplicatedSlotIdentity<'static> {
     ReplicatedSlotIdentity::new(
         Some("test.atmosphere".to_string()),
         Some(StoreIdentityLedger {
@@ -133,6 +133,7 @@ fn atmosphere_replication_identity() -> ReplicatedSlotIdentity {
                 .into_iter()
                 .collect(),
         }),
+        [BLACKOUT_SLOT.to_string()].into_iter().collect(),
     )
 }
 
@@ -257,7 +258,7 @@ struct PersistentAtmosphereHarness {
     host_trigger_bridge: TriggerVolumeBridge,
     host_bindings: TriggerBindingTable,
     host_state: HostStateReplication,
-    replication_identity: ReplicatedSlotIdentity,
+    replication_identity: ReplicatedSlotIdentity<'static>,
     host_remote_pawn: EntityId,
     host_local_pawn: EntityId,
     host_owners: MovementOwners,

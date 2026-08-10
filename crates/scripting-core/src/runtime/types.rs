@@ -2,7 +2,6 @@
 // result types, and the hot-reload dependency classifier.
 // See: context/lib/scripting.md
 
-#[cfg(debug_assertions)]
 use std::collections::BTreeSet;
 #[cfg(debug_assertions)]
 use std::ffi::OsString;
@@ -373,6 +372,10 @@ pub struct ScriptRuntime {
     /// declaration commit. Persistence and replicated-schema consumers must use
     /// this snapshot rather than re-reading `identity.json` mid-session.
     pub(super) store_identity: Option<crate::store_identity::StoreIdentityLedger>,
+    /// Authored dotted slot names from the latest successful declaration
+    /// commit. Kept separately because the live slot table retains removed
+    /// declarations and the ledger deliberately retains orphan entries.
+    pub(super) committed_store_slots: BTreeSet<String>,
     /// The first successfully committed mod identity. Admission, persistence,
     /// and replication keep this process-scoped value across later init attempts.
     pub(super) committed_mod_identity: Option<(String, String)>,

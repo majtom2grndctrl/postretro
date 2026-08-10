@@ -62,6 +62,26 @@ registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
 The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
+**Durable store identity.** A mod-owned slot with writable `persist: true` or
+`network: "shared"` must have an entry in `<mod-root>/identity.json`:
+
+```json
+{
+  "version": 1,
+  "slots": {
+    "options.master": "k0123456789abcdef"
+  }
+}
+```
+
+After adding such a slot, run
+`cargo run -p xtask -- mint-identity <mod-root>` and ship the updated file with
+the mod. When renaming a store or slot, rename the dotted key in this file but
+keep its opaque value; that retains saved data and replication identity. Missing
+or invalid durable identity rejects mod initialization. This is stricter than an
+ordinary missing, malformed, or incompatible saved value, which warns and leaves
+the declared default active.
+
 **Render profile.** The optional `render.bloom` block picks the mod's bloom look
 once, for the whole mod:
 

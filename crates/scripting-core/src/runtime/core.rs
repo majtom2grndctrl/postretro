@@ -144,6 +144,7 @@ impl ScriptRuntime {
             luau,
             mod_manifest: None,
             store_identity: None,
+            committed_store_slots: Default::default(),
             committed_mod_identity: None,
             #[cfg(debug_assertions)]
             watcher: None,
@@ -420,6 +421,8 @@ impl ScriptRuntime {
                     };
                 }
             };
+            let next_committed_store_slots =
+                crate::store_identity::declaration_slot_names(&next_store_declarations);
             // Keep identity in the same all-or-nothing commit gate as slot
             // reconciliation. In particular this runs before deferred mesh
             // snapshots, entity refresh, and every live registry mutation.
@@ -504,12 +507,15 @@ impl ScriptRuntime {
             };
 
             ctx.slot_table.borrow_mut().apply_reconcile_plan(store_plan);
-            if let Some(validated) = next_store_identity {
+            if self.cfg.skip_identity_enforcement {
+                self.store_identity = None;
+            } else if let Some(validated) = next_store_identity {
                 // A successful attempt that reads no ledger explicitly
                 // discards the previous snapshot; persistence must not retain
                 // an old durable mapping for live-but-undeclared slots.
                 self.store_identity = validated.ledger;
             }
+            self.committed_store_slots = next_committed_store_slots;
 
             // Hot-reload range-follow: if the refresh replaced the pawn's Health
             // component (e.g. an authored `max` edit), re-attach the
@@ -634,6 +640,13 @@ impl ScriptRuntime {
         self.store_identity.as_ref()
     }
 
+    /// Returns authored dotted slot names from the latest successful
+    /// declaration commit. Consumers use this snapshot to filter add-only live
+    /// slots that are no longer declared by the current mod content.
+    pub fn committed_store_slots(&self) -> &std::collections::BTreeSet<String> {
+        &self.committed_store_slots
+    }
+
     /// Mutable accessor for the stored manifest. Used by the boot caller to
     /// drain `entities` into `DataRegistry` after a successful
     /// [`ScriptRuntime::run_mod_init`] — the runtime parses and returns; the
@@ -728,6 +741,48 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    // Regression: an absent start script cleared durable identity along with
+    // current declaration membership, losing changed-key protection.
+    #[test]
+    fn debug_no_start_resume_clears_membership_but_retains_valid_ledger() {
+        let mod_root = temp_mod_root("no_start_resume_identity");
+        write_durable_store_manifest(&mod_root, "story");
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"story.score":"k0123456789abcdef"}}"#,
+        )
+        .unwrap();
+        let ctx = ScriptCtx::new();
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+
+        runtime.run_mod_init(&mod_root).unwrap();
+        assert!(runtime.store_identity().is_some());
+        assert!(runtime.committed_store_slots().contains("story.score"));
+
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
+        runtime
+            .run_mod_init(&mod_root)
+            .expect("debug resume without a start script commits an empty snapshot");
+
+        assert!(runtime.mod_manifest().is_none());
+        assert!(runtime.committed_store_slots().is_empty());
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score")),
+            Some("k0123456789abcdef"),
+            "a no-start commit clears membership but retains the valid ledger snapshot"
+        );
+        assert!(
+            ctx.slot_table.borrow().get("story.score").is_some(),
+            "the empty commit must not delete add-only live slots"
+        );
+
+        fs::remove_dir_all(mod_root).unwrap();
     }
 
     #[test]
@@ -841,11 +896,60 @@ mod tests {
                 .and_then(|identity| identity.durable_key("story.score")),
             Some("k0123456789abcdef")
         );
+        assert_eq!(
+            runtime.committed_store_slots(),
+            &BTreeSet::from(["story.score".to_string()])
+        );
         ctx.slot_table
             .borrow_mut()
             .get_mut("story.score")
             .unwrap()
             .write_value(Some(SlotValue::Number(41.0)));
+
+        // Regression: removing the declaration must not let a fresh ledger
+        // mapping re-key the still-live add-only slot.
+        write_empty_mod_manifest(&mod_root);
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"story.score":"kfedcba9876543210"}}"#,
+        )
+        .unwrap();
+        let removed = build_staged_manifest(&mod_root, 21, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(21));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &removed,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Rejected { generation: 21, .. }
+        ));
+
+        // Regression: NoStartScript is the same empty-attempt boundary and
+        // cannot replace the retained snapshot with a changed mapping either.
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
+        let no_start = build_staged_manifest(&mod_root, 22, &StagedManifestBuildConfig::default());
+        assert!(matches!(
+            no_start.status,
+            StagedManifestBuildStatus::NoStartScript
+        ));
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(22));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &no_start,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Rejected { generation: 22, .. }
+        ));
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score")),
+            Some("k0123456789abcdef")
+        );
+
+        write_durable_store_manifest(&mod_root, "story");
 
         fs::write(
             mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
@@ -917,10 +1021,18 @@ mod tests {
                 .and_then(|identity| identity.durable_key("story.score"))
                 .is_none()
         );
+        assert_eq!(
+            runtime.committed_store_slots(),
+            &BTreeSet::from(["chapter.score".to_string()])
+        );
 
-        write_empty_mod_manifest(&mod_root);
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
         fs::remove_file(mod_root.join(crate::store_identity::IDENTITY_FILE_NAME)).unwrap();
         let discarded = build_staged_manifest(&mod_root, 5, &StagedManifestBuildConfig::default());
+        assert!(matches!(
+            discarded.status,
+            StagedManifestBuildStatus::NoStartScript
+        ));
         runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(5));
         assert!(matches!(
             runtime.commit_staged_manifest_result(
@@ -934,6 +1046,7 @@ mod tests {
             runtime.store_identity().is_none(),
             "a successful no-ledger attempt must clear the retained snapshot"
         );
+        assert!(runtime.committed_store_slots().is_empty());
         assert!(
             ctx.slot_table.borrow().get("story.score").is_some(),
             "declaration removal intentionally keeps prior live slots"

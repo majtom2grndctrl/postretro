@@ -185,10 +185,26 @@ pub fn requires_durable_key(record: &SlotRecord) -> bool {
             || record.schema.network != ReplicationScope::None)
 }
 
-/// Read the ledger once and validate it against exactly this declaration
-/// attempt. Existing live slots outside the attempt intentionally do not gate a
-/// reconcile: declarations only add to the table, so removals and explicit
-/// durable-data discards must not wedge future reloads.
+/// Authored dotted names belonging to one successfully committed declaration
+/// snapshot. The live slot table is add-only, so consumers need this membership
+/// separately from the durable ledger to distinguish current declarations from
+/// retained in-memory slots.
+pub fn declaration_slot_names(declarations: &StoreDeclarationSet) -> BTreeSet<String> {
+    declarations
+        .iter()
+        .flat_map(|declaration| {
+            declaration
+                .records
+                .iter()
+                .map(|(slot_name, _)| format!("{}.{}", declaration.namespace, slot_name))
+        })
+        .collect()
+}
+
+/// Read the ledger once and validate it against this declaration attempt.
+/// Missing-entry requirements are attempt-scoped. Durable-key changes compare
+/// every fresh mapping that still names a live slot against the prior snapshot;
+/// omitting the fresh mapping remains the explicit discard gesture.
 pub fn read_and_validate_attempt(
     mod_root: &Path,
     declarations: &StoreDeclarationSet,
@@ -206,7 +222,7 @@ pub fn validate_attempt(
     live_table: &SlotTable,
     previous_snapshot: Option<&StoreIdentityLedger>,
 ) -> Result<ValidatedStoreIdentity, StoreIdentityError> {
-    let mut declared_names = BTreeSet::new();
+    let declared_names = declaration_slot_names(declarations);
     let mut durable_names = Vec::new();
     let mut durable_name_set = BTreeSet::new();
     for declaration in declarations.iter() {
@@ -216,7 +232,6 @@ pub fn validate_attempt(
                 durable_names.push(name.clone());
                 durable_name_set.insert(name.clone());
             }
-            declared_names.insert(name);
         }
     }
 
@@ -232,24 +247,27 @@ pub fn validate_attempt(
 
     let mut warnings = Vec::new();
     if let Some(ledger) = ledger.as_ref() {
+        if let Some(previous_snapshot) = previous_snapshot {
+            for (name, old_key) in &previous_snapshot.slots {
+                let Some(new_key) = ledger.durable_key(name) else {
+                    continue;
+                };
+                if live_table.get(name).is_some() && old_key != new_key {
+                    return Err(StoreIdentityError::Invalid {
+                        reason: format!(
+                            "identity ledger changes durable key for already committed state slot `{name}`"
+                        ),
+                    });
+                }
+            }
+        }
+
         for name in &durable_names {
-            let Some(new_key) = ledger.durable_key(name) else {
+            if ledger.durable_key(name).is_none() {
                 let fresh_key = generate_durable_key()?;
                 return Err(StoreIdentityError::Invalid {
                     reason: format!(
                         "identity ledger is missing durable entry for state slot `{name}`; add `\"{name}\": \"{fresh_key}\"` to `{IDENTITY_FILE_NAME}`"
-                    ),
-                });
-            };
-
-            if live_table.get(name).is_some()
-                && previous_snapshot
-                    .and_then(|previous| previous.durable_key(name))
-                    .is_some_and(|old_key| old_key != new_key)
-            {
-                return Err(StoreIdentityError::Invalid {
-                    reason: format!(
-                        "identity ledger changes durable key for already committed state slot `{name}`"
                     ),
                 });
             }
@@ -483,5 +501,57 @@ mod tests {
         };
 
         assert!(validate_attempt(Some(changed), &declarations, &table, Some(&previous)).is_err());
+    }
+
+    // Regression: removing a declaration let a changed ledger key replace the
+    // snapshot while the add-only table still held data under that authored name.
+    #[test]
+    fn durable_key_changes_for_live_undeclared_slots_are_rejected() {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace("story", vec![("score".to_string(), durable_record())])
+            .unwrap();
+        let previous = StoreIdentityLedger {
+            version: IDENTITY_VERSION,
+            slots: BTreeMap::from([("story.score".to_string(), "k0123456789abcdef".to_string())]),
+        };
+        let changed = StoreIdentityLedger {
+            version: IDENTITY_VERSION,
+            slots: BTreeMap::from([("story.score".to_string(), "kfedcba9876543210".to_string())]),
+        };
+
+        let error = validate_attempt(
+            Some(changed),
+            &StoreDeclarationSet::default(),
+            &table,
+            Some(&previous),
+        )
+        .expect_err("a fresh mapping cannot re-key a live slot omitted by the attempt");
+        assert!(
+            error
+                .to_string()
+                .contains("changes durable key for already committed state slot `story.score`")
+        );
+    }
+
+    #[test]
+    fn omitted_fresh_mapping_explicitly_discards_live_slot_identity() {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace("story", vec![("score".to_string(), durable_record())])
+            .unwrap();
+        let previous = StoreIdentityLedger {
+            version: IDENTITY_VERSION,
+            slots: BTreeMap::from([("story.score".to_string(), "k0123456789abcdef".to_string())]),
+        };
+
+        let validated = validate_attempt(
+            None,
+            &StoreDeclarationSet::default(),
+            &table,
+            Some(&previous),
+        )
+        .expect("an absent fresh mapping is the explicit discard gesture");
+        assert!(validated.ledger.is_none());
     }
 }

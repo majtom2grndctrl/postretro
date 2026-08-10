@@ -1071,6 +1071,7 @@ fn run_after_parsing(
     if args.sh_coarsen {
         apply_coarsen_classification(
             args,
+            &map_data.sh_protect_aabbs,
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
             &mut delta_sections,
@@ -1458,8 +1459,21 @@ fn run_after_parsing(
 /// magnitude + the sole probe-validity authority; each section is classified
 /// independently (its own reconstruction error over the shared composed
 /// magnitude). No-op when the base grid is absent/degenerate.
+/// Concatenate the CLI (`--sh-protect-aabb`) and mapper-authored
+/// (`sh_protect_volume`) protection AABBs into the single list the coarsening
+/// classifier reads. Both sources are world-space `[minx,miny,minz,maxx,maxy,maxz]`
+/// boxes in engine meters, so the union is a plain concatenation — a brick is
+/// protected if it intersects any box from either source.
+fn combined_protect_aabbs(cli: &[[f32; 6]], map: &[[f32; 6]]) -> Vec<[f32; 6]> {
+    let mut combined = Vec::with_capacity(cli.len() + map.len());
+    combined.extend_from_slice(cli);
+    combined.extend_from_slice(map);
+    combined
+}
+
 fn apply_coarsen_classification(
     args: &Args,
+    map_protect_aabbs: &[[f32; 6]],
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     delta_sections: &mut delta_sections::PostBakeDeltaSections,
@@ -1481,6 +1495,11 @@ fn apply_coarsen_classification(
     };
     let params = sh_coarsen::CoarsenParams::default();
 
+    // Both protection sources reach the classifier: the `--sh-protect-aabb` CLI
+    // stand-in and the mapper-authored `sh_protect_volume` brush AABBs. Their
+    // union forces every intersecting brick to L0 (dense).
+    let protect_aabbs = combined_protect_aabbs(&args.sh_protect_aabbs, map_protect_aabbs);
+
     // Compute all three per-section level arrays under shared immutable borrows
     // of the (still dense) delta sections, then stamp them in a second mutable
     // pass — the classifier reads all three sections for the composed magnitude
@@ -1498,7 +1517,7 @@ fn apply_coarsen_classification(
                 all,
                 target,
                 grid,
-                &args.sh_protect_aabbs,
+                &protect_aabbs,
                 &params,
             )
         };
@@ -1626,6 +1645,31 @@ mod tests {
 
     use log::Level;
     use postretro_test_log_capture::LogCapture;
+
+    #[test]
+    fn combined_protect_aabbs_concatenates_cli_then_map_sources() {
+        let cli = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let map = [
+            [2.0, 2.0, 2.0, 3.0, 3.0, 3.0],
+            [4.0, 4.0, 4.0, 5.0, 5.0, 5.0],
+        ];
+        let combined = combined_protect_aabbs(&cli, &map);
+        // Both sources reach the classifier: neither is dropped, and CLI boxes
+        // lead so the order is stable for the coarsening sweep.
+        assert_eq!(combined.len(), 3);
+        assert_eq!(combined[0], cli[0]);
+        assert_eq!(combined[1], map[0]);
+        assert_eq!(combined[2], map[1]);
+    }
+
+    #[test]
+    fn combined_protect_aabbs_handles_empty_sources() {
+        let empty: [[f32; 6]; 0] = [];
+        let one = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        assert!(combined_protect_aabbs(&empty, &empty).is_empty());
+        assert_eq!(combined_protect_aabbs(&one, &empty), one);
+        assert_eq!(combined_protect_aabbs(&empty, &one), one);
+    }
 
     fn direct_delta_stats_fixture() -> direct_sh_bake::DirectDeltaBakeStats {
         direct_sh_bake::DirectDeltaBakeStats {

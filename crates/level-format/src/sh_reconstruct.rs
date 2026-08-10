@@ -117,12 +117,62 @@ pub fn reconstruct_l2_tile(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usiz
     Some(acc)
 }
 
-/// Per-brick, per-section probe-density level.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Per-brick, per-section probe-density level. The `#[repr(u8)]` discriminants
+/// (0/1/2) are the on-wire encoding — see [`Level::to_u8`] / [`Level::from_u8`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
 pub enum Level {
-    L0,
-    L1,
-    L2,
+    L0 = 0,
+    L1 = 1,
+    L2 = 2,
+}
+
+impl Level {
+    /// Wire encoding of the level (0 = L0, 1 = L1, 2 = L2).
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a wire level byte; `None` for any value outside `0..=2`.
+    pub fn from_u8(v: u8) -> Option<Level> {
+        match v {
+            0 => Some(Level::L0),
+            1 => Some(Level::L1),
+            2 => Some(Level::L2),
+            _ => None,
+        }
+    }
+}
+
+/// The kept-probe mask for `valid_probe_mask` at `level`: the subset of valid
+/// probes whose delta tiles are stored (and thus indexed by kept rank). This is
+/// the single source of truth for which probes a coarsened brick keeps — used by
+/// the wire payload-length identity, the emit path, the CPU compose reference,
+/// and (via the WGSL port) the GPU compose passes.
+/// - **L0** — every valid probe (kept == valid).
+/// - **L1** — the valid corner probes (`{0,AF-1}³`).
+/// - **L2** — a single representative slot, the lowest-set valid bit, carrying
+///   the synthesized brick-mean tile (a computed write, not a copied probe).
+///
+/// The result is always a subset of `valid_probe_mask`.
+pub fn kept_mask(level: Level, valid_probe_mask: u64) -> u64 {
+    match level {
+        Level::L0 => valid_probe_mask,
+        Level::L1 => {
+            let mut kept = 0u64;
+            for local in corner_locals() {
+                kept |= valid_probe_mask & (1u64 << local);
+            }
+            kept
+        }
+        Level::L2 => {
+            if valid_probe_mask == 0 {
+                0
+            } else {
+                1u64 << valid_probe_mask.trailing_zeros()
+            }
+        }
+    }
 }
 
 /// Stored tile count for a brick at a given level, intersected with validity.
@@ -140,17 +190,11 @@ pub fn stored_tiles(level: Level, valid_mask: &[bool; PROBES_PER_CELL]) -> usize
     }
 }
 
-/// Stored tile count for a delta entry at a candidate level. Unlike the base
-/// model, this reads the delta section's self-describing compact probe set.
+/// Stored tile count for a delta entry at a candidate level = the popcount of
+/// its [`kept_mask`]. Unlike the base model, this reads the delta section's
+/// self-describing compact probe set.
 pub fn stored_delta_tiles(level: Level, valid_probe_mask: u64) -> usize {
-    match level {
-        Level::L0 => valid_probe_mask.count_ones() as usize,
-        Level::L1 => corner_locals()
-            .iter()
-            .filter(|&&local| valid_probe_mask & (1u64 << local) != 0)
-            .count(),
-        Level::L2 => usize::from(valid_probe_mask != 0),
-    }
+    kept_mask(level, valid_probe_mask).count_ones() as usize
 }
 
 #[cfg(test)]
@@ -301,5 +345,46 @@ mod tests {
         assert_eq!(stored_delta_tiles(Level::L2, non_corner), 1);
 
         assert_eq!(stored_delta_tiles(Level::L2, 0), 0);
+    }
+
+    #[test]
+    fn level_wire_bytes_round_trip_and_reject_out_of_range() {
+        for (lvl, byte) in [(Level::L0, 0u8), (Level::L1, 1), (Level::L2, 2)] {
+            assert_eq!(lvl.to_u8(), byte);
+            assert_eq!(Level::from_u8(byte), Some(lvl));
+        }
+        assert_eq!(Level::from_u8(3), None);
+        assert_eq!(Level::from_u8(255), None);
+    }
+
+    #[test]
+    fn kept_mask_is_a_subset_of_validity_at_every_level() {
+        for valid in [0u64, 1, u64::MAX, 0x00FF_00FF_00FF_00FF, 1u64 << 63, 0b1010] {
+            for lvl in [Level::L0, Level::L1, Level::L2] {
+                let kept = kept_mask(lvl, valid);
+                assert_eq!(kept & !valid, 0, "kept must be a subset of validity");
+                assert_eq!(
+                    kept.count_ones() as usize,
+                    stored_delta_tiles(lvl, valid),
+                    "stored_delta_tiles must equal popcount(kept_mask)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kept_mask_selects_the_expected_lattice() {
+        let full = u64::MAX;
+        // L0 keeps everything.
+        assert_eq!(kept_mask(Level::L0, full), full);
+        // L1 keeps exactly the 8 corner bits.
+        let corner_bits: u64 = corner_locals().iter().map(|&l| 1u64 << l).sum();
+        assert_eq!(kept_mask(Level::L1, full), corner_bits);
+        // L2 keeps a single bit: the lowest-set valid bit.
+        assert_eq!(kept_mask(Level::L2, full), 1u64 << 0);
+        assert_eq!(kept_mask(Level::L2, 0b1100), 1u64 << 2);
+        assert_eq!(kept_mask(Level::L2, 0), 0);
+        // L1 over a mask with no valid corner keeps nothing.
+        assert_eq!(kept_mask(Level::L1, 1u64 << 1), 0);
     }
 }

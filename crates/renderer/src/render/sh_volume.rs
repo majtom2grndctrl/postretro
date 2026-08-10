@@ -1667,6 +1667,7 @@ mod tests {
                 tile_dimension: 6,
                 tile_border: 1,
                 valid_probe_masks: vec![u64::MAX],
+                cell_levels: vec![0u8; 1],
                 affinity_offsets: vec![0, 0],
                 affinity_lights: Vec::new(),
                 delta_subblocks: Vec::new(),
@@ -1707,6 +1708,7 @@ mod tests {
             tile_border: 1,
             animation_descriptor_indices: vec![0],
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![

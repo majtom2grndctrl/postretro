@@ -1374,6 +1374,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1392,6 +1393,7 @@ mod tests {
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1405,6 +1407,7 @@ mod tests {
         let mut section = minimal_direct_sh_delta_volumes();
         section.affinity_dims = [2, 1, 1];
         section.valid_probe_masks = vec![(1u64 << 1) | (1u64 << 63), 0];
+        section.cell_levels = vec![0u8; 2];
         section.affinity_offsets = vec![0, 1, 2];
         section.affinity_lights = vec![0, 0];
         section.delta_subblocks = vec![0; 2 * DEFAULT_DELTA_PROBE_F16_STRIDE];

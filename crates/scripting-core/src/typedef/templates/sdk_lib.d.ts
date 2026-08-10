@@ -392,7 +392,11 @@
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
 
-  /** Define a pure impact-policy descriptor. Register it only by returning it through `events`. */
+  /** Define a pure impact-policy descriptor. Omit `id` only for TypeScript direct-const binding-name sugar; the compiler supplies that binding's name. Register it only by returning it through `events`. */
+  export function defineImpactEvent(
+    filter: ImpactEventFilter,
+    build: (impact: Impact) => readonly EffectOrGroup[],
+  ): ImpactEvent;
   export function defineImpactEvent(
     id: string,
     filter: ImpactEventFilter,
@@ -491,7 +495,10 @@
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  /** Build a state-store declaration. Omit `namespace` only for TypeScript direct-const binding-name sugar; the compiler supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+    schema: S,
+  ): StoreDefinition<S>;
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     namespace: string,
     schema: S,

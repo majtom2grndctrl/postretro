@@ -697,15 +697,15 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             },
           ];
         };
-        const base = defineImpactEvent("salvage:crate-break", { tag: "crate", levels: ["campaign"] }, breakable);
+        const base = defineImpactEvent("crate-break", { tag: "crate", levels: ["campaign"] }, breakable);
         const override = base.override({ tag: "reinforced_crate" }, (impact) => [
           impact.target.despawn({ afterMs: 15 }),
         ]);
-        const independent = defineImpactEvent("salvage:vase-break", { tag: "vase" }, (impact) => [
+        const independent = defineImpactEvent("vase-break", { tag: "vase" }, (impact) => [
           { when: impact.amount.gt(0), do: [] },
           impact.target.despawn(),
         ]);
-        const empty = defineImpactEvent("salvage:empty", { tag: "empty" }, () => []);
+        const empty = defineImpactEvent("empty", { tag: "empty" }, () => []);
         const wire = (event: ImpactEvent) => {
           const descriptor = event as unknown as {
             kind: "impact";
@@ -754,17 +754,17 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             },
           }
         end
-        local base = Postretro.defineImpactEvent("salvage:crate-break", { tag = "crate", levels = { "campaign" } }, breakable)
+        local base = Postretro.defineImpactEvent("crate-break", { tag = "crate", levels = { "campaign" } }, breakable)
         local override = base:override({ tag = "reinforced_crate" }, function(impact)
           return { impact.target:despawn({ afterMs = 15 }) }
         end)
-        local independent = Postretro.defineImpactEvent("salvage:vase-break", { tag = "vase" }, function(impact)
+        local independent = Postretro.defineImpactEvent("vase-break", { tag = "vase" }, function(impact)
           return {
             { when = impact.amount:gt(0), ["do"] = {} },
             impact.target:despawn(),
           }
         end)
-        local empty = Postretro.defineImpactEvent("salvage:empty", { tag = "empty" }, function()
+        local empty = Postretro.defineImpactEvent("empty", { tag = "empty" }, function()
           return {}
         end)
         local function wire(event)
@@ -928,28 +928,65 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
 }
 
 #[test]
-fn impact_event_builder_id_diagnostics_match_across_runtimes() {
+fn authored_name_validation_diagnostics_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineImpactEvent } from "postretro";
-        let message = "";
-        try { defineImpactEvent("not namespaced", {}, () => []); }
-        catch (error) { message = String((error as Error).message); }
-        JSON.stringify({ message });
+        import { defineImpactEvent, defineStore } from "postretro";
+        const message = (action: () => unknown) => {
+          try { action(); return ""; }
+          catch (error) { return String((error as Error).message); }
+        };
+        const computedStoreName = "computed-store";
+        const computedImpactId = "computed-impact";
+        JSON.stringify({
+          impactColon: message(() => defineImpactEvent("has:colon", {}, () => [])),
+          impactTooLong: message(() => defineImpactEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}, () => [])),
+          storeNamespaceColon: message(() => defineStore("has:colon", {})),
+          storeSlotColon: message(() => defineStore("store", { "has:colon": { type: "number", default: 0 } })),
+          storeBindingSugar: message(() => defineStore({ value: { type: "number", default: 0 } })),
+          impactBindingSugar: message(() => defineImpactEvent({}, () => [])),
+          computedStoreName: message(() => defineStore(computedStoreName, {})),
+          computedImpactId: message(() => defineImpactEvent(computedImpactId, {}, () => [])),
+        });
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
-        local ok, message = pcall(function()
-          Postretro.defineImpactEvent("not namespaced", {}, function() return {} end)
-        end)
-        return { message = if ok then "" else tostring(message):gsub("^.-:%d+: ", "") }
+        local function message(action)
+          local ok, value = pcall(action)
+          return if ok then "" else tostring(value):gsub("^.-:%d+: ", "")
+        end
+        local computedStoreName = "computed-store"
+        local computedImpactId = "computed-impact"
+        return {
+          impactColon = message(function() Postretro.defineImpactEvent("has:colon", {}, function() return {} end) end),
+          impactTooLong = message(function() Postretro.defineImpactEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}, function() return {} end) end),
+          storeNamespaceColon = message(function() Postretro.defineStore("has:colon", {}) end),
+          storeSlotColon = message(function() Postretro.defineStore("store", { ["has:colon"] = { type = "number", default = 0 } }) end),
+          storeBindingSugar = message(function() Postretro.defineStore({ value = { type = "number", default = 0 } }) end),
+          impactBindingSugar = message(function() Postretro.defineImpactEvent({}, function() return {} end) end),
+          computedStoreName = message(function() Postretro.defineStore(computedStoreName, {}) end),
+          computedImpactId = message(function() Postretro.defineImpactEvent(computedImpactId, {}, function() return {} end) end),
+        }
     "#;
 
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
     let luau = luau_fixture_value(LUAU_FIXTURE);
     assert_eq!(typescript, luau);
-    assert!(
-        typescript["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("namespaced ASCII string"))
+    assert_eq!(
+        typescript["impactColon"],
+        "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
     );
+    assert_eq!(
+        typescript["impactColon"], typescript["impactTooLong"],
+        "colon-bearing and oversized authored ids share one diagnostic"
+    );
+    assert_eq!(
+        typescript["storeBindingSugar"],
+        "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct const assignment"
+    );
+    assert_eq!(
+        typescript["storeBindingSugar"], typescript["impactBindingSugar"],
+        "name-less store and impact declarations share one diagnostic"
+    );
+    assert_eq!(typescript["computedStoreName"], "");
+    assert_eq!(typescript["computedImpactId"], "");
 }

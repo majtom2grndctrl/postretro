@@ -752,38 +752,31 @@ function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
   })
 end
 
-local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes"
+local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
+local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct const assignment"
 
 local function validateImpactEventId(id: string)
-  local segments = 1
-  local segmentLength = 0
-  local valid = #id > 0 and #id <= 128
+  local valid = #id > 0 and #id <= 64
   for i = 1, #id do
     local byte = string.byte(id, i)
-    if byte == string.byte(":") then
-      valid = valid and segmentLength > 0
-      segments += 1
-      segmentLength = 0
-    else
-      local allowed = (byte >= 48 and byte <= 57)
-        or (byte >= 65 and byte <= 90)
-        or (byte >= 97 and byte <= 122)
-        or byte == 95 or byte == 46 or byte == 45
-      valid = valid and allowed
-      segmentLength += 1
-    end
+    local allowed = (byte >= 48 and byte <= 57)
+      or (byte >= 65 and byte <= 90)
+      or (byte >= 97 and byte <= 122)
+      or byte == 95 or byte == 46 or byte == 45
+    valid = valid and allowed
   end
-  valid = valid and segments >= 2 and segmentLength > 0
   if not valid then
     error(IMPACT_EVENT_ID_DIAGNOSTIC, 3)
   end
 end
 
-function DataScriptSdk.defineImpactEvent(
-  id: string,
-  filter: ImpactEventFilter,
-  build: (Impact) -> {EffectOrGroup}
-): ImpactEvent
+--- Define a pure impact-policy descriptor. The engine prefixes its single-segment
+--- authored id with the mod id. Luau requires the explicit-id form.
+function DataScriptSdk.defineImpactEvent(...: any): ImpactEvent
+  if select("#", ...) == 2 then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local id, filter, build = ...
   validateImpactEventId(id)
   local eventFilter = table.freeze({ tag = filter.tag })
   local policy = lowerImpactPolicy(build(IMPACT))
@@ -984,12 +977,23 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
 end
 
 --- Pure state-store builder. `namespace` prefixes every returned state ref as
---- `namespace.slotName`; `schema` declares the slot names and validation rules.
+--- `namespace.slotName`; neither it nor a slot name may contain `:`. Luau
+--- requires the explicit-namespace form.
 --- The engine consumes `declaration` only when it is returned from the mod
 --- manifest's `stores`; unreturned declarations disappear with the setup VM.
-function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+function DataScriptSdk.defineStore(...: any): StoreDefinition
+  if select("#", ...) == 1 then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local namespace, schema = ...
+  if string.find(namespace, ":", 1, true) ~= nil then
+    error("defineStore `namespace` must not contain `:`", 2)
+  end
   local tracedSchema = {}
   for slotName, input in pairs(schema) do
+    if string.find(slotName, ":", 1, true) ~= nil then
+      error("defineStore slot name " .. string.format("%q", slotName) .. " must not contain `:`", 2)
+    end
     if type(input) == "table" and type((input :: any).accumulate) == "function" then
       local tracedInput = {}
       for key, value in pairs(input :: any) do

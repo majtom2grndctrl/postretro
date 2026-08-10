@@ -1449,16 +1449,6 @@ fn run_after_parsing(
     Ok(())
 }
 
-/// Drive the output-preserving SH coarsenability analysis and emit its summary
-/// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
-/// sections (post static-light selection + exact-zero-drop, i.e. the emitted
-/// set); mutates nothing that reaches the packer.
-/// Classify per-section coarsening levels and stamp them onto each delta
-/// section's `cell_levels`, in place, before valid-probe compaction consumes the
-/// dense payloads. Reads the pre-BC6H base indirect (RGBA16F) for composed
-/// magnitude + the sole probe-validity authority; each section is classified
-/// independently (its own reconstruction error over the shared composed
-/// magnitude). No-op when the base grid is absent/degenerate.
 /// Concatenate the CLI (`--sh-protect-aabb`) and mapper-authored
 /// (`sh_protect_volume`) protection AABBs into the single list the coarsening
 /// classifier reads. Both sources are world-space `[minx,miny,minz,maxx,maxy,maxz]`
@@ -1471,6 +1461,12 @@ fn combined_protect_aabbs(cli: &[[f32; 6]], map: &[[f32; 6]]) -> Vec<[f32; 6]> {
     combined
 }
 
+/// Classify per-section coarsening levels and stamp them onto each delta
+/// section's `cell_levels`, in place, before valid-probe compaction consumes the
+/// dense payloads. Reads the pre-BC6H base indirect (RGBA16F) for composed
+/// magnitude + the sole probe-validity authority; each section is classified
+/// independently (its own reconstruction error over the shared composed
+/// magnitude). No-op when the base grid is absent/degenerate.
 fn apply_coarsen_classification(
     args: &Args,
     map_protect_aabbs: &[[f32; 6]],
@@ -1537,22 +1533,55 @@ fn apply_coarsen_classification(
         )
     };
 
+    // Stamp only when the classifier's level count (base-grid derived) matches
+    // the section's own affinity-cell count. They agree whenever the section
+    // shares the base grid (the normal case); guard the defensive path so an
+    // affinity-mismatched section is never handed a wrong-length `cell_levels`
+    // that would corrupt compaction / the wire contract — leave it uniform L0.
     let mut sections = 0u32;
     if let (Some(section), Some(levels)) = (delta_sections.indirect.as_mut(), indirect_levels) {
-        section.cell_levels = levels;
-        sections += 1;
+        let cells = section.affinity_cell_count();
+        if levels.len() == cells {
+            section.cell_levels = levels;
+            sections += 1;
+        } else {
+            log::warn!(
+                "[sh-coarsen] indirect affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
+                levels.len()
+            );
+        }
     }
     if let (Some(section), Some(levels)) = (delta_sections.direct.as_mut(), direct_levels) {
-        section.cell_levels = levels;
-        sections += 1;
+        let cells = section.affinity_cell_count();
+        if levels.len() == cells {
+            section.cell_levels = levels;
+            sections += 1;
+        } else {
+            log::warn!(
+                "[sh-coarsen] direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
+                levels.len()
+            );
+        }
     }
     if let (Some(section), Some(levels)) = (delta_sections.animated_direct.as_mut(), anim_levels) {
-        section.cell_levels = levels;
-        sections += 1;
+        let cells = section.affinity_cell_count();
+        if levels.len() == cells {
+            section.cell_levels = levels;
+            sections += 1;
+        } else {
+            log::warn!(
+                "[sh-coarsen] animated-direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
+                levels.len()
+            );
+        }
     }
     log::info!("[sh-coarsen] classified coarsening levels for {sections} delta section(s)");
 }
 
+/// Drive the output-preserving SH coarsenability analysis and emit its summary
+/// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
+/// sections (post static-light selection + exact-zero-drop, i.e. the emitted
+/// set); mutates nothing that reaches the packer.
 fn run_sh_analysis(
     args: &Args,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,

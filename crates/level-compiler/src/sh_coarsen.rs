@@ -1,14 +1,18 @@
-//! Delta-SH probe coarsening classifier core (slice G3-α).
+//! Delta-SH probe coarsening classifier (slices G3-α + G3-δ).
 //!
-//! Pure numeric logic: given already-computed per-brick reconstruction-error
-//! and magnitude statistics for the affinity grid, decide each 4×4×4 affinity
-//! brick's probe-density [`Level`] (L0 dense / L1 corners / L2 brick-mean),
-//! force protected bricks back to L0, then run a fixpoint seam-smoothing sweep
-//! so no two face-adjacent bricks differ by more than one level.
-//!
-//! This module owns none of the tile-decoding that produces the input stats —
-//! that is a separate later slice. Everything here is std-only apart from the
+//! **α — the gate (`classify_levels`).** Pure numeric logic: given
+//! already-computed per-brick reconstruction-error and magnitude statistics for
+//! the affinity grid, decide each 4×4×4 affinity brick's probe-density
+//! [`Level`] (L0 dense / L1 corners / L2 brick-mean), force protected bricks
+//! back to L0, then run a fixpoint seam-smoothing sweep so no two face-adjacent
+//! bricks differ by more than one level. This part is std-only apart from the
 //! shared [`Level`] type and is unit-testable with hand-built inputs.
+//!
+//! **δ — the provider (`classify_section_levels`).** Turns pre-BC6H SH sections
+//! into the α gate's [`BrickClass`] inputs and runs the gate per section. This
+//! part depends on `postretro_level_format` section types and reuses
+//! `sh_analyze`'s `pub(crate)` decode/accumulate helpers (`build_brick_tiles`,
+//! `level_errors`, `tile_magnitude`, …), so — unlike α — it is not std-only.
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
@@ -87,6 +91,11 @@ pub(crate) fn classify_levels(
     protect_aabbs: &[[f32; 6]],
     params: &CoarsenParams,
 ) -> Vec<u8> {
+    debug_assert_eq!(
+        bricks.len(),
+        affinity_dims.iter().map(|&d| d as usize).product::<usize>(),
+        "bricks.len() must equal product(affinity_dims); seam-smoothing indexes by affinity coords",
+    );
     // --- Phase A — map-wide magnitude. ---
     let mut valid_mags: Vec<f32> = bricks
         .iter()
@@ -175,6 +184,10 @@ pub(crate) fn classify_levels(
     // Face-adjacency over the x-fastest affinity grid. Repeat sweeps until a
     // full sweep performs zero demotions. Monotone (levels only decrease) so it
     // terminates.
+    // A brick whose L1 is unevaluable (no valid corner) must never be assigned
+    // L1 — by the gate OR by demotion. `demote_one` uses this to skip L1 and
+    // demote such a brick straight to L0.
+    let l1_evaluable: Vec<bool> = bricks.iter().map(|b| b.l1_evaluable).collect();
     let [dx, dy, dz] = affinity_dims;
     let (dxu, dyu, dzu) = (dx as usize, dy as usize, dz as usize);
     loop {
@@ -189,13 +202,20 @@ pub(crate) fn classify_levels(
                     // Only inspect the positive-direction neighbors so each
                     // face-adjacent pair is visited once per sweep.
                     if x + 1 < dxu {
-                        demoted |= smooth_pair(&mut levels, &participating, i, i + 1);
+                        demoted |= smooth_pair(&mut levels, &participating, &l1_evaluable, i, i + 1);
                     }
                     if y + 1 < dyu {
-                        demoted |= smooth_pair(&mut levels, &participating, i, i + dxu);
+                        demoted |=
+                            smooth_pair(&mut levels, &participating, &l1_evaluable, i, i + dxu);
                     }
                     if z + 1 < dzu {
-                        demoted |= smooth_pair(&mut levels, &participating, i, i + dxu * dyu);
+                        demoted |= smooth_pair(
+                            &mut levels,
+                            &participating,
+                            &l1_evaluable,
+                            i,
+                            i + dxu * dyu,
+                        );
                     }
                 }
             }
@@ -220,9 +240,15 @@ fn aabb_overlap(world_min: &[f32; 3], world_max: &[f32; 3], aabb: &[f32; 6]) -> 
 }
 
 /// If two participating face-adjacent bricks differ by ≥ 2 levels (an L2/L0
-/// pair), demote the coarser endpoint one level (L2→L1). Returns whether a
-/// demotion occurred.
-fn smooth_pair(levels: &mut [Level], participating: &[bool], a: usize, b: usize) -> bool {
+/// pair), demote the coarser endpoint one step. Returns whether a demotion
+/// occurred.
+fn smooth_pair(
+    levels: &mut [Level],
+    participating: &[bool],
+    l1_evaluable: &[bool],
+    a: usize,
+    b: usize,
+) -> bool {
     if !participating[a] || !participating[b] {
         return false;
     }
@@ -230,19 +256,30 @@ fn smooth_pair(levels: &mut [Level], participating: &[bool], a: usize, b: usize)
     if la.abs_diff(lb) < 2 {
         return false;
     }
-    // Demote the coarser (numerically higher) endpoint by one level.
+    // Demote the coarser (numerically higher) endpoint.
     if la > lb {
-        levels[a] = demote_one(levels[a]);
+        levels[a] = demote_one(levels[a], l1_evaluable[a]);
     } else {
-        levels[b] = demote_one(levels[b]);
+        levels[b] = demote_one(levels[b], l1_evaluable[b]);
     }
     true
 }
 
-/// Demote a level by one step (L2→L1, L1→L0). L0 is already finest.
-fn demote_one(level: Level) -> Level {
+/// Demote a level by one step: L2→L1, L1→L0, L0 stays. **Exception:** when the
+/// brick's L1 is unevaluable (no valid corner ⇒ `kept_mask(L1) == 0`, which
+/// would store zero tiles and leave every dropped-valid probe
+/// unreconstructable), skip L1 and demote L2 straight to L0. Demoting to the
+/// finest level still satisfies the ≤1-level seam bound (L0 is never the coarser
+/// endpoint of any pair) and keeps the brick reconstructable.
+fn demote_one(level: Level, l1_evaluable: bool) -> Level {
     match level {
-        Level::L2 => Level::L1,
+        Level::L2 => {
+            if l1_evaluable {
+                Level::L1
+            } else {
+                Level::L0
+            }
+        }
         Level::L1 => Level::L0,
         Level::L0 => Level::L0,
     }
@@ -665,6 +702,27 @@ mod tests {
         let out = classify_levels(&bricks, [2, 1, 1], &[], &CoarsenParams::default());
         assert_eq!(out[0], L0, "finer endpoint unchanged");
         assert_eq!(out[1], L1, "coarser +x neighbor demoted L2→L1");
+    }
+
+    #[test]
+    fn smoothing_demotes_l2_to_l0_when_l1_is_unevaluable() {
+        // P9/P11 as a whole-classifier property, not just a gate property: a
+        // brick that gates L2 but whose L1 is unevaluable (no valid corner ⇒
+        // kept_mask(L1)==0) must, when the seam pass demotes it beside an L0
+        // neighbor, go straight to L0 — NOT L1, which would store zero tiles and
+        // leave every dropped-valid probe unreconstructable.
+        let mut coarse = brick(10.0, 10.0, (0.1, 0.1), (0.1, 0.1)); // gates L2
+        coarse.l1_evaluable = false; // no valid corner
+        let bricks = vec![
+            at_x(brick(10.0, 10.0, (9.0, 9.0), (9.0, 9.0)), 0), // L0
+            at_x(coarse, 1),                                    // L2, L1 unevaluable
+        ];
+        let out = classify_levels(&bricks, [2, 1, 1], &[], &CoarsenParams::default());
+        assert_eq!(out[0], L0, "finer endpoint unchanged");
+        assert_eq!(
+            out[1], L0,
+            "L2 brick with unevaluable L1 demotes straight to L0, skipping L1"
+        );
     }
 
     // ---- P6/P14 protection ----

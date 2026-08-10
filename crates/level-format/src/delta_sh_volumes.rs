@@ -97,7 +97,7 @@ pub struct DeltaShVolumesSection {
     pub affinity_dims: [u32; 3],
     /// Full octahedral tile dimension, including border texels.
     pub tile_dimension: u32,
-    /// Octahedral wrap border width. Version 4 bakes with the committed value 1.
+    /// Octahedral wrap border width. Committed value 1.
     pub tile_border: u32,
     /// One entry per animated light: index into the SH section's
     /// `animation_descriptors` array. `u32::MAX` means "no descriptor".

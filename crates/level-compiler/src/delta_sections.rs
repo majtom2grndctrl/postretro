@@ -1208,7 +1208,8 @@ mod tests {
         let compacted =
             compact_direct_valid_probes(&section, &base).expect("an L1 cell compacts");
 
-        // Emitted validity is unchanged full validity (Option B).
+        // Emitted `valid_probe_masks` stays FULL validity; the kept set is
+        // derived from (level, validity) via `kept_mask`, never stored.
         assert_eq!(compacted.valid_probe_masks, vec![validity]);
         assert_eq!(compacted.cell_levels, vec![Level::L1.to_u8()]);
 

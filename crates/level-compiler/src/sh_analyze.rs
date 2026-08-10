@@ -6,7 +6,16 @@
 //! error**, measures seams as **actual shared-face reconstruction differences**,
 //! attributes valid-probe payload compaction / exact-zero delta dropping / density coarsening
 //! **separately**, and reports savings both with and without a protection
-//! stand-in — never touching a single emitted `.prl` byte.
+//! stand-in.
+//!
+//! **Scope note (delta-SH probe coarsening).** This module's own analysis entry
+//! point (`run_analysis`) still never touches an emitted `.prl` byte. But
+//! several of its brick-assembly / error primitives — `build_brick_tiles`,
+//! `level_errors`, `tile_magnitude`, `accumulate_delta_for_cell`,
+//! `brick_world_aabb`, `DeltaView`, `AnalyzeInputs`, `LevelKind` — are now
+//! `pub(crate)` and reused by `sh_coarsen::classify_section_levels` to compute
+//! per-cell coarsening levels, which **do** change emitted `delta_subblocks`
+//! bytes on a `--sh-coarsen` bake. Treat those primitives as producer-facing.
 //!
 //! See `context/lib/experimental_spikes.md`: a spike cuts scope and hardening,
 //! not rigor. This pass runs entirely CPU-side in the compiler, per 4×4×4 brick
@@ -340,7 +349,10 @@ fn percentile(v: &mut [f32], p: f32) -> f32 {
     if v.is_empty() {
         return 0.0;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // NaN-tolerant: a corrupt/garbage atlas texel can decode to NaN, and under
+    // `--sh-coarsen` this stat gates a real bake — treat NaN as equal rather
+    // than panicking the sort (mirrors the classifier's own guarded sort).
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let idx = ((v.len() as f32 - 1.0) * p).round() as usize;
     v[idx.min(v.len() - 1)]
 }
@@ -354,7 +366,7 @@ fn weighted_percentile(values: &[f32], weights: &[f32], p: f32) -> f32 {
         .copied()
         .zip(weights.iter().copied())
         .collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let total: f32 = pairs.iter().map(|(_, w)| *w).sum();
     if total <= 0.0 {
         return pairs.last().map(|(v, _)| *v).unwrap_or(0.0);

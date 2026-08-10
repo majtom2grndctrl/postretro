@@ -47,6 +47,10 @@ fn try_main() -> Result<i32, String> {
         return capture_frame(args.collect());
     }
 
+    if command == "mint-identity" {
+        return mint_identity(args.collect());
+    }
+
     if command == "bake-model-textures" {
         return bake_model_textures_command(args.collect());
     }
@@ -368,6 +372,49 @@ fn parse_capture_args(args: Vec<OsString>) -> Result<PathBuf, String> {
     }
 }
 
+/// `mint-identity <mod-root>` builds the TypeScript sidecar that debug
+/// mod-init uses, then runs the authoring-only ledger mint binary. The mint bin
+/// owns mod-root parsing and diagnostics; xtask only forwards stdio and status.
+fn mint_identity(args: Vec<OsString>) -> Result<i32, String> {
+    let mod_root = parse_mint_identity_args(args)?;
+    let workspace_root = workspace_root()?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+
+    build_scripts_sidecar(&cargo, &workspace_root, &[])?;
+
+    let mut command = Command::new(&cargo);
+    command
+        .current_dir(&workspace_root)
+        .arg("run")
+        .arg("-p")
+        .arg("postretro")
+        .arg("--bin")
+        .arg("mint-identity")
+        .arg("--")
+        .arg(mod_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    status_code(
+        command
+            .status()
+            .map_err(|error| format!("launch mint-identity: {error}")),
+    )
+}
+
+fn parse_mint_identity_args(args: Vec<OsString>) -> Result<PathBuf, String> {
+    match args.as_slice() {
+        [mod_root] => Ok(PathBuf::from(mod_root)),
+        [] => Err("mint-identity requires a mod root\n\n\
+             Usage: cargo run -p xtask -- mint-identity <mod-root>"
+            .to_string()),
+        _ => Err("mint-identity accepts exactly one mod root\n\n\
+             Usage: cargo run -p xtask -- mint-identity <mod-root>"
+            .to_string()),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct RunArgs {
     cargo_run_args: Vec<OsString>,
@@ -473,6 +520,7 @@ fn print_help() {
            cargo run -p xtask -- run [postretro args...]\n\
            cargo run -p xtask -- observe <runspec.json> [--pool-seed=<u64>]\n\
            cargo run -p xtask -- capture <scene.json>\n\
+           cargo run -p xtask -- mint-identity <mod-root>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
@@ -482,6 +530,8 @@ fn print_help() {
                                 the JSON document on stdout untouched\n\
            capture              Run the engine's world-only frame capture\n\
                                 (--features capture --capture <scene.json>)\n\
+           mint-identity        Build scripts-build, then mint a mod's durable
+                                state-slot identity ledger\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
@@ -491,6 +541,7 @@ fn print_help() {
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- observe runspec.json --pool-seed=17\n\
+           cargo run -p xtask -- mint-identity content/dev\n\
            cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
@@ -524,6 +575,16 @@ mod tests {
                 ]),
             }
         );
+    }
+
+    #[test]
+    fn parse_mint_identity_args_requires_exactly_one_mod_root() {
+        assert_eq!(
+            parse_mint_identity_args(os_args(&["content/dev"])).expect("one path is valid"),
+            PathBuf::from("content/dev"),
+        );
+        assert!(parse_mint_identity_args(Vec::new()).is_err());
+        assert!(parse_mint_identity_args(os_args(&["one", "two"])).is_err());
     }
 
     #[test]

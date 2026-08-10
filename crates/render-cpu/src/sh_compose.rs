@@ -130,17 +130,19 @@ pub struct DirectDeltaComposeBuffers {
 
 impl DirectDeltaComposeBuffers {
     /// Pack the id-41 descriptor and post-drop entry offset table into one
-    /// storage-buffer word stream: low/high words per cell mask, followed by
-    /// one f16-half offset per CSR entry. The direct compose shader derives the
-    /// split from `grid.affinity_dims`, so this contains no separately mutable
-    /// length field.
+    /// storage-buffer word stream: low/high words per cell validity mask, one
+    /// widened coarsening level per cell, then one f16-half offset per CSR
+    /// entry. The direct compose shader derives both splits from
+    /// `grid.affinity_dims`, so this contains no separately mutable length
+    /// field.
     pub fn compaction_meta_words(&self) -> Vec<u32> {
         let mut words =
-            Vec::with_capacity(self.valid_probe_masks.len() * 2 + self.entry_offsets.len());
+            Vec::with_capacity(self.valid_probe_masks.len() * 3 + self.entry_offsets.len());
         for &mask in &self.valid_probe_masks {
             words.push(mask as u32);
             words.push((mask >> 32) as u32);
         }
+        words.extend(self.cell_levels.iter().map(|&level| u32::from(level)));
         words.extend_from_slice(&self.entry_offsets);
         words
     }
@@ -897,8 +899,30 @@ mod tests {
                 u32::MAX,
                 u32::MAX,
                 0,
+                0,
+                0,
+                0,
                 (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32,
             ]
+        );
+    }
+
+    #[test]
+    fn direct_delta_compaction_meta_places_cell_levels_before_entry_offsets() {
+        let buffers = DirectDeltaComposeBuffers {
+            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 1],
+            valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
+            cell_levels: vec![1, 2],
+            entry_offsets: vec![144, 180],
+            affinity_dims: [2, 1, 1],
+        };
+
+        assert_eq!(
+            buffers.compaction_meta_words(),
+            vec![0x0000_9009, 0, 0, 0x9009_0000, 1, 2, 144, 180],
+            "id-41 derives its entry-offset base after two mask words and one level word per cell",
         );
     }
 

@@ -66,6 +66,8 @@ pub(super) struct DirectShComposeTimestampWrites<'a> {
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
+    /// Affinity-cell dimensions. One 8×8 workgroup reconstructs and writes the
+    /// 4×4×4 probe tiles belonging to one brick in both direct compose passes.
     dispatch_dimensions: [u32; 3],
     debug_override_buffer: wgpu::Buffer,
     pending_copy_through: bool,
@@ -308,8 +310,8 @@ impl DirectShComposeResources {
             return;
         }
 
-        let wg_x = pipeline.dispatch_dimensions[0].div_ceil(8).max(1);
-        let wg_y = pipeline.dispatch_dimensions[1].div_ceil(8).max(1);
+        let wg_x = pipeline.dispatch_dimensions[0].max(1);
+        let wg_y = pipeline.dispatch_dimensions[1].max(1);
         let wg_z = pipeline.dispatch_dimensions[2].max(1);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -504,11 +506,7 @@ fn build_promotion_pass(
     DirectShComposePipeline {
         pipeline,
         bind_group,
-        dispatch_dimensions: [
-            layout.atlas_dimensions[0],
-            layout.atlas_dimensions[1],
-            layout.atlas_layer_count,
-        ],
+        dispatch_dimensions: buffers.affinity_dims,
         debug_override_buffer,
         pending_copy_through: true,
         was_active: false,
@@ -686,7 +684,7 @@ mod tests {
             storage.footprint(),
             ComposeStorageFootprint {
                 delta_subblocks_bytes: 18_432,
-                delta_compaction_meta_bytes: 12,
+                delta_compaction_meta_bytes: 16,
                 affinity_offsets_bytes: 8,
                 affinity_lights_bytes: 4,
                 animation_descriptor_indices_bytes: 0,
@@ -713,7 +711,7 @@ mod tests {
             storage.footprint(),
             ComposeStorageFootprint {
                 delta_subblocks_bytes: 4,
-                delta_compaction_meta_bytes: 16,
+                delta_compaction_meta_bytes: 24,
                 affinity_offsets_bytes: 12,
                 affinity_lights_bytes: 4,
                 animation_descriptor_indices_bytes: 0,
@@ -725,7 +723,7 @@ mod tests {
 
         capture.assert_logged_once(
             Level::Info,
-            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (16 B), affinity_offsets 0.00 MiB (12 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (36 B)",
+            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (24 B), affinity_offsets 0.00 MiB (12 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (44 B)",
         );
     }
 
@@ -765,21 +763,32 @@ mod tests {
     }
 
     #[test]
-    fn direct_compose_skips_invalid_local_probe_before_delta_read() {
+    fn direct_compose_uses_validity_to_gate_delta_reconstruction() {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
-        let guard = source
-            .find("if (!local_probe_is_valid(affinity.cell_index, affinity.local_probe))")
-            .expect("the direct compose shader must guard invalid locals");
-        let read = source
-            .find("let delta = read_delta_texel(")
-            .expect("the direct compose shader must read selected delta tiles");
         assert!(
-            guard < read,
-            "invalid affinity locals must return before any direct delta payload read"
+            source.contains(
+                "let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);"
+            ),
+            "id-41 has no base probe-indirection, so its validity mask must gate delta reads"
         );
         assert!(
             !source.contains("enable f16"),
             "direct delta payloads remain Rgba16Float read through f32 unpacking"
         );
+    }
+
+    #[test]
+    fn direct_coarsened_compose_uses_one_brick_workgroup_and_kept_shared_tiles() {
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+
+        assert!(source.contains("@builtin(workgroup_id) brick"));
+        assert!(source.contains("var<workgroup> shared_kept_tiles"));
+        assert!(source.contains(
+            "return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u"
+        ));
+        assert!(source.contains("countOneBits(kept_probe_mask_word"));
+        assert!(source.contains("if (level == 0u)"));
+        assert!(source.contains("if (level == 1u && local_probe_is_kept"));
+        assert!(source.contains("if (level == 2u)"));
     }
 }

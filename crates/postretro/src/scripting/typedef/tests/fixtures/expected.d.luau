@@ -1411,8 +1411,10 @@ declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDesc
 export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
-export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
-export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: "@impact.source", __stateRefValueBrand: T? }
+export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
+export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T?, byPlayer: (self: ComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T> }
+export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T, byPlayer: (self: Ref<T>, owner: SourceHandle) -> OwnerAddressedRef<T> }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
 
 --- One slot inside a `defineStore` schema. Every slot needs `default`.
@@ -1420,16 +1422,20 @@ export type StateRef<T> = ComputedRef<T> | Ref<T>
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
---- script writes. `network = "shared"` replicates the slot to every connected
---- client (server-authoritative); omitted means local-only. A mod-owned
+--- script writes. `perOwner = true` gives each player seat an independent
+--- host-side value. `network = "shared"` replicates to every connected client;
+--- `network = "ownerPrivate"` replicates a per-owner slot only to its owner;
+--- omitted means local-only. A mod-owned
 --- persisted writable or replicated slot requires a minted
 --- `<mod-root>/identity.json` entry; run
 --- `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, network: "shared"?, accumulate: nil? }
-  | { type: "number", readonly: false?, network: "shared"?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
 ) & { [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.

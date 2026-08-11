@@ -99,6 +99,7 @@ mod tests {
             readonly: true,
             ownership: SlotOwnership::Engine,
             network: crate::slot_table::ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
     }

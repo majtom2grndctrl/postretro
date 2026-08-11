@@ -782,6 +782,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -795,6 +796,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -811,6 +813,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: Some(IrNode::Mul {
                             a: Box::new(IrNode::Input {
                                 name: "@dt".to_string(),
@@ -831,6 +834,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),

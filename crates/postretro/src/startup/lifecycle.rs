@@ -1790,6 +1790,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: postretro_entities::ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         });
         record.value = Some(SlotValue::Number(value));
@@ -2266,6 +2267,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: postretro_entities::ReplicationScope::None,
+                        per_owner: false,
                         accumulate: Some(postretro_foundation::IrNode::Input {
                             name: "@dt".to_string(),
                         }),

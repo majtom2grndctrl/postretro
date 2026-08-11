@@ -1319,15 +1319,19 @@ declare module "postretro" {
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
-  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
-  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
+  export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: "@impact.source"; readonly [stateRefValueBrand]: T };
+  export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
+  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T; byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T> };
+  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T; byPlayer(owner: SourceHandle): OwnerAddressedRef<T> };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
 
-  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value. `network: "shared"` replicates a slot to every connected client, while `network: "ownerPrivate"` replicates a per-owner slot only to its owner; omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
-    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
-    | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
-    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "shared" | "ownerPrivate"; perOwner: true; persist?: never; accumulate?: never }
+    | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => RuntimeValue }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared" | "ownerPrivate"; perOwner: true; persist?: never; accumulate?: never }
   ) & Record<string, unknown>;
 
   /** Plain declaration data returned through `ModManifest.stores`. */

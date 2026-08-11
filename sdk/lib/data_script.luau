@@ -335,10 +335,15 @@ export type LevelManifest = {
 --- a minted `<mod-root>/identity.json` entry; run
 --- `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when
 --- renaming the store or slot.
+--- `perOwner = true` creates a separate host-side value for each player seat.
+--- `network` remains independent: `"shared"` replicates to every client and
+--- `"ownerPrivate"` replicates a per-owner slot only to that owner.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, accumulate: nil? }
-  | { type: "number", readonly: false?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
 ) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,
@@ -347,7 +352,15 @@ export type StoreDeclaration = {
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
-export type StateRef<T> = ComputedRef<T> | Ref<T>
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: "@impact.source" }
+export type OwnerAddressedRef<T> = Ref<T> & { owner: "@impact.source" }
+type StoreComputedRef<T> = ComputedRef<T> & {
+  byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>,
+}
+type StoreRef<T> = Ref<T> & {
+  byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T>,
+}
+export type StateRef<T> = StoreComputedRef<T> | StoreRef<T>
 export type StoreDefinition = {
   [string]: StateRef<any>,
 }
@@ -1023,6 +1036,23 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
   return table.freeze(clone)
 end
 
+local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): StateRef<any>
+  local ref = { slot = slot, kind = kind }
+  local methods = {
+    byPlayer = function(_self: any, owner: SourceHandle): OwnerAddressedRef<any>
+      if not perOwner then
+        error("state slot `" .. slot .. "` is global and cannot be addressed with byPlayer", 2)
+      end
+      return table.freeze({
+        slot = slot,
+        kind = kind,
+        owner = if owner == IMPACT_SOURCE then "@impact.source" else "@invalid",
+      }) :: any
+    end,
+  }
+  return table.freeze(setmetatable(ref, { __index = methods })) :: any
+end
+
 --- Pure state-store builder. `namespace` prefixes every returned state ref as
 --- `namespace.slotName`; neither it nor a slot name may contain `:`. Luau
 --- requires the explicit-namespace form.
@@ -1055,10 +1085,11 @@ function DataScriptSdk.defineStore(...: any): StoreDefinition
   local frozenSchema = cloneAndFreeze(tracedSchema)
   local store: { [string]: StateRef<any> } = {}
   for slotName in pairs(frozenSchema) do
-    store[slotName] = table.freeze({
-      slot = namespace .. "." .. slotName,
-      kind = (frozenSchema[slotName] :: any).type,
-    }) :: any
+    store[slotName] = storeRef(
+      namespace .. "." .. slotName,
+      (frozenSchema[slotName] :: any).type,
+      (frozenSchema[slotName] :: any).perOwner == true
+    )
   end
   local handle = table.freeze(store)
   storeDeclarations[handle] = table.freeze({

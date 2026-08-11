@@ -116,6 +116,7 @@ fn atmosphere_slots() -> SlotTable {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: ReplicationScope::SharedGlobal,
+                    per_owner: false,
                     accumulate: None,
                 }),
             )],

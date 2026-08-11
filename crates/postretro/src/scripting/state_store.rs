@@ -244,6 +244,24 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ScriptError::InvalidArgument { .. }));
         assert!(ctx.slot_table.borrow().get("mixed.good").is_none());
+
+        let err = commit_store_for_test(
+            &ctx,
+            "per-owner-mixed",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1, "perOwner": true },
+                "bad": { "type": "number", "default": 0, "perOwner": true, "persist": true },
+            }),
+        )
+        .expect_err("invalid perOwner declaration must reject the entire store");
+        assert!(err.to_string().contains("bad"));
+        assert!(
+            ctx.slot_table
+                .borrow()
+                .get("per-owner-mixed.good")
+                .is_none(),
+            "a failed perOwner declaration cannot insert a partial mod store"
+        );
     }
 
     #[test]
@@ -919,20 +937,22 @@ mod tests {
     }
 
     #[test]
-    fn define_store_rejects_owner_private_network_for_mod_stores() {
-        // Mod-declared owner-private per-player slots are out of scope: `"ownerPrivate"`
-        // must be rejected with a clear, author-facing error.
+    fn define_store_rejects_owner_private_network_without_per_owner() {
+        // `ownerPrivate` only describes replication. A global slot has no owner
+        // cardinality, so it must opt into `perOwner` explicitly.
         let err = store_declaration(
             "netFixture",
             serde_json::json!({
                 "secret": { "type": "number", "default": 0, "network": "ownerPrivate" },
             }),
         )
-        .expect_err("ownerPrivate is rejected for mod stores");
+        .expect_err("ownerPrivate without perOwner is rejected");
         let message = err.to_string();
         assert!(
-            message.contains("ownerPrivate") && message.contains("not supported"),
-            "error names the rejected value and that it is unsupported: {message}"
+            message.contains("ownerPrivate")
+                && message.contains("perOwner")
+                && message.contains("secret"),
+            "error names the replication mode, required cardinality, and slot: {message}"
         );
     }
 

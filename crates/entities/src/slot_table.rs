@@ -71,6 +71,9 @@ pub struct SlotSchema {
     /// Replication scope (M15 Phase 3.5). Defaults to `None` (local-only). Only
     /// `SharedGlobal`/`OwnerPrivatePlayer` slots enter the replicated-slot schema.
     pub network: ReplicationScope,
+    /// Whether this mod slot keeps one authoritative value per durable player
+    /// seat. Replication remains an independent declaration in `network`.
+    pub per_owner: bool,
     /// Optional script-authored per-tick delta expression. The binary binds it
     /// once at level install; entities retains only the VM-free raw IR node.
     pub accumulate: Option<IrNode>,
@@ -541,6 +544,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
     }
@@ -968,6 +972,7 @@ mod tests {
                     readonly: true,
                     ownership: SlotOwnership::Engine,
                     network: ReplicationScope::None,
+                    per_owner: false,
                     accumulate: None,
                 }),
             )

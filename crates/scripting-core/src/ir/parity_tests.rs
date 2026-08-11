@@ -1260,6 +1260,115 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
 }
 
 #[test]
+fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
+    // `byPlayer` is SDK metadata, not declaration or widget wire. Both authoring
+    // runtimes therefore expose it without changing the enumerable `{ slot,
+    // kind }` shape of a bare ref or the `{ slot }` output of bindState.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent, defineStore } from "postretro";
+        import { bindState } from "postretro/ui";
+
+        const store = defineStore("currency", {
+          credits: { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
+          shared: { type: "number", default: 0, network: "shared" },
+        });
+        let owned: ReturnType<typeof store.credits.byPlayer> | undefined;
+        let fresh = false;
+        let globalRejected = false;
+        defineImpactEvent("award-credits", { tag: "pickup" }, (impact) => {
+          const first = store.credits.byPlayer(impact.source);
+          const second = store.credits.byPlayer(impact.source);
+          owned = first;
+          fresh = first !== second;
+          try {
+            store.shared.byPlayer(impact.source);
+          } catch (_error) {
+            globalRejected = true;
+          }
+          return [];
+        });
+        if (owned === undefined) throw new Error("impact callback did not run");
+        JSON.stringify({
+          bareKeys: Object.keys(store.credits).sort(),
+          byPlayerEnumerable: Object.getOwnPropertyDescriptor(store.credits, "byPlayer")?.enumerable === true,
+          ownedKeys: Object.keys(owned).sort(),
+          ownedFrozen: Object.isFrozen(owned),
+          owner: owned.owner,
+          fresh,
+          globalRejected,
+          bind: bindState(owned),
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local UI = require("postretro/ui")
+
+        local store = Postretro.defineStore("currency", {
+          credits = { type = "number", default = 0, perOwner = true, network = "ownerPrivate" },
+          shared = { type = "number", default = 0, network = "shared" },
+        })
+        local owned: any = nil
+        local fresh = false
+        local globalRejected = false
+        Postretro.defineImpactEvent("award-credits", { tag = "pickup" }, function(impact)
+          local first = store.credits:byPlayer(impact.source)
+          local second = store.credits:byPlayer(impact.source)
+          owned = first
+          fresh = first ~= second
+          globalRejected = not pcall(function()
+            store.shared:byPlayer(impact.source)
+          end)
+          return {}
+        end)
+        assert(owned ~= nil)
+        local bareKeys = {}
+        for key in pairs(store.credits) do
+          table.insert(bareKeys, key)
+        end
+        table.sort(bareKeys)
+        local ownedKeys = {}
+        for key in pairs(owned) do
+          table.insert(ownedKeys, key)
+        end
+        table.sort(ownedKeys)
+        local ownedFrozen = not pcall(function()
+          owned.owner = "changed"
+        end)
+        return {
+          bareKeys = bareKeys,
+          byPlayerEnumerable = false,
+          ownedKeys = ownedKeys,
+          ownedFrozen = ownedFrozen,
+          owner = owned.owner,
+          fresh = fresh,
+          globalRejected = globalRejected,
+          bind = UI.bindState(owned),
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "per-owner ref surface drifted across runtimes"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "bareKeys": ["kind", "slot"],
+            "byPlayerEnumerable": false,
+            "ownedKeys": ["kind", "owner", "slot"],
+            "ownedFrozen": true,
+            "owner": "@impact.source",
+            "fresh": true,
+            "globalRejected": true,
+            "bind": { "slot": "currency.credits" },
+        }),
+        "byPlayer must produce fresh frozen owner refs without leaking metadata into wire consumers",
+    );
+}
+
+#[test]
 fn authored_name_validation_diagnostics_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { defineImpactEvent, defineStore } from "postretro";

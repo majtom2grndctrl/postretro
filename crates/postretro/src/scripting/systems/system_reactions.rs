@@ -577,6 +577,7 @@ mod tests {
                 SlotOwnership::Mod
             },
             network: Default::default(),
+            per_owner: false,
             accumulate: None,
         })
     }
@@ -677,6 +678,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    per_owner: false,
                     accumulate: None,
                 }),
             )

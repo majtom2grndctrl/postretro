@@ -82,6 +82,7 @@ fn replicated_number(scope: ReplicationScope, accumulate: Option<IrNode>) -> Slo
         readonly: false,
         ownership: SlotOwnership::Mod,
         network: scope,
+        per_owner: false,
         accumulate,
     })
 }

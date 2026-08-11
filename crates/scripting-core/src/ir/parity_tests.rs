@@ -457,7 +457,7 @@ fn trigger_pool_manifest_data_is_byte_identical_across_authoring_runtimes() {
 #[test]
 fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineReaction, defineStore, runtime } from "postretro";
+        import { defineMod, defineReaction, defineStore, runtime } from "postretro";
         import { onStateCrossing, updateState } from "postretro/ui";
 
         const store = defineStore("dispatch", {
@@ -470,31 +470,32 @@ fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
           active: { type: "boolean", default: false },
         });
         const toggle = defineReaction("toggle", (on) =>
-          updateState(store.state.active, runtime.select(on.rising, true, false))
+          updateState(store.active, runtime.select(on.rising, true, false))
         );
         const crossing = onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { below: 0, edge: "both" },
           [toggle],
         );
         const predicate = onStateCrossing(
-          runtime.le(store.state.countdown, 0),
+          runtime.le(store.countdown, 0),
           [toggle],
           { edge: "both" },
         );
         const unknownEdge = onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { above: 10, edge: "future-edge" },
           [toggle],
         );
+        const manifest = defineMod({ stores: [store] });
         const value = {
           reaction: toggle,
           crossing,
           predicate,
           unknownEdge,
-          schema: store.declaration.schema,
-          refRead: runtime.read(store.state.countdown),
-          bareRef: runtime.add(store.state.countdown, 1),
+          schema: manifest.stores[0].schema,
+          refRead: runtime.read(store.countdown),
+          bareRef: runtime.add(store.countdown, 1),
         };
         const roundTrip = JSON.parse(JSON.stringify(value));
         JSON.stringify({ value, roundTrip, hasFunction: typeof toggle.tracer === "function" });
@@ -514,31 +515,32 @@ fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
           active = { type = "boolean", default = false },
         })
         local toggle = Postretro.defineReaction("toggle", function(on)
-          return Ui.updateState(store.state.active, Postretro.runtime.select(on.rising, true, false))
+          return Ui.updateState(store.active, Postretro.runtime.select(on.rising, true, false))
         end)
         local crossing = Ui.onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { below = 0, edge = "both" },
           { toggle }
         )
         local predicate = Ui.onStateCrossing(
-          Postretro.runtime.le(store.state.countdown, 0),
+          Postretro.runtime.le(store.countdown, 0),
           { toggle },
           { edge = "both" }
         )
         local unknownEdge = Ui.onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { above = 10, edge = "future-edge" },
           { toggle }
         )
+        local manifest = Postretro.defineMod({ stores = { store } })
         local value = {
           reaction = toggle,
           crossing = crossing,
           predicate = predicate,
           unknownEdge = unknownEdge,
-          schema = store.declaration.schema,
-          refRead = Postretro.runtime.read(store.state.countdown),
-          bareRef = Postretro.runtime.add(store.state.countdown, 1),
+          schema = manifest.stores[1].schema,
+          refRead = Postretro.runtime.read(store.countdown),
+          bareRef = Postretro.runtime.add(store.countdown, 1),
         }
         return { value = value, roundTrip = value, hasFunction = false }
     "#;
@@ -691,7 +693,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source.grantHealth(impact.amount.plus(2)),
                 impact.source.grantAmmo("cells", hits.plus(3)),
                 impact.target.playAnim("shatter"),
-                slot(counters.state.broken).add(1),
+                slot(counters.broken).add(1),
                 impact.target.despawn(),
               ],
             },
@@ -748,7 +750,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source:grantHealth(impact.amount:plus(2)),
                 impact.source:grantAmmo("cells", hits:plus(3)),
                 impact.target:playAnim("shatter"),
-                Postretro.slot(counters.state.broken):add(1),
+                Postretro.slot(counters.broken):add(1),
                 impact.target:despawn(),
               },
             },

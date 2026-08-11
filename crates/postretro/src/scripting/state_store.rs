@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn define_store_quickjs_and_luau_return_equivalent_declarations() {
+    fn define_store_returns_flat_refs_without_committing_slots() {
         let js_ctx = ScriptCtx::new();
         let js_registry = registry_for(js_ctx.clone());
         let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
@@ -163,8 +163,9 @@ mod tests {
                     mode: { type: "enum", values: ["quiet", "loud"], default: "quiet" },
                     curve: { type: "array", default: [0, 0.5, 1] },
                 });
-                if (store.declaration.namespace !== "audio") throw new Error("namespace");
-                if (store.state.master.slot !== "audio.master") throw new Error("state ref");
+                if (!Object.isFrozen(store)) throw new Error("store is not frozen");
+                if (store.master.slot !== "audio.master" || store.master.kind !== "number") throw new Error("master ref");
+                if (store.muted.slot !== "audio.muted" || store.muted.kind !== "boolean") throw new Error("muted ref");
                 "#,
                 "store.js",
             )
@@ -184,8 +185,10 @@ mod tests {
                 mode = { type = "enum", values = {"quiet", "loud"}, default = "quiet" },
                 curve = { type = "array", default = {0, 0.5, 1} },
             })
-            assert(store.declaration.namespace == "audio")
-            assert(store.state.master.slot == "audio.master")
+            assert(store.master.slot == "audio.master")
+            assert(store.master.kind == "number")
+            assert(store.muted.slot == "audio.muted")
+            assert(store.muted.kind == "boolean")
             "#,
             "store.luau",
         )
@@ -315,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn define_store_returns_stable_state_refs_in_both_runtimes() {
+    fn define_store_returns_stable_flat_refs_in_both_runtimes() {
         let js_ctx = ScriptCtx::new();
         let js_registry = registry_for(js_ctx);
         let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
@@ -327,8 +330,8 @@ mod tests {
                     master: { type: "number", default: 1 },
                     muted: { type: "boolean", default: false },
                 });
-                if (store.state.master.slot !== "audio.master") throw new Error("master handle");
-                if (store.state.muted.slot !== "audio.muted") throw new Error("muted handle");
+                if (store.master.slot !== "audio.master") throw new Error("master handle");
+                if (store.muted.slot !== "audio.muted") throw new Error("muted handle");
                 "#,
                 "store-handles.js",
             )
@@ -345,8 +348,8 @@ mod tests {
                 master = { type = "number", default = 1 },
                 muted = { type = "boolean", default = false },
             })
-            assert(store.state.master.slot == "audio.master")
-            assert(store.state.muted.slot == "audio.muted")
+            assert(store.master.slot == "audio.master")
+            assert(store.muted.slot == "audio.muted")
             "#,
             "store-handles.luau",
         )
@@ -981,7 +984,7 @@ mod tests {
                 local store = defineStore("netFixture", {
                     objectiveProgress = { type = "number", default = 0, network = "shared" },
                 })
-                return { stores = { store.declaration } }
+                return defineMod({ stores = { store } })
                 "#,
                 "net-fixture.luau",
             )

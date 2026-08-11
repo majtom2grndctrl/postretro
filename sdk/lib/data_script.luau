@@ -344,11 +344,11 @@ export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValue
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
 export type StoreDefinition = {
-  declaration: StoreDeclaration,
-  state: { [string]: StateRef<any> },
+  [string]: StateRef<any>,
 }
 
 local DataScriptSdk = {}
+local storeDeclarations = setmetatable({}, { __mode = "k" })
 
 -- Opaque target tokens are distinct frozen tables. Builders compare identity
 -- to lower the matching token and leave a mismatched sentinel visible for Rust
@@ -941,8 +941,19 @@ end
 --- arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`,
 --- `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine
 --- side effects until the manifest is returned and validated.
-function DataScriptSdk.defineMod(config: ModManifest): ModManifest
-  return config
+function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
+  if config.stores == nil then
+    return config
+  end
+
+  local manifest = table.clone(config)
+  local stores = {}
+  for key, entry in pairs(config.stores) do
+    local declaration = if type(entry) == "table" then storeDeclarations[entry] else nil
+    stores[key] = if declaration ~= nil then declaration else entry
+  end
+  manifest.stores = stores
+  return manifest
 end
 
 --- Identity builder for a mod map catalog. `entries` are `ModMapEntry` tables
@@ -1008,8 +1019,8 @@ end
 --- Pure state-store builder. `namespace` prefixes every returned state ref as
 --- `namespace.slotName`; neither it nor a slot name may contain `:`. Luau
 --- requires the explicit-namespace form.
---- The engine consumes `declaration` only when it is returned from the mod
---- manifest's `stores`; unreturned declarations disappear with the setup VM.
+--- Pass the returned handle through `defineMod({ stores = { store } })` to
+--- resolve its declaration; unreturned handles disappear with the setup VM.
 function DataScriptSdk.defineStore(...: any): StoreDefinition
   if select("#", ...) == 1 then
     error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
@@ -1035,17 +1046,19 @@ function DataScriptSdk.defineStore(...: any): StoreDefinition
     end
   end
   local frozenSchema = cloneAndFreeze(tracedSchema)
-  local state = {}
+  local store: { [string]: StateRef<any> } = {}
   for slotName in pairs(frozenSchema) do
-    state[slotName] = table.freeze({ slot = namespace .. "." .. slotName })
+    store[slotName] = table.freeze({
+      slot = namespace .. "." .. slotName,
+      kind = (frozenSchema[slotName] :: any).type,
+    }) :: any
   end
-  return table.freeze({
-    declaration = table.freeze({
-      namespace = namespace,
-      schema = frozenSchema,
-    }),
-    state = table.freeze(state),
+  local handle = table.freeze(store)
+  storeDeclarations[handle] = table.freeze({
+    namespace = namespace,
+    schema = frozenSchema,
   })
+  return handle
 end
 
 return DataScriptSdk

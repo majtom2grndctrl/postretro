@@ -149,9 +149,18 @@ export type StateValueForSlot<Slot> =
   Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
   StoreStateRefForSlot<Slot, string>;
 
+declare const storeHandleBrand: unique symbol;
+
+/** A frozen store handle whose enumerable keys are its schema's slot refs. */
 export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
-  readonly declaration: StoreDeclaration;
-  readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+  readonly [K in keyof S]: StateValueForSlot<S[K]>;
+} & {
+  readonly [storeHandleBrand]: S;
+};
+
+type StoreHandle = { readonly [storeHandleBrand]: unknown };
+type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
+  readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
 type ReactionBody =
@@ -272,6 +281,7 @@ export interface ImpactEvent {
 
 const numberNodes = new WeakMap<object, RuntimeValue>();
 const boolNodes = new WeakMap<object, RuntimeValue>();
+const storeDeclarations = new WeakMap<object, StoreDeclaration>();
 
 function constant(value: number | boolean): RuntimeValue {
   return { op: "const", value };
@@ -718,9 +728,13 @@ export function defineEntity<T extends import("postretro").EntityTypeDescriptor>
  * side effects until the manifest is returned and validated.
  */
 export function defineMod(
-  config: import("postretro").ModManifest,
+  config: ModManifestInput,
 ): import("postretro").ModManifest {
-  return config;
+  if (config.stores === undefined) return config as import("postretro").ModManifest;
+  return {
+    ...config,
+    stores: config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry),
+  } as import("postretro").ModManifest;
 }
 
 /** Identity builder for a mod map catalog. `entries` are `ModMapEntry` objects with required `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. Pure: no engine side effects. */
@@ -789,7 +803,7 @@ function cloneAndFreeze<T>(
   return Object.freeze(clone) as T;
 }
 
-/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
+/** Pure state-store builder. `namespace` prefixes every returned slot ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Pass the returned handle through `defineMod({ stores: [store] })` to resolve its declaration; unreturned handles are discarded with the setup VM. */
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   schema: S,
 ): StoreDefinition<S>;
@@ -815,12 +829,14 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     }
   }
   const frozenSchema = cloneAndFreeze(tracedSchema) as S;
-  const state: Record<string, StateRef> = Object.create(null);
+  const store: Record<string, StateRef> = Object.create(null);
   for (const slot of Object.keys(frozenSchema)) {
-    state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;
+    store[slot] = Object.freeze({
+      slot: `${namespace}.${slot}`,
+      kind: frozenSchema[slot].type,
+    }) as StateRef;
   }
-  return Object.freeze({
-    declaration: Object.freeze({ namespace, schema: frozenSchema }),
-    state: Object.freeze(state) as { readonly [K in keyof S]: StateValueForSlot<S[K]> },
-  });
+  const handle = Object.freeze(store) as StoreDefinition<S>;
+  storeDeclarations.set(handle, Object.freeze({ namespace, schema: frozenSchema }));
+  return handle;
 }

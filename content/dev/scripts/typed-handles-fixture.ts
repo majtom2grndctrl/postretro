@@ -56,17 +56,16 @@ const opts = defineStore("fixtureOpts", {
   curve: { type: "array", default: [0.0, 0.5, 1.0] },
 });
 
-// Correct shape: declarations are returned from `ModManifest.stores`, while
-// state references are stable `{ slot }` objects keyed by schema field.
-const _fixtureStoreDeclaration = opts.declaration;
-const _volume: StateValue<number> = opts.state.volume;
-const _muted: StateValue<boolean> = opts.state.muted;
-const _preset: StateValue<string> = opts.state.preset;
+// Correct shape: `defineStore` returns stable `{ slot }` references keyed by
+// schema field. `defineMod({ stores: [opts] })` resolves declaration data.
+const _volume: StateValue<number> = opts.volume;
+const _muted: StateValue<boolean> = opts.muted;
+const _preset: StateValue<string> = opts.preset;
 
 // The documented mismatch: a `boolean` slot handle is NOT assignable to a
 // numeric-typed binding. This is the `@ts-expect-error` fixture the AC requires.
 // @ts-expect-error — `muted` is StateValue<boolean>, not StateValue<number>.
-const _wrong: StateValue<number> = opts.state.muted;
+const _wrong: StateValue<number> = opts.muted;
 
 // --- (2) Read-only engine-slot refs -----------------------------------------
 // `getGameState().player.health` is directly bindable as a `{ slot }` ref.
@@ -105,21 +104,21 @@ Slider({ id: "hp", label: "HP", bind: gameState.player.health, min: 0, max: 100,
 const _volumeSlider = Slider({
   id: "vol",
   label: "Volume",
-  bind: opts.state.volume,
+  bind: opts.volume,
   min: 0,
   max: 1,
   step: 0.1,
 });
 
 // @ts-expect-error — sliders write numbers, not writable string refs.
-Slider({ id: "preset", label: "Preset", bind: opts.state.preset, min: 0, max: 1, step: 1 });
+Slider({ id: "preset", label: "Preset", bind: opts.preset, min: 0, max: 1, step: 1 });
 
 // @ts-expect-error — array refs accept color tweens, not text `format`.
 const _badArrayBind = bindState(gameState.screen.flash, { format: "RGBA {}" });
 
 // Reaction state writes go through `updateState(ref, value)`: writable mod state
 // is accepted and emits the existing `setState` wire descriptor.
-const _volumeReset = defineReaction("fixtureResetVolume", updateState(opts.state.volume, 0.5));
+const _volumeReset = defineReaction("fixtureResetVolume", updateState(opts.volume, 0.5));
 
 // @ts-expect-error — readonly health cannot feed a state-write reaction.
 const _badHealthWrite = updateState(gameState.player.health, 1);
@@ -137,12 +136,12 @@ const _badEntryTarget = Tree(
     anchor: "center",
     offset: [0, 0],
     // @ts-expect-error — text-entry target must be a writable string ref.
-    textEntryTarget: opts.state.volume,
+    textEntryTarget: opts.volume,
   },
   Text({ content: "Bad" }),
 );
 // @ts-expect-error — text edits require writable string refs.
-const _badAppend = appendText(opts.state.volume, "x");
+const _badAppend = appendText(opts.volume, "x");
 
 // Crossings require numeric refs; equality predicates require scalar refs and a
 // comparand matching the ref value type.

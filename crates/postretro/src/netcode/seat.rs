@@ -100,6 +100,17 @@ pub(crate) fn restore_carried_health(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HoldDeadline(pub(crate) Duration);
 
+/// Result of admitting one remote connection into the durable seat ledger.
+///
+/// A reclaim can repair an impossible-but-recoverable duplicate hold. The
+/// caller owns mod-slot storage, so released losers travel with the admission
+/// result instead of being hidden inside the seat table.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SeatAdmission {
+    pub(crate) seat: Seat,
+    pub(crate) released_seats: Vec<Seat>,
+}
+
 /// Durable host-local player identities for one running session.
 ///
 /// The table is intentionally above transport participation: a `Seat` is minted
@@ -193,12 +204,15 @@ impl SeatTable {
         client_id: u64,
         claim: Option<ConnectClaim>,
         is_currently_closed: bool,
-    ) -> Option<Seat> {
+    ) -> Option<SeatAdmission> {
         if is_currently_closed {
             return None;
         }
         if let Some(seat) = self.seat_for_client(client_id) {
-            return Some(seat);
+            return Some(SeatAdmission {
+                seat,
+                released_seats: Vec::new(),
+            });
         }
 
         if let Some(incoming_claim) = claim.as_ref() {
@@ -226,9 +240,10 @@ impl SeatTable {
 
             if let Some((winner, _)) = held_matches.iter().max_by_key(|(_, order)| *order) {
                 let winner = *winner;
+                let mut released_seats = Vec::new();
                 for (seat, _) in held_matches {
                     if seat != winner {
-                        self.release_seat(seat);
+                        released_seats.push(self.release_seat(seat));
                     }
                 }
                 self.hold_deadlines.remove(&winner);
@@ -239,7 +254,10 @@ impl SeatTable {
                 self.connect_claims
                     .insert(winner, claim.expect("claim borrowed above"));
                 self.roster_dirty = true;
-                return Some(winner);
+                return Some(SeatAdmission {
+                    seat: winner,
+                    released_seats,
+                });
             }
 
             let has_live_identity_collision = self.client_bindings.keys().any(|seat| {
@@ -265,7 +283,11 @@ impl SeatTable {
     ///
     /// `None` means the u16 seat namespace is exhausted; the caller keeps the
     /// connection live, but it cannot acquire a durable player seat.
-    fn mint_fresh_seat(&mut self, client_id: u64, claim: Option<ConnectClaim>) -> Option<Seat> {
+    fn mint_fresh_seat(
+        &mut self,
+        client_id: u64,
+        claim: Option<ConnectClaim>,
+    ) -> Option<SeatAdmission> {
         let Some(seat_number) = u16::try_from(self.next_seat).ok() else {
             // The admitted client still needs one status roster identifying
             // `your_seat: None` even though no row can be allocated for it.
@@ -284,7 +306,10 @@ impl SeatTable {
             self.connect_claims.insert(seat, claim);
         }
         self.roster_dirty = true;
-        Some(seat)
+        Some(SeatAdmission {
+            seat,
+            released_seats: Vec::new(),
+        })
     }
 
     #[must_use]
@@ -358,18 +383,19 @@ impl SeatTable {
     /// Release every hold whose deadline is reached. Seats remain monotonic:
     /// release removes their host-local state and roster entry, but never moves
     /// `next_seat` backward.
-    pub(crate) fn release_expired_holds(&mut self) {
+    pub(crate) fn release_expired_holds(&mut self) -> Vec<Seat> {
         let expired: Vec<Seat> = self
             .hold_deadlines
             .iter()
             .filter_map(|(seat, deadline)| (deadline.0 <= self.hold_clock).then_some(*seat))
             .collect();
-        for seat in expired {
-            self.release_seat(seat);
-        }
+        expired
+            .into_iter()
+            .map(|seat| self.release_seat(seat))
+            .collect()
     }
 
-    fn release_seat(&mut self, seat: Seat) {
+    fn release_seat(&mut self, seat: Seat) -> Seat {
         debug_assert_ne!(seat, Seat(0), "the local seat is never held or released");
         self.carried.remove(&seat);
         self.client_bindings.remove(&seat);
@@ -385,6 +411,7 @@ impl SeatTable {
         self.hold_deadlines.remove(&seat);
         self.hold_order.remove(&seat);
         self.roster_dirty = true;
+        seat
     }
 
     /// Whether this poll needs one consolidated roster publication.
@@ -682,9 +709,10 @@ pub(crate) fn publish_dirty_roster(server: &mut NetServer, seats: &mut SeatTable
 /// Reclaim is resolved by the admission batch before this function runs, so a
 /// connection arriving on its deadline frame keeps its held seat. Expiry and
 /// roster publication then happen together at this sole post-drain seam.
-pub(crate) fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) {
-    seats.release_expired_holds();
+pub(crate) fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) -> Vec<Seat> {
+    let released_seats = seats.release_expired_holds();
     publish_dirty_roster(server, seats);
+    released_seats
 }
 
 #[cfg(test)]
@@ -698,6 +726,10 @@ mod tests {
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::data_descriptors::HealthDescriptor;
     use postretro_entities::registry::Transform;
+    use postretro_entities::{
+        ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable as StateSlotTable,
+        SlotType, SlotValue,
+    };
     use postretro_net::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
     use postretro_net::transport::{HandshakeOutcome, NetClient};
     use postretro_net::wire::encode_connect_claim;
@@ -719,6 +751,19 @@ mod tests {
             (actual - expected).abs() <= 1.0e-6,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn per_seat_number_slot(default: f32) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(default)),
+            range: None,
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
+            accumulate: None,
+        })
     }
 
     fn weapon(magazine: u32) -> WeaponComponent {
@@ -839,7 +884,8 @@ mod tests {
                 server.connect_claim(client_id).cloned(),
                 server.is_closed(client_id),
             )
-            .expect("the fixture seat namespace has room");
+            .expect("the fixture seat namespace has room")
+            .seat;
         finish_host_poll(server, seats);
         seat
     }
@@ -1096,7 +1142,8 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let original_seat = seats
             .admit_or_reclaim(CLOSED_CLIENT, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         assert_eq!(
             seats.hold_disconnected_client(&mut registry, CLOSED_CLIENT),
             Some(original_seat)
@@ -1117,7 +1164,8 @@ mod tests {
         assert_eq!(slots.state(REJOINED_CLIENT), Some(SlotState::Pending));
         let reclaimed = seats
             .admit_or_reclaim(REJOINED_CLIENT, Some(player_claim), false)
-            .expect("fresh transport id reclaims the held seat");
+            .expect("fresh transport id reclaims the held seat")
+            .seat;
         let _ = slots.admit(REJOINED_CLIENT);
 
         assert_eq!(reclaimed, original_seat);
@@ -1172,7 +1220,8 @@ mod tests {
         let mut seats = SeatTable::from_test_session_id([8; 16]);
         let seat = seats
             .admit_or_reclaim(41, None, false)
-            .expect("seat space remains");
+            .expect("seat space remains")
+            .seat;
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         registry.set_component(pawn, health(100.0, 100.0)).unwrap();
@@ -1315,9 +1364,9 @@ mod tests {
     #[test]
     fn admission_mints_each_seat_once_and_keeps_session_id() {
         let mut seats = SeatTable::from_test_session_id([3; 16]);
-        let first = seats.admit_or_reclaim(11, None, false).unwrap();
-        let same = seats.admit_or_reclaim(11, None, false).unwrap();
-        let second = seats.admit_or_reclaim(12, None, false).unwrap();
+        let first = seats.admit_or_reclaim(11, None, false).unwrap().seat;
+        let same = seats.admit_or_reclaim(11, None, false).unwrap().seat;
+        let second = seats.admit_or_reclaim(12, None, false).unwrap().seat;
 
         assert_eq!(first, Seat(1));
         assert_eq!(same, first);
@@ -1348,7 +1397,8 @@ mod tests {
                 }),
                 false,
             )
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
 
         assert!(seats.take_roster_dirty());
         assert!(!seats.take_roster_dirty(), "a poll publishes at most once");
@@ -1387,7 +1437,8 @@ mod tests {
         let player_claim = claim([0x13; 16], "Runner");
         let released = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         seats.carried.insert(
             released,
             Some(CarriedState {
@@ -1420,7 +1471,8 @@ mod tests {
 
         let fresh = seats
             .admit_or_reclaim(42, Some(player_claim), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         assert_eq!(fresh, Seat(2), "released seat numbers are never reused");
         assert!(seats.carried_state_for_test(fresh).is_none());
     }
@@ -1431,7 +1483,8 @@ mod tests {
         let player_claim = claim([0x14; 16], "Old name");
         let original = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         let _ = seats.take_roster_dirty();
 
         assert_eq!(
@@ -1442,7 +1495,8 @@ mod tests {
 
         let reclaimed = seats
             .admit_or_reclaim(42, Some(claim([0x14; 16], "New name")), false)
-            .expect("deadline-frame admission reclaims before expiry runs");
+            .expect("deadline-frame admission reclaims before expiry runs")
+            .seat;
         seats.release_expired_holds();
 
         assert_eq!(reclaimed, original);
@@ -1462,7 +1516,8 @@ mod tests {
         let player_claim = claim([0x18; 16], "Runner");
         let expired = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         assert_eq!(
             seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
             Some(expired)
@@ -1473,7 +1528,8 @@ mod tests {
         // hold is not reclaimable even though the sweep has not removed it yet.
         let fresh = seats
             .admit_or_reclaim(42, Some(player_claim), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         seats.release_expired_holds();
 
         assert_eq!(fresh, Seat(2));
@@ -1486,7 +1542,8 @@ mod tests {
         let original_claim = claim([0x15; 16], "Runner");
         let original = seats
             .admit_or_reclaim(41, Some(original_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         assert_eq!(
             seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
             Some(original)
@@ -1496,13 +1553,15 @@ mod tests {
         nearly_matching_id[7] = 0x16;
         let fresh = seats
             .admit_or_reclaim(42, Some(claim(nearly_matching_id, "Runner")), false)
-            .expect("different player id receives a fresh seat");
+            .expect("different player id receives a fresh seat")
+            .seat;
         assert_eq!(fresh, Seat(2));
         assert_eq!(seats.seat_for_client(42), Some(fresh));
 
         let reclaimed = seats
             .admit_or_reclaim(43, Some(original_claim), false)
-            .expect("the exact opaque identity reclaims its held seat");
+            .expect("the exact opaque identity reclaims its held seat")
+            .seat;
         assert_eq!(reclaimed, original);
     }
 
@@ -1512,12 +1571,14 @@ mod tests {
         let player_claim = claim([0x16; 16], "Runner");
         let held_by_live_client = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
 
         let logs = LogCapture::start();
         let fresh = seats
             .admit_or_reclaim(42, Some(claim([0x16; 16], "Also Runner")), false)
-            .expect("live identity collision receives a fresh seat");
+            .expect("live identity collision receives a fresh seat")
+            .seat;
 
         assert_eq!(held_by_live_client, Seat(1));
         assert_eq!(fresh, Seat(2));
@@ -1530,12 +1591,78 @@ mod tests {
     }
 
     #[test]
+    fn held_seat_keeps_per_seat_values_until_expiry_then_a_fresh_seat_uses_defaults() {
+        let mut seats = SeatTable::from_test_session_id([0x19; 16]);
+        let player_claim = claim([0x19; 16], "Hold Runner");
+        let original = seats
+            .admit_or_reclaim(41, Some(player_claim.clone()), false)
+            .expect("seat namespace has room")
+            .seat;
+        let mut slots = StateSlotTable::new();
+        slots
+            .insert_namespace(
+                "currency",
+                vec![("xp".to_string(), per_seat_number_slot(0.0))],
+            )
+            .unwrap();
+        slots
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(original, SlotValue::Number(80.0));
+
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
+            Some(original)
+        );
+        assert_eq!(
+            slots.get("currency.xp").unwrap().per_seat_value(original),
+            Some(&SlotValue::Number(80.0)),
+            "disconnect starts a hold without clearing the seat-keyed value"
+        );
+
+        let reclaimed = seats
+            .admit_or_reclaim(42, Some(player_claim.clone()), false)
+            .expect("matching claim reclaims the held seat");
+        assert_eq!(reclaimed.seat, original);
+        assert!(reclaimed.released_seats.is_empty());
+        crate::clear_released_seat_slot_values(&mut slots, reclaimed.released_seats);
+        assert_eq!(
+            slots.get("currency.xp").unwrap().per_seat_value(original),
+            Some(&SlotValue::Number(80.0)),
+            "reclaim has no restore step because the original map entry remains live"
+        );
+
+        assert_eq!(
+            seats.hold_disconnected_client(&mut EntityRegistry::new(), 42),
+            Some(original)
+        );
+        seats.advance_hold_clock(HOLD_WINDOW);
+        crate::clear_released_seat_slot_values(&mut slots, seats.release_expired_holds());
+        assert_eq!(
+            slots.get("currency.xp").unwrap().per_seat_value(original),
+            Some(&SlotValue::Number(0.0)),
+            "expiry removes the held seat's authoritative entry"
+        );
+
+        let fresh = seats
+            .admit_or_reclaim(43, Some(player_claim), false)
+            .expect("released seat numbers are never reused");
+        assert_ne!(fresh.seat, original);
+        assert_eq!(
+            slots.get("currency.xp").unwrap().per_seat_value(fresh.seat),
+            Some(&SlotValue::Number(0.0)),
+            "a post-expiry rejoin starts at the declared default"
+        );
+    }
+
+    #[test]
     fn most_recent_matching_hold_wins_and_releases_stale_duplicate() {
         let mut seats = SeatTable::from_test_session_id([17; 16]);
         let player_claim = claim([0x17; 16], "Runner");
         let stale = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         assert_eq!(
             seats.hold_disconnected_client(&mut EntityRegistry::new(), 41),
             Some(stale)
@@ -1546,18 +1673,47 @@ mod tests {
         // would be reclaimed; the table still needs a deterministic repair.
         let recent = seats
             .admit_or_reclaim(42, Some(claim([0x18; 16], "Other")), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         seats.connect_claims.insert(recent, player_claim.clone());
         assert_eq!(
             seats.hold_disconnected_client(&mut EntityRegistry::new(), 42),
             Some(recent)
         );
 
+        let mut slots = StateSlotTable::new();
+        slots
+            .insert_namespace(
+                "currency",
+                vec![("xp".to_string(), per_seat_number_slot(0.0))],
+            )
+            .unwrap();
+        slots
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(stale, SlotValue::Number(11.0));
+        slots
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(recent, SlotValue::Number(29.0));
+
         let reclaimed = seats
             .admit_or_reclaim(43, Some(player_claim), false)
             .expect("matching hold reclaims");
 
-        assert_eq!(reclaimed, recent);
+        assert_eq!(reclaimed.seat, recent);
+        assert_eq!(reclaimed.released_seats, vec![stale]);
+        crate::clear_released_seat_slot_values(&mut slots, reclaimed.released_seats);
+        assert_eq!(
+            slots.get("currency.xp").unwrap().per_seat_value(stale),
+            Some(&SlotValue::Number(0.0)),
+            "the stale duplicate loses its value at reclaim, not at a later expiry sweep"
+        );
+        assert_eq!(
+            slots.get("currency.xp").unwrap().per_seat_value(recent),
+            Some(&SlotValue::Number(29.0)),
+            "cleanup for the losing seat never touches the reclaimed winner"
+        );
         assert_eq!(seats.carried_state_for_test(stale), None);
         assert!(
             seats
@@ -1584,13 +1740,16 @@ mod tests {
         let mut seats = SeatTable::from_test_session_id([12; 16]);
         let first = seats
             .admit_or_reclaim(41, None, false)
-            .expect("first remote seat");
+            .expect("first remote seat")
+            .seat;
         let second = seats
             .admit_or_reclaim(42, None, false)
-            .expect("second remote seat");
+            .expect("second remote seat")
+            .seat;
         let third = seats
             .admit_or_reclaim(43, None, false)
-            .expect("third remote seat");
+            .expect("third remote seat")
+            .seat;
 
         assert_eq!(seats.assign_placement(first, 3, []), Some(0));
         assert_eq!(
@@ -1621,7 +1780,8 @@ mod tests {
         seats.clear_pawn_bindings_for_level_unload(&mut EntityRegistry::new());
         let post_level_admission = seats
             .admit_or_reclaim(44, None, false)
-            .expect("a post-level admission mints a fresh seat");
+            .expect("a post-level admission mints a fresh seat")
+            .seat;
         assert_eq!(
             seats.assign_placement(post_level_admission, 3, [0, 1]),
             Some(2),
@@ -1675,7 +1835,8 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let seat = seats
             .admit_or_reclaim(41, None, false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         let old_pawn = registry.spawn(Transform::default());
         let new_pawn = registry.spawn(Transform::default());
 
@@ -1717,7 +1878,8 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let seat = seats
             .admit_or_reclaim(41, Some(claim([0x22; 16], "Runner")), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         let pawn = registry.spawn(Transform::default());
         seats.bind_pawn(&mut registry, seat, pawn);
 
@@ -1743,7 +1905,8 @@ mod tests {
         let player_claim = claim([0x23; 16], "Runner");
         let seat = seats
             .admit_or_reclaim(41, Some(player_claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
         let old_pawn = registry.spawn(Transform::default());
         seats.bind_pawn(&mut registry, seat, old_pawn);
         assert_eq!(
@@ -1753,7 +1916,8 @@ mod tests {
 
         let reclaimed = seats
             .admit_or_reclaim(42, Some(player_claim), false)
-            .expect("the exact player identity reclaims its held seat");
+            .expect("the exact player identity reclaims its held seat")
+            .seat;
         let new_pawn = registry.spawn(Transform::default());
         seats.bind_pawn(&mut registry, reclaimed, new_pawn);
 

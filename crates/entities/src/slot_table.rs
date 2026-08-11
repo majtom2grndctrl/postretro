@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::engine_state_catalog::engine_state_catalog;
-use postretro_foundation::IrNode;
+use postretro_foundation::{IrNode, Seat};
 
 /// Runtime value stored in a state slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,7 +80,12 @@ pub struct SlotSchema {
 #[derive(Clone, Debug)]
 pub struct SlotRecord {
     pub schema: SlotSchema,
+    /// The scalar projection consumed by existing unaddressed readers. On a
+    /// host, a per-owner slot keeps each owner's authoritative value in
+    /// `per_seat_values`; the local-seat publisher refreshes this scalar
+    /// separately. Clients retain their received local projection here.
     pub value: Option<SlotValue>,
+    per_seat_values: HashMap<Seat, SlotValue>,
     write_generation: u64,
 }
 
@@ -90,8 +95,34 @@ impl SlotRecord {
         Self {
             schema,
             value,
+            per_seat_values: HashMap::new(),
             write_generation: 0,
         }
+    }
+
+    /// Read this slot's value for one durable player seat.
+    ///
+    /// An unwritten seat observes the declared default, exactly as a freshly
+    /// declared scalar slot does. Owner-addressed callers use this instead of
+    /// the scalar projection in `value`.
+    pub fn per_seat_value(&self, seat: Seat) -> Option<&SlotValue> {
+        self.per_seat_values
+            .get(&seat)
+            .or(self.schema.default.as_ref())
+    }
+
+    /// Set this slot's authoritative value for one durable player seat.
+    ///
+    /// This deliberately leaves `value` alone: it is the local projection for
+    /// unaddressed readers, not a fallback for another owner's value.
+    pub fn set_per_seat_value(&mut self, seat: Seat, value: SlotValue) {
+        self.per_seat_values.insert(seat, value);
+        self.write_generation = self.write_generation.wrapping_add(1);
+    }
+
+    /// Remove one durable player's authoritative value at seat release.
+    pub fn clear_per_seat_value(&mut self, seat: Seat) {
+        self.per_seat_values.remove(&seat);
     }
 
     /// Generation of the latest accepted authoritative write.
@@ -116,7 +147,9 @@ impl PartialEq for SlotRecord {
     fn eq(&self, other: &Self) -> bool {
         // Write generations are runtime notifications, not declaration or
         // visible-value semantics.
-        self.schema == other.schema && self.value == other.value
+        self.schema == other.schema
+            && self.value == other.value
+            && self.per_seat_values == other.per_seat_values
     }
 }
 
@@ -376,6 +409,17 @@ impl SlotTable {
             .map(|(name, record)| (name.as_str(), record))
     }
 
+    /// Clear all authoritative per-seat values when a durable seat is released.
+    ///
+    /// The table contains every mod store, so the app can keep the seat-table
+    /// lifecycle and store cleanup separate while still clearing every store at
+    /// the one release seam.
+    pub fn clear_per_seat_values(&mut self, seat: Seat) {
+        for record in self.slots.values_mut() {
+            record.clear_per_seat_value(seat);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.slots.len()
     }
@@ -510,6 +554,87 @@ mod tests {
 
         assert_eq!(written.write_generation(), 1);
         assert_eq!(written, original);
+    }
+
+    #[test]
+    fn per_seat_values_are_isolated_and_unwritten_seats_use_the_declared_default() {
+        let mut record = number_slot(5.0);
+
+        assert_eq!(
+            record.per_seat_value(Seat(1)),
+            Some(&SlotValue::Number(5.0)),
+            "an unwritten seat starts from the slot declaration's default"
+        );
+
+        record.set_per_seat_value(Seat(1), SlotValue::Number(17.0));
+        record.set_per_seat_value(Seat(2), SlotValue::Number(31.0));
+
+        assert_eq!(
+            record.per_seat_value(Seat(1)),
+            Some(&SlotValue::Number(17.0))
+        );
+        assert_eq!(
+            record.per_seat_value(Seat(2)),
+            Some(&SlotValue::Number(31.0))
+        );
+        assert_eq!(
+            record.per_seat_value(Seat(3)),
+            Some(&SlotValue::Number(5.0)),
+            "one owner's write never changes another owner's default"
+        );
+
+        record.clear_per_seat_value(Seat(1));
+
+        assert_eq!(
+            record.per_seat_value(Seat(1)),
+            Some(&SlotValue::Number(5.0)),
+            "releasing a seat drops only that seat's value"
+        );
+        assert_eq!(
+            record.per_seat_value(Seat(2)),
+            Some(&SlotValue::Number(31.0))
+        );
+    }
+
+    #[test]
+    fn table_clear_per_seat_values_clears_each_store_without_changing_scalars() {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace(
+                "currency",
+                vec![
+                    ("xp".to_string(), number_slot(0.0)),
+                    ("tokens".to_string(), number_slot(10.0)),
+                ],
+            )
+            .unwrap();
+        table
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(Seat(7), SlotValue::Number(100.0));
+        table
+            .get_mut("currency.tokens")
+            .unwrap()
+            .set_per_seat_value(Seat(7), SlotValue::Number(50.0));
+
+        table.clear_per_seat_values(Seat(7));
+
+        assert_eq!(
+            table.get("currency.xp").unwrap().per_seat_value(Seat(7)),
+            Some(&SlotValue::Number(0.0))
+        );
+        assert_eq!(
+            table
+                .get("currency.tokens")
+                .unwrap()
+                .per_seat_value(Seat(7)),
+            Some(&SlotValue::Number(10.0))
+        );
+        assert_eq!(
+            table.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(0.0)),
+            "release cleanup does not overwrite the scalar local projection"
+        );
     }
 
     #[test]

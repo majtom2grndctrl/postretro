@@ -814,7 +814,28 @@ impl App {
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
         };
-        let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
+        let products = install_world_cpu(
+            handles,
+            &mut self.level_timings,
+            upload_mesh_models,
+            |spawn_points| {
+                let Some(seats) = session.seat_table.as_mut() else {
+                    return;
+                };
+                let local_pawn = {
+                    let registry = script_ctx.registry.borrow();
+                    crate::capture_player_spawn_placements(&registry, spawn_points, seats);
+                    registry.local_player_pawn()
+                };
+                if let Some(pawn) = local_pawn {
+                    seats.bind_pawn(
+                        &mut script_ctx.registry.borrow_mut(),
+                        postretro_foundation::Seat(0),
+                        pawn,
+                    );
+                }
+            },
+        );
 
         // `levelLoad` may already have queued system commands during the CPU
         // install. Bind the final composed reaction set before that queue is
@@ -836,26 +857,6 @@ impl App {
         // has already built both CPU tables; resolve only this changed pawn through
         // the standard socket-binding path.
         let local_pawn = script_ctx.registry.borrow().local_player_pawn();
-        if let Some(seats) = self
-            .session
-            .as_mut()
-            .expect("session installed before local seat binding")
-            .seat_table
-            .as_mut()
-        {
-            crate::capture_player_spawn_placements(
-                &script_ctx.registry.borrow(),
-                &self.host_spawn_points,
-                seats,
-            );
-            if let Some(pawn) = local_pawn {
-                seats.bind_pawn(
-                    &mut script_ctx.registry.borrow_mut(),
-                    postretro_foundation::Seat(0),
-                    pawn,
-                );
-            }
-        }
         let descriptors = script_ctx.data_registry.borrow().entities.clone();
         if let Some(pawn) = local_pawn {
             let session = self
@@ -2111,9 +2112,14 @@ mod tests {
                 suppress_boot_pawn: suppress_ai_enemies,
                 local_carried_loadout: None,
             };
-            install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
-                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
-            })
+            install_world_cpu(
+                handles,
+                &mut timings,
+                |_models, _clip_tables| {
+                    crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+                },
+                |_spawn_points| {},
+            )
         };
 
         let registry = std::mem::take(&mut *ctx.registry.borrow_mut());
@@ -3668,9 +3674,14 @@ mod tests {
                 local_carried_loadout: None,
             };
             // No-op mesh hook: headless-shaped, no renderer to upload models.
-            let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
-                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
-            });
+            let _ = install_world_cpu(
+                handles,
+                &mut timings,
+                |_models, _clip_tables| {
+                    crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+                },
+                |_spawn_points| {},
+            );
         }
 
         // Fresh registry (no despawns): `to_raw()` low bits are the allocation

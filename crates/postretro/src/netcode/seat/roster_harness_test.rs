@@ -83,7 +83,8 @@ fn admit(
             server.connect_claim(client_id).cloned(),
             server.is_closed(client_id),
         )
-        .expect("test session has a free durable seat");
+        .expect("test session has a free durable seat")
+        .seat;
     finish_host_poll(server, seats);
     seat
 }
@@ -338,7 +339,8 @@ fn expired_seat_cycles_bound_host_local_seat_rows() {
         let client_id = 100 + cycle;
         let seat = seats
             .admit_or_reclaim(client_id, Some(claim(cycle as u8, "Cycle Runner")), false)
-            .expect("each cycle mints one fresh seat");
+            .expect("each cycle mints one fresh seat")
+            .seat;
         assert_eq!(seat, Seat((cycle + 1) as u16));
         assert_eq!(
             seats.hold_disconnected_client(&mut registry, client_id),

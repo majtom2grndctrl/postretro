@@ -141,7 +141,7 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 pub(crate) use crate::startup::session::resolve_map_path;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{ComponentKind, ComponentValue, SystemReactionCommand, Transform};
-use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
+use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
     dispatch_deferred_named_events_with_sequences, fire_named_event,
@@ -4046,7 +4046,10 @@ impl App {
                 (session.net_endpoint.as_mut(), session.seat_table.as_mut())
         {
             // Hold expiry is session-clock work, not successful socket-I/O work.
-            netcode::finish_host_poll(server, seats);
+            clear_released_seat_slot_values(
+                &mut script_ctx.slot_table.borrow_mut(),
+                netcode::finish_host_poll(server, seats),
+            );
         }
         if let netcode::WorldLessPoll::Host(host_poll) = &poll {
             let Some(session) = self.session.as_mut() else {
@@ -4112,11 +4115,16 @@ impl App {
                     log::warn!("[Net] admitted client {client_id} has no host seat table");
                     continue;
                 };
-                if seats.admit_or_reclaim(*client_id, claim, false).is_none() {
+                let Some(admission) = seats.admit_or_reclaim(*client_id, claim, false) else {
                     log::warn!(
                         "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
                     );
-                }
+                    continue;
+                };
+                clear_released_seat_slot_values(
+                    &mut script_ctx.slot_table.borrow_mut(),
+                    admission.released_seats,
+                );
             }
             netcode::host_handle_lifecycle(
                 &mut registry,
@@ -4136,7 +4144,10 @@ impl App {
                 &host_poll.lifecycle,
             );
             if let Some(seats) = seat_table {
-                netcode::finish_host_poll(server, seats);
+                clear_released_seat_slot_values(
+                    &mut script_ctx.slot_table.borrow_mut(),
+                    netcode::finish_host_poll(server, seats),
+                );
             }
         }
         Some(poll)
@@ -5374,15 +5385,18 @@ impl App {
                                             );
                                             continue;
                                         };
-                                        if seats
-                                            .admit_or_reclaim(*client_id, claim, false)
-                                            .is_none()
-                                        {
+                                        let Some(admission) =
+                                            seats.admit_or_reclaim(*client_id, claim, false)
+                                        else {
                                             log::warn!(
                                                 "[Net] admitted client {client_id} could not receive a seat: namespace exhausted"
                                             );
                                             continue;
-                                        }
+                                        };
+                                        clear_released_seat_slot_values(
+                                            &mut script_ctx.slot_table.borrow_mut(),
+                                            admission.released_seats,
+                                        );
                                         log::info!(
                                             "[Net] client {client_id} admitted; awaiting content parity"
                                         );
@@ -5549,7 +5563,10 @@ impl App {
                             }
                         }
                         if let Some(seats) = seat_table {
-                            netcode::finish_host_poll(server, seats);
+                            clear_released_seat_slot_values(
+                                &mut script_ctx.slot_table.borrow_mut(),
+                                netcode::finish_host_poll(server, seats),
+                            );
                         }
                     }
                     Err(err) => {
@@ -5557,7 +5574,10 @@ impl App {
                         if let Some(seats) = seat_table {
                             // A persistently failing socket must not freeze
                             // session-clock hold expiry or its roster update.
-                            netcode::finish_host_poll(server, seats);
+                            clear_released_seat_slot_values(
+                                &mut script_ctx.slot_table.borrow_mut(),
+                                netcode::finish_host_poll(server, seats),
+                            );
                         }
                     }
                 }
@@ -6916,6 +6936,18 @@ fn capture_player_spawn_placements(
             continue;
         };
         seats.bind_level_spawn_placement(pawn, placement);
+    }
+}
+
+/// Drop every mod-store value owned by seats that have actually left the
+/// session. Disconnect holds deliberately do not call this: a reclaim must
+/// observe the same seat-keyed values until expiry releases that seat.
+fn clear_released_seat_slot_values(
+    slot_table: &mut postretro_entities::SlotTable,
+    released_seats: impl IntoIterator<Item = Seat>,
+) {
+    for seat in released_seats {
+        slot_table.clear_per_seat_values(seat);
     }
 }
 

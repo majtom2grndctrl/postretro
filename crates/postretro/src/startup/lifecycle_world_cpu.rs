@@ -66,7 +66,10 @@ pub(crate) fn install_descriptor_player_health_range(
 /// tables and returns renderer ownership of model-load diagnostics; a headless
 /// caller passes a no-op that returns game-side ownership, leaving clips
 /// unresolved while preserving load warnings. Stage durations record into
-/// `timings`, matching the windowed log-line-C labels.
+/// `timings`, matching the windowed log-line-C labels. The caller-owned
+/// `before_level_load` hook runs after player-pawn materialization and before
+/// the event fire, so session state may bind a local pawn without making this
+/// installer depend on the seat table.
 pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,
@@ -75,6 +78,7 @@ pub(crate) fn install_world_cpu(
         &mut crate::scripting_systems::mesh_anim::MeshClipTables,
     )
         -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
+    mut before_level_load: impl FnMut(&[crate::scripting::map_entity::MapEntity]),
 ) -> WorldInstallProducts {
     let WorldInstallHandles {
         world,
@@ -403,6 +407,10 @@ pub(crate) fn install_world_cpu(
         hit_zone_store,
     );
     timings.record("model_load");
+
+    // Bind caller-owned session state after the archetype sweep has created
+    // player pawns but before `levelLoad` can address their owner association.
+    before_level_load(&spawn_points);
 
     // Fire `levelLoad`. Headless fires it too so data-script reactions and
     // crossings compose identically; runs after the clip resolve so a

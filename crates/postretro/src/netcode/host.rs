@@ -636,7 +636,8 @@ mod tests {
         let mut seats = SeatTable::from_test_session_id([5; 16]);
         let seat = seats
             .admit_or_reclaim(CLIENT_ID, None, false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
 
         host_handle_accept(
             &mut registry,
@@ -722,7 +723,8 @@ mod tests {
         let mut seats = SeatTable::from_test_session_id([0x71; 16]);
         let seat = seats
             .admit_or_reclaim(ORIGINAL_CLIENT, Some(claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
 
         host_handle_accept(
             &mut registry,
@@ -771,7 +773,9 @@ mod tests {
         );
 
         assert_eq!(
-            seats.admit_or_reclaim(REJOINED_CLIENT, Some(claim), false),
+            seats
+                .admit_or_reclaim(REJOINED_CLIENT, Some(claim), false)
+                .map(|admission| admission.seat),
             Some(seat)
         );
         host_handle_accept(

@@ -291,7 +291,7 @@ unchanged; new names below.
 const progression = defineStore({ xp: { type: "number", default: 0, persist: true }, teamKills: { type: "number", default: 0 } });
 export function setupMod() { return defineMod({ /* … */ stores: [progression.declaration] }); }
 
-const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
+const reward = defineImpactEvent({ tag: "enemy" }, (impact) => {   // id "reward" from the binding (naming sugar)
   const isKill = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   const bonus  = impact.target.healthAfter.le(-40).select(50, 25);
   return [{ when: isKill, do: [
@@ -307,7 +307,7 @@ const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
 const progression = defineStore({ xp: { type: "number", default: 0, persist: true }, teamKills: { type: "number", default: 0 } });
 export function setupMod() { return defineMod({ /* … */ stores: [progression] }); }   // handle, not .declaration
 
-const reward = defineImpactEvent("dev:reward", { tag: "enemy" }, (impact) => {
+const reward = defineImpactEvent({ tag: "enemy" }, (impact) => {   // id "reward" from the binding (naming sugar)
   const isKill = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));   // BoolRef (computed)
   const bonus  = impact.target.healthAfter.le(-40).select(50, 25);
   return [ when(isKill, [
@@ -327,8 +327,9 @@ when(readState(progression.teamKills).ge(3), [ … ]);  // readState: a slot int
 
 `readState(getGameState().player.health)` lifts an engine `ComputedRef` into the same algebra, so a policy can
 read engine state, store state, and impact facts in one expression — the incoherence this spec removes. Luau is
-the behavioral twin, with the explicit-namespace `defineStore("progression", …)` form, the
-`function(cur) … end` updater callback, and the `cond["and"](cond, other)` boolean spelling.
+the behavioral twin: no compiler sugar, so it names both `defineStore("progression", …)` and
+`defineImpactEvent("reward", { tag = "enemy" }, …)` explicitly (single-segment id, no colon), with the
+`function(cur) … end` updater callback and the `cond["and"](cond, other)` boolean spelling.
 
 ## Open questions
 

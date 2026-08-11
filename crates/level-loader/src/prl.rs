@@ -1144,6 +1144,7 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             valid_probe_masks: vec![u64::MAX; cell_count],
+            cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1167,6 +1168,7 @@ mod tests {
             // The shared fixture base volume marks every probe invalid, so
             // retained zero-length entries are the matching id-41 spelling.
             valid_probe_masks: vec![0; cell_count],
+            cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
             delta_subblocks: Vec::new(),
             affinity_lights,
@@ -1190,6 +1192,7 @@ mod tests {
             // retained zero-length id-45 entry is its matching compact form.
             animation_descriptor_indices: vec![u32::MAX],
             valid_probe_masks: vec![0; cell_count],
+            cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: Vec::new(),

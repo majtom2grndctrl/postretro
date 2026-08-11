@@ -143,6 +143,7 @@ pub fn bake_animated_direct_sh_delta_volumes_controlled(
         tile_border: TILE_BORDER,
         animation_descriptor_indices: (0..animated_light_count as u32).collect(),
         valid_probe_masks: vec![u64::MAX; decomposition.affinity_cell_count()],
+        cell_levels: vec![0u8; decomposition.affinity_cell_count()],
         affinity_offsets,
         affinity_lights,
         delta_subblocks,

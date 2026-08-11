@@ -52,8 +52,9 @@ impl AnimatedDirectShDebugOverride {
 }
 
 const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
-/// Combined low/high valid-probe mask words followed by one f16-half payload
-/// offset per post-drop CSR entry. Binding 26 is the pass-B debug override.
+/// Combined low/high valid-probe mask words, one coarsening level per cell,
+/// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
+/// pass-B debug override.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
 #[cfg(feature = "dev-tools")]
@@ -310,23 +311,33 @@ mod tests {
     }
 
     #[test]
-    fn animated_shader_skips_invalid_locals_before_delta_reads() {
+    fn animated_shader_uses_validity_to_gate_delta_reconstruction() {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
-        let guard = source
-            .find("if (!local_probe_is_valid(affinity.cell_index, affinity.local_probe))")
-            .expect("animated compose must guard invalid locals");
-        let read = source
-            .find("let delta = read_delta_texel(")
-            .expect("animated compose must read compact delta tiles");
-
         assert!(
-            guard < read,
-            "the invalid-local guard must run before every compact payload read"
+            source.contains(
+                "let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);"
+            ),
+            "id-45 has no base probe-indirection, so its validity mask must gate delta reads"
         );
         assert!(
             !source.contains("enable f16"),
             "animated-direct delta payloads remain Rgba16Float read through f32 unpacking"
         );
+    }
+
+    #[test]
+    fn animated_coarsened_compose_uses_one_brick_workgroup_and_kept_shared_tiles() {
+        let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
+
+        assert!(source.contains("@builtin(workgroup_id) brick"));
+        assert!(source.contains("var<workgroup> shared_kept_tiles"));
+        assert!(source.contains(
+            "return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u"
+        ));
+        assert!(source.contains("countOneBits(kept_probe_mask_word"));
+        assert!(source.contains("if (level == 0u)"));
+        assert!(source.contains("if (level == 1u && local_probe_is_kept"));
+        assert!(source.contains("if (level == 2u)"));
     }
 
     #[test]

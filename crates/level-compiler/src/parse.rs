@@ -661,6 +661,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
+    // Mapper-authored SH probe-coarsening protection volumes, each a world-space
+    // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
+    // `--sh-protect-aabb` CLI stand-in at the coarsening classifier so both
+    // sources force intersecting 4×4×4 bricks to stay L0 (dense).
+    let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
 
     // Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest). Default 4 when
     // unset. `0` is the "unset" sentinel — pass it through as `0` so the
@@ -883,6 +888,46 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 trigger_volumes.push(crate::trigger_volumes::resolve_trigger_volume(
                     &geo_map, &brush_ids, &props, scale, &classname,
                 )?);
+                continue;
+            }
+            // A brush volume marking world space where SH probe coarsening must
+            // be suppressed: intersecting 4×4×4 bricks stay L0 (dense). The
+            // mapper-authored counterpart to the `--sh-protect-aabb` CLI stand-in
+            // — both feed the SAME `sh_coarsen::classify_section_levels` protect
+            // input (unioned in `pipeline.rs::apply_coarsen_classification`).
+            //
+            // The classname is PROVISIONAL: B4's FGD entity pins the final name;
+            // update this string (and the FGD) together when it lands.
+            if classname == "sh_protect_volume" {
+                let props = collect_entity_properties(&geo_map, entity_id);
+                let name = props
+                    .get("name")
+                    .map(|v| v.trim().to_owned())
+                    .unwrap_or_default();
+                // Same brush-hull → world-AABB union `trigger_volume` uses; a
+                // protection volume needs only the enclosing box, none of the
+                // trigger's activation/target data.
+                let (mut min, mut max) = crate::trigger_volumes::resolve_brush_entity_aabb(
+                    &geo_map, &brush_ids, scale, &classname, &name,
+                )?;
+                // Optional `dilation` margin, expanding the box on all six faces
+                // so a probe just outside the authored brushwork is still
+                // protected. Default 0.0; negatives are an authoring error (they
+                // would shrink the volume). In world units — the same engine
+                // space the AABB and the CLI `--sh-protect-aabb` boxes live in.
+                let dilation =
+                    parse_optional_finite_f32(&props, "dilation", 0.0, &classname, &name)?;
+                if dilation < 0.0 {
+                    anyhow::bail!(
+                        "{classname} `{name}` `dilation` must be non-negative, got {dilation}"
+                    );
+                }
+                let d = dilation as f64;
+                min -= DVec3::splat(d);
+                max += DVec3::splat(d);
+                let min = min.to_array().map(|v| v as f32);
+                let max = max.to_array().map(|v| v as f32);
+                sh_protect_aabbs.push([min[0], min[1], min[2], max[0], max[1], max[2]]);
                 continue;
             }
             // A `switch` is authoring sugar that desugars into two shipped
@@ -1185,6 +1230,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_movers,
         kinematic_waypoints,
         trigger_volumes,
+        sh_protect_aabbs,
         fog_volumes,
         fog_pixel_scale,
         initial_gravity,
@@ -2586,6 +2632,111 @@ mod tests {
         let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
             .expect("one trigger produces a PRL section");
         assert_eq!(records.triggers[0].on_exit, "close_lift");
+    }
+
+    /// A `worldspawn` plus one `sh_protect_volume` brush entity — a 32-unit box
+    /// at the Quake origin. `extra_kvps` is spliced onto the entity without a
+    /// blank line (a blank line inside an entity block makes the .map parser
+    /// silently drop the remaining entities).
+    fn sh_protect_volume_map(extra_kvps: &str) -> String {
+        format!(
+            r#"
+// entity 0
+{{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+{{
+( 256 0 -32 ) ( 257 0 -32 ) ( 256 1 -32 ) static_tex 0 0 0 1 1
+( 256 0  32 ) ( 256 1  32 ) ( 257 0  32 ) static_tex 0 0 0 1 1
+( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) static_tex 0 0 0 1 1
+( 320 0 0 ) ( 320 0 1 ) ( 320 1 0 ) static_tex 0 0 0 1 1
+( 256 -64 0 ) ( 256 -64 1 ) ( 257 -64 0 ) static_tex 0 0 0 1 1
+( 256  64 0 ) ( 257  64 0 ) ( 256  64 1 ) static_tex 0 0 0 1 1
+}}
+}}
+// entity 1
+{{
+"classname" "sh_protect_volume"
+"name" "vault"{extra_kvps}
+{{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) protect_tex 0 0 0 1 1
+( 32 0 0 ) ( 32 0 1 ) ( 32 1 0 ) protect_tex 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 1 0 0 ) protect_tex 0 0 0 1 1
+( 0 32 0 ) ( 1 32 0 ) ( 0 32 1 ) protect_tex 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) protect_tex 0 0 0 1 1
+( 0 0 32 ) ( 0 1 32 ) ( 1 0 32 ) protect_tex 0 0 0 1 1
+}}
+}}
+"#
+        )
+    }
+
+    #[test]
+    fn sh_protect_volume_resolves_to_a_world_aabb() {
+        let map = parse_inline_map(&sh_protect_volume_map("")).expect("protect volume compiles");
+        assert_eq!(
+            map.sh_protect_aabbs.len(),
+            1,
+            "one protect volume → one AABB"
+        );
+        // Quake box [0,32]^3 → engine (−y, z, −x) × 0.0254 (inch → m).
+        let s = MapFormat::IdTech2.units_to_meters() as f32;
+        let expect = [-32.0 * s, 0.0, -32.0 * s, 0.0, 32.0 * s, 0.0];
+        let aabb = map.sh_protect_aabbs[0];
+        for (got, want) in aabb.iter().zip(expect.iter()) {
+            assert!(
+                (got - want).abs() < 1e-5,
+                "aabb {aabb:?} vs expected {expect:?}"
+            );
+        }
+        // A protection volume is invisible: it becomes neither a trigger nor
+        // static world geometry.
+        assert!(
+            map.trigger_volumes.is_empty(),
+            "protect volume is not a trigger"
+        );
+        assert!(
+            map.brush_volumes
+                .iter()
+                .flat_map(|b| b.sides.iter())
+                .all(|side| side.texture != "protect_tex"),
+            "protect volume brush must not enter static geometry"
+        );
+    }
+
+    #[test]
+    fn sh_protect_volume_dilation_expands_the_aabb_on_all_faces() {
+        let base = parse_inline_map(&sh_protect_volume_map(""))
+            .unwrap()
+            .sh_protect_aabbs[0];
+        let dilated = parse_inline_map(&sh_protect_volume_map("\n\"dilation\" \"0.5\""))
+            .expect("dilated protect volume compiles")
+            .sh_protect_aabbs[0];
+        let d = 0.5f32;
+        for i in 0..3 {
+            assert!(
+                (dilated[i] - (base[i] - d)).abs() < 1e-5,
+                "min[{i}] expected {} got {}",
+                base[i] - d,
+                dilated[i]
+            );
+            assert!(
+                (dilated[i + 3] - (base[i + 3] + d)).abs() < 1e-5,
+                "max[{i}] expected {} got {}",
+                base[i + 3] + d,
+                dilated[i + 3]
+            );
+        }
+    }
+
+    #[test]
+    fn sh_protect_volume_rejects_negative_dilation() {
+        let err = parse_inline_map(&sh_protect_volume_map("\n\"dilation\" \"-1\""))
+            .expect_err("negative dilation must fail the compile");
+        assert!(
+            err.to_string().contains("`dilation` must be non-negative"),
+            "{err}"
+        );
     }
 
     /// A `switch` sharing the `trigger_volume` fixture's brush, so the two can be

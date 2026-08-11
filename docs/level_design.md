@@ -172,6 +172,31 @@ Set `fog_pixel_scale` on the `worldspawn` entity, not on individual volumes. It 
 
 ---
 
+## SH Probe Protection Volumes
+
+`sh_protect_volume` is an invisible brush entity that forces every intersecting
+4×4×4 probe brick to L0 (full valid-probe density) in every present coarsened
+delta section. Use it where coarsened lighting changes would be noticeable,
+such as around a small hero prop, a sharp lighting transition, or a gameplay
+focal point.
+
+Create brushwork around the area, then tie it to
+`sh_protect_volume`. The compiler converts the brush hull to a world-space
+AABB. The brush does not render, collide, become a trigger, or enter the
+static world geometry.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dilation` | float | `0` | Expands the resolved AABB on all six faces, in world/engine meters. Negative values are a compile error. |
+
+The coarsening classifier forces every intersecting 4×4×4 probe brick to L0
+before it smooths density seams. A brush authored flush to a brick edge can
+miss because bricks intersect against their probe-span bounds rather than an
+outer cell boundary. When a volume hugs an edge, set `dilation` to roughly
+half a probe cell or more.
+
+---
+
 ## Textures
 
 Textures are PNG files under `content/<mod>/textures/<collection>/<name>.png`. TrenchBroom requires this one-level subdirectory structure.

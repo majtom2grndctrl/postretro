@@ -25,6 +25,50 @@ fn authored<'a>(props: &'a HashMap<String, String>, key: &str) -> Option<&'a str
         .filter(|value| !value.is_empty())
 }
 
+/// Union a brush entity's face-vertex hull into a world-space AABB in engine
+/// coordinates (Y-up, meters).
+///
+/// Shared by [`resolve_trigger_volume`] and the SH protection-volume path in
+/// `parse.rs`: both need only the enclosing box of an entity's brushwork.
+/// `classname`/`name` name the offending entity in the two diagnostics —
+/// no usable vertices, and a zero-extent box.
+pub(crate) fn resolve_brush_entity_aabb(
+    geo_map: &GeoMap,
+    brush_ids: &[BrushId],
+    scale: f64,
+    classname: &str,
+    name: &str,
+) -> Result<(DVec3, DVec3)> {
+    let geo_planes = face_planes(&geo_map.face_planes);
+    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
+        .iter()
+        .filter_map(|id| {
+            geo_map
+                .brush_faces
+                .get(id)
+                .map(|faces| (*id, faces.clone()))
+        })
+        .collect();
+    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
+    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
+    let mut min = DVec3::splat(f64::INFINITY);
+    let mut max = DVec3::splat(f64::NEG_INFINITY);
+    for verts in face_verts.values() {
+        for v in verts {
+            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
+            min = min.min(p);
+            max = max.max(p);
+        }
+    }
+    if !min.is_finite() {
+        anyhow::bail!("{classname} `{name}` brushes produced no usable vertices");
+    }
+    if (max - min).min_element() <= 0.0 {
+        anyhow::bail!("{classname} `{name}` AABB has zero extent");
+    }
+    Ok((min, max))
+}
+
 /// Resolve a brush entity's world-space trigger AABB and activation data.
 ///
 /// `classname` names the authored entity in every diagnostic: `switch` desugars
@@ -99,33 +143,7 @@ pub(crate) fn resolve_trigger_volume(
             anyhow::bail!("{classname} `{name}` `enabled_on_spawn` must be 0/1, got `{other}`")
         }
     };
-    let geo_planes = face_planes(&geo_map.face_planes);
-    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
-        .iter()
-        .filter_map(|id| {
-            geo_map
-                .brush_faces
-                .get(id)
-                .map(|faces| (*id, faces.clone()))
-        })
-        .collect();
-    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
-    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
-    let mut min = DVec3::splat(f64::INFINITY);
-    let mut max = DVec3::splat(f64::NEG_INFINITY);
-    for verts in face_verts.values() {
-        for v in verts {
-            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
-            min = min.min(p);
-            max = max.max(p);
-        }
-    }
-    if !min.is_finite() {
-        anyhow::bail!("{classname} `{name}` brushes produced no usable vertices");
-    }
-    if (max - min).min_element() <= 0.0 {
-        anyhow::bail!("{classname} `{name}` AABB has zero extent");
-    }
+    let (min, max) = resolve_brush_entity_aabb(geo_map, brush_ids, scale, classname, &name)?;
     Ok(MapTriggerVolume {
         name,
         tags: props

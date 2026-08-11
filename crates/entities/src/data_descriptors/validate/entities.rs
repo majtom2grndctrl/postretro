@@ -111,6 +111,7 @@ mod tests {
         let predicate = build_predicate_crossing(
             IrNode::Input {
                 name: "test.flag".to_string(),
+                owner: None,
             },
             Some("future".to_string()),
             vec!["fire".to_string()],

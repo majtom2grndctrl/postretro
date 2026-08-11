@@ -470,9 +470,11 @@
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
   export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: "@impact.source"; readonly [stateRefValueBrand]: T };
   export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
-  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T; byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T> };
-  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T; byPlayer(owner: SourceHandle): OwnerAddressedRef<T> };
+  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
+  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
+  type StoreComputedRef<T> = ComputedRef<T> & { byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T> };
+  type StoreRef<T> = Ref<T> & { byPlayer(owner: SourceHandle): OwnerAddressedRef<T> };
 
   /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value. `network: "shared"` replicates a slot to every connected client, while `network: "ownerPrivate"` replicates a per-owner slot only to its owner; omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
@@ -492,7 +494,7 @@
    * string ref. Slots with `readonly: true` produce `ComputedRef<T>`;
    * all other slots produce `Ref<T>`. */
   export type StoreStateRefForSlot<Slot, T> =
-    Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
+    Slot extends { readonly: true } ? StoreComputedRef<T> : StoreRef<T>;
 
   export type StateValueForSlot<Slot> =
     Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :

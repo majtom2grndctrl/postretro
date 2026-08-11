@@ -306,7 +306,7 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
         "ts StoreDefinition missing opaque store-handle identity"
     );
     assert!(
-        ts.contains("Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;"),
+        ts.contains("Slot extends { readonly: true } ? StoreComputedRef<T> : StoreRef<T>;"),
         "ts StoreStateRefForSlot must preserve readonly schema capability"
     );
     assert!(
@@ -324,8 +324,8 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
             && ts.contains("export type TickParams = Readonly<{ dt: RuntimeRead }>")
             && ts.contains("read(name: string | ComputedRef<unknown>): RuntimeRead;")
             && ts.contains("export function read(ref: StateRef<number>): NumberRef;")
-            && ts.contains("export function set(ref: Ref<number>, value: NumberValue): Effect;")
-            && ts.contains("export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect;")
+            && ts.contains("export function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect;")
+            && ts.contains("export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;")
             && ts.contains("export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;"),
         "ts must expose accumulator tracing and state-ref runtime reads:\n{ts}"
     );
@@ -347,7 +347,7 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
         "luau missing StoreDefinition defineStore declaration:\n{luau}"
     );
     assert!(
-        luau.contains("export type StoreStateRef<T> = ComputedRef<T> | Ref<T>")
+        luau.contains("export type StoreStateRef<T> = StoreComputedRef<T> | StoreRef<T>")
             && luau.contains("export type StoreDefinition = {\n  [string]: StoreStateRef<any>,\n}")
             && luau.contains("declare function defineMod(config: ModManifestInput): ModManifest"),
         "luau StoreDefinition must expose the flattened handle:\n{luau}"
@@ -358,12 +358,12 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
             && luau.contains("readonly: false?, network: \"shared\"?, perOwner: false?, accumulate:")
             && luau.contains("perOwner: false?")
             && luau.contains("network: (\"shared\" | \"ownerPrivate\")?, perOwner: true, persist: nil?, accumulate: nil?")
-            && luau.contains("byPlayer: (self: ComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>")
+            && luau.contains("byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>")
             && luau.contains("owner: \"@impact.source\"")
             && luau.contains("export type TickParams = { dt: RuntimeRead }")
             && luau.contains("read: (name: string | ComputedRef<any>) -> RuntimeRead")
-            && luau.contains("declare function set(ref: Ref<number>, value: NumberValue): Effect")
-            && luau.contains("declare function update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect"),
+            && luau.contains("declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect")
+            && luau.contains("declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect"),
         "luau must expose accumulator tracing and state-ref runtime reads:\n{luau}"
     );
 }

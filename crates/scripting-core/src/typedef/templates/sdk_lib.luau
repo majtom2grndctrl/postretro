@@ -698,9 +698,11 @@ export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: "@impact.source", __stateRefValueBrand: T? }
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
-export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T?, byPlayer: (self: ComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T> }
-export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T, byPlayer: (self: Ref<T>, owner: SourceHandle) -> OwnerAddressedRef<T> }
+export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
+export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
+type StoreComputedRef<T> = ComputedRef<T> & { byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T> }
+type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T> }
 
 --- One slot inside a `defineStore` schema. Every slot needs `default`.
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
@@ -725,7 +727,7 @@ export type StoreSlotSchema = (
 
 --- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
-export type StoreStateRef<T> = ComputedRef<T> | Ref<T>
+export type StoreStateRef<T> = StoreComputedRef<T> | StoreRef<T>
 
 --- Frozen store handle whose enumerable keys are its slot refs. Pass it to
 --- `defineMod({ stores = { store } })` so the SDK can resolve declaration data.

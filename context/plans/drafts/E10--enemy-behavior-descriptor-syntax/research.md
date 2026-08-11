@@ -54,9 +54,15 @@ Engine floor (`crates/postretro/src/scripting/systems/ai/`):
   in `target_candidate` would re-gate the retained lookup too. `target_candidate` keeps its existing
   visibility/`PlayerMovement`/transform checks unchanged; retention drop is authored via
   `@brain.targetHostile` instead.
-- `engine_floor.rs`: `SteeringIntent { Chase, Clear, Hold }` (:44) is Copy and data-less;
-  `think_stride_for_distance` (:28); `is_meaningfully_closer` (:66). Position-goal motion needs a
-  destination, so `SteeringIntent` gains a data-carrying `MoveTo(Vec3)` variant.
+- `engine_floor.rs`: `SteeringIntent { Chase, Clear, Hold }` (:44) derives `Copy, PartialEq, Eq`
+  and is data-less; `think_stride_for_distance` (:28); `STRIDE_NEAR_DISTANCE = 12.0` (:15);
+  `is_meaningfully_closer` (:66). Position-goal motion needs a destination, so `SteeringIntent`
+  gains a data-carrying `MoveTo(Vec3)` variant — which drops `Eq` from the derive (`Vec3`'s `f32`
+  has no `Eq`); `PartialEq`/`Copy` stay, and its only `==` consumers (`engages`, the tick match)
+  need only `PartialEq`. `steering_for` cannot carry a goal (no registry/anchor/patrol block), so
+  its `MoveToAnchor`/`Patrol` arms are classification-only sentinels (non-`Chase`, so `engages`
+  reads non-engaged); a separate compute-pass goal resolver holding `&BrainComponent` produces the
+  real `MoveTo(goal)`/`Clear`.
 - `graph_eval.rs`: `steering_for(motion)` (:120) pure; `engages` (:99) = `steering_for == Chase || action.is_some()`;
   `is_locomotion_state` (:137) = `ChaseTarget && action.is_none()`; `locomotion_animation` (:156) picks
   the first locomotion state by `BTreeMap` order (documented v1 collapse for multi-locomotion graphs).
@@ -128,28 +134,44 @@ the O(N²) candidacy cost and its spatial broad-phase belong — deferred. Facti
 **existing E16 `@state` write path** (`setState` / impact policy / `registry.entity_state_mut`); this
 spec adds no new mutation surface — only the engine-floor *read* and the retention fact.
 
+The default seed is a constraint over **every** enemy-assembly path, not one call site. The
+archetype spawn block seeds it, but the AI test suite builds enemies via `spawn_enemy`
+(`ai_tests.rs`) and `BrainComponent::from_graph`, which attach no `EntityStateComponent` and never
+touch that block. An enemy so built reads `@state.faction` absent → 0.0, matches the player's 0.0,
+and drops out of the hostility-filtered `nearest_target_candidate` — the targeting/chase/attack
+suite collapses. So the seed rides the archetype block AND the shared test spawn helper (and any
+other host spawn/reconstruction); `spawn_enemy` also seeds `home_anchor` from its position argument
+(same assembly seam). A default-on-read shim is rejected: it would make a mod's `@state.faction`
+read 0 while the engine treats the enemy as 1 — a visible engine divergence.
+
+Write/read ordering across the game-logic phase (`sim/mod.rs`): trigger dispatch / touch →
+`run_ai_tick` → `agent_steering::tick`. A `@state.faction` write from a trigger command or touch
+reaction lands *before* the AI tick, so the same tick's candidacy scan and `targetHostile` observe
+it. A write from `on_impact` inside the AI apply pass is observed by ALL brains on the NEXT tick
+uniformly — the compute pass (which reads faction) completes before any apply-pass mutation, so there
+is no intra-tick, enemy-order-dependent read.
+
 ## Lifecycle — retreat/patrol/reachability across one tick
 
 ```mermaid
 stateDiagram-v2
-    [*] --> idle : spawn (home_anchor := transform.position, faction := 1)
-    idle --> alert : le(targetDistance, detection) && acquisitionDue
+    [*] --> patrol : spawn (home_anchor := transform.position, faction := 1)
+    patrol --> alert : le(targetDistance, detection) && acquisitionDue
     alert --> attack : le(targetDistance, attackRange)
     attack --> alert : gt(targetDistance, attackRange)
     alert --> retreat : gt(distanceFromAnchor, leash)
     attack --> retreat : gt(distanceFromAnchor, leash)
-    retreat --> idle : le(distanceFromAnchor, arrivalEps)
-    retreat --> alert : le(targetDistance, reengage)
+    retreat --> patrol : le(distanceFromAnchor, arrivalEps)
     alert --> waiting : select(targetReachable, false, true)
     waiting --> alert : targetReachable
-    idle --> patrol : select(hasTarget,false,true) && le(distanceFromAnchor, patrolRadius)
-    patrol --> alert : le(targetDistance, detection) && acquisitionDue
     note right of retreat
       motion: moveToAnchor
-      goal = home_anchor; arrived -> Clear
+      goal = home_anchor; arrived -> Clear (not latched)
+      non-engaged: no target across strides; exits are
+      distanceFromAnchor-based or the any-state stand-down
     end note
     note right of patrol
-      motion: patrol
+      motion: patrol; untargeted-active RESTING state
       goal = anchor + points[cursor];
       arrived -> advance cursor (loop / pingPong)
     end note
@@ -158,11 +180,13 @@ stateDiagram-v2
       been steered to the nearest reachable
       point by chaseTarget's find_path degradation
     end note
-    note right of idle
-      any-state interrupts stand the enemy down:
-      not hasTarget, targetDied, not targetHostile
-      (targetHostile retention drop is authored,
-      not an engine re-gate)
+    note left of patrol
+      any-state stand-downs target patrol (the resting state),
+      so they are skipped there (to == current) and do not
+      oscillate: not hasTarget, targetDied, not targetHostile.
+      targetHostile retention drop is authored, not an engine
+      re-gate. From any other state they route back to patrol,
+      which steers home along the anchor-relative route.
     end note
 ```
 

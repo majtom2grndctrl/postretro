@@ -48,6 +48,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "armTrigger",
     "disarmTrigger",
     "setState",
+    "addSlot",
     "setAnimationState",
     "updateEnemyState",
     "spawnFromSpawner",
@@ -136,6 +137,13 @@ enum PrimitiveClass {
 struct SetStateArgs {
     slot: String,
     value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddSlotArgs {
+    slot: String,
+    delta: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,6 +811,52 @@ fn bind_command(
             target: target(primitive)?,
         }),
         "setState" => bind_store_slot(args, slot_table, script_ctx),
+        "addSlot" => {
+            let args: AddSlotArgs = match serde_json::from_value(args.clone()) {
+                Ok(args) if args.delta.is_finite() => args,
+                Ok(_) => {
+                    log::warn!("[Trigger] addSlot delta must be finite; not binding");
+                    return None;
+                }
+                Err(error) => {
+                    log::warn!("[Trigger] addSlot has invalid args; not binding: {error}");
+                    return None;
+                }
+            };
+            let Some(record) = slot_table.get(&args.slot) else {
+                log::warn!(
+                    "[Trigger] addSlot references unknown slot `{}`; not binding",
+                    args.slot
+                );
+                return None;
+            };
+            if !record.schema.per_owner {
+                log::warn!(
+                    "[Trigger] addSlot requires per-owner slot `{}`; not binding",
+                    args.slot
+                );
+                return None;
+            }
+            if record.schema.slot_type != postretro_entities::SlotType::Number {
+                log::warn!(
+                    "[Trigger] addSlot requires numeric slot `{}`; not binding",
+                    args.slot
+                );
+                return None;
+            }
+            if record.schema.readonly {
+                log::warn!(
+                    "[Trigger] addSlot rejects readonly slot `{}` at bind time",
+                    args.slot
+                );
+                return None;
+            }
+            Some(BoundTriggerCommand::AddOwnerSlot {
+                target: target(primitive)?,
+                slot: args.slot,
+                delta: args.delta,
+            })
+        }
         "setAnimationState" => {
             let args: SetAnimationStateArgs = match serde_json::from_value(args.clone()) {
                 Ok(args) => args,
@@ -949,9 +1003,10 @@ mod tests {
     use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{
-        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
-        TriggerActivation, TriggerFireMode,
+        NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+        Transform, TriggerActivation, TriggerFireMode,
     };
+    use postretro_foundation::Seat;
 
     fn primitive(
         name: &str,
@@ -1015,6 +1070,75 @@ mod tests {
         };
         attach_brain_graph(registry, entity, &graph).unwrap();
         entity
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(value)),
+            range: Some(NumericRange {
+                min: -10_000.0,
+                max: 10_000.0,
+            }),
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
+            per_owner: true,
+            accumulate: None,
+        })
+    }
+
+    #[test]
+    fn add_slot_trigger_command_applies_to_activator_seat_and_zero_activators_is_silent() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.bind_pawn_seat(pawn, Seat(6));
+        let mut slots = SlotTable::new();
+        slots
+            .insert("currency.xp".to_string(), per_owner_number_slot(10.0))
+            .unwrap();
+        let command = bind_command(
+            "addSlot",
+            Some(BoundTarget::Activators),
+            &serde_json::json!({ "slot": "currency.xp", "delta": 2.0 }),
+            &slots,
+            None,
+        )
+        .expect("owner-slot add binds");
+        assert_eq!(command.kind(), BoundTriggerCommandKind::AddOwnerSlot);
+
+        command.execute(
+            &mut registry,
+            &mut slots,
+            &MoverCommandDiagnostics::default(),
+            &crate::spawner::SpawnContext::default(),
+            &TriggerFireContext {
+                activator: Some(pawn),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            slots
+                .get("currency.xp")
+                .and_then(|record| record.per_seat_value(Seat(6))),
+            Some(&SlotValue::Number(12.0)),
+        );
+
+        command.execute(
+            &mut registry,
+            &mut slots,
+            &MoverCommandDiagnostics::default(),
+            &crate::spawner::SpawnContext::default(),
+            &TriggerFireContext::default(),
+        );
+        assert_eq!(
+            slots
+                .get("currency.xp")
+                .and_then(|record| record.per_seat_value(Seat(6))),
+            Some(&SlotValue::Number(12.0)),
+            "zero activators leave the slot untouched without needing a warning path",
+        );
     }
 
     #[test]

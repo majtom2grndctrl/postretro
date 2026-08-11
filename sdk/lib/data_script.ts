@@ -35,7 +35,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;
@@ -243,7 +243,8 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
-  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } };
+  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
+  | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
 
 /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
 export interface Effect {
@@ -418,8 +419,21 @@ const IMPACT: Impact = Object.freeze({
 
 /** Build the closed absolute store-write effect. */
 export function set(ref: Ref<number>, value: NumberValue): Effect {
+  // Keep the ordinary global wire exactly as it was. An explicit owner is the
+  // only signal that this must become the source-addressed command path.
+  if (!("owner" in ref)) {
+    return {
+      primitive: "slot.set",
+      args: {
+        slot: ref.slot,
+        value: numberNode(value),
+      },
+    } as ImpactEffectWire as unknown as Effect;
+  }
+  const owner = (ref as OwnerAddressedRef<number>).owner;
   return {
     primitive: "slot.set",
+    target: owner,
     args: {
       slot: ref.slot,
       value: numberNode(value),
@@ -610,6 +624,23 @@ export function grantAmmo(
     primitive: "grantAmmo",
     target: wireTarget,
     args: { type, amount },
+  } as PrimitiveReactionDescriptor;
+}
+
+/** Add a delta to a per-owner numeric slot for the current trigger activators or every pawn with a tag. */
+export function addSlot(
+  target: ActivatorsTarget | string,
+  slot: StateRef<number>,
+  delta: number,
+): PrimitiveReactionDescriptor {
+  if (typeof target === "string") {
+    return { primitive: "addSlot", tag: target, args: { slot: slot.slot, delta } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return {
+    primitive: "addSlot",
+    target: wireTarget,
+    args: { slot: slot.slot, delta },
   } as PrimitiveReactionDescriptor;
 }
 

@@ -974,7 +974,7 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -1282,6 +1282,8 @@ declare module "postretro" {
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
   export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
   export function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor;
+  /** Add a delta to one per-owner numeric slot for each selected player pawn. */
+  export function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor;
   /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
   export type EnemyGroupFilter = { tag?: string };
   /** Typed, additive partial for consequential enemy-state updates. */
@@ -1377,10 +1379,10 @@ declare module "postretro" {
   export function read(ref: StateRef<boolean>): BoolRef;
   /** Lift raw `runtime.*` output into the fluent impact-expression algebra. */
   export const fromRuntime: RuntimeExpressionRefs;
-  /** Build an absolute number-store write. */
-  export function set(ref: Ref<number>, value: NumberValue): Effect;
+  /** Build an absolute number-store write. An owner-addressed ref lowers to an `@impact.source` command. */
+  export function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect;
   /** Build a frozen-snapshot read-modify-write; `cur` is exactly `read(ref)`. */
-  export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect;
+  export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;
   /** Build a deferred impact-effect group guarded by a Bool expression. */
   export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
 

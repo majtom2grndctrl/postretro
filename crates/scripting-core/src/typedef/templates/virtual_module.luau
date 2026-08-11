@@ -99,6 +99,7 @@ export type PostretroModule = {
   damage: typeof(damage),
   grantHealth: typeof(grantHealth),
   grantAmmo: typeof(grantAmmo),
+  addSlot: typeof(addSlot),
   enemies: typeof(enemies),
   spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),

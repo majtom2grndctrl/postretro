@@ -109,6 +109,14 @@ impl StoreScope {
             ir_type,
         })
     }
+
+    fn per_owner_slot(&self, name: &str) -> Option<bool> {
+        self.ctx
+            .slot_table
+            .borrow()
+            .get(name)
+            .map(|record| record.schema.per_owner)
+    }
 }
 
 /// A resolved input in a [`DispatchScope`]: either an index into its ephemeral
@@ -422,6 +430,26 @@ impl EntityScope {
         StoreScope::project_value(handle.ir_type, record.per_seat_value(seat))
     }
 
+    /// Inspect a store declaration while binding an owner-addressed impact
+    /// command. The owner target is meaningful only for per-owner slots;
+    /// ordinary outputs continue through the StoreScope write path.
+    pub fn per_owner_store_slot(&self, name: &str) -> Option<bool> {
+        self.dispatch.store.per_owner_slot(name)
+    }
+
+    /// Owner-addressed impact writes bypass the ordinary output handle, which
+    /// is where script capability normally denies readonly slots. Expose the
+    /// schema gate explicitly so that alternate write path preserves it.
+    pub fn store_slot_is_readonly(&self, name: &str) -> Option<bool> {
+        self.dispatch
+            .store
+            .ctx
+            .slot_table
+            .borrow()
+            .get(name)
+            .map(|record| record.schema.readonly)
+    }
+
     fn write_state(
         registry: &mut EntityRegistry,
         target: Option<EntityId>,
@@ -576,6 +604,12 @@ impl BindingScope for StoreScope {
     fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<StoreHandle>> {
         let table = self.ctx.slot_table.borrow();
         let record = table.get(name)?;
+        // A per-owner value must travel through an owner-addressed command.
+        // Returning no ordinary output handle rejects a bare `slot.set` at
+        // bind, before it could silently overwrite the scalar projection.
+        if record.schema.per_owner {
+            return None;
+        }
         let ir_type = Self::project(&record.schema.slot_type)?;
         // Script-capability scopes cannot write readonly slots — deny the handle
         // at bind so the write path is never reached for them. Engine scopes

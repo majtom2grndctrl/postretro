@@ -5168,6 +5168,61 @@ impl App {
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
                     }
                 }
+                SystemReactionCommand::AddOwnerSlot { slot, seats, delta } => {
+                    // The reaction dispatcher resolves concrete seats at fire
+                    // time, but a disconnect/release can happen before this
+                    // app-frame drain. Never recreate a released owner's value.
+                    for seat in seats {
+                        let seat_is_live = self.session.as_ref().is_some_and(|session| {
+                            session
+                                .seat_table
+                                .as_ref()
+                                .is_some_and(|seat_table| seat_table.contains_seat(seat))
+                        });
+                        if !seat_is_live {
+                            continue;
+                        }
+
+                        let mut slot_table = script_ctx.slot_table.borrow_mut();
+                        let Some(record) = slot_table.get_mut(&slot) else {
+                            log::warn!(
+                                "[Scripting] addSlot references missing slot `{slot}` at drain; skipping"
+                            );
+                            continue;
+                        };
+                        if !record.schema.per_owner {
+                            log::warn!(
+                                "[Scripting] addSlot requires per-owner slot `{slot}`; skipping"
+                            );
+                            continue;
+                        }
+                        if record.schema.readonly {
+                            log::warn!(
+                                "[Scripting] addSlot rejects readonly slot `{slot}`; skipping"
+                            );
+                            continue;
+                        }
+                        let Some(postretro_entities::SlotValue::Number(current)) =
+                            record.per_seat_value(seat)
+                        else {
+                            log::warn!(
+                                "[Scripting] addSlot requires numeric slot `{slot}`; skipping"
+                            );
+                            continue;
+                        };
+                        let next = postretro_scripting_core::store_bridge::validate_slot_value(
+                            &slot,
+                            &record.schema,
+                            postretro_entities::SlotValue::Number(*current + delta),
+                        );
+                        match next {
+                            Ok(next) => record.set_per_seat_value(seat, next),
+                            Err(error) => log::warn!(
+                                "[Scripting] addSlot for `{slot}` failed validation; skipping: {error}"
+                            ),
+                        }
+                    }
+                }
                 SystemReactionCommand::CellWrite { scope, cell, value } => {
                     // Presentation-cell write at the game-logic stage (M13 G1b,
                     // Task 5): routes into the app-side `PresentationCellStore`,

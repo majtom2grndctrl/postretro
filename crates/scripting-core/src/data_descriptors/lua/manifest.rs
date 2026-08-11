@@ -79,7 +79,7 @@ fn is_resource_grant_reaction_lua(value: &LuaValue) -> bool {
     };
     matches!(
         primitive.to_str().ok().as_deref(),
-        Some("grantHealth" | "grantAmmo")
+        Some("grantHealth" | "grantAmmo" | "addSlot")
     )
 }
 

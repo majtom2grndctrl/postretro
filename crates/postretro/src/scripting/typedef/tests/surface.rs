@@ -640,13 +640,13 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         ),
         (
             "slot.set",
-            "export function set(ref: Ref<number>, value: NumberValue): Effect;",
-            "declare function set(ref: Ref<number>, value: NumberValue): Effect",
+            "export function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect;",
+            "declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect",
         ),
         (
             "slot.update",
-            "export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect;",
-            "declare function update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect",
+            "export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;",
+            "declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect",
         ),
     ];
     for (builder, ts_signature, luau_signature) in effect_builders {
@@ -674,6 +674,7 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     for wire in [
         "grantHealth\", target: \"@impact.source",
         "grantAmmo\", target: \"@impact.source",
+        "slot.set\", target: \"@impact.source",
     ] {
         assert!(luau.contains(wire), "Luau grant wire must target source");
     }

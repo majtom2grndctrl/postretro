@@ -65,10 +65,10 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A non-empty
 --- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
 --- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
 --- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
 --- reactions carry neither `tag` nor `target` and enqueue typed engine commands
 --- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
 --- `args`
@@ -258,6 +258,7 @@ type ImpactEffectWire =
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
+  | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
 -- not an Effect, and every value that type-checks lowers to one closed wire arm.
@@ -442,6 +443,16 @@ function DataScriptSdk.grantAmmo(target: ActivatorsTarget | string, ammoType: st
   end
   local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "grantAmmo", target = wireTarget, args = { type = ammoType, amount = amount } }
+end
+
+--- Add a delta to a per-owner numeric slot for current trigger activators or
+--- every player pawn with a tag.
+function DataScriptSdk.addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "addSlot", tag = target, args = { slot = slot.slot, delta = delta } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "addSlot", target = wireTarget, args = { slot = slot.slot, delta = delta } }
 end
 
 --- Selects a live enemy group addressed when a reaction fires.
@@ -784,6 +795,9 @@ function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
       value = numberNode(value),
     },
   } :: any
+  if (ref :: any).owner ~= nil then
+    wire.target = (ref :: any).owner
+  end
   return function(capability: ImpactEffectCapability): ImpactEffectWire
     if capability ~= IMPACT_EFFECT_CAPABILITY then
       error("impact effects can only be lowered by the SDK", 2)

@@ -342,24 +342,33 @@ fn spawner_fire_descriptors_match_across_authoring_runtimes() {
 }
 
 #[test]
-fn grant_reaction_builders_match_across_root_sdk_surfaces() {
+fn resource_reaction_builders_match_across_root_sdk_surfaces() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { grantAmmo, grantHealth } from "postretro";
+        import { addSlot, defineStore, grantAmmo, grantHealth } from "postretro";
+        const currency = defineStore("currency", {
+          xp: { type: "number", default: 0, perOwner: true },
+        });
         JSON.stringify({
           health: grantHealth("players", 12.5),
           ammo: grantAmmo("players", "bullets.light", 8),
+          slot: addSlot("players", currency.xp, 3),
         });
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
+        local currency = Postretro.defineStore("currency", {
+          xp = { type = "number", default = 0, perOwner = true },
+        })
         return {
           module = {
             health = Postretro.grantHealth("players", 12.5),
             ammo = Postretro.grantAmmo("players", "bullets.light", 8),
+            slot = Postretro.addSlot("players", currency.xp, 3),
           },
           globals = {
             health = grantHealth("players", 12.5),
             ammo = grantAmmo("players", "bullets.light", 8),
+            slot = addSlot("players", currency.xp, 3),
           },
         }
     "#;
@@ -386,6 +395,11 @@ fn grant_reaction_builders_match_across_root_sdk_surfaces() {
                 "primitive": "grantAmmo",
                 "tag": "players",
                 "args": { "type": "bullets.light", "amount": 8 },
+            },
+            "slot": {
+                "primitive": "addSlot",
+                "tag": "players",
+                "args": { "slot": "currency.xp", "delta": 3 },
             },
         })
     );
@@ -1285,7 +1299,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           } catch (_error) {
             globalRejected = true;
           }
-          return [set(store.shared, read(first))];
+          return [set(store.shared, read(first)), set(first, 5)];
         });
         if (owned === undefined) throw new Error("impact callback did not run");
         JSON.stringify({
@@ -1298,6 +1312,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           globalRejected,
           bind: bindState(owned),
           read: (event as any).policy[0].args.value,
+          ownerWrite: (event as any).policy[1],
           runtimeRead: runtime.read(owned),
         });
     "#;
@@ -1320,7 +1335,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           globalRejected = not pcall(function()
             store.shared:byPlayer(impact.source)
           end)
-          return { Postretro.set(store.shared, Postretro.read(first)) }
+          return { Postretro.set(store.shared, Postretro.read(first)), Postretro.set(first, 5) }
         end)
         assert(owned ~= nil)
         local bareKeys = {}
@@ -1346,6 +1361,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           globalRejected = globalRejected,
           bind = UI.bindState(owned),
           read = event.policy[1].args.value,
+          ownerWrite = event.policy[2],
           runtimeRead = runtime.read(owned),
         }
     "#;
@@ -1368,6 +1384,14 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
             "globalRejected": true,
             "bind": { "slot": "currency.credits" },
             "read": { "op": "input", "name": "currency.credits", "owner": "@impact.source" },
+            "ownerWrite": {
+                "primitive": "slot.set",
+                "target": "@impact.source",
+                "args": {
+                    "slot": "currency.credits",
+                    "value": { "op": "const", "value": 5 },
+                },
+            },
             "runtimeRead": { "op": "input", "name": "currency.credits", "owner": "@impact.source" },
         }),
         "byPlayer must produce fresh frozen owner refs without leaking metadata into wire consumers",

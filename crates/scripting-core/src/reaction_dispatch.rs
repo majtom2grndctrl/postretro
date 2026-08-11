@@ -8,10 +8,14 @@ use super::data_descriptors::{
     EntityTypeDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
 };
 use super::data_registry::{DataRegistry, ScopedReaction};
-use super::reaction_registry::{ReactionPrimitiveRegistry, SystemReactionRegistry};
+use super::reaction_registry::{
+    ReactionPrimitiveRegistry, SystemReactionCommand, SystemReactionRegistry,
+};
 use super::registry::{ComponentKind, EntityId, EntityRegistry};
 use super::sequence::SequencedPrimitiveRegistry;
+use super::slot_table::SlotType;
 use postretro_foundation::ir::IrValue;
+use serde::Deserialize;
 
 /// `total` is captured at level load; subsequent spawns do NOT raise it.
 /// Threshold compare: `killed/total >= at` (`at: 1.0` means "all dead").
@@ -340,6 +344,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "armTrigger"
             | "disarmTrigger"
             | "setState"
+            | "addSlot"
             | "setAnimationState"
             | "updateEnemyState"
             | "spawnFromSpawner"
@@ -358,7 +363,18 @@ fn dispatch_primitive(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) {
+    // Connected clients compose the same descriptor graph for presentation
+    // work, but must not make authoritative per-owner state mutations or emit
+    // diagnostics for host-only gameplay events.
+    if descriptor.primitive == "addSlot" && !script_ctx.owner_slot_writes_enabled.get() {
+        return;
+    }
+
     let Some(tag) = descriptor.tag.as_deref() else {
+        if descriptor.primitive == "addSlot" {
+            log::warn!("[Scripting] addSlot requires a target tag; reaction had no effect");
+            return;
+        }
         dispatch_system_primitive(descriptor, system_registry, script_ctx);
         return;
     };
@@ -372,6 +388,11 @@ fn dispatch_primitive(
             .map(|(id, _)| id)
             .collect()
     };
+
+    if descriptor.primitive == "addSlot" {
+        dispatch_add_owner_slot(descriptor, &targets, script_ctx);
+        return;
+    }
 
     log::info!(
         "[Scripting] dispatch primitive '{}' on tag '{}' ({} targets)",
@@ -398,6 +419,100 @@ fn dispatch_primitive(
             descriptor.primitive,
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddSlotArgs {
+    slot: String,
+    delta: f32,
+}
+
+/// Resolve the tagged pawn recipients while a named/crossing/level-load
+/// reaction fires, then defer the actual addition to the host app drain. This
+/// keeps reaction dispatch independent from the session seat ledger while the
+/// drain remains responsible for skipping seats released in the meantime.
+fn dispatch_add_owner_slot(
+    descriptor: &PrimitiveDescriptor,
+    targets: &[EntityId],
+    script_ctx: &ScriptCtx,
+) {
+    // A tag with no matching pawns is a normal no-op. In particular, do not
+    // make zero-recipient level-load and trigger-shaped compositions noisy.
+    if targets.is_empty() {
+        return;
+    }
+
+    let args: AddSlotArgs = match serde_json::from_value(descriptor.args.clone()) {
+        Ok(args) if args.delta.is_finite() => args,
+        Ok(_) => {
+            log::warn!("[Scripting] addSlot delta must be finite; reaction had no effect");
+            return;
+        }
+        Err(error) => {
+            log::warn!("[Scripting] addSlot has invalid args; reaction had no effect: {error}");
+            return;
+        }
+    };
+
+    {
+        let slot_table = script_ctx.slot_table.borrow();
+        let Some(record) = slot_table.get(&args.slot) else {
+            log::warn!(
+                "[Scripting] addSlot references unknown slot `{}`; reaction had no effect",
+                args.slot
+            );
+            return;
+        };
+        if !record.schema.per_owner {
+            log::warn!(
+                "[Scripting] addSlot requires per-owner slot `{}`; reaction had no effect",
+                args.slot
+            );
+            return;
+        }
+        if record.schema.slot_type != SlotType::Number {
+            log::warn!(
+                "[Scripting] addSlot requires numeric slot `{}`; reaction had no effect",
+                args.slot
+            );
+            return;
+        }
+        if record.schema.readonly {
+            log::warn!(
+                "[Scripting] addSlot rejects readonly slot `{}`; reaction had no effect",
+                args.slot
+            );
+            return;
+        }
+    }
+
+    let seats = {
+        let registry = script_ctx.registry.borrow();
+        targets
+            .iter()
+            .filter_map(|target| match registry.seat_for_pawn(*target) {
+                Some(seat) => Some(seat),
+                None => {
+                    log::warn!(
+                        "[Scripting] addSlot target {target:?} has no player seat; skipping"
+                    );
+                    None
+                }
+            })
+            .collect()
+    };
+    if seats.is_empty() {
+        return;
+    }
+
+    script_ctx
+        .system_commands
+        .push(SystemReactionCommand::AddOwnerSlot {
+            slot: args.slot,
+            seats,
+            delta: args.delta,
+        });
 }
 
 /// System-reaction arm: no entity targets. The handler parses `args` and
@@ -535,6 +650,28 @@ mod tests {
         ReactionDescriptor,
     };
     use crate::registry::{EntityRegistry, Transform};
+    use crate::slot_table::{
+        NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+    };
+    use postretro_foundation::Seat;
+    use postretro_test_log_capture::LogCapture;
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(value)),
+            range: Some(NumericRange {
+                min: -10_000.0,
+                max: 10_000.0,
+            }),
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
+            per_owner: true,
+            accumulate: None,
+        })
+    }
 
     fn progress_reaction(name: &str, tag: &str, at: f32, fire: &str) -> NamedReaction {
         NamedReaction {
@@ -836,6 +973,105 @@ mod tests {
         let data = DataRegistry::new();
         let chained = fire_named_event("nothingHere", &data);
         assert!(chained.is_empty());
+    }
+
+    #[test]
+    fn add_slot_tag_target_resolves_owner_seat_for_level_load_and_crossing_dispatch() {
+        use crate::reaction_registry::SystemReactionCommand;
+
+        let script_ctx = ScriptCtx::new();
+        script_ctx
+            .slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new owner slot");
+        let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        {
+            let mut registry = script_ctx.registry.borrow_mut();
+            registry
+                .set_tags(pawn, vec!["players".to_string()])
+                .unwrap();
+            registry.bind_pawn_seat(pawn, Seat(4));
+        }
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "levelLoadOrCrossing".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "addSlot".to_string(),
+                    target: None,
+                    tag: Some("players".to_string()),
+                    on_complete: None,
+                    args: serde_json::json!({ "slot": "currency.xp", "delta": 3.0 }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+
+        fire_named_event_with_sequences(
+            "levelLoadOrCrossing",
+            &data,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            &script_ctx,
+            None,
+        );
+
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::AddOwnerSlot {
+                slot: "currency.xp".to_string(),
+                seats: vec![Seat(4)],
+                delta: 3.0,
+            }],
+            "the same tag resolver is used by level-load and crossing named dispatches"
+        );
+    }
+
+    #[test]
+    fn add_slot_zero_recipients_and_client_dispatch_are_silent_no_ops() {
+        let script_ctx = ScriptCtx::new();
+        script_ctx
+            .slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new owner slot");
+        let descriptor = PrimitiveDescriptor {
+            primitive: "addSlot".to_string(),
+            target: None,
+            tag: Some("no-pawns".to_string()),
+            on_complete: None,
+            args: serde_json::json!({ "slot": "currency.xp", "delta": 1.0 }),
+        };
+        let logs = LogCapture::start();
+        dispatch_primitive(
+            &descriptor,
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            &script_ctx,
+        );
+        assert!(script_ctx.system_commands.is_empty());
+        assert!(logs.records().is_empty(), "zero recipients must not warn");
+        drop(logs);
+
+        script_ctx.owner_slot_writes_enabled.set(false);
+        let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        script_ctx
+            .registry
+            .borrow_mut()
+            .set_tags(pawn, vec!["no-pawns".to_string()])
+            .unwrap();
+        let logs = LogCapture::start();
+        dispatch_primitive(
+            &descriptor,
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            &script_ctx,
+        );
+        assert!(script_ctx.system_commands.is_empty());
+        assert!(logs.records().is_empty(), "client addSlot must be silent");
     }
 
     // A trigger-bound Progress reaction means "the tracker watches this tag", not

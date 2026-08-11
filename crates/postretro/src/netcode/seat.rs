@@ -185,6 +185,13 @@ impl SeatTable {
         self.session_id
     }
 
+    /// Whether this durable seat still belongs to the active session. Queued
+    /// owner-slot reactions retain a copied `Seat`, so the app drain must check
+    /// this before writing rather than recreating state for a released seat.
+    pub(crate) fn contains_seat(&self, seat: Seat) -> bool {
+        self.carried.contains_key(&seat)
+    }
+
     /// Advance the session-relative hold clock once for this rendered frame.
     ///
     /// The caller is the sole frame-timing seam. Polling can happen more than
@@ -1460,6 +1467,10 @@ mod tests {
         seats.release_expired_holds();
 
         assert_eq!(seats.carried_state_for_test(released), None);
+        assert!(
+            !seats.contains_seat(released),
+            "a queued owner-slot addition must not recreate a seat released before its app drain"
+        );
         assert_eq!(
             seats.roster_entries(),
             vec![RosterEntry {

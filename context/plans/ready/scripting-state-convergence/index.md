@@ -4,7 +4,7 @@
 
 One reference-and-expression model for durable game state across engine observations, mod stores, and impact
 policies — replacing three non-converging authoring dialects. Removes the `store.state.key` hop; gives a store
-slot a read (`readState`), an absolute write (`set`), and a read-modify-write (`update`); and unifies
+slot a read (`read`), an absolute write (`set`), and a read-modify-write (`update`); and unifies
 expression-building under the shipped fluent IR algebra so a policy can read engine state, store state, and
 impact facts in one expression. The governing mental model is "the compile-to-IR shadow of Vue" (`research.md`):
 `Ref`/`ComputedRef` sources, named derived expressions, and a deferred `when` guard — evaluated in Rust, not JS.
@@ -23,21 +23,23 @@ the retired `slot.add` arm and its target-rejection arm. No new IR node type, no
 - **`Ref<T>` / `ComputedRef<T>` rename.** Rename `WritableStateRef<T>` → `Ref<T>` and `ReadonlyStateRef<T>` →
   `ComputedRef<T>`, keyed on the existing per-ref writable capability (not owner). A writable engine slot
   (`ui.textEntry`) types as `Ref`; readonly engine and mod slots as `ComputedRef`/`Ref` per their catalog flag.
-- **`readState(ref)` read helper.** Lifts any state ref — engine or store — into the shipped `NumberRef` /
+- **`read(ref)` read helper.** Lifts any state ref — engine or store — into the shipped `NumberRef` /
   `BoolRef` fluent algebra, type-directed by the ref's `kind` field: a build-time-only tag (never serialized)
   stamped onto the ref by `defineStore` and the engine catalog, holding the slot's declared value type.
-  `readState` reads `kind` to pick `numberRef` or `boolRef` and register the result in the matching WeakMap; the
-  wire is unaffected and consumers still read only `.slot`. A noun-selects-state helper, not a `.get()`. Scoped
-  to reading a slot into a condition or a *different* slot's expression; the read-modify-write of one slot is
-  `update` (below), which names the slot once.
+  `read` consults `ref.kind` to pick `numberRef` or `boolRef` and register the result in the matching WeakMap;
+  the wire is unaffected and consumers still read only `.slot`. A noun-selects-state helper, not a `.get()`. The
+  short name matches its `set`/`update` siblings; the `*State` suffix is reserved for the UI/reaction subsystem
+  helpers (`bindState`/`stateEquals`/`updateState`/`onStateCrossing`). Scoped to reading a slot into a condition
+  or a *different* slot's expression; the read-modify-write of one slot is `update` (below), which names the
+  slot once.
 - **Expression-algebra unification.** Export or repackage the private `numberRef`/`boolRef` adapters so a
   `runtime.*` `RuntimeValue` and a state read both compose with impact facts and satisfy `GatedEffect.when`.
 - **`set(writableRef, expr)` absolute write.** Writes an arbitrary expression to a store slot; performs no
-  *implicit* self-read (unlike `update`, below) — an author can still pass a `readState(ref)` into `set`
+  *implicit* self-read (unlike `update`, below) — an author can still pass a `read(ref)` into `set`
   explicitly, which is legal, just non-idiomatic. Lowers to a new `slot.set` wire primitive and Rust binder arm
   that reuses `bind_number_write`.
 - **`update(writableRef, cur => expr)` read-modify-write.** The functional-updater form: the callback receives
-  the slot's current value as a `NumberRef` (`cur`, exactly `readState(ref)`) and returns the new expression, so
+  the slot's current value as a `NumberRef` (`cur`, exactly `read(ref)`) and returns the new expression, so
   the slot is named once. Lowers to `slot.set` — the same wire as `set`, with `cur` inlined as the input leaf.
   Supersedes the additive-only `slot(ref).add(delta)`, which is retired.
 - **Retire `slot(ref).add()` / `slot.add`.** The additive builder and its wire primitive are removed once
@@ -61,8 +63,17 @@ the retired `slot.add` arm and its target-rejection arm. No new IR node type, no
   instance-scoped state on a different lifecycle (G1-owned). Reconciling it with the authoritative `{slot}`
   model is a separate concern, not pulled in here.
 - **Wire slot-name renames.** The retained wire stays dotted-name based (`scripting.md:151`).
-- **UI-reaction `updateState` unification.** Whether `set` also subsumes the UI-reaction `updateState` (a
-  different dispatch context and wire path) is an open question (below), not a decided in-scope change.
+- **UI-reaction `updateState` — decided KEEP-SEPARATE.** Not a literal-vs-expression split — `updateState`
+  already accepts full IR via `SystemReactionIrBindings`, so it is not literals-only. Four durable separators
+  instead: different wire descriptor (`setState` reaction descriptor vs the `slot.set` effect), different scope
+  type (`DispatchScope` seeded with `@rising` ephemeral dispatch inputs vs `EntityScope` seeded with the frozen
+  `@impact.*`/`@state.*` snapshot), different frame stage (the app-frame system-command drain after the
+  post-tick event drains vs synchronously inside the fixed simulation tick), and different trigger (a named UI
+  event — button/crossing/slider — vs per-damage-hit). They share no engine slot-write primitive, so a single
+  author verb would either hide that difference or drag one subsystem's timing/scope into the other. `set`/
+  `update` are the impact-effect write twins, deliberately named apart from the UI-reaction `updateState` — the
+  reason the `*State` suffix marks UI/reaction-subsystem membership, and what makes the `read` naming (Scope,
+  above) coherent.
 - **Persistence, replication, and the `setState` opcode.** Unchanged.
 
 ## Direction
@@ -83,7 +94,7 @@ this in the engine would widen the closed IR evaluator, which the surface delibe
 vocabulary"). The engine touches are the `slot.set` arm added in Task 1 and the `slot.add` arm removed in Task 5
 — both reuse the existing binder and add no IR node, so neither is a vocabulary widening.
 
-**Frame and ordering.** A policy fires in GameLogic synchronously after each in-tick damage hit; `readState` of
+**Frame and ordering.** A policy fires in GameLogic synchronously after each in-tick damage hit; `read` of
 engine or store state and impact facts all resolve against one snapshot seeded at that fire (via
 `seed_impact_from_registry`), not a live end-of-tick read. Same-slot writes across independent events or groups
 follow the same frozen-read, last-writer-wins rule as within one `do:` list; an override replaces (evicts) its
@@ -91,7 +102,7 @@ base rather than composing with it (Orderings, below).
 
 **Prior commitments.**
 - "Nouns select state. Helpers describe how a reference is used. No `.get()`/`.set()`" (`scripting.md:145`).
-  Honored: reads are the helper `readState(ref)` returning a `NumberRef` — the exact shape `TargetHandle.state`
+  Honored: reads are the helper `read(ref)` returning a `NumberRef` — the exact shape `TargetHandle.state`
   already ships (`data_script.ts:231`) — not arithmetic or a getter bolted onto the ref. `set(ref, expr)` is a
   free write constructor, not a `.set()` method on the ref.
 - Closed IR evaluator, not widened (`data_script.ts:169-171`). Honored — see Placement.
@@ -120,13 +131,13 @@ base rather than composing with it (Orderings, below).
   to hold reactive cells. This boundary is what forces `when` ≠ `if` and read-as-node, and it is why the design
   is the *compile-to-IR shadow* of Vue, not Vue.
 - *Arithmetic/`.set()` methods directly on the store ref* (the withdrawn E16 Variant C(b)). Rejected as the
-  noun/helper-boundary violation `scripting.md:145` forbids; `readState`/`set`/`update` keep verbs off the ref.
-- *Read-modify-write via `set(ref, readState(ref).expr)`.* The obvious general form, but it names the slot
+  noun/helper-boundary violation `scripting.md:145` forbids; `read`/`set`/`update` keep verbs off the ref.
+- *Read-modify-write via `set(ref, read(ref).expr)`.* The obvious general form, but it names the slot
   twice per RMW — the duplication that made the shipped `slot(ref).add()` terser than its replacement. `update`
   binds the read as `cur` so the slot is named once, and reduces to `set` for the absolute-write case.
 - *Engine-native type names instead of Vue's (`StateRef`/`ReadonlyStateRef`).* Rejected, narrowly. Vue's
   `Ref`/`ComputedRef` do carry the mis-expectation the design cannot honor (no live `.value`, `when ≠ if`) — but
-  the names are *inferred*, never written by authors (a modder writes `const xp = readState(store.xp)`, never
+  the names are *inferred*, never written by authors (a modder writes `const xp = read(store.xp)`, never
   `Ref<number>`), so the risk lives only in the mental model and docs, not at any call site. Against that, the
   Vue frame is the clearest available account of the writable/readonly split (`Ref` mutates, `ComputedRef` is
   derived-readonly). Keep the names; the docs state plainly that these are compile-time descriptors with no live
@@ -135,15 +146,15 @@ base rather than composing with it (Orderings, below).
 ## Acceptance criteria
 
 - [ ] A store slot is referenced as `store.key` (e.g. `puzzles.northHeld`) — no `.state` hop — and this ref
-  binds a widget, feeds `readState`, and feeds `set`.
+  binds a widget, feeds `read`, and feeds `set`.
 - [ ] `defineMod({ stores: [store] })` commits the store's declaration; a mod-init that returns the store
   handle (not a `.declaration` property) registers its slots in the slot table.
 - [ ] A store slot named `declaration` or `state` declares and resolves without collision (identity-resolved
   declaration, not a reserved property name).
 - [ ] An unreturned `defineStore` result commits no slots (parity with today's discard-on-VM-drop).
-- [ ] `readState(store.numberSlot)` yields a `NumberRef`; `readState(store.boolSlot)` yields a `BoolRef`; each
+- [ ] `read(store.numberSlot)` yields a `NumberRef`; `read(store.boolSlot)` yields a `BoolRef`; each
   composes with the fluent algebra (`.plus`, `.gt`, `.and`, …).
-- [ ] `readState(getGameState().player.health)` (an engine `ComputedRef`) yields a `NumberRef` usable in the
+- [ ] `read(getGameState().player.health)` (an engine `ComputedRef`) yields a `NumberRef` usable in the
   same expression as an impact fact and a store read; inside an impact expression this resolves via the
   store-slot path only if `player.health` is present in the slot table at policy-bind time, so the test must
   seed it.
@@ -153,7 +164,7 @@ base rather than composing with it (Orderings, below).
   (no `tsc` CI), not a `cargo test`.
 - [ ] `update(store.xp, (xp) => xp.plus(1))` names the slot once and performs a read-modify-write; it and the
   pre-retirement `slot(store.xp).add(1)` produce the same stored value against an `EntityScope` seeded with a
-  known `store.xp` input. The callback's `cur` argument is a `NumberRef` equal to `readState(store.xp)`. Task 4
+  known `store.xp` input. The callback's `cur` argument is a `NumberRef` equal to `read(store.xp)`. Task 4
   asserts this directly on the `update` form's bound wire (not only via a `set` surrogate), so the equivalence
   has a verifying artifact.
 - [ ] The `slot.set` primitive rejects a present target with a diagnostic (mirroring the pre-retirement
@@ -213,13 +224,13 @@ bind_number_write(slot.to_string(), value, scope).map(BoundEffect::Write) }` and
 mirroring `:497`. This reuses the shipped binder (`:534-544`) — no new `IrNode` variant.
 
 Add the SDK surface in `data_script.ts`: state refs carry a build-time `kind` field — the slot's declared value
-type, never serialized. Task 1 only *consumes* `kind`: `readState(ref): NumberRef` / `readState(ref): BoolRef`
+type, never serialized. Task 1 only *consumes* `kind`: `read(ref): NumberRef` / `read(ref): BoolRef`
 reads `ref.kind` to pick `numberRef` or `boolRef`, emitting `{ op: "input", name: ref.slot }` and registering the
 result in the matching WeakMap (`data_script.ts:287, 306`); and `set(ref: WritableStateRef<number>, value:
 NumberValue): Effect` emits `args: { slot: ref.slot, value: numberNode(value) }`, mirroring the shipped
 `slot.add` builder's `numberNode(delta)`. `kind`'s *production* belongs to later tasks — Task 2 stamps it on
 engine-catalog refs, Task 3's `defineStore` stamps it on store refs — so no real ref carries `kind` until Task 3;
-Task 1's `readState`/`set` are not exercised by a real ref in Phase 1.
+Task 1's `read`/`set` are not exercised by a real ref in Phase 1.
 
 Task 1's Phase-1 proof is therefore the Rust wire-arm equality alone, not SDK authoring (the SDK builders can't
 run in Rust yet): a Rust test hand-builds the `slot.set` wire JSON — the way `breakable_threshold`'s `slot_add()`
@@ -228,8 +239,8 @@ helper hand-builds `slot.add` JSON at `impact_policy.rs:688` — and seeds the s
 directly, so `set(xp, {op:"add", a:{op:"input",name:"xp"}, b:1})` equals `slot.add(xp, 1)` by stored result — a
 comparison of the *evaluated stored value*, not of the bound program or the wire (`slot.set` and `slot.add` are
 different wire; `BoundProgram` exposes no equality/serialize). This and companion cases assert pin-table rows
-P1–P6 (Orderings, below). If a TS-level `readState`/`set` unit test is wanted in Phase 1, it must hand-construct
-a `{ slot, kind }` object — no real ref exists yet; otherwise `readState`/`set` are wire-proven only, until Task
+P1–P6 (Orderings, below). If a TS-level `read`/`set` unit test is wanted in Phase 1, it must hand-construct
+a `{ slot, kind }` object — no real ref exists yet; otherwise `read`/`set` are wire-proven only, until Task
 3 supplies a real ref. Uses the pre-rename type names (`WritableStateRef`); Task 2 renames.
 
 ### Task 2: `Ref` / `ComputedRef` rename
@@ -284,19 +295,19 @@ Consumes the renamed types from Task 2.
 
 Close the three-dialect bridge so one algebra spans engine reads, store reads, `runtime.*` values, and impact
 facts. Repackage the private `numberRef`/`boolRef` adapters (`sdk/lib/data_script.ts:287, 306`) so a
-`RuntimeValue` — from `runtime.*` or from `readState` — lifts into the fluent `NumberRef`/`BoolRef` algebra and
+`RuntimeValue` — from `runtime.*` or from `read` — lifts into the fluent `NumberRef`/`BoolRef` algebra and
 registers in the `numberNodes`/`boolNodes` WeakMaps (`:272-273`), resolving the `boolNode(runtimeValue)`
 WeakMap-miss (`:283-284`) that today blocks a `runtime.*` value from `GatedEffect.when`. Prefer a
-`readState`/`fromRuntime` helper family over exporting the raw adapters, to keep the raw-node privacy the comment
+`read`/`fromRuntime` helper family over exporting the raw adapters, to keep the raw-node privacy the comment
 at `:169-171` relies on. Add `update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect` — it
-calls `build` with `readState(ref)` and emits the returned expression through the `slot.set` wire from Task 1, so
+calls `build` with `read(ref)` and emits the returned expression through the `slot.set` wire from Task 1, so
 the read-modify-write names the slot once; `update`/`set` supersede the author-facing `slot(ref)` builder, which
 stays in place until Task 5 removes it (after content migrates and after `update` exists). Assert the `update`
 form's bound wire directly — not only via a `set` surrogate — for AC8. Add
 `when(cond: BoolRef, effects: readonly Effect[]): GatedEffect` returning `{ when: cond, do: effects }` (the
 shipped shape, `:218`). Mirror all of it in `data_script.luau`, and
 document the Luau boolean spelling `ref["and"](ref, other)` in the SDK docs, since `when`'s condition path leans
-on boolean composition and `and`/`or`/`not` are Luau keywords (`.luau:237-239`). Consumes Task 1's `readState`
+on boolean composition and `and`/`or`/`not` are Luau keywords (`.luau:237-239`). Consumes Task 1's `read`
 and Task 2's renamed types; shares `data_script.ts` with Task 3, so sequence after it.
 
 ### Task 5: Typedef regen, docs, content sweep, parity tests
@@ -321,9 +332,9 @@ types (no type-check), so this "compile" step doesn't catch a TypeScript error; 
 still "compiles" under it. Regenerate and commit `sdk/types/postretro.d.{ts,luau}` via
 `cargo run -p postretro --bin gen-script-types`; confirm the drift-detection test
 (`committed_sdk_types_match_current_registry`) is green. Update `scripting.md` §5 to the converged surface:
-`store.key`, `readState`, `set`, `update`, `when`, and the `Ref`/`ComputedRef` vocabulary, removing
+`store.key`, `read`, `set`, `update`, `when`, and the `Ref`/`ComputedRef` vocabulary, removing
 `.state`/`.declaration` and `slot().add()` examples. Add cross-runtime parity tests asserting byte-identical
-wire for `readState`, `set`/`update`/`slot.set`, `when`, the flattened store, and the `runtime.*` bridge, plus
+wire for `read`, `set`/`update`/`slot.set`, `when`, the flattened store, and the `runtime.*` bridge, plus
 the ordering pin-table rows P7–P13 (Orderings, below). P12 and P13 need a purpose-built harness, not the bare
 `breakable` one: P12 (a policy reading `getGameState().player.health` mid-tick) requires seeding `player.health`
 into the slot table before the impact freezes — the `breakable` harness never populates it, so seed it
@@ -353,7 +364,7 @@ unchanged; new names below. The ref itself carries `.slot` plus a build-time `ki
 |---|---|---|---|---|
 | absolute slot write | `bind_effect` arm `"slot.set"` → `bind_number_write` | `{ primitive: "slot.set", args: { slot, value: numberNode(value) } }` | `set(ref, value)` | `set(ref, value)` |
 | read-modify-write | same `"slot.set"` arm (`cur` = input leaf) | `{ primitive: "slot.set", args: { slot, value: numberNode(value) } }` | `update(ref, cur => expr)` | `update(ref, function(cur) … end)` |
-| state read (into expr) | n/a (emits `{op:"input", name}`) | `{ op: "input", name: "<dotted.slot>" }` | `readState(ref)` | `readState(ref)` |
+| state read (into expr) | n/a (emits `{op:"input", name}`) | `{ op: "input", name: "<dotted.slot>" }` | `read(ref)` | `read(ref)` |
 | effect guard sugar | n/a (existing `GatedEffect`) | `{ when, do }` (unchanged) | `when(cond, effects)` | `when(cond, effects)` |
 | writable ref type | `WritableStateRef` (internal) | `{ slot: "<dotted>" }` (unchanged; SDK ref also carries build-time `kind`, not serialized) | `Ref<T>` | `Ref<T>` |
 | readonly ref type | `ReadonlyStateRef` (internal) | `{ slot: "<dotted>" }` (unchanged; SDK ref also carries build-time `kind`, not serialized) | `ComputedRef<T>` | `ComputedRef<T>` |
@@ -386,8 +397,8 @@ writes apply last-writer-wins in do-list order.
 | P8 | base+override, same id, same slot | base do:[set(xp,1)], override(tag) do:[set(xp,2)], both tags present | ⇒ 2; override evicts base |
 | P9 | batching N=0 | do:[] | no write; wire byte-identical pre/post migration |
 | P10 | when(cond,[]) empty guard | do:[when(false,[])] and when(true,[]) | cond evaluated, no write either way; wire {when,do:[]} |
-| P11 | readState of unproduced slot | when(readState(store.fresh).ge(1), […]), fresh never written | reads slot default, no error |
-| P12 | mid-tick engine read | readState(getGameState().player.health) in a policy on an in-tick hit | fire-time frozen stored health (post-damage healthAfter), not end-of-tick |
+| P11 | read of unproduced slot | when(read(store.fresh).ge(1), […]), fresh never written | reads slot default, no error |
+| P12 | mid-tick engine read | read(getGameState().player.health) in a policy on an in-tick hit | fire-time frozen stored health (post-damage healthAfter), not end-of-tick |
 | P13 | consecutive in-tick hits | same policy fires hit 1 then hit 2 in one tick, update(xp,x=>x.plus(1)) | hit 2 observes hit 1's write (re-seed per fire) ⇒ base+2 across the two fires |
 
 Task 1 asserts P1–P6; Task 5 asserts P7–P13.
@@ -431,22 +442,11 @@ The three write/read verbs and their roles:
 // Proposed design
 update(progression.xp, (xp) => xp.plus(1));           // read-modify-write of one slot (slot named once)
 set(progression.phase, 2);                            // absolute write, no implicit self-read
-when(readState(progression.teamKills).ge(3), [ … ]);  // readState: a slot into a condition
+when(read(progression.teamKills).ge(3), [ … ]);       // read: a slot into a condition
 ```
 
-`readState(getGameState().player.health)` lifts an engine `ComputedRef` into the same algebra, so a policy can
+`read(getGameState().player.health)` lifts an engine `ComputedRef` into the same algebra, so a policy can
 read engine state, store state, and impact facts in one expression — the incoherence this spec removes. Luau is
 the behavioral twin: no compiler sugar, so it names both `defineStore("progression", …)` and
 `defineImpactEvent("reward", { tag = "enemy" }, …)` explicitly (single-segment id, no colon), with the
 `function(cur) … end` updater callback and the `cond["and"](cond, other)` boolean spelling.
-
-## Open questions
-
-- **Does `set` also subsume the UI-reaction `updateState`?** `updateState(ref, value)` (`sdk/lib/ui/reactions.ts`)
-  emits a `setState` reaction descriptor in the UI-reaction dispatch context, distinct from the impact-effect
-  `slot.set` this spec adds. Unifying the two author-facing verbs is desirable but crosses dispatch contexts and
-  wire paths; verify the descriptors before claiming it. Owner: this spec's reviewer, or a follow-up — do not
-  fold `updateState` into `set` without grounding the wire shapes.
-- **Is `readState` the right name?** It fits the `bindState`/`stateEquals`/`updateState` helper family and does
-  not imply a live read (it emits an input node). Alternatives (`asExpr`, `expr`) were weighed against family
-  consistency. Pinned to `readState` unless review prefers otherwise.

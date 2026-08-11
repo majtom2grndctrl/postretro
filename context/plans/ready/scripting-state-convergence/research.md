@@ -13,7 +13,7 @@ execute in Rust, not JS.** Every ergonomic divergence from Vue traces to that si
 |---|---|---|
 | `ref(0)` — writable reactive source | mod store slot (`store.xp`) | — |
 | `computed(() => …)` — readonly derived | engine observation (`player.health`) + author-named intermediates | body is a graph expression, not runnable JS — no native `&&`/`>`, only combinators |
-| `.value` live read/write | `readState(ref)` (read) / `set(ref, expr)` (write) | the value exists only later, in Rust — no live access |
+| `.value` live read/write | `read(ref)` (read) / `set(ref, expr)` (write) | the value exists only later, in Rust — no live access |
 | `watch(src, cb)` / `v-if` | `when(cond, effects)` | a native `if` tests a frozen node object (always truthy) → silent mis-compile |
 | `Ref<T>` vs readonly `ComputedRef<T>` | `Ref<T>` (writable) vs `ComputedRef<T>` (readonly) | keyed on per-ref writable capability, not owner |
 
@@ -51,8 +51,10 @@ Constraint → verdict, all grounded in shipped source:
    two E16 docs disagree whether `byPlayer` sits on the ref or the store handle. **Deferred to
    E16--per-player-currency** (index.md scope).
 4. **Three-dialect type bridge** — NEEDS-BRIDGE. All three share one wire type; divergence is surface-only.
-   Exporting/repackaging `numberRef`/`boolRef` (or a `readState`/`fromRuntime` family) unifies them. `when`
-   already accepts an author-named `BoolRef` const verbatim (`data_script.ts:218, 425`).
+   Exporting/repackaging `numberRef`/`boolRef` (or a `read`/`fromRuntime` family) unifies them. `when`
+   already accepts an author-named `BoolRef` const verbatim (`data_script.ts:218, 425`). Resolved: the read
+   helper is named `read` (short form matching `set`/`update`; `*State` reserved for the UI/reaction family) —
+   see `index.md` Scope.
 5. **Luau twin parity** — SUPPORTED, one friction. Every fluent method exists and chains in `.luau`
    (`data_script.luau:221-241, 553-611`); `const`-naming is ordinary locals (no compiler pass). But `and`/`or`/
    `not` are Luau keywords, so `BoolRef` declares them as bracket keys `["and"]` (`.luau:237-239, 597-604`) — a

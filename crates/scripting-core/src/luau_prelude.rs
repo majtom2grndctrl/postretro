@@ -151,7 +151,11 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
-    "slot",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
 ];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.
@@ -292,7 +296,11 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
-    "slot",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
     "brain",
     "candidate",
     "state",

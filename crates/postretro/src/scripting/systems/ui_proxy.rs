@@ -1,4 +1,5 @@
-// Player HUD state publisher. Host publishes authoritative health, ammo, and reload slots;
+// Player state publisher. Host publishes authoritative health at each impact seam and
+// republishes health, ammo, and reload slots for HUD consumers after game logic;
 // every role publishes local display-only `player.weapon.*` slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
@@ -81,7 +82,7 @@ fn weapon_state_values(
     (current, pending, inventory.switch_target.is_some())
 }
 
-/// Engine-side producer for the HUD store slots.
+/// Engine-side producer for player slots consumed by impact policies and HUD.
 pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
     invalid_max_warned_for: Option<EntityId>,
@@ -161,6 +162,14 @@ impl PlayerHudStatePublisher {
         self.tick_and_report_sampled_weapon()
     }
 
+    /// Publish the owning local pawn's health slots from a registry the fixed-tick
+    /// producer already borrows. Impact evaluation calls this after damage and
+    /// before freezing ambient engine-state reads.
+    pub(crate) fn publish_health_from_registry(&mut self, registry: &EntityRegistry) {
+        let pawn_health = pawn_health_values(registry);
+        self.publish_health_values(pawn_health);
+    }
+
     /// Republish the player HUD store slots for this frame.
     ///
     /// Publishes the live pawn HP into `player.health` and max HP into
@@ -185,20 +194,7 @@ impl PlayerHudStatePublisher {
         // the `write_store_slot` calls (which borrow the slot table, a separate
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
-        if let Some((pawn, current, max)) = pawn_health {
-            // Engine-owned and always declared, so a write error is a real bug
-            // and must be surfaced rather than silently skipped.
-            self.write_hud_slot("player.health", SlotValue::Number(current));
-
-            if max.is_finite() && max >= 1.0 {
-                self.write_hud_slot("player.maxHealth", SlotValue::Number(max));
-            } else if self.invalid_max_warned_for != Some(pawn) {
-                log::warn!(
-                    "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
-                );
-                self.invalid_max_warned_for = Some(pawn);
-            }
-        }
+        self.publish_health_values(pawn_health);
 
         let (sampled_weapon, ammo, reload_progress, reload_active) =
             weapon_hud_values(&self.ctx.registry.borrow());
@@ -223,6 +219,23 @@ impl PlayerHudStatePublisher {
             sampled_weapon
         } else {
             None
+        }
+    }
+
+    fn publish_health_values(&mut self, pawn_health: Option<(EntityId, f32, f32)>) {
+        if let Some((pawn, current, max)) = pawn_health {
+            // Engine-owned and always declared, so a write error is a real bug
+            // and must be surfaced rather than silently skipped.
+            self.write_hud_slot("player.health", SlotValue::Number(current));
+
+            if max.is_finite() && max >= 1.0 {
+                self.write_hud_slot("player.maxHealth", SlotValue::Number(max));
+            } else if self.invalid_max_warned_for != Some(pawn) {
+                log::warn!(
+                    "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
+                );
+                self.invalid_max_warned_for = Some(pawn);
+            }
         }
     }
 

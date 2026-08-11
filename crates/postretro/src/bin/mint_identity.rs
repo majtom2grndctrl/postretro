@@ -352,12 +352,12 @@ mod tests {
         format!(
             r#"
                 {stores}
-                globalThis.__postretroModManifest = {{
+                globalThis.__postretroModManifest = defineMod({{
                     name: "Mint fixture",
                     id: "mint-fixture",
                     version: "1",
-                    stores: [store.declaration],
-                }};
+                    stores: [store],
+                }});
             "#
         )
     }
@@ -488,12 +488,12 @@ mod tests {
                     score = { type = "number", default = 0, persist = true },
                 }
                 local store = defineStore(computedName, schema)
-                return {
+                return defineMod({
                     name = "Mint fixture",
                     id = "mint-fixture",
                     version = "1",
-                    stores = { store.declaration },
-                }
+                    stores = { store },
+                })
             "#,
         )
         .expect("write Luau mod manifest");

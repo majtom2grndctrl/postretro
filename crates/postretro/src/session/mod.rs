@@ -267,7 +267,8 @@ pub(crate) struct ScriptingCore {
     pub(crate) slot_accumulator_bindings:
         scripting_systems::slot_accumulators::SlotAccumulatorBindings,
 
-    /// Publishes live pawn health, ammo, and reload state into HUD slots each frame.
+    /// Publishes live pawn health before each impact snapshot, then republishes
+    /// health, ammo, and reload state for HUD consumers after game logic.
     /// See: context/lib/scripting.md §5 for the store contract.
     pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
 
@@ -287,6 +288,18 @@ pub(crate) struct ScriptingCore {
     /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
     /// See: context/lib/input.md §7.
     pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+}
+
+/// Publish owner-local health and evaluate the damage call's pending impact in
+/// one fixed-tick seam. The caller already owns the live registry, so the health
+/// producer must read that borrow rather than re-enter `ScriptCtx::registry`.
+pub(crate) fn evaluate_pending_in_tick_impacts(
+    player_hud_state: &mut scripting_systems::ui_proxy::PlayerHudStatePublisher,
+    impact_policy_runtime: &mut ImpactPolicyRuntime,
+    registry: &mut postretro_entities::EntityRegistry,
+) {
+    player_hud_state.publish_health_from_registry(registry);
+    impact_policy_runtime.evaluate_pending_in_registry(registry);
 }
 
 impl Session {
@@ -760,6 +773,19 @@ fn build_scripting_core(
 }
 
 impl ScriptingCore {
+    /// Evaluate one damage call's pending impacts against engine state published
+    /// from the same post-damage registry borrow.
+    pub(crate) fn evaluate_pending_in_tick_impacts(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+    ) {
+        evaluate_pending_in_tick_impacts(
+            &mut self.player_hud_state,
+            &mut self.impact_policy_runtime,
+            registry,
+        );
+    }
+
     /// Drain the validated mod manifest's engine-global registrations into the
     /// `DataRegistry`: entity-type descriptors, the map catalog, global reactions
     /// (validated against the sequence registry), global crossings, and global trigger pools. Shared by

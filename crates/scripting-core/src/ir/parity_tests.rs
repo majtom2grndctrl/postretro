@@ -457,7 +457,7 @@ fn trigger_pool_manifest_data_is_byte_identical_across_authoring_runtimes() {
 #[test]
 fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineReaction, defineStore, runtime } from "postretro";
+        import { defineMod, defineReaction, defineStore, runtime } from "postretro";
         import { onStateCrossing, updateState } from "postretro/ui";
 
         const store = defineStore("dispatch", {
@@ -470,31 +470,32 @@ fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
           active: { type: "boolean", default: false },
         });
         const toggle = defineReaction("toggle", (on) =>
-          updateState(store.state.active, runtime.select(on.rising, true, false))
+          updateState(store.active, runtime.select(on.rising, true, false))
         );
         const crossing = onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { below: 0, edge: "both" },
           [toggle],
         );
         const predicate = onStateCrossing(
-          runtime.le(store.state.countdown, 0),
+          runtime.le(store.countdown, 0),
           [toggle],
           { edge: "both" },
         );
         const unknownEdge = onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { above: 10, edge: "future-edge" },
           [toggle],
         );
+        const manifest = defineMod({ stores: [store] });
         const value = {
           reaction: toggle,
           crossing,
           predicate,
           unknownEdge,
-          schema: store.declaration.schema,
-          refRead: runtime.read(store.state.countdown),
-          bareRef: runtime.add(store.state.countdown, 1),
+          schema: manifest.stores[0].schema,
+          refRead: runtime.read(store.countdown),
+          bareRef: runtime.add(store.countdown, 1),
         };
         const roundTrip = JSON.parse(JSON.stringify(value));
         JSON.stringify({ value, roundTrip, hasFunction: typeof toggle.tracer === "function" });
@@ -514,31 +515,32 @@ fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
           active = { type = "boolean", default = false },
         })
         local toggle = Postretro.defineReaction("toggle", function(on)
-          return Ui.updateState(store.state.active, Postretro.runtime.select(on.rising, true, false))
+          return Ui.updateState(store.active, Postretro.runtime.select(on.rising, true, false))
         end)
         local crossing = Ui.onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { below = 0, edge = "both" },
           { toggle }
         )
         local predicate = Ui.onStateCrossing(
-          Postretro.runtime.le(store.state.countdown, 0),
+          Postretro.runtime.le(store.countdown, 0),
           { toggle },
           { edge = "both" }
         )
         local unknownEdge = Ui.onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { above = 10, edge = "future-edge" },
           { toggle }
         )
+        local manifest = Postretro.defineMod({ stores = { store } })
         local value = {
           reaction = toggle,
           crossing = crossing,
           predicate = predicate,
           unknownEdge = unknownEdge,
-          schema = store.declaration.schema,
-          refRead = Postretro.runtime.read(store.state.countdown),
-          bareRef = Postretro.runtime.add(store.state.countdown, 1),
+          schema = manifest.stores[1].schema,
+          refRead = Postretro.runtime.read(store.countdown),
+          bareRef = Postretro.runtime.add(store.countdown, 1),
         }
         return { value = value, roundTrip = value, hasFunction = false }
     "#;
@@ -671,7 +673,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // assertion pins every cross-task leaf/token spelling and proves the
     // boolean sugar introduces only `select` nodes.
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineImpactEvent, defineStore, slot } from "postretro";
+        import { defineImpactEvent, defineStore, update } from "postretro";
         import type { Impact, ImpactEvent } from "postretro";
 
         const counters = defineStore("impact", {
@@ -691,7 +693,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source.grantHealth(impact.amount.plus(2)),
                 impact.source.grantAmmo("cells", hits.plus(3)),
                 impact.target.playAnim("shatter"),
-                slot(counters.state.broken).add(1),
+                update(counters.broken, (current) => current.plus(1)),
                 impact.target.despawn(),
               ],
             },
@@ -748,7 +750,9 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source:grantHealth(impact.amount:plus(2)),
                 impact.source:grantAmmo("cells", hits:plus(3)),
                 impact.target:playAnim("shatter"),
-                Postretro.slot(counters.state.broken):add(1),
+                Postretro.update(counters.broken, function(current)
+                  return current:plus(1)
+                end),
                 impact.target:despawn(),
               },
             },
@@ -804,8 +808,9 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     }
 
     assert_eq!(
-        typescript, luau,
-        "impact ids and policy lowering must match across runtimes"
+        serde_json::to_vec(&typescript).expect("serialize TypeScript wire"),
+        serde_json::to_vec(&luau).expect("serialize Luau wire"),
+        "impact ids and policy lowering must be byte-identical across runtimes"
     );
 
     let base = &typescript["base"];
@@ -899,10 +904,14 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     assert_eq!(
         base["policy"][1]["do"][4],
         serde_json::json!({
-            "primitive": "slot.add",
+            "primitive": "slot.set",
             "args": {
                 "slot": "impact.broken",
-                "delta": { "op": "const", "value": 1 },
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.broken" },
+                    "b": { "op": "const", "value": 1 },
+                },
             },
         })
     );
@@ -924,6 +933,329 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         typescript["empty"]["policy"],
         serde_json::json!([]),
         "an empty impact policy must stay an array in both SDKs"
+    );
+}
+
+#[test]
+fn impact_expression_algebra_update_and_when_match_across_authoring_runtimes() {
+    // The public bridges must accept raw runtime nodes as fluent operands and
+    // lift a runtime predicate into BoolRef before `when` lowers it. The first
+    // group names its condition; the second inlines the identical expression.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent, defineStore, fromRuntime, read, runtime, update, when } from "postretro";
+
+        const counters = defineStore("impact", {
+          count: { type: "number", default: 0 },
+          enabled: { type: "boolean", default: false },
+        });
+        const namedGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+          .and(read(counters.enabled));
+        const event = defineImpactEvent("runtime-bridge", { tag: "crate" }, (impact) => {
+          const rawRuntimeNumber = runtime.add(runtime.read("impact.bonus"), 1);
+          return [
+            when(namedGate, [
+              update(counters.count, (cur) => cur.plus(impact.amount.plus(rawRuntimeNumber))),
+            ]),
+            when(
+              fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+                .and(read(counters.enabled)),
+              [],
+            ),
+          ];
+        });
+        JSON.stringify({ policy: (event as unknown as { policy: unknown[] }).policy });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+
+        local counters = Postretro.defineStore("impact", {
+          count = { type = "number", default = 0 },
+          enabled = { type = "boolean", default = false },
+        })
+        local namedGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+        namedGate = namedGate["and"](namedGate, Postretro.read(counters.enabled))
+        local event = Postretro.defineImpactEvent("runtime-bridge", { tag = "crate" }, function(impact)
+          local rawRuntimeNumber = runtime.add(runtime.read("impact.bonus"), 1)
+          local inlineGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+          return {
+            Postretro.when(namedGate, {
+              Postretro.update(counters.count, function(cur)
+                return cur:plus(impact.amount:plus(rawRuntimeNumber))
+              end),
+            }),
+            Postretro.when(
+              inlineGate["and"](
+                inlineGate,
+                Postretro.read(counters.enabled)
+              ),
+              {}
+            ),
+          }
+        end)
+        return { policy = event.policy }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "expression-algebra lowering must match across runtimes"
+    );
+
+    let policy = &typescript["policy"];
+    assert_eq!(
+        policy[0]["when"], policy[1]["when"],
+        "named and inline `when` conditions must lower identically"
+    );
+    assert_eq!(
+        policy[0]["do"][0],
+        serde_json::json!({
+            "primitive": "slot.set",
+            "args": {
+                "slot": "impact.count",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.count" },
+                    "b": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "@impact.amount" },
+                        "b": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "impact.bonus" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                    },
+                },
+            },
+        }),
+        "update must lower directly to slot.set with its current-value input inlined"
+    );
+}
+
+#[test]
+fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
+    // This fixture exercises the converged surface through its public runtime
+    // modules. `state` and `declaration` are deliberate slot names: flattening
+    // must not reserve either name on the store handle. The returned manifest
+    // and impact policy are the FFI wire, so SDK-only ref `kind` tags cannot
+    // appear anywhere in the serialized result.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import {
+          defineImpactEvent,
+          defineMod,
+          defineStore,
+          fromRuntime,
+          read,
+          runtime,
+          set,
+          update,
+          when,
+        } from "postretro";
+        import { bindState } from "postretro/ui";
+
+        const store = defineStore("converged", {
+          count: { type: "number", default: 0 },
+          enabled: { type: "boolean", default: true },
+          state: { type: "number", default: 0 },
+          declaration: { type: "number", default: 0 },
+        });
+        const manifest = defineMod({
+          name: "Converged",
+          id: "converged",
+          version: "1",
+          stores: [store],
+        });
+        const runtimeGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0));
+        const gate = runtimeGate.and(read(store.enabled));
+        const boundCount = bindState(store.count, { format: "Count {}" });
+        const kindMutationRejected = !Reflect.set(boundCount as object, "kind", "boolean");
+        const kindPreserved = boundCount.kind === "number";
+        const event = defineImpactEvent("converged", { tag: "crate" }, () => [
+          set(store.count, read(boundCount).plus(5)),
+          update(store.count, (current) => current.plus(1)),
+          when(gate, [set(store.state, read(store.declaration).plus(1))]),
+          when(fromRuntime.bool(runtime.constant(false)), []),
+        ]);
+        JSON.stringify({
+          bind: boundCount,
+          kindMutationRejected,
+          kindPreserved,
+          slots: {
+            count: store.count.slot,
+            enabled: store.enabled.slot,
+            state: store.state.slot,
+            declaration: store.declaration.slot,
+          },
+          stores: manifest.stores,
+          policy: (event as unknown as { policy: unknown[] }).policy,
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local UI = require("postretro/ui")
+
+        local store = Postretro.defineStore("converged", {
+          count = { type = "number", default = 0 },
+          enabled = { type = "boolean", default = true },
+          state = { type = "number", default = 0 },
+          declaration = { type = "number", default = 0 },
+        })
+        local manifest = Postretro.defineMod({
+          name = "Converged",
+          id = "converged",
+          version = "1",
+          stores = { store },
+        })
+        local runtimeGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+        local gate = runtimeGate["and"](runtimeGate, Postretro.read(store.enabled))
+        local boundCount = UI.bindState(store.count, { format = "Count {}" })
+        local kindMutationRejected = not pcall(function()
+          boundCount.kind = "boolean"
+        end)
+        local kindPreserved = boundCount.kind == "number"
+        local event = Postretro.defineImpactEvent("converged", { tag = "crate" }, function()
+          return {
+            Postretro.set(store.count, Postretro.read(boundCount):plus(5)),
+            Postretro.update(store.count, function(current)
+              return current:plus(1)
+            end),
+            Postretro.when(gate, {
+              Postretro.set(store.state, Postretro.read(store.declaration):plus(1)),
+            }),
+            Postretro.when(Postretro.fromRuntime.bool(runtime.constant(false)), {}),
+          }
+        end)
+        return {
+          bind = boundCount,
+          kindMutationRejected = kindMutationRejected,
+          kindPreserved = kindPreserved,
+          slots = {
+            count = store.count.slot,
+            enabled = store.enabled.slot,
+            state = store.state.slot,
+            declaration = store.declaration.slot,
+          },
+          stores = manifest.stores,
+          policy = event.policy,
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    let typescript_wire = serde_json::to_vec(&typescript).expect("serialize TypeScript wire");
+    let luau_wire = serde_json::to_vec(&luau).expect("serialize Luau wire");
+
+    assert_eq!(
+        typescript_wire, luau_wire,
+        "flatten/read/set/update/when/runtime bridge wire diverged across runtimes"
+    );
+    assert!(
+        !String::from_utf8(typescript_wire)
+            .expect("wire JSON is UTF-8")
+            .contains("\"kind\""),
+        "SDK-only ref kind must not cross the descriptor wire",
+    );
+    assert_eq!(
+        typescript["bind"],
+        serde_json::json!({ "slot": "converged.count", "format": "Count {}" }),
+        "bindState must retain kind for SDK composition without serializing it",
+    );
+    assert_eq!(
+        typescript["kindMutationRejected"],
+        serde_json::json!(true),
+        "bindState kind metadata must reject author mutation",
+    );
+    assert_eq!(
+        typescript["kindPreserved"],
+        serde_json::json!(true),
+        "rejected kind mutation must preserve numeric expression lowering",
+    );
+    assert_eq!(
+        typescript["policy"][0]["args"]["value"],
+        serde_json::json!({
+            "op": "add",
+            "a": { "op": "input", "name": "converged.count" },
+            "b": { "op": "const", "value": 5 },
+        }),
+        "read(bindState(numberRef)) must stay in the numeric fluent algebra",
+    );
+    assert_eq!(
+        typescript["slots"],
+        serde_json::json!({
+            "count": "converged.count",
+            "enabled": "converged.enabled",
+            "state": "converged.state",
+            "declaration": "converged.declaration",
+        }),
+        "flattened handles must expose schema fields directly, including state/declaration",
+    );
+    assert_eq!(
+        typescript["stores"],
+        serde_json::json!([{
+            "namespace": "converged",
+            "schema": {
+                "count": { "type": "number", "default": 0 },
+                "enabled": { "type": "boolean", "default": true },
+                "state": { "type": "number", "default": 0 },
+                "declaration": { "type": "number", "default": 0 },
+            },
+        }]),
+        "defineMod must resolve the handle to the unchanged store declaration wire",
+    );
+    assert_eq!(
+        typescript["policy"],
+        serde_json::json!([
+            {
+                "primitive": "slot.set",
+                "args": {
+                    "slot": "converged.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "converged.count" },
+                        "b": { "op": "const", "value": 5 },
+                    },
+                },
+            },
+            {
+                "primitive": "slot.set",
+                "args": {
+                    "slot": "converged.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "converged.count" },
+                        "b": { "op": "const", "value": 1 },
+                    },
+                },
+            },
+            {
+                "when": {
+                    "op": "select",
+                    "cond": {
+                        "op": "gt",
+                        "a": { "op": "input", "name": "impact.bonus" },
+                        "b": { "op": "const", "value": 0 },
+                    },
+                    "a": { "op": "input", "name": "converged.enabled" },
+                    "b": { "op": "const", "value": false },
+                },
+                "do": [{
+                    "primitive": "slot.set",
+                    "args": {
+                        "slot": "converged.state",
+                        "value": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "converged.declaration" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                    },
+                }],
+            },
+            {
+                "when": { "op": "const", "value": false },
+                "do": [],
+            },
+        ]),
+        "converged builders must lower only through slot.set and the shipped IR",
     );
 }
 

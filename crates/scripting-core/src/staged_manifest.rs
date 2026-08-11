@@ -995,18 +995,28 @@ mod tests {
         fs::write(
             dir.join("start-script.js"),
             r#"
+            const discarded = defineStore("discarded", {
+                value: { type: "number", default: 0 },
+            });
             const staged = defineStore("staged", {
                 count: { type: "number", default: 1 },
+                state: { type: "boolean", default: false },
+                declaration: { type: "string", default: "ready" },
             });
-            if (staged.state.count.slot !== "staged.count") throw new Error("bad store handle");
-            globalThis.__postretroModManifest = {
+            if (staged.count.slot !== "staged.count" || staged.count.kind !== "number") throw new Error("bad count ref");
+            if (staged.state.slot !== "staged.state" || staged.state.kind !== "boolean") throw new Error("bad state ref");
+            if (staged.declaration.slot !== "staged.declaration" || staged.declaration.kind !== "string") throw new Error("bad declaration ref");
+            globalThis.__postretroModManifest = defineMod({
                 name: "StagedMod",
                 id: "staged-mod",
                 version: "1",
                 entities: [{ canonicalName: "smoke_pillar" }],
                 maps: [{ id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] }],
-                stores: [staged.declaration],
-            };
+                stores: [staged, {
+                    namespace: "explicit",
+                    schema: { passthrough: { type: "number", default: 0 } },
+                }],
+            });
             "#,
         )
         .unwrap();
@@ -1025,12 +1035,84 @@ mod tests {
         assert_eq!(manifest.maps[0].path, "maps/e1m1.prl");
         assert!(manifest.ui_trees.is_empty());
         assert_eq!(manifest.theme, ModThemeTokens::default());
-        assert_eq!(manifest.store_declarations.len(), 1);
+        assert_eq!(manifest.store_declarations.len(), 2);
+        let staged_store = manifest
+            .store_declarations
+            .iter()
+            .find(|declaration| declaration.namespace == "staged")
+            .expect("registered handle resolves to its declaration");
+        assert_eq!(
+            staged_store.records.len(),
+            3,
+            "schema keys named `state` and `declaration` remain store slots"
+        );
+        assert!(
+            manifest
+                .store_declarations
+                .iter()
+                .any(|declaration| declaration.namespace == "explicit"),
+            "an explicit declaration passes through defineMod unchanged"
+        );
+        assert!(
+            manifest
+                .store_declarations
+                .iter()
+                .all(|declaration| declaration.namespace != "discarded"),
+            "an unreturned store handle does not register a declaration"
+        );
         assert_eq!(
             manifest.entities[0].canonical_name.as_deref(),
             Some("smoke_pillar")
         );
         assert_eq!(manifest.dependency_paths.len(), 1);
+    }
+
+    #[test]
+    fn staged_manifest_requires_define_mod_for_flat_store_handles() {
+        for (runtime, entry, source) in [
+            (
+                "QuickJS",
+                "start-script.js",
+                r#"
+                const store = defineStore("raw", { value: { type: "number", default: 0 } });
+                globalThis.__postretroModManifest = {
+                    name: "Raw Store",
+                    id: "raw-store",
+                    version: "1",
+                    stores: [store],
+                };
+                "#,
+            ),
+            (
+                "Luau",
+                "start-script.luau",
+                r#"
+                local store = defineStore("raw", { value = { type = "number", default = 0 } })
+                return {
+                    name = "Raw Store",
+                    id = "raw-store",
+                    version = "1",
+                    stores = { store },
+                }
+                "#,
+            ),
+        ] {
+            let dir = temp_mod_root(&format!("flat_store_without_define_mod_{runtime}"));
+            fs::write(dir.join(entry), source).unwrap();
+
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            assert_eq!(result.status, StagedManifestBuildStatus::Failed);
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity
+                        == StagedManifestDiagnosticSeverity::Error
+                        && diagnostic.message.contains("requires `namespace`")),
+                "raw {runtime} store handle should reach the declaration drain unresolved: {:?}",
+                result.diagnostics
+            );
+        }
     }
 
     #[test]
@@ -1108,18 +1190,19 @@ mod tests {
             local staged = defineStore("staged", {
                 count = { type = "number", default = 1 },
             })
-            assert(staged.state.count.slot == "staged.count")
-            return {
+            assert(staged.count.slot == "staged.count")
+            assert(staged.count.kind == "number")
+            return defineMod({
                 name = "LuauDeps",
                 id = "luau-deps",
                 version = "1",
-                stores = { staged.declaration },
+                stores = { staged },
                 entities = {
                     player.descriptor,
                     player_again.descriptor,
                     weapons.descriptor,
                 },
-            }
+            })
             "#,
         )
         .unwrap();

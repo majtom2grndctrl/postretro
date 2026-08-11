@@ -713,7 +713,7 @@ mod tests {
                     const modStore = defineStore("{namespace}", {{
                         score: {{ type: "number", default: 1, persist: true }},
                     }});
-                    globalThis.__postretroModManifest = {{
+                    globalThis.__postretroModManifest = defineMod({{
                         name: "Identity Gate",
                         id: "identity-gate",
                         version: "1",
@@ -721,8 +721,8 @@ mod tests {
                             canonicalName: "identity_guard",
                             components: {{ health: {{ max: 10 }} }},
                         }}],
-                        stores: [modStore.declaration],
-                    }};
+                        stores: [modStore],
+                    }});
                 "#,
             ),
         )

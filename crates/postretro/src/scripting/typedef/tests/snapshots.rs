@@ -210,9 +210,9 @@ fn generic_brand_emits_exact_contract_without_changing_plain_brands() {
 
     let ts = generate_typescript(&registry);
     assert!(ts.contains("  export type EntityId = number & { readonly __brand: \"EntityId\" };"));
-    assert!(ts.contains("  export type StateValue<T> = WritableStateRef<T>;"));
+    assert!(ts.contains("  export type StateValue<T> = Ref<T>;"));
 
     let luau = generate_luau(&registry);
     assert!(luau.contains("export type EntityId = number"));
-    assert!(luau.contains("export type StateValue<T> = WritableStateRef<T>"));
+    assert!(luau.contains("export type StateValue<T> = Ref<T>"));
 }

@@ -277,13 +277,12 @@ fn trigger_command_step_types_are_emitted_in_both_sdk_surfaces() {
     }
 }
 
-/// `defineStore` returns a pure `{ declaration, state }` builder result.
-/// The generator special-cases it (like `worldQuery`) so the static SDK
-/// block's generic `defineStore<const S>` supplies the schema-keyed
-/// `state` map and declaration type. The old registry-driven
-/// `StateValue<string>` handle map must NOT be emitted.
+/// `defineStore` returns a pure flattened store handle. The generator
+/// special-cases it (like `worldQuery`) so the static SDK block's generic
+/// `defineStore<const S>` supplies its schema-keyed top-level refs and the
+/// `defineMod` input accepts the opaque handle.
 #[test]
-fn define_store_emits_returned_declaration_and_state_refs() {
+fn define_store_emits_flattened_handle_and_converged_refs() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
 
@@ -299,15 +298,15 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         "ts defineStore must expose both binding-sugar and explicit-name arities:\n{ts}"
     );
     assert!(
-        ts.contains("readonly declaration: StoreDeclaration;"),
-        "ts StoreDefinition missing declaration field"
+        ts.contains("readonly [K in keyof S]: StateValueForSlot<S[K]>;"),
+        "ts StoreDefinition missing flattened schema-keyed refs"
     );
     assert!(
-        ts.contains("readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };"),
-        "ts StoreDefinition missing schema-keyed state refs"
+        ts.contains("readonly [storeDefinitionBrand]: S;"),
+        "ts StoreDefinition missing opaque store-handle identity"
     );
     assert!(
-        ts.contains("Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;"),
+        ts.contains("Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;"),
         "ts StoreStateRefForSlot must preserve readonly schema capability"
     );
     assert!(
@@ -319,7 +318,11 @@ fn define_store_emits_returned_declaration_and_state_refs() {
             && ts.contains("type: \"number\"; readonly?: boolean;")
             && ts.contains("readonly?: false; network?: \"shared\"; accumulate:")
             && ts.contains("export type TickParams = Readonly<{ dt: RuntimeRead }>")
-            && ts.contains("read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;"),
+            && ts.contains("read(name: string | ComputedRef<unknown>): RuntimeRead;")
+            && ts.contains("export function read(ref: StateRef<number>): NumberRef;")
+            && ts.contains("export function set(ref: Ref<number>, value: NumberValue): Effect;")
+            && ts.contains("export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect;")
+            && ts.contains("export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;"),
         "ts must expose accumulator tracing and state-ref runtime reads:\n{ts}"
     );
     // The old uniform registry-driven handle map must be gone.
@@ -328,8 +331,10 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         "ts must not emit the registry-driven uniform StateValue<string> defineStore"
     );
     assert!(
-        !ts.contains("): { readonly [K in keyof S]: StateValueForSlot<S[K]> };"),
-        "ts must not return the old top-level StateValue handle map"
+        !ts.contains("readonly declaration: StoreDeclaration;")
+            && !ts
+                .contains("readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };"),
+        "ts must not retain the old declaration/state store shape"
     );
 
     let luau = generate_luau(&r);
@@ -338,16 +343,19 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         "luau missing StoreDefinition defineStore declaration:\n{luau}"
     );
     assert!(
-        luau.contains("export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>")
-            && luau.contains("state: { [string]: StoreStateRef<any> },"),
-        "luau StoreDefinition must not type every store slot as writable:\n{luau}"
+        luau.contains("export type StoreStateRef<T> = ComputedRef<T> | Ref<T>")
+            && luau.contains("export type StoreDefinition = {\n  [string]: StoreStateRef<any>,\n}")
+            && luau.contains("declare function defineMod(config: ModManifestInput): ModManifest"),
+        "luau StoreDefinition must expose the flattened handle:\n{luau}"
     );
     assert!(
         luau.contains("accumulate: (TickParams) -> RuntimeValue")
             && luau.contains("type: \"number\", readonly: boolean?")
             && luau.contains("readonly: false?, network: \"shared\"?, accumulate:")
             && luau.contains("export type TickParams = { dt: RuntimeRead }")
-            && luau.contains("read: (name: string | ReadonlyStateRef<any>) -> RuntimeRead"),
+            && luau.contains("read: (name: string | ComputedRef<any>) -> RuntimeRead")
+            && luau.contains("declare function set(ref: Ref<number>, value: NumberValue): Effect")
+            && luau.contains("declare function update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect"),
         "luau must expose accumulator tracing and state-ref runtime reads:\n{luau}"
     );
 }
@@ -381,7 +389,7 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && ts.contains("blockDuringReload: boolean;")
             && ts.contains("switching?: SwitchingDescriptor;")
             && ts.contains("blockDuringReload?: boolean;")
-            && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
+            && ts.contains("export function defineMod(config: ModManifestInput): ModManifest;")
             && ts.contains(
                 "export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];"
             ),
@@ -406,7 +414,7 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && luau.contains("blockDuringReload: boolean,")
             && luau.contains("switching: SwitchingDescriptor?")
             && luau.contains("blockDuringReload: boolean?")
-            && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
+            && luau.contains("declare function defineMod(config: ModManifestInput): ModManifest")
             && luau.contains(
                 "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"
             )
@@ -434,8 +442,8 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "ts missing getGameState declaration:\n{ts}"
     );
     assert!(
-        ts.contains("readonly player: {\n      readonly ammo: ReadonlyStateRef<number>;\n      readonly ammoReserve: ReadonlyStateRef<number>;\n      readonly health: ReadonlyStateRef<number>;\n      readonly maxHealth: ReadonlyStateRef<number>;")
-            && ts.contains("readonly textEntry: WritableStateRef<string>;"),
+        ts.contains("readonly player: {\n      readonly ammo: ComputedRef<number>;\n      readonly ammoReserve: ComputedRef<number>;\n      readonly health: ComputedRef<number>;\n      readonly maxHealth: ComputedRef<number>;")
+            && ts.contains("readonly textEntry: Ref<string>;"),
         "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
     );
     assert!(
@@ -449,11 +457,11 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "luau missing getGameState declaration:\n{luau}"
     );
     assert!(
-        luau.contains("ammo: ReadonlyStateRef<number>,")
-            && luau.contains("ammoReserve: ReadonlyStateRef<number>,")
-            && luau.contains("health: ReadonlyStateRef<number>,")
-            && luau.contains("maxHealth: ReadonlyStateRef<number>,")
-            && luau.contains("textEntry: WritableStateRef<string>,"),
+        luau.contains("ammo: ComputedRef<number>,")
+            && luau.contains("ammoReserve: ComputedRef<number>,")
+            && luau.contains("health: ComputedRef<number>,")
+            && luau.contains("maxHealth: ComputedRef<number>,")
+            && luau.contains("textEntry: Ref<string>,"),
         "luau GameStateRefs missing catalog path/capability refs"
     );
 

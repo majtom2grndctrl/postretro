@@ -2,8 +2,8 @@
 
 declare module "postretro/ui" {
   import type {
-    ReadonlyStateRef,
-    WritableStateRef,
+    ComputedRef,
+    Ref,
     ScalarStateValue,
     NumericArrayStateValue,
     GameStateRefs,
@@ -78,14 +78,14 @@ declare module "postretro/ui" {
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   export type LocalBindRef = { local: string };
   export type PredicateValue = number | boolean | string;
-  export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
-  export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
-  export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
-  export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  export type BarMaxProp = number | ReadonlyStateRef<number>;
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
+  export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarMaxProp = number | ComputedRef<number>;
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
   export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
@@ -145,7 +145,7 @@ declare module "postretro/ui" {
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
   /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
@@ -156,15 +156,15 @@ declare module "postretro/ui" {
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
 
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
-    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
-    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;
   /** Compose bind-only options onto a state ref. Pure; it emits `{ slot, ...options }` for widget props and never reads live state. */
-  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
-  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+  export function bindState<T>(ref: ComputedRef<T>): ComputedRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
-  export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
+  export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
   export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
@@ -175,7 +175,7 @@ declare module "postretro/ui" {
   export function getGameState(): GameStateRefs;
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
-  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
+  export function onStateCrossing(ref: ComputedRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
   export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
@@ -208,8 +208,8 @@ declare module "postretro/ui" {
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
   /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
-  export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
-  export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
-  export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
-  export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
+  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
+  export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;
+  export function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor;
+  export function clearText(ref: Ref<string>): PrimitiveReactionDescriptor;
 }

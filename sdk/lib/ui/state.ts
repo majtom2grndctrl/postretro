@@ -1,7 +1,7 @@
-// Authoritative state-reference helpers. State refs are immutable descriptors
-// with runtime shape `{ slot }`; readonly/writable and value type are type-level
-// capabilities. Presentation-local cells below remain separate and keep their
-// `.get()`/`.set()` handle behavior.
+// Authoritative state-reference helpers. State refs carry an SDK-only `kind`
+// tag alongside `slot`; descriptor wire includes only `slot`. Readonly/writable
+// remains a type-level capability. Presentation-local cells below remain
+// separate and keep their `.get()`/`.set()` handle behavior.
 
 import type { PrimitiveReactionDescriptor } from "../data_script";
 import type {
@@ -11,17 +11,17 @@ import type {
   NumericArrayStateValue,
   Predicate,
   PredicateValue,
-  ReadonlyStateRef,
+  ComputedRef,
   ScalarStateValue,
 } from "./widgets";
 
 export type StateBindOptionsFor<T> =
-  T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
-  T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
-  T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+  T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+  T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
+  T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
   never;
 
-function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
+function stateSlot(ref: ComputedRef<unknown>, helper: string): string {
   if (ref === null || typeof ref !== "object" || typeof ref.slot !== "string" || ref.slot.length === 0) {
     throw new Error(`${helper}: expected a state reference with a nonempty \`slot\``);
   }
@@ -32,15 +32,15 @@ function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
  * Compose bind-only options onto a state reference. Pure: returns the existing
  * retained bind wire shape `{ slot, ...options }`.
  */
-export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
+export function bindState<T>(ref: ComputedRef<T>): ComputedRef<T>;
 export function bindState<T, Options extends StateBindOptionsFor<T>>(
-  ref: ReadonlyStateRef<T>,
+  ref: ComputedRef<T>,
   options: Options,
-): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+): ComputedRef<T> & Omit<Options, "slot" | "local">;
 export function bindState<T>(
-  ref: ReadonlyStateRef<T>,
+  ref: ComputedRef<T>,
   options?: StateBindOptionsFor<T>,
-): ReadonlyStateRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local"> {
+): ComputedRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local"> {
   const slot = stateSlot(ref, "bindState");
   if (options !== undefined) {
     if (Object.prototype.hasOwnProperty.call(options, "slot")) {
@@ -49,15 +49,23 @@ export function bindState<T>(
     if (Object.prototype.hasOwnProperty.call(options, "local")) {
       throw new Error("bindState: `options.local` is reserved");
     }
+    if (Object.prototype.hasOwnProperty.call(options, "kind")) {
+      throw new Error("bindState: `options.kind` is reserved");
+    }
   }
-  return options === undefined
-    ? ({ slot } as ReadonlyStateRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">)
-    : ({ slot, ...options } as ReadonlyStateRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">);
+  const bound = options === undefined ? { slot } : { slot, ...options };
+  Object.defineProperty(bound, "kind", {
+    value: ref.kind,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return bound as ComputedRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">;
 }
 
 /** Build an equality predicate against a readable scalar state reference. */
 export function stateEquals<T extends PredicateValue>(
-  ref: ReadonlyStateRef<T>,
+  ref: ComputedRef<T>,
   value: T,
 ): Predicate {
   return { slot: stateSlot(ref, "stateEquals"), equals: value };

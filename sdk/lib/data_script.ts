@@ -2,7 +2,7 @@
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
-import type { ReadonlyStateRef, WritableStateRef } from "./ui/widgets";
+import type { ComputedRef, Ref } from "./ui/widgets";
 import type { RuntimeValue } from "postretro";
 
 /** Dispatch values published by a state-crossing fire. */
@@ -138,10 +138,10 @@ export type StoreDeclaration = {
   schema: Record<string, StoreSlotSchema>;
 };
 
-export type StateRef<T = unknown> = ReadonlyStateRef<T> | WritableStateRef<T>;
+export type StateRef<T = unknown> = ComputedRef<T> | Ref<T>;
 
 export type StoreStateRefForSlot<Slot, T> =
-  Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+  Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
 
 export type StateValueForSlot<Slot> =
   Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -149,9 +149,18 @@ export type StateValueForSlot<Slot> =
   Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
   StoreStateRefForSlot<Slot, string>;
 
+declare const storeHandleBrand: unique symbol;
+
+/** A frozen store handle whose enumerable keys are its schema's slot refs. */
 export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
-  readonly declaration: StoreDeclaration;
-  readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+  readonly [K in keyof S]: StateValueForSlot<S[K]>;
+} & {
+  readonly [storeHandleBrand]: S;
+};
+
+type StoreHandle = { readonly [storeHandleBrand]: unknown };
+type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
+  readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
 type ReactionBody =
@@ -175,8 +184,10 @@ declare const sourceBrand: unique symbol;
 declare const impactEventBrand: unique symbol;
 declare const effectBrand: unique symbol;
 
-export type NumberValue = number | NumberRef;
-export type BoolValue = boolean | BoolRef;
+/** A numeric literal, fluent expression, or raw `runtime.*` node. */
+export type NumberValue = number | NumberRef | RuntimeValue;
+/** A boolean literal, fluent expression, or raw `runtime.*` node. */
+export type BoolValue = boolean | BoolRef | RuntimeValue;
 
 export interface NumberRef {
   readonly [numBrand]: true;
@@ -202,6 +213,16 @@ export interface BoolRef {
   select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
 }
 
+/**
+ * Lift raw `runtime.*` output into the fluent impact-expression algebra.
+ * `number` and `bool` select the expected result kind; Rust remains the
+ * authority that validates the resulting IR at bind time.
+ */
+export type RuntimeExpressionRefs = Readonly<{
+  number(value: RuntimeValue): NumberRef;
+  bool(value: RuntimeValue): BoolRef;
+}>;
+
 type ImpactEffectWire =
   | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
   | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
@@ -209,9 +230,9 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
-  | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
+  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } };
 
-/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
+/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
 export interface Effect {
   readonly [effectBrand]: true;
 }
@@ -248,10 +269,6 @@ export interface SourceHandle {
   grantAmmo(type: string, amount: NumberValue): Effect;
 }
 
-export interface NumberSlot {
-  add(delta: NumberValue): Effect;
-}
-
 export type Impact = Readonly<{
   target: TargetHandle;
   source: SourceHandle;
@@ -271,17 +288,20 @@ export interface ImpactEvent {
 
 const numberNodes = new WeakMap<object, RuntimeValue>();
 const boolNodes = new WeakMap<object, RuntimeValue>();
+const storeDeclarations = new WeakMap<object, StoreDeclaration>();
 
 function constant(value: number | boolean): RuntimeValue {
   return { op: "const", value };
 }
 
 function numberNode(value: NumberValue): RuntimeValue {
-  return typeof value === "number" ? constant(value) : numberNodes.get(value)!;
+  if (typeof value === "number") return constant(value);
+  return numberNodes.get(value) ?? (value as RuntimeValue);
 }
 
 function boolNode(value: BoolValue): RuntimeValue {
-  return typeof value === "boolean" ? constant(value) : boolNodes.get(value)!;
+  if (typeof value === "boolean") return constant(value);
+  return boolNodes.get(value) ?? (value as RuntimeValue);
 }
 
 function numberRef(node: RuntimeValue): NumberRef {
@@ -317,6 +337,19 @@ function boolRef(node: RuntimeValue): BoolRef {
   } as BoolRef;
   boolNodes.set(ref, node);
   return Object.freeze(ref);
+}
+
+/** Public lifting helpers keep the raw-node adapters private to the SDK. */
+export const fromRuntime: RuntimeExpressionRefs = Object.freeze({
+  number: (value) => numberRef(value),
+  bool: (value) => boolRef(value),
+});
+
+export function read(ref: StateRef<number>): NumberRef;
+export function read(ref: StateRef<boolean>): BoolRef;
+export function read(ref: StateRef<number> | StateRef<boolean>): NumberRef | BoolRef {
+  const node: RuntimeValue = { op: "input", name: ref.slot };
+  return ref.kind === "number" ? numberRef(node) : boolRef(node);
 }
 
 function impactEffect(
@@ -367,19 +400,29 @@ const IMPACT: Impact = Object.freeze({
   amount: numberRef({ op: "input", name: "@impact.amount" }),
 });
 
-/** Build the closed additive store-write effect. */
-export function slot(ref: WritableStateRef<number>): NumberSlot {
-  return Object.freeze({
-    add(delta: NumberValue): Effect {
-      return {
-        primitive: "slot.add",
-        args: {
-          slot: ref.slot,
-          delta: numberNode(delta),
-        },
-      } as ImpactEffectWire as unknown as Effect;
+/** Build the closed absolute store-write effect. */
+export function set(ref: Ref<number>, value: NumberValue): Effect {
+  return {
+    primitive: "slot.set",
+    args: {
+      slot: ref.slot,
+      value: numberNode(value),
     },
-  });
+  } as ImpactEffectWire as unknown as Effect;
+}
+
+/**
+ * Build a read-modify-write effect. `build` receives exactly `read(ref)`, so
+ * the authored slot name occurs once while its expression reads the frozen
+ * pre-fire snapshot.
+ */
+export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect {
+  return set(ref, build(read(ref)));
+}
+
+/** Build a deferred impact-effect group guarded by a Bool expression. */
+export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect {
+  return { when: cond, do: effects };
 }
 
 function impactEvent(
@@ -699,9 +742,13 @@ export function defineEntity<T extends import("postretro").EntityTypeDescriptor>
  * side effects until the manifest is returned and validated.
  */
 export function defineMod(
-  config: import("postretro").ModManifest,
+  config: ModManifestInput,
 ): import("postretro").ModManifest {
-  return config;
+  if (config.stores === undefined) return config as import("postretro").ModManifest;
+  return {
+    ...config,
+    stores: config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry),
+  } as import("postretro").ModManifest;
 }
 
 /** Identity builder for a mod map catalog. `entries` are `ModMapEntry` objects with required `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. Pure: no engine side effects. */
@@ -770,7 +817,7 @@ function cloneAndFreeze<T>(
   return Object.freeze(clone) as T;
 }
 
-/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
+/** Pure state-store builder. `namespace` prefixes every returned slot ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Pass the returned handle through `defineMod({ stores: [store] })` to resolve its declaration; unreturned handles are discarded with the setup VM. */
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   schema: S,
 ): StoreDefinition<S>;
@@ -796,12 +843,14 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     }
   }
   const frozenSchema = cloneAndFreeze(tracedSchema) as S;
-  const state: Record<string, StateRef> = Object.create(null);
+  const store: Record<string, StateRef> = Object.create(null);
   for (const slot of Object.keys(frozenSchema)) {
-    state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;
+    store[slot] = Object.freeze({
+      slot: `${namespace}.${slot}`,
+      kind: frozenSchema[slot].type,
+    }) as StateRef;
   }
-  return Object.freeze({
-    declaration: Object.freeze({ namespace, schema: frozenSchema }),
-    state: Object.freeze(state) as { readonly [K in keyof S]: StateValueForSlot<S[K]> },
-  });
+  const handle = Object.freeze(store) as StoreDefinition<S>;
+  storeDeclarations.set(handle, Object.freeze({ namespace, schema: frozenSchema }));
+  return handle;
 }

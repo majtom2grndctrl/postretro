@@ -7,7 +7,7 @@
 import type { RuntimeValue } from "postretro";
 import type { CrossingParams, Reaction } from "../data_script";
 
-import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
+import type { ComputedRef, Ref } from "./widgets";
 
 /**
  * Crossing condition: fires when the watched slot crosses the threshold in one
@@ -54,7 +54,7 @@ export type PredicateCrossingDescriptor = {
  * (IR form) versus `slot` (threshold form). */
 export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;
 
-function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
+function stateSlot(ref: ComputedRef<unknown>, helper: string): string {
   if (ref === null || typeof ref !== "object" || typeof ref.slot !== "string" || ref.slot.length === 0) {
     throw new Error(`${helper}: expected a state reference with a nonempty \`slot\``);
   }
@@ -118,7 +118,7 @@ function crossingThreshold(condition: CrossingCondition): { key: "below" | "abov
  * against a non-Number slot warns and is skipped at load.
  */
 export function onStateCrossing(
-  ref: ReadonlyStateRef<number>,
+  ref: ComputedRef<number>,
   condition: CrossingCondition,
   fire: CrossingReaction[],
 ): CrossingDescriptor;
@@ -132,7 +132,7 @@ export function onStateCrossing(
   options?: CrossingOptions,
 ): CrossingDescriptor;
 export function onStateCrossing(
-  refOrPredicate: ReadonlyStateRef<number> | RuntimeValue,
+  refOrPredicate: ComputedRef<number> | RuntimeValue,
   conditionOrFire: CrossingCondition | CrossingReaction[],
   fireOrOptions?: CrossingReaction[] | CrossingOptions,
 ): CrossingDescriptor {
@@ -156,7 +156,7 @@ export function onStateCrossing(
   const fire = crossingFireNames(fireOrOptions);
   const threshold = crossingThreshold(conditionOrFire);
   const descriptor: ThresholdCrossingDescriptor = {
-    slot: stateSlot(refOrPredicate as ReadonlyStateRef<number>, "onStateCrossing"),
+    slot: stateSlot(refOrPredicate as ComputedRef<number>, "onStateCrossing"),
     fire,
     [threshold.key]: threshold.value,
   } as ThresholdCrossingDescriptor;
@@ -382,7 +382,7 @@ export function returnToFrontend(): import("../data_script").PrimitiveReactionDe
  * nonprojectable inputs and readonly targets reject the IR before it can fire.
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
-  ref: WritableStateRef<T>,
+  ref: Ref<T>,
   value: T | RuntimeValue,
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "setState", args: { slot: stateSlot(ref, "updateState"), value } };
@@ -396,7 +396,7 @@ export function updateState<T extends number | boolean | string | ReadonlyArray<
  * writable slot (e.g. `ui.textEntry`) is a valid target.
  */
 export function appendText(
-  ref: WritableStateRef<string>,
+  ref: Ref<string>,
   text: string,
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "appendText", args: { slot: stateSlot(ref, "appendText"), text } };
@@ -411,7 +411,7 @@ export function appendText(
  * Empty is a no-op with no warning. Readonly-gated like `setState`.
  */
 export function backspaceText(
-  ref: WritableStateRef<string>,
+  ref: Ref<string>,
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "backspaceText", args: { slot: stateSlot(ref, "backspaceText") } };
 }
@@ -422,7 +422,7 @@ export function backspaceText(
  * Readonly-gated like `setState`.
  */
 export function clearText(
-  ref: WritableStateRef<string>,
+  ref: Ref<string>,
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "clearText", args: { slot: stateSlot(ref, "clearText") } };
 }

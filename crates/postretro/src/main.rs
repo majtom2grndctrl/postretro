@@ -2632,7 +2632,7 @@ impl ApplicationHandler for App {
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
-                        let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
+                        let scripting = &mut session.scripting;
                         let trigger_system = &mut session.trigger_system;
                         let touch_system = &mut session.touch_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
@@ -2689,12 +2689,10 @@ impl ApplicationHandler for App {
                                 bindings: trigger_bindings,
                                 slot_table: script_ctx.slot_table.clone(),
                                 script_ctx: Some(script_ctx.clone()),
-                                auto_close_timers: Some(
-                                    session.scripting.auto_close_timers.clone(),
-                                ),
+                                auto_close_timers: Some(scripting.auto_close_timers.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
-                            |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
+                            |registry| scripting.evaluate_pending_in_tick_impacts(registry),
                         );
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
@@ -2870,7 +2868,9 @@ impl ApplicationHandler for App {
                 // Player HUD state: republish engine-owned health/ammo/reload slots
                 // after game logic settles and before crossing detection / UI
                 // snapshot construction, so same-frame consumers see the
-                // settled pawn and weapon state. See: context/lib/scripting.md §5.
+                // settled pawn and weapon state. In-tick impact evaluation has
+                // already published health at each fire seam. See:
+                // context/lib/scripting.md §5.
                 //
                 // A connected client skips host-authoritative HUD slot writes:
                 // those values arrive through state-slot apply. It still samples
@@ -6210,7 +6210,7 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
-        let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
+        let scripting = &mut session.scripting;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -6236,7 +6236,7 @@ impl App {
             open_shots,
             pending_hit_declarations,
             *tick,
-            |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
+            |registry| scripting.evaluate_pending_in_tick_impacts(registry),
         )
     }
 

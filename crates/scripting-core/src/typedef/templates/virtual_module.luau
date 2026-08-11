@@ -34,12 +34,12 @@ export type PostretroUiModule = {
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   getGameState: typeof(getGameState),
   --- Compose bind-only options onto a state ref; pure and never reads live state.
-  bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> ReadonlyStateRef<number> & NumberStateBindOptions)
-    & ((ReadonlyStateRef<{number}>, NumericArrayStateBindOptions?) -> ReadonlyStateRef<{number}> & NumericArrayStateBindOptions)
-    & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
-    & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions),
+  bindState: ((ComputedRef<number>, NumberStateBindOptions?) -> ComputedRef<number> & NumberStateBindOptions)
+    & ((ComputedRef<{number}>, NumericArrayStateBindOptions?) -> ComputedRef<{number}> & NumericArrayStateBindOptions)
+    & ((ComputedRef<string>, ScalarStateBindOptions?) -> ComputedRef<string> & ScalarStateBindOptions)
+    & ((ComputedRef<boolean>, ScalarStateBindOptions?) -> ComputedRef<boolean> & ScalarStateBindOptions),
   --- Build a scalar equality predicate for visibility, selection, or checked state.
-  stateEquals: <T>(ref: ReadonlyStateRef<T>, value: T) -> Predicate,
+  stateEquals: <T>(ref: ComputedRef<T>, value: T) -> Predicate,
   --- Declare presentation-local cells. Values may be number, boolean, string, or RGBA tuple.
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
@@ -48,7 +48,7 @@ export type PostretroUiModule = {
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
   --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
-  onStateCrossing: ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
+  onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
     & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
   --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
   playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
@@ -80,10 +80,10 @@ export type PostretroUiModule = {
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
-  updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
-  appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
-  backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
-  clearText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
+  updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
+  appendText: (ref: Ref<string>, text: string) -> PrimitiveReactionDescriptor,
+  backspaceText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
+  clearText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
 }
 
 export type PostretroModule = {
@@ -114,10 +114,18 @@ export type PostretroModule = {
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for trigger-pool declarations returned from level or mod manifests.
   defineTriggerPool: typeof(defineTriggerPool),
-  --- Pure state-store builder returning `{ declaration, state }`.
+  --- Pure state-store builder returning a flattened, frozen schema-keyed handle.
   defineStore: typeof(defineStore),
-  --- Build an additive write for a writable Number store slot.
-  slot: typeof(slot),
+  --- Read a state ref into an expression value.
+  read: typeof(read),
+  --- Lift raw `runtime.*` expressions into public NumberRef/BoolRef values.
+  fromRuntime: typeof(fromRuntime),
+  --- Build an absolute writable-number store-slot write.
+  set: typeof(set),
+  --- Build a writable-number store-slot read-modify-write from the frozen fire snapshot.
+  update: typeof(update),
+  --- Gate impact effects with a Bool expression.
+  when: typeof(when),
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
   --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.

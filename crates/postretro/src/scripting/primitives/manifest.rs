@@ -148,7 +148,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "stores?",
             "Vec<StoreDeclaration>",
-            "Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.",
+            "Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.",
         )
         .finish();
 }

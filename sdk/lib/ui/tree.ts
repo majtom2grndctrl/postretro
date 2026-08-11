@@ -10,7 +10,7 @@
 // `root` widget's own concern; this factory only places the whole tree once.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
-import type { WidgetDescriptor, WidgetRole, WritableStateRef } from "./widgets";
+import type { Ref, WidgetDescriptor, WidgetRole } from "./widgets";
 
 /**
  * The nine placement anchors a tree may be pinned to. Mirrors `descriptor.rs`
@@ -50,7 +50,7 @@ export type TreeProps = {
   offset: [number, number];
   captureMode?: WidgetCaptureMode;
   initialFocus?: string;
-  textEntryTarget?: WritableStateRef<string>;
+  textEntryTarget?: Ref<string>;
   accessibleName?: string;
   role?: WidgetRole;
 };

@@ -2,7 +2,7 @@
 declare module "postretro" {
   export type EntityId = number & { readonly __brand: "EntityId" };
 
-  export type StateValue<T> = WritableStateRef<T>;
+  export type StateValue<T> = Ref<T>;
 
   export type Vec3 = { x: number; y: number; z: number };
 
@@ -693,7 +693,7 @@ declare module "postretro" {
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
-    /** Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical. */
+    /** Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
 
@@ -819,32 +819,32 @@ declare module "postretro" {
   /** Generated engine-owned state reference tree returned by `getGameState()`. */
   export type GameStateRefs = {
     readonly input: {
-      readonly mode: ReadonlyStateRef<"pointer" | "focus">;
+      readonly mode: ComputedRef<"pointer" | "focus">;
     };
     readonly player: {
-      readonly ammo: ReadonlyStateRef<number>;
-      readonly ammoReserve: ReadonlyStateRef<number>;
-      readonly health: ReadonlyStateRef<number>;
-      readonly maxHealth: ReadonlyStateRef<number>;
-      readonly reloadActive: ReadonlyStateRef<boolean>;
-      readonly reloadProgress: ReadonlyStateRef<number>;
+      readonly ammo: ComputedRef<number>;
+      readonly ammoReserve: ComputedRef<number>;
+      readonly health: ComputedRef<number>;
+      readonly maxHealth: ComputedRef<number>;
+      readonly reloadActive: ComputedRef<boolean>;
+      readonly reloadProgress: ComputedRef<number>;
       readonly weapon: {
-        readonly current: ReadonlyStateRef<string>;
-        readonly pending: ReadonlyStateRef<string>;
-        readonly switching: ReadonlyStateRef<boolean>;
+        readonly current: ComputedRef<string>;
+        readonly pending: ComputedRef<string>;
+        readonly switching: ComputedRef<boolean>;
       };
-      readonly weaponCooldownMs: ReadonlyStateRef<number>;
+      readonly weaponCooldownMs: ComputedRef<number>;
     };
     readonly screen: {
-      readonly flash: ReadonlyStateRef<ReadonlyArray<number>>;
-      readonly shake: ReadonlyStateRef<ReadonlyArray<number>>;
-      readonly vignette: ReadonlyStateRef<ReadonlyArray<number>>;
+      readonly flash: ComputedRef<ReadonlyArray<number>>;
+      readonly shake: ComputedRef<ReadonlyArray<number>>;
+      readonly vignette: ComputedRef<ReadonlyArray<number>>;
     };
     readonly session: {
-      readonly openSeats: ReadonlyStateRef<number>;
+      readonly openSeats: ComputedRef<number>;
     };
     readonly ui: {
-      readonly textEntry: WritableStateRef<string>;
+      readonly textEntry: Ref<string>;
     };
   };
 
@@ -1120,8 +1120,8 @@ declare module "postretro" {
   const sourceBrand: unique symbol;
   const impactEventBrand: unique symbol;
   const effectBrand: unique symbol;
-  export type NumberValue = number | NumberRef;
-  export type BoolValue = boolean | BoolRef;
+  export type NumberValue = number | NumberRef | RuntimeValue;
+  export type BoolValue = boolean | BoolRef | RuntimeValue;
   export interface NumberRef {
     readonly [numBrand]: true;
     plus(n: NumberValue): NumberRef;
@@ -1144,7 +1144,11 @@ declare module "postretro" {
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
+  export type RuntimeExpressionRefs = Readonly<{
+    number(value: RuntimeValue): NumberRef;
+    bool(value: RuntimeValue): BoolRef;
+  }>;
+  /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
   export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
@@ -1168,7 +1172,6 @@ declare module "postretro" {
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
     grantAmmo(type: string, amount: NumberValue): Effect;
   }
-  export interface NumberSlot { add(delta: NumberValue): Effect; }
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
@@ -1315,8 +1318,10 @@ declare module "postretro" {
   const writableStateRefBrand: unique symbol;
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
-  export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
-  export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
+  export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
+  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
+  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
+  export type StateRef<T> = ComputedRef<T> | Ref<T>;
 
   /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
@@ -1331,10 +1336,10 @@ declare module "postretro" {
   /** Maps one schema slot's `type` discriminant to its handle value type:
    * `{type:"number"}` → number ref, `{type:"boolean"}` →
    * boolean ref, `array` → numeric-array ref, and `string`/`enum` →
-   * string ref. Slots with `readonly: true` produce `ReadonlyStateRef<T>`;
-   * all other slots produce `WritableStateRef<T>`. */
+   * string ref. Slots with `readonly: true` produce `ComputedRef<T>`;
+   * all other slots produce `Ref<T>`. */
   export type StoreStateRefForSlot<Slot, T> =
-    Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+    Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
 
   export type StateValueForSlot<Slot> =
     Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -1342,13 +1347,19 @@ declare module "postretro" {
     Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
     StoreStateRefForSlot<Slot, string>;
 
-  /** Result of a pure `defineStore` call. Return `declaration` from `ModManifest.stores`; use `state` references in descriptors. */
+  declare const storeDefinitionBrand: unique symbol;
+  /** Frozen store handle whose enumerable keys are its schema's slot refs. Pass it to `defineMod({ stores: [store] })`. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
-    readonly declaration: StoreDeclaration;
-    readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+    readonly [K in keyof S]: StateValueForSlot<S[K]>;
+  } & {
+    readonly [storeDefinitionBrand]: S;
+  };
+  type StoreDefinitionHandle = { readonly [storeDefinitionBrand]: unknown };
+  export type ModManifestInput = Omit<ModManifest, "stores"> & {
+    readonly stores?: readonly (StoreDeclaration | StoreDefinitionHandle)[];
   };
 
-  /** Build a state-store declaration. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest and required durable identities validate. */
+  /** Build a frozen state-store handle. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Pass the handle through `defineMod({ stores: [store] })`; `defineMod` resolves declaration data before the manifest crosses the FFI. */
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     schema: S,
   ): StoreDefinition<S>;
@@ -1357,8 +1368,17 @@ declare module "postretro" {
     schema: S,
   ): StoreDefinition<S>;
 
-  /** Build an additive write for a writable Number store slot. */
-  export function slot(ref: WritableStateRef<number>): NumberSlot;
+  /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
+  export function read(ref: StateRef<number>): NumberRef;
+  export function read(ref: StateRef<boolean>): BoolRef;
+  /** Lift raw `runtime.*` output into the fluent impact-expression algebra. */
+  export const fromRuntime: RuntimeExpressionRefs;
+  /** Build an absolute number-store write. */
+  export function set(ref: Ref<number>, value: NumberValue): Effect;
+  /** Build a frozen-snapshot read-modify-write; `cur` is exactly `read(ref)`. */
+  export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect;
+  /** Build a deferred impact-effect group guarded by a Bool expression. */
+  export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
 
 
   // -------------------------------------------------------------------------
@@ -1395,7 +1415,7 @@ declare module "postretro" {
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
   /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
-  export function defineMod(config: ModManifest): ModManifest;
+  export function defineMod(config: ModManifestInput): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
   /** Pure identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
@@ -1470,7 +1490,7 @@ declare module "postretro" {
 
   /** A builder operand: an already-built node, or a bare `number`/`boolean`
    * literal that the builder auto-wraps into a `const` node. */
-  type RuntimeOperand = RuntimeValue | ReadonlyStateRef<unknown> | number | boolean;
+  type RuntimeOperand = RuntimeValue | ComputedRef<unknown> | number | boolean;
 
   /** Pure builder vocabulary for runtime values, installed as
    * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
@@ -1481,7 +1501,7 @@ declare module "postretro" {
     /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
     constant(value: number | boolean): RuntimeConst;
     /** Named-input leaf, bound to live state by name in the Rust evaluator. */
-    read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;
+    read(name: string | ComputedRef<unknown>): RuntimeRead;
     /** `a + b` (number). */
     add(a: RuntimeOperand, b: RuntimeOperand): RuntimeAdd;
     /** `a - b` (number). */
@@ -1590,8 +1610,8 @@ declare module "postretro" {
 
 declare module "postretro/ui" {
   import type {
-    ReadonlyStateRef,
-    WritableStateRef,
+    ComputedRef,
+    Ref,
     ScalarStateValue,
     NumericArrayStateValue,
     GameStateRefs,
@@ -1666,14 +1686,14 @@ declare module "postretro/ui" {
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   export type LocalBindRef = { local: string };
   export type PredicateValue = number | boolean | string;
-  export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
-  export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
-  export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
-  export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  export type BarMaxProp = number | ReadonlyStateRef<number>;
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
+  export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarMaxProp = number | ComputedRef<number>;
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
   export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
@@ -1733,7 +1753,7 @@ declare module "postretro/ui" {
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
   /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
@@ -1744,15 +1764,15 @@ declare module "postretro/ui" {
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
 
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
-    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
-    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;
   /** Compose bind-only options onto a state ref. Pure; it emits `{ slot, ...options }` for widget props and never reads live state. */
-  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
-  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+  export function bindState<T>(ref: ComputedRef<T>): ComputedRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
-  export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
+  export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
   export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
@@ -1763,7 +1783,7 @@ declare module "postretro/ui" {
   export function getGameState(): GameStateRefs;
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
-  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
+  export function onStateCrossing(ref: ComputedRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
   export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
@@ -1796,8 +1816,8 @@ declare module "postretro/ui" {
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
   /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
-  export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
-  export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
-  export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
-  export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
+  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
+  export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;
+  export function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor;
+  export function clearText(ref: Ref<string>): PrimitiveReactionDescriptor;
 }

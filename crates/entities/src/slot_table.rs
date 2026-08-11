@@ -560,6 +560,22 @@ mod tests {
         })
     }
 
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        let mut record = number_slot(value);
+        record.schema.per_owner = true;
+        record
+    }
+
+    fn assert_slot_number_eq(value: Option<&SlotValue>, expected: f32) {
+        let Some(SlotValue::Number(actual)) = value else {
+            panic!("expected numeric slot value");
+        };
+        assert!(
+            (*actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     #[test]
     fn write_generation_advances_for_equal_values_without_affecting_equality() {
         let mut written = number_slot(1.0);
@@ -573,42 +589,22 @@ mod tests {
 
     #[test]
     fn per_seat_values_are_isolated_and_unwritten_seats_use_the_declared_default() {
-        let mut record = number_slot(5.0);
+        let mut record = per_owner_number_slot(5.0);
 
-        assert_eq!(
-            record.per_seat_value(Seat(1)),
-            Some(&SlotValue::Number(5.0)),
-            "an unwritten seat starts from the slot declaration's default"
-        );
+        assert!(record.schema.per_owner);
+        assert_slot_number_eq(record.per_seat_value(Seat(1)), 5.0);
 
         record.set_per_seat_value(Seat(1), SlotValue::Number(17.0));
         record.set_per_seat_value(Seat(2), SlotValue::Number(31.0));
 
-        assert_eq!(
-            record.per_seat_value(Seat(1)),
-            Some(&SlotValue::Number(17.0))
-        );
-        assert_eq!(
-            record.per_seat_value(Seat(2)),
-            Some(&SlotValue::Number(31.0))
-        );
-        assert_eq!(
-            record.per_seat_value(Seat(3)),
-            Some(&SlotValue::Number(5.0)),
-            "one owner's write never changes another owner's default"
-        );
+        assert_slot_number_eq(record.per_seat_value(Seat(1)), 17.0);
+        assert_slot_number_eq(record.per_seat_value(Seat(2)), 31.0);
+        assert_slot_number_eq(record.per_seat_value(Seat(3)), 5.0);
 
         record.clear_per_seat_value(Seat(1));
 
-        assert_eq!(
-            record.per_seat_value(Seat(1)),
-            Some(&SlotValue::Number(5.0)),
-            "releasing a seat drops only that seat's value"
-        );
-        assert_eq!(
-            record.per_seat_value(Seat(2)),
-            Some(&SlotValue::Number(31.0))
-        );
+        assert_slot_number_eq(record.per_seat_value(Seat(1)), 5.0);
+        assert_slot_number_eq(record.per_seat_value(Seat(2)), 31.0);
     }
 
     #[test]
@@ -618,11 +614,13 @@ mod tests {
             .insert_namespace(
                 "currency",
                 vec![
-                    ("xp".to_string(), number_slot(0.0)),
-                    ("tokens".to_string(), number_slot(10.0)),
+                    ("xp".to_string(), per_owner_number_slot(0.0)),
+                    ("tokens".to_string(), per_owner_number_slot(10.0)),
                 ],
             )
             .unwrap();
+        assert!(table.get("currency.xp").unwrap().schema.per_owner);
+        assert!(table.get("currency.tokens").unwrap().schema.per_owner);
         table
             .get_mut("currency.xp")
             .unwrap()
@@ -634,22 +632,18 @@ mod tests {
 
         table.clear_per_seat_values(Seat(7));
 
-        assert_eq!(
+        assert_slot_number_eq(
             table.get("currency.xp").unwrap().per_seat_value(Seat(7)),
-            Some(&SlotValue::Number(0.0))
+            0.0,
         );
-        assert_eq!(
+        assert_slot_number_eq(
             table
                 .get("currency.tokens")
                 .unwrap()
                 .per_seat_value(Seat(7)),
-            Some(&SlotValue::Number(10.0))
+            10.0,
         );
-        assert_eq!(
-            table.get("currency.xp").unwrap().value,
-            Some(SlotValue::Number(0.0)),
-            "release cleanup does not overwrite the scalar local projection"
-        );
+        assert_slot_number_eq(table.get("currency.xp").unwrap().value.as_ref(), 0.0);
     }
 
     #[test]

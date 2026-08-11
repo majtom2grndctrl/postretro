@@ -140,6 +140,15 @@ impl BoundTriggerCommand {
                 let BoundStoreValue::Literal(value) = value else {
                     unreachable!("IR-valued trigger setState must execute with a ScriptCtx");
                 };
+                if slot_table
+                    .get(slot)
+                    .is_some_and(|record| record.schema.per_owner)
+                {
+                    log::warn!(
+                        "[Trigger] setState rejects per-owner slot `{slot}` at execution time"
+                    );
+                    return;
+                }
                 if let Err(error) =
                     apply_store_slot_batch(slot_table, &[(slot.clone(), value.clone())])
                 {
@@ -175,6 +184,15 @@ impl BoundTriggerCommand {
             Self::StoreSlot { slot, value } => match value {
                 BoundStoreValue::Literal(value) => {
                     let mut slot_table = script_ctx.slot_table.borrow_mut();
+                    if slot_table
+                        .get(slot)
+                        .is_some_and(|record| record.schema.per_owner)
+                    {
+                        log::warn!(
+                            "[Trigger] setState rejects per-owner slot `{slot}` at execution time"
+                        );
+                        return;
+                    }
                     if let Err(error) =
                         apply_store_slot_batch(&mut slot_table, &[(slot.clone(), value.clone())])
                     {

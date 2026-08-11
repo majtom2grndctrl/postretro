@@ -41,6 +41,8 @@ const legalAccumulator: import("postretro").StoreSlotSchema = {
 const invalidReadonlyAccumulator: import("postretro").StoreSlotSchema = { type: "number", readonly: true, default: 0, accumulate: (t: TickParams) => t.dt };
 // @ts-expect-error non-Number slots cannot accumulate.
 const invalidBooleanAccumulator: import("postretro").StoreSlotSchema = { type: "boolean", default: false, accumulate: (t: TickParams) => t.dt };
+// @ts-expect-error shared replication serializes one global scalar, so it cannot carry per-owner cardinality.
+const invalidSharedPerOwner: import("postretro").StoreSlotSchema = { type: "number", default: 0, perOwner: true, network: "shared" };
 
 const triggerScoped = defineReaction((on: TriggerEventParams) => damage(on.activators, 25));
 const triggerSequence = defineReaction((on: TriggerEventParams) => ({ sequence: armTrigger(on.trigger) }));
@@ -64,5 +66,6 @@ void invalidScopedHelperErasure;
 void legalAccumulator;
 void invalidReadonlyAccumulator;
 void invalidBooleanAccumulator;
+void invalidSharedPerOwner;
 void triggerScoped;
 void triggerSequence;

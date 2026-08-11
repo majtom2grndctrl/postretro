@@ -82,6 +82,13 @@ or invalid durable identity rejects mod initialization. This is stricter than an
 ordinary missing, malformed, or incompatible saved value, which warns and leaves
 the declared default active.
 
+**Per-owner stores.** `perOwner: true` gives each player seat an independent
+host-side value. Omit `network` for host-local bookkeeping or use
+`network: "ownerPrivate"` to replicate each value only to its owner.
+`network: "shared"` is valid only for global slots. `updateState`/legacy
+`setState` cannot write per-owner slots; use an owner-addressed impact `set` or
+`update`, or the `addSlot` reaction.
+
 **Render profile.** The optional `render.bloom` block picks the mod's bloom look
 once, for the whole mod:
 
@@ -1516,7 +1523,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
-| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes at the game-logic stage. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
+| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
@@ -1785,7 +1792,8 @@ system reaction body for a **writable** state reference. It is **readonly-gated*
 at runtime: a write to a readonly slot (e.g. the
 engine-owned `player.health`, `input.mode`) logs a warning and no-ops; an
 engine-owned but writable slot, or any mod-declared writable slot, is a valid
-target. The value is coerced to the slot's declared type (number / boolean /
+target when it has global cardinality. Per-owner slots require an owner-addressed
+write and reject `updateState`. The value is coerced to the slot's declared type (number / boolean /
 string / number array) with the same range/enum validation a script store write
 applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.

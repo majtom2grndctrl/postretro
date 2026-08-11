@@ -123,7 +123,7 @@ export type PostretroModule = {
   fromRuntime: typeof(fromRuntime),
   --- Build an absolute writable-number store-slot write.
   set: typeof(set),
-  --- Build a writable-number store-slot read-modify-write from the frozen fire snapshot.
+  --- Build a writable-number store-slot read-modify-write; `cur` is read during plan phase before effects apply. Owner-addressed reads resolve the live per-seat map, not a frozen snapshot.
   update: typeof(update),
   --- Gate impact effects with a Bool expression.
   when: typeof(when),

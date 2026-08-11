@@ -28,13 +28,13 @@ pub(crate) use postretro_scripting_core::reaction_registry::{
 /// ClampToEdge edge-smear with no meaningful additional shake effect.
 const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
 
-/// Install-time bindings for inline `setState` IR. Entity-owned reaction
-/// descriptors and queued commands deliberately retain only raw JSON; this
-/// binary-side table owns the app-drain `DispatchScope`-specialized programs and known
-/// rejected command identities.
+/// Install-time bindings for `setState`. Entity-owned reaction descriptors and
+/// queued commands deliberately retain only raw JSON; this binary-side table
+/// owns app-drain `DispatchScope` programs plus known rejected command identities.
 #[derive(Debug, Default)]
 pub(crate) struct SystemReactionIrBindings {
     bindings: Vec<SystemSetStateBinding>,
+    rejected_literals: Vec<SystemSetStateLiteralRejection>,
     warned_missing_inputs: std::cell::RefCell<std::collections::HashSet<(usize, String)>>,
 }
 
@@ -50,6 +50,12 @@ struct SystemSetStateBinding {
     value: serde_json::Value,
     program: Option<BoundProgram<DispatchScope>>,
     required_dispatch_inputs: Vec<String>,
+}
+
+#[derive(Debug)]
+struct SystemSetStateLiteralRejection {
+    slot: String,
+    value: serde_json::Value,
 }
 
 impl SystemSetStateBinding {
@@ -74,6 +80,7 @@ impl SystemReactionIrBindings {
     /// the normal `BakedIr` envelope; no wire envelope/version is introduced.
     pub(crate) fn rebuild(&mut self, data_registry: &DataRegistry, script_ctx: &ScriptCtx) {
         self.bindings.clear();
+        self.rejected_literals.clear();
         let scope = DispatchScope::script(script_ctx.clone(), &APP_DRAIN_DISPATCH_INPUTS);
         self.warned_missing_inputs.borrow_mut().clear();
 
@@ -95,6 +102,32 @@ impl SystemReactionIrBindings {
                     continue;
                 }
             };
+            let per_owner = script_ctx
+                .slot_table
+                .borrow()
+                .get(&args.slot)
+                .is_some_and(|record| record.schema.per_owner);
+            if per_owner {
+                log::warn!(
+                    "[Scripting] setState reaction `{}` rejects per-owner slot `{}`; not binding",
+                    reaction.name,
+                    args.slot
+                );
+                if is_ir_node(&args.value) {
+                    self.bindings.push(SystemSetStateBinding {
+                        slot: args.slot,
+                        value: args.value,
+                        program: None,
+                        required_dispatch_inputs: Vec::new(),
+                    });
+                } else {
+                    self.rejected_literals.push(SystemSetStateLiteralRejection {
+                        slot: args.slot,
+                        value: args.value,
+                    });
+                }
+                continue;
+            }
             if !is_ir_node(&args.value) {
                 continue;
             }
@@ -199,6 +232,15 @@ impl SystemReactionIrBindings {
         }
         eval_and_write(program, &mut scope);
         SystemReactionIrDispatch::Evaluated
+    }
+
+    /// Whether install-time binding rejected this literal legacy `setState`.
+    /// The app drain uses this to keep repeated fires silent after the one
+    /// reaction-naming diagnostic emitted by [`Self::rebuild`].
+    pub(crate) fn rejects_literal(&self, slot: &str, value: &serde_json::Value) -> bool {
+        self.rejected_literals
+            .iter()
+            .any(|binding| binding.slot == slot && binding.value.eq(value))
     }
 }
 
@@ -557,12 +599,14 @@ struct SlotOnlyArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
     use postretro_entities::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
     };
+    use postretro_test_log_capture::LogCapture;
 
     fn number_slot(default: f32, max: f32, readonly: bool) -> SlotRecord {
         SlotRecord::new(SlotSchema {
@@ -587,6 +631,15 @@ mod tests {
             .borrow_mut()
             .insert(name.to_string(), number_slot(default, max, readonly))
             .expect("fixture slot should be vacant");
+    }
+
+    fn insert_per_owner_number(ctx: &ScriptCtx, name: &str, default: f32) {
+        let mut record = number_slot(default, 100.0, false);
+        record.schema.per_owner = true;
+        ctx.slot_table
+            .borrow_mut()
+            .insert(name.to_string(), record)
+            .expect("fixture per-owner slot should be vacant");
     }
 
     fn set_state_reaction(name: &str, slot: &str, value: serde_json::Value) -> NamedReaction {
@@ -716,6 +769,52 @@ mod tests {
                 .and_then(|record| record.value.as_ref()),
             Some(SlotValue::String(value)) if value == "unchanged"
         ));
+    }
+
+    #[test]
+    fn system_set_state_rejects_per_owner_literal_and_ir_while_global_sibling_binds() {
+        let ctx = ScriptCtx::new();
+        insert_per_owner_number(&ctx, "currency.xp", 7.0);
+        insert_number(&ctx, "currency.team", 0.0, 100.0, false);
+        let literal = serde_json::json!(99.0);
+        let runtime = serde_json::json!({ "op": "const", "value": 88.0 });
+        let global = serde_json::json!({ "op": "const", "value": 3.0 });
+        let data = active_reactions(vec![
+            set_state_reaction("badLiteral", "currency.xp", literal.clone()),
+            set_state_reaction("badRuntime", "currency.xp", runtime.clone()),
+            set_state_reaction("goodGlobal", "currency.team", global.clone()),
+        ]);
+        let capture = LogCapture::start();
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "setState reaction `badLiteral` rejects per-owner slot `currency.xp`",
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "setState reaction `badRuntime` rejects per-owner slot `currency.xp`",
+        );
+        assert!(bindings.rejects_literal("currency.xp", &literal));
+        assert_eq!(
+            bindings.dispatch("currency.xp", &runtime, "named:badRuntime", &[], &ctx),
+            SystemReactionIrDispatch::Rejected,
+        );
+        assert_eq!(
+            bindings.dispatch("currency.team", &global, "named:goodGlobal", &[], &ctx),
+            SystemReactionIrDispatch::Evaluated,
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "currency.xp"),
+            7.0,
+            "rejected setState paths leave the scalar projection unchanged",
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "currency.team"),
+            3.0,
+            "a rejected per-owner reaction does not block a global sibling",
+        );
     }
 
     #[test]

@@ -337,14 +337,14 @@ export type LevelManifest = {
 --- `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when
 --- renaming the store or slot.
 --- `perOwner = true` creates a separate host-side value for each player seat.
---- `network` remains independent: `"shared"` replicates to every client and
---- `"ownerPrivate"` replicates a per-owner slot only to that owner.
+--- It permits omitted `network` (host-local) or `"ownerPrivate"`; `"shared"`
+--- is reserved for global slots.
 export type StoreSlotSchema = (
   { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
-  | { type: "number", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
   | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
   | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
 ) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,
@@ -806,9 +806,9 @@ function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
   end
 end
 
---- Build a read-modify-write effect. `build` receives exactly `read(ref)`, so
---- the authored slot name occurs once while its expression reads the frozen
---- pre-fire snapshot.
+--- Build a read-modify-write effect. `build` receives `cur` during impact plan
+--- phase, before effects apply. Owner-addressed reads resolve the live per-seat
+--- map; `cur` is not a frozen snapshot.
 function DataScriptSdk.update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
   return DataScriptSdk.set(ref, build(DataScriptSdk.read(ref) :: NumberRef))
 end

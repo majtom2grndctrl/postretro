@@ -114,6 +114,13 @@ pub fn write_state_slot_json(
     let slot = table
         .get_mut(name)
         .ok_or_else(|| unknown_slot("setState", name))?;
+    if slot.schema.per_owner {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "setState: slot `{name}` is per-owner and requires an owner-addressed write"
+            ),
+        });
+    }
     if slot.schema.readonly {
         log::warn!("[Scripting] setState: rejected write to readonly slot `{name}`");
         return Ok(());
@@ -531,7 +538,12 @@ fn replication_scope_for(
 ) -> Result<ReplicationScope, ScriptError> {
     match network {
         None => Ok(ReplicationScope::None),
-        Some("shared") => Ok(ReplicationScope::SharedGlobal),
+        Some("shared") if !per_owner => Ok(ReplicationScope::SharedGlobal),
+        Some("shared") => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` may not combine `perOwner: true` with `network: \"shared\"`; use `network: \"ownerPrivate\"` or omit `network`"
+            ),
+        }),
         Some("ownerPrivate") if per_owner => Ok(ReplicationScope::OwnerPrivatePlayer),
         Some("ownerPrivate") => Err(ScriptError::InvalidArgument {
             reason: format!(
@@ -873,6 +885,32 @@ mod tests {
     }
 
     #[test]
+    fn write_state_slot_json_rejects_per_owner_slot_without_mutating_scalar_projection() {
+        let ctx = ScriptCtx::new();
+        let mut record = readonly_slot();
+        record.schema.readonly = false;
+        record.schema.per_owner = true;
+        record.value = Some(SlotValue::Number(41.0));
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), record)
+            .expect("test per-owner slot should be vacant");
+
+        let error = write_state_slot_json(&ctx, "currency.xp", &serde_json::json!(99.0))
+            .expect_err("legacy setState must not write a per-owner slot projection");
+
+        assert!(error.to_string().contains("currency.xp"));
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.xp")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(41.0)),
+            "rejected setState must leave the retained scalar projection unchanged"
+        );
+    }
+
+    #[test]
     fn apply_text_edit_returns_success_and_logs_readonly_refusal() {
         let ctx = context_with_readonly_slot();
         let capture = LogCapture::start();
@@ -983,6 +1021,16 @@ mod tests {
                     "accumulate": { "op": "input", "name": "@dt" }
                 }),
                 "may not declare `perOwner` with `accumulate`",
+            ),
+            (
+                "sharedXp",
+                serde_json::json!({
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "network": "shared"
+                }),
+                "may not combine `perOwner: true` with `network: \"shared\"`",
             ),
             (
                 "tokens",

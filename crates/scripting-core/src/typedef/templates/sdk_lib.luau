@@ -710,19 +710,18 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle)
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
 --- script writes. `perOwner = true` gives each player seat an independent
---- host-side value. `network = "shared"` replicates to every connected client;
---- `network = "ownerPrivate"` replicates a per-owner slot only to its owner;
---- omitted means local-only. A mod-owned
+--- host-side value and permits only omitted `network` or
+--- `network = "ownerPrivate"`; `network = "shared"` is for global slots. A mod-owned
 --- persisted writable or replicated slot requires a minted
 --- `<mod-root>/identity.json` entry; run
 --- `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
   { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
-  | { type: "number", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
   | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
   | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: ("shared" | "ownerPrivate")?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
 ) & { [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.
@@ -771,7 +770,9 @@ declare fromRuntime: RuntimeExpressionRefs
 --- Build an absolute number-store write. An owner-addressed ref lowers to an
 --- `@impact.source` command.
 declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect
---- Build a frozen-snapshot read-modify-write; `cur` is exactly `read(ref)`.
+--- Build a read-modify-write; `cur` is read during impact plan phase before
+--- effects apply. Owner-addressed reads resolve the live per-seat map, not a
+--- frozen snapshot.
 declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect
 --- Build a deferred impact-effect group guarded by a Bool expression.
 declare function when(cond: BoolRef, effects: {Effect}): GatedEffect

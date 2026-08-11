@@ -851,8 +851,15 @@ fn bind_command(
                 );
                 return None;
             }
+            let Some(target) = target_from_context else {
+                log::warn!(
+                    "[Trigger] addSlot for slot `{}` has no target tag; not binding",
+                    args.slot
+                );
+                return None;
+            };
             Some(BoundTriggerCommand::AddOwnerSlot {
-                target: target(primitive)?,
+                target,
                 slot: args.slot,
                 delta: args.delta,
             })
@@ -924,6 +931,16 @@ fn bind_store_slot(
             return None;
         }
     };
+    if slot_table
+        .get(&args.slot)
+        .is_some_and(|record| record.schema.per_owner)
+    {
+        log::warn!(
+            "[Trigger] setState rejects per-owner slot `{}` at bind time",
+            args.slot
+        );
+        return None;
+    }
     if crate::scripting::reactions::system_commands::is_ir_node(&args.value) {
         let Some(script_ctx) = script_ctx else {
             log::warn!(
@@ -1138,6 +1155,133 @@ mod tests {
                 .and_then(|record| record.per_seat_value(Seat(6))),
             Some(&SlotValue::Number(12.0)),
             "zero activators leave the slot untouched without needing a warning path",
+        );
+    }
+
+    #[test]
+    fn add_slot_missing_target_diagnostic_names_parsed_slot() {
+        let mut slots = SlotTable::new();
+        slots
+            .insert("currency.xp".to_string(), per_owner_number_slot(0.0))
+            .unwrap();
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            assert!(
+                bind_command(
+                    "addSlot",
+                    None,
+                    &serde_json::json!({ "slot": "currency.xp", "delta": 2.0 }),
+                    &slots,
+                    None,
+                )
+                .is_none()
+            );
+        });
+
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("addSlot")
+                && message.contains("currency.xp")
+                && message.contains("no target")
+        }));
+    }
+
+    #[test]
+    fn legacy_set_state_rejects_per_owner_literal_and_ir_without_blocking_global_sibling() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert("currency.xp".to_string(), per_owner_number_slot(10.0))
+                .unwrap();
+            slots
+                .insert_namespace(
+                    "trigger",
+                    vec![(
+                        "flag".to_string(),
+                        SlotRecord::new(SlotSchema {
+                            slot_type: SlotType::Number,
+                            default: Some(SlotValue::Number(0.0)),
+                            range: None,
+                            persist: false,
+                            readonly: false,
+                            ownership: SlotOwnership::Mod,
+                            network: ReplicationScope::None,
+                            per_owner: false,
+                            accumulate: None,
+                        }),
+                    )],
+                )
+                .unwrap();
+        }
+
+        let slots = ctx.slot_table.borrow();
+        assert!(
+            bind_command(
+                "setState",
+                None,
+                &serde_json::json!({ "slot": "currency.xp", "value": 99.0 }),
+                &slots,
+                Some(&ctx),
+            )
+            .is_none(),
+            "literal setState must not bind a per-owner slot"
+        );
+        assert!(
+            bind_command(
+                "setState",
+                None,
+                &serde_json::json!({
+                    "slot": "currency.xp",
+                    "value": { "op": "const", "value": 99.0 }
+                }),
+                &slots,
+                Some(&ctx),
+            )
+            .is_none(),
+            "IR setState must not bind a per-owner slot"
+        );
+        let global = bind_command(
+            "setState",
+            None,
+            &serde_json::json!({ "slot": "trigger.flag", "value": 1.0 }),
+            &slots,
+            Some(&ctx),
+        )
+        .expect("global sibling setState still binds");
+        drop(slots);
+
+        let defensive_per_owner = BoundTriggerCommand::StoreSlot {
+            slot: "currency.xp".to_string(),
+            value: BoundStoreValue::Literal(SlotValue::Number(99.0)),
+        };
+        let mut registry = EntityRegistry::new();
+        let mut dispatch_scope = DispatchScope::script(ctx.clone(), &TRIGGER_EVENT_INPUTS);
+        for command in [&defensive_per_owner, &global] {
+            command.execute_with_script_ctx(
+                &mut registry,
+                &ctx,
+                &mut dispatch_scope,
+                &MoverCommandDiagnostics::default(),
+                &crate::spawner::SpawnContext::default(),
+                &TriggerFireContext::default(),
+            );
+        }
+
+        let slots = ctx.slot_table.borrow();
+        assert_eq!(
+            slots
+                .get("currency.xp")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(10.0)),
+            "defensive trigger execution must not mutate the retained scalar projection"
+        );
+        assert_eq!(
+            slots
+                .get("trigger.flag")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(1.0)),
+            "rejected per-owner setState must not block a valid global sibling"
         );
     }
 

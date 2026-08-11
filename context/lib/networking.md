@@ -58,6 +58,10 @@ lifetime. A schema rebuild retires earlier ids and clears per-client state witho
 restarting the allocator. A delayed pre-rebuild ack therefore cannot suppress a
 fresh baseline for a rebuilt slot, even when participation itself did not change.
 
+Shared state-slot replication serializes one retained global scalar to every client.
+Per-owner mod slots therefore use owner-private replication or stay host-local; they
+never enter the shared-global scope.
+
 The codec surface is two functions (encode, decode) over these types. Decode of a short, corrupted, or over-long buffer is always a typed `Err`, never a panic — the transport must survive a hostile or truncated packet.
 
 **One payload is opaque to the net crate and variable-length.** The replicated tuning values (see *What gates, and what replicates instead*) cross as bytes the crate never decodes, compares, or validates; every other opaque value on the wire is a fixed-size digest. A typed mirror would make the crate learn the engine's descriptor vocabulary, breaking the registry-blindness the whole boundary rests on — so the payload is engine-serialized at both ends and the crate is a courier. The cost is real and accepted: a malformed payload is the engine's to detect, because the crate cannot validate what it forwards.

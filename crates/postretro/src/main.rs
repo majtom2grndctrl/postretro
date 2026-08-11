@@ -5156,6 +5156,15 @@ impl App {
                                 );
                             }
                         }
+                    } else if self.session.as_ref().is_some_and(|session| {
+                        session
+                            .scripting
+                            .system_reaction_ir_bindings
+                            .rejects_literal(&slot, &value)
+                    }) {
+                        // Install-time binding already named the reaction and slot.
+                        // Never route the rejected per-owner write through the
+                        // scalar JSON fallback.
                     } else if let Err(err) =
                         crate::scripting::primitives::store::write_state_slot_json(
                             &script_ctx,

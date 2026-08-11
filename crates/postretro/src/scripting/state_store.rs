@@ -262,6 +262,29 @@ mod tests {
                 .is_none(),
             "a failed perOwner declaration cannot insert a partial mod store"
         );
+
+        let err = commit_store_for_test(
+            &ctx,
+            "per-owner-shared",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1 },
+                "badShared": {
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "network": "shared"
+                },
+            }),
+        )
+        .expect_err("shared replication cannot serialize per-owner cardinality");
+        assert!(err.to_string().contains("badShared"));
+        assert!(
+            ctx.slot_table
+                .borrow()
+                .get("per-owner-shared.good")
+                .is_none(),
+            "a failed shared per-owner declaration cannot partially insert siblings"
+        );
     }
 
     #[test]

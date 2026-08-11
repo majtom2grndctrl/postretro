@@ -128,6 +128,8 @@ An engine-owned numeric slot may gain its declared range after registration: the
 
 Declaration attempts validate as a whole before commit. Repeating an identical schema preserves current values. New non-overlapping namespaces may commit during staged hot reload. Changed schemas, duplicate declarations, and namespace overlap reject the whole staged result. Removed declarations do not clear committed stores.
 
+Per-owner slots hold one host-side value per player seat. They may be host-local or use owner-private replication. Shared replication is global-scalar-only and cannot combine with per-owner cardinality. Legacy `setState` writes only global slots; per-owner writes require an owner-addressed impact write or `addSlot` reaction.
+
 Each successful commit also replaces current declaration membership. Persistence and replicated schemas filter the add-only live table through that membership. The full identity ledger remains retained for rename protection, including orphan entries.
 
 Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.

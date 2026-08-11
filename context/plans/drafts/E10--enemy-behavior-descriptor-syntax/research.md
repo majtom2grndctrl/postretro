@@ -30,7 +30,7 @@ does not read its type-zero untargeted; its `gt`/`ge` asymmetry is load-bearing.
 (:112) routes `@state.` → `BrainInputRef::State`, table names → `Fixed { index, ir_type }`.
 `BrainValidationScope` (:134) resolves via the table, so a new `BRAIN_INPUTS` entry is picked up by
 validation automatically. `@brain.targetHealth/targetMaxHealth/targetDied` are indices
-7/8/9, so the table holds 10 entries (0-9); **new facts append at indices 10, 11.**
+7/8/9, so the table holds 10 entries (0-9); **new facts append at indices 10, 11, 12.**
 
 Candidate facts (`crates/foundation/src/candidate.rs`): `CANDIDATE_INPUTS` (:22), 4 entries, no
 `@state.*`. Left unchanged by this spec — the faction hook is engine-floor candidacy, not an
@@ -48,8 +48,12 @@ literal (:119-134) that must gain the two new slots in the same edit or the crat
 Engine floor (`crates/postretro/src/scripting/systems/ai/`):
 - `targeting.rs:57` `nearest_target_candidate` iterates `ComponentKind::PlayerMovement`; `target_candidate`
   (:30) is the per-entity gate both the fresh scan and the retained lookup call (`select_target` :121
-  calls it at :130 for the retained target and inside `nearest_target_candidate` for fresh) — so a
-  hostility check placed in `target_candidate` gates **both acquisition and retention** for one edit.
+  calls it at :130 for the retained target and inside `nearest_target_candidate` for fresh). §7c
+  evaluates candidacy only against fresh offered candidates, so the hostility filter belongs in
+  `nearest_target_candidate` (the fresh scan), not in the shared `target_candidate` gate — placing it
+  in `target_candidate` would re-gate the retained lookup too. `target_candidate` keeps its existing
+  visibility/`PlayerMovement`/transform checks unchanged; retention drop is authored via
+  `@brain.targetHostile` instead.
 - `engine_floor.rs`: `SteeringIntent { Chase, Clear, Hold }` (:44) is Copy and data-less;
   `think_stride_for_distance` (:28); `is_meaningfully_closer` (:66). Position-goal motion needs a
   destination, so `SteeringIntent` gains a data-carrying `MoveTo(Vec3)` variant.
@@ -96,20 +100,33 @@ rounds it, and any authored "unreachable → retreat/hold" edge fires spuriously
 the fact becomes a bug generator. So expressing these behaviors *correctly* requires the nav floor
 to stop returning false negatives first. `E10--mandatory-vertex-wedge-escapes` is the softer
 sibling: it keeps a chase-to-nearest-reachable *hold* from jittering at the barrier vertex. Hence
-Task 4 (and the reference reachability demo) sequence after the wraparound fix.
+Task 5 (and the reference reachability demo) sequence after the wraparound fix.
 
-## Faction hook — why minimal, and the default seeding
+## Faction hook — the fresh-scan / retention split, why minimal, and the default seeding
 
 The full relationship model (named alliances, neutrality, per-pair diplomacy, a declaration surface
 for initial faction) is a research→spec pass of its own. The minimal hook keeps candidacy's iteration
-set exactly as today (`ComponentKind::PlayerMovement`) and adds only an O(1) hostility test per
-candidate, so perf and default behavior are unchanged. Hostility rule: `faction(enemy) != faction(candidate)`,
-faction read from `@state.faction` (absent → 0.0). Players read 0 (their `@state` has no `faction`
-key); enemies are seeded `1.0` at spawn, so enemy(1)≠player(0) → hostile, preserving today exactly.
-Enemy-vs-enemy infighting (broadening the targetable-kind set to include `Brain`) is the value the
-full model adds and is where the O(N²) candidacy cost and its spatial broad-phase belong — deferred.
-Faction is mutated through the **existing E16 `@state` write path** (`setState` / impact policy /
-`registry.entity_state_mut`); this spec adds no new mutation surface — only the engine-floor *read*.
+set exactly as today (`ComponentKind::PlayerMovement`) and adds only an O(1) hostility test per fresh
+candidate, so perf and default behavior are unchanged.
+
+The mechanism splits along `entity_model.md` §7c: the candidacy predicate is evaluated once per
+offered candidate on a ranking scan, never against the target already retained — dropping a retained
+target is what guards are for. So hostility filters *acquisition* in `nearest_target_candidate` (the
+fresh ranking scan) only; the retained lookup (`select_target`'s :130 `target_candidate` call) applies
+no faction test. The fresh-scan filter is necessary under nearest-target selection — without it a
+nearer friendly pawn masks a hostile one behind it. *Retention* drop is authored: `@brain.targetHostile`
+(Bool, index 11) reports whether the selected target is hostile (`false` untargeted), and the reference
+enemy stands down on `select(targetHostile, false, true)` — the exact analog of the shipped
+`targetDied` stand-down interrupt, which already handles the "retained target went invalid" case as
+graph policy rather than an engine re-gate.
+
+Hostility rule: `faction(enemy) != faction(candidate)`, faction read from `@state.faction`
+(absent → 0.0). Players read 0 (their `@state` has no `faction` key); enemies are seeded `1.0` at
+spawn, so enemy(1)≠player(0) → hostile, preserving today exactly. Enemy-vs-enemy infighting
+(broadening the targetable-kind set to include `Brain`) is the value the full model adds and is where
+the O(N²) candidacy cost and its spatial broad-phase belong — deferred. Faction is mutated through the
+**existing E16 `@state` write path** (`setState` / impact policy / `registry.entity_state_mut`); this
+spec adds no new mutation surface — only the engine-floor *read* and the retention fact.
 
 ## Lifecycle — retreat/patrol/reachability across one tick
 
@@ -141,6 +158,12 @@ stateDiagram-v2
       been steered to the nearest reachable
       point by chaseTarget's find_path degradation
     end note
+    note right of idle
+      any-state interrupts stand the enemy down:
+      not hasTarget, targetDied, not targetHostile
+      (targetHostile retention drop is authored,
+      not an engine re-gate)
+    end note
 ```
 
 ## Fact refresh + steering ordering across the tick passes
@@ -152,9 +175,10 @@ sequenceDiagram
     participant Eval as select_transition
     participant Steer as steering resolution
     participant Apply as apply pass
-    Sel->>Sel: hostility-gated candidacy (faction @state), retained + fresh
+    Sel->>Sel: hostility-filtered fresh candidacy scan (faction @state); retained lookup ungated
+    Sel->>Sel: targetHostile = faction(enemy) != faction(selected) (false untargeted)
     Sel->>Sel: reachability probe on acquisition-due tick -> cache brain.target_reachable
-    Fact->>Fact: fixed[10]=distanceFromAnchor (every tick), fixed[11]=targetReachable (cached)
+    Fact->>Fact: fixed[10]=distanceFromAnchor (every tick), fixed[11]=targetHostile, fixed[12]=targetReachable (cached)
     Eval->>Eval: interrupts then transitions, first-true-wins
     Steer->>Steer: motion -> SteeringIntent (MoveToAnchor/Patrol compute goal, advance cursor)
     Apply->>Apply: Chase->slot/target, MoveTo(goal)->set_destination, Clear/Hold as today
@@ -173,8 +197,10 @@ sequenceDiagram
 - **Reachability oracle = `find_path`, not region connectivity.** Connectivity reads "reachable"
   through an unthreadable clearance pinch; `find_path` is the clearance-safe truth and is what makes
   the nav-draft dependency real.
-- **`attacks` map grammar is pinned, not shipped here.** Shipping the map would absorb
-  `E10--enemy-multi-attack` Tasks 1-2. This spec decides the canonical spelling and coordinates;
-  the reference enemy keeps its singular `attack` block until multi-attack lands the map.
+- **`attacks` map grammar is recommended, not shipped here.** Shipping the map would absorb
+  `E10--enemy-multi-attack` Tasks 1-2. This spec surfaces the canonical spelling as a
+  coordination recommendation for the owner to record in the multi-attack ship vehicle (or a
+  shared context doc); it does not assert the grammar onto that draft from here. The reference
+  enemy keeps its singular `attack` block until multi-attack lands the map.
 </content>
 </invoke>

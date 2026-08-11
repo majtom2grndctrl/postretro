@@ -8,9 +8,9 @@ behavior, and chase-to-nearest-reachable / barrier behavior — become *expressi
 authored content on the shipped behavior-state-graph, not new hardcoded archetypes.
 It adds position-goal motion verbs (a spawn anchor to move toward, a patrol route
 to walk), the brain facts that guard them (distance-from-home, target
-reachability), a minimal mutable-hostility hook so candidacy consults a per-entity
-faction relation instead of hardcoding targets to player pawns, and applies the
-composition shape the player descriptor set. Today the motion vocabulary is only
+reachability), a minimal mutable-hostility hook so fresh acquisition consults a
+per-entity faction relation instead of hardcoding targets to player pawns, and
+applies the composition shape the player descriptor set. Today the motion vocabulary is only
 chase/hold/freeze and no position/home/reachability fact exists — these behaviors
 cannot be written at all, and closing that gap is the work.
 
@@ -28,29 +28,37 @@ cannot be written at all, and closing that gap is the work.
   XZ offsets, so a route is placement-independent) and `mode` (`loop` | `pingPong`).
   The engine tracks a per-brain patrol cursor. `patrol` motion with no block, or an
   empty `points` list, is a parse error in both runtimes.
-- **New brain facts** (append-only at `BRAIN_INPUTS` indices 10, 11):
-  `@brain.distanceFromAnchor` (Number; the enemy's XZ distance from `home_anchor`,
-  always meaningful, `0` at the anchor) and `@brain.targetReachable` (Bool; whether
-  the nav floor can path enemy→selected-target this tick, `false` untargeted, `true`
-  with no navmesh). Each lands in the foundation table + `BrainValidationScope`, the
-  runtime `BrainScope` refresh, `BrainFacts`, and the SDK `brain` prelude (TS + Luau).
-- **Minimal faction hook.** Candidacy (`target_candidate`, the gate both fresh
-  acquisition and retained-target lookup pass) admits a pawn only when the evaluating
-  enemy is hostile to it: `faction(enemy) != faction(candidate)`, faction read from
-  the E16 `@state.faction` leaf (absent → 0.0). Enemies are seeded faction 1 at spawn,
-  players read 0, so all existing targeting is unchanged. Faction is *mutated* through
-  the existing E16 `@state` write path — this spec adds only the engine-floor read and
-  the spawn seed.
+- **New brain facts** (append-only at `BRAIN_INPUTS` indices 10 and 12; the faction hook
+  appends between them at 11): `@brain.distanceFromAnchor` (Number; the enemy's XZ distance
+  from `home_anchor`, always meaningful, `0` at the anchor) and `@brain.targetReachable`
+  (Bool; whether the nav floor can path enemy→selected-target this tick, `false`
+  untargeted, `true` with no navmesh). Each lands in the foundation table +
+  `BrainValidationScope`, the runtime `BrainScope` refresh, `BrainFacts`, and the SDK
+  `brain` prelude (TS + Luau).
+- **Minimal faction hook** (two parts, split along the fresh-scan / retained-lookup
+  seam). *Acquisition:* the fresh ranking scan (`nearest_target_candidate`) admits a
+  pawn only when the evaluating enemy is hostile to it — `faction(enemy) !=
+  faction(candidate)`, faction read from the E16 `@state.faction` leaf (absent → 0.0) —
+  so a friendly pawn never masks a hostile one behind it. The retained-target lookup
+  applies no faction test (`entity_model.md` §7c: candidacy filters fresh candidates
+  only, never the retained target). *Retention:* the second brain fact
+  `@brain.targetHostile` (Bool; whether the *selected* target is hostile, `false`
+  untargeted) at `BRAIN_INPUTS` index 11; a target whose faction flips friendly
+  mid-chase is stood down by an authored interrupt over it — the shape of the shipped
+  `targetDied` stand-down. Enemies are seeded faction 1 at spawn, players read 0, so
+  all existing targeting is unchanged. Faction is *mutated* through the existing E16
+  `@state` write path — this spec adds only the engine-floor read, the fact, and the
+  spawn seed.
 - **Composition shape.** Applied per `player-descriptor-composition`: one transition
   grammar (already the `{to, when}` rows), closed engine vocabulary, data-only, new
   tuning added as composed graph-wide blocks (`patrol`) rather than flat flags. The
-  named-attack-map instance of the "shared defaults + sparse override" pattern is
-  *pinned* (see Coordination), landed by `E10--enemy-multi-attack`.
+  named-attack-map instance of the "shared defaults + sparse override" pattern is a
+  coordination *recommendation* (see Coordination), landed by `E10--enemy-multi-attack`.
 - **Split `ai/mod.rs`** (982 production lines) before extension: extract the facing
   helpers and combat-slot resolution into sibling modules.
 - Reference enemy authored with a retreat-to-start + patrol demonstration; agent
   diagnostics overlay labels the new states; `docs/scripting-reference.md` documents
-  the new verbs/facts/faction and the pinned attack-map grammar.
+  the new verbs/facts/faction and the recommended attack-map grammar.
 
 ### Out of scope
 
@@ -59,7 +67,7 @@ cannot be written at all, and closing that gap is the work.
   authored candidate-filter IR, and enemy-vs-enemy infighting (broadening the
   targetable-kind set beyond `PlayerMovement`). Deferred to its own research→spec
   pass; the perf broad-phase for a widened candidacy set lives there. See Open questions.
-- **The `attacks` named map + parameterized `attack` action verb** — grammar pinned
+- **The `attacks` named map + parameterized `attack` action verb** — grammar recommended
   here (Coordination), shipped by `E10--enemy-multi-attack`. This spec does not touch
   `AttackParams` or `ActionVerb`.
 - **Random / wander patrol** — needs the seeded-deterministic-RNG story `E10--enemy-stagger`
@@ -91,15 +99,16 @@ second spelling of disengagement that silently outranks the guards" — *preserv
 leash is a `distanceFromAnchor` guard, no engine leash field. Its "guards are
 read-only" rule is preserved (facts read-only; faction is written via the existing
 E16 `setState`, never a guard). The append-only `BRAIN_INPUTS` ordering is preserved
-(the two facts append at the tail). The engine-owned candidacy floor stays engine-owned
-— the faction hook extends the floor's *rule* (hostility) without moving candidacy into
-graph content. One divergence, argued: behavior-state-graph's "candidate filters admit
-fresh candidates only; retention is graph policy" rule is *not* extended to faction —
-hostility gates **both** acquisition and retention, because hostility is a target-validity
-property of the floor (kin to `selected_target_alive`), not an acquisition-narrowing
-policy; a target whose faction flips to friendly mid-chase must be dropped by the floor,
-not left for the graph to notice. The player-descriptor-composition shape is applied.
-The `E10--enemy-multi-attack` map grammar is pinned and coordinated, not overridden.
+(the three facts append at the tail, indices 10-12). The engine-owned candidacy floor
+stays engine-owned — the hostility filter extends the floor's *rule* without moving
+candidacy into graph content, and follows behavior-state-graph's "candidate filters
+admit fresh candidates only; retention is graph policy" rule exactly (`entity_model.md`
+§7c): hostility narrows *fresh acquisition* on the ranking scan, and a target whose
+faction flips friendly mid-chase is stood down by an authored interrupt over
+`@brain.targetHostile` — the same shape as the shipped `targetDied` stand-down, not an
+engine re-gate of the retained target. The player-descriptor-composition shape is
+applied. The `E10--enemy-multi-attack` map grammar is coordinated, not overridden
+(see Coordination).
 
 **Alternatives rejected.** The strongest rival is an engine-floor leash: a `leashRange`
 scalar plus hardcoded retreat/patrol steering that reproduces these behaviors as engine
@@ -110,7 +119,12 @@ anchor/patrol entirely in graph content (author stores home in `@state.homeX/hom
 does position math in IR): rejected because the IR has no vector type and no way to read
 the spawn transform, and per-tick position arithmetic in `select` trees is unauthorable
 in practice — a first-class anchor fact and verb are cleaner and the engine already holds
-the position.
+the position. A third rival puts the hostility test in the shared candidacy predicate
+(`target_candidate`, which the retained lookup also calls) so the floor drops a target
+the instant its faction flips: rejected because `entity_model.md` §7c evaluates the
+candidacy predicate only against fresh offered candidates, never the retained target —
+re-gating retention there would re-split acquisition and retention against that rule.
+Retention drop is authored instead, over `@brain.targetHostile`.
 
 ## Acceptance criteria
 
@@ -140,21 +154,24 @@ the position.
   present; it is recomputed on the think-stride acquisition cadence and a between-strides
   tick reuses the cached value. An authored `select(targetReachable, false, true)` guard
   routes to a hold state when the target is unpathable and back when it becomes pathable.
-- [ ] **Faction hostility gate.** An enemy acquires and retains a `PlayerMovement` pawn
-  only while hostile to it per `@state.faction`; a pawn whose faction is written (through
-  the E16 `@state` path) to equal the enemy's faction is dropped on the next candidacy
-  scan and never freshly acquired, and reverting it re-enables targeting. With default
-  seeding (enemies faction 1, players 0) the full existing AI test suite passes unchanged.
+- [ ] **Faction hostility gate.** On a fresh acquisition scan an enemy admits a
+  `PlayerMovement` candidate only while hostile to it per `@state.faction`, so a friendly
+  pawn never masks a hostile one and is never freshly acquired; the retained-target lookup
+  applies no faction test. A retained target whose faction is written (through the E16
+  `@state` path) to equal the enemy's faction is dropped by the reference enemy's authored
+  `select(targetHostile, false, true)` stand-down interrupt on the next guard eval — not
+  by candidacy — and reverting it lets the enemy re-acquire. With default seeding (enemies
+  faction 1, players 0) the full existing AI test suite passes unchanged.
 - [ ] **Split.** `ai/mod.rs`'s facing helpers and combat-slot resolution move to sibling
   modules; its production line count drops below ~800; the full AI suite passes with
   import-only changes.
-- [ ] **Both scopes, both facts.** `@brain.distanceFromAnchor` and `@brain.targetReachable`
-  resolve identically in `BrainValidationScope` and the runtime `BrainScope` (drift test),
-  occupy `BRAIN_INPUTS` indices 10 and 11, and appear in the SDK `brain` prelude in both
-  runtimes (SDK drift test green).
-- [ ] **Zero-alloc preserved.** Snapshot refresh plus guard eval — now including the two
-  new fixed slots and the anchor/reachability computation feeding them — performs zero
-  heap allocations (alloc-probe).
+- [ ] **Both scopes, all three facts.** `@brain.distanceFromAnchor`, `@brain.targetHostile`,
+  and `@brain.targetReachable` resolve identically in `BrainValidationScope` and the runtime
+  `BrainScope` (drift test), occupy `BRAIN_INPUTS` indices 10, 11, and 12 respectively, and
+  appear in the SDK `brain` prelude in both runtimes (SDK drift test green).
+- [ ] **Zero-alloc preserved.** Snapshot refresh plus guard eval — now including the three
+  new fixed slots and the anchor / reachability / hostility computation feeding them —
+  performs zero heap allocations (alloc-probe).
 - [ ] **Host-only, deterministic, no wire change.** Anchor, patrol cursor, reachability
   cache, and faction are host-only sim state; sim determinism tests stay green; a
   connected client observes only replicated animation-state names, with no new wire field.
@@ -231,45 +248,71 @@ limitation, not a desync). Extend the facing gate so an enemy under a position-g
 arrived/stopped) — today facing is gated on `outcome.engaged`, which position-goal motion
 is not.
 
-### Task 4: The `@brain.targetReachable` fact and its nav probe
+### Task 4: Minimal faction hostility hook
 
-Append `@brain.targetReachable` (Bool) to `BRAIN_INPUTS` at **index 11** (after Task 2's
-index 10) with its const, wired the same way as Task 2 through `BrainValidationScope`, the
-`BrainScope` `fixed` array + `refresh` slot 11, a new `BrainFacts.target_reachable: bool`,
-the SDK `brain` prelude (TS + Luau), the SDK typedef fixtures, and the drift tests. Compute
-reachability in the compute pass: when the brain is armed, has a selected target, and the
-tick is acquisition-due (reuse the existing `evaluate_acquisition` stride gate — do not add
-a stride constant), call the nav floor's `find_path(nav_graph, snap.position, target_pos).is_some()`
-and cache it on a new `BrainComponent.target_reachable: bool` field; between strides reuse
-the cache. With no selected target the fact reads `false`; with no `nav_graph` (a map
-without a navmesh) it reads `true`, preserving today's chase-degradation behavior. This is
-the one per-enemy nav query added; it is strided and cached so an idle-strided distant
-enemy pays it at most once per stride band, within the combat-positioning query budget.
+Split the hostility mechanism along the fresh-scan / retained-lookup seam `ai/targeting.rs`
+already draws (`entity_model.md` §7c: the candidacy predicate is evaluated once per offered
+candidate on a ranking scan, never against the target already retained).
+
+**Acquisition — fresh scan only.** `target_candidate` (:30), the per-entity gate both the
+fresh scan (`nearest_target_candidate` :49) and the retained lookup (`select_target` :130)
+call, keeps its existing checks (visibility, `PlayerMovementComponent`, `Transform`)
+unchanged for both paths. Add the hostility filter to `nearest_target_candidate` only: for
+each offered candidate read its `@state.faction`
+(`registry.get_component::<EntityStateComponent>(entity)`, absent → 0.0) and admit it only
+when it differs from the evaluating enemy's faction — under nearest-target ranking this is
+necessary, since without it a nearer friendly pawn masks a hostile one behind it. The
+retained lookup applies no faction test (its alive/died checks are unchanged), so a retained
+target is never re-gated on hostility. Thread the enemy's faction scalar as a new `f32`
+parameter `select_target` → `nearest_target_candidate` (read once per enemy in the compute
+pass from its `EntityStateComponent`); `target_candidate`'s signature is untouched.
+
+**Retention — authored, over a target-side fact.** Append `@brain.targetHostile` (Bool) to
+`BRAIN_INPUTS` at **index 11** (after Task 2's index 10) with its
+`BRAIN_TARGET_HOSTILE_INPUT` const, wired the full Task-2 way: `BrainValidationScope`
+(via the table), the `BrainScope` `fixed` array + `refresh` slot 11, a new
+`BrainFacts.target_hostile: bool`, the SDK `brain` prelude (TS + Luau), the SDK typedef
+fixtures, the drift tests, and the `expected_fixed_value` oracle. The engine computes it in
+the compute pass from the *selected* target: hostile (`faction(enemy) != faction(target)`) →
+`true`; no valid hostile target — untargeted, or the selected target's faction equals the
+enemy's — → `false`, following the target-side facts' no-target convention (`targetDied`
+reads `false` untargeted), so an authored `select(targetHostile, false, true)` stand-down
+reads true and fires exactly when the retained target is not hostile. Retention drop is then
+authored: the reference enemy (Task 6) carries an any-state interrupt
+`select(targetHostile, false, true)` → stand-down — the exact analog of the shipped
+`targetDied` stand-down — so a target whose faction flips friendly mid-chase stands the
+enemy down on the next guard eval.
+
+Seed the enemy default faction at the spawn site (`builtins/data_archetype.rs:582-590`, same
+block as Task 2's anchor seed): `registry.entity_state_mut(id).set(FACTION_STATE_FIELD,
+ENEMY_DEFAULT_FACTION)` where `ENEMY_DEFAULT_FACTION = 1.0` and `FACTION_STATE_FIELD =
+"faction"`. Players carry no `faction` key and read 0, so enemy(1) ≠ player(0) stays hostile
+and every existing test is unchanged. The targetable-kind iteration set stays
+`[ComponentKind::PlayerMovement]` (a named constant seam so the full model can widen it);
+this keeps candidacy's iteration and perf identical to today and adds only an O(1) hostility
+test per fresh candidate. Faction is mutated entirely through the shipped E16 `@state` write
+path — no new reaction or output.
+
+### Task 5: The `@brain.targetReachable` fact and its nav probe
+
+Append `@brain.targetReachable` (Bool) to `BRAIN_INPUTS` at **index 12** (after Task 4's
+index 11) with its const, wired the same way as Task 2 and Task 4 through
+`BrainValidationScope`, the `BrainScope` `fixed` array + `refresh` slot 12, a new
+`BrainFacts.target_reachable: bool`, the SDK `brain` prelude (TS + Luau), the SDK typedef
+fixtures, and the drift tests. Compute reachability in the compute pass: when the brain is
+armed, has a selected target, and the tick is acquisition-due (reuse the existing
+`evaluate_acquisition` stride gate — do not add a stride constant), call the nav floor's
+`find_path(nav_graph, snap.position, target_pos).is_some()` and cache it on a new
+`BrainComponent.target_reachable: bool` field; between strides reuse the cache. With no
+selected target the fact reads `false`; with no `nav_graph` (a map without a navmesh) it
+reads `true`, preserving today's chase-degradation behavior. This is the one per-enemy nav
+query added; it is strided and cached so an idle-strided distant enemy pays it at most once
+per stride band, within the combat-positioning query budget.
 **Sequenced after `E10--pursuit-wraparound-blocked`:** that draft fixes `find_path`
 returning a false `None` for a routable wraparound around a freestanding wall; without it
 `@brain.targetReachable` reads `false` for a target reachable behind a wall, so any authored
 unreachable-behavior fires spuriously at every corner — the fact would ship a bug. Do not
-land Task 4 or its reference demo (Task 6) before that fix.
-
-### Task 5: Minimal faction hostility hook
-
-Replace candidacy's hardcoded player-pawn admission with a hostility gate in
-`ai/targeting.rs`. `target_candidate` (:30) — the single gate both the fresh scan
-(`nearest_target_candidate`) and the retained lookup (`select_target`) call — additionally
-reads the candidate's `@state.faction` (`registry.get_component::<EntityStateComponent>(entity)`,
-absent → 0.0) and admits it only when it differs from the evaluating enemy's faction, so
-both acquisition and retention are gated in one edit. Plumb the enemy's faction scalar
-through `select_target` → `nearest_target_candidate` → `target_candidate` (a new `f32`
-parameter; the enemy's faction is read once per enemy in the compute pass from its
-`EntityStateComponent`). Seed the enemy default faction at the spawn site
-(`builtins/data_archetype.rs:582-590`, same block as Task 2's anchor seed):
-`registry.entity_state_mut(id).set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION)` where
-`ENEMY_DEFAULT_FACTION = 1.0` and `FACTION_STATE_FIELD = "faction"`. Players carry no
-`faction` key and read 0, so enemy(1) ≠ player(0) stays hostile and every existing test is
-unchanged. The targetable-kind iteration set stays `[ComponentKind::PlayerMovement]` (a
-named constant seam so the full model can widen it); this keeps candidacy's iteration and
-perf identical to today and adds only an O(1) hostility test per candidate. Faction is
-mutated entirely through the shipped E16 `@state` write path — no new reaction or output.
+land Task 5 or its reference demo (Task 6) before that fix.
 
 ### Task 6: Reference authoring, tests, diagnostics, docs
 
@@ -279,42 +322,48 @@ from `alert`/`attack` on `gt(distanceFromAnchor, leash)` and exiting to `idle` o
 `le(distanceFromAnchor, arrivalEps)` and to `alert` on target re-entry, plus a `patrol`
 block and an `idle → patrol` edge for the untargeted case. Its comments are the de-facto
 authoring docs — they must teach that the anchor is the spawn position, that leash is a
-`distanceFromAnchor` guard (not an engine field), and the patrol cursor's persistence. The
-reachability demo (a `waiting` state on `select(targetReachable, false, true)`) is added
-only once Task 4's nav dependency lands; until then the reference ships without it and the
-docs note the fact exists. Port/extend `ai_tests.rs`: retreat round-trip (leash exit,
-arrival, re-engage edges), patrol cursor (loop wrap, pingPong reversal, single-point
-degenerate, persistence across re-entry), the faction gate (drop-on-flip, no fresh
-acquisition, default-seed behavior identity), and the alloc-probe with the two new fixed
-slots populated. Update the agent diagnostics overlay to label the new states. Update
-`docs/scripting-reference.md` with the new motion verbs, the two facts, the faction hook,
-and the **pinned attack-map grammar** (see Coordination). Regenerate and commit both
-typedef fixtures.
+`distanceFromAnchor` guard (not an engine field), the patrol cursor's persistence, and that
+retention drop on a friendly flip is authored as a `select(targetHostile, false, true)`
+stand-down interrupt (the `targetDied` shape). Add that interrupt alongside the existing
+`not hasTarget` stand-down. The reachability demo (a `waiting` state on
+`select(targetReachable, false, true)`) is added only once Task 5's nav dependency lands;
+until then the reference ships without it and the docs note the fact exists. Port/extend
+`ai_tests.rs`: retreat round-trip (leash exit, arrival, re-engage edges), patrol cursor
+(loop wrap, pingPong reversal, single-point degenerate, persistence across re-entry), the
+faction gate (fresh-scan acquisition filter, no friendly acquisition, the authored
+`targetHostile` stand-down dropping a flipped-to-friendly target, default-seed behavior
+identity), and the alloc-probe with the three new fixed slots populated. Update the agent
+diagnostics overlay to label the new states. Update `docs/scripting-reference.md` with the
+new motion verbs, the three facts, the faction hook, and the recommended attack-map grammar
+(see Coordination). Regenerate and commit both typedef fixtures.
 
 ### Coordination — attack-map grammar seam, multi-attack, stagger, weapon model
 
-This spec pins one grammar decision it does not itself ship, so the multi-attack and
-stagger drafts land consistently on it:
+This spec surfaces one grammar recommendation it does not itself ship. It is not asserted
+from here onto the other drafts — the owner records it in `E10--enemy-multi-attack` (the
+ship vehicle) or a shared context doc, so the multi-attack and stagger drafts land
+consistently on it:
 
-- **Canonical attack grammar.** The attack tuning is a **named map**
+- **Recommended attack grammar.** The attack tuning is a **named map**
   `components.behavior.attacks: BTreeMap<String, AttackParams>` and the action verb is
   **parameterized** `action: { attack: "<name>" }` naming a map entry — no privileged
-  singular entry, matching the composition shape's "named map, reference by name." There
-  is no bare `action: "attack"` and no singular `attack` block in the canonical grammar.
+  singular entry, matching the composition shape's "named map, reference by name." No bare
+  `action: "attack"` and no singular `attack` block in the recommended grammar.
 - **`E10--enemy-stagger` reconciliation.** Its examples use the singular `action: "attack"`
-  and `attack: { ... }` block; both migrate to `action: { attack: "<name>" }` and an
+  and `attack: { ... }` block; both would migrate to `action: { attack: "<name>" }` and an
   `attacks` map when the map lands. Nothing else in stagger conflicts — its `@state.staggered`
   interrupt, `hold`-motion flinch state, and commitment-window guard are unaffected, and it
   may freely add `distanceFromAnchor`/`targetReachable` guards (e.g. stagger-then-retreat).
 - **`E10--enemy-multi-attack` reconciliation.** Its Task 1 already defines the `attacks`
-  map and `action: { attack }` — it is the ship vehicle for this grammar. It must (a) keep
-  the map canonical with no singular fallback; (b) extend `AttackParams` additively with
-  `weapon`/`minRange`/`maxRange`/`ResolutionMode` (contact preserved as today's behavior);
-  (c) redefine the `engagementRadius()` fallback, which today reads the singular `attack.range`
-  — with a map it falls back to the **largest entry `range`/`maxRange`**, else the 2 m default;
-  its open question ("positioning reads the current firing state's `maxRange`") reconciles to
-  this. This spec leaves `AttackParams`/`ActionVerb` untouched so multi-attack owns the
-  migration; the reference enemy keeps its singular `attack` block until then.
+  map and `action: { attack }` — it is the ship vehicle for this grammar. The recommendation
+  for it to record: (a) keep the map canonical with no singular fallback; (b) extend
+  `AttackParams` additively with `weapon`/`minRange`/`maxRange`/`ResolutionMode` (contact
+  preserved as today's behavior); (c) redefine the `engagementRadius()` fallback, which today
+  reads the singular `attack.range` — with a map it would fall back to the **largest entry
+  `range`/`maxRange`**, else the 2 m default; its open question ("positioning reads the
+  current firing state's `maxRange`") reconciles to this. This spec leaves
+  `AttackParams`/`ActionVerb` untouched so multi-attack owns the migration; the reference
+  enemy keeps its singular `attack` block until then.
 - **Weapon-model direction (enemy-as-wielder).** A named attack entry may reference a weapon
   descriptor (`AttackParams::weapon`, multi-attack), making the enemy the *wielder* of the
   same weapon-descriptor substrate player weapons use — not a melee-vs-ranged slot. This
@@ -327,16 +376,17 @@ stagger drafts land consistently on it:
 (foundation table → validation scope → runtime scope → `BrainFacts` → `BrainComponent` →
 spawn seed → SDK prelude → drift fixtures) before it is repeated.
 **Phase 3 (sequential):** Task 3 — motion verbs; consumes Task 2's `home_anchor` and
-`distanceFromAnchor`. Shares the compute/apply passes with Task 5.
-**Phase 4 (sequential):** Task 5 — faction hook; shares the compute pass's target-selection
-region with Task 3, so it follows rather than races it.
-**Phase 5 (sequential):** Task 4 — reachability fact; appends the second `BRAIN_INPUTS`
-entry after Task 2's, and is **blocked on `E10--pursuit-wraparound-blocked`** landing.
+`distanceFromAnchor`. Shares the compute/apply passes with Task 4.
+**Phase 4 (sequential):** Task 4 — faction hook; shares the compute pass's target-selection
+region with Task 3, so it follows rather than races it, and appends `@brain.targetHostile`
+at `BRAIN_INPUTS` index 11, which must follow Task 2's index-10 append (append-only).
+**Phase 5 (sequential):** Task 5 — reachability fact; appends `BRAIN_INPUTS` index 12 after
+Task 4's index 11, and is **blocked on `E10--pursuit-wraparound-blocked`** landing.
 **Phase 6 (sequential):** Task 6 — consumes the settled vocabulary; the reachability demo
-half waits on Task 4's nav dependency.
+half waits on Task 5's nav dependency.
 
-Cross-spec: `E10--enemy-multi-attack` and `E10--enemy-stagger` reconcile onto the pinned
-grammar (Coordination) as a separate follow-up, not part of this spec.
+Cross-spec: `E10--enemy-multi-attack` and `E10--enemy-stagger` reconcile onto the
+recommended grammar (Coordination) as a separate follow-up, not part of this spec.
 
 ## Boundary inventory
 
@@ -347,24 +397,25 @@ grammar (Coordination) as a separate follow-up, not part of this spec.
 | Patrol points | `PatrolDescriptor::points: Vec<[f32;2]>` | `"points"` (array of `[x, z]`) | `points: [number, number][]` | same | n/a |
 | Patrol mode | `PatrolMode::{Loop, PingPong}` | `"loop"` / `"pingPong"` | `"loop" \| "pingPong"` | same | n/a |
 | Distance-from-anchor fact | `BRAIN_INPUTS[10]` `@brain.distanceFromAnchor` (Number) | — | `brain.distanceFromAnchor` | same | n/a |
-| Target-reachable fact | `BRAIN_INPUTS[11]` `@brain.targetReachable` (Bool) | — | `brain.targetReachable` | same | n/a |
+| Target-hostile fact | `BRAIN_INPUTS[11]` `@brain.targetHostile` (Bool) | — | `brain.targetHostile` | same | n/a |
+| Target-reachable fact | `BRAIN_INPUTS[12]` `@brain.targetReachable` (Bool) | — | `brain.targetReachable` | same | n/a |
 | Home anchor (sim state) | `BrainComponent::home_anchor: Vec3` | serde `home_anchor`, default `ZERO` | — (engine-internal) | — | n/a |
 | Patrol cursor (sim state) | `BrainComponent::{patrol_cursor, patrol_direction}` | serde-default | — | — | n/a |
 | Faction leaf | `@state.faction` via `EntityStateComponent` | — | `state("faction")` (existing E16 write path) | same | n/a |
-| Attacks map (pinned, not shipped) | `BehaviorGraphDescriptor::attacks: BTreeMap<String, AttackParams>` | `"attacks"` | `attacks: Record<string, …>` | same | n/a |
-| Attack action param (pinned) | `ActionVerb::Attack { attack: String }` | `action: { "attack": "<name>" }` | `action: { attack: string }` | same | n/a |
+| Attacks map (recommended, not shipped) | `BehaviorGraphDescriptor::attacks: BTreeMap<String, AttackParams>` | `"attacks"` | `attacks: Record<string, …>` | same | n/a |
+| Attack action param (recommended) | `ActionVerb::Attack { attack: String }` | `action: { "attack": "<name>" }` | `action: { attack: string }` | same | n/a |
 
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| `BRAIN_INPUTS` is append-only and the runtime `BrainScope.fixed` array length equals the table length, so table and refresh grow together in index order | Task 2 (index 10), Task 4 (index 11) | Any new fact must append and add its refresh slot in the same edit, or the crate will not compile; `expected_fixed_value` (no `_` arm) and the resolution-parity drift test guard it | AC 8, 9 |
-| Facts are read-only; faction is the only new mutable `@state`, written solely through the E16 `setState`/`entity_state_mut` path, never by a guard | Task 5 | Any guard-side write; any new reaction claiming faction | AC 6 |
-| Hostility gates both acquisition and retention (a target-validity property of the floor), diverging from candidate-filter's fresh-only rule | Task 5 (`target_candidate`) | A future refactor that moves the hostility test out of the shared `target_candidate` gate would re-split the two paths | AC 6 |
-| No-target / no-nav conventions: `distanceFromAnchor` always meaningful; `targetReachable` `false` untargeted, `true` with no navmesh | Task 2, Task 4 | The refresh must apply these before eval, matching the `BRAIN_NO_TARGET_DISTANCE` sentinel precedent | AC 1, 5 |
+| `BRAIN_INPUTS` is append-only and the runtime `BrainScope.fixed` array length equals the table length, so table and refresh grow together in index order | Task 2 (index 10), Task 4 (index 11), Task 5 (index 12) | Any new fact must append and add its refresh slot in the same edit, or the crate will not compile; `expected_fixed_value` (no `_` arm) and the resolution-parity drift test guard it | AC 8, 9 |
+| Facts are read-only; faction is the only new mutable `@state`, written solely through the E16 `setState`/`entity_state_mut` path, never by a guard | Task 4 | Any guard-side write; any new reaction claiming faction | AC 6 |
+| Hostility filters fresh acquisition only, on the ranking scan (`entity_model.md` §7c); retention is stood down by an authored interrupt over `@brain.targetHostile`, never re-gated by candidacy | Task 4 (`nearest_target_candidate` filter + `@brain.targetHostile` fact) | Any move of the hostility test into the shared `target_candidate` gate — which the retained lookup also calls — would re-gate retention against §7c | AC 6 |
+| No-target / no-nav conventions: `distanceFromAnchor` always meaningful; `targetHostile` `false` untargeted; `targetReachable` `false` untargeted, `true` with no navmesh | Task 2, Task 4, Task 5 | The refresh must apply these before eval, matching the `BRAIN_NO_TARGET_DISTANCE` sentinel precedent | AC 1, 5, 6 |
 | All new state (anchor, patrol cursor, reachability cache, faction) is host-only sim state; no wire/replication field; clients see animation-state names only | Task 2, 3, 4, 5 | Any snapshot/replication edit that serializes these onto the wire | AC 10 |
 | Leash is authored, not an engine field — expressed via `distanceFromAnchor` guards | Task 3, Task 6 | Any reintroduction of a `leashRange`-style field re-forecloses behavior-state-graph's decision | AC 4 |
-| Per-tick guard window stays zero-alloc — the anchor distance and cached reachability feed `refresh` without allocating | Task 2, Task 4 | The `find_path` probe runs before the armed alloc probe (strided, cached); refresh writes slots by index | AC 9 |
+| Per-tick guard window stays zero-alloc — the anchor distance and cached reachability feed `refresh` without allocating | Task 2, Task 5 | The `find_path` probe runs before the armed alloc probe (strided, cached); refresh writes slots by index | AC 9 |
 
 ## Orderings
 
@@ -380,8 +431,8 @@ grammar (Coordination) as a separate follow-up, not part of this spec.
 | Reachability, target changes between strides | new target acquired on a non-due tick | cached reachability is one stride stale; refreshed next due tick — accepted |
 | Reachability, no navmesh on the map | `nav_graph == None` | reads `true` (chase degrades as today), no probe run |
 | Reachability, target lost | `hasTarget` false this tick | reads `false`; cache cleared |
-| Faction flips to friendly mid-chase | `@state.faction` written == enemy faction, next candidacy scan | retained target dropped by `target_candidate`; not re-acquired |
-| Faction flip on the same tick as acquisition | write ordered before the candidacy scan | scan reads the new value; write after → next tick |
+| Faction flips to friendly mid-chase | `@state.faction` written == enemy faction; next guard eval | `@brain.targetHostile` reads `false`; the authored `select(targetHostile, false, true)` stand-down drops the retained target; the fresh scan never re-offers it |
+| Faction flip on the same tick as acquisition | write ordered before the fresh candidacy scan | scan reads the new value; write after → next tick |
 | Enemy moved by a script | transform changes, `home_anchor` unchanged | `distanceFromAnchor` grows; home stays the spawn point |
 
 ## Script syntax examples
@@ -406,6 +457,9 @@ export const sentry = defineEntity({
       patrol: { mode: "pingPong", points: [[0, 0], [6, 0], [6, 6]] },
       interrupts: [
         { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+        // Authored retention drop: stand down when the retained target is no
+        // longer hostile (faction flipped friendly). The `targetDied` shape.
+        { to: "idle", when: runtime.select(brain.targetHostile, false, true) },
       ],
       states: {
         // Untargeted: walk the patrol route.
@@ -461,8 +515,12 @@ export const sentry = defineEntity({
   enemy-vs-enemy infighting by widening the targetable-kind set, with the O(N²) candidacy
   broad-phase that requires) is a separate research→spec pass. Owner: confirm the numeric
   field and hostility rule are forward-compatible with the intended model before promotion,
-  and decide whether infighting is wanted soon enough to co-design the broad-phase.
-- **Reachability ship vs. the nav fix.** Task 4 is sequenced after
+  and decide whether infighting is wanted soon enough to co-design the broad-phase. The
+  fresh-scan engine hostility filter is the minimal-hook stand-in for acquisition narrowing
+  until `@candidate.faction` (the cross-entity `@state` read on the candidate scope) lands;
+  once it does, acquisition narrowing migrates to the authored candidate filter and the
+  engine floor keeps only the seed and the retention-side `@brain.targetHostile` read.
+- **Reachability ship vs. the nav fix.** Task 5 is sequenced after
   `E10--pursuit-wraparound-blocked`. If that fix slips, the owner may prefer to ship the
   `@brain.targetReachable` fact with a documented "unreliable around freestanding walls"
   caveat and no reference demo, rather than block this spec. `E10--mandatory-vertex-wedge-escapes`

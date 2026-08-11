@@ -4,7 +4,7 @@
 use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
-use postretro_entities::{ScriptCtx, SlotValue};
+use postretro_entities::{EntityRegistry, ScriptCtx, SlotValue};
 use postretro_foundation::ir::{
     BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
 };
@@ -294,6 +294,7 @@ impl ImpactPolicyRuntime {
         dispatch: &ImpactDispatch,
         presentation: bool,
     ) {
+        let ctx = self.ctx.clone();
         let effects = if presentation {
             &mut self.presentation
         } else {
@@ -326,7 +327,7 @@ impl ImpactPolicyRuntime {
                     if let Some(recipient) = recipient {
                         match effect {
                             ImpactEffect::SetOwnerSlot { slot, value } => {
-                                self.apply_owner_slot(registry, recipient, &slot, value);
+                                Self::apply_owner_slot(&ctx, registry, recipient, &slot, value);
                             }
                             effect => apply_effect(registry, recipient, &effect),
                         }
@@ -337,7 +338,7 @@ impl ImpactPolicyRuntime {
     }
 
     fn apply_owner_slot(
-        &self,
+        ctx: &ScriptCtx,
         registry: &EntityRegistry,
         recipient: postretro_entities::EntityId,
         slot: &str,
@@ -348,7 +349,7 @@ impl ImpactPolicyRuntime {
             return;
         };
 
-        let mut table = self.ctx.slot_table.borrow_mut();
+        let mut table = ctx.slot_table.borrow_mut();
         let Some(record) = table.get_mut(slot) else {
             debug_assert!(false, "bound owner slot `{slot}` disappeared before apply");
             return;

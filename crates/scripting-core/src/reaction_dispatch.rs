@@ -443,7 +443,7 @@ fn dispatch_add_owner_slot(
         return;
     }
 
-    let args: AddSlotArgs = match serde_json::from_value(descriptor.args.clone()) {
+    let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(descriptor.args.clone()) {
         Ok(args) if args.delta.is_finite() => args,
         Ok(_) => {
             log::warn!("[Scripting] addSlot delta must be finite; reaction had no effect");
@@ -487,7 +487,7 @@ fn dispatch_add_owner_slot(
         }
     }
 
-    let seats = {
+    let seats: Vec<_> = {
         let registry = script_ctx.registry.borrow();
         targets
             .iter()

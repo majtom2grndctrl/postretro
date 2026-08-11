@@ -812,7 +812,7 @@ fn bind_command(
         }),
         "setState" => bind_store_slot(args, slot_table, script_ctx),
         "addSlot" => {
-            let args: AddSlotArgs = match serde_json::from_value(args.clone()) {
+            let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(args.clone()) {
                 Ok(args) if args.delta.is_finite() => args,
                 Ok(_) => {
                     log::warn!("[Trigger] addSlot delta must be finite; not binding");

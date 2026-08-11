@@ -478,6 +478,21 @@ pub fn resolve_delta_f16_offset(
         .checked_add(kept_rank.checked_mul(tile_f16_stride)?)
 }
 
+/// Immutable section data used to reconstruct one or more delta probe tiles.
+#[derive(Clone, Copy, Debug)]
+pub struct DeltaProbeReconstructionContext<'a> {
+    pub valid_probe_masks: &'a [u64],
+    pub cell_levels: &'a [u8],
+    /// Kept-rank base offsets produced by `delta_entry_offsets`.
+    pub entry_offsets: &'a [u32],
+    /// Packed f16 RGBA payload. Reconstruction reads RGB; alpha is unused.
+    pub delta_subblocks: &'a [u16],
+    /// Interior RGB texel count per tile.
+    pub tile_texels: usize,
+    /// f16 stride per probe tile (`tile_texels * 4` for RGBA16F).
+    pub tile_f16_stride: u32,
+}
+
 /// Reconstruct the composed delta tile for one probe from a (possibly coarsened)
 /// delta section, intra-brick. Three states:
 ///  - invalid       (validity bit clear)  -> None (skip)
@@ -491,39 +506,34 @@ pub fn resolve_delta_f16_offset(
 /// `probe_indirection`). This CPU reference is the AC-3 golden the WGSL compose
 /// port must match.
 pub fn reconstruct_delta_probe_tile(
-    valid_probe_masks: &[u64],
-    cell_levels: &[u8],
-    entry_offsets: &[u32], // kept-rank base offsets (from delta_entry_offsets)
-    delta_subblocks: &[u16], // f16 payload
+    context: &DeltaProbeReconstructionContext<'_>,
     entry: usize,
     cell: usize,
     local_probe: u32,
-    tile_texels: usize,   // interior RGB texel count per tile
-    tile_f16_stride: u32, // f16 stride per probe tile (texels*4 for RGBA16F)
 ) -> Option<Vec<glam::Vec3>> {
     if local_probe >= PROBES_PER_CELL as u32 {
         return None;
     }
-    let level = Level::from_u8(*cell_levels.get(cell)?)?;
-    let mask = *valid_probe_masks.get(cell)?;
+    let level = Level::from_u8(*context.cell_levels.get(cell)?)?;
+    let mask = *context.valid_probe_masks.get(cell)?;
     let local_bit = 1u64 << local_probe;
     if mask & local_bit == 0 {
         return None; // invalid probe
     }
     let kept = kept_mask(level, mask);
-    let entry_base = *entry_offsets.get(entry)?;
+    let entry_base = *context.entry_offsets.get(entry)?;
 
     // Read `tile_texels` RGB texels from the f16 payload at the given kept rank,
     // taking the R,G,B of each 4-f16 (RGBA) texel.
     let decode = |kept_rank: u32| -> Vec<glam::Vec3> {
-        let base = (entry_base + kept_rank * tile_f16_stride) as usize;
-        (0..tile_texels)
+        let base = (entry_base + kept_rank * context.tile_f16_stride) as usize;
+        (0..context.tile_texels)
             .map(|t| {
                 let i = base + t * 4;
                 glam::Vec3::new(
-                    f16_bits_to_f32(delta_subblocks[i]),
-                    f16_bits_to_f32(delta_subblocks[i + 1]),
-                    f16_bits_to_f32(delta_subblocks[i + 2]),
+                    f16_bits_to_f32(context.delta_subblocks[i]),
+                    f16_bits_to_f32(context.delta_subblocks[i + 1]),
+                    f16_bits_to_f32(context.delta_subblocks[i + 2]),
                 )
             })
             .collect()
@@ -547,8 +557,8 @@ pub fn reconstruct_delta_probe_tile(
     }
 
     match level {
-        Level::L1 => reconstruct_l1_tile(&kept_tiles, local_probe as usize, tile_texels),
-        Level::L2 => reconstruct_l2_tile(&kept_tiles, tile_texels),
+        Level::L1 => reconstruct_l1_tile(&kept_tiles, local_probe as usize, context.tile_texels),
+        Level::L2 => reconstruct_l2_tile(&kept_tiles, context.tile_texels),
         // L0 has no dropped-valid probes (kept == valid), so this is unreachable;
         // treat defensively as the stored tile.
         Level::L0 => {
@@ -1196,20 +1206,18 @@ mod tests {
             remaining &= remaining - 1;
         }
         let entry_offsets = vec![0u32];
+        let context = DeltaProbeReconstructionContext {
+            valid_probe_masks: &valid_probe_masks,
+            cell_levels: &cell_levels,
+            entry_offsets: &entry_offsets,
+            delta_subblocks: &delta_subblocks,
+            tile_texels,
+            tile_f16_stride: stride,
+        };
 
         // Dropped interior local (1,1,1): trilinear over the linear-x ramp -> 12.
-        let recon = reconstruct_delta_probe_tile(
-            &valid_probe_masks,
-            &cell_levels,
-            &entry_offsets,
-            &delta_subblocks,
-            0,
-            0,
-            interior as u32,
-            tile_texels,
-            stride,
-        )
-        .expect("dropped interior local reconstructs");
+        let recon = reconstruct_delta_probe_tile(&context, 0, 0, interior as u32)
+            .expect("dropped interior local reconstructs");
         assert!(
             (recon[0].x - 12.0).abs() < 1e-2,
             "trilinear ramp at (1,1,1) must be 12, got {}",
@@ -1217,18 +1225,8 @@ mod tests {
         );
 
         // A kept corner reads its stored value (local 3 -> lx 3 -> 16).
-        let corner = reconstruct_delta_probe_tile(
-            &valid_probe_masks,
-            &cell_levels,
-            &entry_offsets,
-            &delta_subblocks,
-            0,
-            0,
-            3,
-            tile_texels,
-            stride,
-        )
-        .expect("kept corner reads stored tile");
+        let corner =
+            reconstruct_delta_probe_tile(&context, 0, 0, 3).expect("kept corner reads stored tile");
         assert!(
             (corner[0].x - 16.0).abs() < 1e-2,
             "kept corner local 3 stores 16, got {}",
@@ -1237,18 +1235,7 @@ mod tests {
 
         // An invalid local (validity clear) returns None.
         assert!(
-            reconstruct_delta_probe_tile(
-                &valid_probe_masks,
-                &cell_levels,
-                &entry_offsets,
-                &delta_subblocks,
-                0,
-                0,
-                1,
-                tile_texels,
-                stride,
-            )
-            .is_none(),
+            reconstruct_delta_probe_tile(&context, 0, 0, 1).is_none(),
             "an invalid local reconstructs to None"
         );
     }
@@ -1264,51 +1251,28 @@ mod tests {
         // Kept = the single lowest bit (local 0) holding the brick-mean tile.
         let delta_subblocks = vec![bits, bits, bits, 0];
         let entry_offsets = vec![0u32];
+        let context = DeltaProbeReconstructionContext {
+            valid_probe_masks: &valid_probe_masks,
+            cell_levels: &cell_levels,
+            entry_offsets: &entry_offsets,
+            delta_subblocks: &delta_subblocks,
+            tile_texels,
+            tile_f16_stride: stride,
+        };
 
         // A dropped-valid local returns the brick mean.
-        let dropped = reconstruct_delta_probe_tile(
-            &valid_probe_masks,
-            &cell_levels,
-            &entry_offsets,
-            &delta_subblocks,
-            0,
-            0,
-            1,
-            tile_texels,
-            stride,
-        )
-        .expect("dropped-valid returns the brick mean");
+        let dropped = reconstruct_delta_probe_tile(&context, 0, 0, 1)
+            .expect("dropped-valid returns the brick mean");
         assert!((dropped[0].x - mean).abs() < 1e-2);
 
         // The kept representative (local 0) reads the stored mean directly.
-        let rep = reconstruct_delta_probe_tile(
-            &valid_probe_masks,
-            &cell_levels,
-            &entry_offsets,
-            &delta_subblocks,
-            0,
-            0,
-            0,
-            tile_texels,
-            stride,
-        )
-        .expect("kept representative reads the stored mean tile");
+        let rep = reconstruct_delta_probe_tile(&context, 0, 0, 0)
+            .expect("kept representative reads the stored mean tile");
         assert!((rep[0].x - mean).abs() < 1e-2);
 
         // An invalid local returns None.
         assert!(
-            reconstruct_delta_probe_tile(
-                &valid_probe_masks,
-                &cell_levels,
-                &entry_offsets,
-                &delta_subblocks,
-                0,
-                0,
-                4,
-                tile_texels,
-                stride,
-            )
-            .is_none(),
+            reconstruct_delta_probe_tile(&context, 0, 0, 4).is_none(),
             "an invalid local reconstructs to None"
         );
     }

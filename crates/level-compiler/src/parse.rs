@@ -2674,17 +2674,27 @@ mod tests {
     #[test]
     fn sh_protect_volume_resolves_to_a_world_aabb() {
         let map = parse_inline_map(&sh_protect_volume_map("")).expect("protect volume compiles");
-        assert_eq!(map.sh_protect_aabbs.len(), 1, "one protect volume → one AABB");
+        assert_eq!(
+            map.sh_protect_aabbs.len(),
+            1,
+            "one protect volume → one AABB"
+        );
         // Quake box [0,32]^3 → engine (−y, z, −x) × 0.0254 (inch → m).
         let s = MapFormat::IdTech2.units_to_meters() as f32;
         let expect = [-32.0 * s, 0.0, -32.0 * s, 0.0, 32.0 * s, 0.0];
         let aabb = map.sh_protect_aabbs[0];
         for (got, want) in aabb.iter().zip(expect.iter()) {
-            assert!((got - want).abs() < 1e-5, "aabb {aabb:?} vs expected {expect:?}");
+            assert!(
+                (got - want).abs() < 1e-5,
+                "aabb {aabb:?} vs expected {expect:?}"
+            );
         }
         // A protection volume is invisible: it becomes neither a trigger nor
         // static world geometry.
-        assert!(map.trigger_volumes.is_empty(), "protect volume is not a trigger");
+        assert!(
+            map.trigger_volumes.is_empty(),
+            "protect volume is not a trigger"
+        );
         assert!(
             map.brush_volumes
                 .iter()

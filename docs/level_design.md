@@ -174,10 +174,11 @@ Set `fog_pixel_scale` on the `worldspawn` entity, not on individual volumes. It 
 
 ## SH Probe Protection Volumes
 
-`sh_protect_volume` is an invisible brush entity that keeps animated-light SH
-delta probes at full valid-probe density (L0) inside an important lighting area. Use it for
-places where coarsened indirect-light changes would be noticeable, such as a
-small hero prop, a sharp lighting transition, or a gameplay focal point.
+`sh_protect_volume` is an invisible brush entity that forces every intersecting
+4×4×4 probe brick to L0 (full valid-probe density) in every present coarsened
+delta section. Use it where coarsened lighting changes would be noticeable,
+such as around a small hero prop, a sharp lighting transition, or a gameplay
+focal point.
 
 Create brushwork around the area, then tie it to
 `sh_protect_volume`. The compiler converts the brush hull to a world-space

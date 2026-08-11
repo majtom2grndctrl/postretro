@@ -485,8 +485,7 @@ fn compact_dense_valid_probe_payload(
 /// rolled here. The caller guarantees `validity != 0`, so the mean is defined.
 fn synthesize_l2_mean_tile(dense_entry: &[u16], validity: u64, probe_stride: usize) -> Vec<u16> {
     let tile_texels = probe_stride / DELTA_TILE_TEXEL_F16_COUNT;
-    let mut valid_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] =
-        std::array::from_fn(|_| None);
+    let mut valid_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
     let mut remaining = validity;
     while remaining != 0 {
         let local = remaining.trailing_zeros() as usize;
@@ -1205,8 +1204,7 @@ mod tests {
         section.affinity_offsets = vec![0, 1];
         section.cell_levels = vec![Level::L1.to_u8()];
 
-        let compacted =
-            compact_direct_valid_probes(&section, &base).expect("an L1 cell compacts");
+        let compacted = compact_direct_valid_probes(&section, &base).expect("an L1 cell compacts");
 
         // Emitted `valid_probe_masks` stays FULL validity; the kept set is
         // derived from (level, validity) via `kept_mask`, never stored.
@@ -1258,8 +1256,7 @@ mod tests {
         section.affinity_offsets = vec![0, 1];
         section.cell_levels = vec![Level::L2.to_u8()];
 
-        let compacted =
-            compact_direct_valid_probes(&section, &base).expect("an L2 cell compacts");
+        let compacted = compact_direct_valid_probes(&section, &base).expect("an L2 cell compacts");
 
         assert_eq!(compacted.valid_probe_masks, vec![validity]);
         // Exactly one stored tile (the representative slot = lowest valid bit).
@@ -1325,8 +1322,7 @@ mod tests {
         section.affinity_offsets = vec![0, 1];
         section.cell_levels = vec![Level::L2.to_u8()];
 
-        let compacted =
-            compact_direct_valid_probes(&section, &base).expect("an L2 cell compacts");
+        let compacted = compact_direct_valid_probes(&section, &base).expect("an L2 cell compacts");
         let decoded = DirectShDeltaVolumesSection::from_bytes(&compacted.to_bytes())
             .expect("a producer-emitted L2 section uses the existing loader format");
         assert_eq!(decoded, compacted);
@@ -1397,7 +1393,7 @@ mod tests {
         let compacted =
             compact_indirect_valid_probes(&section, &base).expect("an L1 cell compacts");
         let compacted_bytes = payload_bytes(&compacted.delta_subblocks);
-        let mut sections = PostBakeDeltaSections::new(
+        let sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
             },

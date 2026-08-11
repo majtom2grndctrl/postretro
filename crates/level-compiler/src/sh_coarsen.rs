@@ -18,13 +18,13 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::sh_reconstruct::{local_xyz, zero_tile, Level, Tile};
+use postretro_level_format::sh_reconstruct::{Level, Tile, local_xyz, zero_tile};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::affinity_grid::AFFINITY_FACTOR;
 use crate::sh_analyze::{
-    accumulate_delta_for_cell, brick_world_aabb, build_brick_tiles, level_errors, tile_magnitude,
-    AnalyzeInputs, DeltaView, LevelKind,
+    AnalyzeInputs, DeltaView, LevelKind, accumulate_delta_for_cell, brick_world_aabb,
+    build_brick_tiles, level_errors, tile_magnitude,
 };
 
 const AF: usize = AFFINITY_FACTOR as usize; // 4
@@ -202,7 +202,8 @@ pub(crate) fn classify_levels(
                     // Only inspect the positive-direction neighbors so each
                     // face-adjacent pair is visited once per sweep.
                     if x + 1 < dxu {
-                        demoted |= smooth_pair(&mut levels, &participating, &l1_evaluable, i, i + 1);
+                        demoted |=
+                            smooth_pair(&mut levels, &participating, &l1_evaluable, i, i + 1);
                     }
                     if y + 1 < dyu {
                         demoted |=
@@ -337,11 +338,11 @@ pub(crate) struct SectionGrid<'a> {
 /// linearity = the composed error it induces). Returns per-cell Level-as-u8,
 /// x-fastest, length == affinity_cell_count.
 pub(crate) fn classify_section_levels(
-    base_indirect: &OctahedralShVolumeSection,   // pre-BC6H RGBA16F id34
+    base_indirect: &OctahedralShVolumeSection, // pre-BC6H RGBA16F id34
     base_direct: Option<&DirectShVolumeSection>, // pre-BC6H id35 (may be absent)
-    all_deltas: DeltaSectionsRef<'_>,            // the three sections (for composed magnitude)
-    target: TargetDeltaSection,                  // which section's levels to produce
-    grid: SectionGrid<'_>,                       // affinity dims + origin + spacing + validity
+    all_deltas: DeltaSectionsRef<'_>,          // the three sections (for composed magnitude)
+    target: TargetDeltaSection,                // which section's levels to produce
+    grid: SectionGrid<'_>,                     // affinity dims + origin + spacing + validity
     protect_aabbs: &[[f32; 6]],
     params: &CoarsenParams,
 ) -> Vec<u8> {
@@ -391,7 +392,10 @@ pub(crate) fn classify_section_levels(
     fn guard<'a>(view: Option<DeltaView<'a>>, expected: [u32; 3]) -> Option<DeltaView<'a>> {
         view.filter(|v| v.affinity_dims == expected)
     }
-    let dv_ind = guard(all_deltas.indirect.map(DeltaView::from_indirect), affinity_dims);
+    let dv_ind = guard(
+        all_deltas.indirect.map(DeltaView::from_indirect),
+        affinity_dims,
+    );
     let dv_dir = guard(all_deltas.direct.map(DeltaView::from_direct), affinity_dims);
     let dv_anim = guard(
         all_deltas.anim_direct.map(DeltaView::from_anim_direct),
@@ -439,8 +443,22 @@ pub(crate) fn classify_section_levels(
                 // magnitude denominator + darkness floor are identical no matter
                 // which section is the target.
                 let bt = build_brick_tiles(
-                    &inputs, base, tile_dim, interior, border, &valid_rank, dims, cell_lin, cx, cy,
-                    cz, ax, ay, &dv_ind, &dv_dir, &dv_anim,
+                    &inputs,
+                    base,
+                    tile_dim,
+                    interior,
+                    border,
+                    &valid_rank,
+                    dims,
+                    cell_lin,
+                    cx,
+                    cy,
+                    cz,
+                    ax,
+                    ay,
+                    &dv_ind,
+                    &dv_dir,
+                    &dv_anim,
                 );
                 let mag = tile_magnitude(&bt.composed, texels);
 
@@ -583,7 +601,11 @@ mod tests {
             (0.5, 3.0), // rel_p95 0.05 pass, rel_max 0.30 fail
         )];
         let out = classify_levels(&bricks, [1, 1, 1], &[], &CoarsenParams::default());
-        assert_eq!(out, vec![L0], "passing p95 but failing rel_max must stay finer");
+        assert_eq!(
+            out,
+            vec![L0],
+            "passing p95 but failing rel_max must stay finer"
+        );
     }
 
     // ---- P8 dark map ----
@@ -597,7 +619,10 @@ mod tests {
             .map(|_| brick(1e-4, 1e-4, (1e-7, 1e-7), (1e-7, 1e-7)))
             .collect();
         let out = classify_levels(&bricks, [4, 1, 1], &[], &CoarsenParams::default());
-        assert!(out.iter().any(|&l| l != L0), "dark map must not be forced all-L0");
+        assert!(
+            out.iter().any(|&l| l != L0),
+            "dark map must not be forced all-L0"
+        );
     }
 
     #[test]
@@ -611,7 +636,10 @@ mod tests {
         // Sub-floor brick with huge nominal errors — bypass ignores them.
         bricks.push(brick(0.5, 0.5, (999.0, 999.0), (999.0, 999.0)));
         let out = classify_levels(&bricks, [4, 1, 1], &[], &CoarsenParams::default());
-        assert_eq!(out[3], L2, "sub-floor brick must bypass to coarsest evaluable level");
+        assert_eq!(
+            out[3], L2,
+            "sub-floor brick must bypass to coarsest evaluable level"
+        );
     }
 
     // ---- P9 no valid corners ----
@@ -648,7 +676,10 @@ mod tests {
             })
             .collect();
         let out = classify_levels(&bricks, [3, 1, 1], &[], &CoarsenParams::default());
-        assert!(out.iter().all(|&l| l == L2), "must be L2-only coarsening, never L1");
+        assert!(
+            out.iter().all(|&l| l == L2),
+            "must be L2-only coarsening, never L1"
+        );
     }
 
     // ---- P10 zero valid probes ----
@@ -663,7 +694,10 @@ mod tests {
         let bricks = vec![at_x(zero, 0), at_x(l2_neighbor, 1)];
         let out = classify_levels(&bricks, [2, 1, 1], &[], &CoarsenParams::default());
         assert_eq!(out[0], L0, "zero-valid brick is L0");
-        assert_eq!(out[1], L2, "L2 neighbor not demoted by a non-participating brick");
+        assert_eq!(
+            out[1], L2,
+            "L2 neighbor not demoted by a non-participating brick"
+        );
     }
 
     // ---- P5 fixpoint chain ----
@@ -806,7 +840,7 @@ mod tests {
     // (grid [4,4,4] → one affinity cell, all 64 probes valid) with 1×1 tiles
     // (tile_dimension 1, border 0 → 1 interior texel).
 
-    use postretro_level_format::lightmap::{f32_to_f16_bits, IRRADIANCE_FORMAT_RGBA16F};
+    use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
 
     /// Base indirect (id 34) whose every probe decodes to a uniform RGB
     /// `value` — a bright, dense composed floor to test the coarsener against.
@@ -848,7 +882,7 @@ mod tests {
             sub[local * 4] = h; // R
             sub[local * 4 + 1] = h; // G
             sub[local * 4 + 2] = h; // B
-                                    // A left at 0.
+            // A left at 0.
         }
         DirectShDeltaVolumesSection {
             affinity_factor: 4,
@@ -880,11 +914,7 @@ mod tests {
     /// trilinear-from-corners blend, so it forces high per-section error.
     fn parity(local: usize, amp: f32) -> f32 {
         let (lx, ly, lz) = local_xyz(local);
-        if (lx + ly + lz) % 2 == 0 {
-            amp
-        } else {
-            -amp
-        }
+        if (lx + ly + lz) % 2 == 0 { amp } else { -amp }
     }
 
     #[test]
@@ -908,7 +938,11 @@ mod tests {
             &[],
             &CoarsenParams::default(),
         );
-        assert_eq!(out, vec![L2], "uniform target vs bright composed must coarsen to L2");
+        assert_eq!(
+            out,
+            vec![L2],
+            "uniform target vs bright composed must coarsen to L2"
+        );
     }
 
     #[test]
@@ -933,7 +967,11 @@ mod tests {
             &[],
             &CoarsenParams::default(),
         );
-        assert_eq!(out, vec![L0], "high-variance target must stay L0 despite bright composed");
+        assert_eq!(
+            out,
+            vec![L0],
+            "high-variance target must stay L0 despite bright composed"
+        );
     }
 
     #[test]

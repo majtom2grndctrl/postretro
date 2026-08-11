@@ -1948,10 +1948,9 @@ mod tests {
 
     #[test]
     fn parse_args_sh_coarsen_flag() {
-        let parsed = parse_args_from(
-            vec!["input.map".to_string(), "--sh-coarsen".to_string()].into_iter(),
-        )
-        .unwrap();
+        let parsed =
+            parse_args_from(vec!["input.map".to_string(), "--sh-coarsen".to_string()].into_iter())
+                .unwrap();
         assert!(parsed.sh_coarsen);
         // Independent of the measurement flag.
         assert!(!parsed.sh_analyze);

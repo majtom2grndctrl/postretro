@@ -66,9 +66,9 @@ struct DebugOverride {
 @group(1) @binding(26) var<uniform> debug_override: DebugOverride;
 // Low/high u32 words for every affinity-cell valid-probe mask, followed by one
 // widened coarsening level per cell, then one f16-half payload offset for every
-// post-drop CSR entry. Pass B has no base probe-indirection binding, so this
-// descriptor guards invalid-local reads. B1 updates this shared id-27/id-45
-// layout; B2 adds id-45 reconstruction.
+// post-drop CSR entry. id-27 and id-45 share this metadata layout, so their
+// accessors stay in lockstep. Pass B has no base probe-indirection binding, so
+// validity guards invalid-local reads.
 @group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
 
 const AFFINITY_FACTOR: u32 = 4u;
@@ -81,8 +81,8 @@ const TILE_TEXEL_COUNT: u32 = RUNTIME_TILE_DIMENSION * RUNTIME_TILE_DIMENSION;
 const MAX_KEPT_TILES: u32 = 8u;
 
 // L1 stores at most its eight local corners; L2 stores one synthesized mean.
-// The workgroup loads each stored tile once per CSR entry, then all 64 dense
-// output probes reconstruct from this brick-local lattice.
+// The workgroup loads each stored tile once per CSR entry, then each valid
+// output probe reconstructs from this brick-local lattice.
 var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
 var<workgroup> shared_kept_present: array<u32, 8>;
 
@@ -94,9 +94,8 @@ fn valid_probe_mask_word(cell: u32, word: u32) -> u32 {
     return delta_compaction_meta[cell * 2u + word];
 }
 
-// Kept here in lockstep with `sh_compose.wgsl` even though Pass B still uses
-// its pre-B2 dense-local compose path. Without this accessor/layout update its
-// CSR entry offsets would point into the newly inserted level words.
+// This accessor follows the shared id-27/id-45 metadata layout. Pass B
+// reconstructs valid L1/L2 output probes from the brick-local kept lattice.
 fn cell_level(cell: u32) -> u32 {
     let cell_count = grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z;
     return delta_compaction_meta[cell_count * 2u + cell];

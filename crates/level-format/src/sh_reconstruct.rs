@@ -56,11 +56,7 @@ pub fn local_xyz(local: usize) -> (usize, usize, usize) {
 pub fn trilinear_weight(target: (usize, usize, usize), corner: (usize, usize, usize)) -> f32 {
     let axis = |t: usize, c: usize| -> f32 {
         let f = t as f32 / (AF - 1) as f32; // 0..1 along the brick span
-        if c == AF - 1 {
-            f
-        } else {
-            1.0 - f
-        }
+        if c == AF - 1 { f } else { 1.0 - f }
     };
     axis(target.0, corner.0) * axis(target.1, corner.1) * axis(target.2, corner.2)
 }

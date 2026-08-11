@@ -602,7 +602,10 @@ mod tests {
         bytes[cell_level_offset] = 3;
 
         let err = DirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
-        assert!(err.to_string().contains("level"), "expected level error: {err}");
+        assert!(
+            err.to_string().contains("level"),
+            "expected level error: {err}"
+        );
     }
 
     #[test]

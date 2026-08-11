@@ -824,7 +824,8 @@ mod tests {
             delta_subblocks: payload.clone(),
         };
 
-        let restored = AnimatedDirectShDeltaVolumesSection::from_bytes(&section.to_bytes()).unwrap();
+        let restored =
+            AnimatedDirectShDeltaVolumesSection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(restored, section);
         assert_eq!(
             valid_probe_mask_payload_f16_count(&offsets, &masks, &levels, stride),
@@ -853,7 +854,10 @@ mod tests {
         bytes[cell_level_offset] = 3;
 
         let err = AnimatedDirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
-        assert!(err.to_string().contains("level"), "expected level error: {err}");
+        assert!(
+            err.to_string().contains("level"),
+            "expected level error: {err}"
+        );
     }
 
     #[test]

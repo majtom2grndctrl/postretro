@@ -56,8 +56,8 @@ const TILE_TEXEL_COUNT: u32 = RUNTIME_TILE_DIMENSION * RUNTIME_TILE_DIMENSION;
 const MAX_KEPT_TILES: u32 = 8u;
 
 // L1 stores at most its eight local corners; L2 stores one synthesized mean.
-// The workgroup loads each stored tile once per CSR entry, then all 64 dense
-// output probes reconstruct from this brick-local lattice.
+// The workgroup loads each stored tile once per CSR entry, then each valid
+// output probe reconstructs from this brick-local lattice.
 var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
 var<workgroup> shared_kept_present: array<u32, 8>;
 

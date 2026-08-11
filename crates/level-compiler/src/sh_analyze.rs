@@ -60,8 +60,8 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
 use postretro_level_format::sh_reconstruct::{
-    local_xyz, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles, stored_tiles,
-    zero_tile, Level, Tile,
+    Level, Tile, local_xyz, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles,
+    stored_tiles, zero_tile,
 };
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use serde::Serialize;
@@ -1406,12 +1406,14 @@ pub(crate) fn level_errors(
 /// `error / magnitude` compares like with like. Absent (invalid) probes are
 /// skipped, exactly as `level_errors` skips them. Returns a zeroed record when
 /// the brick has no valid probe tiles.
-pub(crate) fn tile_magnitude(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usize) -> MagnitudeStats {
+pub(crate) fn tile_magnitude(
+    tiles: &[Option<Tile>; PROBES_PER_CELL],
+    texels: usize,
+) -> MagnitudeStats {
     let mut acc = ErrAccum::default();
     for tile in tiles.iter() {
         let Some(truth) = tile else { continue };
-        for texel in 0..texels {
-            let v = &truth[texel];
+        for v in &truth[..texels] {
             let m = v.x.abs().max(v.y.abs()).max(v.z.abs());
             acc.push(m, 1.0);
         }

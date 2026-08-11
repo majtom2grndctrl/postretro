@@ -17,7 +17,7 @@ const DEFINE_STORE_DOC: &str = "Build a typed state-store declaration for ModMan
      Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. \
      A persisted writable or replicated slot requires a minted <mod-root>/identity.json entry; run cargo run -p xtask -- mint-identity <mod-root> and keep its durable key across renames. \
      Calling this builder does not mutate engine state. Returned declarations commit atomically only after manifest validation and required durable-identity validation succeed. \
-     Returns { declaration, state }, where state leaves are stable { slot } references. Definition context.";
+     Returns a frozen store handle whose top-level leaves are stable { slot } references. Pass that handle to defineMod({ stores: [store] }). Definition context.";
 
 const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \
      Available in definition and data contexts.";

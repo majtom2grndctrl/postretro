@@ -349,8 +349,8 @@ export type Reaction<S> = NamedReactionDescriptor
 
 --- Impact-policy IR skin. These refs lower to the existing closed runtime IR;
 --- boolean composition is represented exclusively through `select`.
-export type NumberValue = number | NumberRef
-export type BoolValue = boolean | BoolRef
+export type NumberValue = number | NumberRef | RuntimeValue
+export type BoolValue = boolean | BoolRef | RuntimeValue
 export type NumberRef = {
   plus: (self: NumberRef, n: NumberValue) -> NumberRef,
   minus: (self: NumberRef, n: NumberValue) -> NumberRef,
@@ -371,6 +371,10 @@ export type BoolRef = {
   ["not"]: (self: BoolRef) -> BoolRef,
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
+export type RuntimeExpressionRefs = {
+  number: (value: RuntimeValue) -> NumberRef,
+  bool: (value: RuntimeValue) -> BoolRef,
+}
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
@@ -378,7 +382,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
-  | { primitive: "slot.add", args: { slot: string, delta: any } }
+  | { primitive: "slot.set", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 --- Closed impact effect lowered only by SDK constructors.
 export type Effect = (ImpactEffectCapability) -> ImpactEffectWire
@@ -410,7 +414,6 @@ export type SourceHandle = {
   --- expressions remain impact-target scoped; v1 has no source facts.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
 }
-export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }
 export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
 export type ImpactEvent = {
   kind: "impact",
@@ -537,7 +540,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
-declare function defineMod(config: ModManifest): ModManifest
+declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -692,6 +695,7 @@ export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+export type StateRef<T> = ComputedRef<T> | Ref<T>
 
 --- One slot inside a `defineStore` schema. Every slot needs `default`.
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
@@ -714,12 +718,12 @@ export type StoreSlotSchema = (
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
 export type StoreStateRef<T> = ComputedRef<T> | Ref<T>
 
---- Result of a pure `defineStore` call. Return `declaration` from
---- `ModManifest.stores`; use `state` references in descriptors.
+--- Frozen store handle whose enumerable keys are its slot refs. Pass it to
+--- `defineMod({ stores = { store } })` so the SDK can resolve declaration data.
 export type StoreDefinition = {
-  declaration: StoreDeclaration,
-  state: { [string]: StoreStateRef<any> },
+  [string]: StoreStateRef<any>,
 }
+export type ModManifestInput = ModManifest | { stores: {StoreDeclaration | StoreDefinition}? }
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
 --- no engine state. `namespace` prefixes returned refs as `namespace.slotName`;
@@ -728,8 +732,16 @@ export type StoreDefinition = {
 --- validate.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
---- Build an additive write for a writable Number store slot.
-declare function slot(ref: Ref<number>): NumberSlot
+--- Lift a number or boolean state ref into the fluent impact-expression algebra.
+declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)
+--- Lift raw `runtime.*` output into the fluent impact-expression algebra.
+declare fromRuntime: RuntimeExpressionRefs
+--- Build an absolute number-store write.
+declare function set(ref: Ref<number>, value: NumberValue): Effect
+--- Build a frozen-snapshot read-modify-write; `cur` is exactly `read(ref)`.
+declare function update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
+--- Build a deferred impact-effect group guarded by a Bool expression.
+declare function when(cond: BoolRef, effects: {Effect}): GatedEffect
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and

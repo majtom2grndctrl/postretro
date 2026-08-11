@@ -114,10 +114,18 @@ export type PostretroModule = {
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for trigger-pool declarations returned from level or mod manifests.
   defineTriggerPool: typeof(defineTriggerPool),
-  --- Pure state-store builder returning `{ declaration, state }`.
+  --- Pure state-store builder returning a flattened, frozen schema-keyed handle.
   defineStore: typeof(defineStore),
-  --- Build an additive write for a writable Number store slot.
-  slot: typeof(slot),
+  --- Read a state ref into an expression value.
+  read: typeof(read),
+  --- Lift raw `runtime.*` expressions into public NumberRef/BoolRef values.
+  fromRuntime: typeof(fromRuntime),
+  --- Build an absolute writable-number store-slot write.
+  set: typeof(set),
+  --- Build a writable-number store-slot read-modify-write from the frozen fire snapshot.
+  update: typeof(update),
+  --- Gate impact effects with a Bool expression.
+  when: typeof(when),
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
   --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.

@@ -488,21 +488,8 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 .ok_or_else(|| "slot.set args is missing `value`".to_string())?;
             bind_number_write(slot.to_string(), value, scope).map(BoundEffect::Write)
         }
-        "slot.add" if target.is_none() => {
-            let slot = required_string(args, "slot", "slot.add args")?;
-            let delta = args
-                .get("delta")
-                .ok_or_else(|| "slot.add args is missing `delta`".to_string())?;
-            let value = serde_json::json!({
-                "op": "add",
-                "a": { "op": "input", "name": slot },
-                "b": delta,
-            });
-            bind_number_write(slot.to_string(), &value, scope).map(BoundEffect::Write)
-        }
         "setState" => Err("setState must target @impact.target".to_string()),
         "slot.set" => Err("slot.set must not carry a target".to_string()),
-        "slot.add" => Err("slot.add must not carry a target".to_string()),
         _ => Err(format!("unsupported impact primitive `{primitive}`")),
     }
 }
@@ -693,13 +680,6 @@ mod tests {
         })
     }
 
-    fn slot_add(slot: &str, delta: Value) -> Value {
-        json!({
-            "primitive": "slot.add",
-            "args": { "slot": slot, "delta": delta },
-        })
-    }
-
     fn slot_set(slot: &str, value: Value) -> Value {
         json!({
             "primitive": "slot.set",
@@ -842,24 +822,21 @@ mod tests {
     }
 
     #[test]
-    fn slot_set_matches_slot_add_stored_result() {
-        let slot_set_result = evaluate_slot_policy(
+    fn slot_set_evaluates_an_explicit_current_value_read() {
+        let result = evaluate_slot_policy(
             10.0,
             vec![slot_set(
                 "progress.xp",
                 json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
             )],
         );
-        let slot_add_result =
-            evaluate_slot_policy(10.0, vec![slot_add("progress.xp", number(1.0))]);
 
-        assert_eq!(slot_set_result, 11.0);
-        assert_eq!(slot_set_result, slot_add_result);
+        assert_eq!(result, 11.0);
     }
 
     #[test]
-    fn slot_set_aliasing_reads_the_frozen_snapshot_and_matches_slot_add() {
-        let slot_set_result = evaluate_slot_policy(
+    fn slot_set_aliasing_reads_the_frozen_snapshot() {
+        let result = evaluate_slot_policy(
             10.0,
             vec![
                 slot_set(
@@ -872,16 +849,8 @@ mod tests {
                 ),
             ],
         );
-        let slot_add_result = evaluate_slot_policy(
-            10.0,
-            vec![
-                slot_add("progress.xp", number(1.0)),
-                slot_add("progress.xp", number(2.0)),
-            ],
-        );
 
-        assert_eq!(slot_set_result, 12.0);
-        assert_eq!(slot_set_result, slot_add_result);
+        assert_eq!(result, 12.0);
     }
 
     #[test]
@@ -930,6 +899,211 @@ mod tests {
     }
 
     #[test]
+    fn p7_later_registered_distinct_event_write_wins_for_one_slot() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![
+            event(
+                "increment",
+                "crate",
+                vec![slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                )],
+            ),
+            event(
+                "replace",
+                "crate",
+                vec![slot_set("progress.xp", number(9.0))],
+            ),
+        ]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 9.0);
+    }
+
+    #[test]
+    fn p8_matching_override_evicts_its_base_slot_write() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(0.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate", "reinforced"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "reward",
+            "crate",
+            vec![slot_set("progress.xp", number(1.0))],
+        )]);
+        runtime.replace_level_events(
+            vec![override_event(
+                "reward",
+                "reinforced",
+                vec![slot_set("progress.xp", number(2.0))],
+            )],
+            &[],
+        );
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 2.0);
+    }
+
+    #[test]
+    fn p9_empty_policy_leaves_store_unchanged() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event("empty", "crate", Vec::new())]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 10.0);
+    }
+
+    #[test]
+    fn p10_empty_when_groups_evaluate_without_writes() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "empty-guards",
+            "crate",
+            vec![
+                json!({ "when": { "op": "const", "value": false }, "do": [] }),
+                json!({ "when": { "op": "const", "value": true }, "do": [] }),
+            ],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 10.0);
+    }
+
+    #[test]
+    fn p11_unproduced_store_slot_reads_its_declared_default() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert("progress.xp".into(), number_slot(0.0))
+                .expect("new output slot");
+            slots
+                .insert("progress.fresh".into(), number_slot(1.0))
+                .expect("new defaulted slot");
+        }
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "default-read",
+            "crate",
+            vec![json!({
+                "when": { "op": "ge", "a": input("progress.fresh"), "b": number(1.0) },
+                "do": [slot_set("progress.xp", number(9.0))],
+            })],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 9.0);
+    }
+
+    #[test]
+    fn p12_engine_health_read_uses_the_post_damage_fire_snapshot() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            // The policy binds this engine ref before any impact fires. The
+            // production UI proxy seeds it after damage and before this fire's
+            // snapshot; the harness performs that publication below.
+            slots
+                .insert("impact.observedHealth".into(), number_slot(0.0))
+                .expect("new output slot");
+        }
+        let target = target(&ctx, &["player"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "capture-health",
+            "player",
+            vec![slot_set("impact.observedHealth", input("player.health"))],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        postretro_scripting_core::store_bridge::write_store_slot(
+            &ctx,
+            "player.health",
+            SlotValue::Number(99.0),
+        )
+        .expect("engine health seed succeeds before the impact freeze");
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "impact.observedHealth"), 99.0);
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current,
+            99.0,
+            "the seeded engine slot is the same post-damage value as healthAfter",
+        );
+    }
+
+    #[test]
+    fn p13_consecutive_in_tick_hits_reseed_store_reads_for_each_fire() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "counter",
+            "crate",
+            vec![slot_set(
+                "progress.xp",
+                json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+            )],
+        )]);
+
+        let mut registry = ctx.registry.borrow_mut();
+        for _ in 0..2 {
+            let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 1.0 },
+                context,
+            );
+            runtime.evaluate_pending_in_registry(&mut registry);
+        }
+        drop(registry);
+
+        assert_eq!(store(&ctx, "progress.xp"), 12.0);
+    }
+
+    #[test]
     fn breakable_threshold_reads_pre_effect_state_snapshot() {
         let ctx = ScriptCtx::new();
         ctx.slot_table
@@ -949,7 +1123,14 @@ mod tests {
                 json!({
                     "when": { "op": "eq", "a": input("@state.hits"), "b": number(2.0) },
                     "do": [
-                        slot_add("impact.broken", number(1.0)),
+                        slot_set(
+                            "impact.broken",
+                            json!({
+                                "op": "add",
+                                "a": input("impact.broken"),
+                                "b": number(1.0),
+                            }),
+                        ),
                         { "primitive": "despawn", "target": "@impact.target", "args": {} },
                     ],
                 }),
@@ -1623,10 +1804,6 @@ mod tests {
                 "args": { "name": "bad", "value": { "op": "const", "value": true } },
             }),
             json!({
-                "primitive": "slot.add",
-                "args": { "slot": "impact.total", "delta": { "op": "const", "value": true } },
-            }),
-            json!({
                 "primitive": "slot.set",
                 "args": { "slot": "impact.total", "value": { "op": "const", "value": true } },
             }),
@@ -1648,18 +1825,6 @@ mod tests {
                 .expect("slot.set must reject a present target"),
             "slot.set must not carry a target"
         );
-
-        for invalid_target in [json!(null), json!(42), json!({}), json!("@impact.target")] {
-            let malformed = json!({
-                "primitive": "slot.add",
-                "target": invalid_target,
-                "args": { "slot": "impact.total", "delta": number(1.0) },
-            });
-            assert!(
-                bind_effect(&malformed, &scope).is_err(),
-                "slot.add accepted a present target: {malformed}"
-            );
-        }
 
         for primitive in ["despawn", "playAnim", "setHealth", "setState"] {
             let malformed = json!({

@@ -258,7 +258,6 @@ type ImpactEffectWire =
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
-  | { primitive: "slot.add", args: { slot: string, delta: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
 -- not an Effect, and every value that type-checks lowers to one closed wire arm.
@@ -292,10 +291,6 @@ export type SourceHandle = {
   --- skips this effect; app-drain impacts run no policy in v1. Amount
   --- expressions remain impact-target scoped; v1 has no source facts.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
-}
-
-export type NumberSlot = {
-  add: (self: NumberSlot, delta: NumberValue) -> Effect,
 }
 
 export type Impact = {
@@ -763,26 +758,6 @@ lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
     end
   end
   return lowered
-end
-
-function DataScriptSdk.slot(ref: Ref<number>): NumberSlot
-  return table.freeze({
-    add = function(_self: NumberSlot, delta: NumberValue): Effect
-      local wire = {
-        primitive = "slot.add",
-        args = {
-          slot = ref.slot,
-          delta = numberNode(delta),
-        },
-      } :: any
-      return function(capability: ImpactEffectCapability): ImpactEffectWire
-        if capability ~= IMPACT_EFFECT_CAPABILITY then
-          error("impact effects can only be lowered by the SDK", 2)
-        end
-        return wire
-      end
-    end,
-  })
 end
 
 function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect

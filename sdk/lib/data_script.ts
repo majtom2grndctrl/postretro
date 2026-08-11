@@ -230,10 +230,9 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
-  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
-  | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
+  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } };
 
-/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
+/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
 export interface Effect {
   readonly [effectBrand]: true;
 }
@@ -268,10 +267,6 @@ export interface SourceHandle {
    * remain impact-target scoped; v1 has no source facts.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
-}
-
-export interface NumberSlot {
-  add(delta: NumberValue): Effect;
 }
 
 export type Impact = Readonly<{
@@ -404,21 +399,6 @@ const IMPACT: Impact = Object.freeze({
   source: IMPACT_SOURCE,
   amount: numberRef({ op: "input", name: "@impact.amount" }),
 });
-
-/** Build the closed additive store-write effect. */
-export function slot(ref: Ref<number>): NumberSlot {
-  return Object.freeze({
-    add(delta: NumberValue): Effect {
-      return {
-        primitive: "slot.add",
-        args: {
-          slot: ref.slot,
-          delta: numberNode(delta),
-        },
-      } as ImpactEffectWire as unknown as Effect;
-    },
-  });
-}
 
 /** Build the closed absolute store-write effect. */
 export function set(ref: Ref<number>, value: NumberValue): Effect {

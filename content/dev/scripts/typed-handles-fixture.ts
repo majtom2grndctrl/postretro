@@ -12,6 +12,11 @@
 import {
   defineStore,
   defineReaction,
+  read,
+  set,
+  update,
+  type ComputedRef,
+  type Ref,
   type StateValue,
 } from "postretro";
 import {
@@ -70,6 +75,9 @@ const _wrong: StateValue<number> = opts.muted;
 // --- (2) Read-only engine-slot refs -----------------------------------------
 // `getGameState().player.health` is directly bindable as a `{ slot }` ref.
 const gameState = getGameState();
+const _writableStoreRef: Ref<number> = opts.volume;
+const _readonlyEngineRef: ComputedRef<number> = gameState.player.health;
+const _writableEngineRef: Ref<string> = gameState.ui.textEntry;
 const _health = gameState.player.health;
 const _healthText = Text({ content: "HP", bind: gameState.player.health });
 const _healthBar = Bar({
@@ -122,6 +130,17 @@ const _volumeReset = defineReaction("fixtureResetVolume", updateState(opts.volum
 
 // @ts-expect-error — readonly health cannot feed a state-write reaction.
 const _badHealthWrite = updateState(gameState.player.health, 1);
+
+// Impact-policy store writes use the converged `set` / `update` surface. The
+// SDK type system rejects readonly refs; scripts-build deliberately strips this
+// fixture's types, so these remain review gates rather than runtime checks.
+const _healthExpr = read(gameState.player.health).plus(1);
+const _volumeSet = set(opts.volume, 0.5);
+const _volumeUpdate = update(opts.volume, (current) => current.plus(0.1));
+// @ts-expect-error — readonly engine refs cannot feed absolute slot writes.
+const _badHealthSet = set(gameState.player.health, 1);
+// @ts-expect-error — readonly engine refs cannot feed read-modify-write slots.
+const _badHealthUpdate = update(gameState.player.health, (current) => current.plus(1));
 
 // Text-entry targets and text-edit reactions require writable string refs.
 const _entryTree = Tree(
@@ -191,6 +210,10 @@ void _muted;
 void _preset;
 void _wrong;
 void _health;
+void _writableStoreRef;
+void _readonlyEngineRef;
+void _writableEngineRef;
+void _healthExpr;
 void _healthText;
 void _healthBar;
 void _formattedHealth;
@@ -203,6 +226,10 @@ void _named;
 void _auto;
 void _volumeReset;
 void _badHealthWrite;
+void _volumeSet;
+void _volumeUpdate;
+void _badHealthSet;
+void _badHealthUpdate;
 void _entryTree;
 void _appendEntry;
 void _backspaceEntry;

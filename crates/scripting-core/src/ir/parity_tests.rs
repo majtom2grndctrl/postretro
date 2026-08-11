@@ -673,7 +673,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // assertion pins every cross-task leaf/token spelling and proves the
     // boolean sugar introduces only `select` nodes.
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineImpactEvent, defineStore, slot } from "postretro";
+        import { defineImpactEvent, defineStore, update } from "postretro";
         import type { Impact, ImpactEvent } from "postretro";
 
         const counters = defineStore("impact", {
@@ -693,7 +693,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source.grantHealth(impact.amount.plus(2)),
                 impact.source.grantAmmo("cells", hits.plus(3)),
                 impact.target.playAnim("shatter"),
-                slot(counters.broken).add(1),
+                update(counters.broken, (current) => current.plus(1)),
                 impact.target.despawn(),
               ],
             },
@@ -750,7 +750,9 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source:grantHealth(impact.amount:plus(2)),
                 impact.source:grantAmmo("cells", hits:plus(3)),
                 impact.target:playAnim("shatter"),
-                Postretro.slot(counters.broken):add(1),
+                Postretro.update(counters.broken, function(current)
+                  return current:plus(1)
+                end),
                 impact.target:despawn(),
               },
             },
@@ -806,8 +808,9 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     }
 
     assert_eq!(
-        typescript, luau,
-        "impact ids and policy lowering must match across runtimes"
+        serde_json::to_vec(&typescript).expect("serialize TypeScript wire"),
+        serde_json::to_vec(&luau).expect("serialize Luau wire"),
+        "impact ids and policy lowering must be byte-identical across runtimes"
     );
 
     let base = &typescript["base"];
@@ -901,10 +904,14 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     assert_eq!(
         base["policy"][1]["do"][4],
         serde_json::json!({
-            "primitive": "slot.add",
+            "primitive": "slot.set",
             "args": {
                 "slot": "impact.broken",
-                "delta": { "op": "const", "value": 1 },
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.broken" },
+                    "b": { "op": "const", "value": 1 },
+                },
             },
         })
     );
@@ -1022,6 +1029,193 @@ fn impact_expression_algebra_update_and_when_match_across_authoring_runtimes() {
             },
         }),
         "update must lower directly to slot.set with its current-value input inlined"
+    );
+}
+
+#[test]
+fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
+    // This fixture exercises the converged surface through its public runtime
+    // modules. `state` and `declaration` are deliberate slot names: flattening
+    // must not reserve either name on the store handle. The returned manifest
+    // and impact policy are the FFI wire, so SDK-only ref `kind` tags cannot
+    // appear anywhere in the serialized result.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import {
+          defineImpactEvent,
+          defineMod,
+          defineStore,
+          fromRuntime,
+          read,
+          runtime,
+          set,
+          update,
+          when,
+        } from "postretro";
+
+        const store = defineStore("converged", {
+          count: { type: "number", default: 0 },
+          enabled: { type: "boolean", default: true },
+          state: { type: "number", default: 0 },
+          declaration: { type: "number", default: 0 },
+        });
+        const manifest = defineMod({
+          name: "Converged",
+          id: "converged",
+          version: "1",
+          stores: [store],
+        });
+        const runtimeGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0));
+        const gate = runtimeGate.and(read(store.enabled));
+        const event = defineImpactEvent("converged", { tag: "crate" }, () => [
+          set(store.count, read(store.count).plus(5)),
+          update(store.count, (current) => current.plus(1)),
+          when(gate, [set(store.state, read(store.declaration).plus(1))]),
+          when(fromRuntime.bool(runtime.constant(false)), []),
+        ]);
+        JSON.stringify({
+          slots: {
+            count: store.count.slot,
+            enabled: store.enabled.slot,
+            state: store.state.slot,
+            declaration: store.declaration.slot,
+          },
+          stores: manifest.stores,
+          policy: (event as unknown as { policy: unknown[] }).policy,
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+
+        local store = Postretro.defineStore("converged", {
+          count = { type = "number", default = 0 },
+          enabled = { type = "boolean", default = true },
+          state = { type = "number", default = 0 },
+          declaration = { type = "number", default = 0 },
+        })
+        local manifest = Postretro.defineMod({
+          name = "Converged",
+          id = "converged",
+          version = "1",
+          stores = { store },
+        })
+        local runtimeGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+        local gate = runtimeGate["and"](runtimeGate, Postretro.read(store.enabled))
+        local event = Postretro.defineImpactEvent("converged", { tag = "crate" }, function()
+          return {
+            Postretro.set(store.count, Postretro.read(store.count):plus(5)),
+            Postretro.update(store.count, function(current)
+              return current:plus(1)
+            end),
+            Postretro.when(gate, {
+              Postretro.set(store.state, Postretro.read(store.declaration):plus(1)),
+            }),
+            Postretro.when(Postretro.fromRuntime.bool(runtime.constant(false)), {}),
+          }
+        end)
+        return {
+          slots = {
+            count = store.count.slot,
+            enabled = store.enabled.slot,
+            state = store.state.slot,
+            declaration = store.declaration.slot,
+          },
+          stores = manifest.stores,
+          policy = event.policy,
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    let typescript_wire = serde_json::to_vec(&typescript).expect("serialize TypeScript wire");
+    let luau_wire = serde_json::to_vec(&luau).expect("serialize Luau wire");
+
+    assert_eq!(
+        typescript_wire, luau_wire,
+        "flatten/read/set/update/when/runtime bridge wire diverged across runtimes"
+    );
+    assert!(
+        !String::from_utf8(typescript_wire)
+            .expect("wire JSON is UTF-8")
+            .contains("\"kind\""),
+        "SDK-only ref kind must not cross the descriptor wire",
+    );
+    assert_eq!(
+        typescript["slots"],
+        serde_json::json!({
+            "count": "converged.count",
+            "enabled": "converged.enabled",
+            "state": "converged.state",
+            "declaration": "converged.declaration",
+        }),
+        "flattened handles must expose schema fields directly, including state/declaration",
+    );
+    assert_eq!(
+        typescript["stores"],
+        serde_json::json!([{
+            "namespace": "converged",
+            "schema": {
+                "count": { "type": "number", "default": 0 },
+                "enabled": { "type": "boolean", "default": true },
+                "state": { "type": "number", "default": 0 },
+                "declaration": { "type": "number", "default": 0 },
+            },
+        }]),
+        "defineMod must resolve the handle to the unchanged store declaration wire",
+    );
+    assert_eq!(
+        typescript["policy"],
+        serde_json::json!([
+            {
+                "primitive": "slot.set",
+                "args": {
+                    "slot": "converged.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "converged.count" },
+                        "b": { "op": "const", "value": 5 },
+                    },
+                },
+            },
+            {
+                "primitive": "slot.set",
+                "args": {
+                    "slot": "converged.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "converged.count" },
+                        "b": { "op": "const", "value": 1 },
+                    },
+                },
+            },
+            {
+                "when": {
+                    "op": "select",
+                    "cond": {
+                        "op": "gt",
+                        "a": { "op": "input", "name": "impact.bonus" },
+                        "b": { "op": "const", "value": 0 },
+                    },
+                    "a": { "op": "input", "name": "converged.enabled" },
+                    "b": { "op": "const", "value": false },
+                },
+                "do": [{
+                    "primitive": "slot.set",
+                    "args": {
+                        "slot": "converged.state",
+                        "value": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "converged.declaration" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                    },
+                }],
+            },
+            {
+                "when": { "op": "const", "value": false },
+                "do": [],
+            },
+        ]),
+        "converged builders must lower only through slot.set and the shipped IR",
     );
 }
 

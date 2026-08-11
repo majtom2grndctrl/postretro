@@ -185,34 +185,38 @@ Concrete orderings the tasks must hold and the tests in Tasks 3 and 4 assert dir
 ## Script syntax examples
 
 ```ts
-// Proposed design — every currency here is declared by the mod. The engine
-// ships cardinality, not XP.
-const { state: progression } = defineStore("progression", {
+// Every currency here is declared by the mod — the engine ships cardinality,
+// not XP. Under the scripts-build naming sugar, a direct `const name = define…`
+// binding supplies the name, so `defineStore` needs no name string; slots are
+// reached through `.state`.
+const progression = defineStore({
   // One per player, replicated to its owner. Rides the seat's hold window;
   // session-scoped until the persistence spec lands.
-  xp:        { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
+  xp:         { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
   // One per player, host-side only — the HUD never shows it.
-  killStreak:{ type: "number", default: 0, perOwner: true },
+  killStreak: { type: "number", default: 0, perOwner: true },
   // One for the session, shared by everyone.
-  teamKills: { type: "number", default: 0 },
+  teamKills:  { type: "number", default: 0 },
 });
 
-const reward = defineImpactEvent("reward", { tag: "enemy" }, (impact) => {
+// `defineImpactEvent` takes the same sugar — the id `reward` comes from the
+// binding, and the engine prefixes it with the mod id.
+const reward = defineImpactEvent({ tag: "enemy" }, (impact) => {
   const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   const bonus = impact.target.healthAfter.le(-40).select(50, 25);
   return [
     { when: killed, do: [
-        slot(progression.xp.byPlayer(impact.source)).add(bonus), // per player
-        slot(progression.teamKills).add(1),                // shared, unchanged from today
+        slot(progression.state.xp.byPlayer(impact.source)).add(bonus), // per player
+        slot(progression.state.teamKills).add(1),              // shared, unchanged from today
     ]},
   ];
 });
 
 // Awardable without dealing damage — the objective volume pays everyone in it.
-// Tracer returns the builder's descriptor directly, like the shipped
-// `grantAmmo(on.activators, ...)` pattern in combat-demo-reaction.ts.
+// The reaction addresses its owner-set positionally (like the shipped
+// `grantAmmo(on.activators, ...)` dual); the per-owner slot rides bare.
 onTriggerEvent({ tag: "objective" }, "enter", [
-  defineReaction((on: TriggerEventParams) => addSlot(on.activators, progression.xp, 100)),
+  defineReaction((on: TriggerEventParams) => addSlot(on.activators, progression.state.xp, 100)),
 ]);
 ```
 

@@ -462,8 +462,9 @@
   const writableStateRefBrand: unique symbol;
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
-  export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
-  export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
+  export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
+  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
+  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
 
   /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
@@ -478,10 +479,10 @@
   /** Maps one schema slot's `type` discriminant to its handle value type:
    * `{type:"number"}` → number ref, `{type:"boolean"}` →
    * boolean ref, `array` → numeric-array ref, and `string`/`enum` →
-   * string ref. Slots with `readonly: true` produce `ReadonlyStateRef<T>`;
-   * all other slots produce `WritableStateRef<T>`. */
+   * string ref. Slots with `readonly: true` produce `ComputedRef<T>`;
+   * all other slots produce `Ref<T>`. */
   export type StoreStateRefForSlot<Slot, T> =
-    Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+    Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
 
   export type StateValueForSlot<Slot> =
     Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -505,7 +506,7 @@
   ): StoreDefinition<S>;
 
   /** Build an additive write for a writable Number store slot. */
-  export function slot(ref: WritableStateRef<number>): NumberSlot;
+  export function slot(ref: Ref<number>): NumberSlot;
 
   // -------------------------------------------------------------------------
   // UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -608,21 +609,21 @@
   /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
   /** A reactive condition used by `visibleWhen`, `selected`, and `checked`: read either an engine state ref or presentation-local cell and compare it to `equals` when provided. */
-  export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
   /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
   export type AnnouncePriority = "polite" | "assertive";
   /** State binding for a `Text` widget. The source is a readable engine state ref or presentation-local cell; `format` is a one-placeholder string such as `"HP {}"`; numeric sources may also tween. */
-  export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
   /** State binding for a `Panel` fill color. The source resolves to a numeric RGBA array; `tween` eases the displayed color and never writes back to state. */
-  export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
+  export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   /** State binding for a writable numeric `Slider`. Engine refs must be writable; local cells are valid. The optional number tween controls displayed thumb movement only. */
-  export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** State binding for a readonly numeric `Bar`. The value is displayed against `max`; it is not interactive and never writes state. */
-  export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** Bar denominator: either a literal number or a readonly numeric state ref such as `getGameState().player.maxHealth`. */
-  export type BarMaxProp = number | ReadonlyStateRef<number>;
+  export type BarMaxProp = number | ComputedRef<number>;
   /** One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold; omit it on the final entry to make that entry the default band. `color`, `pulse`, and `flash` affect the rendered style, not authoritative state. */
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   /** Continuous value-to-style map for text, panel, and bar widgets. Values are normalized by `max`; entries are evaluated in order, and bars commonly use `max: 1.0` because they style their displayed fill fraction. */
@@ -701,7 +702,7 @@
   /** Tree input behavior. `"capture"` makes this tree consume UI input and freeze lower modal layers; `"passthrough"` is the HUD/default mode and lets game input continue. */
   export type WidgetCaptureMode = "capture" | "passthrough";
   /** Placement envelope props for `Tree`. `anchor` + `offset` position the root in 1280x720 logical UI space; `captureMode`, `initialFocus`, and `textEntryTarget` control modal/input behavior. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
   /** The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI registries. `textEntryTarget` is serialized to its dotted state-slot name. */
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
@@ -720,10 +721,10 @@
     T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
     never;
   /** Compose bind-only options onto a state ref, emitting `{ slot, ...options }`. */
-  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
-  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+  export function bindState<T>(ref: ComputedRef<T>): ComputedRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build `{ slot, equals }` for scalar state refs. */
-  export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
+  export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
 
   /** A presentation-cell initial value (`CellInit` wire shapes). */
   type CellInit = number | boolean | string | [number, number, number, number];
@@ -818,7 +819,7 @@
 
   /** A builder operand: an already-built node, or a bare `number`/`boolean`
    * literal that the builder auto-wraps into a `const` node. */
-  type RuntimeOperand = RuntimeValue | ReadonlyStateRef<unknown> | number | boolean;
+  type RuntimeOperand = RuntimeValue | ComputedRef<unknown> | number | boolean;
 
   /** Pure builder vocabulary for runtime values, installed as
    * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
@@ -829,7 +830,7 @@
     /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
     constant(value: number | boolean): RuntimeConst;
     /** Named-input leaf, bound to live state by name in the Rust evaluator. */
-    read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;
+    read(name: string | ComputedRef<unknown>): RuntimeRead;
     /** `a + b` (number). */
     add(a: RuntimeOperand, b: RuntimeOperand): RuntimeAdd;
     /** `a - b` (number). */

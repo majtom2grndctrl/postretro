@@ -39,7 +39,7 @@ pub(super) fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
             if ty.name == "StateValue" {
                 writeln!(
                     out,
-                    "export type StateValue<{type_param}> = WritableStateRef<{type_param}>",
+                    "export type StateValue<{type_param}> = Ref<{type_param}>",
                 )
                 .unwrap();
             } else {
@@ -145,9 +145,9 @@ pub fn state_ref_luau(
     value_type: EngineStateValueType<'_>,
 ) -> String {
     let ref_ty = if capability == EngineStateCapability::Writable {
-        "WritableStateRef"
+        "Ref"
     } else {
-        "ReadonlyStateRef"
+        "ComputedRef"
     };
     format!("{ref_ty}<{}>", value_type.to_luau())
 }

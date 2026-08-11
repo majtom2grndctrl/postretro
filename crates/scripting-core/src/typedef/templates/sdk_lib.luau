@@ -552,7 +552,7 @@ declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDesc
 --- then true, to fire. Each `fire` entry is a `defineReaction` handle or a
 --- bare reaction name, reduced to its wire string.
 declare onStateCrossing: (
-  ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
+  ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
   & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
 )
 
@@ -659,26 +659,26 @@ declare function returnToFrontend(): PrimitiveReactionDescriptor
 --- be writable; unknown or nonprojectable inputs and readonly targets reject
 --- the IR before the reaction can fire. Pure:
 --- returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor
+declare function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
 --- gated through the same writable-slot gate as `setState` -- a readonly slot
 --- warns and stays unchanged; an engine-owned writable slot (e.g. `ui.textEntry`)
 --- is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor
+declare function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): remove the last character -- one
 --- Unicode scalar value (char-pop floor: never splits a UTF-8 sequence, but does
 --- not segment grapheme clusters) -- from the writable String slot `slot` at the
 --- game-logic stage. Empty is a no-op with no warning.
 --- Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor
+declare function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): empty the writable String slot `slot`
 --- at the game-logic stage. Readonly-gated like `setState`. Pure: returns a
 --- `PrimitiveReactionDescriptor`, no FFI.
-declare function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor
+declare function clearText(ref: Ref<string>): PrimitiveReactionDescriptor
 
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
@@ -689,8 +689,9 @@ declare function clearText(ref: WritableStateRef<string>): PrimitiveReactionDesc
 
 export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
-export type ReadonlyStateRef<T> = { slot: string, __stateRefValueBrand: T? }
-export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
+export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
+export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
+export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 
 --- One slot inside a `defineStore` schema. Every slot needs `default`.
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
@@ -711,7 +712,7 @@ export type StoreSlotSchema = (
 
 --- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
-export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
+export type StoreStateRef<T> = ComputedRef<T> | Ref<T>
 
 --- Result of a pure `defineStore` call. Return `declaration` from
 --- `ModManifest.stores`; use `state` references in descriptors.
@@ -728,7 +729,7 @@ export type StoreDefinition = {
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 --- Build an additive write for a writable Number store slot.
-declare function slot(ref: WritableStateRef<number>): NumberSlot
+declare function slot(ref: Ref<number>): NumberSlot
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -831,7 +832,7 @@ export type PredicateValue = number | boolean | string
 --- A reactive condition used by `visibleWhen`, `selected`, and `checked`: read
 --- either an engine state ref or presentation-local cell and compare it to
 --- `equals` when provided.
-export type Predicate = (ReadonlyStateRef<PredicateValue> | LocalBindRef) & { equals: PredicateValue? }
+export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef) & { equals: PredicateValue? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
 --- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
@@ -843,14 +844,14 @@ export type AnnouncePriority = "polite" | "assertive"
 --- State binding for a `Text` widget. The source is a readable engine state ref
 --- or presentation-local cell; `format` is a one-placeholder string such as
 --- `"HP {}"`; numeric sources may also tween.
-export type TextBindProp = (ReadonlyStateRef<ScalarStateValue> | LocalBindRef) & { format: string?, tween: NumberTween? }
+export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef) & { format: string?, tween: NumberTween? }
 --- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
 --- array; `tween` eases the displayed color and never writes back to state.
-export type PanelBindProp = (ReadonlyStateRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
+export type PanelBindProp = (ComputedRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
 --- State binding for a writable numeric `Slider`. Engine refs must be writable;
 --- local cells are valid. The optional number tween controls displayed thumb
 --- movement only.
-export type SliderBindProp = (WritableStateRef<number> | LocalBindRef) & { tween: NumberTween? }
+export type SliderBindProp = (Ref<number> | LocalBindRef) & { tween: NumberTween? }
 --- One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold;
 --- omit it on the final entry to make that entry the default band. `color`,
 --- `pulse`, and `flash` affect the rendered style, not authoritative state.
@@ -911,10 +912,10 @@ declare function Slider(props: SliderProps): WidgetDescriptor
 
 --- State binding for a readonly numeric `Bar`. The value is displayed against
 --- `max`; it is not interactive and never writes state.
-export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: NumberTween? }
+export type BarBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
 --- Bar denominator: either a literal number or a readonly numeric state ref such
 --- as `getGameState().player.maxHealth`.
-export type BarMaxProp = number | ReadonlyStateRef<number>
+export type BarMaxProp = number | ComputedRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
 --- Linear retained-UI exit fade for a `Bar` with `visibleWhen`.
 export type BarExitFade = { durationMs: number }
@@ -963,7 +964,7 @@ export type WidgetCaptureMode = "capture" | "passthrough"
 --- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
 --- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
 --- `textEntryTarget` control modal/input behavior.
-export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: WritableStateRef<string>?, accessibleName: string?, role: WidgetRole? }
+export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: Ref<string>?, accessibleName: string?, role: WidgetRole? }
 --- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.
 export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
@@ -986,12 +987,12 @@ export type NumericArrayStateBindOptions = { tween: ColorTween? }
 --- Bind-only options for string/boolean scalar refs (text format only).
 export type ScalarStateBindOptions = { format: string? }
 --- Compose bind-only options onto a state ref, emitting `{ slot, ...options }`.
-declare bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> ReadonlyStateRef<number> & NumberStateBindOptions)
-  & ((ReadonlyStateRef<{number}>, NumericArrayStateBindOptions?) -> ReadonlyStateRef<{number}> & NumericArrayStateBindOptions)
-  & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
-  & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions)
+declare bindState: ((ComputedRef<number>, NumberStateBindOptions?) -> ComputedRef<number> & NumberStateBindOptions)
+  & ((ComputedRef<{number}>, NumericArrayStateBindOptions?) -> ComputedRef<{number}> & NumericArrayStateBindOptions)
+  & ((ComputedRef<string>, ScalarStateBindOptions?) -> ComputedRef<string> & ScalarStateBindOptions)
+  & ((ComputedRef<boolean>, ScalarStateBindOptions?) -> ComputedRef<boolean> & ScalarStateBindOptions)
 --- Build `{ slot, equals }` for scalar state refs.
-declare function stateEquals<T>(ref: ReadonlyStateRef<T>, value: T): Predicate
+declare function stateEquals<T>(ref: ComputedRef<T>, value: T): Predicate
 
 --- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
 --- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`); `:is(v)` produces
@@ -1062,7 +1063,7 @@ export type RuntimeValue = RuntimeConst | RuntimeRead | RuntimeAdd | RuntimeSub 
 
 --- A builder operand: an already-built node, or a bare `number`/`boolean`
 --- literal that the builder auto-wraps into a `const` node.
-export type RuntimeOperand = RuntimeValue | ReadonlyStateRef<any> | number | boolean
+export type RuntimeOperand = RuntimeValue | ComputedRef<any> | number | boolean
 
 --- Pure builder vocabulary for runtime values, installed as global `runtime`.
 --- Every method returns a plain `RuntimeValue` table; constructing a node has
@@ -1074,7 +1075,7 @@ export type Runtime = {
   --- Literal scalar leaf. `const` is reserved, so the builder is `constant`.
   constant: (value: number | boolean) -> RuntimeConst,
   --- Named-input leaf, bound to live state by name in the Rust evaluator.
-  read: (name: string | ReadonlyStateRef<any>) -> RuntimeRead,
+  read: (name: string | ComputedRef<any>) -> RuntimeRead,
   --- `a + b` (number).
   add: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeAdd,
   --- `a - b` (number).

@@ -2,7 +2,7 @@
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
-import type { ReadonlyStateRef, WritableStateRef } from "./ui/widgets";
+import type { ComputedRef, Ref } from "./ui/widgets";
 import type { RuntimeValue } from "postretro";
 
 /** Dispatch values published by a state-crossing fire. */
@@ -138,10 +138,10 @@ export type StoreDeclaration = {
   schema: Record<string, StoreSlotSchema>;
 };
 
-export type StateRef<T = unknown> = ReadonlyStateRef<T> | WritableStateRef<T>;
+export type StateRef<T = unknown> = ComputedRef<T> | Ref<T>;
 
 export type StoreStateRefForSlot<Slot, T> =
-  Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+  Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
 
 export type StateValueForSlot<Slot> =
   Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -376,7 +376,7 @@ const IMPACT: Impact = Object.freeze({
 });
 
 /** Build the closed additive store-write effect. */
-export function slot(ref: WritableStateRef<number>): NumberSlot {
+export function slot(ref: Ref<number>): NumberSlot {
   return Object.freeze({
     add(delta: NumberValue): Effect {
       return {
@@ -391,7 +391,7 @@ export function slot(ref: WritableStateRef<number>): NumberSlot {
 }
 
 /** Build the closed absolute store-write effect. */
-export function set(ref: WritableStateRef<number>, value: NumberValue): Effect {
+export function set(ref: Ref<number>, value: NumberValue): Effect {
   return {
     primitive: "slot.set",
     args: {

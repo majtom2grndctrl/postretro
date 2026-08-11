@@ -340,9 +340,9 @@ export type StoreDeclaration = {
   schema: { [string]: StoreSlotSchema },
 }
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
-export type ReadonlyStateRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
-export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
-export type StateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
+export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
+export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+export type StateRef<T> = ComputedRef<T> | Ref<T>
 export type StoreDefinition = {
   declaration: StoreDeclaration,
   state: { [string]: StateRef<any> },
@@ -612,7 +612,7 @@ boolRef = function(node: any): BoolRef
   return table.freeze(ref) :: any
 end
 
-function DataScriptSdk.read(ref: ReadonlyStateRef<number> | ReadonlyStateRef<boolean>): NumberRef | BoolRef
+function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): NumberRef | BoolRef
   local node = { op = "input", name = ref.slot }
   if ref.kind == "number" then
     return numberRef(node)
@@ -745,7 +745,7 @@ lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
   return lowered
 end
 
-function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
+function DataScriptSdk.slot(ref: Ref<number>): NumberSlot
   return table.freeze({
     add = function(_self: NumberSlot, delta: NumberValue): Effect
       local wire = {
@@ -765,7 +765,7 @@ function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
   })
 end
 
-function DataScriptSdk.set(ref: WritableStateRef<number>, value: NumberValue): Effect
+function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
   local wire = {
     primitive = "slot.set",
     args = {

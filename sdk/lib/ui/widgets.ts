@@ -45,7 +45,7 @@ export type NumericArrayStateValue = ReadonlyArray<number>;
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
 
 /** Readable authoritative state reference. Descriptor consumers serialize only `slot`. */
-export type ReadonlyStateRef<T> = {
+export type ComputedRef<T> = {
   readonly slot: string;
   /** SDK-only value-type tag. Descriptor consumers serialize only `slot`. */
   readonly kind: StateRefKind;
@@ -53,7 +53,7 @@ export type ReadonlyStateRef<T> = {
 };
 
 /** Writable authoritative state reference. The writable marker is type-only. */
-export type WritableStateRef<T> = ReadonlyStateRef<T> & {
+export type Ref<T> = ComputedRef<T> & {
   readonly [writableStateRefBrand]: T;
 };
 
@@ -97,7 +97,7 @@ export type PredicateValue = number | boolean | string;
  * the comparand there is typed to the cell/slot value type.
  */
 export type Predicate = (
-  | (ReadonlyStateRef<PredicateValue> & { local?: never })
+  | (ComputedRef<PredicateValue> & { local?: never })
   | LocalBindRef
 ) & {
   equals?: PredicateValue;
@@ -127,7 +127,7 @@ export type AnnouncePriority = "polite" | "assertive";
  * value. Mirrors `descriptor.rs` `TextBind`.
  */
 export type TextBindProp = (
-  | (ReadonlyStateRef<ScalarStateValue> & { local?: never })
+  | (ComputedRef<ScalarStateValue> & { local?: never })
   | LocalBindRef
 ) & {
   format?: string;
@@ -140,7 +140,7 @@ export type TextBindProp = (
  * resolved color. Mirrors `descriptor.rs` `PanelBind`.
  */
 export type PanelBindProp = (
-  | (ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never })
+  | (ComputedRef<NumericArrayStateValue> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: ColorTween;
@@ -151,20 +151,20 @@ export type PanelBindProp = (
  * source + optional number-shape tween). Mirrors `descriptor.rs` `SliderBind`.
  */
 export type SliderBindProp = (
-  | (WritableStateRef<number> & { local?: never; format?: never })
+  | (Ref<number> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: NumberTween;
 };
 
 export type BarBindProp = (
-  | (ReadonlyStateRef<number> & { local?: never; format?: never })
+  | (ComputedRef<number> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: NumberTween;
 };
 
-export type BarMaxProp = number | ReadonlyStateRef<number>;
+export type BarMaxProp = number | ComputedRef<number>;
 
 /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
 export type BarExitFade = { durationMs: number };

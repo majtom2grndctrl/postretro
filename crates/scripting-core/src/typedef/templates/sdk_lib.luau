@@ -723,7 +723,28 @@ export type StoreStateRef<T> = ComputedRef<T> | Ref<T>
 export type StoreDefinition = {
   [string]: StoreStateRef<any>,
 }
-export type ModManifestInput = ModManifest | { stores: {StoreDeclaration | StoreDefinition}? }
+--- Luau has no mapped `Omit` type, so this mirrors `ModManifest` while
+--- widening only `stores` to accept unresolved store handles.
+export type ModManifestInput = {
+  name: string,
+  id: string,
+  version: string,
+  render: RenderProfile?,
+  movers: MoverDefaults?,
+  switching: SwitchingDescriptor?,
+  entities: {EntityTypeDescriptor}?,
+  uiTrees: {ModUiTree}?,
+  theme: ThemeTokens?,
+  fonts: { [string]: string }?,
+  maps: {ModMapEntry}?,
+  frontend: Frontend?,
+  reactions: {NamedReactionDescriptor}?,
+  events: {ImpactEvent}?,
+  crossings: {CrossingDescriptor}?,
+  triggerEvents: {TriggerEventDescriptor}?,
+  triggerPools: {TriggerPoolDescriptor}?,
+  stores: {StoreDeclaration | StoreDefinition}?,
+}
 
 --- Build a frozen state-store handle. Pure: calling it performs no FFI and
 --- changes no engine state. `namespace` prefixes returned refs as

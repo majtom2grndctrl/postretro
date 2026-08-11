@@ -46,8 +46,10 @@ function UiStateSdk.bindState(ref: any, options: { [string]: any }?): any
       out[key] = value
     end
   end
-  setmetatable(out, { __index = { kind = ref.kind } })
-  return out
+  -- Keep `kind` inherited so it stays out of descriptor serialization. Freezing
+  -- the raw wire table prevents an author assignment (including `rawset`) from
+  -- shadowing that SDK-only metadata.
+  return table.freeze(setmetatable(out, { __index = { kind = ref.kind } }))
 end
 
 --- Build an equality predicate against a readable scalar state reference.

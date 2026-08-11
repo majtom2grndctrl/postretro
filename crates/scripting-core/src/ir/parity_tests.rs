@@ -1068,6 +1068,8 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         const runtimeGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0));
         const gate = runtimeGate.and(read(store.enabled));
         const boundCount = bindState(store.count, { format: "Count {}" });
+        const kindMutationRejected = !Reflect.set(boundCount as object, "kind", "boolean");
+        const kindPreserved = boundCount.kind === "number";
         const event = defineImpactEvent("converged", { tag: "crate" }, () => [
           set(store.count, read(boundCount).plus(5)),
           update(store.count, (current) => current.plus(1)),
@@ -1076,6 +1078,8 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         ]);
         JSON.stringify({
           bind: boundCount,
+          kindMutationRejected,
+          kindPreserved,
           slots: {
             count: store.count.slot,
             enabled: store.enabled.slot,
@@ -1105,6 +1109,10 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         local runtimeGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
         local gate = runtimeGate["and"](runtimeGate, Postretro.read(store.enabled))
         local boundCount = UI.bindState(store.count, { format = "Count {}" })
+        local kindMutationRejected = not pcall(function()
+          boundCount.kind = "boolean"
+        end)
+        local kindPreserved = boundCount.kind == "number"
         local event = Postretro.defineImpactEvent("converged", { tag = "crate" }, function()
           return {
             Postretro.set(store.count, Postretro.read(boundCount):plus(5)),
@@ -1119,6 +1127,8 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         end)
         return {
           bind = boundCount,
+          kindMutationRejected = kindMutationRejected,
+          kindPreserved = kindPreserved,
           slots = {
             count = store.count.slot,
             enabled = store.enabled.slot,
@@ -1149,6 +1159,16 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         typescript["bind"],
         serde_json::json!({ "slot": "converged.count", "format": "Count {}" }),
         "bindState must retain kind for SDK composition without serializing it",
+    );
+    assert_eq!(
+        typescript["kindMutationRejected"],
+        serde_json::json!(true),
+        "bindState kind metadata must reject author mutation",
+    );
+    assert_eq!(
+        typescript["kindPreserved"],
+        serde_json::json!(true),
+        "rejected kind mutation must preserve numeric expression lowering",
     );
     assert_eq!(
         typescript["policy"][0]["args"]["value"],

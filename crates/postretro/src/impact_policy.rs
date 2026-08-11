@@ -1143,8 +1143,10 @@ mod tests {
             )],
         )]);
 
+        let mut publisher =
+            crate::scripting_systems::ui_proxy::PlayerHudStatePublisher::new(ctx.clone());
         let mut registry = ctx.registry.borrow_mut();
-        for _ in 0..2 {
+        for expected_xp in [11.0, 12.0] {
             let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
             apply_damage_with_context(
                 &mut registry,
@@ -1152,7 +1154,12 @@ mod tests {
                 &DamagePayload { amount: 1.0 },
                 context,
             );
-            runtime.evaluate_pending_in_registry(&mut registry);
+            crate::session::evaluate_pending_in_tick_impacts(
+                &mut publisher,
+                &mut runtime,
+                &mut registry,
+            );
+            assert_eq!(store(&ctx, "progress.xp"), expected_xp);
         }
         drop(registry);
 

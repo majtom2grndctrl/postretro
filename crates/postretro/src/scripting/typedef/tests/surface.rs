@@ -510,6 +510,59 @@ fn luau_predicate_helpers_are_typed_to_the_value_type() {
 }
 
 #[test]
+fn luau_mod_manifest_input_preserves_manifest_fields_and_only_widens_stores() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use std::collections::BTreeMap;
+
+    fn object_fields(output: &str, type_name: &str) -> BTreeMap<String, String> {
+        let header = format!("export type {type_name} = {{");
+        let mut lines = output.lines().skip_while(|line| line.trim() != header);
+        assert_eq!(
+            lines.next().map(str::trim),
+            Some(header.as_str()),
+            "missing Luau object type `{type_name}`"
+        );
+
+        lines
+            .take_while(|line| line.trim() != "}")
+            .filter_map(|line| {
+                let line = line.trim().strip_suffix(',')?;
+                let (name, value_type) = line.split_once(": ")?;
+                Some((name.to_string(), value_type.to_string()))
+            })
+            .collect()
+    }
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let luau = generate_luau(&registry);
+    let mut manifest = object_fields(&luau, "ModManifest");
+    let mut input = object_fields(&luau, "ModManifestInput");
+
+    assert_eq!(
+        manifest.remove("stores"),
+        Some("{StoreDeclaration}?".into())
+    );
+    assert_eq!(
+        input.remove("stores"),
+        Some("{StoreDeclaration | StoreDefinition}?".into()),
+        "ModManifestInput must widen only the stores element type"
+    );
+    assert_eq!(
+        input, manifest,
+        "ModManifestInput must mirror every non-store ModManifest field"
+    );
+    for required_identity in ["name", "id", "version"] {
+        assert_eq!(
+            input.get(required_identity).map(String::as_str),
+            Some("string"),
+            "ModManifestInput must require `{required_identity}` so a stores-only table is invalid"
+        );
+    }
+}
+
+#[test]
 fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;

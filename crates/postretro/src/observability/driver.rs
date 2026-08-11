@@ -282,12 +282,7 @@ fn run_headless_inner(
             // host-authoritative trigger stage is not driven (no use/overlap
             // routing), so triggers stay inert — declared out-of-frame in the dump.
             None,
-            |registry| {
-                session
-                    .scripting
-                    .impact_policy_runtime
-                    .evaluate_pending_in_registry(registry)
-            },
+            |registry| session.scripting.evaluate_pending_in_tick_impacts(registry),
         );
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,

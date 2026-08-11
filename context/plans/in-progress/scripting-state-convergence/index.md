@@ -94,8 +94,9 @@ this in the engine would widen the closed IR evaluator, which the surface delibe
 vocabulary"). The engine touches are the `slot.set` arm added in Task 1 and the `slot.add` arm removed in Task 5
 — both reuse the existing binder and add no IR node, so neither is a vocabulary widening.
 
-**Frame and ordering.** A policy fires in GameLogic synchronously after each in-tick damage hit; `read` of
-engine or store state and impact facts all resolve against one snapshot seeded at that fire (via
+**Frame and ordering.** A policy fires in GameLogic synchronously after each in-tick damage hit. The fixed-tick
+seam first publishes owner-local engine health from the same post-damage registry borrow, then `read` of engine
+or store state and impact facts resolve against one snapshot seeded at that fire (via
 `seed_impact_from_registry`), not a live end-of-tick read. Same-slot writes across independent events or groups
 follow the same frozen-read, last-writer-wins rule as within one `do:` list; an override replaces (evicts) its
 base rather than composing with it (Orderings, below).
@@ -206,8 +207,8 @@ base rather than composing with it (Orderings, below).
   over-constraining it.)
 - [ ] Every row in the Orderings pin table (P1–P13) is asserted by a test: Task 1 for P1–P6, Task 5 for P7–P13.
   P1 is a stored-result equality (`update` vs `slot.add` produce the same evaluated value; wire differs, no
-  bound-program comparison — see Task 1). P12 and P13 need the seeded / two-fire harness named in Task 5, not
-  the bare `breakable` seeding.
+  bound-program comparison — see Task 1). P12 and P13 need the production fixed-tick / two-fire harness named
+  in Task 5, not the bare `breakable` seeding.
 - [ ] A mod that returns `{ stores: [store] }` without calling `defineMod` fails store resolution — the raw
   slot-ref map lacks `namespace`/`schema`, so `defineMod` is load-bearing for flattened-store registration.
 
@@ -255,8 +256,8 @@ plus the typedef templates `crates/scripting-core/src/typedef/templates/sdk_lib.
 `game_state.ts` references neither name (its types flow through the regenerated `GameStateRefs`) — no edit.
 `sdk/lib/index.ts` and `sdk/lib/runtime.ts` reference the `StateRef` union alias by name, unchanged; only its
 definition body is affected. Engine-catalog refs (`getGameState()`) carry `kind` from the catalog value type,
-same as store refs. The runtime `{slot}` shape and the phantom brands are unchanged; only the exported type
-names change. Engine-catalog slots keep their per-slot capability — `ui.textEntry` stays writable
+same as store refs. The SDK runtime shape is `{slot, kind}` while descriptor wire remains `{slot}`; only the
+exported type names change. Engine-catalog slots keep their per-slot capability — `ui.textEntry` stays writable
 (`Ref<string>`), `player.*`/`screen.*` stay readonly (`ComputedRef`) — so the writable/readonly axis is per-ref,
 absorbing the writable-engine-slot exception rather than collapsing onto engine-vs-mod. This also removes the
 phantom-brand silent-no-op: a `set`/write against a `ComputedRef` is now a type error at every author site. The
@@ -336,11 +337,11 @@ still "compiles" under it. Regenerate and commit `sdk/types/postretro.d.{ts,luau
 `.state`/`.declaration` and `slot().add()` examples. Add cross-runtime parity tests asserting byte-identical
 wire for `read`, `set`/`update`/`slot.set`, `when`, the flattened store, and the `runtime.*` bridge, plus
 the ordering pin-table rows P7–P13 (Orderings, below). P12 and P13 need a purpose-built harness, not the bare
-`breakable` one: P12 (a policy reading `getGameState().player.health` mid-tick) requires seeding `player.health`
-into the slot table before the impact freezes — the `breakable` harness never populates it, so seed it
-explicitly; P13 (a store-slot re-seed across two in-tick hits in one policy fire) extends the proven `@state`
-re-seed pattern (`breakable_threshold_reads_pre_effect_state_snapshot`) to a store slot and needs a two-fire
-test. Consumes Tasks 2, 3, 4.
+`breakable` one: P12 (a policy reading `getGameState().player.health` mid-tick) must run real damage through the
+production fixed-tick seam, which publishes owner-local health before the impact freezes; P13 (a store-slot
+re-seed across two in-tick hits in one policy fire) extends the proven `@state` re-seed pattern
+(`breakable_threshold_reads_pre_effect_state_snapshot`) to a store slot and needs a two-fire test. Consumes
+Tasks 2, 3, 4.
 
 ## Sequencing
 
@@ -375,7 +376,7 @@ unchanged; new names below. The ref itself carries `.slot` plus a build-time `ki
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Converged surface lowers to byte-identical wire as the pre-convergence surface, except the new `slot.set` primitive and the Rust `breakable_threshold` test's `slot.add`→`update` conversion (the only real `slot.add` emitter; semantically equivalent, not byte-identical) | Tasks 2, 3, 4 (surface-only changes) | `defineMod` store resolution must emit the same `{namespace, schema}`; the flatten must yield the same `{slot}` refs; the rename must not touch runtime shape | Task 5's TS↔Luau parity tests + typedef drift test + targeted equality tests (`{namespace, schema}` unchanged; `{slot}` shape unchanged; Task 1's P1 stored-result equality) — no `content/dev` wire golden exists in-tree |
+| Converged surface lowers to byte-identical wire as the pre-convergence surface, except the new `slot.set` primitive and the Rust `breakable_threshold` test's `slot.add`→`update` conversion (the only real `slot.add` emitter; semantically equivalent, not byte-identical) | Tasks 2, 3, 4 (surface-only changes) | `defineMod` store resolution must emit the same `{namespace, schema}`; refs must carry SDK-only `kind` while consumers emit only `{slot}` | Task 5's TS↔Luau parity tests + typedef drift test + targeted equality tests (`{namespace, schema}` unchanged; ref descriptor wire remains `{slot}`; Task 1's P1 stored-result equality) — no `content/dev` wire golden exists in-tree |
 | `slot.set` reuses the shipped binder — no new `IrNode`, no evaluator vocabulary widening | Task 1 (`bind_number_write` reuse) | any temptation to add an IR node for a general write | AC "binds through `bind_number_write`"; `research.md` placement |
 | All operands in one impact fire read the pre-fire frozen snapshot (plan-before-apply in `evaluate_dispatch`); `cur` in `update` never observes an earlier same-fire write; same-slot writes are last-writer-wins in do-list order, not accumulating | Shipped substrate (inherited, not changed by this spec) | any same-slot write across `do:` entries, events, or groups | Orderings pin table (below) |
 | Ref consumers read only `.slot`; the ref also carries a build-time `kind` (never serialized) and may later carry an owner key (keeps room for E16 owner-addressing) | Task 2 (per-ref `{slot, kind}` shape) | a consumer doing an exhaustive-shape check would over-constrain E16's later ref extension | AC review gate |
@@ -398,7 +399,7 @@ writes apply last-writer-wins in do-list order.
 | P9 | batching N=0 | do:[] | no write; wire byte-identical pre/post migration |
 | P10 | when(cond,[]) empty guard | do:[when(false,[])] and when(true,[]) | cond evaluated, no write either way; wire {when,do:[]} |
 | P11 | read of unproduced slot | when(read(store.fresh).ge(1), […]), fresh never written | reads slot default, no error |
-| P12 | mid-tick engine read | read(getGameState().player.health) in a policy on an in-tick hit | fire-time frozen stored health (post-damage healthAfter), not end-of-tick |
+| P12 | mid-tick engine read | read(getGameState().player.health) in a policy on an in-tick hit | owner-local health published from the post-damage registry at fire time, not the prior HUD frame |
 | P13 | consecutive in-tick hits | same policy fires hit 1 then hit 2 in one tick, update(xp,x=>x.plus(1)) | hit 2 observes hit 1's write (re-seed per fire) ⇒ base+2 across the two fires |
 
 Task 1 asserts P1–P6; Task 5 asserts P7–P13.

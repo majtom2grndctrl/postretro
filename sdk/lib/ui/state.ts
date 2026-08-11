@@ -1,7 +1,7 @@
-// Authoritative state-reference helpers. State refs are immutable descriptors
-// with runtime shape `{ slot }`; readonly/writable and value type are type-level
-// capabilities. Presentation-local cells below remain separate and keep their
-// `.get()`/`.set()` handle behavior.
+// Authoritative state-reference helpers. State refs carry an SDK-only `kind`
+// tag alongside `slot`; descriptor wire includes only `slot`. Readonly/writable
+// remains a type-level capability. Presentation-local cells below remain
+// separate and keep their `.get()`/`.set()` handle behavior.
 
 import type { PrimitiveReactionDescriptor } from "../data_script";
 import type {
@@ -16,9 +16,9 @@ import type {
 } from "./widgets";
 
 export type StateBindOptionsFor<T> =
-  T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
-  T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
-  T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+  T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+  T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
+  T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
   never;
 
 function stateSlot(ref: ComputedRef<unknown>, helper: string): string {
@@ -49,10 +49,18 @@ export function bindState<T>(
     if (Object.prototype.hasOwnProperty.call(options, "local")) {
       throw new Error("bindState: `options.local` is reserved");
     }
+    if (Object.prototype.hasOwnProperty.call(options, "kind")) {
+      throw new Error("bindState: `options.kind` is reserved");
+    }
   }
-  return options === undefined
-    ? ({ slot } as ComputedRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">)
-    : ({ slot, ...options } as ComputedRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">);
+  const bound = options === undefined ? { slot } : { slot, ...options };
+  Object.defineProperty(bound, "kind", {
+    value: ref.kind,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return bound as ComputedRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">;
 }
 
 /** Build an equality predicate against a readable scalar state reference. */

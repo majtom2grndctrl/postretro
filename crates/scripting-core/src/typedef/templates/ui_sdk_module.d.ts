@@ -156,9 +156,9 @@ declare module "postretro/ui" {
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
 
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
-    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
-    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;
   /** Compose bind-only options onto a state ref. Pure; it emits `{ slot, ...options }` for widget props and never reads live state. */
   export function bindState<T>(ref: ComputedRef<T>): ComputedRef<T>;

@@ -640,7 +640,11 @@ mod tests {
     use postretro_entities::components::health::{
         DamageContext, HealthComponent, apply_damage_with_context,
     };
-    use postretro_entities::data_descriptors::HealthDescriptor;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
+        PlayerMovementDescriptor, SpeedParams,
+    };
     use postretro_entities::slot_table::{
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
@@ -736,6 +740,51 @@ mod tests {
             .set_tags(target, tags.iter().map(|tag| (*tag).to_string()).collect())
             .expect("target is live");
         target
+    }
+
+    fn mark_as_local_player(ctx: &ScriptCtx, target: EntityId) {
+        let movement = PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        });
+        let mut registry = ctx.registry.borrow_mut();
+        registry
+            .set_component(target, movement)
+            .expect("target is live");
+        registry
+            .mark_local_player_pawn(target)
+            .expect("target is live");
     }
 
     fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
@@ -1028,19 +1077,19 @@ mod tests {
         assert_eq!(store(&ctx, "progress.xp"), 9.0);
     }
 
+    // Regression: fixed-tick policies observed the prior HUD publish because
+    // `player.health` was not republished between damage and impact evaluation.
     #[test]
-    fn p12_engine_health_read_uses_the_post_damage_fire_snapshot() {
+    fn p12_fixed_tick_seam_reads_post_damage_engine_health() {
         let ctx = ScriptCtx::new();
         {
             let mut slots = ctx.slot_table.borrow_mut();
-            // The policy binds this engine ref before any impact fires. The
-            // production UI proxy seeds it after damage and before this fire's
-            // snapshot; the harness performs that publication below.
             slots
                 .insert("impact.observedHealth".into(), number_slot(0.0))
                 .expect("new output slot");
         }
         let target = target(&ctx, &["player"]);
+        mark_as_local_player(&ctx, target);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
         runtime.replace_global_events(vec![event(
             "capture-health",
@@ -1048,24 +1097,32 @@ mod tests {
             vec![slot_set("impact.observedHealth", input("player.health"))],
         )]);
 
-        hit(&ctx, target, DamageProducer::InTick);
-        postretro_scripting_core::store_bridge::write_store_slot(
-            &ctx,
-            "player.health",
-            SlotValue::Number(99.0),
-        )
-        .expect("engine health seed succeeds before the impact freeze");
-        evaluate_pending(&ctx, &mut runtime);
+        let mut publisher = crate::scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
+            ctx.clone(),
+        );
+        let mut registry = ctx.registry.borrow_mut();
+        let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+        apply_damage_with_context(
+            &mut registry,
+            target,
+            &DamagePayload { amount: 1.0 },
+            context,
+        );
+        crate::session::evaluate_pending_in_tick_impacts(
+            &mut publisher,
+            &mut runtime,
+            &mut registry,
+        );
 
         assert_eq!(store(&ctx, "impact.observedHealth"), 99.0);
+        assert_eq!(store(&ctx, "player.health"), 99.0);
         assert_eq!(
-            ctx.registry
-                .borrow()
+            registry
                 .get_component::<HealthComponent>(target)
                 .expect("target remains live")
                 .current,
             99.0,
-            "the seeded engine slot is the same post-damage value as healthAfter",
+            "the published engine slot matches the post-damage component value",
         );
     }
 

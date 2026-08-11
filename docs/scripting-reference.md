@@ -387,14 +387,13 @@ import { updateState } from "postretro/ui";
 const puzzle = defineStore("puzzle", {
   charge: { type: "number", default: 0, range: [0, 3] },
 });
-const ref = puzzle.state.charge;
-const slot = ref.slot;
+const ref = puzzle.charge;
 
-const increment = updateState(ref, runtime.add(runtime.read(slot), 1));
-const decrement = updateState(ref, runtime.sub(runtime.read(slot), 1));
+const increment = updateState(ref, runtime.add(runtime.read(ref), 1));
+const decrement = updateState(ref, runtime.sub(runtime.read(ref), 1));
 const keepInBounds = updateState(
   ref,
-  runtime.clamp(runtime.add(runtime.read(slot), 1), 0, 3),
+  runtime.clamp(runtime.add(runtime.read(ref), 1), 0, 3),
 );
 ```
 
@@ -1444,7 +1443,15 @@ Every fire evaluates gates and effect operands from one pre-effect snapshot, the
 
 `impact.source.grantHealth(amount)` and `impact.source.grantAmmo(type, amount)` add a resource to the damager, not to the entity that was hit. They accept only `@impact.source`; an authored `@impact.target` grant is rejected while the policy binds. This is deliberately asymmetric: target healing remains expressible as `target.setHealth(target.healthAfter.plus(amount))`, but v1 has no target-addressed absolute-ammo write. Amount expressions still read the impact target's snapshot (`@impact.*` and `target.state(...)`); there is no source-scoped fact vocabulary. An absent or stale source skips that one effect, and a source without the required health or ammo-reserve component warns and skips it without aborting sibling effects. Ammo pool keys use the same identifier grammar as weapon resource types.
 
-`slot(ref).add(delta)` is snapshot read-modify-write, not an atomic increment. If one fire writes the same slot more than once, every operand reads the same starting value and the last applied write wins. Impact policies currently run only for in-tick weapon and AI damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+Impact policies use `Ref<T>` for writable slots and `ComputedRef<T>` for
+read-only slots. `read(ref)` lifts a numeric or boolean ref into an impact
+expression; `set(ref, value)` writes an absolute value; and
+`update(ref, current => current.plus(delta))` is snapshot read-modify-write,
+not an atomic increment. Use `when(condition, effects)` to defer a group until
+its boolean expression is true. If one fire writes the same slot more than
+once, every operand reads the same starting value and the last applied write
+wins. Impact policies currently run only for in-tick weapon and AI damage;
+`applyDamage` reactions and other app-drain producers run no policy in v1.
 
 That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
@@ -1795,10 +1802,10 @@ export default defineMod({
   name: "MyMod",
   id: "example.my-mod",
   version: "1.0.0",
-  stores: [options.declaration],
+  stores: [options],
 });
 
-defineReaction("resetVolume", updateState(options.state.master, 1));
+defineReaction("resetVolume", updateState(options.master, 1));
 ```
 
 ### Text-edit reactions and the `ui.textEntry` slot
@@ -2039,7 +2046,7 @@ SDK factory takes and nests inside SDK containers exactly like a factory call:
 ```typescript
 // A modder component: a plain function returning a subtree.
 import {
-  type ReadonlyStateRef,
+  type ComputedRef,
   Button,
   HStack,
   Text,
@@ -2062,7 +2069,7 @@ const statsTheme = defineTheme({
 });
 const tokens = getDesignTokens(statsTheme);
 
-function StatRow(props: { label: string; ref: ReadonlyStateRef<number | string | boolean> }) {
+function StatRow(props: { label: string; ref: ComputedRef<number | string | boolean> }) {
   return HStack({ gap: tokens.spacing.s, align: "center" }, [
     Text({ content: props.label, fontSize: 16, color: tokens.color.text }),
     Text({ content: "", fontSize: 16, color: tokens.color.ok, bind: bindState(props.ref, { format: "{}" }) }),
@@ -2172,7 +2179,7 @@ for authoritative state refs:
 ```typescript
 const sel = ui.createLocalState({ tab: "loadout" });
 sel.cells.tab.is("loadout");        // { local: "tab", equals: "loadout" }
-stateEquals(opts.state.muted, true); // { slot: "fixtureOpts.muted", equals: true }
+stateEquals(opts.muted, true); // { slot: "fixtureOpts.muted", equals: true }
 ```
 
 A `Predicate` is a valid **`bind` source for `styleRanges`-capable widgets**
@@ -2265,7 +2272,7 @@ canonical end-to-end example is the campaign-test tabs demo
 
 ```typescript
 Button({ id: "save", label: "Save", onPress: "save", disabled: true });
-Slider({ id: "vol", labelledBy: "volumeTitle", bind: options.state.master,
+Slider({ id: "vol", labelledBy: "volumeTitle", bind: options.master,
          min: 0, max: 1, step: 0.05 });
 ```
 

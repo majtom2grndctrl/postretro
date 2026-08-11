@@ -725,11 +725,11 @@ export type StoreDefinition = {
 }
 export type ModManifestInput = ModManifest | { stores: {StoreDeclaration | StoreDefinition}? }
 
---- Build a state-store declaration. Pure: calling it performs no FFI and changes
---- no engine state. `namespace` prefixes returned refs as `namespace.slotName`;
---- `schema` declares slot names and validation rules. Returned declarations
---- commit atomically only after the mod manifest and required durable identities
---- validate.
+--- Build a frozen state-store handle. Pure: calling it performs no FFI and
+--- changes no engine state. `namespace` prefixes returned refs as
+--- `namespace.slotName`; `schema` declares slot names and validation rules.
+--- Pass the handle through `defineMod({ stores = { store } })`; `defineMod`
+--- resolves declaration data before the manifest crosses the FFI.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 --- Lift a number or boolean state ref into the fluent impact-expression algebra.

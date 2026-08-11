@@ -1,8 +1,8 @@
 --!strict
--- Authoritative state-reference helpers. State refs are immutable descriptors
--- with runtime shape `{ slot = "..." }`; readonly/writable and value type are
--- type-level capabilities. Presentation-local cells below remain separate and
--- keep their `:get()`/`:set()` handle behavior.
+-- Authoritative state-reference helpers. State refs carry an SDK-only `kind`
+-- tag alongside `slot`; descriptor wire includes only `slot`. Readonly/writable
+-- remains a type-level capability. Presentation-local cells below remain
+-- separate and keep their `:get()`/`:set()` handle behavior.
 
 --- Primitive reaction body produced by `:set()`. Mirrors `data_script.luau`'s
 --- `PrimitiveReactionDescriptor`; redeclared here to keep the module
@@ -40,9 +40,13 @@ function UiStateSdk.bindState(ref: any, options: { [string]: any }?): any
       if key == "local" then
         error("bindState: `options.local` is reserved")
       end
+      if key == "kind" then
+        error("bindState: `options.kind` is reserved")
+      end
       out[key] = value
     end
   end
+  setmetatable(out, { __index = { kind = ref.kind } })
   return out
 end
 

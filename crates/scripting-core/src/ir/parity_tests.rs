@@ -1051,6 +1051,7 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
           update,
           when,
         } from "postretro";
+        import { bindState } from "postretro/ui";
 
         const store = defineStore("converged", {
           count: { type: "number", default: 0 },
@@ -1066,13 +1067,15 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         });
         const runtimeGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0));
         const gate = runtimeGate.and(read(store.enabled));
+        const boundCount = bindState(store.count, { format: "Count {}" });
         const event = defineImpactEvent("converged", { tag: "crate" }, () => [
-          set(store.count, read(store.count).plus(5)),
+          set(store.count, read(boundCount).plus(5)),
           update(store.count, (current) => current.plus(1)),
           when(gate, [set(store.state, read(store.declaration).plus(1))]),
           when(fromRuntime.bool(runtime.constant(false)), []),
         ]);
         JSON.stringify({
+          bind: boundCount,
           slots: {
             count: store.count.slot,
             enabled: store.enabled.slot,
@@ -1085,6 +1088,7 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
+        local UI = require("postretro/ui")
 
         local store = Postretro.defineStore("converged", {
           count = { type = "number", default = 0 },
@@ -1100,9 +1104,10 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
         })
         local runtimeGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
         local gate = runtimeGate["and"](runtimeGate, Postretro.read(store.enabled))
+        local boundCount = UI.bindState(store.count, { format = "Count {}" })
         local event = Postretro.defineImpactEvent("converged", { tag = "crate" }, function()
           return {
-            Postretro.set(store.count, Postretro.read(store.count):plus(5)),
+            Postretro.set(store.count, Postretro.read(boundCount):plus(5)),
             Postretro.update(store.count, function(current)
               return current:plus(1)
             end),
@@ -1113,6 +1118,7 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
           }
         end)
         return {
+          bind = boundCount,
           slots = {
             count = store.count.slot,
             enabled = store.enabled.slot,
@@ -1138,6 +1144,20 @@ fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
             .expect("wire JSON is UTF-8")
             .contains("\"kind\""),
         "SDK-only ref kind must not cross the descriptor wire",
+    );
+    assert_eq!(
+        typescript["bind"],
+        serde_json::json!({ "slot": "converged.count", "format": "Count {}" }),
+        "bindState must retain kind for SDK composition without serializing it",
+    );
+    assert_eq!(
+        typescript["policy"][0]["args"]["value"],
+        serde_json::json!({
+            "op": "add",
+            "a": { "op": "input", "name": "converged.count" },
+            "b": { "op": "const", "value": 5 },
+        }),
+        "read(bindState(numberRef)) must stay in the numeric fluent algebra",
     );
     assert_eq!(
         typescript["slots"],

@@ -32,14 +32,17 @@ vocabulary widening.
 - **`when(cond, effects)` sugar** over the shipped `GatedEffect` object literal.
 - **Luau twins** for every new surface; regenerate and commit `sdk/types/postretro.d.{ts,luau}`; migrate
   `content/` call sites; cross-runtime parity tests.
-- **Ref shaped owner-ready.** The ref keeps its `{slot}` identity such that an owner key is additive — the
-  deferral contract with E16 (below).
+- **Ref kept minimal for E16.** The ref keeps its `{slot}` identity and consumers read only `.slot`, so E16's
+  later owner-addressing has room to work. Best-effort discipline, not a contract — E16 owns the owner shape
+  (below).
 
 ### Out of scope
 
 - **Per-owner `.byPlayer` / owner-addressed access.** `E16--per-player-currency` owns it. Unbuilt today (zero
   `sdk/lib/` hits; `slot.add` rejects any target, `impact_policy.rs:497`), and its read leg is an open question
-  even on paper. This spec only guarantees the ref is owner-ready; it builds no owner path.
+  even on paper. This spec builds no owner path and makes no shape guarantee for it: E16's draft currently uses
+  a `ref.byPlayer(token)` method and its placement (ref vs store handle) is unsettled — E16 owns that decision
+  and the own-property-enumeration hazard a method on the ref carries.
 - **Widening the engine IR evaluator vocabulary.** `slot.set` reuses the shipped binder; no new IR node.
 - **The component-local presentation-cell model** (`ui.createLocalState().cells.*.get()/.set()`). Ephemeral,
   instance-scoped state on a different lifecycle (G1-owned). Reconciling it with the authoritative `{slot}`
@@ -81,8 +84,13 @@ respects that line: a new primitive dispatch that lowers to the same binder is n
   namespace argument in the `crates/script-compiler` pass, orthogonal to the store's return shape.
 - The retained wire is dotted-name based (`scripting.md:151`). Honored — no wire slot-name changes; the flatten
   and rename lower to byte-identical descriptors (Invariants).
-- `E16--per-player-currency` owns per-owner state. This spec diverges from nothing there; it defers `.byPlayer`
-  and guarantees owner-readiness so E16 bolts on rather than re-cuts.
+- `E16--per-player-currency` owns per-owner state. This spec defers `.byPlayer` and keeps the ref minimal
+  (consumers read only `.slot`) so E16 has room to work — a best-effort discipline, not a guarantee, since
+  E16's owner shape is unsettled (ref-method vs store-handle) and E16 owns whichever it picks. One deliberate
+  foreclosure: flattening the store handle to *be* the slot-ref map means an author method (`byPlayer` or any
+  other) cannot live on the store handle without colliding with a slot name — so E16 must place owner-addressing
+  on the ref, not the handle. Stated so the foreclosure is explicit, and because it settles E16's open
+  ref-vs-handle placement question by construction.
 
 **Alternatives rejected.**
 - *Narrow `.state`-hop fix only.* Fixes the symptom, leaves the three dialects. `myXp.plus(bonus)` stays
@@ -131,8 +139,9 @@ respects that line: a new primitive dispatch that lowers to the same binder is n
   `sdk/types/postretro.d.{ts,luau}`; the drift-detection test is green.
 - [ ] Migrated `content/dev` scripts (`run-counter.ts`, `coop-two-button-puzzles.ts`, `start-script.ts`,
   `hud.ts`, `typed-handles-fixture.ts`) compile and load on a running engine.
-- [ ] **Review gate:** every ref consumer reads only `.slot` and tolerates additional fields, so an owner key
-  is additive — no consumer does an exhaustive-shape check that a `{slot, owner}` ref would fail.
+- [ ] **Review gate:** every ref consumer reads only `.slot` — no consumer does an exhaustive-shape check — so
+  E16's later owner-addressing has room to extend the ref. (E16 owns its owner shape and any
+  own-property-enumeration hazard; this gate only keeps consumers from over-constraining it.)
 
 ## Tasks
 
@@ -240,7 +249,7 @@ unchanged; new names below.
 |---|---|---|---|
 | Converged surface lowers to byte-identical wire as the pre-convergence surface (except `slot.set`) | Tasks 2, 3, 4 (surface-only changes) | `defineMod` store resolution must emit the same `{namespace, schema}`; the flatten must yield the same `{slot}` refs; the rename must not touch runtime shape | AC "byte-identical wire", golden over `content/dev`; drift test |
 | `slot.set` reuses the shipped binder — no new `IrNode`, no evaluator vocabulary widening | Task 1 (`bind_number_write` reuse) | any temptation to add an IR node for a general write | AC "binds through `bind_number_write`"; `research.md` placement |
-| Ref is owner-ready — an owner key is additive to `{slot}` | Task 2 (per-ref `{slot}` shape) | a consumer doing an exhaustive-shape check would reject `{slot, owner}` | AC review gate (every consumer reads only `.slot`) |
+| Ref consumers read only `.slot` (keeps room for E16 owner-addressing) | Task 2 (per-ref `{slot}` shape) | a consumer doing an exhaustive-shape check would over-constrain E16's later ref extension | AC review gate |
 
 ## Script syntax examples
 

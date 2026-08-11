@@ -672,6 +672,10 @@ mod tests {
         json!({ "op": "input", "name": name })
     }
 
+    fn owned_input(name: &str) -> Value {
+        json!({ "op": "input", "name": name, "owner": IMPACT_SOURCE_TOKEN })
+    }
+
     fn number(value: f32) -> Value {
         json!({ "op": "const", "value": value })
     }
@@ -722,6 +726,12 @@ mod tests {
             per_owner: false,
             accumulate: None,
         })
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        let mut record = number_slot(value);
+        record.schema.per_owner = true;
+        record
     }
 
     fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
@@ -1818,6 +1828,68 @@ mod tests {
             *level == log::Level::Warn
                 && message.contains("policy `postretro.dev:invalid-pool` was skipped during bind")
                 && message.contains("`grantAmmo.type` must match [A-Za-z0-9_.:-]")
+        }));
+    }
+
+    #[test]
+    fn invalid_store_read_skips_only_its_policy_while_siblings_still_run() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.personal".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.global".into(), number_slot(0.0))
+            .expect("new global slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_global_events(vec![
+                event(
+                    "bare-per-owner-read",
+                    "crate",
+                    vec![slot_set("currency.global", input("currency.personal"))],
+                ),
+                event(
+                    "owner-addressed-global-read",
+                    "crate",
+                    vec![slot_set("currency.global", owned_input("currency.global"))],
+                ),
+                event(
+                    "valid-sibling",
+                    "crate",
+                    vec![slot_set("currency.global", number(7.0))],
+                ),
+            ]);
+        });
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.global")
+                .expect("global slot")
+                .value,
+            Some(SlotValue::Number(7.0)),
+            "invalid descriptors do not prevent a sibling descriptor from binding",
+        );
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message
+                    .contains("policy `postretro.dev:bare-per-owner-read` was skipped during bind")
+                && message.contains("currency.personal")
+        }));
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains(
+                    "policy `postretro.dev:owner-addressed-global-read` was skipped during bind",
+                )
+                && message.contains("currency.global")
         }));
     }
 

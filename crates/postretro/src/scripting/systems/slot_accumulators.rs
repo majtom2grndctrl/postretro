@@ -194,7 +194,10 @@ mod tests {
                     1.0,
                     Some(NumericRange { min: 0.0, max: 1.0 }),
                     IrNode::Mul {
-                        a: Box::new(IrNode::Input { name: "@dt".into() }),
+                        a: Box::new(IrNode::Input {
+                            name: "@dt".into(),
+                            owner: None,
+                        }),
                         b: Box::new(IrNode::Const {
                             value: IrValue::Number(-2.0),
                         }),
@@ -231,7 +234,10 @@ mod tests {
                         max: 60.0,
                     }),
                     IrNode::Mul {
-                        a: Box::new(IrNode::Input { name: "@dt".into() }),
+                        a: Box::new(IrNode::Input {
+                            name: "@dt".into(),
+                            owner: None,
+                        }),
                         b: Box::new(IrNode::Const {
                             value: IrValue::Number(-1.0),
                         }),
@@ -248,6 +254,7 @@ mod tests {
                 condition: CrossingCondition::Ir(IrNode::Le {
                     a: Box::new(IrNode::Input {
                         name: "timer.remaining".into(),
+                        owner: None,
                     }),
                     b: Box::new(IrNode::Const {
                         value: IrValue::Number(0.0),
@@ -302,7 +309,14 @@ mod tests {
         table
             .insert(
                 "timer.good".into(),
-                number_slot(1.0, None, IrNode::Input { name: "@dt".into() }),
+                number_slot(
+                    1.0,
+                    None,
+                    IrNode::Input {
+                        name: "@dt".into(),
+                        owner: None,
+                    },
+                ),
             )
             .unwrap();
         table
@@ -313,6 +327,7 @@ mod tests {
                     None,
                     IrNode::Input {
                         name: "trigger.absent.occupants".into(),
+                        owner: None,
                     },
                 ),
             )
@@ -340,7 +355,14 @@ mod tests {
         table
             .insert(
                 "order.z_source".into(),
-                number_slot(1.0, None, IrNode::Input { name: "@dt".into() }),
+                number_slot(
+                    1.0,
+                    None,
+                    IrNode::Input {
+                        name: "@dt".into(),
+                        owner: None,
+                    },
+                ),
             )
             .unwrap();
         table
@@ -351,6 +373,7 @@ mod tests {
                     None,
                     IrNode::Input {
                         name: "order.z_source".into(),
+                        owner: None,
                     },
                 ),
             )
@@ -490,9 +513,13 @@ mod tests {
                             max: 10.0,
                         }),
                         IrNode::Mul {
-                            a: Box::new(IrNode::Input { name: "@dt".into() }),
+                            a: Box::new(IrNode::Input {
+                                name: "@dt".into(),
+                                owner: None,
+                            }),
                             b: Box::new(IrNode::Input {
                                 name: "determinism.rate".into(),
+                                owner: None,
                             }),
                         },
                     ),

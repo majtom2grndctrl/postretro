@@ -632,6 +632,9 @@ end
 
 function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): NumberRef | BoolRef
   local node = { op = "input", name = ref.slot }
+  if (ref :: any).owner ~= nil then
+    node.owner = (ref :: any).owner
+  end
   if ref.kind == "number" then
     return numberRef(node)
   end

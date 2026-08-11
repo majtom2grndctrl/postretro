@@ -76,6 +76,19 @@ pub trait BindingScope {
     /// `None` if the name is unknown or backed by a non-projectable slot.
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>>;
 
+    /// Resolve an owner-addressed input leaf. Scopes are sourceless unless
+    /// they explicitly opt in, so the default refuses every owner token.
+    ///
+    /// The token remains opaque to the IR substrate. A scope that publishes
+    /// an owner context validates it against its own dispatch vocabulary.
+    fn resolve_owned_input(
+        &self,
+        _name: &str,
+        _owner: &str,
+    ) -> Option<ResolvedInput<Self::InputHandle>> {
+        None
+    }
+
     /// Resolve an output name to a write handle and its projected IR type, or
     /// `None` if the name is unknown, non-projectable, or not writable by this
     /// scope.

@@ -98,6 +98,7 @@ mod tests {
         IrNode::Select {
             cond: Box::new(IrNode::Input {
                 name: BRAIN_HAS_TARGET_INPUT.to_string(),
+                owner: None,
             }),
             a: Box::new(always()),
             b: Box::new(IrNode::Const {

@@ -113,7 +113,10 @@ mod tests {
     fn validation_scope_reads_type_correct_zeros() {
         let scope = CandidateValidationScope;
         for (name, ir_type) in CANDIDATE_INPUTS {
-            let node = IrNode::Input { name: name.into() };
+            let node = IrNode::Input {
+                name: name.into(),
+                owner: None,
+            };
             let program = bind_candidate_filter(&node).expect("candidate input binds");
             assert_eq!(eval_value(&program, &scope), ir_type.zero(), "{name}");
         }

@@ -361,7 +361,10 @@ export const fromRuntime: RuntimeExpressionRefs = Object.freeze({
 export function read(ref: StateRef<number>): NumberRef;
 export function read(ref: StateRef<boolean>): BoolRef;
 export function read(ref: StateRef<number> | StateRef<boolean>): NumberRef | BoolRef {
-  const node: RuntimeValue = { op: "input", name: ref.slot };
+  const owner = "owner" in ref ? ref.owner : undefined;
+  const node: RuntimeValue = owner === undefined
+    ? { op: "input", name: ref.slot }
+    : { op: "input", name: ref.slot, owner };
   return ref.kind === "number" ? numberRef(node) : boolRef(node);
 }
 

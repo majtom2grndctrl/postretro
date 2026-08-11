@@ -9,13 +9,14 @@
 use std::cell::RefCell;
 
 use crate::components::entity_state::EntityStateComponent;
-use crate::components::health::{IMPACT_DISPATCH_INPUTS, ImpactDispatch};
+use crate::components::health::{IMPACT_DISPATCH_INPUTS, IMPACT_SOURCE_TOKEN, ImpactDispatch};
 use crate::ctx::ScriptCtx;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
 use crate::registry::{EntityId, EntityRegistry};
 use crate::slot_table::{SlotType, SlotValue};
 use crate::store_bridge::write_store_slot;
+use postretro_foundation::Seat;
 
 /// Write-capability mode for a [`StoreScope`]. Mirrors the two write paths in
 /// `primitives::store`: an engine-policy program bypasses the readonly flag
@@ -78,6 +79,35 @@ impl StoreScope {
             SlotType::Boolean => Some(IrType::Bool),
             SlotType::String | SlotType::Enum { .. } | SlotType::Array => None,
         }
+    }
+
+    fn project_value(ir_type: IrType, value: Option<&SlotValue>) -> IrValue {
+        match (ir_type, value) {
+            (IrType::Number, Some(SlotValue::Number(value))) => IrValue::Number(*value),
+            (IrType::Bool, Some(SlotValue::Boolean(value))) => IrValue::Bool(*value),
+            // An absent value or a slot whose declaration changed after bind
+            // is still total under the evaluator contract.
+            (IrType::Number, _) => IrValue::Number(0.0),
+            (IrType::Bool, _) => IrValue::Bool(false),
+        }
+    }
+
+    /// Resolve the addressable half of an owner store. Only the impact scope
+    /// exposes this handle after it validates the owner token.
+    fn resolve_owner_input(&self, name: &str) -> Option<ResolvedInput<StoreHandle>> {
+        let table = self.ctx.slot_table.borrow();
+        let record = table.get(name)?;
+        if !record.schema.per_owner {
+            return None;
+        }
+        let ir_type = Self::project(&record.schema.slot_type)?;
+        Some(ResolvedInput {
+            handle: StoreHandle {
+                name: name.to_string(),
+                ir_type,
+            },
+            ir_type,
+        })
     }
 }
 
@@ -223,6 +253,9 @@ pub enum EntityInputHandle {
     State(usize),
     Dispatch(usize),
     Store(usize),
+    /// A per-owner store handle reads its addressed seat's live value rather
+    /// than the fire-time scalar store snapshot.
+    OwnedStore(StoreHandle),
 }
 
 /// A resolved output in an [`EntityScope`].
@@ -254,6 +287,10 @@ pub struct EntityScope {
     /// group's write during the same impact dispatch.
     store_handles: RefCell<Vec<StoreHandle>>,
     store_snapshot: RefCell<Vec<IrValue>>,
+    /// The seat resolved from the current impact source. It is refreshed once
+    /// per fire from the caller-owned registry so evaluation can read without
+    /// re-borrowing that registry while fixed-tick damage holds it mutably.
+    owner_seat: Option<Seat>,
 }
 
 impl EntityScope {
@@ -271,6 +308,7 @@ impl EntityScope {
             snapshot: RefCell::new(Vec::new()),
             store_handles: RefCell::new(Vec::new()),
             store_snapshot: RefCell::new(Vec::new()),
+            owner_seat: None,
         }
     }
 
@@ -280,7 +318,10 @@ impl EntityScope {
         for (name, value) in dispatch.ir_values() {
             self.dispatch.seed(name, value)?;
         }
-        self.seed_target(dispatch.target);
+        let registry = self.registry.clone();
+        let registry = registry.borrow();
+        self.seed_owner_seat_from_registry(&registry, dispatch.source);
+        self.seed_target_from_registry(&registry, dispatch.target);
         Ok(())
     }
 
@@ -298,6 +339,7 @@ impl EntityScope {
         for (name, value) in dispatch.ir_values() {
             self.dispatch.seed(name, value)?;
         }
+        self.seed_owner_seat_from_registry(registry, dispatch.source);
         self.seed_target_from_registry(registry, dispatch.target);
         Ok(())
     }
@@ -331,6 +373,14 @@ impl EntityScope {
         }
     }
 
+    fn seed_owner_seat_from_registry(
+        &mut self,
+        registry: &EntityRegistry,
+        source: Option<EntityId>,
+    ) {
+        self.owner_seat = source.and_then(|source| registry.seat_for_pawn(source));
+    }
+
     fn bind_state_name(&self, name: &str) -> usize {
         let mut names = self.state_names.borrow_mut();
         if let Some(index) = names.iter().position(|bound| bound == name) {
@@ -355,6 +405,21 @@ impl EntityScope {
         handles.push(handle);
         self.store_snapshot.borrow_mut().push(initial);
         index
+    }
+
+    fn read_owned_store(&self, handle: &StoreHandle) -> IrValue {
+        let table = self.dispatch.store.ctx.slot_table.borrow();
+        let Some(record) = table.get(&handle.name) else {
+            return handle.ir_type.zero();
+        };
+        let Some(seat) = self.owner_seat else {
+            log::warn!(
+                "[Impact] owner read for slot `{}` resolved no seat; using declared default",
+                handle.name
+            );
+            return StoreScope::project_value(handle.ir_type, record.schema.default.as_ref());
+        };
+        StoreScope::project_value(handle.ir_type, record.per_seat_value(seat))
     }
 
     fn write_state(
@@ -419,6 +484,23 @@ impl BindingScope for EntityScope {
         })
     }
 
+    fn resolve_owned_input(
+        &self,
+        name: &str,
+        owner: &str,
+    ) -> Option<ResolvedInput<Self::InputHandle>> {
+        if owner != IMPACT_SOURCE_TOKEN {
+            return None;
+        }
+        self.dispatch
+            .store
+            .resolve_owner_input(name)
+            .map(|resolved| ResolvedInput {
+                handle: EntityInputHandle::OwnedStore(resolved.handle),
+                ir_type: resolved.ir_type,
+            })
+    }
+
     fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
         if let Some(state_name) = name.strip_prefix(ENTITY_STATE_INPUT_PREFIX) {
             return Some(ResolvedOutput {
@@ -453,6 +535,7 @@ impl BindingScope for EntityScope {
                 .get(*index)
                 .copied()
                 .unwrap_or(IrValue::Number(0.0)),
+            EntityInputHandle::OwnedStore(handle) => self.read_owned_store(handle),
         }
     }
 
@@ -474,6 +557,12 @@ impl BindingScope for StoreScope {
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<StoreHandle>> {
         let table = self.ctx.slot_table.borrow();
         let record = table.get(name)?;
+        // Bare reads are scalar projections. A per-owner slot has no
+        // meaningful scalar owner here, so only the impact scope's explicit
+        // owner resolver may bind it.
+        if record.schema.per_owner {
+            return None;
+        }
         let ir_type = Self::project(&record.schema.slot_type)?;
         Some(ResolvedInput {
             handle: StoreHandle {
@@ -509,15 +598,7 @@ impl BindingScope for StoreScope {
         let value = table
             .get(&handle.name)
             .and_then(|record| record.value.as_ref());
-        match (handle.ir_type, value) {
-            (IrType::Number, Some(SlotValue::Number(n))) => IrValue::Number(*n),
-            (IrType::Bool, Some(SlotValue::Boolean(b))) => IrValue::Bool(*b),
-            // Absent value, or a slot whose live kind disagrees with the bound
-            // projection (cannot happen post-bind for a stable table): total
-            // type-zero per the eval contract.
-            (IrType::Number, _) => IrValue::Number(0.0),
-            (IrType::Bool, _) => IrValue::Bool(false),
-        }
+        Self::project_value(handle.ir_type, value)
     }
 
     fn write(&mut self, handle: &StoreHandle, value: IrValue) {
@@ -548,6 +629,8 @@ mod tests {
     use crate::slot_table::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
 
     const EPSILON: f32 = 1e-6;
     const TEST_DISPATCH_INPUTS: [(&str, IrType); 2] =
@@ -562,6 +645,14 @@ mod tests {
     fn input(name: &str) -> Box<IrNode> {
         Box::new(IrNode::Input {
             name: name.to_string(),
+            owner: None,
+        })
+    }
+
+    fn owned_input(name: &str) -> Box<IrNode> {
+        Box::new(IrNode::Input {
+            name: name.to_string(),
+            owner: Some(IMPACT_SOURCE_TOKEN.to_string()),
         })
     }
 
@@ -602,6 +693,12 @@ mod tests {
             per_owner: false,
             accumulate: None,
         })
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        let mut record = number_slot(value, false);
+        record.schema.per_owner = true;
+        record
     }
 
     fn bool_slot(value: bool) -> SlotRecord {
@@ -926,6 +1023,13 @@ mod tests {
         }
     }
 
+    fn impact_from(target: EntityId, source: EntityId) -> ImpactDispatch {
+        ImpactDispatch {
+            source: Some(source),
+            ..impact(target, 1.0)
+        }
+    }
+
     #[test]
     fn entity_scope_routes_exact_prefixes_without_store_collision() {
         let ctx = ScriptCtx::new();
@@ -1063,5 +1167,117 @@ mod tests {
             .seed_impact(&impact(target, 1.0))
             .expect("next fire seeds");
         assert_number(eval_value(&reader, &scope), 3.0);
+    }
+
+    #[test]
+    fn entity_scope_reads_owned_store_from_the_source_seat_live_value() {
+        let ctx = ScriptCtx::new();
+        let mut record = per_owner_number_slot(5.0);
+        record.value = Some(SlotValue::Number(91.0));
+        record.set_per_seat_value(Seat(1), SlotValue::Number(17.0));
+        record.set_per_seat_value(Seat(2), SlotValue::Number(31.0));
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), record)
+            .expect("test store slot is new");
+
+        let (target, source) = {
+            let mut registry = ctx.registry.borrow_mut();
+            let target = registry.spawn(crate::registry::Transform::default());
+            let source = registry.spawn(crate::registry::Transform::default());
+            registry.bind_pawn_seat(source, Seat(1));
+            (target, source)
+        };
+
+        let mut scope = EntityScope::impact(ctx.clone());
+        let reader = bind(&read_only(*owned_input("currency.xp")), &scope)
+            .expect("impact source owns a per-owner input");
+        scope
+            .seed_impact(&impact_from(target, source))
+            .expect("impact fire seeds");
+
+        assert_number(eval_value(&reader, &scope), 17.0);
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("currency.xp")
+            .expect("slot remains present")
+            .set_per_seat_value(Seat(1), SlotValue::Number(23.0));
+        assert_number(eval_value(&reader, &scope), 23.0);
+    }
+
+    #[test]
+    fn entity_scope_owner_read_without_a_source_seat_uses_default_and_warns() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), per_owner_number_slot(5.0))
+            .expect("test store slot is new");
+        let (target, source) = {
+            let mut registry = ctx.registry.borrow_mut();
+            (
+                registry.spawn(crate::registry::Transform::default()),
+                registry.spawn(crate::registry::Transform::default()),
+            )
+        };
+        let mut scope = EntityScope::impact(ctx);
+        let reader = bind(&read_only(*owned_input("currency.xp")), &scope)
+            .expect("per-owner input binds in impact scope");
+        scope
+            .seed_impact(&impact_from(target, source))
+            .expect("impact fire seeds");
+
+        let capture = LogCapture::start();
+        assert_number(eval_value(&reader, &scope), 5.0);
+        capture.assert_logged_once(
+            Level::Warn,
+            "owner read for slot `currency.xp` resolved no seat; using declared default",
+        );
+    }
+
+    #[test]
+    fn store_read_binders_reject_unaddressed_per_owner_and_addressed_global_slots() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut table = ctx.slot_table.borrow_mut();
+            table
+                .insert("currency.xp".to_string(), per_owner_number_slot(0.0))
+                .expect("per-owner slot is new");
+            table
+                .insert("currency.team".to_string(), number_slot(0.0, false))
+                .expect("global slot is new");
+        }
+        let impact_scope = EntityScope::impact(ctx.clone());
+
+        assert_eq!(
+            bind(&read_only(*input("currency.xp")), &impact_scope).unwrap_err(),
+            BindError::UnknownInput {
+                name: "currency.xp".to_string(),
+            },
+            "a bare read must name no implicit owner"
+        );
+        assert_eq!(
+            bind(&read_only(*owned_input("currency.team")), &impact_scope).unwrap_err(),
+            BindError::UnknownInput {
+                name: "currency.team".to_string(),
+            },
+            "an owner token cannot address a global slot"
+        );
+    }
+
+    #[test]
+    fn sourceless_dispatch_scope_refuses_owner_addressed_store_reads() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), per_owner_number_slot(0.0))
+            .expect("per-owner slot is new");
+        let scope = DispatchScope::script(ctx, &TEST_DISPATCH_INPUTS);
+
+        assert_eq!(
+            bind(&read_only(*owned_input("currency.xp")), &scope).unwrap_err(),
+            BindError::UnknownInput {
+                name: "currency.xp".to_string(),
+            }
+        );
     }
 }

@@ -110,6 +110,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                         when: IrNode::Le {
                             a: Box::new(IrNode::Input {
                                 name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Const {
                                 value: IrValue::Number(16.0),

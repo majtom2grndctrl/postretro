@@ -1265,7 +1265,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
     // runtimes therefore expose it without changing the enumerable `{ slot,
     // kind }` shape of a bare ref or the `{ slot }` output of bindState.
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineImpactEvent, defineStore } from "postretro";
+        import { defineImpactEvent, defineStore, read, runtime, set } from "postretro";
         import { bindState } from "postretro/ui";
 
         const store = defineStore("currency", {
@@ -1275,7 +1275,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
         let owned: ReturnType<typeof store.credits.byPlayer> | undefined;
         let fresh = false;
         let globalRejected = false;
-        defineImpactEvent("award-credits", { tag: "pickup" }, (impact) => {
+        const event = defineImpactEvent("award-credits", { tag: "pickup" }, (impact) => {
           const first = store.credits.byPlayer(impact.source);
           const second = store.credits.byPlayer(impact.source);
           owned = first;
@@ -1285,7 +1285,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           } catch (_error) {
             globalRejected = true;
           }
-          return [];
+          return [set(store.shared, read(first))];
         });
         if (owned === undefined) throw new Error("impact callback did not run");
         JSON.stringify({
@@ -1297,6 +1297,8 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           fresh,
           globalRejected,
           bind: bindState(owned),
+          read: (event as any).policy[0].args.value,
+          runtimeRead: runtime.read(owned),
         });
     "#;
     const LUAU_FIXTURE: &str = r#"
@@ -1310,7 +1312,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
         local owned: any = nil
         local fresh = false
         local globalRejected = false
-        Postretro.defineImpactEvent("award-credits", { tag = "pickup" }, function(impact)
+        local event = Postretro.defineImpactEvent("award-credits", { tag = "pickup" }, function(impact)
           local first = store.credits:byPlayer(impact.source)
           local second = store.credits:byPlayer(impact.source)
           owned = first
@@ -1318,7 +1320,7 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           globalRejected = not pcall(function()
             store.shared:byPlayer(impact.source)
           end)
-          return {}
+          return { Postretro.set(store.shared, Postretro.read(first)) }
         end)
         assert(owned ~= nil)
         local bareKeys = {}
@@ -1343,6 +1345,8 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
           fresh = fresh,
           globalRejected = globalRejected,
           bind = UI.bindState(owned),
+          read = event.policy[1].args.value,
+          runtimeRead = runtime.read(owned),
         }
     "#;
 
@@ -1363,6 +1367,8 @@ fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
             "fresh": true,
             "globalRejected": true,
             "bind": { "slot": "currency.credits" },
+            "read": { "op": "input", "name": "currency.credits", "owner": "@impact.source" },
+            "runtimeRead": { "op": "input", "name": "currency.credits", "owner": "@impact.source" },
         }),
         "byPlayer must produce fresh frozen owner refs without leaking metadata into wire consumers",
     );

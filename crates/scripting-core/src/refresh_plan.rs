@@ -1265,6 +1265,7 @@ mod tests {
             .boost_speed = NumberOrIr::Ir(IrNode::Add {
             a: Box::new(IrNode::Input {
                 name: "speed".to_string(),
+                owner: None,
             }),
             b: Box::new(IrNode::Const {
                 value: IrValue::Number(5.0),

@@ -99,7 +99,7 @@ impl IrValue {
 /// | op | fields | result type |
 /// |----|--------|-------------|
 /// | `const` | `value` | the literal's type |
-/// | `input` | `name` | the bound source's projected type |
+/// | `input` | `name`, optional `owner` | the bound source's projected type |
 /// | `add`/`sub`/`mul`/`div` | `a`,`b`: number | number |
 /// | `clamp` | `x`,`lo`,`hi`: number | number |
 /// | `lerp` | `a`,`b`,`t`: number | number |
@@ -114,6 +114,13 @@ pub enum IrNode {
     },
     Input {
         name: String,
+        /// An optional opaque owner token for an owner-addressed store read.
+        ///
+        /// Omission is deliberate: plain input leaves must retain their shipped
+        /// wire form. The binding scope decides whether a supplied token has
+        /// meaning in its current dispatch context.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
     },
 
     Add {
@@ -186,9 +193,15 @@ impl IrNode {
         fn walk(node: &IrNode, names: &mut Vec<String>) {
             match node {
                 IrNode::Const { .. } => {}
-                IrNode::Input { name } => {
+                IrNode::Input { name, owner } => {
                     if name.starts_with('@') && !names.contains(name) {
                         names.push(name.clone());
+                    }
+                    if let Some(owner) = owner
+                        && owner.starts_with('@')
+                        && !names.contains(owner)
+                    {
+                        names.push(owner.clone());
                     }
                 }
                 IrNode::Add { a, b }
@@ -295,6 +308,7 @@ mod wire_format_tests {
         assert_round_trip(
             &IrNode::Input {
                 name: "speed".to_string(),
+                owner: None,
             },
             r#"{"op":"input","name":"speed"}"#,
         );
@@ -305,21 +319,51 @@ mod wire_format_tests {
         let node = IrNode::Select {
             cond: Box::new(IrNode::Input {
                 name: "@rising".to_string(),
+                owner: None,
             }),
             a: Box::new(IrNode::Add {
                 a: Box::new(IrNode::Input {
                     name: "ambient.slot".to_string(),
+                    owner: None,
                 }),
                 b: Box::new(IrNode::Input {
                     name: "@dt".to_string(),
+                    owner: None,
                 }),
             }),
             b: Box::new(IrNode::Input {
                 name: "@rising".to_string(),
+                owner: None,
             }),
         };
 
         assert_eq!(node.dispatch_input_names(), vec!["@rising", "@dt"]);
+    }
+
+    #[test]
+    fn input_owner_is_optional_and_plain_wire_form_stays_byte_identical() {
+        let legacy = r#"{"op":"input","name":"progression.xp"}"#;
+        let parsed: IrNode = serde_json::from_str(legacy).expect("legacy leaf parses");
+        assert_eq!(
+            parsed,
+            IrNode::Input {
+                name: "progression.xp".to_string(),
+                owner: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&parsed).expect("legacy leaf reserializes"),
+            legacy,
+            "an unowned read retains its shipped wire bytes"
+        );
+
+        assert_round_trip(
+            &IrNode::Input {
+                name: "progression.xp".to_string(),
+                owner: Some("@impact.source".to_string()),
+            },
+            r#"{"op":"input","name":"progression.xp","owner":"@impact.source"}"#,
+        );
     }
 
     #[test]
@@ -475,6 +519,7 @@ mod wire_format_tests {
             output: Some("player.shield".to_string()),
             root: IrNode::Input {
                 name: "speed".to_string(),
+                owner: None,
             },
         };
         let json = serde_json::to_string(&envelope).expect("serialize envelope");

@@ -791,8 +791,8 @@
 
   /** Literal scalar leaf: `{ op: "const", value }`. `value` is a number or boolean. */
   export type RuntimeConst = { op: "const"; value: number | boolean };
-  /** Named-input leaf: `{ op: "input", name }`. Bound to live state by the Rust evaluator. */
-  export type RuntimeRead = { op: "input"; name: string };
+  /** Named-input leaf: `{ op: "input", name, owner? }`. `owner` selects a per-owner store value in an owner-aware scope. */
+  export type RuntimeRead = { op: "input"; name: string; owner?: string };
   /** Addition: `a + b` (number). */
   export type RuntimeAdd = { op: "add"; a: RuntimeValue; b: RuntimeValue };
   /** Subtraction: `a - b` (number). */

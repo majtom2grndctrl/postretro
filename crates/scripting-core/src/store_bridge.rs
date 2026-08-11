@@ -902,7 +902,8 @@ mod tests {
         assert_eq!(
             declaration.records[0].1.schema.accumulate,
             Some(postretro_foundation::IrNode::Input {
-                name: "@dt".to_string()
+                name: "@dt".to_string(),
+                owner: None,
             })
         );
     }

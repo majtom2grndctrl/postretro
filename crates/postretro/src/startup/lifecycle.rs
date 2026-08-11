@@ -2270,6 +2270,7 @@ mod tests {
                         per_owner: false,
                         accumulate: Some(postretro_foundation::IrNode::Input {
                             name: "@dt".to_string(),
+                            owner: None,
                         }),
                     }),
                 )],

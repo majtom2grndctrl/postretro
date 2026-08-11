@@ -412,6 +412,17 @@ impl SlotTable {
             .map(|(name, record)| (name.as_str(), record))
     }
 
+    /// Iterate every slot record mutably.
+    ///
+    /// The HUD publisher uses this to refresh the scalar projection for the
+    /// local seat without exposing another owner's per-seat value to an
+    /// unaddressed reader.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&str, &mut SlotRecord)> {
+        self.slots
+            .iter_mut()
+            .map(|(name, record)| (name.as_str(), record))
+    }
+
     /// Clear all authoritative per-seat values when a durable seat is released.
     ///
     /// The table contains every mod store, so the app can keep the seat-table

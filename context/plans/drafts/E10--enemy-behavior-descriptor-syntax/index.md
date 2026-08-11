@@ -189,13 +189,16 @@ Retention drop is authored instead, over `@brain.targetHostile`.
   and `@brain.targetReachable` resolve identically in `BrainValidationScope` and the runtime
   `BrainScope` (drift test), occupy `BRAIN_INPUTS` indices 10, 11, and 12 respectively, and
   appear in the SDK `brain` prelude in both runtimes (SDK drift test green).
-- [ ] **Zero-alloc between strides.** On a between-strides (non-acquisition-due) tick with
-  a navmesh present, snapshot refresh plus guard eval — including the three new fixed slots
-  and the anchor / cached-reachability / hostility computation feeding them — performs zero
-  heap allocations (the alloc-probe fixture targets a non-due tick). The due-tick reachability
-  probe calls `find_path`, which runs A* and allocates a `NavPath`; that allocation is
-  explicitly *outside* the zero-alloc contract — it is strided and cached, so a between-strides
-  tick reuses the cached verdict and allocates nothing.
+- [ ] **Zero-alloc guard window.** The `brain_scope` refresh+eval fixture
+  (`refresh_and_guard_eval_perform_zero_heap_allocations`, `ai/brain_scope.rs`), extended
+  with the three new fixed slots populated for a non-due tick — anchor distance, the cached
+  reachability verdict (no `find_path` call), and hostility — performs zero heap
+  allocations. `run_ai_tick` is not the probe target: its compute pass builds fresh
+  outcome/snapshot/event `Vec`s every tick regardless of stride, so it can never be
+  zero-alloc. The due-tick reachability probe calls `find_path`, which runs A* and
+  allocates a `NavPath`; that allocation is explicitly *outside* the zero-alloc contract —
+  it is strided and cached, so a between-strides tick reuses the cached verdict and
+  allocates nothing.
 - [ ] **Host-only, deterministic, no wire change.** Anchor, patrol cursor, reachability
   cache, and faction are host-only sim state; sim determinism tests stay green; a
   connected client observes only replicated animation-state names, with no new wire field.
@@ -216,8 +219,9 @@ pure facing/yaw cluster (`MESH_FORWARD`, `FACING_TURN_RATE`, `yaw_rotation_towar
 into a new `ai/combat_slots.rs`. `LocomotionIntent`/`MOVE_SPEED_EPSILON` are used across the
 apply pass as well as facing — leave them in `mod.rs` (or wherever the implementer sees the
 cleaner seam); do not force them into `facing.rs`. Add `mod facing;` / `mod combat_slots;`
-to `mod.rs` and re-export the `pub(crate)` items the tick and `ai_tests.rs` use
-(`FACING_TURN_RATE`, `slew_yaw`) so call sites change imports only. No behavior change; the full AI suite stays green. This lands first because every
+to `mod.rs`, and expose (`pub(super)`/`pub(crate)` as appropriate) and re-export every
+extracted item the tick or `ai_tests.rs` references, so call sites change imports only.
+No behavior change; the full AI suite stays green. This lands first because every
 later task edits the tick and both extracted clusters.
 
 ### Task 2: Thin slice — the `@brain.distanceFromAnchor` fact end to end
@@ -228,7 +232,8 @@ spec repeats. Add `home_anchor: Vec3` to `BrainComponent` (`crates/entities/src/
 spawn position on every host enemy-assembly path (coordinate with Task 4's faction seed —
 both seed at assembly): the archetype spawn block (`builtins/data_archetype.rs`, the
 read-modify-write block that already reads the brain to set `aggro_armed`) seeds it from the
-entity's `Transform.position`; the shared test spawn helper (`spawn_enemy`, `ai_tests.rs`)
+entity's `Transform.position` (attached by `try_spawn` before component seeding runs, so
+it's already on the entity here); the shared test spawn helper (`spawn_enemy`, `ai_tests.rs`)
 seeds it from its position argument. `from_graph` has no transform available and defaults
 `Vec3::ZERO`; client reconstruction reaches the brain only through `from_graph`
 (`netcode/replication.rs`), so a replicated enemy keeps `home_anchor == ZERO` — harmless,
@@ -258,9 +263,8 @@ rule), and each point's components must be finite — pathed messages
 (`components.behavior.patrol.points[i]`). `behavior.rs` production is ~453 lines (its
 `mod tests` bulk starts at line 454); it stays under the split threshold, so no split
 is warranted here. Extend `SteeringIntent` (`engine_floor.rs`) with a data-carrying
-`MoveTo(Vec3)` variant and a `POSITION_GOAL_ARRIVAL_EPSILON` constant (`0.5` m — at or above
-the agent steering arrival radius so the goal resolver's "arrived" agrees with the steering
-layer's stop). `SteeringIntent` currently derives `Eq`; `Vec3` holds `f32` and has no `Eq`,
+`MoveTo(Vec3)` variant and a `POSITION_GOAL_ARRIVAL_EPSILON` constant (`0.5` m).
+`SteeringIntent` currently derives `Eq`; `Vec3` holds `f32` and has no `Eq`,
 so the `MoveTo(Vec3)` variant forces dropping `Eq` from the derive — keep `PartialEq` (`Vec3`
 supports it) and `Copy` (both still hold). Its only consumers compare with `==`
 (`graph_eval::engages` and the compute-pass steering match), which `PartialEq` satisfies; no
@@ -319,7 +323,11 @@ necessary, since without it a nearer friendly pawn masks a hostile one behind it
 retained lookup applies no faction test (its alive/died checks are unchanged), so a retained
 target is never re-gated on hostility. Thread the enemy's faction scalar as a new `f32`
 parameter `select_target` → `nearest_target_candidate` (read once per enemy in the compute
-pass from its `EntityStateComponent`); `target_candidate`'s signature is untouched.
+pass from its `EntityStateComponent`); `target_candidate`'s signature is untouched. This
+changes the call the unit test `selection_keeps_retained_target_until_a_fresh_candidate_beats_hysteresis`
+(`targeting.rs`) makes: it now passes the enemy's faction argument, and its hysteresis
+assertion is unchanged — both pawns read faction 0.0 (absent), the enemy passes its default
+1.0, so both stay admitted.
 
 **Retention — authored, over a target-side fact.** Append `@brain.targetHostile` (Bool) to
 `BRAIN_INPUTS` at **index 11** (after Task 2's index 10) with its
@@ -410,7 +418,11 @@ authored-arrival-guard wedge (a guard threshold `<` epsilon never exits); the fa
 dropping a flipped-to-friendly target, the trigger/touch vs `on_impact` faction-write ordering
 seam, default-seed behavior identity); the reachability cache reused across a retained target's
 movement; and the alloc-probe on a between-strides tick with the three new fixed slots populated
-(the due-tick `find_path` allocation is out of the zero-alloc contract). AC 10 (host-only,
+(the due-tick `find_path` allocation is out of the zero-alloc contract). Update the
+reference-enemy identity pins in `crates/scripting-core/src/data_descriptors/tests/behavior.rs`
+(`the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`) to the new
+authored shape — the pins are hand-written, so re-derive them from the rewritten reference
+rather than silencing them. AC 10 (host-only,
 deterministic, no wire) is covered by the existing sim/net determinism suite staying green plus
 the by-construction host-only fields; add a determinism assertion over a retreat/patrol tick to
 this list to pin it. Update the agent diagnostics overlay to label the new states. Update
@@ -560,7 +572,13 @@ export const sentry = defineEntity({
         // Untargeted: walk the patrol route; acquire on a fresh scan.
         patrol: {
           animation: "walk", motion: "patrol",
-          transitions: [{ to: "alert", when: runtime.le(brain.targetDistance, 16) }],
+          transitions: [{
+            to: "alert",
+            // acquisitionDue conjunction: the reference-enemy idiom
+            // (sdk/behaviors/reference/entities.ts) — detection is
+            // time-sliced by the engine's think stride.
+            when: runtime.select(brain.acquisitionDue, runtime.le(brain.targetDistance, 16), false),
+          }],
         },
         alert: {
           animation: "walk", motion: "chaseTarget",

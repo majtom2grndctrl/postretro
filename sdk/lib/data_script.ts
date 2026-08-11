@@ -184,8 +184,10 @@ declare const sourceBrand: unique symbol;
 declare const impactEventBrand: unique symbol;
 declare const effectBrand: unique symbol;
 
-export type NumberValue = number | NumberRef;
-export type BoolValue = boolean | BoolRef;
+/** A numeric literal, fluent expression, or raw `runtime.*` node. */
+export type NumberValue = number | NumberRef | RuntimeValue;
+/** A boolean literal, fluent expression, or raw `runtime.*` node. */
+export type BoolValue = boolean | BoolRef | RuntimeValue;
 
 export interface NumberRef {
   readonly [numBrand]: true;
@@ -210,6 +212,16 @@ export interface BoolRef {
   not(): BoolRef;
   select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
 }
+
+/**
+ * Lift raw `runtime.*` output into the fluent impact-expression algebra.
+ * `number` and `bool` select the expected result kind; Rust remains the
+ * authority that validates the resulting IR at bind time.
+ */
+export type RuntimeExpressionRefs = Readonly<{
+  number(value: RuntimeValue): NumberRef;
+  bool(value: RuntimeValue): BoolRef;
+}>;
 
 type ImpactEffectWire =
   | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
@@ -288,11 +300,13 @@ function constant(value: number | boolean): RuntimeValue {
 }
 
 function numberNode(value: NumberValue): RuntimeValue {
-  return typeof value === "number" ? constant(value) : numberNodes.get(value)!;
+  if (typeof value === "number") return constant(value);
+  return numberNodes.get(value) ?? (value as RuntimeValue);
 }
 
 function boolNode(value: BoolValue): RuntimeValue {
-  return typeof value === "boolean" ? constant(value) : boolNodes.get(value)!;
+  if (typeof value === "boolean") return constant(value);
+  return boolNodes.get(value) ?? (value as RuntimeValue);
 }
 
 function numberRef(node: RuntimeValue): NumberRef {
@@ -329,6 +343,12 @@ function boolRef(node: RuntimeValue): BoolRef {
   boolNodes.set(ref, node);
   return Object.freeze(ref);
 }
+
+/** Public lifting helpers keep the raw-node adapters private to the SDK. */
+export const fromRuntime: RuntimeExpressionRefs = Object.freeze({
+  number: (value) => numberRef(value),
+  bool: (value) => boolRef(value),
+});
 
 export function read(ref: StateRef<number>): NumberRef;
 export function read(ref: StateRef<boolean>): BoolRef;
@@ -409,6 +429,20 @@ export function set(ref: Ref<number>, value: NumberValue): Effect {
       value: numberNode(value),
     },
   } as ImpactEffectWire as unknown as Effect;
+}
+
+/**
+ * Build a read-modify-write effect. `build` receives exactly `read(ref)`, so
+ * the authored slot name occurs once while its expression reads the frozen
+ * pre-fire snapshot.
+ */
+export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect {
+  return set(ref, build(read(ref)));
+}
+
+/** Build a deferred impact-effect group guarded by a Bool expression. */
+export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect {
+  return { when: cond, do: effects };
 }
 
 function impactEvent(

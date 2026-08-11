@@ -930,6 +930,102 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
 }
 
 #[test]
+fn impact_expression_algebra_update_and_when_match_across_authoring_runtimes() {
+    // The public bridges must accept raw runtime nodes as fluent operands and
+    // lift a runtime predicate into BoolRef before `when` lowers it. The first
+    // group names its condition; the second inlines the identical expression.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent, defineStore, fromRuntime, read, runtime, update, when } from "postretro";
+
+        const counters = defineStore("impact", {
+          count: { type: "number", default: 0 },
+          enabled: { type: "boolean", default: false },
+        });
+        const namedGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+          .and(read(counters.enabled));
+        const event = defineImpactEvent("runtime-bridge", { tag: "crate" }, (impact) => {
+          const rawRuntimeNumber = runtime.add(runtime.read("impact.bonus"), 1);
+          return [
+            when(namedGate, [
+              update(counters.count, (cur) => cur.plus(impact.amount.plus(rawRuntimeNumber))),
+            ]),
+            when(
+              fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+                .and(read(counters.enabled)),
+              [],
+            ),
+          ];
+        });
+        JSON.stringify({ policy: (event as unknown as { policy: unknown[] }).policy });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+
+        local counters = Postretro.defineStore("impact", {
+          count = { type = "number", default = 0 },
+          enabled = { type = "boolean", default = false },
+        })
+        local namedGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+        namedGate = namedGate["and"](namedGate, Postretro.read(counters.enabled))
+        local event = Postretro.defineImpactEvent("runtime-bridge", { tag = "crate" }, function(impact)
+          local rawRuntimeNumber = runtime.add(runtime.read("impact.bonus"), 1)
+          local inlineGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+          return {
+            Postretro.when(namedGate, {
+              Postretro.update(counters.count, function(cur)
+                return cur:plus(impact.amount:plus(rawRuntimeNumber))
+              end),
+            }),
+            Postretro.when(
+              inlineGate["and"](
+                inlineGate,
+                Postretro.read(counters.enabled)
+              ),
+              {}
+            ),
+          }
+        end)
+        return { policy = event.policy }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "expression-algebra lowering must match across runtimes"
+    );
+
+    let policy = &typescript["policy"];
+    assert_eq!(
+        policy[0]["when"], policy[1]["when"],
+        "named and inline `when` conditions must lower identically"
+    );
+    assert_eq!(
+        policy[0]["do"][0],
+        serde_json::json!({
+            "primitive": "slot.set",
+            "args": {
+                "slot": "impact.count",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.count" },
+                    "b": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "@impact.amount" },
+                        "b": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "impact.bonus" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                    },
+                },
+            },
+        }),
+        "update must lower directly to slot.set with its current-value input inlined"
+    );
+}
+
+#[test]
 fn authored_name_validation_diagnostics_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { defineImpactEvent, defineStore } from "postretro";

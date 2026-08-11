@@ -77,6 +77,7 @@ export type {
   BoolValue,
   NumberRef,
   BoolRef,
+  RuntimeExpressionRefs,
   Effect,
   GatedEffect,
   EffectOrGroup,
@@ -91,6 +92,7 @@ export type {
   StoreDefinition,
   StoreSlotSchema,
 } from "./data_script";
+export type { ComputedRef, Ref } from "./ui/widgets";
 export {
   defineReaction,
   defineImpactEvent,
@@ -101,7 +103,10 @@ export {
   defineTriggerPool,
   defineStore,
   read,
+  fromRuntime,
   set,
+  update,
+  when,
   slot,
   damage,
   grantHealth,

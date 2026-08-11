@@ -215,8 +215,8 @@ export type TriggerEventParams = {
 }
 export type Reaction<S> = NamedReactionDescriptor
 
-export type NumberValue = number | NumberRef
-export type BoolValue = boolean | BoolRef
+export type NumberValue = number | NumberRef | RuntimeValue
+export type BoolValue = boolean | BoolRef | RuntimeValue
 
 export type NumberRef = {
   plus: (self: NumberRef, n: NumberValue) -> NumberRef,
@@ -234,10 +234,20 @@ export type NumberRef = {
 }
 
 export type BoolRef = {
+  --- `and`, `or`, and `not` are Luau keywords. Call this as
+  --- `ref["and"](ref, other)`, not `ref:and(other)`.
   ["and"]: (self: BoolRef, other: BoolValue) -> BoolRef,
   ["or"]: (self: BoolRef, other: BoolValue) -> BoolRef,
   ["not"]: (self: BoolRef) -> BoolRef,
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
+}
+
+--- Lift raw `runtime.*` output into the fluent impact-expression algebra.
+--- The `number` and `bool` helpers select the expected result kind; Rust
+--- validates the resulting IR when it binds the descriptor.
+export type RuntimeExpressionRefs = {
+  number: (value: RuntimeValue) -> NumberRef,
+  bool: (value: RuntimeValue) -> BoolRef,
 }
 
 type ImpactEffectWire =
@@ -542,14 +552,14 @@ local function numberNode(value: NumberValue): any
   if type(value) == "number" then
     return constant(value)
   end
-  return numberNodes[value]
+  return numberNodes[value] or value
 end
 
 local function boolNode(value: BoolValue): any
   if type(value) == "boolean" then
     return constant(value)
   end
-  return boolNodes[value]
+  return boolNodes[value] or value
 end
 
 local function numberRef(node: any): NumberRef
@@ -619,6 +629,16 @@ function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): Nu
   end
   return boolRef(node)
 end
+
+--- Public lifting helpers keep the raw-node adapters private to the SDK.
+DataScriptSdk.fromRuntime = table.freeze({
+  number = function(value: RuntimeValue): NumberRef
+    return numberRef(value)
+  end,
+  bool = function(value: RuntimeValue): BoolRef
+    return boolRef(value)
+  end,
+}) :: RuntimeExpressionRefs
 
 local IMPACT_EFFECT_CAPABILITY: ImpactEffectCapability = table.freeze({ __impactEffectCapability = true })
 
@@ -779,6 +799,18 @@ function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
     end
     return wire
   end
+end
+
+--- Build a read-modify-write effect. `build` receives exactly `read(ref)`, so
+--- the authored slot name occurs once while its expression reads the frozen
+--- pre-fire snapshot.
+function DataScriptSdk.update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
+  return DataScriptSdk.set(ref, build(DataScriptSdk.read(ref) :: NumberRef))
+end
+
+--- Build a deferred impact-effect group guarded by a Bool expression.
+function DataScriptSdk.when(cond: BoolRef, effects: {Effect}): GatedEffect
+  return { when = cond, ["do"] = effects }
 end
 
 local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"

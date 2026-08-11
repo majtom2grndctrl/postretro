@@ -151,6 +151,11 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
     "slot",
 ];
 
@@ -292,6 +297,11 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
     "slot",
     "brain",
     "candidate",

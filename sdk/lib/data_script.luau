@@ -247,6 +247,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.add", args: { slot: string, delta: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
@@ -338,7 +339,8 @@ export type StoreDeclaration = {
   namespace: string,
   schema: { [string]: StoreSlotSchema },
 }
-export type ReadonlyStateRef<T> = { slot: string, __stateRefValueBrand: T? }
+export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
+export type ReadonlyStateRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 export type StoreDefinition = {
@@ -610,6 +612,14 @@ boolRef = function(node: any): BoolRef
   return table.freeze(ref) :: any
 end
 
+function DataScriptSdk.read(ref: ReadonlyStateRef<number> | ReadonlyStateRef<boolean>): NumberRef | BoolRef
+  local node = { op = "input", name = ref.slot }
+  if ref.kind == "number" then
+    return numberRef(node)
+  end
+  return boolRef(node)
+end
+
 local IMPACT_EFFECT_CAPABILITY: ImpactEffectCapability = table.freeze({ __impactEffectCapability = true })
 
 local function lowerImpactEffect(effect: Effect): ImpactEffectWire
@@ -753,6 +763,22 @@ function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
       end
     end,
   })
+end
+
+function DataScriptSdk.set(ref: WritableStateRef<number>, value: NumberValue): Effect
+  local wire = {
+    primitive = "slot.set",
+    args = {
+      slot = ref.slot,
+      value = numberNode(value),
+    },
+  } :: any
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
 end
 
 local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"

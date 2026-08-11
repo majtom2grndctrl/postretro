@@ -42,10 +42,13 @@ declare const writableStateRefBrand: unique symbol;
 
 export type ScalarStateValue = number | boolean | string;
 export type NumericArrayStateValue = ReadonlyArray<number>;
+export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
 
-/** Readable authoritative state reference. Runtime shape is exactly `{ slot }`. */
+/** Readable authoritative state reference. Descriptor consumers serialize only `slot`. */
 export type ReadonlyStateRef<T> = {
   readonly slot: string;
+  /** SDK-only value-type tag. Descriptor consumers serialize only `slot`. */
+  readonly kind: StateRefKind;
   readonly [stateRefValueBrand]: T;
 };
 

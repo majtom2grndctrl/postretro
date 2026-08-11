@@ -100,6 +100,8 @@ export {
   defineMapCatalog,
   defineTriggerPool,
   defineStore,
+  read,
+  set,
   slot,
   damage,
   grantHealth,

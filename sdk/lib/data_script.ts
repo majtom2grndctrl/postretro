@@ -209,6 +209,7 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
+  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
   | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
 
 /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
@@ -319,6 +320,13 @@ function boolRef(node: RuntimeValue): BoolRef {
   return Object.freeze(ref);
 }
 
+export function read(ref: StateRef<number>): NumberRef;
+export function read(ref: StateRef<boolean>): BoolRef;
+export function read(ref: StateRef<number> | StateRef<boolean>): NumberRef | BoolRef {
+  const node: RuntimeValue = { op: "input", name: ref.slot };
+  return ref.kind === "number" ? numberRef(node) : boolRef(node);
+}
+
 function impactEffect(
   primitive: string,
   args?: Record<string, unknown>,
@@ -380,6 +388,17 @@ export function slot(ref: WritableStateRef<number>): NumberSlot {
       } as ImpactEffectWire as unknown as Effect;
     },
   });
+}
+
+/** Build the closed absolute store-write effect. */
+export function set(ref: WritableStateRef<number>, value: NumberValue): Effect {
+  return {
+    primitive: "slot.set",
+    args: {
+      slot: ref.slot,
+      value: numberNode(value),
+    },
+  } as ImpactEffectWire as unknown as Effect;
 }
 
 function impactEvent(

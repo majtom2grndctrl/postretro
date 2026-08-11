@@ -481,6 +481,13 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 .ok_or_else(|| "target setState args is missing `value`".to_string())?;
             bind_number_write(format!("@state.{name}"), value, scope).map(BoundEffect::Write)
         }
+        "slot.set" if target.is_none() => {
+            let slot = required_string(args, "slot", "slot.set args")?;
+            let value = args
+                .get("value")
+                .ok_or_else(|| "slot.set args is missing `value`".to_string())?;
+            bind_number_write(slot.to_string(), value, scope).map(BoundEffect::Write)
+        }
         "slot.add" if target.is_none() => {
             let slot = required_string(args, "slot", "slot.add args")?;
             let delta = args
@@ -494,6 +501,7 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
             bind_number_write(slot.to_string(), &value, scope).map(BoundEffect::Write)
         }
         "setState" => Err("setState must target @impact.target".to_string()),
+        "slot.set" => Err("slot.set must not carry a target".to_string()),
         "slot.add" => Err("slot.add must not carry a target".to_string()),
         _ => Err(format!("unsupported impact primitive `{primitive}`")),
     }
@@ -692,6 +700,13 @@ mod tests {
         })
     }
 
+    fn slot_set(slot: &str, value: Value) -> Value {
+        json!({
+            "primitive": "slot.set",
+            "args": { "slot": slot, "value": value },
+        })
+    }
+
     fn grant_health(amount: Value) -> Value {
         json!({
             "primitive": "grantHealth",
@@ -808,6 +823,110 @@ mod tests {
             Some(SlotValue::Number(value)) => *value,
             other => panic!("expected number slot value, got {other:?}"),
         }
+    }
+
+    fn evaluate_slot_policy(base: f32, policy: Vec<Value>) -> f32 {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(base))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event("slot-policy", "crate", policy)]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        store(&ctx, "progress.xp")
+    }
+
+    #[test]
+    fn slot_set_matches_slot_add_stored_result() {
+        let slot_set_result = evaluate_slot_policy(
+            10.0,
+            vec![slot_set(
+                "progress.xp",
+                json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+            )],
+        );
+        let slot_add_result =
+            evaluate_slot_policy(10.0, vec![slot_add("progress.xp", number(1.0))]);
+
+        assert_eq!(slot_set_result, 11.0);
+        assert_eq!(slot_set_result, slot_add_result);
+    }
+
+    #[test]
+    fn slot_set_aliasing_reads_the_frozen_snapshot_and_matches_slot_add() {
+        let slot_set_result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                ),
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(2.0) }),
+                ),
+            ],
+        );
+        let slot_add_result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_add("progress.xp", number(1.0)),
+                slot_add("progress.xp", number(2.0)),
+            ],
+        );
+
+        assert_eq!(slot_set_result, 12.0);
+        assert_eq!(slot_set_result, slot_add_result);
+    }
+
+    #[test]
+    fn slot_set_input_write_clobbers_an_earlier_absolute_write() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set("progress.xp", number(5.0)),
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                ),
+            ],
+        );
+
+        assert_eq!(result, 11.0);
+    }
+
+    #[test]
+    fn slot_set_absolute_write_clobbers_an_earlier_input_write() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                ),
+                slot_set("progress.xp", number(5.0)),
+            ],
+        );
+
+        assert_eq!(result, 5.0);
+    }
+
+    #[test]
+    fn slot_set_last_absolute_write_wins() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set("progress.xp", number(5.0)),
+                slot_set("progress.xp", number(7.0)),
+            ],
+        );
+
+        assert_eq!(result, 7.0);
     }
 
     #[test]
@@ -1507,12 +1626,28 @@ mod tests {
                 "primitive": "slot.add",
                 "args": { "slot": "impact.total", "delta": { "op": "const", "value": true } },
             }),
+            json!({
+                "primitive": "slot.set",
+                "args": { "slot": "impact.total", "value": { "op": "const", "value": true } },
+            }),
         ] {
             assert!(
                 bind_effect(&malformed, &scope).is_err(),
                 "numeric effect operand accepted boolean IR: {malformed}"
             );
         }
+
+        let slot_set_with_target = json!({
+            "primitive": "slot.set",
+            "target": "@impact.target",
+            "args": { "slot": "impact.total", "value": number(1.0) },
+        });
+        assert_eq!(
+            bind_effect(&slot_set_with_target, &scope)
+                .err()
+                .expect("slot.set must reject a present target"),
+            "slot.set must not carry a target"
+        );
 
         for invalid_target in [json!(null), json!(42), json!({}), json!("@impact.target")] {
             let malformed = json!({

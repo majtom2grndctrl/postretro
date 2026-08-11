@@ -410,6 +410,12 @@ Both primitives call the one grant chokepoint per resolved recipient. Amounts mu
 
 **The mechanism.** At load time the author calls an engine-provided builder API. Calling it looks like writing a function, but it does not produce one — it constructs a **typed, serializable IR**: a tree of closed-vocabulary opcodes whose leaf nodes reference engine-provided inputs by name. That IR crosses the FFI as plain data. The VM drops; Rust owns the IR and a **total evaluator** that binds the named input leaves to live state and evaluates the tree each tick. The author thus expresses behavior that depends on live state — `boost = f(speed, charges, grounded)` — with no retained closure and no live VM.
 
+**Reactive graph, compiled not run.** The builder API mirrors Vue's composition API: named sources composed into derived values and effects. But the graph compiles to IR that Rust evaluates each tick — it never runs in JS. The consequences:
+
+- no `.value` — a reference builds an input leaf, never reads a value;
+- `if`/`&&` over a reference collapses to a constant at author time, so a condition is a deferred `select`, not a branch;
+- a derived value is an IR subtree, not a cached cell.
+
 **This generalizes patterns already in the engine.** Two existing instances:
 
 - **Reactions** cross the FFI as `{name, JSON args}` and dispatch to a Rust handler keyed by name (§10). A reaction is a one-instruction command buffer: a single opcode plus its serialized arguments.

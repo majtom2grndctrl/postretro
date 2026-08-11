@@ -291,6 +291,16 @@ policies; they exercise two distinct recipient paths.
    deliberately never self-disarms in v1, so leave it, wait three seconds, and
    enter again for another volume payout.
 
+3. **Per-player XP alongside a shared team count.** Every dummy kill also awards
+   **10 XP** to its damage source and increments the shared `teamKills` counter.
+   In a two-client session, have each player kill a different number of dummies:
+   each HUD shows only that player's XP, so the XP readouts diverge, while the
+   shared team-kill count agrees for both clients. They are the same reward policy;
+   the declaration and `.byPlayer(impact.source)` address make XP per-player,
+   while the plain `teamKills` update remains one session pot. XP is session-scoped:
+   it survives only the current seat's hold/reclaim window and does not persist to
+   disk until the per-player persistence work lands.
+
 ## Why the chain is `progress → named event → applyDamage`, not a simpler trigger
 
 - A `levelLoad` reaction fires **before the first rendered frame**, so an

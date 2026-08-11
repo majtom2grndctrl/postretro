@@ -144,9 +144,13 @@ base rather than composing with it (Orderings, below).
 - [ ] `readState(store.numberSlot)` yields a `NumberRef`; `readState(store.boolSlot)` yields a `BoolRef`; each
   composes with the fluent algebra (`.plus`, `.gt`, `.and`, …).
 - [ ] `readState(getGameState().player.health)` (an engine `ComputedRef`) yields a `NumberRef` usable in the
-  same expression as an impact fact and a store read.
+  same expression as an impact fact and a store read; inside an impact expression this resolves via the
+  store-slot path only if `player.health` is present in the slot table at policy-bind time, so the test must
+  seed it.
 - [ ] `set(store.writableNumberSlot, expr)` writes the evaluated expression to the slot, performing no implicit
-  self-read; a readonly ref (`ComputedRef`) passed to `set` or `update` is a TypeScript type error.
+  self-read — runtime-testable: `set(xp, 5)` stores `5`, not `xp+5`. A readonly ref (`ComputedRef`) passed to
+  `set` or `update` is a TypeScript type error — a `tsc`/review gate via `@ts-expect-error` type-test fixtures
+  (no `tsc` CI), not a `cargo test`.
 - [ ] `update(store.xp, (xp) => xp.plus(1))` names the slot once and performs a read-modify-write; it and the
   pre-retirement `slot(store.xp).add(1)` produce the same stored value against an `EntityScope` seeded with a
   known `store.xp` input. The callback's `cur` argument is a `NumberRef` equal to `readState(store.xp)`. Task 4
@@ -165,25 +169,34 @@ base rather than composing with it (Orderings, below).
   miss — the three-dialect bridge is closed.
 - [ ] `Ref<T>` is writable and `ComputedRef<T>` is readonly at the type level; `getGameState().ui.textEntry`
   types as `Ref<string>` (writable engine slot) while `getGameState().player.health` types as
-  `ComputedRef<number>`. Both carry a build-time `kind` field alongside `.slot` (never serialized); the
-  writable/readonly split stays keyed on capability, not on `kind`.
+  `ComputedRef<number>` — these are `tsc`/review gates via `@ts-expect-error` type-test fixtures (no `tsc` CI),
+  not a `cargo test`. Both carry a build-time `kind` field alongside `.slot`, never serialized — a grep/parity
+  gate: only `.slot` reaches the wire. The writable/readonly split stays keyed on capability, not on `kind`.
 - [ ] Every new TS surface has a Luau twin producing byte-identical wire; the Luau boolean path is documented
   as `ref["and"](…)` (keyword collision).
-- [ ] The converged surface lowers to byte-identical wire descriptors as the pre-convergence surface for
-  equivalent authoring (golden comparison over the migrated `content/dev` scripts) — except the newly added
-  `slot.set` primitive and the Rust `breakable_threshold` test's `slot.add`→`update` conversion (the only real
-  `slot.add` emitter; no `content/` site emits it today), which are semantically equivalent (same stored result)
-  rather than byte-identical.
+- [ ] The converged surface lowers to the same wire as the pre-convergence surface for equivalent authoring.
+  There is no `content/dev` pre-vs-post wire-golden harness in-tree, and Task 5's cross-runtime parity tests
+  build TS↔Luau parity — a different axis — so this is verified by the coverage that actually exists: Task 5's
+  TS↔Luau byte-identical parity tests, the typedef drift-detection test, and targeted equality tests (the store
+  flatten emits the same `{namespace, schema}`; the `Ref`/`ComputedRef` rename doesn't touch the runtime
+  `{slot}` shape; Task 1's P1 stored-result equality) — except the newly added `slot.set` primitive and the
+  Rust `breakable_threshold` test's `slot.add`→`update` conversion (the only real `slot.add` emitter; no
+  `content/` site emits it today), which are semantically equivalent (same stored result), not byte-identical.
 - [ ] `cargo run -p postretro --bin gen-script-types` produces no diff against committed
   `sdk/types/postretro.d.{ts,luau}`; the drift-detection test is green.
 - [ ] Migrated `content/dev` scripts (`run-counter.ts`, `coop-two-button-puzzles.ts`, `start-script.ts`,
-  `hud.ts`, `typed-handles-fixture.ts`) compile and load on a running engine.
+  `hud.ts`, `typed-handles-fixture.ts`) compile and load on a running engine — `scripts-build` compiles by
+  stripping types (no type-check), so this "compile" doesn't catch a TypeScript error; a `@ts-expect-error`
+  fixture like `typed-handles-fixture.ts` still "compiles" under it.
 - [ ] **Review gate:** every ref consumer reads only `.slot` — no consumer does an exhaustive-shape check — so
   E16's later owner-addressing has room to extend the ref. The ref carries `.slot` plus a build-time `kind`
   (SDK-only, never serialized); consumers tolerate the extra field and only `.slot` reaches the wire. (E16 owns
   its owner shape and any own-property-enumeration hazard; this gate only keeps consumers from
   over-constraining it.)
 - [ ] Every row in the Orderings pin table (P1–P13) is asserted by a test: Task 1 for P1–P6, Task 5 for P7–P13.
+  P1 is a stored-result equality (`update` vs `slot.add` produce the same evaluated value; wire differs, no
+  bound-program comparison — see Task 1). P12 and P13 need the seeded / two-fire harness named in Task 5, not
+  the bare `breakable` seeding.
 - [ ] A mod that returns `{ stores: [store] }` without calling `defineMod` fails store resolution — the raw
   slot-ref map lacks `namespace`/`schema`, so `defineMod` is load-bearing for flattened-store registration.
 
@@ -200,16 +213,24 @@ bind_number_write(slot.to_string(), value, scope).map(BoundEffect::Write) }` and
 mirroring `:497`. This reuses the shipped binder (`:534-544`) — no new `IrNode` variant.
 
 Add the SDK surface in `data_script.ts`: state refs carry a build-time `kind` field — the slot's declared value
-type, stamped by `defineStore` and the engine catalog, never serialized. `readState(ref): NumberRef` /
-`readState(ref): BoolRef` reads `ref.kind` to pick `numberRef` or `boolRef`,
-emitting `{ op: "input", name: ref.slot }` and registering the result in the matching WeakMap
-(`data_script.ts:287, 306`); and `set(ref: WritableStateRef<number>, value: NumberValue): Effect` emits
-`args: { slot: ref.slot, value: numberNode(value) }`, mirroring the shipped `slot.add` builder's
-`numberNode(delta)`. Prove end to end: a Rust test seeds an `EntityScope` with a `store.xp` input, evaluates the
-descriptor from `set(store.xp, readState(store.xp).plus(1))`, and asserts the same stored result as
-`slot(store.xp).add(1)` — mirror the `breakable_threshold` harness (`impact_policy.rs:813-861`); this and
-companion cases assert pin-table rows P1–P6 (Orderings, below). Uses the pre-rename type names
-(`WritableStateRef`); Task 2 renames.
+type, never serialized. Task 1 only *consumes* `kind`: `readState(ref): NumberRef` / `readState(ref): BoolRef`
+reads `ref.kind` to pick `numberRef` or `boolRef`, emitting `{ op: "input", name: ref.slot }` and registering the
+result in the matching WeakMap (`data_script.ts:287, 306`); and `set(ref: WritableStateRef<number>, value:
+NumberValue): Effect` emits `args: { slot: ref.slot, value: numberNode(value) }`, mirroring the shipped
+`slot.add` builder's `numberNode(delta)`. `kind`'s *production* belongs to later tasks — Task 2 stamps it on
+engine-catalog refs, Task 3's `defineStore` stamps it on store refs — so no real ref carries `kind` until Task 3;
+Task 1's `readState`/`set` are not exercised by a real ref in Phase 1.
+
+Task 1's Phase-1 proof is therefore the Rust wire-arm equality alone, not SDK authoring (the SDK builders can't
+run in Rust yet): a Rust test hand-builds the `slot.set` wire JSON — the way `breakable_threshold`'s `slot_add()`
+helper hand-builds `slot.add` JSON at `impact_policy.rs:688` — and seeds the slot table directly
+(`ctx.slot_table.borrow_mut().insert(...)`). The `slot.set` value passes through the `bind_number_write` arm
+directly, so `set(xp, {op:"add", a:{op:"input",name:"xp"}, b:1})` equals `slot.add(xp, 1)` by stored result — a
+comparison of the *evaluated stored value*, not of the bound program or the wire (`slot.set` and `slot.add` are
+different wire; `BoundProgram` exposes no equality/serialize). This and companion cases assert pin-table rows
+P1–P6 (Orderings, below). If a TS-level `readState`/`set` unit test is wanted in Phase 1, it must hand-construct
+a `{ slot, kind }` object — no real ref exists yet; otherwise `readState`/`set` are wire-proven only, until Task
+3 supplies a real ref. Uses the pre-rename type names (`WritableStateRef`); Task 2 renames.
 
 ### Task 2: `Ref` / `ComputedRef` rename
 
@@ -227,8 +248,12 @@ same as store refs. The runtime `{slot}` shape and the phantom brands are unchan
 names change. Engine-catalog slots keep their per-slot capability — `ui.textEntry` stays writable
 (`Ref<string>`), `player.*`/`screen.*` stay readonly (`ComputedRef`) — so the writable/readonly axis is per-ref,
 absorbing the writable-engine-slot exception rather than collapsing onto engine-vs-mod. This also removes the
-phantom-brand silent-no-op: a `set`/write against a `ComputedRef` is now a type error at every author site.
-Do not regenerate committed typedefs here (Task 5 owns the single regen).
+phantom-brand silent-no-op: a `set`/write against a `ComputedRef` is now a type error at every author site. The
+typedef generator's convenience alias `StateValue<T> = WritableStateRef<T>` (emitted literally in
+`crates/scripting-core/src/typedef/ts.rs:46` and `luau.rs:42`, outside the grepped `sdk/lib/**` scope above)
+rides this rename too — it must read `StateValue<T> = Ref<T>` post-regen, so pick it up in Task 5's typedef
+regen; it's easy to miss since the grep above doesn't reach it. Do not regenerate committed typedefs here
+(Task 5 owns the single regen).
 
 ### Task 3: Store surface flatten
 
@@ -246,7 +271,12 @@ fails store resolution, since the raw slot-ref map lacks `namespace`/`schema`; a
 (`sdk/lib/data_script.luau` `defineStore` and `defineMod` at `:918`). Migrate the `content/dev` store authoring
 this breaks so the surface stays loadable:
 `stores: [store.declaration]` → `stores: [store]` and `store.state.key` → `store.key` in `start-script.ts:63`,
-`run-counter.ts`, `coop-two-button-puzzles.ts`, `typed-handles-fixture.ts`. The binding-name sugar
+`run-counter.ts`, `coop-two-button-puzzles.ts`, `typed-handles-fixture.ts`. A third transform is needed beside
+those two: a bare `.declaration` *read* (e.g. `const _fixtureStoreDeclaration = opts.declaration;` in
+`typed-handles-fixture.ts`) also migrates — the flatten moves `.declaration` off the store object into the
+identity `WeakMap`, so nothing is left at that property. Applying only the two named transforms leaves this
+read dangling and breaks compilation. `typed-handles-fixture.ts` is a `@ts-expect-error` review-gate fixture (no
+`tsc` CI) — its type-error lines are a `tsc`/review gate, not a runtime concern. The binding-name sugar
 (`crates/script-compiler`) is untouched — it injects the namespace argument, independent of the return shape.
 Consumes the renamed types from Task 2.
 
@@ -283,14 +313,23 @@ the `slot.add` variant from `ImpactEffectWire` (`data_script.ts:212`). In
 `impact_effect_wire_rejects_raw_store_assignment_and_boolean_operands`, drop only the `slot.add` entry from the
 shared numeric-operand-rejection loop, keeping its `setHealth`/`setState` cases, and remove the
 `slot.add`-specific target-present rejection loop (the `for invalid_target in […]` block) in its entirety.
-Complete the `content/dev` migration beyond Task 3's store edits — `hud.ts` and any consumer using the old ref
-idioms — and rebuild any committed `.js`. Regenerate and commit `sdk/types/postretro.d.{ts,luau}` via
+Complete the `content/dev` migration beyond Task 3's store edits — any consumer still on the old
+`slot()`/`.state`/`.declaration` idioms. `hud.ts` needs no change: it reads only `getGameState()` catalog refs
+via `bindState`/`stateEquals` (no `slot()`, `.state`, or `.declaration`), so its refs transparently gain `kind`
+and nothing wire-affecting moves under it. Rebuild any committed `.js` — `scripts-build` compiles by stripping
+types (no type-check), so this "compile" step doesn't catch a TypeScript error; a `@ts-expect-error` fixture
+still "compiles" under it. Regenerate and commit `sdk/types/postretro.d.{ts,luau}` via
 `cargo run -p postretro --bin gen-script-types`; confirm the drift-detection test
 (`committed_sdk_types_match_current_registry`) is green. Update `scripting.md` §5 to the converged surface:
 `store.key`, `readState`, `set`, `update`, `when`, and the `Ref`/`ComputedRef` vocabulary, removing
 `.state`/`.declaration` and `slot().add()` examples. Add cross-runtime parity tests asserting byte-identical
 wire for `readState`, `set`/`update`/`slot.set`, `when`, the flattened store, and the `runtime.*` bridge, plus
-the ordering pin-table rows P7–P13 (Orderings, below). Consumes Tasks 2, 3, 4.
+the ordering pin-table rows P7–P13 (Orderings, below). P12 and P13 need a purpose-built harness, not the bare
+`breakable` one: P12 (a policy reading `getGameState().player.health` mid-tick) requires seeding `player.health`
+into the slot table before the impact freezes — the `breakable` harness never populates it, so seed it
+explicitly; P13 (a store-slot re-seed across two in-tick hits in one policy fire) extends the proven `@state`
+re-seed pattern (`breakable_threshold_reads_pre_effect_state_snapshot`) to a store slot and needs a two-fire
+test. Consumes Tasks 2, 3, 4.
 
 ## Sequencing
 
@@ -325,7 +364,7 @@ unchanged; new names below. The ref itself carries `.slot` plus a build-time `ki
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Converged surface lowers to byte-identical wire as the pre-convergence surface, except the new `slot.set` primitive and the Rust `breakable_threshold` test's `slot.add`→`update` conversion (the only real `slot.add` emitter; semantically equivalent, not byte-identical) | Tasks 2, 3, 4 (surface-only changes) | `defineMod` store resolution must emit the same `{namespace, schema}`; the flatten must yield the same `{slot}` refs; the rename must not touch runtime shape | AC "byte-identical wire", golden over `content/dev`; drift test |
+| Converged surface lowers to byte-identical wire as the pre-convergence surface, except the new `slot.set` primitive and the Rust `breakable_threshold` test's `slot.add`→`update` conversion (the only real `slot.add` emitter; semantically equivalent, not byte-identical) | Tasks 2, 3, 4 (surface-only changes) | `defineMod` store resolution must emit the same `{namespace, schema}`; the flatten must yield the same `{slot}` refs; the rename must not touch runtime shape | Task 5's TS↔Luau parity tests + typedef drift test + targeted equality tests (`{namespace, schema}` unchanged; `{slot}` shape unchanged; Task 1's P1 stored-result equality) — no `content/dev` wire golden exists in-tree |
 | `slot.set` reuses the shipped binder — no new `IrNode`, no evaluator vocabulary widening | Task 1 (`bind_number_write` reuse) | any temptation to add an IR node for a general write | AC "binds through `bind_number_write`"; `research.md` placement |
 | All operands in one impact fire read the pre-fire frozen snapshot (plan-before-apply in `evaluate_dispatch`); `cur` in `update` never observes an earlier same-fire write; same-slot writes are last-writer-wins in do-list order, not accumulating | Shipped substrate (inherited, not changed by this spec) | any same-slot write across `do:` entries, events, or groups | Orderings pin table (below) |
 | Ref consumers read only `.slot`; the ref also carries a build-time `kind` (never serialized) and may later carry an owner key (keeps room for E16 owner-addressing) | Task 2 (per-ref `{slot, kind}` shape) | a consumer doing an exhaustive-shape check would over-constrain E16's later ref extension | AC review gate |
@@ -337,7 +376,7 @@ writes apply last-writer-wins in do-list order.
 
 | # | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | single update ≡ single slot.add | do:[update(xp, x=>x.plus(1))] vs do:[slot.add(xp,1)], seed base | both ⇒ base+1; byte-identical bound program |
+| P1 | single update ≡ single slot.add | do:[update(xp, x=>x.plus(1))] vs do:[slot.add(xp,1)], seed base | both ⇒ base+1; same stored result — wire differs (`slot.set` vs `slot.add`) |
 | P2 | RMW aliasing (two updates, one slot) | do:[update(xp,x=>x.plus(1)), update(xp,x=>x.plus(2))], seed base | ⇒ base+2 (not base+3); both cur read frozen base |
 | P3 | aliasing equivalence to legacy | do:[slot.add(xp,1), slot.add(xp,2)], seed base | ⇒ base+2; identical to P2 |
 | P4 | set then update, one slot | do:[set(xp,5), update(xp,x=>x.plus(1))], seed base | ⇒ base+1 (not 6); set clobbered |

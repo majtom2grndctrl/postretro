@@ -1097,9 +1097,8 @@ mod tests {
             vec![slot_set("impact.observedHealth", input("player.health"))],
         )]);
 
-        let mut publisher = crate::scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
-            ctx.clone(),
-        );
+        let mut publisher =
+            crate::scripting_systems::ui_proxy::PlayerHudStatePublisher::new(ctx.clone());
         let mut registry = ctx.registry.borrow_mut();
         let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
         apply_damage_with_context(

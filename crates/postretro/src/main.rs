@@ -2689,9 +2689,7 @@ impl ApplicationHandler for App {
                                 bindings: trigger_bindings,
                                 slot_table: script_ctx.slot_table.clone(),
                                 script_ctx: Some(script_ctx.clone()),
-                                auto_close_timers: Some(
-                                    scripting.auto_close_timers.clone(),
-                                ),
+                                auto_close_timers: Some(scripting.auto_close_timers.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),

@@ -1,49 +1,63 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // SPECULATIVE VISION — not a contract, does not compile against today's SDK.
 //
-// The reference enemy as a HIERARCHICAL FSM (Harel statechart), in the
-// Vue-Composition authoring style. Purpose is twofold:
-//   • inform E10--enemy-behavior-descriptor-syntax (what the near-term vocabulary
-//     should NOT preclude), and
-//   • seed roadmap entries for the larger behavior-architecture specs that follow.
-// Scope tags mark which layer each construct belongs to:
-//   [E10]   this spec (position-goal motion, distance/reachability/hostility facts,
-//           patrol, faction) — buildable now, flat.
-//   [ATK]   the multi-attack draft (attacks-as-handles, offense selection).
-//   [HFSM]  a future architecture spec: composite activities, orthogonal layers,
-//           scoped transitions, entry/exit actions.
-//   [CMB]   further out: combat stances (telegraphed, attack-gating) and a
-//           FEAR-style planner over the same graph.
+// The reference enemy as a hierarchical FSM (Harel statechart) authored in the
+// composition-over-IR style. Revised to consensus after a design review. Two jobs:
+//   • inform E10--enemy-behavior-descriptor-syntax (what the near-term flat spec
+//     must NOT foreclose, and which slice of the dialect E10 itself ships), and
+//   • seed the roadmap specs that build the rest.
 //
-// Statechart concepts used, and their PostRetro spelling:
-//   superstate / composite state   → a composite `activity` (engage)
-//   orthogonal regions (concurrent)→ `layers` (the spec already names this the
-//                                     "parallel layers" future extension; a flat
-//                                     graph is "one layer of a future set")
-//   substate                       → a leaf `activity` (patrol, retreat)
-//   superstate transition          → a transition declared ON the composite; it
-//                                     is scoped to it, so it can't fire elsewhere
-//   entry / exit action            → onEnter / onExit (the telegraph seam)
+// Scope tags:
+//   [E10-fact]   facts/motion/faction E10 builds now (flat).
+//   [E10-syntax] the fluent guard spelling E10 *could* adopt now (owner call).
+//   [ATK]        the multi-attack draft (attacks-as-handles, offense selection).
+//   [HFSM]       a future spec: recursive composites, layers, scoped transitions.
+//   [CMB]        further out: combat stances (telegraphed, attack-gating), planner.
 //
-// Naming locked this session: `agent` is the entity context; `stance` is RESERVED
-// for combat (telegraphed posture that gates available attacks); `action` stays the
-// leaf verb; `motion` stays locomotion. `activity` is the level-1 word (swap with
-// `routine`/`goal` freely — it is the one still-open name).
+// ── The one envelope, recursively ────────────────────────────────────────────
+// A brain, a composite activity, and a stateful layer are all the SAME shape:
+//     { initial, activities, transitions }
+// The brain is the root composite. `transitions` is an adjacency map: keys are
+// activity names (or "*"), values are ordered `on(guard, target)` rows, first true
+// wins. There is NO `.on()` mutation — the returned maps ARE the graph:
+//   • referenced-but-unreturned handle  → pathed LOAD ERROR (never a silent vanish)
+//   • returned-but-unreferenced activity → included, + a "unreachable activity" lint
+//   • identity is the cross-reference currency; a map key is only this descriptor's
+//     local name for a handle (a shared handle may be keyed differently per entity).
+// Scoping falls out of nesting: "*" at a level = "while this composite is active"
+// (the flat model's `interrupts`, generalized); outer scope beats inner. Because a
+// row can only target handles returned AT ITS OWN LEVEL, a parent's source-keyed
+// rows reach SIBLINGS (exits) and a nested "*" reaches CHILDREN (internal) — disjoint,
+// which also forecloses Harel cross-boundary transitions (a decided [HFSM] cut).
+//
+// ── Guard hazard, stated precisely ───────────────────────────────────────────
+// Guards compile to serializable IR; they never run as live JS. Native `&&`/`||`
+// over two node objects does NOT throw and does NOT collapse to a constant — it
+// evaluates to the RIGHT-HAND node, silently DROPPING the other conjunct, yielding
+// a legal-looking still-dynamic guard that lost a clause. Use `.and()/.or()/.not()`
+// (compile to `select` until the and/or/not opcodes land). A `no-native-boolean-ops-
+// on-nodes` lint is owed on the [HFSM] task list.
+//
+// Naming locked: `agent` = entity context · `motions` = motion-handle catalog ·
+// `on` = the ordered guarded row (NOT `when`, which keeps its shipped GatedEffect
+// meaning) · `activity` = level-1 node · `layers` = orthogonal regions · `action`
+// = leaf verb · `stance` RESERVED for combat · `memory` = interim read-view of E16
+// per-entity `@state` (see below). `animation` never abbreviated.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { defineEntity } from "postretro";
 import {
-  defineBehavior,  // the setup() factory: (agent) => the whole brain
-  defineActivity,  // an FSM node; leaf or composite (composite carries `layers`)
+  defineBehavior,  // (agent) => the root composite { initial, activities, transitions }
+  defineActivity,  // an FSM node; a leaf, or composite via `layers`
   defineAttack,    // [ATK] a wieldable/attack handle, referenced by identity
-  when,            // guarded choice: when(guard, value) — layer entry or transition
-  motion,          // motion-verb handles: patrol / chase / hold / moveToAnchor / freeze
+  on,              // on(guard, target): one ordered guarded row (transitions AND layer rows)
+  motions,         // motion handles: patrol / chase / hold / moveToAnchor / freeze
 } from "postretro/behavior";
 
-// [ATK] Attacks are declared handles. `damage/range/cooldownMs` today; `weapon:`
-//       (enemy-as-wielder) is additive later.
-const claw = defineAttack({ damage: 8, range: 2,  cooldownMs: 1200 });
-const spit = defineAttack({ damage: 4, range: 12, cooldownMs: 800  });
+// [ATK] Attacks are declared handles; each carries its OWN clip (claw and spit must
+//       not animate alike). `weapon:` (enemy-as-wielder) is additive later.
+const claw = defineAttack({ damage: 8, range: 2,  cooldownMs: 1200, animation: "claw-swipe" });
+const spit = defineAttack({ damage: 4, range: 12, cooldownMs: 800,  animation: "spit"        });
 
 export const sentry = defineEntity({
   canonicalName: "sentry",
@@ -51,104 +65,135 @@ export const sentry = defineEntity({
     health: { max: 70 },
     mesh: { model: "sentry.glb" },
 
-    // `agent` is the composition context: it carries this entity's engine-computed
-    // facts (agent.targetDistance, …) AND its own mutable per-entity reads
-    // (agent.flag("faction")) and self-actions (agent.play(…)). One namespace for
-    // "me"; `candidate` below is the only other entity a guard ever sees.
+    // `agent` carries this entity's facts and its own reads/actions. `agent.target.*`
+    // mirrors `impact.target.*`; every `agent.target.*` ATOM auto-conjoins existence
+    // (compiles to `select(agent.target.exists, atom, false)` — per-atom, so an
+    // `.or(anchorClause)` is NOT suppressed when untargeted), which retires the old
+    // 1e9-sentinel foot-gun. `agent.target.exists` is exempt; `.not()` over a guarded
+    // atom reads true untargeted (documented, shown in guard-diagnostics);
+    // `agent.target.rawDistance` is the escape hatch.
     behavior: defineBehavior((agent) => {
-      // ── Breathing room: name guards once, fluent nodes. `.and/.or/.not` compile
-      //    to `select` today (or ride the deferred and/or/not opcodes). ──
-      const hostileInSight = agent.hasTarget.and(agent.targetHostile).and(agent.acquisitionDue);
-      const standDown      = agent.hasTarget.not().or(agent.targetHostile.not()); // [E10] faction seam
-      const pastLeash      = agent.distanceFromAnchor.gt(20);                      // [E10] leash is authored
-      const atHome         = agent.distanceFromAnchor.le(1);
-      const inClaw         = agent.targetDistance.le(2);
-      const inSpit         = agent.targetDistance.between(4, 12).and(agent.targetReachable); // [E10]
+      // ── Breathing room: guards named once, fluent nodes. ──
+      const hostileAcquired = agent.target.hostile.and(agent.acquisitionDue);   // [E10-fact] exists auto-conjoined
+      const standDown       = agent.target.exists.not().or(agent.target.hostile.not());
+      const pastLeash       = agent.distanceFromAnchor.gt(20);                  // [E10-fact] leash is authored
+      const atHome          = agent.distanceFromAnchor.le(1);
+      const inClaw          = agent.target.distance.le(2);
+      const inSpit          = agent.target.distance.between(4, 12).and(agent.target.reachable); // inclusive [E10-fact]
 
-      // ── Leaf activities: no target stake, a single motion. ──
+      // ── Leaf activities. `motion:` is sugar for `layers: { move: [motions.x] }`,
+      //    so flat is a strict specialization of the layered form, not a 2nd schema.
+      //    `animation` (locomotion clip) stays on leaves until the E21 pose-stack
+      //    composes per-layer clips; a composite (engage) therefore carries none. ──
       const patrol = defineActivity({
-        anim: "walk",
-        motion: motion.patrol,                                   // [E10]
-        route: { mode: "pingPong", points: [[0, 0], [6, 0], [6, 6]] }, // anchor-relative [E10]
+        animation: "walk",
+        motion: motions.patrol,                                       // [E10-fact]
+        route: { mode: "pingPong", points: [[0, 0], [6, 0], [6, 6]] }, // per-activity, anchor-relative
       });
 
       const retreat = defineActivity({
-        anim: "walk",
-        motion: motion.moveToAnchor,                             // [E10] position-goal motion
+        animation: "walk",
+        motion: motions.moveToAnchor,                                 // [E10-fact] position-goal motion
       });
 
-      // ── [HFSM] engage: a COMPOSITE activity. Two orthogonal `layers` run
-      //    concurrently while it is active — the creature closes distance AND
-      //    picks an attack in the same tick. This is the level the flat model
-      //    flattened: today `alert` (chase) and `strike`/`lob` (attack) are peer
-      //    states; here chase is the `move` layer and attacking is the `offense`
-      //    layer of ONE activity.
+      // ── [HFSM] engage: a COMPOSITE with two orthogonal layers running at once.
+      //    A layer is a selector list here (stateless, per-tick). Motion layers
+      //    require a trailing fallback (type-enforced) — locomotion is never
+      //    undefined; attack layers may have none (idle = no attack this tick). ──
       const engage = defineActivity({
         layers: {
-          // locomotion region: hold at melee, else close the gap. First match wins;
-          // the bare trailing value is the fallback.
-          move: [ when(inClaw, motion.hold), motion.chase ],
-          // [ATK] offense region: fire the first attack whose range matches. No
-          // fallback → the layer is idle (still chasing via `move`) when out of range.
-          offense: [ when(inClaw, claw), when(inSpit, spit) ],
+          move:    [ on(inClaw, motions.hold), motions.chase ],       // fallback: chase
+          offense: [ on(inClaw, claw), on(inSpit, spit) ],            // [ATK] no fallback → idle
         },
-        anim: "attack",                    // anim derives from the active offense; see history note
-        onEnter: agent.play("alert-roar"), // [CMB] entry action — the telegraph seam
+        onEnter: [ agent.playClip("alert-roar") ],                    // [CMB] telegraph seam (mechanism is [HFSM])
       });
-
-      // ── Transitions. Declared where they belong in the hierarchy. ──
-      patrol.on(hostileInSight, engage);
-      retreat.on(atHome, patrol)
-             .on(hostileInSight, engage);       // re-aggro mid-retreat
-
-      // [HFSM] scoped superstate transitions: these live ON engage, so they fire
-      // ONLY while engaged. `standDown → patrol` is the old any-state interrupt,
-      // now correctly scoped — it can't touch patrol, so patrol never oscillates
-      // (this is the clean form of the F1 fix the flat spec had to convention around).
-      engage.on(pastLeash, retreat)            // leash pulls out of combat
-            .on(standDown,  patrol);           // target gone or turned friendly
 
       return {
         initial: patrol,
         moveSpeed: 3,
-        activities: { patrol, engage, retreat }, // names inferred from keys (naming sugar)
-        attacks: { claw, spit },                 // [ATK]
+        activities: { patrol, engage, retreat },   // membership + naming authority
+        attacks: { claw, spit },                   // [ATK] authority for attack handles
+        candidateFilter: (candidate) => candidate.distance.le(24).and(candidate.alive), // `alive` = sugar for the death latch (not a health test)
 
-        // [E10] fresh-acquisition eligibility; a callback over the per-candidate
-        // scope, never re-gating a retained target.
-        candidateFilter: (candidate) => candidate.distance.le(24).and(candidate.alive),
+        // Adjacency map. Keys typed `Record<keyof activities | "*", Row[]>`, so a
+        // typo'd key (`patorl`) fails excess-property checking at author time; targets
+        // stay identity-valued. Source-keyed rows target SIBLINGS (exits).
+        transitions: {
+          patrol:  [ on(hostileAcquired, engage) ],
+          retreat: [ on(atHome, patrol), on(hostileAcquired, engage) ],   // re-aggro mid-retreat
+          engage:  [ on(pastLeash, retreat), on(standDown, patrol) ],     // leash outranks standDown (declaration order)
+          "*":     [ /* root-scoped interrupts — empty: stand-down is correctly scoped
+                        to `engage`, so patrol/retreat never see it. This is the F1 fix,
+                        structural rather than by convention. */ ],
+        },
       };
     }),
   },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCOPE MAP — what each layer tells which spec
+// [HFSM/CMB] When a layer needs its OWN state (attack windup → commit → recover,
+// and the [CMB] `stance` gate: a posture that constrains which attacks offense may
+// pick until the creature commits to switching), the layer value stops being a
+// selector list and becomes a nested graph — the SAME envelope, recursively:
 //
-// [E10] buildable now, FLAT (no composite/layers): the facts (distanceFromAnchor,
-//   targetReachable, targetHostile), moveToAnchor/patrol motion + route, the
-//   authored leash, the fresh-scan faction filter behind agent.targetHostile.
-//   The E10 spec should keep the descriptor envelope from precluding the [HFSM]
-//   shape — i.e. don't bake "a state is a leaf with one motion+action" as a hard
-//   contract; leave room for a node to become composite.
+//   offense: {
+//     initial: windup,
+//     activities: { windup, commit, recover },
+//     transitions: {
+//       windup:  [ on(agent.timeInState.ge(300), commit) ],   // telegraph window
+//       commit:  [ on(agent.timeInState.ge(120), recover) ],
+//       recover: [ on(agent.timeInState.ge(500), windup) ],
+//       "*":     [ on(agent.memory("staggered").eq(1), recover) ],  // targets a CHILD (internal)
+//     },
+//   }
 //
-// [ATK] the multi-attack draft: attacks-as-handles and the `offense` selection.
-//   Reconcile its `attacks` map onto handles referenced by identity.
+// The parent `engage` row `on(standDown, patrol)` targets a SIBLING (exit); this
+// nested `"*"` targets a CHILD (recover). Disjoint by the membership rule — no
+// ambiguity about which fires — and the reason cross-boundary transitions are
+// foreclosed.
 //
-// [HFSM] a NEW roadmap spec — "Hierarchical behavior (statecharts)": composite
-//   activities, orthogonal `layers`, transitions scoped to a composite, entry/exit
-//   actions, and history (does re-entering `engage` resume the prior layer choice?
-//   — pin it there, out of scope here). This is the spec that dissolves the flat
-//   any-state-interrupt scoping hack and sets up the planner seam.
+// SCOPE MAP — what each layer owes which spec
 //
-// [CMB] further roadmap: combat `stance` (a telegraphed posture that CONSTRAINS
-//   which attacks the offense layer may pick until the creature commits to switching
-//   — the reserved word), onEnter/onExit telegraph animations, and a FEAR-style
-//   planner replacing hand-authored transition order (`select_transition` is the
-//   pinned seam). GOAP/utility scoring plug in here without changing the node model.
+// [E10-fact]   buildable now, FLAT: distanceFromAnchor / target.reachable /
+//   target.hostile facts, moveToAnchor + patrol motion, per-activity `route`, the
+//   authored leash, the fresh-scan faction filter behind `agent.target.hostile`.
+//   HAND-OFF: the E10 draft currently authors the patrol route as a GRAPH-WIDE block;
+//   the endpoint is per-activity (two patrol loops is an obvious ask, and no composite
+//   cleanly owns a graph-wide block). Move it onto the patrol activity in E10 now —
+//   cheap while there is one patrol state, authored-content churn if deferred.
 //
-// Naming decisions carried forward: agent (context) · activity (level-1 node, swap
-// with routine/goal) · motion (locomotion) · action (leaf verb) · layers (orthogonal
-// regions) · stance (RESERVED, combat) · flag/… (the not-"state" word for per-entity
-// mutable reads — still open).
+// [E10-syntax] the fluent guard spelling (`agent.target.distance.le(2)`) is the cheap
+//   near-term slice of "behavior joins the unification": lift the pre-wrapped brain
+//   leaves into the shipped NumberRef/BoolRef algebra (the bridge the convergence
+//   spec already built for impact facts) — no `defineActivity`, no `on()`, no engine
+//   change. OWNER CALL: does E10 ship this now, or author its reference graphs in the
+//   old `runtime.le(brain.x, n)` prefix dialect and re-author later? If deferred,
+//   every E10 reference graph is written twice.
+//
+// [ATK] the multi-attack draft: attacks-as-handles, per-attack `animation`, and the
+//   `offense` selection layer. Reconcile its `attacks` map onto identity handles.
+//
+// [HFSM] a NEW roadmap spec — "Hierarchical behavior (statecharts)": the recursive
+//   `{ initial, activities, transitions }` envelope; layers (selector | nested graph)
+//   with `motion:` sugar and typed motion-fallback; `"*"` scoping with outer-beats-
+//   inner priority; the membership authority + unreachable-activity lint; the
+//   `no-native-boolean-ops-on-nodes` lint; and two DECIDED CONSTRAINTS to state, not
+//   inherit silently: (a) cross-boundary transitions are foreclosed (same-level
+//   targets only; a composite's source-keyed exit rows already cover "leave from
+//   anywhere inside"); (b) layer history — does re-entering a composite resume its
+//   nested graph, or restart at `initial`? — pin it here.
+//
+// [CMB] further roadmap: combat `stance` (telegraphed posture gating available
+//   attacks — the reserved word), onEnter/onExit telegraph clips, and a FEAR-style
+//   planner replacing hand-authored `on(...)` order (the `select_transition` seam);
+//   GOAP/utility plug in without changing the node model (which is why `goal` is NOT
+//   spent on FSM nodes — the planner needs it).
+//
+// Open name still parked: `memory` is the interim behavior-scope READ-VIEW of the
+// same E16 per-entity `@state` fields impact policies and reactions WRITE through
+// `setState` — one storage, read-only here by construction (guards never write).
+// `agent.memory("faction")` is explicitly interim: when the relation model lands,
+// allegiance is engine-modeled (declaration surface, `@candidate.faction`, relation
+// facts) and the guard read that matters is already the `agent.target.hostile` fact.
 // ─────────────────────────────────────────────────────────────────────────────

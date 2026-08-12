@@ -635,7 +635,14 @@ export const sentry = defineEntity({
         // re-fires every tick that state is live (idle<->patrol oscillation).
         { to: "patrol", when: runtime.select(brain.hasTarget, false, true) },
         // Authored retention drop: stand down when the retained target is no
-        // longer hostile (faction flipped friendly). The `targetDied` shape.
+        // longer hostile (faction flipped friendly) — the `targetDied` *shape*, but
+        // the polarity DIFFERS: select(targetHostile, false, true) reads `true`
+        // untargeted, so it fires on untargeted-OR-friendly (unlike targetDied,
+        // which reads false untargeted). It is correct only because the
+        // `not hasTarget` stand-down above shares this `to` and wins first-true-wins
+        // on untargeted ticks — so this row MUST stay below it and target the same
+        // state. Reordering it, or lifting it without the hasTarget row, silently
+        // breaks stand-down.
         { to: "patrol", when: runtime.select(brain.targetHostile, false, true) },
       ],
       states: {

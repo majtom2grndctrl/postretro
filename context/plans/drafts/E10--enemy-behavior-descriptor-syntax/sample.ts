@@ -2,7 +2,7 @@
 // SPECULATIVE VISION — not a contract, does not compile against today's SDK.
 //
 // The reference enemy as a hierarchical FSM (Harel statechart) authored in the
-// composition-over-IR style. Revised to consensus after a design review. Two jobs:
+// composition-over-IR style. Two jobs:
 //   • inform E10--enemy-behavior-descriptor-syntax (what the near-term flat spec
 //     must NOT foreclose, and which slice of the dialect E10 itself ships), and
 //   • seed the roadmap specs that build the rest.
@@ -38,11 +38,13 @@
 // (compile to `select` until the and/or/not opcodes land). A `no-native-boolean-ops-
 // on-nodes` lint is owed on the [HFSM] task list.
 //
-// Naming locked: `agent` = entity context · `motions` = motion-handle catalog ·
+// Naming locked: `brain` = the state machine (one per entity) · `behavior` = its
+// component slot and emergent whole · `activity` = a node (one of the many behaviors
+// the brain composes) · `agent` = entity context · `motions` = motion-handle catalog ·
 // `on` = the ordered guarded row (NOT `when`, which keeps its shipped GatedEffect
-// meaning) · `activity` = level-1 node · `layers` = orthogonal regions · `action`
-// = leaf verb · `stance` RESERVED for combat · `memory` = interim read-view of E16
-// per-entity `@state` (see below). `animation` never abbreviated.
+// meaning) · `layers` = orthogonal regions · `action` = leaf verb · `stance` RESERVED
+// for combat · `memory` = interim read-view of E16 per-entity `@state` (see below).
+// `animation` never abbreviated.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { defineEntity } from "postretro";
@@ -141,9 +143,9 @@ export const sentry = defineEntity({
 //     initial: windup,
 //     activities: { windup, commit, recover },
 //     transitions: {
-//       windup:  [ on(agent.timeInState.ge(300), commit) ],   // telegraph window
-//       commit:  [ on(agent.timeInState.ge(120), recover) ],
-//       recover: [ on(agent.timeInState.ge(500), windup) ],
+//       windup:  [ on(agent.timeInActivity.ge(300), commit) ],   // telegraph window
+//       commit:  [ on(agent.timeInActivity.ge(120), recover) ],
+//       recover: [ on(agent.timeInActivity.ge(500), windup) ],
 //       "*":     [ on(agent.memory("staggered").eq(1), recover) ],  // targets a CHILD (internal)
 //     },
 //   }
@@ -161,7 +163,7 @@ export const sentry = defineEntity({
 //   HAND-OFF: the E10 draft currently authors the patrol route as a GRAPH-WIDE block;
 //   the endpoint is per-activity (two patrol loops is an obvious ask, and no composite
 //   cleanly owns a graph-wide block). Move it onto the patrol activity in E10 now —
-//   cheap while there is one patrol state, authored-content churn if deferred.
+//   cheap while there is one patrol activity, authored-content churn if deferred.
 //
 // [E10-syntax] the fluent guard spelling (`agent.target.distance.le(2)`) is the cheap
 //   near-term slice of "behavior joins the unification": lift the pre-wrapped brain

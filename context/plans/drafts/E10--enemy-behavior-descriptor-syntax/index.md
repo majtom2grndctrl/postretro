@@ -231,6 +231,10 @@ apply pass as well as facing — leave them in `mod.rs` (or wherever the impleme
 cleaner seam); do not force them into `facing.rs`. Add `mod facing;` / `mod combat_slots;`
 to `mod.rs`, and expose (`pub(super)`/`pub(crate)` as appropriate) and re-export every
 extracted item the tick or `ai_tests.rs` references, so call sites change imports only.
+The combat-slot functions read private `EnemyOutcome` fields (`combat_slot`, `engaged`,
+`brain`, `id`, `position`, `target`, `prior_acquired_target`); moving them to
+`combat_slots.rs` also requires widening those fields to `pub(super)` — extract the item
+*and* the struct-field access it needs, not just the functions.
 No behavior change; the full AI suite stays green. This lands first because every
 later task edits the tick and both extracted clusters.
 
@@ -255,8 +259,9 @@ the wire goes through `from_graph`, which has no transform — so `home_anchor` 
 through the table. In the runtime `BrainScope` (`ai/brain_scope.rs`): grow the `fixed`
 array (it is `[IrValue; BRAIN_INPUTS.len()]`, so the length follows the table) and write
 slot 10 in `refresh` from a new `BrainFacts.distance_from_anchor: f32`. Compute that value
-in the tick's compute pass as `distance_xz(snap.position, brain.home_anchor)` — every
-tick, no stride, no target needed. Append the leaf to `sdk/lib/brain.ts` and `brain.luau`
+in the tick's compute pass as `crate::nav::distance_xz(snap.position, brain.home_anchor)`
+(`pub(crate)` in `nav/mod.rs`; import it into `ai/mod.rs`) — every tick, no stride, no
+target needed. Append the leaf to `sdk/lib/brain.ts` and `brain.luau`
 (the frozen `brain` object + `BrainInputs` interface) per their stated sync obligation.
 Regenerate the committed SDK typedef fixtures and update the drift-test expectations in
 `crates/scripting-core/src/data_descriptors/tests/behavior.rs`. The `expected_fixed_value`
@@ -264,7 +269,9 @@ oracle in `brain_scope.rs` tests (no `_` arm) forces a matching case.
 
 ### Task 3: Position-goal motion verbs and patrol authoring
 
-Add `MoveToAnchor` and `Patrol` to `MotionVerb` (`data_descriptors/types/behavior.rs`),
+Add `MoveToAnchor` and `Patrol` to `MotionVerb`
+(`crates/foundation/src/data_descriptors/types/behavior.rs` — the type lives in `foundation`;
+`crates/scripting-core/.../data_descriptors/tests/behavior.rs` holds only the drift tests),
 updating `MotionVerb::ALL` and the `motion_verb_all_is_exhaustive` successor chain (the
 test fails until both are updated). Add an optional `patrol: Option<PatrolDescriptor>`
 graph-wide block: `points: Vec<[f32; 2]>` (anchor-relative XZ, metres) and `mode:
@@ -302,7 +309,10 @@ this resolver and every other verb through `steering_for`. In the apply pass, ad
 
 The cursor and direction are new `BrainComponent` fields (`patrol_cursor: usize`,
 `patrol_direction: i8`), mutated in the compute pass (the brain is already `&mut` there); they
-persist across state changes. `patrol_cursor` is serde-persisted, so a save written against a
+persist across state changes. `patrol_cursor` is serde-persisted and carries `#[serde(default)]`
+(like `home_anchor` — a newly-added non-defaulted field would reject every brain save written
+before it existed, and no suite test loads a genuinely-old save, so the compiler will not catch
+the omission). A save written against a
 longer `points` list and loaded after the descriptor shrinks the list deserializes an
 out-of-range cursor — clamp it with `cursor % points.len()` (preserves route phase over a reset-to-0) before
 indexing, mirroring the `state_index` re-seat in `ai/mod.rs`. `patrol_direction` serde-defaults
@@ -316,7 +326,13 @@ them as locomotion, the existing multi-locomotion `locomotion_animation` BTreeMa
 spans chase/patrol (a documented, host/client-consistent v1 limitation, not a desync). Extend the facing gate so an enemy under a position-goal
 `SteeringIntent::MoveTo` faces its travel velocity while moving (it faces nothing when
 arrived/stopped) — today facing is gated on `outcome.engaged`, which position-goal motion
-is not.
+is not. Crucially, a position-goal state may still hold a nearest pawn in `outcome.target`
+(an unengaged state still runs `select_target` on a due tick and stores the nearest pawn), and
+the current stopped branch faces `outcome.target`. The position-goal facing path must face
+travel velocity *only* and face nothing when stopped — it must not fall through to the
+`outcome.target`-facing branch, or a retreating/patrolling enemy that is arrived (or blocked
+pre-move, speed ≤ ε) would spin to face a nearby pawn, violating AC 2's "faces nothing when
+arrived/stopped." Pin this with a test (Task 6).
 
 ### Task 4: Minimal faction hostility hook
 
@@ -337,9 +353,10 @@ target is never re-gated on hostility. Thread the enemy's faction scalar as a ne
 parameter `select_target` → `nearest_target_candidate` (read once per enemy in the compute
 pass from its `EntityStateComponent`); `target_candidate`'s signature is untouched. This
 changes the call the unit test `selection_keeps_retained_target_until_a_fresh_candidate_beats_hysteresis`
-(`targeting.rs`) makes: it now passes the enemy's faction argument, and its hysteresis
-assertion is unchanged — both pawns read faction 0.0 (absent), the enemy passes its default
-1.0, so both stay admitted.
+(`targeting.rs`) makes: it now passes the enemy's faction argument as a hardcoded
+`1.0` literal (the test has no enemy entity to read it from), and its hysteresis
+assertion is unchanged — both pawns read faction 0.0 (absent), the enemy passes `1.0`,
+so both stay admitted.
 
 **Retention — authored, over a target-side fact.** Append `@brain.targetHostile` (Bool) to
 `BRAIN_INPUTS` at **index 11** (after Task 2's index 10) with its
@@ -444,10 +461,16 @@ lifecycle (loop wrap, `pingPong` reversal and the `patrol_direction = 1` seed fr
 across re-entry, an out-of-range persisted `patrol_cursor` clamped on load, and an untargeted
 enemy holding `patrol` under an any-state stand-down while its cursor advances); the
 `moveToAnchor` arrival not latched (a post-arrival push past epsilon re-issues `MoveTo`); the
+position-goal facing-when-stopped case (an arrived — or blocked pre-move — `moveToAnchor`/`patrol`
+enemy holding a nearby pawn in `outcome.target` faces *nothing*, not the pawn); the
 authored-arrival-guard wedge (a guard threshold `<` epsilon never exits); the faction gate
 (fresh-scan acquisition filter, no friendly acquisition, the authored `targetHostile` stand-down
 dropping a flipped-to-friendly target, the trigger/touch vs `on_impact` faction-write ordering
-seam, default-seed behavior identity); the reachability cache reused across a retained target's
+seam — a trigger/touch `@state.faction` write lands before `run_ai_tick`, so the candidacy scan
+and `targetHostile` read it the *same* tick, whereas an `on_impact` write inside the AI apply
+pass is read by all brains the *next* tick uniformly (the compute pass completes before any
+apply-pass mutation, so there is no intra-tick enemy-order dependence) — and default-seed
+behavior identity); the reachability cache reused across a retained target's
 movement; and the alloc-probe (`refresh_and_guard_eval_perform_zero_heap_allocations`) on a between-strides
 tick with the three new fixed slots populated (the due-tick `find_path` allocation is out of
 the zero-alloc contract). Update the
@@ -457,7 +480,10 @@ authored shape — the pins are hand-written, so re-derive them from the rewritt
 rather than silencing them. AC 10 (host-only,
 deterministic, no wire) is covered by the existing sim/net determinism suite staying green plus
 the by-construction host-only fields; add a determinism assertion over a retreat/patrol tick to
-this list to pin it. Update the agent diagnostics overlay to label the new states. Update
+this list to pin it. Verify the agent diagnostics overlay renders the new authored state names
+(`patrol`, `retreat`, `waiting`) — it reads `brain.state_name()` dynamically
+(`agent_diagnostics.rs`), with no hardcoded state list, so the names already surface with no code
+change; confirm this rather than hunting for a map to edit. Update
 `docs/scripting-reference.md` with the new motion verbs, the three facts, the arrival-guard
 `>= POSITION_GOAL_ARRIVAL_EPSILON` rule, the faction hook, and the recommended attack-map grammar
 (see Coordination). The faction docs must frame `@state.faction` as the *interim* numeric hostility

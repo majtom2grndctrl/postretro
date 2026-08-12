@@ -85,17 +85,22 @@ export const sentry = defineEntity({
 
       // ── Leaf activities. `motion:` is sugar for `layers: { move: [motions.x] }`,
       //    so flat is a strict specialization of the layered form, not a 2nd schema.
-      //    `animation` (locomotion clip) stays on leaves until the E21 pose-stack
-      //    composes per-layer clips; a composite (engage) therefore carries none. ──
+      //    `speed` is per-activity — the locomotion speed while this activity moves
+      //    (patrol strolls, engage sprints, a tanky retreat power-walks); attach it to
+      //    a motion handle instead if one activity ever needs several. `animation`
+      //    (locomotion clip) stays on leaves until the E21 pose-stack composes
+      //    per-layer clips; a composite (engage) therefore carries none. ──
       const patrol = defineActivity({
         animation: "walk",
         motion: motions.patrol,                                       // [E10-fact]
+        speed: 3,                                                     // a stroll
         route: { mode: "pingPong", points: [[0, 0], [6, 0], [6, 6]] }, // per-activity, anchor-relative
       });
 
       const retreat = defineActivity({
         animation: "walk",
         motion: motions.moveToAnchor,                                 // [E10-fact] position-goal motion
+        speed: 5,                                                     // hustle home
       });
 
       // ── [HFSM] engage: a COMPOSITE with two orthogonal layers running at once.
@@ -107,12 +112,12 @@ export const sentry = defineEntity({
           move:    [ on(inClaw, motions.hold), motions.chase ],       // fallback: chase
           offense: [ on(inClaw, claw), on(inSpit, spit) ],            // [ATK] no fallback → idle
         },
+        speed: 6,                                                     // sprint (governs the move layer's chase)
         onEnter: [ agent.playClip("alert-roar") ],                    // [CMB] telegraph seam (mechanism is [HFSM])
       });
 
       return {
         initial: patrol,
-        moveSpeed: 3,
         activities: { patrol, engage, retreat },   // membership + naming authority
         attacks: { claw, spit },                   // [ATK] authority for attack handles
         candidateFilter: (candidate) => candidate.distance.le(24).and(candidate.alive), // `alive` = sugar for the death latch (not a health test)
@@ -164,6 +169,8 @@ export const sentry = defineEntity({
 //   the endpoint is per-activity (two patrol loops is an obvious ask, and no composite
 //   cleanly owns a graph-wide block). Move it onto the patrol activity in E10 now —
 //   cheap while there is one patrol activity, authored-content churn if deferred.
+//   Same for `moveSpeed`: the draft carries one graph-wide speed; per-activity is the
+//   endpoint (patrol strolls, chase sprints), same cheap-now / churn-later trade.
 //
 // [E10-syntax] the fluent guard spelling (`agent.target.distance.le(2)`) is the cheap
 //   near-term slice of "behavior joins the unification": lift the pre-wrapped brain

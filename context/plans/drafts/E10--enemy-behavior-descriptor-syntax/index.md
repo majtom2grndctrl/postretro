@@ -75,15 +75,17 @@ cannot be written at all, and closing that gap is the work.
 - **The full faction / relationship model** — named alliances, neutrality, per-pair
   diplomacy, a declaration surface for initial faction, `@candidate.faction` in the
   authored candidate-filter IR, and enemy-vs-enemy infighting (broadening the
-  targetable-kind set beyond `PlayerMovement`). Deferred to its own research→spec
-  pass; the perf broad-phase for a widened candidacy set lives there. See Open questions.
+  targetable-kind set beyond `PlayerMovement`). Owned by the **Faction & relationship model**
+  roadmap spec (Epic 10), where the widened-candidacy broad-phase also lives (gated on measured
+  need). See Open questions (faction forward-compatibility).
 - **The `attacks` named map + parameterized `attack` action verb** — grammar recommended
   here (Coordination), shipped by `E10--enemy-multi-attack`. This spec does not touch
   `AttackParams` or `ActionVerb`.
 - **Random / wander patrol** — needs the seeded-deterministic-RNG story `E10--enemy-stagger`
   also defers; `patrol` is deterministic ordered points only.
 - **A runtime-movable home anchor** — the anchor is the spawn position for the brain's
-  life; re-homing is not expressible. Noted in Open questions.
+  life; re-homing is not expressible here. The additive write path is the **Runtime-movable
+  home anchor** roadmap item (Epic 10), deferred to a set-piece consumer.
 - **New perception inputs** (LOS, sound, alert propagation) and damage-based aggro —
   the roadmap's line-of-sight bullet and `research/enemy-aggro-model.md`.
 - **An engine-side leash or acquisition range** — leash is authored via
@@ -617,43 +619,37 @@ export const sentry = defineEntity({
 
 ## Open questions
 
-- **Full faction / relationship model — owner decision.** The minimal hook ships a
-  numeric `@state.faction` with a differ-means-hostile rule over the existing
-  player-pawn targetable set. The full model (named alliances, neutrality, per-pair
-  diplomacy, a per-archetype initial-faction *declaration* surface — `EntityStateComponent`
-  has none today — `@candidate.faction` in the authored candidate-filter IR, and
-  enemy-vs-enemy infighting by widening the targetable-kind set, with the O(N²) candidacy
-  broad-phase that requires) is a separate research→spec pass. Owner: confirm the numeric
-  field and hostility rule are forward-compatible with the intended model before promotion,
-  and decide whether infighting is wanted soon enough to co-design the broad-phase. The
-  fresh-scan engine hostility filter is the minimal-hook stand-in for acquisition narrowing
-  until `@candidate.faction` (the cross-entity `@state` read on the candidate scope) lands;
-  once it does, acquisition narrowing migrates to the authored candidate filter and the
-  engine floor keeps only the seed and the retention-side `@brain.targetHostile` read. When
-  it does, authored range-limiting stays on the acquire transition (detection) rather than
-  the candidate filter (candidacy), so the two ranges stay independently authorable — a
-  sentry may be targetable at one range yet only engage from patrol at a tighter one.
+- **Faction forward-compatibility — owner, before promotion.** The minimal hook ships a
+  numeric `@state.faction` with a differ-means-hostile rule over the player-pawn targetable
+  set; the full model (named alliances, neutrality, per-pair diplomacy, an initial-faction
+  declaration surface, `@candidate.faction`, and enemy-vs-enemy infighting) is the **Faction &
+  relationship model** roadmap spec (Epic 10), where the widened-candidacy broad-phase also
+  lives, gated on measured need. Forward-compatibility holds by construction: the durable
+  authored contract is the `hostile` / `targetHostile` fact, and numeric `@state.faction` is
+  interim storage that migrates beneath it (to a relation table, differ-means-hostile becoming
+  the default relation) — provided the numeric leaf stays framed as the interim *input* to the
+  fact, not published as the permanent allegiance surface. So the owner confirms only the
+  product intent (whether named factions / diplomacy are wanted, and roughly when); the minimal
+  hook is forward-compatible either way, and this does not gate promotion. When `@candidate.faction`
+  lands, acquisition narrowing migrates to the authored candidate filter and the engine floor
+  keeps only the seed and the retention-side `@brain.targetHostile` read, with authored
+  range-limiting staying on the acquire transition (detection) rather than the filter (candidacy)
+  so the two ranges stay independently authorable — a sentry may be targetable at one range yet
+  only engage from patrol at a tighter one.
 - **Reachability ship vs. the nav fix.** Task 5 is sequenced after
   `E10--pursuit-wraparound-blocked`. If that fix slips, the owner may prefer to ship the
   `@brain.targetReachable` fact with a documented "unreliable around freestanding walls"
   caveat and no reference demo, rather than block this spec. `E10--mandatory-vertex-wedge-escapes`
   is the softer dependency (it keeps a chase-to-nearest-reachable barrier *hold* from
   jittering); decide whether the barrier demo waits on it too.
-- **Runtime-movable anchor.** The anchor is fixed at spawn. A future "re-home" (a guard-post
-  rotation, a patrol leader relocating its followers) would need a write path to
-  `home_anchor` — deferred; note whether any near-term content wants it.
-- **State-scoped interrupts — multiple untargeted-active states.** The single-resting-state
-  convention (one untargeted-active state, and the any-state stand-down targets it so
-  `to == current` skips it there) holds while a graph has exactly one untargeted-active state.
-  A graph wanting several — `patrol` plus a `search-last-known` state — needs each to skip the
-  stand-down, which the graph-wide `interrupt.to != current` skip cannot express. State-scoped
-  interrupts (an interrupt carrying the states it applies to, or excludes) are the general fix.
-  Deferred: search is out of scope, so one resting state suffices here; this is the natural
-  follow-up if multiple untargeted-active states are later wanted. A companion `behavior_lints`
-  finding (an any-state `not hasTarget` / `not targetHostile` stand-down whose `to` is not the
-  graph's untargeted-active resting state) could catch the oscillation at authoring time, but
-  identifying "the untargeted-active resting state" statically is not clearly cheap — noted here
-  rather than scoped as a task.
+- **State-scoped interrupts — deferred to statecharts.** The general fix for multiple
+  untargeted-active resting states (an interrupt carrying the states it applies to or excludes)
+  is the **Hierarchical behavior (statecharts)** roadmap spec's `"*"` scoped transitions; the
+  single-resting-state convention holds here (search is out of scope, so one resting state
+  suffices), and the first real consumer arrives with perception. A companion `behavior_lints`
+  finding — an any-state `not hasTarget` / `not targetHostile` stand-down whose `to` is not the
+  graph's untargeted-active resting state — could catch the oscillation at authoring time, but
+  identifying that state statically is not clearly cheap; noted, not scoped.
 - **Hierarchical composites — forward compatibility (owner, before promotion).** The flat
   state model is v1; the endpoint is a recursive statechart — composite activities, orthogonal
   layers, scoped transitions — owned by the *Hierarchical behavior (statecharts)* roadmap spec

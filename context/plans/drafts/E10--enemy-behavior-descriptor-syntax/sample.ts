@@ -47,7 +47,7 @@
 
 import { defineEntity } from "postretro";
 import {
-  defineBehavior,  // (agent) => the root composite { initial, activities, transitions }
+  defineBrain,     // (agent) => the root composite { initial, activities, transitions } — a state machine
   defineActivity,  // an FSM node; a leaf, or composite via `layers`
   defineAttack,    // [ATK] a wieldable/attack handle, referenced by identity
   on,              // on(guard, target): one ordered guarded row (transitions AND layer rows)
@@ -72,7 +72,7 @@ export const sentry = defineEntity({
     // 1e9-sentinel foot-gun. `agent.target.exists` is exempt; `.not()` over a guarded
     // atom reads true untargeted (documented, shown in guard-diagnostics);
     // `agent.target.rawDistance` is the escape hatch.
-    behavior: defineBehavior((agent) => {
+    behavior: defineBrain((agent) => {   // the `behavior` component is defined by a brain (the machine)
       // ── Breathing room: guards named once, fluent nodes. ──
       const hostileAcquired = agent.target.hostile.and(agent.acquisitionDue);   // [E10-fact] exists auto-conjoined
       const standDown       = agent.target.exists.not().or(agent.target.hostile.not());

@@ -629,7 +629,10 @@ export const sentry = defineEntity({
   fresh-scan engine hostility filter is the minimal-hook stand-in for acquisition narrowing
   until `@candidate.faction` (the cross-entity `@state` read on the candidate scope) lands;
   once it does, acquisition narrowing migrates to the authored candidate filter and the
-  engine floor keeps only the seed and the retention-side `@brain.targetHostile` read.
+  engine floor keeps only the seed and the retention-side `@brain.targetHostile` read. When
+  it does, authored range-limiting stays on the acquire transition (detection) rather than
+  the candidate filter (candidacy), so the two ranges stay independently authorable — a
+  sentry may be targetable at one range yet only engage from patrol at a tighter one.
 - **Reachability ship vs. the nav fix.** Task 5 is sequenced after
   `E10--pursuit-wraparound-blocked`. If that fix slips, the owner may prefer to ship the
   `@brain.targetReachable` fact with a documented "unreliable around freestanding walls"
@@ -651,4 +654,15 @@ export const sentry = defineEntity({
   graph's untargeted-active resting state) could catch the oscillation at authoring time, but
   identifying "the untargeted-active resting state" statically is not clearly cheap — noted here
   rather than scoped as a task.
+- **Hierarchical composites — forward compatibility (owner, before promotion).** The flat
+  state model is v1; the endpoint is a recursive statechart — composite activities, orthogonal
+  layers, scoped transitions — owned by the *Hierarchical behavior (statecharts)* roadmap spec
+  (Epic 10) and explored in this spec's `sample.ts`. Two per-activity migrations are deferred
+  to it rather than pulled forward, keeping E10 minimal and the shipped `moveSpeed` contract
+  untouched: per-activity `route` (from the graph-wide `patrol` block — E10-new, bounded) and
+  per-activity `speed` (from the shipped graph-wide `moveSpeed` — a contract migration touching
+  descriptor, validation, SDK, and replication, *not* cheap), each requiring per-state patrol
+  cursors. E10 authors the graph-wide forms. Confirm nothing in the flat shape forecloses either
+  migration or the composite envelope; the any-state `interrupts` grammar is the flat precursor
+  of that spec's `"*"` scoped transitions — additively generalized, not replaced.
 </content>

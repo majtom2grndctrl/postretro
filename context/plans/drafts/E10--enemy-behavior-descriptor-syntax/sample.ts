@@ -187,12 +187,15 @@ export const sentry = defineEntity({
 // [E10-fact]   buildable now, FLAT: distanceFromAnchor / target.reachable /
 //   target.hostile facts, moveToAnchor + patrol motion, per-activity `route`, the
 //   authored leash, the fresh-scan faction filter behind `agent.target.hostile`.
-//   HAND-OFF: the E10 draft currently authors the patrol route as a GRAPH-WIDE block;
-//   the endpoint is per-activity (two patrol loops is an obvious ask, and no composite
-//   cleanly owns a graph-wide block). Move it onto the patrol activity in E10 now —
-//   cheap while there is one patrol activity, authored-content churn if deferred.
-//   Same for `moveSpeed`: the draft carries one graph-wide speed; per-activity is the
-//   endpoint (patrol strolls, chase sprints), same cheap-now / churn-later trade.
+//   HAND-OFF (E10 owner, 2026-08: both DEFERRED to the statecharts spec, recorded as
+//   E10 forward-compat, not pulled into the flat draft): patrol route → per-activity
+//   `route` and graph-wide `moveSpeed` → per-activity `speed` are the endpoint (two
+//   patrol loops is an obvious ask; patrol strolls while chase sprints). NOT the same
+//   cost, though — the earlier "same cheap-now trade" was wrong: `route` reshapes the
+//   E10-NEW `patrol` block (bounded, in-draft), while `moveSpeed` is a SHIPPED required
+//   field whose migration touches the descriptor, validation, SDK, replication, and
+//   every authored enemy. Both also need per-state patrol cursors. The statecharts spec
+//   owns them; E10 ships the graph-wide forms and must not foreclose the per-activity move.
 //
 // [E10-syntax] the fluent guard spelling (`agent.target.distance.le(2)`) is the cheap
 //   near-term slice of "behavior joins the unification": lift the pre-wrapped brain

@@ -8,8 +8,8 @@ use postretro_scripting_core::primitive_adapters::{
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 #[allow(unused_imports)]
 pub(crate) use postretro_scripting_core::store_bridge::{
-    TextEdit, apply_store_slot_batch, apply_text_edit, read_store_slot, store_declaration,
-    store_declaration_from_manifest_value, store_declaration_set_from_values,
+    TextEdit, apply_store_slot_batch, apply_text_edit, read_script_store_slot, read_store_slot,
+    store_declaration, store_declaration_from_manifest_value, store_declaration_set_from_values,
     write_state_slot_json, write_store_slot,
 };
 
@@ -20,10 +20,11 @@ const DEFINE_STORE_DOC: &str = "Build a typed state-store handle for ModManifest
      Pass that handle to defineMod({ stores: [store] }); defineMod resolves declaration data before the manifest crosses the FFI. Definition context.";
 
 const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \
-     Available in definition and data contexts.";
+     Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts.";
 
 const STORE_WRITE_DOC: &str = "Write an engine-global state slot by stable dotted name. \
      The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. \
+     Per-owner slots require an owner-addressed write and are rejected. \
      Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.";
 
 pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -45,7 +46,7 @@ pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: S
         .register("storeRead", {
             let ctx = ctx.clone();
             move |name: String| -> Result<Any, ScriptError> {
-                read_store_slot(&ctx, &name).map(Any)
+                read_script_store_slot(&ctx, &name).map(Any)
             }
         })
         .scope(ContextScope::Both)

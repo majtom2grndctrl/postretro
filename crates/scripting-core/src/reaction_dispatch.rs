@@ -437,12 +437,6 @@ fn dispatch_add_owner_slot(
     targets: &[EntityId],
     script_ctx: &ScriptCtx,
 ) {
-    // A tag with no matching pawns is a normal no-op. In particular, do not
-    // make zero-recipient level-load and trigger-shaped compositions noisy.
-    if targets.is_empty() {
-        return;
-    }
-
     let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(descriptor.args.clone()) {
         Ok(args) if args.delta.is_finite() => args,
         Ok(_) => {
@@ -485,6 +479,13 @@ fn dispatch_add_owner_slot(
             );
             return;
         }
+    }
+
+    // A valid descriptor with no matching pawns is a normal no-op. Validate
+    // first so malformed named level-load and crossing descriptors cannot
+    // survive merely because their current level has no recipients.
+    if targets.is_empty() {
+        return;
     }
 
     let seats: Vec<_> = {
@@ -653,6 +654,7 @@ mod tests {
     use crate::slot_table::{
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use log::Level;
     use postretro_foundation::Seat;
     use postretro_test_log_capture::LogCapture;
 
@@ -1072,6 +1074,151 @@ mod tests {
         );
         assert!(script_ctx.system_commands.is_empty());
         assert!(logs.records().is_empty(), "client addSlot must be silent");
+    }
+
+    // Regression: an invalid named addSlot escaped validation when its tag had no matches.
+    #[test]
+    fn named_add_slot_validates_global_slot_without_recipients_and_runs_sibling_effect() {
+        let script_ctx = ScriptCtx::new();
+        let mut global_slot = per_owner_number_slot(0.0);
+        global_slot.schema.per_owner = false;
+        script_ctx
+            .slot_table
+            .borrow_mut()
+            .insert("currency.teamKills".into(), global_slot)
+            .expect("new global slot");
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_for_handler = std::sync::Arc::clone(&calls);
+        let mut system_registry = SystemReactionRegistry::new();
+        system_registry.register("record", move |args, _queue| {
+            calls_for_handler.lock().unwrap().push(
+                args.get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            );
+            Ok(())
+        });
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                NamedReaction {
+                    name: "levelLoadOrCrossing".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "addSlot".to_string(),
+                        target: None,
+                        tag: Some("no-pawns".to_string()),
+                        on_complete: None,
+                        args: serde_json::json!({
+                            "slot": "currency.teamKills",
+                            "delta": 1.0
+                        }),
+                    }),
+                },
+                NamedReaction {
+                    name: "levelLoadOrCrossing".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "record".to_string(),
+                        target: None,
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "label": "sibling" }),
+                    }),
+                },
+            ],
+            Vec::new(),
+            &[],
+        );
+
+        let logs = LogCapture::start();
+        fire_named_event_with_sequences(
+            "levelLoadOrCrossing",
+            &data,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+            None,
+        );
+
+        logs.assert_logged_once(
+            Level::Warn,
+            "[Scripting] addSlot requires per-owner slot `currency.teamKills`; reaction had no effect",
+        );
+        assert_eq!(calls.lock().unwrap().as_slice(), ["sibling".to_string()]);
+    }
+
+    #[test]
+    fn named_add_slot_with_valid_descriptor_and_zero_recipients_is_silent_and_runs_sibling_effect()
+    {
+        let script_ctx = ScriptCtx::new();
+        script_ctx
+            .slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new owner slot");
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_for_handler = std::sync::Arc::clone(&calls);
+        let mut system_registry = SystemReactionRegistry::new();
+        system_registry.register("record", move |args, _queue| {
+            calls_for_handler.lock().unwrap().push(
+                args.get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            );
+            Ok(())
+        });
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                NamedReaction {
+                    name: "levelLoadOrCrossing".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "addSlot".to_string(),
+                        target: None,
+                        tag: Some("no-pawns".to_string()),
+                        on_complete: None,
+                        args: serde_json::json!({ "slot": "currency.xp", "delta": 1.0 }),
+                    }),
+                },
+                NamedReaction {
+                    name: "levelLoadOrCrossing".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "record".to_string(),
+                        target: None,
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "label": "sibling" }),
+                    }),
+                },
+            ],
+            Vec::new(),
+            &[],
+        );
+
+        let logs = LogCapture::start();
+        fire_named_event_with_sequences(
+            "levelLoadOrCrossing",
+            &data,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+            None,
+        );
+
+        assert!(
+            logs.records()
+                .iter()
+                .all(|record| record.level != Level::Warn),
+            "valid zero-recipient addSlot must not warn"
+        );
+        assert_eq!(calls.lock().unwrap().as_slice(), ["sibling".to_string()]);
     }
 
     // A trigger-bound Progress reaction means "the tracker watches this tag", not

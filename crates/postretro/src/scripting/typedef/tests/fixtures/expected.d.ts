@@ -802,10 +802,10 @@ declare module "postretro" {
   /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
 
-  /** Read the current value of an engine-global state slot by stable dotted name. Available in definition and data contexts. */
+  /** Read the current value of an engine-global state slot by stable dotted name. Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts. */
   export function storeRead(name: string): unknown;
 
-  /** Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts. */
+  /** Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Per-owner slots require an owner-addressed write and are rejected. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts. */
   export function storeWrite(name: string, value: unknown): void;
 
   /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */

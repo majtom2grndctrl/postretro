@@ -64,6 +64,25 @@ pub fn read_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptE
         })
 }
 
+pub fn read_script_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptError> {
+    let table = ctx.slot_table.borrow();
+    let slot = table
+        .get(name)
+        .ok_or_else(|| unknown_slot("storeRead", name))?;
+    if slot.schema.per_owner {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "storeRead: slot `{name}` is per-owner and requires an owner-addressed read"
+            ),
+        });
+    }
+    slot.value
+        .clone()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: format!("storeRead: state slot `{name}` has no current value"),
+        })
+}
+
 pub fn write_script_store_slot(
     ctx: &ScriptCtx,
     name: &str,
@@ -73,6 +92,13 @@ pub fn write_script_store_slot(
     let slot = table
         .get_mut(name)
         .ok_or_else(|| unknown_slot("storeWrite", name))?;
+    if slot.schema.per_owner {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "storeWrite: slot `{name}` is per-owner and requires an owner-addressed write"
+            ),
+        });
+    }
     if slot.schema.readonly {
         log::warn!("[Scripting] storeWrite: rejected write to readonly slot `{name}`");
         return Ok(());
@@ -907,6 +933,45 @@ mod tests {
                 .and_then(|record| record.value.as_ref()),
             Some(&SlotValue::Number(41.0)),
             "rejected setState must leave the retained scalar projection unchanged"
+        );
+    }
+
+    // Regression: generic storeRead/storeWrite exposed a per-owner slot's scalar projection.
+    #[test]
+    fn generic_script_helpers_reject_per_owner_slot_without_mutating_any_value() {
+        let ctx = ScriptCtx::new();
+        let mut record = readonly_slot();
+        record.schema.readonly = false;
+        record.schema.per_owner = true;
+        record.value = Some(SlotValue::Number(41.0));
+        record.set_per_seat_value(postretro_foundation::Seat(7), SlotValue::Number(73.0));
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), record)
+            .expect("test per-owner slot should be vacant");
+
+        let read_error = read_script_store_slot(&ctx, "currency.xp")
+            .expect_err("generic storeRead must require explicit owner addressing");
+        assert_eq!(
+            read_error.to_string(),
+            "invalid argument: storeRead: slot `currency.xp` is per-owner and requires an owner-addressed read"
+        );
+
+        let write_error =
+            write_script_store_slot(&ctx, "currency.xp", ScriptSlotValue::Number(99.0))
+                .expect_err("generic storeWrite must require explicit owner addressing");
+        assert_eq!(
+            write_error.to_string(),
+            "invalid argument: storeWrite: slot `currency.xp` is per-owner and requires an owner-addressed write"
+        );
+
+        let table = ctx.slot_table.borrow();
+        let record = table.get("currency.xp").expect("test slot remains present");
+        assert_eq!(record.value, Some(SlotValue::Number(41.0)));
+        assert_eq!(
+            record.per_seat_value(postretro_foundation::Seat(7)),
+            Some(&SlotValue::Number(73.0)),
+            "rejected generic access must leave authoritative owner storage unchanged"
         );
     }
 

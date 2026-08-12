@@ -271,7 +271,9 @@ impl PlayerHudStatePublisher {
             let Some(value) = record.per_seat_value(local_seat).cloned() else {
                 continue;
             };
-            record.write_value(Some(value));
+            if record.value.as_ref() != Some(&value) {
+                record.write_value(Some(value));
+            }
         }
     }
 }
@@ -454,12 +456,30 @@ mod tests {
             xp.write_value(Some(SlotValue::Number(99.0)));
         }
 
-        PlayerHudStatePublisher::new(ctx.clone()).tick(None);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick(None);
 
         assert_eq!(
             ctx.slot_table.borrow().get("currency.xp").unwrap().value,
             Some(SlotValue::Number(17.0)),
             "the HUD projection reads the local seat, never a remote owner's value"
+        );
+
+        let generation = ctx
+            .slot_table
+            .borrow()
+            .get("currency.xp")
+            .unwrap()
+            .write_generation();
+        publisher.tick(None);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.xp")
+                .unwrap()
+                .write_generation(),
+            generation,
+            "an unchanged local-seat projection must not emit a spurious write notification"
         );
     }
 

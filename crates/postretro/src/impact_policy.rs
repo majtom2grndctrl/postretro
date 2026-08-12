@@ -722,6 +722,14 @@ mod tests {
     use postretro_foundation::{DamagePayload, Seat};
     use serde_json::json;
 
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
+
     fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
             id: id.to_string(),
@@ -1815,7 +1823,7 @@ mod tests {
         hit_from(&ctx, target, Some(source), DamageProducer::InTick);
         evaluate_pending(&ctx, &mut runtime);
 
-        assert_eq!(owner_store(&ctx, "currency.xp", Seat(7)), 5.0);
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(7)), 5.0);
     }
 
     #[test]
@@ -1842,7 +1850,7 @@ mod tests {
             evaluate_pending(&ctx, &mut runtime);
         });
 
-        assert_eq!(state(&ctx, target, "sibling_runs"), 1.0);
+        assert_number_approx_eq(state(&ctx, target, "sibling_runs"), 1.0);
         assert!(captured.iter().any(|(level, message)| {
             *level == log::Level::Warn
                 && message.contains("[Impact] owner write for slot `currency.xp` resolved no seat")
@@ -1871,7 +1879,7 @@ mod tests {
 
         hit_from(&ctx, target, Some(source), DamageProducer::InTick);
         evaluate_pending(&ctx, &mut runtime);
-        assert_eq!(owner_store(&ctx, "currency.xp", Seat(3)), 2.0);
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(3)), 2.0);
 
         runtime.replace_global_events(vec![event(
             "owner-accrual",
@@ -1884,7 +1892,7 @@ mod tests {
         for expected in [3.0, 4.0] {
             hit_from(&ctx, target, Some(source), DamageProducer::InTick);
             evaluate_pending(&ctx, &mut runtime);
-            assert_eq!(owner_store(&ctx, "currency.xp", Seat(3)), expected);
+            assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(3)), expected);
         }
     }
 

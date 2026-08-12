@@ -63,7 +63,8 @@ The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
 **Durable store identity.** A mod-owned slot with writable `persist: true` or
-`network: "shared"` must have an entry in `<mod-root>/identity.json`:
+any `network` replication scope (`"shared"` or `"ownerPrivate"`) must have an
+entry in `<mod-root>/identity.json`:
 
 ```json
 {
@@ -87,7 +88,10 @@ host-side value. Omit `network` for host-local bookkeeping or use
 `network: "ownerPrivate"` to replicate each value only to its owner.
 `network: "shared"` is valid only for global slots. `updateState`/legacy
 `setState` cannot write per-owner slots; use an owner-addressed impact `set` or
-`update`, or the `addSlot` reaction.
+`update`, or the `addSlot` reaction. Generic `storeRead(name)` and
+`storeWrite(name, value)` also reject per-owner slots because they carry no
+owner address. Per-owner values are session-scoped: `perOwner: true` with
+`persist: true` is rejected.
 
 **Render profile.** The optional `render.bloom` block picks the mod's bloom look
 once, for the whole mod:
@@ -1437,6 +1441,28 @@ health or ammo-reserve components warn and skip that recipient while sibling
 targets continue. These reaction grants are independent of impact-policy
 producer gating, so a trigger pickup can grant resources even though
 source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
+
+### `addSlot`
+
+```typescript
+import { addSlot, defineReaction } from "postretro";
+
+// progression.xp is a writable numeric `perOwner: true` slot.
+const objectiveAward = defineReaction((on) =>
+  addSlot(on.activators, progression.xp, 100),
+);
+```
+
+`addSlot(target, slot, delta)` adds a finite `delta` to each selected player's
+current slot value on the host. `target` is either a tag string, which selects
+matching entities, or `on.activators` in a trigger-event reaction. The slot
+must be a writable numeric `perOwner: true` slot; global, readonly, and
+non-numeric slots are rejected.
+
+The addition is per selected owner, so repeated or overlapping awards compose
+additively (subject to the slot's normal range validation). A target set with no
+matches is a no-op. A matched entity without a player seat is skipped with a
+warning; other selected players still receive their additions.
 
 ### Impact policies
 

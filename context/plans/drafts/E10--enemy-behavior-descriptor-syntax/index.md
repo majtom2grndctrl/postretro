@@ -460,7 +460,11 @@ the by-construction host-only fields; add a determinism assertion over a retreat
 this list to pin it. Update the agent diagnostics overlay to label the new states. Update
 `docs/scripting-reference.md` with the new motion verbs, the three facts, the arrival-guard
 `>= POSITION_GOAL_ARRIVAL_EPSILON` rule, the faction hook, and the recommended attack-map grammar
-(see Coordination). Regenerate and commit both typedef fixtures.
+(see Coordination). The faction docs must frame `@state.faction` as the *interim* numeric hostility
+input — an opaque identity token, hostility being a differing identity — whose durable authored
+contract is the `targetHostile`/`hostile` fact, with named alliances / diplomacy roadmapped in
+**Faction & relationship model**; so no authored content builds a permanent dependency on the
+numeric surface (the forward-compat proviso the roadmap's migration relies on). Regenerate and commit both typedef fixtures.
 
 ### Coordination — attack-map grammar seam, multi-attack, stagger, weapon model
 
@@ -657,7 +661,12 @@ export const sentry = defineEntity({
 
 ## Open questions
 
-- **Faction forward-compatibility — owner, before promotion.** The minimal hook ships a
+- **Faction forward-compatibility — decided (factions roadmapped, low priority).** The owner
+  confirms named factions / per-pair diplomacy are wanted on the roadmap — not a priority for
+  the first game, but PostRetro is a substrate for community-built games, so the full model must
+  not be foreclosed. Already recorded as the **Faction & relationship model** roadmap item
+  (`roadmap.md`), which names E10's faction seed + `hostile`/`targetHostile` facts as the durable
+  contract the numeric storage migrates beneath. The minimal hook ships a
   numeric `@state.faction` with a differ-means-hostile rule over the player-pawn targetable
   set; the full model (named alliances, neutrality, per-pair diplomacy, an initial-faction
   declaration surface, `@candidate.faction`, and enemy-vs-enemy infighting) is the **Faction &
@@ -666,9 +675,10 @@ export const sentry = defineEntity({
   authored contract is the `hostile` / `targetHostile` fact, and numeric `@state.faction` is
   interim storage that migrates beneath it (to a relation table, differ-means-hostile becoming
   the default relation) — provided the numeric leaf stays framed as the interim *input* to the
-  fact, not published as the permanent allegiance surface. So the owner confirms only the
-  product intent (whether named factions / diplomacy are wanted, and roughly when); the minimal
-  hook is forward-compatible either way, and this does not gate promotion. When `@candidate.faction`
+  fact, not published as the permanent allegiance surface. That proviso is the one discipline
+  that keeps the door open, and it is enforced by Task 6's docs requirement (frame `@state.faction`
+  as an opaque interim identity token whose durable contract is `targetHostile`), so the minimal
+  hook is forward-compatible either way and this does not gate promotion. When `@candidate.faction`
   lands, acquisition narrowing migrates to the authored candidate filter and the engine floor
   keeps only the seed and the retention-side `@brain.targetHostile` read, with authored
   range-limiting staying on the acquire transition (detection) rather than the filter (candidacy)

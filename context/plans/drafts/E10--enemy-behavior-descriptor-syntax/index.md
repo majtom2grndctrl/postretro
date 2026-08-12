@@ -172,11 +172,15 @@ Retention drop is authored instead, over `@brain.targetHostile`.
   routes through the any-state stand-down to `patrol`, which steers back toward home;
   re-engagement then fires from `patrol → alert` on a fresh acquisition, not from a
   `retreat → alert` edge.
-- [ ] **targetReachable.** With a selected target the fact reads whether the nav floor
-  can path enemy→target; it reads `false` with no target and `true` with no navmesh
-  present; it is recomputed on the think-stride acquisition cadence and a between-strides
-  tick reuses the cached value. An authored `select(targetReachable, false, true)` guard
-  routes to a hold state when the target is unpathable and back when it becomes pathable.
+- [ ] **targetReachable.** With a selected target the fact reads the nav floor's `find_path`
+  verdict (enemy→target); it reads `false` with no target and `true` with no navmesh present;
+  it is recomputed on the think-stride acquisition cadence and a between-strides tick reuses
+  the cached value. The fact is correct by construction — it reports the same verdict chase
+  steering already acts on — and ships with this spec. The authored routing demo — a
+  `select(targetReachable, false, true)` guard routing to a hold state when the target is
+  unpathable and back when it becomes pathable — is gated on `E10--pursuit-wraparound-blocked`
+  (AC 11): until that fix the verdict inherits pursuit's false-negative around freestanding
+  walls, so a demo built on it would misfire at every wall corner.
 - [ ] **Faction hostility gate.** On a fresh acquisition scan an enemy admits a
   `PlayerMovement` candidate only while hostile to it per `@state.faction`, so a friendly
   pawn never masks a hostile one and is never freshly acquired; the retained-target lookup
@@ -395,11 +399,17 @@ selected target the fact reads `false`; with no `nav_graph` (a map without a nav
 reads `true`, preserving today's chase-degradation behavior. This is the one per-enemy nav
 query added; it is strided and cached so an idle-strided distant enemy pays it at most once
 per stride band, within the combat-positioning query budget.
-**Sequenced after `E10--pursuit-wraparound-blocked`:** that draft fixes `find_path`
-returning a false `None` for a routable wraparound around a freestanding wall; without it
-`@brain.targetReachable` reads `false` for a target reachable behind a wall, so any authored
-unreachable-behavior fires spuriously at every corner — the fact would ship a bug. Do not
-land Task 5 or its reference demo (Task 6) before that fix.
+**The fact ships here; only its reference demo waits.** `@brain.targetReachable` is defined
+as the nav floor's `find_path` verdict (cached) and reports it faithfully — the *same* verdict
+chase steering already consumes (`E10--pursuit-wraparound-blocked` confirms pursuit itself
+freezes on the same false `None`, through the same `find_path`). It is not a ground-truth
+reachability oracle. That draft fixes a `find_path` repair failure that returns a false `None`
+for a genuinely-routable wraparound around a freestanding wall; until it lands, the verdict
+inherits pursuit's known wraparound limitation around such walls. The fact and its wiring
+therefore land with Task 5; only the authored reference *demo* (Task 6's `waiting` barrier-hold,
+which would trigger at every wall corner and read as a malfunctioning reference enemy) waits on
+the fix — per AC 11. Document the limitation alongside the fact so an author knows it tracks the
+pathfinder's current capability, not ground truth.
 
 ### Task 6: Reference authoring, tests, diagnostics, docs
 
@@ -499,7 +509,8 @@ spawn seed → SDK prelude → drift fixtures) before it is repeated.
 region with Task 3, so it follows rather than races it, and appends `@brain.targetHostile`
 at `BRAIN_INPUTS` index 11, which must follow Task 2's index-10 append (append-only).
 **Phase 5 (sequential):** Task 5 — reachability fact; appends `BRAIN_INPUTS` index 12 after
-Task 4's index 11, and is **blocked on `E10--pursuit-wraparound-blocked`** landing.
+Task 4's index 11. The fact ships here (it faithfully reports `find_path`); only its reference
+*demo* (Task 6) waits on `E10--pursuit-wraparound-blocked`.
 **Phase 6 (sequential):** Task 6 — consumes the settled vocabulary; the reachability demo
 half waits on Task 5's nav dependency.
 
@@ -663,12 +674,15 @@ export const sentry = defineEntity({
   range-limiting staying on the acquire transition (detection) rather than the filter (candidacy)
   so the two ranges stay independently authorable — a sentry may be targetable at one range yet
   only engage from patrol at a tighter one.
-- **Reachability ship vs. the nav fix.** Task 5 is sequenced after
-  `E10--pursuit-wraparound-blocked`. If that fix slips, the owner may prefer to ship the
-  `@brain.targetReachable` fact with a documented "unreliable around freestanding walls"
-  caveat and no reference demo, rather than block this spec. `E10--mandatory-vertex-wedge-escapes`
-  is the softer dependency (it keeps a chase-to-nearest-reachable barrier *hold* from
-  jittering); decide whether the barrier demo waits on it too.
+- **Reachability: fact ships, demo waits (decided).** `@brain.targetReachable` is the nav
+  floor's `find_path` verdict, correct by construction (the same verdict chase already acts on),
+  so it ships with this spec — not a ground-truth oracle. It inherits pursuit's wraparound
+  false-negative around freestanding walls until `E10--pursuit-wraparound-blocked` lands; only
+  the authored reference *demo* (the `waiting` barrier-hold) waits on that fix, per AC 11.
+  The same rule settles the softer `E10--mandatory-vertex-wedge-escapes` dependency: it keeps a
+  chase-to-nearest-reachable barrier *hold* from jittering, so the demo waits on it too (a feel
+  fix), while the fact does not. General rule: the fact ships; an authored reachability *demo*
+  waits on whatever nav fix its feel needs.
 - **State-scoped interrupts — deferred to statecharts.** The general fix for multiple
   untargeted-active resting states (an interrupt carrying the states it applies to or excludes)
   is the **Hierarchical behavior (statecharts)** roadmap spec's `"*"` scoped transitions; the

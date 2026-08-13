@@ -212,8 +212,3 @@ Update the dev mod's per-player XP slot declaration in `content/dev/scripts/comb
 | join seed value type | `JoinSeedValue` (wire crate) <-> `PersistedValue` (binary crate) | bitcode `JoinSeedValue` enum: Boolean, Number, String, Array | -- | -- |
 | on-disk format | `PersistedState { version: 3, slots, per_owner }` | JSON with `per_owner: { durable_key: { hex_id: value } }` | -- (not author-facing) | -- |
 | app protocol id | `APP_PROTOCOL_ID` bumped | -- | -- | -- |
-
-## Open questions
-
-- **Join seed size limit.** The join seed is an app-protocol message bounded by the reliable channel's message size limit, not the renetcode user-data field. A mod with many `perOwner + persist` slots could produce a large seed. The existing message framing is likely sufficient, but a byte-size cap could be added if needed.
-- **Multi-mod persistence.** The save format is per-mod (`state.json` scoped by mod id). The join seed carries entries from the same mod the host runs. A client whose save file is from a different mod sends effectively empty durable keys — correct behavior (progress is mod-scoped), worth noting.

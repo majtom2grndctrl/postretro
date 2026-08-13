@@ -34,10 +34,10 @@ use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
     BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-    BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor,
-    BehaviorStateDescriptor, BindingScope, BoundProgram, CANDIDATE_DIED_INPUT,
-    CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor, IrNode, IrValue,
-    MotionVerb, PatrolDescriptor, PatrolMode, TransitionDescriptor, bind,
+    BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
+    BakedIr, BehaviorGraphDescriptor, BehaviorStateDescriptor, BindingScope, BoundProgram,
+    CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor,
+    IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -438,6 +438,7 @@ fn step_graph(
             acquisition_due,
             distance_from_anchor: 0.0,
             target_hostile: true,
+            target_reachable: true,
         },
     );
 
@@ -455,6 +456,247 @@ fn step_graph(
         .expect("the selected index is declared")
         .clone();
     (name, steering_for(motion))
+}
+
+/// A graph whose authored transition makes the runtime reachability fact
+/// observable: a selected but unrouteable target moves from chase to hold.
+fn reachability_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "chase".to_string(),
+        states: BTreeMap::from([
+            (
+                "chase".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge("hold", target_is_unreachable())],
+                ),
+            ),
+            (
+                "hold".to_string(),
+                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        patrol: None,
+        attack: None,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+/// A chase-only graph keeps the selected target retained across stride bands,
+/// letting the cache test move it between a due and non-due tick.
+fn reachability_cache_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "chase".to_string(),
+        states: BTreeMap::from([(
+            "chase".to_string(),
+            authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+        )]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        patrol: None,
+        attack: None,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+fn target_is_unreachable() -> IrNode {
+    IrNode::Select {
+        cond: Box::new(brain_input(BRAIN_TARGET_REACHABLE_INPUT)),
+        a: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(true),
+        }),
+    }
+}
+
+fn reachability_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
+    NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 64,
+        dim_z: 64,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions,
+        portals: Vec::new(),
+    })
+}
+
+#[test]
+fn target_reachability_is_false_without_a_selected_target() {
+    let graph = reachability_cache_graph();
+    let mut registry = EntityRegistry::new();
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.target_reachable = true;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert!(
+        !registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable,
+        "losing the selected target clears the cached reachability verdict"
+    );
+}
+
+#[test]
+fn target_reachability_is_true_without_a_navmesh() {
+    let graph = reachability_graph();
+    let mut registry = EntityRegistry::new();
+    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::new(1.0, 0.0, 1.0),
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert!(
+        brain.target_reachable,
+        "no navmesh keeps direct chase reachable"
+    );
+    assert_eq!(brain.state_name(), Some("chase"));
+}
+
+#[test]
+fn target_reachability_uses_the_nav_pathfinder_verdict() {
+    let single_region = reachability_nav_graph(vec![NavRegion {
+        x0: 0,
+        z0: 0,
+        x1: 8,
+        z1: 8,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    }]);
+    let disconnected_regions = reachability_nav_graph(vec![
+        NavRegion {
+            x0: 0,
+            z0: 0,
+            x1: 4,
+            z1: 4,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+        NavRegion {
+            x0: 5,
+            z0: 0,
+            x1: 8,
+            z1: 4,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+    ]);
+
+    for (nav_graph, expected_reachable, expected_state) in [
+        (&single_region, true, "chase"),
+        (&disconnected_regions, false, "hold"),
+    ] {
+        let graph = reachability_graph();
+        let mut registry = EntityRegistry::new();
+        spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+        let enemy = spawn_enemy(
+            &mut registry,
+            Vec3::new(1.0, 0.0, 1.0),
+            BrainComponent::from_graph(&graph),
+            50.0,
+        );
+        let mut runtime = AiRuntime::new();
+
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(nav_graph), None);
+
+        let brain = registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain");
+        assert_eq!(brain.target_reachable, expected_reachable);
+        assert_eq!(brain.state_name(), Some(expected_state));
+    }
+}
+
+#[test]
+fn target_reachability_cache_holds_until_the_next_acquisition_tick() {
+    let graph = reachability_cache_graph();
+    let nav_graph = reachability_nav_graph(vec![
+        NavRegion {
+            x0: 0,
+            z0: 0,
+            x1: 30,
+            z1: 10,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+        NavRegion {
+            x0: 0,
+            z0: 40,
+            x1: 30,
+            z1: 50,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+    ]);
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::new(17.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.think_stride_counter = 3;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    // Distance 16 uses the four-tick band. Counter 3 makes this first tick due,
+    // so the reachable starting location seeds the cache.
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    assert!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    );
+
+    // The retained target moves to a disconnected region. Its new far-band
+    // stride is not due on this tick, so the fact must reuse the cached true
+    // verdict instead of issuing another path query.
+    set_enemy_position(&mut registry, target, Vec3::new(17.0, 0.0, 41.0));
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert_eq!(brain.acquired_target, Some(target));
+    assert!(
+        brain.target_reachable,
+        "non-due tick retains the cached verdict"
+    );
+
+    // Set the existing stride counter to its next far-band due boundary. This
+    // is the first tick allowed to refresh the cache against the moved target.
+    let mut brain = brain.clone();
+    brain.think_stride_counter = 11;
+    registry.set_component(enemy, brain).expect("enemy is live");
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    assert!(
+        !registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable,
+        "the next due tick replaces the cache with the disconnected-path verdict"
+    );
 }
 
 #[test]

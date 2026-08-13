@@ -66,6 +66,12 @@ pub struct BrainComponent {
     /// so absent values default open.
     #[serde(default = "default_aggro_armed")]
     pub aggro_armed: bool,
+    /// Cached nav-path verdict for the selected target. It is recomputed on
+    /// acquisition-due ticks and deliberately omitted from serialized brain
+    /// state so a restored brain never trusts a path query from an older map
+    /// position or nav graph.
+    #[serde(skip)]
+    pub target_reachable: bool,
     /// Currently acquired player pawn. Set only while the current state engages
     /// that pawn (chasing it or acting against it), so near-equidistant co-op
     /// players do not cause per-think target churn. Fixed position-goal states
@@ -127,6 +133,7 @@ impl BrainComponent {
             think_stride_counter: 0,
             locomotion_moving: false,
             aggro_armed: true,
+            target_reachable: false,
             acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
@@ -408,6 +415,28 @@ mod tests {
         let restored: BrainComponent =
             serde_json::from_value(serialized).expect("pre-anchor brain deserializes");
         assert_eq!(restored.home_anchor, Vec3::ZERO);
+    }
+
+    #[test]
+    fn target_reachability_cache_is_recomputed_after_deserialize() {
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.target_reachable = true;
+
+        let serialized = serde_json::to_value(&brain).expect("brain serializes");
+        assert!(
+            !serialized
+                .as_object()
+                .expect("brain serializes as an object")
+                .contains_key("target_reachable"),
+            "the nav verdict is a cache, not persisted simulation data"
+        );
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("brain deserializes");
+        assert!(
+            !restored.target_reachable,
+            "a restored brain recomputes reachability on its next acquisition tick"
+        );
     }
 
     #[test]

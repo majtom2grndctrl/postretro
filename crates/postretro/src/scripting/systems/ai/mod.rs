@@ -43,7 +43,7 @@ mod ai_tests;
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
-use crate::nav::NavGraph;
+use crate::nav::{NavGraph, find_path};
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use combat_slots::resolve_combat_slots;
@@ -513,6 +513,25 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             target.map(|target| (target.entity, target_distance(target, snap.position)));
         let target_hostile = selected_target
             .is_some_and(|(target, _)| entity_faction(registry, target) != enemy_faction);
+        // Reachability is the nav floor's pathfinder verdict, cached on the
+        // existing acquisition stride. It deliberately mirrors the same
+        // `find_path` capability chase consumes, rather than claiming a
+        // stronger ground-truth answer. A map without navigation keeps chase's
+        // direct-destination degradation and therefore reads reachable.
+        let target_reachable = match target {
+            Some(target) if evaluate_acquisition => {
+                let reachable = nav_graph.map_or(true, |graph| {
+                    find_path(graph, snap.position, target.position).is_some()
+                });
+                brain.target_reachable = reachable;
+                reachable
+            }
+            Some(_) => brain.target_reachable,
+            None => {
+                brain.target_reachable = false;
+                false
+            }
+        };
         let selected_distance = selected_target.map(|(_, distance)| distance);
         let (next_index, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
@@ -562,6 +581,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
+                    target_reachable,
                 },
             );
             let next_index = programs

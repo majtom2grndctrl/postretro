@@ -52,6 +52,10 @@ pub(crate) struct BrainFacts {
     /// enemy's. `false` without a selected target, following the target-side
     /// fact convention.
     pub target_hostile: bool,
+    /// Whether the selected target is routeable by the nav floor's pathfinder.
+    /// `false` without a target; maps without a navmesh report `true` so the
+    /// chase motion keeps its direct-destination behavior.
+    pub target_reachable: bool,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -141,6 +145,7 @@ impl BrainScope {
             IrValue::Bool(target_health.is_some_and(|health| health.death_handled)),
             IrValue::Number(facts.distance_from_anchor),
             IrValue::Bool(facts.target_hostile),
+            IrValue::Bool(facts.target_reachable),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -216,8 +221,9 @@ mod tests {
         BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
         BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
         BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
-        BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
-        CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
+        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BindError,
+        BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard,
+        eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -292,6 +298,7 @@ mod tests {
             acquisition_due: true,
             distance_from_anchor: 12.5,
             target_hostile: true,
+            target_reachable: true,
         }
     }
 
@@ -394,6 +401,7 @@ mod tests {
             BRAIN_TARGET_DIED_INPUT => IrValue::Bool(target_health.death_handled),
             BRAIN_DISTANCE_FROM_ANCHOR_INPUT => IrValue::Number(facts.distance_from_anchor),
             BRAIN_TARGET_HOSTILE_INPUT => IrValue::Bool(facts.target_hostile),
+            BRAIN_TARGET_REACHABLE_INPUT => IrValue::Bool(facts.target_reachable),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"
@@ -440,6 +448,7 @@ mod tests {
         let target_max_health_input = bind_read(BRAIN_TARGET_MAX_HEALTH_INPUT, &scope);
         let target_died_input = bind_read(BRAIN_TARGET_DIED_INPUT, &scope);
         let target_hostile_input = bind_read(BRAIN_TARGET_HOSTILE_INPUT, &scope);
+        let target_reachable_input = bind_read(BRAIN_TARGET_REACHABLE_INPUT, &scope);
 
         scope.refresh(
             &registry,
@@ -447,6 +456,7 @@ mod tests {
             BrainFacts {
                 target: None,
                 target_hostile: false,
+                target_reachable: false,
                 ..facts
             },
         );
@@ -457,6 +467,11 @@ mod tests {
             eval_value(&target_hostile_input, &scope),
             IrValue::Bool(false),
             "target hostility follows the target-side no-target convention"
+        );
+        assert_eq!(
+            eval_value(&target_reachable_input, &scope),
+            IrValue::Bool(false),
+            "target reachability follows the target-side no-target convention"
         );
 
         scope.refresh(
@@ -475,6 +490,11 @@ mod tests {
             IrValue::Bool(true),
             "the compute pass owns faction comparison and refresh preserves its result"
         );
+        assert_eq!(
+            eval_value(&target_reachable_input, &scope),
+            IrValue::Bool(true),
+            "the compute pass owns the nav verdict and refresh preserves its cached result"
+        );
     }
 
     #[test]
@@ -490,6 +510,7 @@ mod tests {
             BrainFacts {
                 target: None,
                 target_hostile: false,
+                target_reachable: false,
                 ..engaged_facts(target)
             },
         );
@@ -574,21 +595,36 @@ mod tests {
         let (registry, first, second) = seeded_registry();
         let mut scope = BrainScope::for_validation();
         let guard = IrNode::Select {
-            cond: Box::new(IrNode::Ge {
-                a: Box::new(input("@state.staggered")),
-                b: Box::new(IrNode::Const {
-                    value: IrValue::Number(1.0),
+            cond: Box::new(input(BRAIN_TARGET_REACHABLE_INPUT)),
+            a: Box::new(IrNode::Select {
+                cond: Box::new(input(BRAIN_TARGET_HOSTILE_INPUT)),
+                a: Box::new(IrNode::Gt {
+                    a: Box::new(input(BRAIN_DISTANCE_FROM_ANCHOR_INPUT)),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(0.0),
+                    }),
+                }),
+                b: Box::new(IrNode::Select {
+                    cond: Box::new(IrNode::Ge {
+                        a: Box::new(input("@state.staggered")),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(1.0),
+                        }),
+                    }),
+                    a: Box::new(IrNode::Le {
+                        a: Box::new(input(BRAIN_TARGET_DISTANCE_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(16.0),
+                        }),
+                    }),
+                    b: Box::new(IrNode::Gt {
+                        a: Box::new(input(BRAIN_HEALTH_INPUT)),
+                        b: Box::new(input(BRAIN_MAX_HEALTH_INPUT)),
+                    }),
                 }),
             }),
-            a: Box::new(IrNode::Le {
-                a: Box::new(input(BRAIN_TARGET_DISTANCE_INPUT)),
-                b: Box::new(IrNode::Const {
-                    value: IrValue::Number(16.0),
-                }),
-            }),
-            b: Box::new(IrNode::Gt {
-                a: Box::new(input(BRAIN_HEALTH_INPUT)),
-                b: Box::new(input(BRAIN_MAX_HEALTH_INPUT)),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Bool(false),
             }),
         };
         let program = bind(
@@ -602,11 +638,19 @@ mod tests {
         .expect("mixed guard binds");
 
         // Warm any one-time lazy state so the measured window is pure work.
-        scope.refresh(&registry, first, engaged_facts(second));
+        let first_facts = BrainFacts {
+            acquisition_due: false,
+            ..engaged_facts(second)
+        };
+        let second_facts = BrainFacts {
+            acquisition_due: false,
+            ..engaged_facts(first)
+        };
+        scope.refresh(&registry, first, first_facts);
         let _ = eval_value(&program, &scope);
 
         let snapshot = AllocSnapshot::arm();
-        scope.refresh(&registry, second, engaged_facts(first));
+        scope.refresh(&registry, second, second_facts);
         let value = eval_value(&program, &scope);
         let allocs = snapshot.allocs_since();
 

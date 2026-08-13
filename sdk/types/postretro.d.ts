@@ -1595,6 +1595,10 @@ declare module "postretro" {
     readonly targetDied: RuntimeRead;
     /** XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number). */
     readonly distanceFromAnchor: RuntimeRead;
+    /** `true` when the selected target's faction differs from this enemy's; false with no target (boolean). */
+    readonly targetHostile: RuntimeRead;
+    /** `true` when the nav pathfinder can route this enemy to its selected target; false with no target. On maps without a navmesh it is `true`, and it reflects the pathfinder's current capability rather than ground-truth reachability (boolean). */
+    readonly targetReachable: RuntimeRead;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

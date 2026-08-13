@@ -31,7 +31,9 @@ local BrainSdk = {}
 --- health component), `targetDied` (boolean; false with no target), and
 --- `distanceFromAnchor` (number; the enemy's XZ distance from its spawn-time
 --- home anchor, including untargeted), and `targetHostile` (boolean; true
---- when the selected target's faction differs, false with no target).
+--- when the selected target's faction differs, false with no target), and
+--- `targetReachable` (boolean; false with no target, true with no navmesh;
+--- the pathfinder's cached verdict rather than ground-truth reachability).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -45,6 +47,7 @@ BrainSdk.brain = table.freeze({
   targetDied = input("@brain.targetDied"),
   distanceFromAnchor = input("@brain.distanceFromAnchor"),
   targetHostile = input("@brain.targetHostile"),
+  targetReachable = input("@brain.targetReachable"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

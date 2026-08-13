@@ -133,10 +133,14 @@ fn position_goal_steering(
     position: Vec3,
 ) -> SteeringIntent {
     match motion {
-        MotionVerb::MoveToAnchor => (crate::nav::distance_xz(position, brain.home_anchor)
-            <= POSITION_GOAL_ARRIVAL_EPSILON)
-            .then_some(SteeringIntent::Clear)
-            .unwrap_or(SteeringIntent::MoveTo(brain.home_anchor)),
+        MotionVerb::MoveToAnchor => {
+            if crate::nav::distance_xz(position, brain.home_anchor) <= POSITION_GOAL_ARRIVAL_EPSILON
+            {
+                SteeringIntent::Clear
+            } else {
+                SteeringIntent::MoveTo(brain.home_anchor)
+            }
+        }
         MotionVerb::Patrol => patrol_steering(brain, position),
         // This resolver owns only motion modes with per-brain position goals.
         // Every other mode remains the pure graph evaluator's responsibility.
@@ -520,9 +524,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // direct-destination degradation and therefore reads reachable.
         let target_reachable = match target {
             Some(target) if evaluate_acquisition => {
-                let reachable = nav_graph.map_or(true, |graph| {
-                    find_path(graph, snap.position, target.position).is_some()
-                });
+                let reachable = nav_graph
+                    .is_none_or(|graph| find_path(graph, snap.position, target.position).is_some());
                 brain.target_reachable = reachable;
                 reachable
             }

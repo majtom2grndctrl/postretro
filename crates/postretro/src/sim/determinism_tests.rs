@@ -1256,6 +1256,13 @@ fn spawn_driven_agent(
         .set_component(enemy, brain_in_state(&driven_agent_graph(), state))
         .expect("driven agent brain should attach");
     registry
+        .entity_state_mut(enemy)
+        .expect("driven agent carries entity state")
+        .set(
+            crate::scripting_systems::ai::FACTION_STATE_FIELD,
+            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+        );
+    registry
         .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
         .expect("driven agent steering component should attach");
     registry

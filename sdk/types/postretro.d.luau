@@ -801,10 +801,10 @@ declare function getEntityProperty(id: EntityId, key: string): string?
 --- Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context.
 declare function setLightAnimation(id: EntityId, animation: LightAnimation | null): ()
 
---- Read the current value of an engine-global state slot by stable dotted name. Available in definition and data contexts.
+--- Read the current value of an engine-global state slot by stable dotted name. Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts.
 declare function storeRead(name: string): any
 
---- Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.
+--- Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Per-owner slots require an owner-addressed write and are rejected. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.
 declare function storeWrite(name: string, value: any): ()
 
 --- Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`.
@@ -1044,10 +1044,10 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A non-empty
 --- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
 --- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
 --- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
 --- reactions carry neither `tag` nor `target` and enqueue typed engine commands
 --- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
 --- `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
@@ -1235,6 +1235,7 @@ type ImpactEffectWire =
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
+  | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 --- Closed impact effect lowered only by SDK constructors.
 export type Effect = (ImpactEffectCapability) -> ImpactEffectWire
@@ -1357,6 +1358,8 @@ declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit"
 declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
 declare function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
 declare function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor
+--- Add a delta to one per-owner numeric slot for each selected player pawn.
+declare function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
 --- Select a live enemy group by tag. Its tag resolves at reaction fire time.
 export type EnemyGroupFilter = { tag: string? }
 --- Typed, additive partial for consequential enemy-state updates.
@@ -1411,30 +1414,37 @@ declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDesc
 export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
+export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: "@impact.source", __stateRefValueBrand: T? }
+export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
+type StoreComputedRef<T> = ComputedRef<T> & { byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T> }
+type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T> }
 
 --- One slot inside a `defineStore` schema. Every slot needs `default`.
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
---- script writes. `network = "shared"` replicates the slot to every connected
---- client (server-authoritative); omitted means local-only. A mod-owned
+--- script writes. `perOwner = true` gives each player seat an independent
+--- host-side value and permits only omitted `network` or
+--- `network = "ownerPrivate"`; `network = "shared"` is for global slots. A mod-owned
 --- persisted writable or replicated slot requires a minted
 --- `<mod-root>/identity.json` entry; run
 --- `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, network: "shared"?, accumulate: nil? }
-  | { type: "number", readonly: false?, network: "shared"?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
 ) & { [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
-export type StoreStateRef<T> = ComputedRef<T> | Ref<T>
+export type StoreStateRef<T> = StoreComputedRef<T> | StoreRef<T>
 
 --- Frozen store handle whose enumerable keys are its slot refs. Pass it to
 --- `defineMod({ stores = { store } })` so the SDK can resolve declaration data.
@@ -1475,10 +1485,13 @@ declare function defineStore(namespace: string, schema: { [string]: StoreSlotSch
 declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)
 --- Lift raw `runtime.*` output into the fluent impact-expression algebra.
 declare fromRuntime: RuntimeExpressionRefs
---- Build an absolute number-store write.
-declare function set(ref: Ref<number>, value: NumberValue): Effect
---- Build a frozen-snapshot read-modify-write; `cur` is exactly `read(ref)`.
-declare function update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
+--- Build an absolute number-store write. An owner-addressed ref lowers to an
+--- `@impact.source` command.
+declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect
+--- Build a read-modify-write; `cur` is read during impact plan phase before
+--- effects apply. Owner-addressed reads resolve the live per-seat map, not a
+--- frozen snapshot.
+declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect
 --- Build a deferred impact-effect group guarded by a Bool expression.
 declare function when(cond: BoolRef, effects: {Effect}): GatedEffect
 
@@ -1736,8 +1749,8 @@ export type LocalStateHandle<T> = {
 
 --- Literal scalar leaf: `{ op = "const", value }`. `value` is a number or boolean.
 export type RuntimeConst = { op: "const", value: number | boolean }
---- Named-input leaf: `{ op = "input", name }`. Bound to live state by the Rust evaluator.
-export type RuntimeRead = { op: "input", name: string }
+--- Named-input leaf: `{ op = "input", name, owner? }`. `owner` selects a per-owner store value in an owner-aware scope.
+export type RuntimeRead = { op: "input", name: string, owner: string? }
 --- Addition: `a + b` (number).
 export type RuntimeAdd = { op: "add", a: RuntimeValue, b: RuntimeValue }
 --- Subtraction: `a - b` (number).
@@ -1978,6 +1991,7 @@ export type PostretroModule = {
   damage: typeof(damage),
   grantHealth: typeof(grantHealth),
   grantAmmo: typeof(grantAmmo),
+  addSlot: typeof(addSlot),
   enemies: typeof(enemies),
   spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),
@@ -2001,7 +2015,7 @@ export type PostretroModule = {
   fromRuntime: typeof(fromRuntime),
   --- Build an absolute writable-number store-slot write.
   set: typeof(set),
-  --- Build a writable-number store-slot read-modify-write from the frozen fire snapshot.
+  --- Build a writable-number store-slot read-modify-write; `cur` is read during plan phase before effects apply. Owner-addressed reads resolve the live per-seat map, not a frozen snapshot.
   update: typeof(update),
   --- Gate impact effects with a Bool expression.
   when: typeof(when),

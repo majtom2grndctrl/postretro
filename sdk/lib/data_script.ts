@@ -35,7 +35,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;
@@ -126,11 +126,13 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
-/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when renaming the store or slot. */
+/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `perOwner: true` creates one value per player seat and permits only omitted `network` (host-local) or `"ownerPrivate"`; `"shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when renaming the store or slot. */
 export type StoreSlotSchema = (
-  | { type: "number"; readonly?: boolean; accumulate?: never }
-  | { type: "number"; readonly?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; accumulate?: never }
+  | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+  | { type: "number"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: never; accumulate?: never }
+  | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: never; accumulate?: never }
 ) & Record<string, unknown>;
 
 export type StoreDeclaration = {
@@ -138,10 +140,21 @@ export type StoreDeclaration = {
   schema: Record<string, StoreSlotSchema>;
 };
 
-export type StateRef<T = unknown> = ComputedRef<T> | Ref<T>;
+/** A ref with an explicit owner token, suitable for owner-addressed read/write lowering. */
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { readonly owner: "@impact.source" };
+export type OwnerAddressedRef<T> = Ref<T> & { readonly owner: "@impact.source" };
+
+type StoreComputedRef<T> = ComputedRef<T> & {
+  byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T>;
+};
+type StoreRef<T> = Ref<T> & {
+  byPlayer(owner: SourceHandle): OwnerAddressedRef<T>;
+};
+
+export type StateRef<T = unknown> = StoreComputedRef<T> | StoreRef<T>;
 
 export type StoreStateRefForSlot<Slot, T> =
-  Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
+  Slot extends { readonly: true } ? StoreComputedRef<T> : StoreRef<T>;
 
 export type StateValueForSlot<Slot> =
   Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -230,7 +243,8 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
-  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } };
+  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
+  | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
 
 /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
 export interface Effect {
@@ -348,7 +362,10 @@ export const fromRuntime: RuntimeExpressionRefs = Object.freeze({
 export function read(ref: StateRef<number>): NumberRef;
 export function read(ref: StateRef<boolean>): BoolRef;
 export function read(ref: StateRef<number> | StateRef<boolean>): NumberRef | BoolRef {
-  const node: RuntimeValue = { op: "input", name: ref.slot };
+  const owner = "owner" in ref ? ref.owner : undefined;
+  const node: RuntimeValue = owner === undefined
+    ? { op: "input", name: ref.slot }
+    : { op: "input", name: ref.slot, owner };
   return ref.kind === "number" ? numberRef(node) : boolRef(node);
 }
 
@@ -402,8 +419,21 @@ const IMPACT: Impact = Object.freeze({
 
 /** Build the closed absolute store-write effect. */
 export function set(ref: Ref<number>, value: NumberValue): Effect {
+  // Keep the ordinary global wire exactly as it was. An explicit owner is the
+  // only signal that this must become the source-addressed command path.
+  if (!("owner" in ref)) {
+    return {
+      primitive: "slot.set",
+      args: {
+        slot: ref.slot,
+        value: numberNode(value),
+      },
+    } as ImpactEffectWire as unknown as Effect;
+  }
+  const owner = (ref as OwnerAddressedRef<number>).owner;
   return {
     primitive: "slot.set",
+    target: owner,
     args: {
       slot: ref.slot,
       value: numberNode(value),
@@ -412,9 +442,9 @@ export function set(ref: Ref<number>, value: NumberValue): Effect {
 }
 
 /**
- * Build a read-modify-write effect. `build` receives exactly `read(ref)`, so
- * the authored slot name occurs once while its expression reads the frozen
- * pre-fire snapshot.
+ * Build a read-modify-write effect. `build` receives `cur` during impact plan
+ * phase, before effects apply. Owner-addressed reads resolve the live per-seat
+ * map; `cur` is not a frozen snapshot.
  */
 export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect {
   return set(ref, build(read(ref)));
@@ -594,6 +624,23 @@ export function grantAmmo(
     primitive: "grantAmmo",
     target: wireTarget,
     args: { type, amount },
+  } as PrimitiveReactionDescriptor;
+}
+
+/** Add a delta to a per-owner numeric slot for the current trigger activators or every pawn with a tag. */
+export function addSlot(
+  target: ActivatorsTarget | string,
+  slot: StateRef<number>,
+  delta: number,
+): PrimitiveReactionDescriptor {
+  if (typeof target === "string") {
+    return { primitive: "addSlot", tag: target, args: { slot: slot.slot, delta } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return {
+    primitive: "addSlot",
+    target: wireTarget,
+    args: { slot: slot.slot, delta },
   } as PrimitiveReactionDescriptor;
 }
 
@@ -845,12 +892,33 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   const frozenSchema = cloneAndFreeze(tracedSchema) as S;
   const store: Record<string, StateRef> = Object.create(null);
   for (const slot of Object.keys(frozenSchema)) {
-    store[slot] = Object.freeze({
-      slot: `${namespace}.${slot}`,
-      kind: frozenSchema[slot].type,
-    }) as StateRef;
+    store[slot] = storeRef(
+      `${namespace}.${slot}`,
+      frozenSchema[slot].type,
+      frozenSchema[slot].perOwner === true,
+    );
   }
   const handle = Object.freeze(store) as StoreDefinition<S>;
   storeDeclarations.set(handle, Object.freeze({ namespace, schema: frozenSchema }));
   return handle;
+}
+
+function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): StateRef {
+  const ref = { slot, kind };
+  Object.defineProperty(ref, "byPlayer", {
+    value: (owner: SourceHandle): OwnerAddressedRef<unknown> => {
+      if (!perOwner) {
+        throw new TypeError(`state slot \`${slot}\` is global and cannot be addressed with byPlayer`);
+      }
+      return Object.freeze({
+        slot,
+        kind,
+        owner: owner === IMPACT_SOURCE ? "@impact.source" : "@invalid",
+      }) as OwnerAddressedRef<unknown>;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return Object.freeze(ref) as StateRef;
 }

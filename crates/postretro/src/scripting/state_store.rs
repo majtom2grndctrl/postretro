@@ -8,8 +8,8 @@ use postretro_scripting_core::primitive_adapters::{
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 #[allow(unused_imports)]
 pub(crate) use postretro_scripting_core::store_bridge::{
-    TextEdit, apply_store_slot_batch, apply_text_edit, read_store_slot, store_declaration,
-    store_declaration_from_manifest_value, store_declaration_set_from_values,
+    TextEdit, apply_store_slot_batch, apply_text_edit, read_script_store_slot, read_store_slot,
+    store_declaration, store_declaration_from_manifest_value, store_declaration_set_from_values,
     write_state_slot_json, write_store_slot,
 };
 
@@ -20,10 +20,11 @@ const DEFINE_STORE_DOC: &str = "Build a typed state-store handle for ModManifest
      Pass that handle to defineMod({ stores: [store] }); defineMod resolves declaration data before the manifest crosses the FFI. Definition context.";
 
 const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \
-     Available in definition and data contexts.";
+     Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts.";
 
 const STORE_WRITE_DOC: &str = "Write an engine-global state slot by stable dotted name. \
      The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. \
+     Per-owner slots require an owner-addressed write and are rejected. \
      Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.";
 
 pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -45,7 +46,7 @@ pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: S
         .register("storeRead", {
             let ctx = ctx.clone();
             move |name: String| -> Result<Any, ScriptError> {
-                read_store_slot(&ctx, &name).map(Any)
+                read_script_store_slot(&ctx, &name).map(Any)
             }
         })
         .scope(ContextScope::Both)
@@ -244,6 +245,47 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ScriptError::InvalidArgument { .. }));
         assert!(ctx.slot_table.borrow().get("mixed.good").is_none());
+
+        let err = commit_store_for_test(
+            &ctx,
+            "per-owner-mixed",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1, "perOwner": true },
+                "bad": { "type": "number", "default": 0, "perOwner": true, "persist": true },
+            }),
+        )
+        .expect_err("invalid perOwner declaration must reject the entire store");
+        assert!(err.to_string().contains("bad"));
+        assert!(
+            ctx.slot_table
+                .borrow()
+                .get("per-owner-mixed.good")
+                .is_none(),
+            "a failed perOwner declaration cannot insert a partial mod store"
+        );
+
+        let err = commit_store_for_test(
+            &ctx,
+            "per-owner-shared",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1 },
+                "badShared": {
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "network": "shared"
+                },
+            }),
+        )
+        .expect_err("shared replication cannot serialize per-owner cardinality");
+        assert!(err.to_string().contains("badShared"));
+        assert!(
+            ctx.slot_table
+                .borrow()
+                .get("per-owner-shared.good")
+                .is_none(),
+            "a failed shared per-owner declaration cannot partially insert siblings"
+        );
     }
 
     #[test]
@@ -919,20 +961,22 @@ mod tests {
     }
 
     #[test]
-    fn define_store_rejects_owner_private_network_for_mod_stores() {
-        // Mod-declared owner-private per-player slots are out of scope: `"ownerPrivate"`
-        // must be rejected with a clear, author-facing error.
+    fn define_store_rejects_owner_private_network_without_per_owner() {
+        // `ownerPrivate` only describes replication. A global slot has no owner
+        // cardinality, so it must opt into `perOwner` explicitly.
         let err = store_declaration(
             "netFixture",
             serde_json::json!({
                 "secret": { "type": "number", "default": 0, "network": "ownerPrivate" },
             }),
         )
-        .expect_err("ownerPrivate is rejected for mod stores");
+        .expect_err("ownerPrivate without perOwner is rejected");
         let message = err.to_string();
         assert!(
-            message.contains("ownerPrivate") && message.contains("not supported"),
-            "error names the rejected value and that it is unsupported: {message}"
+            message.contains("ownerPrivate")
+                && message.contains("perOwner")
+                && message.contains("secret"),
+            "error names the replication mode, required cardinality, and slot: {message}"
         );
     }
 

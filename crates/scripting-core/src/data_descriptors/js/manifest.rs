@@ -78,7 +78,7 @@ fn is_resource_grant_reaction_js<'js>(value: &JsValue<'js>) -> bool {
     };
     matches!(
         primitive.to_string().ok().as_deref(),
-        Some("grantHealth" | "grantAmmo")
+        Some("grantHealth" | "grantAmmo" | "addSlot")
     )
 }
 

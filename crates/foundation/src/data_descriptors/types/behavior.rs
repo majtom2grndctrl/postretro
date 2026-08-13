@@ -511,6 +511,7 @@ mod tests {
         IrNode::Le {
             a: Box::new(IrNode::Input {
                 name: input.to_string(),
+                owner: None,
             }),
             b: Box::new(IrNode::Const {
                 value: IrValue::Number(value),
@@ -570,6 +571,7 @@ mod tests {
         let mut with_filter = graph();
         with_filter.candidate_filter = Some(IrNode::Input {
             name: CANDIDATE_DIED_INPUT.to_string(),
+            owner: None,
         });
         with_filter
             .validate()
@@ -578,6 +580,7 @@ mod tests {
         let mut bad_name = graph();
         bad_name.candidate_filter = Some(IrNode::Input {
             name: "@candidate.missing".to_string(),
+            owner: None,
         });
         let error = bad_name.validate().unwrap_err().to_string();
         assert!(
@@ -742,6 +745,7 @@ mod tests {
         let mut g = graph();
         g.states.get_mut("idle").unwrap().transitions[0].when = IrNode::Input {
             name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+            owner: None,
         };
         let err = g.validate().unwrap_err().to_string();
         assert!(

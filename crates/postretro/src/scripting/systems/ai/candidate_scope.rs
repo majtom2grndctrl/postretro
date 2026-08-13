@@ -155,6 +155,7 @@ mod tests {
                 root: IrNode::Le {
                     a: Box::new(IrNode::Input {
                         name: CANDIDATE_DISTANCE_INPUT.into(),
+                        owner: None,
                     }),
                     b: Box::new(IrNode::Const {
                         value: IrValue::Number(10.0),

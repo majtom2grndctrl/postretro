@@ -357,6 +357,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
     }

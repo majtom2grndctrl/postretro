@@ -641,9 +641,10 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
 /// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, and
 /// reload state resolve through its `Inventory` to the sibling `WeaponComponent`;
-/// ammo reserve reads the owning pawn's `AmmoReserve`. Any other owner-private
-/// slot falls back to the slot table's current value keyed to this owner (a
-/// single global value replicated privately). `None` when no source value exists.
+/// ammo reserve reads the owning pawn's `AmmoReserve`. Per-owner mod slots read
+/// the value for this pawn's seat before the global fallback. Any other
+/// owner-private slot falls back to the slot table's current global value.
+/// `None` when no source value exists.
 fn owner_private_source_value(
     slot_table: &SlotTable,
     registry: &EntityRegistry,
@@ -661,9 +662,32 @@ fn owner_private_source_value(
     if let Some(value) = ammo_projection.slot_value(name) {
         return value.as_ref().and_then(slot_value_to_wire);
     }
+    if let Some(value) = per_owner_slot_value_for_pawn(slot_table, registry, name, pawn) {
+        return value;
+    }
     let record = slot_table.get(name)?;
     let value = record.value.as_ref()?;
     slot_value_to_wire(value)
+}
+
+/// Read a per-owner slot for one pawn's durable seat. The outer option says
+/// whether this declaration is per-owner; the inner option is its source value.
+/// A per-owner slot with no pawn-seat binding deliberately returns `Some(None)`,
+/// preventing the global scalar fallback from leaking another owner's value.
+fn per_owner_slot_value_for_pawn(
+    slot_table: &SlotTable,
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+) -> Option<Option<WireSlotValue>> {
+    let record = slot_table.get(name)?;
+    if !record.schema.per_owner {
+        return None;
+    }
+    let Some(seat) = registry.seat_for_pawn(pawn) else {
+        return Some(None);
+    };
+    Some(record.per_seat_value(seat).and_then(slot_value_to_wire))
 }
 
 /// Project ammo/reload slots from one owner's pawn and sibling weapon.
@@ -1140,6 +1164,7 @@ mod tests {
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::data_descriptors::ReloadStyle;
     use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
+    use postretro_foundation::Seat;
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
         let (_ns, slot) = name.split_once('.').unwrap();
@@ -1153,6 +1178,7 @@ mod tests {
                 readonly: false,
                 ownership: SlotOwnership::Mod,
                 network: scope,
+                per_owner: false,
                 accumulate: None,
             }),
         )
@@ -1187,6 +1213,8 @@ mod tests {
                 ("net.private", "k0000000000000004"),
                 ("netFixture.objectiveProgress", "k0000000000000005"),
                 ("extra.extra", "k0000000000000006"),
+                ("currency.xp", "k0000000000000007"),
+                ("currency.killStreak", "k0000000000000008"),
             ],
         )
     }
@@ -1368,6 +1396,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::SharedGlobal,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 )],
@@ -1609,6 +1638,7 @@ mod tests {
 
     const CLIENT_A: u64 = 1;
     const CLIENT_B: u64 = 2;
+    const CLIENT_C: u64 = 3;
 
     /// A host slot table with one `SharedGlobal` (`net.objective`) and one
     /// `OwnerPrivatePlayer` (`net.private`) mod number slot. Both peers build this
@@ -1637,6 +1667,74 @@ mod tests {
             )
             .unwrap();
         table
+    }
+
+    fn per_owner_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
+        let (_namespace, slot) = name.split_once('.').unwrap();
+        (
+            slot.to_string(),
+            SlotRecord::new(SlotSchema {
+                slot_type: SlotType::Number,
+                default: Some(SlotValue::Number(5.0)),
+                range: None,
+                persist: false,
+                readonly: false,
+                ownership: SlotOwnership::Mod,
+                network: scope,
+                per_owner: true,
+                accumulate: None,
+            }),
+        )
+    }
+
+    /// A per-owner currency fixture with one owner-private replicated slot and
+    /// one host-only per-owner slot. Disable built-in owner-private sources so
+    /// the behavior harness observes exactly these mod-owned records.
+    fn per_owner_currency_table() -> SlotTable {
+        let mut table = SlotTable::new();
+        for name in [
+            "player.ammo",
+            "player.ammoReserve",
+            "player.health",
+            "player.maxHealth",
+            "player.reloadActive",
+            "player.reloadProgress",
+            "player.weaponCooldownMs",
+        ] {
+            table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        }
+        table
+            .insert_namespace(
+                "currency",
+                vec![
+                    per_owner_number("currency.xp", ReplicationScope::OwnerPrivatePlayer),
+                    per_owner_number("currency.killStreak", ReplicationScope::None),
+                ],
+            )
+            .unwrap();
+        table
+    }
+
+    fn add_owned_pawn(
+        registry: &mut EntityRegistry,
+        owners: &mut MovementOwners,
+        client_id: u64,
+        seat: Seat,
+    ) -> EntityId {
+        let pawn = registry.spawn(Transform::default());
+        registry.bind_pawn_seat(pawn, seat);
+        owners.set(pawn, client_id);
+        pawn
+    }
+
+    fn record_for_slot(
+        records: &[RawStateSlotRecord],
+        slot_id: StateSlotId,
+    ) -> &RawStateSlotRecord {
+        records
+            .iter()
+            .find(|record| record.slot_id == slot_id.0)
+            .expect("owner-private slot record exists")
     }
 
     /// A slot table whose player owner-private slots are replicated. The catalog
@@ -2669,6 +2767,286 @@ mod tests {
             table_b.get("player.health").unwrap().value,
             Some(SlotValue::Number(40.0)),
             "client B sees its own (different) health"
+        );
+    }
+
+    #[test]
+    fn per_owner_mod_slot_isolates_owner_private_snapshots_and_skips_unbound_pawns() {
+        let mut host_table = per_owner_currency_table();
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_B, Seat(11));
+        let unbound_pawn = registry.spawn(Transform::default());
+        owners.set(unbound_pawn, CLIENT_C);
+        {
+            let xp = host_table.get_mut("currency.xp").unwrap();
+            xp.set_per_seat_value(Seat(10), SlotValue::Number(17.0));
+            xp.set_per_seat_value(Seat(11), SlotValue::Number(31.0));
+            // A poisoned scalar catches accidental global fallback for owner slots.
+            xp.write_value(Some(SlotValue::Number(99.0)));
+        }
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        host.register_client(CLIENT_C);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        let xp_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("currency.xp")
+            .unwrap();
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
+        let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
+        let records_c = host.produce_for_client(CLIENT_C, 0).unwrap();
+
+        assert_eq!(
+            record_for_slot(&records_a, xp_id).value,
+            WireSlotValue::Number(17.0)
+        );
+        assert_eq!(
+            record_for_slot(&records_b, xp_id).value,
+            WireSlotValue::Number(31.0)
+        );
+        assert!(
+            records_c.is_empty(),
+            "a pawn with no seat skips its per-owner source instead of falling through to 99"
+        );
+
+        let mut table_a = per_owner_currency_table();
+        let mut table_b = per_owner_currency_table();
+        ClientStateApply::new().apply_snapshot_state(
+            &mut table_a,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_a,
+        );
+        ClientStateApply::new().apply_snapshot_state(
+            &mut table_b,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_b,
+        );
+        assert_eq!(
+            table_a.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(17.0)),
+            "client A receives only its seat's value"
+        );
+        assert_eq!(
+            table_b.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(31.0)),
+            "client B receives only its seat's value"
+        );
+    }
+
+    #[test]
+    fn per_owner_late_join_baseline_uses_that_seats_default_or_current_value() {
+        let mut host_table = per_owner_currency_table();
+        host_table
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(Seat(10), SlotValue::Number(71.0));
+        host_table
+            .get_mut("currency.xp")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(99.0)));
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let _ = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+
+        // Admission mints and binds the seat before the first tracker ingest.
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_B, Seat(11));
+        host.register_client(CLIENT_B);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let xp_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("currency.xp")
+            .unwrap();
+        let default_records = host.produce_for_client(CLIENT_B, 1).unwrap();
+        let default_record = record_for_slot(&default_records, xp_id);
+        assert_eq!(
+            default_record.value,
+            WireSlotValue::Number(5.0),
+            "an unwritten late-join seat receives the declaration default, never A's 71"
+        );
+        assert_eq!(
+            default_record.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE
+        );
+
+        host_table
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(Seat(12), SlotValue::Number(43.0));
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_C, Seat(12));
+        host.register_client(CLIENT_C);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let current_records = host.produce_for_client(CLIENT_C, 2).unwrap();
+        let current_record = record_for_slot(&current_records, xp_id);
+        assert_eq!(
+            current_record.value,
+            WireSlotValue::Number(43.0),
+            "a late joiner with a current seat value receives that value, never another owner's"
+        );
+        assert_eq!(
+            current_record.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE
+        );
+    }
+
+    #[test]
+    fn per_owner_reclaim_reseeds_a_full_baseline_from_the_seat_store() {
+        let mut host_table = per_owner_currency_table();
+        {
+            let xp = host_table.get_mut("currency.xp").unwrap();
+            xp.set_per_seat_value(Seat(10), SlotValue::Number(47.0));
+            xp.write_value(Some(SlotValue::Number(99.0)));
+        }
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let departing_pawn = add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        assert!(
+            !host.produce_for_client(CLIENT_A, 0).unwrap().is_empty(),
+            "the original participant received a baseline before disconnect"
+        );
+
+        // Participation exit clears tracker state, but not the held seat's store value.
+        host.remove_client(CLIENT_A);
+        owners.remove_pawn(departing_pawn);
+        registry.clear_pawn_seat(departing_pawn);
+        registry.despawn(departing_pawn).unwrap();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+        host.register_client(CLIENT_A);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+
+        let xp_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("currency.xp")
+            .unwrap();
+        let records = host.produce_for_client(CLIENT_A, 1).unwrap();
+        let record = record_for_slot(&records, xp_id);
+        assert_eq!(
+            record.value,
+            WireSlotValue::Number(47.0),
+            "the first post-reclaim value comes from the held seat store, not the dropped tracker"
+        );
+        assert_eq!(
+            record.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+            "a re-registered connection receives a fresh baseline"
+        );
+
+        let mut client_table = per_owner_currency_table();
+        ClientStateApply::new().apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            1,
+            &fingerprint,
+            &records,
+        );
+        assert_eq!(
+            client_table.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(47.0))
+        );
+    }
+
+    #[test]
+    fn per_owner_slot_without_network_stays_host_only_and_unreplicated() {
+        let mut host_table = per_owner_currency_table();
+        {
+            let kill_streak = host_table.get_mut("currency.killStreak").unwrap();
+            kill_streak.set_per_seat_value(Seat(10), SlotValue::Number(3.0));
+            kill_streak.set_per_seat_value(Seat(11), SlotValue::Number(9.0));
+        }
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_B, Seat(11));
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        let schema = host
+            .schema(&host_table, &test_replication_identity())
+            .clone();
+        assert_eq!(
+            schema.id_for("currency.killStreak"),
+            None,
+            "a per-owner declaration with no network scope has no wire slot"
+        );
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+
+        let xp_id = schema.id_for("currency.xp").unwrap();
+        for client_id in [CLIENT_A, CLIENT_B] {
+            let records = host.produce_for_client(client_id, 0).unwrap();
+            assert!(
+                records.iter().all(|record| record.slot_id == xp_id.0),
+                "host-only killStreak never enters the owner-private replication tracker"
+            );
+        }
+        let kill_streak = host_table.get("currency.killStreak").unwrap();
+        assert_eq!(
+            kill_streak.per_seat_value(Seat(10)),
+            Some(&SlotValue::Number(3.0))
+        );
+        assert_eq!(
+            kill_streak.per_seat_value(Seat(11)),
+            Some(&SlotValue::Number(9.0))
         );
     }
 

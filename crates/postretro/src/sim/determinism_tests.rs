@@ -452,6 +452,7 @@ impl SimHarness {
                         cond: Box::new(IrNode::Ge {
                             a: Box::new(IrNode::Input {
                                 name: "determinism.triggered".to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Const {
                                 value: IrValue::Number(4.0),
@@ -460,6 +461,7 @@ impl SimHarness {
                         a: Box::new(IrNode::Ge {
                             a: Box::new(IrNode::Input {
                                 name: "determinism.enabled".to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Const {
                                 value: IrValue::Number(1.0),
@@ -782,6 +784,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -795,6 +798,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -811,12 +815,15 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: Some(IrNode::Mul {
                             a: Box::new(IrNode::Input {
                                 name: "@dt".to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Input {
                                 name: "determinism.rate".to_string(),
+                                owner: None,
                             }),
                         }),
                     }),
@@ -831,6 +838,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),

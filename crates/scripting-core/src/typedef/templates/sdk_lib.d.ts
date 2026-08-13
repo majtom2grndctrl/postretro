@@ -121,7 +121,7 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -429,6 +429,8 @@
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
   export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
   export function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor;
+  /** Add a delta to one per-owner numeric slot for each selected player pawn. */
+  export function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor;
   /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
   export type EnemyGroupFilter = { tag?: string };
   /** Typed, additive partial for consequential enemy-state updates. */
@@ -466,15 +468,21 @@
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
+  export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: "@impact.source"; readonly [stateRefValueBrand]: T };
+  export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
+  type StoreComputedRef<T> = ComputedRef<T> & { byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T> };
+  type StoreRef<T> = Ref<T> & { byPlayer(owner: SourceHandle): OwnerAddressedRef<T> };
 
-  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value and permits only omitted `network` or `network: "ownerPrivate"`; `network: "shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
-    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
-    | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
-    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: never; accumulate?: never }
+    | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => RuntimeValue }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: never; accumulate?: never }
   ) & Record<string, unknown>;
 
   /** Plain declaration data returned through `ModManifest.stores`. */
@@ -486,7 +494,7 @@
    * string ref. Slots with `readonly: true` produce `ComputedRef<T>`;
    * all other slots produce `Ref<T>`. */
   export type StoreStateRefForSlot<Slot, T> =
-    Slot extends { readonly: true } ? ComputedRef<T> : Ref<T>;
+    Slot extends { readonly: true } ? StoreComputedRef<T> : StoreRef<T>;
 
   export type StateValueForSlot<Slot> =
     Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -520,10 +528,10 @@
   export function read(ref: StateRef<boolean>): BoolRef;
   /** Lift raw `runtime.*` output into the fluent impact-expression algebra. */
   export const fromRuntime: RuntimeExpressionRefs;
-  /** Build an absolute number-store write. */
-  export function set(ref: Ref<number>, value: NumberValue): Effect;
-  /** Build a frozen-snapshot read-modify-write; `cur` is exactly `read(ref)`. */
-  export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect;
+  /** Build an absolute number-store write. An owner-addressed ref lowers to an `@impact.source` command. */
+  export function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect;
+  /** Build a read-modify-write; `cur` is read during impact plan phase before effects apply. Owner-addressed reads resolve the live per-seat map, not a frozen snapshot. */
+  export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;
   /** Build a deferred impact-effect group guarded by a Bool expression. */
   export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
 
@@ -787,8 +795,8 @@
 
   /** Literal scalar leaf: `{ op: "const", value }`. `value` is a number or boolean. */
   export type RuntimeConst = { op: "const"; value: number | boolean };
-  /** Named-input leaf: `{ op: "input", name }`. Bound to live state by the Rust evaluator. */
-  export type RuntimeRead = { op: "input"; name: string };
+  /** Named-input leaf: `{ op: "input", name, owner? }`. `owner` selects a per-owner store value in an owner-aware scope. */
+  export type RuntimeRead = { op: "input"; name: string; owner?: string };
   /** Addition: `a + b` (number). */
   export type RuntimeAdd = { op: "add"; a: RuntimeValue; b: RuntimeValue };
   /** Subtraction: `a - b` (number). */

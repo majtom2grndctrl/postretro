@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use postretro_foundation::ir::IrValue;
+use postretro_foundation::{Seat, ir::IrValue};
 
 /// A single deferred system-reaction effect. Variants carry their full args so
 /// the drain seam is typed end to end.
@@ -52,6 +52,14 @@ pub enum SystemReactionCommand {
         /// Ephemeral values published by the firing source. They are not part
         /// of command selection or any persistent/wire format.
         dispatch_values: Vec<(String, IrValue)>,
+    },
+    /// Add a delta to the authoritative value of one per-owner numeric slot
+    /// for every seat resolved while the reaction fired. The app drain checks
+    /// that each queued seat is still live before mutating the slot table.
+    AddOwnerSlot {
+        slot: String,
+        seats: Vec<Seat>,
+        delta: f32,
     },
     CellWrite {
         scope: String,

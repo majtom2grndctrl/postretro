@@ -43,9 +43,15 @@ pub(crate) fn hash_ir_node(hasher: &mut blake3::Hasher, node: &IrNode) {
             hasher.update(&[0]);
             hash_ir_value(hasher, value);
         }
-        IrNode::Input { name } => {
+        IrNode::Input { name, owner } => {
             hasher.update(&[1]);
             hash_str(hasher, name);
+            // Preserve the legacy byte sequence for an unowned input, while
+            // keeping owner-addressed reads distinct in compatibility hashes.
+            if let Some(owner) = owner {
+                hasher.update(&[u8::MAX]);
+                hash_str(hasher, owner);
+            }
         }
         IrNode::Add { a, b } => {
             hasher.update(&[2]);

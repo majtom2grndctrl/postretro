@@ -182,9 +182,14 @@ fn run_headless_inner(
             suppress_boot_pawn: false,
             local_carried_loadout: None,
         };
-        install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
-            crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
-        })
+        install_world_cpu(
+            handles,
+            &mut timings,
+            |_models, _clip_tables| {
+                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+            },
+            |_spawn_points| {},
+        )
     };
 
     let mover_colliders = products.mover_colliders;

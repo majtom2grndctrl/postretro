@@ -15,6 +15,17 @@
 -- auto-wrapped into a `const` node.
 type Operand = RuntimeValue | StateRef<any> | number | boolean
 
+local function input(name: string | StateRef<any>): RuntimeRead
+  if type(name) == "string" then
+    return { op = "input", name = name }
+  end
+  local node = { op = "input", name = (name :: any).slot }
+  if (name :: any).owner ~= nil then
+    node.owner = (name :: any).owner
+  end
+  return node
+end
+
 -- Wrap a bare number/boolean literal into a `const` node; pass an existing node
 -- through unchanged. The wrapping rule is identical in `runtime.ts` so the two
 -- runtimes canonicalize to byte-identical IR.
@@ -23,7 +34,7 @@ local function wrap(value: Operand): RuntimeValue
     return { op = "const", value = value }
   end
   if type(value) == "table" and type((value :: any).slot) == "string" then
-    return { op = "input", name = (value :: any).slot }
+    return input(value :: StateRef<any>)
   end
   return value
 end
@@ -36,7 +47,7 @@ local runtime = {
   end,
   --- Named-input leaf, bound to live state by name in the Rust evaluator.
   read = function(name: string | StateRef<any>): RuntimeRead
-    return { op = "input", name = if type(name) == "string" then name else (name :: any).slot }
+    return input(name)
   end,
   --- `a + b` (number).
   add = function(a: Operand, b: Operand): RuntimeAdd

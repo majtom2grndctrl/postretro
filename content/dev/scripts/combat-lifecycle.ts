@@ -8,7 +8,24 @@
 // policies build on. Reward behavior is reference content only: the engine has
 // no concept of a reward, so a mod replaces these policies wholesale.
 
-import { defineImpactEvent } from "postretro";
+import { defineImpactEvent, defineStore, update } from "postretro";
+
+// REFERENCE CONTENT — XP belongs to its earning player, while teamKills is one
+// session-wide counter. The two slots share a policy below so the cardinality
+// decision is visible in the authoring surface rather than hidden in engine code.
+export const progression = defineStore("progression", {
+  xp: {
+    type: "number",
+    default: 0,
+    perOwner: true,
+    network: "ownerPrivate",
+  },
+  teamKills: {
+    type: "number",
+    default: 0,
+    network: "shared",
+  },
+});
 
 const RESURRECT_DELAY_MS = 3_000;
 // This is one authored per-impact raw-overkill rule, not accumulated shell
@@ -79,15 +96,26 @@ export const enemyDeath = defineImpactEvent(
 );
 
 // REFERENCE CONTENT — this mod-global kill payout grants 8 `shells.buck` per
-// dummy kill. It is one possible economy policy, not engine behavior; a real
-// mod replaces it with its own policy.
+// dummy kill, plus per-player XP and one shared team-kill count. It is one
+// possible economy policy, not engine behavior; a real mod replaces it whole.
 export const ammoOnKill = defineImpactEvent(
   "ammo-on-kill",
   { tag: "dummy" },
   (impact) => {
     const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
 
-    return [{ when: killed, do: [impact.source.grantAmmo("shells.buck", 8)] }];
+    return [
+      {
+        when: killed,
+        do: [
+          impact.source.grantAmmo("shells.buck", 8),
+          // Same reward and policy; only the slot and this owner address decide
+          // that XP is one per-player pot rather than one shared session pot.
+          update(progression.xp.byPlayer(impact.source), (cur) => cur.plus(10)),
+          update(progression.teamKills, (cur) => cur.plus(1)),
+        ],
+      },
+    ];
   },
 );
 

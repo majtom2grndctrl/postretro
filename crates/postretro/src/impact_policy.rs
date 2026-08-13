@@ -1,15 +1,16 @@
 // Runtime-owned impact-policy binding and per-fire evaluation.
 // See: context/lib/scripting.md (Impact-policy composition and evaluation).
 
-use postretro_entities::ScriptCtx;
 use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
+use postretro_entities::{EntityRegistry, ScriptCtx, SlotValue};
 use postretro_foundation::ir::{
     BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
 };
 use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
+use postretro_scripting_core::store_bridge::validate_slot_value;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
@@ -49,6 +50,10 @@ struct BoundGroup {
 
 enum BoundEffect {
     Write(BoundProgram<EntityScope>),
+    SetOwnerSlot {
+        slot: String,
+        value: BoundProgram<EntityScope>,
+    },
     SetHealth {
         value: BoundProgram<EntityScope>,
         after_ms: Option<f32>,
@@ -269,6 +274,7 @@ impl ImpactPolicyRuntime {
                     match effect {
                         BoundEffect::PlayAnimation { .. } => self.presentation.push(planned),
                         BoundEffect::Write(_)
+                        | BoundEffect::SetOwnerSlot { .. }
                         | BoundEffect::SetHealth { .. }
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
@@ -288,6 +294,7 @@ impl ImpactPolicyRuntime {
         dispatch: &ImpactDispatch,
         presentation: bool,
     ) {
+        let ctx = self.ctx.clone();
         let effects = if presentation {
             &mut self.presentation
         } else {
@@ -318,11 +325,40 @@ impl ImpactPolicyRuntime {
                         }
                     };
                     if let Some(recipient) = recipient {
-                        apply_effect(registry, recipient, &effect);
+                        match effect {
+                            ImpactEffect::SetOwnerSlot { slot, value } => {
+                                Self::apply_owner_slot(&ctx, registry, recipient, &slot, value);
+                            }
+                            effect => apply_effect(registry, recipient, &effect),
+                        }
                     }
                 }
             }
         }
+    }
+
+    fn apply_owner_slot(
+        ctx: &ScriptCtx,
+        registry: &EntityRegistry,
+        recipient: postretro_entities::EntityId,
+        slot: &str,
+        value: f32,
+    ) {
+        let Some(seat) = registry.seat_for_pawn(recipient) else {
+            log::warn!("[Impact] owner write for slot `{slot}` resolved no seat; skipping");
+            return;
+        };
+
+        let mut table = ctx.slot_table.borrow_mut();
+        let Some(record) = table.get_mut(slot) else {
+            debug_assert!(false, "bound owner slot `{slot}` disappeared before apply");
+            return;
+        };
+        let Ok(value) = validate_slot_value(slot, &record.schema, SlotValue::Number(value)) else {
+            log::warn!("[Impact] owner write for slot `{slot}` failed validation; skipping");
+            return;
+        };
+        record.set_per_seat_value(seat, value);
     }
 }
 
@@ -488,8 +524,35 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 .ok_or_else(|| "slot.set args is missing `value`".to_string())?;
             bind_number_write(slot.to_string(), value, scope).map(BoundEffect::Write)
         }
+        "slot.set" => {
+            require_impact_token(target, primitive, IMPACT_SOURCE_TOKEN)?;
+            let slot = required_string(args, "slot", "slot.set args")?;
+            match scope.per_owner_store_slot(slot) {
+                Some(true) => {}
+                Some(false) => {
+                    return Err(format!(
+                        "slot.set owner-addressed write may only target per-owner slot `{slot}`"
+                    ));
+                }
+                None => return Err(format!("slot.set references unknown slot `{slot}`")),
+            }
+            if scope.store_slot_is_readonly(slot) == Some(true) {
+                return Err(format!("slot.set cannot write readonly slot `{slot}`"));
+            }
+            let value = bind_read(
+                args.get("value")
+                    .ok_or_else(|| "slot.set args is missing `value`".to_string())?,
+                scope,
+            )?;
+            if value.root_type != IrType::Number {
+                return Err("slot.set `value` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::SetOwnerSlot {
+                slot: slot.to_string(),
+                value,
+            })
+        }
         "setState" => Err("setState must target @impact.target".to_string()),
-        "slot.set" => Err("slot.set must not carry a target".to_string()),
         _ => Err(format!("unsupported impact primitive `{primitive}`")),
     }
 }
@@ -548,6 +611,13 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
                 .expect("bound impact write has an output handle")
                 .clone(),
             value: eval_value(program, scope),
+        },
+        BoundEffect::SetOwnerSlot { slot, value } => PlannedEffect::Command {
+            recipient: CommandRecipient::Source,
+            effect: ImpactEffect::SetOwnerSlot {
+                slot: slot.clone(),
+                value: number(eval_value(value, scope)),
+            },
         },
         BoundEffect::SetHealth { value, after_ms } => PlannedEffect::Command {
             recipient: CommandRecipient::Target,
@@ -649,8 +719,16 @@ mod tests {
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
     use postretro_entities::{EntityId, Transform};
-    use postretro_foundation::DamagePayload;
+    use postretro_foundation::{DamagePayload, Seat};
     use serde_json::json;
+
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
 
     fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
@@ -672,6 +750,10 @@ mod tests {
         json!({ "op": "input", "name": name })
     }
 
+    fn owned_input(name: &str) -> Value {
+        json!({ "op": "input", "name": name, "owner": IMPACT_SOURCE_TOKEN })
+    }
+
     fn number(value: f32) -> Value {
         json!({ "op": "const", "value": value })
     }
@@ -687,6 +769,14 @@ mod tests {
     fn slot_set(slot: &str, value: Value) -> Value {
         json!({
             "primitive": "slot.set",
+            "args": { "slot": slot, "value": value },
+        })
+    }
+
+    fn owner_slot_set(slot: &str, value: Value) -> Value {
+        json!({
+            "primitive": "slot.set",
+            "target": "@impact.source",
             "args": { "slot": slot, "value": value },
         })
     }
@@ -719,8 +809,15 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        let mut record = number_slot(value);
+        record.schema.per_owner = true;
+        record
     }
 
     fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
@@ -851,6 +948,18 @@ mod tests {
         {
             Some(SlotValue::Number(value)) => *value,
             other => panic!("expected number slot value, got {other:?}"),
+        }
+    }
+
+    fn owner_store(ctx: &ScriptCtx, name: &str, seat: Seat) -> f32 {
+        match ctx
+            .slot_table
+            .borrow()
+            .get(name)
+            .and_then(|record| record.per_seat_value(seat))
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected owner number slot value, got {other:?}"),
         }
     }
 
@@ -1695,6 +1804,99 @@ mod tests {
     }
 
     #[test]
+    fn source_addressed_slot_set_rewards_the_damager_seat() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        ctx.registry.borrow_mut().bind_pawn_seat(source, Seat(7));
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "source-owner-reward",
+            "crate",
+            vec![owner_slot_set("currency.xp", number(5.0))],
+        )]);
+
+        hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(7)), 5.0);
+    }
+
+    #[test]
+    fn owner_slot_write_without_a_source_seat_warns_and_keeps_siblings_running() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "owner-no-seat",
+            "crate",
+            vec![
+                owner_slot_set("currency.xp", number(5.0)),
+                state_write("sibling_runs", number(1.0)),
+            ],
+        )]);
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+        });
+
+        assert_number_approx_eq(state(&ctx, target, "sibling_runs"), 1.0);
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("[Impact] owner write for slot `currency.xp` resolved no seat")
+        }));
+    }
+
+    #[test]
+    fn owner_slot_writes_are_last_writer_per_fire_and_accrue_across_hits() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        ctx.registry.borrow_mut().bind_pawn_seat(source, Seat(3));
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "owner-last-writer",
+            "crate",
+            vec![
+                owner_slot_set("currency.xp", number(1.0)),
+                owner_slot_set("currency.xp", number(2.0)),
+            ],
+        )]);
+
+        hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(3)), 2.0);
+
+        runtime.replace_global_events(vec![event(
+            "owner-accrual",
+            "crate",
+            vec![owner_slot_set(
+                "currency.xp",
+                json!({ "op": "add", "a": owned_input("currency.xp"), "b": number(1.0) }),
+            )],
+        )]);
+        for expected in [3.0, 4.0] {
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+            assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(3)), expected);
+        }
+    }
+
+    #[test]
     fn absent_or_stale_source_skips_only_the_source_grant() {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
@@ -1821,6 +2023,68 @@ mod tests {
     }
 
     #[test]
+    fn invalid_store_read_skips_only_its_policy_while_siblings_still_run() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.personal".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.global".into(), number_slot(0.0))
+            .expect("new global slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_global_events(vec![
+                event(
+                    "bare-per-owner-read",
+                    "crate",
+                    vec![slot_set("currency.global", input("currency.personal"))],
+                ),
+                event(
+                    "owner-addressed-global-read",
+                    "crate",
+                    vec![slot_set("currency.global", owned_input("currency.global"))],
+                ),
+                event(
+                    "valid-sibling",
+                    "crate",
+                    vec![slot_set("currency.global", number(7.0))],
+                ),
+            ]);
+        });
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.global")
+                .expect("global slot")
+                .value,
+            Some(SlotValue::Number(7.0)),
+            "invalid descriptors do not prevent a sibling descriptor from binding",
+        );
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message
+                    .contains("policy `postretro.dev:bare-per-owner-read` was skipped during bind")
+                && message.contains("currency.personal")
+        }));
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains(
+                    "policy `postretro.dev:owner-addressed-global-read` was skipped during bind",
+                )
+                && message.contains("currency.global")
+        }));
+    }
+
+    #[test]
     fn app_drain_dispatches_are_consumed_without_policy_evaluation() {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
@@ -1844,6 +2108,10 @@ mod tests {
             .borrow_mut()
             .insert("impact.total".into(), number_slot(0.0))
             .expect("new slot");
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.personal".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
         let scope = EntityScope::impact(ctx);
 
         let raw_assignment = json!({
@@ -1886,7 +2154,21 @@ mod tests {
             bind_effect(&slot_set_with_target, &scope)
                 .err()
                 .expect("slot.set must reject a present target"),
-            "slot.set must not carry a target"
+            "slot.set must target @impact.source"
+        );
+
+        let bare_per_owner_error = bind_effect(&slot_set("currency.personal", number(1.0)), &scope)
+            .err()
+            .expect("bare per-owner output must reject");
+        assert!(
+            bare_per_owner_error.contains("currency.personal"),
+            "the bare output diagnostic must name the per-owner slot"
+        );
+        assert_eq!(
+            bind_effect(&owner_slot_set("impact.total", number(1.0)), &scope)
+                .err()
+                .expect("owner-addressed global output must reject"),
+            "slot.set owner-addressed write may only target per-owner slot `impact.total`"
         );
 
         for primitive in ["despawn", "playAnim", "setHealth", "setState"] {

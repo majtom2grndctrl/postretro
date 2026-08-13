@@ -65,10 +65,10 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A non-empty
 --- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
 --- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
 --- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
 --- reactions carry neither `tag` nor `target` and enqueue typed engine commands
 --- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
 --- `args`
@@ -258,6 +258,7 @@ type ImpactEffectWire =
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
+  | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
 -- not an Effect, and every value that type-checks lowers to one closed wire arm.
@@ -335,10 +336,15 @@ export type LevelManifest = {
 --- a minted `<mod-root>/identity.json` entry; run
 --- `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when
 --- renaming the store or slot.
+--- `perOwner = true` creates a separate host-side value for each player seat.
+--- It permits omitted `network` (host-local) or `"ownerPrivate"`; `"shared"`
+--- is reserved for global slots.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, accumulate: nil? }
-  | { type: "number", readonly: false?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
 ) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,
@@ -347,7 +353,15 @@ export type StoreDeclaration = {
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
-export type StateRef<T> = ComputedRef<T> | Ref<T>
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: "@impact.source" }
+export type OwnerAddressedRef<T> = Ref<T> & { owner: "@impact.source" }
+type StoreComputedRef<T> = ComputedRef<T> & {
+  byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>,
+}
+type StoreRef<T> = Ref<T> & {
+  byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T>,
+}
+export type StateRef<T> = StoreComputedRef<T> | StoreRef<T>
 export type StoreDefinition = {
   [string]: StateRef<any>,
 }
@@ -429,6 +443,16 @@ function DataScriptSdk.grantAmmo(target: ActivatorsTarget | string, ammoType: st
   end
   local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "grantAmmo", target = wireTarget, args = { type = ammoType, amount = amount } }
+end
+
+--- Add a delta to a per-owner numeric slot for current trigger activators or
+--- every player pawn with a tag.
+function DataScriptSdk.addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "addSlot", tag = target, args = { slot = slot.slot, delta = delta } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "addSlot", target = wireTarget, args = { slot = slot.slot, delta = delta } }
 end
 
 --- Selects a live enemy group addressed when a reaction fires.
@@ -619,6 +643,9 @@ end
 
 function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): NumberRef | BoolRef
   local node = { op = "input", name = ref.slot }
+  if (ref :: any).owner ~= nil then
+    node.owner = (ref :: any).owner
+  end
   if ref.kind == "number" then
     return numberRef(node)
   end
@@ -768,6 +795,9 @@ function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
       value = numberNode(value),
     },
   } :: any
+  if (ref :: any).owner ~= nil then
+    wire.target = (ref :: any).owner
+  end
   return function(capability: ImpactEffectCapability): ImpactEffectWire
     if capability ~= IMPACT_EFFECT_CAPABILITY then
       error("impact effects can only be lowered by the SDK", 2)
@@ -776,9 +806,9 @@ function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
   end
 end
 
---- Build a read-modify-write effect. `build` receives exactly `read(ref)`, so
---- the authored slot name occurs once while its expression reads the frozen
---- pre-fire snapshot.
+--- Build a read-modify-write effect. `build` receives `cur` during impact plan
+--- phase, before effects apply. Owner-addressed reads resolve the live per-seat
+--- map; `cur` is not a frozen snapshot.
 function DataScriptSdk.update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
   return DataScriptSdk.set(ref, build(DataScriptSdk.read(ref) :: NumberRef))
 end
@@ -1023,6 +1053,23 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
   return table.freeze(clone)
 end
 
+local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): StateRef<any>
+  local ref = { slot = slot, kind = kind }
+  local methods = {
+    byPlayer = function(_self: any, owner: SourceHandle): OwnerAddressedRef<any>
+      if not perOwner then
+        error("state slot `" .. slot .. "` is global and cannot be addressed with byPlayer", 2)
+      end
+      return table.freeze({
+        slot = slot,
+        kind = kind,
+        owner = if owner == IMPACT_SOURCE then "@impact.source" else "@invalid",
+      }) :: any
+    end,
+  }
+  return table.freeze(setmetatable(ref, { __index = methods })) :: any
+end
+
 --- Pure state-store builder. `namespace` prefixes every returned state ref as
 --- `namespace.slotName`; neither it nor a slot name may contain `:`. Luau
 --- requires the explicit-namespace form.
@@ -1055,10 +1102,11 @@ function DataScriptSdk.defineStore(...: any): StoreDefinition
   local frozenSchema = cloneAndFreeze(tracedSchema)
   local store: { [string]: StateRef<any> } = {}
   for slotName in pairs(frozenSchema) do
-    store[slotName] = table.freeze({
-      slot = namespace .. "." .. slotName,
-      kind = (frozenSchema[slotName] :: any).type,
-    }) :: any
+    store[slotName] = storeRef(
+      namespace .. "." .. slotName,
+      (frozenSchema[slotName] :: any).type,
+      (frozenSchema[slotName] :: any).perOwner == true
+    )
   end
   local handle = table.freeze(store)
   storeDeclarations[handle] = table.freeze({

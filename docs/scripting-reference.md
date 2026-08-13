@@ -63,7 +63,8 @@ The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
 **Durable store identity.** A mod-owned slot with writable `persist: true` or
-`network: "shared"` must have an entry in `<mod-root>/identity.json`:
+any `network` replication scope (`"shared"` or `"ownerPrivate"`) must have an
+entry in `<mod-root>/identity.json`:
 
 ```json
 {
@@ -81,6 +82,16 @@ keep its opaque value; that retains saved data and replication identity. Missing
 or invalid durable identity rejects mod initialization. This is stricter than an
 ordinary missing, malformed, or incompatible saved value, which warns and leaves
 the declared default active.
+
+**Per-owner stores.** `perOwner: true` gives each player seat an independent
+host-side value. Omit `network` for host-local bookkeeping or use
+`network: "ownerPrivate"` to replicate each value only to its owner.
+`network: "shared"` is valid only for global slots. `updateState`/legacy
+`setState` cannot write per-owner slots; use an owner-addressed impact `set` or
+`update`, or the `addSlot` reaction. Generic `storeRead(name)` and
+`storeWrite(name, value)` also reject per-owner slots because they carry no
+owner address. Per-owner values are session-scoped: `perOwner: true` with
+`persist: true` is rejected.
 
 **Render profile.** The optional `render.bloom` block picks the mod's bloom look
 once, for the whole mod:
@@ -1431,6 +1442,28 @@ targets continue. These reaction grants are independent of impact-policy
 producer gating, so a trigger pickup can grant resources even though
 source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
 
+### `addSlot`
+
+```typescript
+import { addSlot, defineReaction } from "postretro";
+
+// progression.xp is a writable numeric `perOwner: true` slot.
+const objectiveAward = defineReaction((on) =>
+  addSlot(on.activators, progression.xp, 100),
+);
+```
+
+`addSlot(target, slot, delta)` adds a finite `delta` to each selected player's
+current slot value on the host. `target` is either a tag string, which selects
+matching entities, or `on.activators` in a trigger-event reaction. The slot
+must be a writable numeric `perOwner: true` slot; global, readonly, and
+non-numeric slots are rejected.
+
+The addition is per selected owner, so repeated or overlapping awards compose
+additively (subject to the slot's normal range validation). A target set with no
+matches is a no-op. A matched entity without a player seat is skipped with a
+warning; other selected players still receive their additions.
+
 ### Impact policies
 
 `defineImpactEvent("reward", filter, build)` declares what an in-tick hit means. The authored ID is one portable ASCII segment: 1–64 bytes using only letters, digits, `_`, `.`, or `-`. Do not include `:`: when the event is composed, the engine qualifies it as `<modId>:<authoredId>`.
@@ -1516,7 +1549,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
-| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes at the game-logic stage. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
+| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
@@ -1785,7 +1818,8 @@ system reaction body for a **writable** state reference. It is **readonly-gated*
 at runtime: a write to a readonly slot (e.g. the
 engine-owned `player.health`, `input.mode`) logs a warning and no-ops; an
 engine-owned but writable slot, or any mod-declared writable slot, is a valid
-target. The value is coerced to the slot's declared type (number / boolean /
+target when it has global cardinality. Per-owner slots require an owner-addressed
+write and reject `updateState`. The value is coerced to the slot's declared type (number / boolean /
 string / number array) with the same range/enum validation a script store write
 applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.

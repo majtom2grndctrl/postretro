@@ -394,6 +394,7 @@ mod tests {
         IrNode::Le {
             a: Box::new(IrNode::Input {
                 name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                owner: None,
             }),
             b: Box::new(IrNode::Const {
                 value: IrValue::Number(distance),
@@ -405,6 +406,7 @@ mod tests {
         IrNode::Select {
             cond: Box::new(IrNode::Input {
                 name: BRAIN_HAS_TARGET_INPUT.to_string(),
+                owner: None,
             }),
             a: Box::new(IrNode::Const {
                 value: IrValue::Bool(false),
@@ -451,6 +453,7 @@ mod tests {
                             IrNode::Gt {
                                 a: Box::new(IrNode::Input {
                                     name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                                    owner: None,
                                 }),
                                 b: Box::new(IrNode::Const {
                                     value: IrValue::Number(2.0),
@@ -467,12 +470,14 @@ mod tests {
                     "rest",
                     IrNode::Input {
                         name: BRAIN_TARGET_DIED_INPUT.to_string(),
+                        owner: None,
                     },
                 ),
             ],
             candidate_filter: Some(IrNode::Le {
                 a: Box::new(IrNode::Input {
                     name: "@candidate.distance".to_string(),
+                    owner: None,
                 }),
                 b: Box::new(IrNode::Const {
                     value: IrValue::Number(50.0),
@@ -607,6 +612,7 @@ mod tests {
         let mut graph = minimal_graph("idle");
         graph.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
             name: "@brain.morale".to_string(),
+            owner: None,
         };
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
@@ -630,6 +636,7 @@ mod tests {
         let mut graph = minimal_graph("idle");
         graph.candidate_filter = Some(IrNode::Input {
             name: "@candidate.morale".to_string(),
+            owner: None,
         });
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
@@ -651,6 +658,7 @@ mod tests {
         let mut graph = minimal_graph("idle");
         graph.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
             name: "@brain.morale".to_string(),
+            owner: None,
         };
         // A second entity with the same broken graph must not warn again.
         let (mut registry, entity) = registry_with_brain(&graph);
@@ -685,10 +693,12 @@ mod tests {
         let mut first = minimal_graph("idle");
         first.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
             name: "@brain.morale".to_string(),
+            owner: None,
         };
         let mut second = minimal_graph("walk");
         second.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
             name: "@brain.nerve".to_string(),
+            owner: None,
         };
 
         let mut registry = EntityRegistry::new();
@@ -713,6 +723,7 @@ mod tests {
         let mut graph = minimal_graph("idle");
         graph.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
             name: postretro_foundation::BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+            owner: None,
         };
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();

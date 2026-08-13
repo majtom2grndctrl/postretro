@@ -48,6 +48,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "armTrigger",
     "disarmTrigger",
     "setState",
+    "addSlot",
     "setAnimationState",
     "updateEnemyState",
     "spawnFromSpawner",
@@ -136,6 +137,13 @@ enum PrimitiveClass {
 struct SetStateArgs {
     slot: String,
     value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddSlotArgs {
+    slot: String,
+    delta: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,6 +811,59 @@ fn bind_command(
             target: target(primitive)?,
         }),
         "setState" => bind_store_slot(args, slot_table, script_ctx),
+        "addSlot" => {
+            let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(args.clone()) {
+                Ok(args) if args.delta.is_finite() => args,
+                Ok(_) => {
+                    log::warn!("[Trigger] addSlot delta must be finite; not binding");
+                    return None;
+                }
+                Err(error) => {
+                    log::warn!("[Trigger] addSlot has invalid args; not binding: {error}");
+                    return None;
+                }
+            };
+            let Some(record) = slot_table.get(&args.slot) else {
+                log::warn!(
+                    "[Trigger] addSlot references unknown slot `{}`; not binding",
+                    args.slot
+                );
+                return None;
+            };
+            if !record.schema.per_owner {
+                log::warn!(
+                    "[Trigger] addSlot requires per-owner slot `{}`; not binding",
+                    args.slot
+                );
+                return None;
+            }
+            if record.schema.slot_type != postretro_entities::SlotType::Number {
+                log::warn!(
+                    "[Trigger] addSlot requires numeric slot `{}`; not binding",
+                    args.slot
+                );
+                return None;
+            }
+            if record.schema.readonly {
+                log::warn!(
+                    "[Trigger] addSlot rejects readonly slot `{}` at bind time",
+                    args.slot
+                );
+                return None;
+            }
+            let Some(target) = target_from_context else {
+                log::warn!(
+                    "[Trigger] addSlot for slot `{}` has no target tag; not binding",
+                    args.slot
+                );
+                return None;
+            };
+            Some(BoundTriggerCommand::AddOwnerSlot {
+                target,
+                slot: args.slot,
+                delta: args.delta,
+            })
+        }
         "setAnimationState" => {
             let args: SetAnimationStateArgs = match serde_json::from_value(args.clone()) {
                 Ok(args) => args,
@@ -870,6 +931,16 @@ fn bind_store_slot(
             return None;
         }
     };
+    if slot_table
+        .get(&args.slot)
+        .is_some_and(|record| record.schema.per_owner)
+    {
+        log::warn!(
+            "[Trigger] setState rejects per-owner slot `{}` at bind time",
+            args.slot
+        );
+        return None;
+    }
     if crate::scripting::reactions::system_commands::is_ir_node(&args.value) {
         let Some(script_ctx) = script_ctx else {
             log::warn!(
@@ -949,9 +1020,10 @@ mod tests {
     use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{
-        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
-        TriggerActivation, TriggerFireMode,
+        NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+        Transform, TriggerActivation, TriggerFireMode,
     };
+    use postretro_foundation::Seat;
 
     fn primitive(
         name: &str,
@@ -1015,6 +1087,202 @@ mod tests {
         };
         attach_brain_graph(registry, entity, &graph).unwrap();
         entity
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(value)),
+            range: Some(NumericRange {
+                min: -10_000.0,
+                max: 10_000.0,
+            }),
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
+            per_owner: true,
+            accumulate: None,
+        })
+    }
+
+    #[test]
+    fn add_slot_trigger_command_applies_to_activator_seat_and_zero_activators_is_silent() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.bind_pawn_seat(pawn, Seat(6));
+        let mut slots = SlotTable::new();
+        slots
+            .insert("currency.xp".to_string(), per_owner_number_slot(10.0))
+            .unwrap();
+        let command = bind_command(
+            "addSlot",
+            Some(BoundTarget::Activators),
+            &serde_json::json!({ "slot": "currency.xp", "delta": 2.0 }),
+            &slots,
+            None,
+        )
+        .expect("owner-slot add binds");
+        assert_eq!(command.kind(), BoundTriggerCommandKind::AddOwnerSlot);
+
+        command.execute(
+            &mut registry,
+            &mut slots,
+            &MoverCommandDiagnostics::default(),
+            &crate::spawner::SpawnContext::default(),
+            &TriggerFireContext {
+                activator: Some(pawn),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            slots
+                .get("currency.xp")
+                .and_then(|record| record.per_seat_value(Seat(6))),
+            Some(&SlotValue::Number(12.0)),
+        );
+
+        command.execute(
+            &mut registry,
+            &mut slots,
+            &MoverCommandDiagnostics::default(),
+            &crate::spawner::SpawnContext::default(),
+            &TriggerFireContext::default(),
+        );
+        assert_eq!(
+            slots
+                .get("currency.xp")
+                .and_then(|record| record.per_seat_value(Seat(6))),
+            Some(&SlotValue::Number(12.0)),
+            "zero activators leave the slot untouched without needing a warning path",
+        );
+    }
+
+    #[test]
+    fn add_slot_missing_target_diagnostic_names_parsed_slot() {
+        let mut slots = SlotTable::new();
+        slots
+            .insert("currency.xp".to_string(), per_owner_number_slot(0.0))
+            .unwrap();
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            assert!(
+                bind_command(
+                    "addSlot",
+                    None,
+                    &serde_json::json!({ "slot": "currency.xp", "delta": 2.0 }),
+                    &slots,
+                    None,
+                )
+                .is_none()
+            );
+        });
+
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("addSlot")
+                && message.contains("currency.xp")
+                && message.contains("no target")
+        }));
+    }
+
+    #[test]
+    fn legacy_set_state_rejects_per_owner_literal_and_ir_without_blocking_global_sibling() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert("currency.xp".to_string(), per_owner_number_slot(10.0))
+                .unwrap();
+            slots
+                .insert_namespace(
+                    "trigger",
+                    vec![(
+                        "flag".to_string(),
+                        SlotRecord::new(SlotSchema {
+                            slot_type: SlotType::Number,
+                            default: Some(SlotValue::Number(0.0)),
+                            range: None,
+                            persist: false,
+                            readonly: false,
+                            ownership: SlotOwnership::Mod,
+                            network: ReplicationScope::None,
+                            per_owner: false,
+                            accumulate: None,
+                        }),
+                    )],
+                )
+                .unwrap();
+        }
+
+        let slots = ctx.slot_table.borrow();
+        assert!(
+            bind_command(
+                "setState",
+                None,
+                &serde_json::json!({ "slot": "currency.xp", "value": 99.0 }),
+                &slots,
+                Some(&ctx),
+            )
+            .is_none(),
+            "literal setState must not bind a per-owner slot"
+        );
+        assert!(
+            bind_command(
+                "setState",
+                None,
+                &serde_json::json!({
+                    "slot": "currency.xp",
+                    "value": { "op": "const", "value": 99.0 }
+                }),
+                &slots,
+                Some(&ctx),
+            )
+            .is_none(),
+            "IR setState must not bind a per-owner slot"
+        );
+        let global = bind_command(
+            "setState",
+            None,
+            &serde_json::json!({ "slot": "trigger.flag", "value": 1.0 }),
+            &slots,
+            Some(&ctx),
+        )
+        .expect("global sibling setState still binds");
+        drop(slots);
+
+        let defensive_per_owner = BoundTriggerCommand::StoreSlot {
+            slot: "currency.xp".to_string(),
+            value: BoundStoreValue::Literal(SlotValue::Number(99.0)),
+        };
+        let mut registry = EntityRegistry::new();
+        let mut dispatch_scope = DispatchScope::script(ctx.clone(), &TRIGGER_EVENT_INPUTS);
+        for command in [&defensive_per_owner, &global] {
+            command.execute_with_script_ctx(
+                &mut registry,
+                &ctx,
+                &mut dispatch_scope,
+                &MoverCommandDiagnostics::default(),
+                &crate::spawner::SpawnContext::default(),
+                &TriggerFireContext::default(),
+            );
+        }
+
+        let slots = ctx.slot_table.borrow();
+        assert_eq!(
+            slots
+                .get("currency.xp")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(10.0)),
+            "defensive trigger execution must not mutate the retained scalar projection"
+        );
+        assert_eq!(
+            slots
+                .get("trigger.flag")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(1.0)),
+            "rejected per-owner setState must not block a valid global sibling"
+        );
     }
 
     #[test]
@@ -1209,6 +1477,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: Default::default(),
+                        per_owner: false,
                         accumulate: None,
                     }),
                 )],
@@ -1267,6 +1536,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: Default::default(),
+                        per_owner: false,
                         accumulate: None,
                     }),
                 )],
@@ -1737,6 +2007,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    per_owner: false,
                     accumulate: None,
                 }),
             )
@@ -1800,6 +2071,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    per_owner: false,
                     accumulate: None,
                 }),
             )
@@ -1864,6 +2136,7 @@ mod tests {
                             readonly: false,
                             ownership: SlotOwnership::Mod,
                             network: Default::default(),
+                            per_owner: false,
                             accumulate: None,
                         }),
                     ),
@@ -1877,6 +2150,7 @@ mod tests {
                             readonly: false,
                             ownership: SlotOwnership::Mod,
                             network: Default::default(),
+                            per_owner: false,
                             accumulate: None,
                         }),
                     ),
@@ -1961,6 +2235,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    per_owner: false,
                     accumulate: None,
                 }),
             )

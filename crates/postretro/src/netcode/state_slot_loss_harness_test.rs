@@ -82,6 +82,7 @@ fn replicated_number(scope: ReplicationScope, accumulate: Option<IrNode>) -> Slo
         readonly: false,
         ownership: SlotOwnership::Mod,
         network: scope,
+        per_owner: false,
         accumulate,
     })
 }
@@ -525,6 +526,7 @@ fn accumulated_shared_global_converges_without_client_side_evaluation() {
     };
     let accumulator = IrNode::Input {
         name: "@dt".to_string(),
+        owner: None,
     };
     let mut h = StateSlotHarness::new_with_accumulator(CLIENT_A, direct, direct, Some(accumulator));
     let mut bindings = SlotAccumulatorBindings::default();

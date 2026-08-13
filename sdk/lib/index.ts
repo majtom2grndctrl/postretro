@@ -109,6 +109,7 @@ export {
   damage,
   grantHealth,
   grantAmmo,
+  addSlot,
   armTrigger,
   disarmTrigger,
   onTriggerEvent,

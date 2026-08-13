@@ -465,6 +465,13 @@ impl Session {
             &net_endpoint,
             Some(netcode::NetEndpoint::Client { .. })
         ));
+        scripting
+            .script_ctx
+            .owner_slot_writes_enabled
+            .set(!matches!(
+                &net_endpoint,
+                Some(netcode::NetEndpoint::Client { .. })
+            ));
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 

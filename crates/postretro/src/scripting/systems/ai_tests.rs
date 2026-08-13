@@ -896,6 +896,7 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
     let filter = bind_candidate_filter_for_test(IrNode::Select {
         cond: Box::new(IrNode::Input {
             name: "@candidate.died".into(),
+            owner: None,
         }),
         a: Box::new(IrNode::Const {
             value: IrValue::Bool(false),
@@ -922,6 +923,7 @@ fn candidate_filter_is_never_evaluated_for_a_retained_target() {
     let filter = bind_candidate_filter_for_test(IrNode::Gt {
         a: Box::new(IrNode::Input {
             name: CANDIDATE_DISTANCE_INPUT.into(),
+            owner: None,
         }),
         b: Box::new(IrNode::Const {
             value: IrValue::Number(100.0),
@@ -955,6 +957,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     let filter = bind_candidate_filter_for_test(IrNode::Le {
         a: Box::new(IrNode::Input {
             name: "@candidate.distance".into(),
+            owner: None,
         }),
         b: Box::new(IrNode::Const {
             value: IrValue::Number(RANGE),
@@ -3446,6 +3449,7 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
 fn brain_input(name: &str) -> IrNode {
     IrNode::Input {
         name: name.to_string(),
+        owner: None,
     }
 }
 
@@ -3585,6 +3589,7 @@ fn graph_candidate_filter_excludes_a_dead_pawn_and_acquires_a_live_one() {
     graph.candidate_filter = Some(IrNode::Select {
         cond: Box::new(IrNode::Input {
             name: "@candidate.died".into(),
+            owner: None,
         }),
         a: Box::new(IrNode::Const {
             value: IrValue::Bool(false),
@@ -3623,11 +3628,13 @@ fn death_interrupt_releases_a_latched_target_and_filter_reacquires_a_live_pawn()
         "rest",
         IrNode::Input {
             name: BRAIN_TARGET_DIED_INPUT.into(),
+            owner: None,
         },
     )];
     graph.candidate_filter = Some(IrNode::Select {
         cond: Box::new(IrNode::Input {
             name: "@candidate.died".into(),
+            owner: None,
         }),
         a: Box::new(IrNode::Const {
             value: IrValue::Bool(false),
@@ -3684,6 +3691,7 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
                         "beta",
                         IrNode::Input {
                             name: BRAIN_ACQUISITION_DUE_INPUT.into(),
+                            owner: None,
                         },
                     )],
                 ),
@@ -3698,6 +3706,7 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
                         "alpha",
                         IrNode::Input {
                             name: BRAIN_ACQUISITION_DUE_INPUT.into(),
+                            owner: None,
                         },
                     )],
                 ),
@@ -3905,11 +3914,13 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
             "rest",
             IrNode::Input {
                 name: BRAIN_TARGET_DIED_INPUT.into(),
+                owner: None,
             },
         )],
         candidate_filter: Some(IrNode::Select {
             cond: Box::new(IrNode::Input {
                 name: CANDIDATE_DIED_INPUT.into(),
+                owner: None,
             }),
             a: Box::new(IrNode::Const {
                 value: IrValue::Bool(false),

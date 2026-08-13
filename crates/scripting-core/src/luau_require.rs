@@ -434,6 +434,7 @@ mod tests {
                 "damage",
                 "grantHealth",
                 "grantAmmo",
+                "addSlot",
                 "enemies",
                 "spawner",
                 "armTrigger",

@@ -14,7 +14,9 @@ use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use super::candidate_scope::CandidateScope;
+use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
 use super::engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
+use super::facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;

@@ -24,14 +24,16 @@
 // shot flinch on an authored interrupt while it has nobody to chase.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use glam::{Quat, Vec3};
 
 mod brain_programs;
 mod brain_scope;
 mod candidate_scope;
+mod combat_slots;
 mod engine_floor;
+mod facing;
 mod graph_eval;
 mod targeting;
 
@@ -41,14 +43,12 @@ mod ai_tests;
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
-use crate::combat_positioning::{
-    CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
-    select_combat_positions_batch,
-};
 use crate::nav::NavGraph;
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
+use combat_slots::resolve_combat_slots;
 use engine_floor::SteeringIntent;
+use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use graph_eval::{
     action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
     steering_for,
@@ -85,15 +85,6 @@ const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 /// shared epsilon keeps facing and locomotion animation in agreement.
 const MOVE_SPEED_EPSILON: f32 = 0.05;
 
-/// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering
-/// so visual facing catches up quickly without snapping.
-pub(crate) const FACING_TURN_RATE: f32 = crate::agent_steering::MAX_TURN_RATE * 2.0;
-
-/// How many ticks a resolved combat slot is held for its incumbent before the
-/// batch solver is free to reassign it to a challenger. See
-/// `resolve_combat_slots`/`retained_combat_slot`.
-const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LocomotionIntent {
     moving: bool,
@@ -119,92 +110,6 @@ fn should_switch_animation(state_changed: bool, moving: bool, latch: bool) -> bo
     state_changed || moving != latch
 }
 
-/// The reference enemy mesh's VISUAL forward axis in model space. The skinned
-/// glTF characters (`content/dev/models/reference_enemy_kaykit_knight`) are
-/// authored facing `+Z` in model space — the KayKit/glTF/Blender convention, and
-/// confirmed by this rig: the knee/toe IK control bones sit in front of the body
-/// at `+Z` (`kneeIK` ≈ `+0.576`, `control-toe-roll` ≈ `+0.246`). The renderer
-/// applies `Transform.rotation` straight to the model matrix with no import-time
-/// axis flip (`mesh_render.rs`, `Mat4::from_scale_rotation_translation`), so a
-/// rotation that aims the model's `+Z` at the target makes its FACE meet the
-/// target.
-///
-/// Note this is the OPPOSITE of the engine's camera/view forward, which is `-Z`
-/// (`camera.rs`: `forward(yaw) = (-sin yaw, 0, -cos yaw)`). Facing code orients a
-/// rendered MESH, so it must aim the mesh's authored front (`+Z`), not the view
-/// forward — aiming the view forward at the target would leave the model's back
-/// to it (a clean 180° error).
-const MESH_FORWARD: Vec3 = Vec3::Z;
-
-/// A yaw-only rotation that aims the model's visual forward ([`MESH_FORWARD`],
-/// `+Z`) at a horizontal direction. `Quat::from_rotation_y(yaw) * (+Z)` is
-/// `(sin yaw, 0, cos yaw)`; solving `that == dir_xz` gives `yaw = atan2(dx, dz)`,
-/// so the rotation turns the model's authored FRONT to face `dir`.
-///
-/// Returns `None` for a direction that yields no usable heading — negligible XZ
-/// length, or a non-finite component — so neither a zero-length nor a corrupt
-/// steering/aim vector ever produces a NaN yaw. The caller then leaves the
-/// existing facing untouched. The Y component is ignored: facing is yaw-only,
-/// keeping the model upright.
-fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
-    // Squared XZ length guard: below this the direction is too short to derive a
-    // stable heading (and `atan2(0, 0)` would be meaningless), so report "no
-    // facing change".
-    const MIN_XZ_LEN_SQ: f32 = 1e-8;
-    // The NaN test is not redundant with the length test: NaN compares false
-    // against EVERYTHING, so `len <= MIN` alone let a NaN component fall through
-    // to `atan2(NaN, NaN)` and write a NaN quaternion into `Transform.rotation`
-    // — from which nothing recovers, because the next tick reads that rotation
-    // back as its own current yaw. `+inf` needs no such treatment
-    // (`atan2(inf, inf)` is a finite π/4) and passes as usual.
-    let len_xz_sq = dir.x * dir.x + dir.z * dir.z;
-    if len_xz_sq.is_nan() || len_xz_sq <= MIN_XZ_LEN_SQ {
-        return None;
-    }
-    // Aim MESH_FORWARD at `dir` in the XZ plane: the yaw that rotates the model's
-    // authored forward heading onto the target heading. `Quat::from_rotation_y`
-    // measures yaw from `+Z` (its heading is `atan2(x, z)`), so subtract the
-    // model-forward's own heading — for `MESH_FORWARD == +Z` this term is `0`,
-    // leaving `atan2(dir.x, dir.z)`. Keeping the term keeps `MESH_FORWARD` the
-    // single source of truth: re-authoring the mesh-forward axis updates the result
-    // without touching this math.
-    let yaw = dir.x.atan2(dir.z) - MESH_FORWARD.x.atan2(MESH_FORWARD.z);
-    Some(Quat::from_rotation_y(yaw))
-}
-
-fn yaw_from_rotation(rotation: Quat) -> f32 {
-    let heading = rotation * MESH_FORWARD;
-    heading.x.atan2(heading.z)
-}
-
-/// Advance `current` yaw toward `target` by at most `max_delta` radians along the
-/// shortest arc. Returns `target` exactly when it is within the per-tick budget,
-/// preserving exact arrival instead of orbiting around the goal.
-///
-/// Total over non-finite input: a non-finite yaw here would otherwise be
-/// ABSORBING rather than transient, because `delta.signum()` is NaN for a NaN
-/// delta, so `current + NaN * max_delta` is NaN and the corrupt value is written
-/// straight back into the rotation the next tick reads. Falling back to whichever
-/// operand is finite keeps one bad frame from wedging an entity's facing forever.
-pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
-    if !target.is_finite() {
-        return current;
-    }
-    if !current.is_finite() {
-        // Nothing sensible to slew FROM — seat the facing at the target rather
-        // than propagating the corruption through the arithmetic below.
-        return target;
-    }
-    let delta = (target - current + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-        - std::f32::consts::PI;
-    let max_delta = max_delta.max(0.0);
-    if delta.abs() <= max_delta {
-        target
-    } else {
-        current + delta.signum() * max_delta
-    }
-}
-
 /// Per-enemy snapshot captured under the immutable iterator borrow so the
 /// mutable writes (steering, damage, animation) happen after the walk completes.
 /// The compute pass CONSUMES these — the brain is moved into its outcome rather
@@ -217,22 +122,22 @@ struct EnemySnapshot {
 
 /// One enemy's resolved outcome after evaluating its brain this tick, applied in
 /// a second pass under `&mut registry`.
-struct EnemyOutcome {
-    id: EntityId,
+pub(super) struct EnemyOutcome {
+    pub(super) id: EntityId,
     /// This enemy's position as snapshotted, carried forward so combat-slot
     /// resolution needs nothing but the outcomes.
-    position: Vec3,
-    target: Option<TargetPawn>,
-    brain: BrainComponent,
+    pub(super) position: Vec3,
+    pub(super) target: Option<TargetPawn>,
+    pub(super) brain: BrainComponent,
     steering: SteeringIntent,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.
-    engaged: bool,
-    combat_slot: Option<Vec3>,
+    pub(super) engaged: bool,
+    pub(super) combat_slot: Option<Vec3>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
-    prior_acquired_target: Option<EntityId>,
+    pub(super) prior_acquired_target: Option<EntityId>,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -868,115 +773,4 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     }
 
     events
-}
-
-fn resolve_combat_slots(
-    outcomes: &mut [EnemyOutcome],
-    nav_graph: Option<&NavGraph>,
-    collision_world: Option<&CollisionWorld>,
-) {
-    // Slots belong to the ENGAGED: a brain standing its ground and swinging is
-    // occupying a piece of ground around the target just as much as one walking
-    // into it, so it keeps its claim and its incumbency. Only the destination
-    // WRITE keys on the chase intent.
-    for outcome in outcomes.iter_mut() {
-        outcome.combat_slot = None;
-        if !outcome.engaged {
-            clear_combat_slot(outcome);
-        }
-    }
-
-    let (Some(nav_graph), Some(collision_world)) = (nav_graph, collision_world) else {
-        for outcome in outcomes.iter_mut() {
-            clear_combat_slot(outcome);
-        }
-        return;
-    };
-
-    if !outcomes.iter().any(|outcome| outcome.engaged) {
-        return;
-    }
-
-    let other_agents: Vec<CombatAgentSnapshot> = outcomes
-        .iter()
-        .map(|outcome| CombatAgentSnapshot {
-            claimant_id: outcome.id.to_raw(),
-            position: outcome.position,
-        })
-        .collect();
-
-    let mut queries = Vec::new();
-    for outcome in outcomes.iter() {
-        if !outcome.engaged {
-            continue;
-        }
-        let Some(target) = outcome.target else {
-            continue;
-        };
-        let retained_slot = retained_combat_slot(outcome);
-        queries.push(CombatQuery {
-            claimant_id: outcome.id.to_raw(),
-            agent_pos: outcome.position,
-            // `attack.range` gates DAMAGE only; this is pure combat-slot
-            // spacing. The accessor resolves explicit `engagementRadius` →
-            // `attack.range` → a default, so a graph with no `attack` block
-            // still spreads chasers onto a ring instead of every one of them
-            // steering at the raw target position and piling up.
-            engagement_radius: outcome.brain.graph.engagement_radius(),
-            target_pos: target.position,
-            combat_slot: retained_slot,
-            scan_challengers: retained_slot.is_none(),
-            other_agents: &other_agents,
-            nav_graph,
-            collision_world,
-            path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
-        });
-    }
-
-    let assignments: HashMap<u32, Option<CombatCandidate>> =
-        select_combat_positions_batch(&queries)
-            .into_iter()
-            .map(|assignment| (assignment.claimant_id, assignment.candidate))
-            .collect();
-
-    for outcome in outcomes.iter_mut() {
-        if !outcome.engaged {
-            clear_combat_slot(outcome);
-            continue;
-        }
-
-        match assignments.get(&outcome.id.to_raw()).copied().flatten() {
-            Some(candidate) => {
-                outcome.combat_slot = Some(candidate.position);
-                outcome.brain.combat_slot = Some(candidate.position);
-                outcome.brain.combat_slot_hold_ticks = if candidate.is_incumbent {
-                    outcome.brain.combat_slot_hold_ticks.saturating_sub(1)
-                } else {
-                    COMBAT_SLOT_HOLD_TICKS
-                };
-            }
-            None => {
-                clear_combat_slot(outcome);
-            }
-        }
-    }
-}
-
-fn clear_combat_slot(outcome: &mut EnemyOutcome) {
-    outcome.combat_slot = None;
-    outcome.brain.combat_slot = None;
-    outcome.brain.combat_slot_hold_ticks = 0;
-}
-
-/// The slot this enemy may re-present as an incumbent: the one it held while
-/// already engaged with this same target, and only while its hold window is
-/// open. Both slot fields are still the PRIOR tick's here — nothing but this
-/// pass writes them.
-fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
-    let target = outcome.target?;
-    (outcome.engaged
-        && outcome.prior_acquired_target == Some(target.entity)
-        && outcome.brain.combat_slot_hold_ticks > 0)
-        .then_some(outcome.brain.combat_slot)
-        .flatten()
 }

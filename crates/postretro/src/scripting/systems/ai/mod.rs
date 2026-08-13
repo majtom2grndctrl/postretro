@@ -63,7 +63,7 @@ use postretro_entities::components::mesh::{
 };
 use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
-    EntityRegistry, Transform,
+    EntityRegistry, EntityStateComponent, Transform,
 };
 use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
 use targeting::{
@@ -77,6 +77,14 @@ use targeting::{
 /// tick loop settles.
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
+
+/// Interim `@state` field supplying the engine's fresh-acquisition hostility
+/// floor. Guards consume the durable `@brain.targetHostile` fact instead of
+/// binding directly to this storage detail.
+pub(crate) const FACTION_STATE_FIELD: &str = "faction";
+/// Host-owned brain-bearing enemies begin in faction one. Player pawns leave
+/// the emergent state field absent and therefore read as faction zero.
+pub(crate) const ENEMY_DEFAULT_FACTION: f32 = 1.0;
 
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
 /// above it the enemy orients to its velocity and a locomotion state plays its
@@ -108,6 +116,12 @@ impl LocomotionIntent {
 
 fn should_switch_animation(state_changed: bool, moving: bool, latch: bool) -> bool {
     state_changed || moving != latch
+}
+
+fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32 {
+    registry
+        .get_component::<EntityStateComponent>(entity)
+        .map_or(0.0, |state| state.get(FACTION_STATE_FIELD))
 }
 
 /// Resolve a state motion whose destination depends on per-brain state. Unlike
@@ -406,6 +420,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
+        // Read the evaluating enemy's mutable faction once for the whole
+        // compute pass. Candidate comparison consumes this scalar only on a
+        // fresh scan; retained target lookup deliberately does not see it.
+        let enemy_faction = entity_faction(registry, snap.id);
         // A home-distance guard is about the evaluating enemy alone, not its
         // target or the acquisition stride. Compute it once from this tick's
         // immutable position snapshot before either branch can suppress target
@@ -434,6 +452,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     select_target(
                         registry,
                         snap.position,
+                        enemy_faction,
                         Some(retained.target.entity),
                         None,
                         candidate_filter,
@@ -450,6 +469,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 let (nearest_for_stride, nearest_selection) = select_target(
                     registry,
                     snap.position,
+                    enemy_faction,
                     None,
                     None,
                     candidate_filter,
@@ -491,6 +511,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // so neither can disagree about which target they describe.
         let selected_target =
             target.map(|target| (target.entity, target_distance(target, snap.position)));
+        let target_hostile = selected_target
+            .is_some_and(|(target, _)| entity_faction(registry, target) != enemy_faction);
         let selected_distance = selected_target.map(|(_, distance)| distance);
         let (next_index, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
@@ -539,6 +561,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
+                    target_hostile,
                 },
             );
             let next_index = programs

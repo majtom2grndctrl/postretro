@@ -10,7 +10,7 @@ use postretro_entities::ComponentKind;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, Transform};
 use postretro_foundation::{BoundProgram, IrValue, eval_value};
 
 use super::candidate_scope::CandidateScope;
@@ -49,6 +49,7 @@ pub(super) fn target_candidate(
 fn nearest_target_candidate(
     registry: &EntityRegistry,
     from: Vec3,
+    enemy_faction: f32,
     visible: Option<&dyn Fn(EntityId) -> bool>,
     exclude: Option<EntityId>,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
@@ -68,12 +69,19 @@ fn nearest_target_candidate(
             }) {
                 nearest = Some(candidate);
             }
-            // Eligibility is per offered candidate only: retained lookup stays
-            // above this scan and never consults the graph's policy.
-            let filter_allows = candidate_filter.is_none_or(|filter| {
-                candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
-                eval_value(filter, candidate_scope) == IrValue::Bool(true)
-            });
+            // Hostility and graph candidacy are eligibility only for a fresh
+            // ranking scan. The raw nearest offer remains intact for think
+            // stride pricing, while retained lookup stays above this scan and
+            // never re-gates its target on either policy.
+            let hostile = registry
+                .get_component::<EntityStateComponent>(candidate.target.entity)
+                .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD))
+                != enemy_faction;
+            let filter_allows = hostile
+                && candidate_filter.is_none_or(|filter| {
+                    candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
+                    eval_value(filter, candidate_scope) == IrValue::Bool(true)
+                });
             if filter_allows
                 && eligible.is_none_or(|current: TargetCandidate| {
                     candidate.distance.total_cmp(&current.distance).is_lt()
@@ -121,6 +129,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 pub(crate) fn select_target(
     registry: &EntityRegistry,
     from: Vec3,
+    enemy_faction: f32,
     retained_target: Option<EntityId>,
     visible: Option<&dyn Fn(EntityId) -> bool>,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
@@ -131,6 +140,7 @@ pub(crate) fn select_target(
     let (nearest_offered, nearest_eligible) = nearest_target_candidate(
         registry,
         from,
+        enemy_faction,
         visible,
         retained_target,
         candidate_filter,
@@ -213,6 +223,7 @@ mod tests {
         let (_, selected) = select_target(
             &registry,
             Vec3::ZERO,
+            1.0,
             Some(retained),
             None,
             None,
@@ -232,6 +243,7 @@ mod tests {
         let (_, selected) = select_target(
             &registry,
             Vec3::ZERO,
+            1.0,
             Some(retained),
             None,
             None,
@@ -240,6 +252,72 @@ mod tests {
         assert_eq!(
             selected.map(|target| target.entity),
             Some(near_but_not_meaningfully_closer)
+        );
+    }
+
+    #[test]
+    fn fresh_acquisition_skips_friendlies_so_they_do_not_mask_hostiles() {
+        let mut registry = EntityRegistry::new();
+        let friendly = pawn(&mut registry, 2.0);
+        let hostile = pawn(&mut registry, 5.0);
+        registry
+            .entity_state_mut(friendly)
+            .unwrap()
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+
+        let (_, selected) = select_target(
+            &registry,
+            Vec3::ZERO,
+            1.0,
+            None,
+            None,
+            None,
+            &mut CandidateScope::for_validation(),
+        );
+        assert_eq!(
+            selected.map(|target| target.entity),
+            Some(hostile),
+            "a nearer friendly cannot mask a farther hostile candidate"
+        );
+
+        registry
+            .entity_state_mut(hostile)
+            .unwrap()
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+        let (_, selected) = select_target(
+            &registry,
+            Vec3::ZERO,
+            1.0,
+            None,
+            None,
+            None,
+            &mut CandidateScope::for_validation(),
+        );
+        assert!(selected.is_none(), "a friendly is never freshly acquired");
+    }
+
+    #[test]
+    fn retained_target_stays_selected_after_its_faction_turns_friendly() {
+        let mut registry = EntityRegistry::new();
+        let retained = pawn(&mut registry, 2.0);
+        registry
+            .entity_state_mut(retained)
+            .unwrap()
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+
+        let (_, selected) = select_target(
+            &registry,
+            Vec3::ZERO,
+            1.0,
+            Some(retained),
+            None,
+            None,
+            &mut CandidateScope::for_validation(),
+        );
+        assert_eq!(
+            selected.map(|target| target.entity),
+            Some(retained),
+            "retention deliberately bypasses the fresh-acquisition hostility filter"
         );
     }
 }

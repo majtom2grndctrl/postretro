@@ -17,6 +17,7 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
+use crate::scripting_systems::ai::{ENEMY_DEFAULT_FACTION, FACTION_STATE_FIELD};
 #[cfg(test)]
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
@@ -593,6 +594,10 @@ pub(crate) fn attach_descriptor_components(
             brain.home_anchor = home_anchor;
             let _ = registry.set_component(id, brain);
         }
+        registry
+            .entity_state_mut(id)
+            .expect("newly spawned descriptor entity carries entity state")
+            .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         let _ = attach_agent(registry, id, &params, move_speed);
@@ -3090,6 +3095,13 @@ mod tests {
                 .expect("behavior enemy has a transform")
                 .position,
             "host brain anchors to its spawn transform rather than descriptor data"
+        );
+        assert_eq!(
+            reg.entity_state_mut(id)
+                .expect("behavior enemy carries entity state")
+                .get(FACTION_STATE_FIELD),
+            ENEMY_DEFAULT_FACTION,
+            "host descriptor assembly seeds the transparent default enemy faction"
         );
     }
 

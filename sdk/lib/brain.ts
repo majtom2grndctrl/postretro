@@ -51,6 +51,9 @@ export interface BrainInputs {
   /** XZ distance from this enemy's spawn-time home anchor; zero at home and
    * meaningful even without a selected target (number). */
   readonly distanceFromAnchor: RuntimeRead;
+  /** `true` when the selected target's faction differs from this enemy's;
+   * false with no target (boolean). */
+  readonly targetHostile: RuntimeRead;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -78,6 +81,7 @@ export const brain: BrainInputs = Object.freeze({
   targetMaxHealth: Object.freeze(runtime.read("@brain.targetMaxHealth")),
   targetDied: Object.freeze(runtime.read("@brain.targetDied")),
   distanceFromAnchor: Object.freeze(runtime.read("@brain.distanceFromAnchor")),
+  targetHostile: Object.freeze(runtime.read("@brain.targetHostile")),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

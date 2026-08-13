@@ -921,6 +921,13 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         .set_component(id, BrainComponent::from_graph(&enemy_graph(0.0, "alert")))
         .expect("enemy brain component should attach");
     registry
+        .entity_state_mut(id)
+        .expect("spawned enemy carries entity state")
+        .set(
+            crate::scripting_systems::ai::FACTION_STATE_FIELD,
+            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+        );
+    registry
         .set_component(
             id,
             HealthComponent {

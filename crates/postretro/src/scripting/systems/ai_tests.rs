@@ -34,10 +34,10 @@ use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
     BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-    BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor, BehaviorStateDescriptor,
-    BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
-    TransitionDescriptor, bind,
+    BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor,
+    BehaviorStateDescriptor, BindingScope, BoundProgram, CANDIDATE_DIED_INPUT,
+    CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor, IrNode, IrValue,
+    MotionVerb, PatrolDescriptor, PatrolMode, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -271,6 +271,9 @@ fn spawn_enemy(
     let mut brain = brain;
     brain.home_anchor = pos;
     reg.set_component(id, brain).unwrap();
+    reg.entity_state_mut(id)
+        .expect("spawned enemy carries entity state")
+        .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
     reg.set_component(id, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
         .unwrap();
     reg.set_component(id, enemy_mesh()).unwrap();
@@ -434,6 +437,7 @@ fn step_graph(
             attack_cooldown_ms: 0.0,
             acquisition_due,
             distance_from_anchor: 0.0,
+            target_hostile: true,
         },
     );
 
@@ -790,6 +794,7 @@ fn select_target_returns_single_player_pawn() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         None,
@@ -811,6 +816,7 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         None,
@@ -834,6 +840,7 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         None,
@@ -858,6 +865,7 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         None,
@@ -882,6 +890,7 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         None,
@@ -921,6 +930,7 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
     let (_, target) = select_target(
         &registry,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         Some(&filter),
@@ -946,6 +956,7 @@ fn candidate_filter_is_never_evaluated_for_a_retained_target() {
     let (_, target) = select_target(
         &registry,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         Some(&filter),
@@ -981,6 +992,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     let (_, selected) = select_target(
         &inside,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         Some(&filter),
@@ -996,12 +1008,81 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     let (_, selected) = select_target(
         &outside,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         Some(&filter),
         &mut CandidateScope::for_validation(),
     );
     assert!(selected.is_none(), "R + epsilon is ineligible");
+}
+
+#[test]
+fn faction_seed_is_transparent_and_target_hostility_tracks_a_retained_target() {
+    let mut graph = tuning();
+    graph.states.get_mut(TEST_IDLE_STATE).unwrap().transitions = vec![edge(
+        TEST_ALERT_STATE,
+        brain_input(BRAIN_TARGET_HOSTILE_INPUT),
+    )];
+    graph.interrupts = vec![
+        edge(TEST_IDLE_STATE, target_lost()),
+        edge(
+            TEST_IDLE_STATE,
+            IrNode::Select {
+                cond: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                a: Box::new(IrNode::Const {
+                    value: IrValue::Bool(false),
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Bool(true),
+                }),
+            },
+        ),
+    ];
+    graph.candidate_filter = None;
+
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, TEST_IDLE_STATE),
+        50.0,
+    );
+    assert_eq!(
+        registry
+            .get_component::<EntityStateComponent>(enemy)
+            .expect("spawned enemy carries entity state")
+            .get(FACTION_STATE_FIELD),
+        ENEMY_DEFAULT_FACTION,
+        "the shared enemy assembly helper seeds faction one"
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        TEST_ALERT_STATE,
+        "an absent player faction reads zero, so the default enemy faction acquires it as hostile"
+    );
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(player));
+
+    registry
+        .entity_state_mut(player)
+        .expect("player carries entity state")
+        .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        TEST_IDLE_STATE,
+        "the retained target is still selected for this tick, but targetHostile lets the authored interrupt stand down"
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "the idle state disengages after the authored targetHostile interrupt"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -922,6 +922,8 @@
     readonly targetDied: RuntimeRead;
     /** XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number). */
     readonly distanceFromAnchor: RuntimeRead;
+    /** `true` when the selected target's faction differs from this enemy's; false with no target (boolean). */
+    readonly targetHostile: RuntimeRead;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

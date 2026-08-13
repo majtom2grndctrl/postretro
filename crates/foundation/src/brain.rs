@@ -59,8 +59,7 @@ pub const BRAIN_DISTANCE_FROM_ANCHOR_INPUT: &str = "@brain.distanceFromAnchor";
 /// storage is intentionally an interim `@state` implementation detail.
 pub const BRAIN_TARGET_HOSTILE_INPUT: &str = "@brain.targetHostile";
 /// Whether the nav pathfinder can currently route from this enemy to its
-/// selected target. `false` without a target; `true` when the map has no
-/// navmesh, matching chase's direct-destination degradation.
+/// selected target. `false` without a target or when the map has no navmesh.
 ///
 /// This is the cached verdict from the same `find_path` query chase relies on,
 /// not a ground-truth reachability oracle: it inherits the pathfinder's current

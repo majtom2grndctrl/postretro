@@ -43,7 +43,7 @@ the work.
   the faction hook below): `@brain.distanceFromAnchor` (Number; the enemy's XZ distance
   from `home_anchor`, always meaningful, `0` at the anchor) and `@brain.targetReachable`
   (Bool; whether the nav floor can path enemy→selected-target this tick, `false`
-  untargeted, `true` with no navmesh). Each lands in the foundation table +
+  untargeted or with no navmesh). Each lands in the foundation table +
   `BrainValidationScope`, the runtime `BrainScope` refresh, `BrainFacts`, and the SDK
   `brain` prelude (TS + Luau).
 - **Minimal faction hook** (two parts, split along the fresh-scan / retained-lookup
@@ -172,11 +172,12 @@ Retention drop is authored instead, over `@brain.targetHostile`.
   routes through the any-state stand-down to `patrol`, which steers back toward home;
   re-engagement then fires from `patrol → alert` on a fresh acquisition, not from a
   `retreat → alert` edge.
-- [ ] **targetReachable.** With a selected target the fact reads the nav floor's `find_path`
-  verdict (enemy→target); it reads `false` with no target and `true` with no navmesh present;
-  it is recomputed on the think-stride acquisition cadence and a between-strides tick reuses
-  the cached value. The fact is correct by construction — it reports the same verdict chase
-  steering already acts on — and ships with this spec. The authored routing demo — a
+- [ ] **targetReachable.** With a selected target and navmesh the fact reads the nav floor's
+  `find_path` verdict (enemy→target); it reads `false` with no target or no navmesh present,
+  clearing any restored or non-due cached verdict immediately. It is recomputed on the
+  think-stride acquisition cadence and a between-strides tick reuses the cached value only
+  while navigation is present. The fact ships with this spec as the nav-floor verdict, not a
+  ground-truth reachability oracle. The authored routing demo — a
   `select(targetReachable, false, true)` guard routing to a hold state when the target is
   unpathable and back when it becomes pathable — is gated on `E10--pursuit-wraparound-blocked`
   (AC 11): until that fix the verdict inherits pursuit's false-negative around freestanding
@@ -405,21 +406,22 @@ Task 4 through `BrainValidationScope`, the `BrainScope` `fixed` array + `refresh
 new `BrainFacts.target_reachable: bool`, the SDK `brain` prelude (TS + Luau), the SDK typedef
 fixtures, the drift tests, and the `expected_fixed_value` oracle (its no-`_` panic arm forces
 a matching case). Compute reachability in the compute pass: when the brain is
-armed, has a selected target, and the tick is acquisition-due (reuse the existing
-`evaluate_acquisition` stride gate — do not add a stride constant), call the nav floor's
-`find_path(nav_graph, snap.position, target_pos).is_some()` and cache it on a new
+armed, has a selected target, a nav graph is present, and the tick is acquisition-due (reuse
+the existing `evaluate_acquisition` stride gate — do not add a stride constant), call the nav
+floor's `find_path(nav_graph, snap.position, target_pos).is_some()` and cache it on a new
 `BrainComponent.target_reachable: bool` field marked `#[serde(default)]` (or
 `#[serde(skip)]` — it is a recomputed cache that need not persist, and a plain field
 with no default would reject any save written before it existed); between strides
-reuse the cache. With no
-selected target the fact reads `false`; with no `nav_graph` (a map without a navmesh) it
-reads `true`, preserving today's chase-degradation behavior. This is the one per-enemy nav
-query added; it is strided and cached so an idle-strided distant enemy pays it at most once
-per stride band, within the combat-positioning query budget.
+reuse the cache. With no selected target the fact reads `false`; with no `nav_graph` (a map
+without a navmesh) it also reads `false` immediately and clears the cache before a non-due
+retained-target tick can reuse it. This intentional implementation correction does not add
+no-nav direct steering or pursuit behavior; `E10--pursuit-wraparound-blocked` owns pursuit
+route correctness. This is the one per-enemy nav query added; it is strided and cached so an
+idle-strided distant enemy pays it at most once per stride band, within the combat-positioning
+query budget.
 **The fact ships here; only its reference demo waits.** `@brain.targetReachable` is defined
-as the nav floor's `find_path` verdict (cached) and reports it faithfully — the *same* verdict
-chase steering already consumes (`E10--pursuit-wraparound-blocked` confirms pursuit itself
-freezes on the same false `None`, through the same `find_path`). It is not a ground-truth
+as the nav floor's `find_path` verdict (cached when a nav graph exists); without a nav graph it
+conservatively reports `false`. It is not a ground-truth
 reachability oracle. That draft fixes a `find_path` repair failure that returns a false `None`
 for a genuinely-routable wraparound around a freestanding wall; until it lands, the verdict
 inherits pursuit's known wraparound limitation around such walls. The fact and its wiring
@@ -572,7 +574,7 @@ recommended grammar (Coordination) as a separate follow-up, not part of this spe
 | `BRAIN_INPUTS` is append-only and the runtime `BrainScope.fixed` array length equals the table length, so table and refresh grow together in index order | Task 2 (index 10), Task 4 (index 11), Task 5 (index 12) | Any new fact must append and add its refresh slot in the same edit, or the crate will not compile; `expected_fixed_value` (no `_` arm) and the resolution-parity drift test guard it | AC 8, 9 |
 | Facts are read-only; faction is the only new mutable `@state`, written solely through the E16 `setState`/`entity_state_mut` path, never by a guard | Task 4 | Any guard-side write; any new reaction claiming faction | AC 6 |
 | Hostility filters fresh acquisition only, on the ranking scan (`entity_model.md` §7c); retention is stood down by an authored interrupt over `@brain.targetHostile`, never re-gated by candidacy | Task 4 (`nearest_target_candidate` filter + `@brain.targetHostile` fact) | Any move of the hostility test into the shared `target_candidate` gate — which the retained lookup also calls — would re-gate retention against §7c | AC 6 |
-| No-target / no-nav conventions: `distanceFromAnchor` always meaningful; `targetHostile` `false` untargeted; `targetReachable` `false` untargeted, `true` with no navmesh | Task 2, Task 4, Task 5 | The refresh must apply these before eval, matching the `BRAIN_NO_TARGET_DISTANCE` sentinel precedent | AC 1, 5, 6 |
+| No-target / no-nav conventions: `distanceFromAnchor` always meaningful; `targetHostile` `false` untargeted; `targetReachable` `false` untargeted or with no navmesh, with the absent-nav result taking priority over a cache | Task 2, Task 4, Task 5 | The refresh must apply these before eval, matching the `BRAIN_NO_TARGET_DISTANCE` sentinel precedent | AC 1, 5, 6 |
 | All new state (anchor, patrol cursor, reachability cache, faction) is host-only sim state; no wire/replication field; clients see animation-state names only | Task 2, 3, 4, 5 | Any snapshot/replication edit that serializes these onto the wire | AC 10 |
 | Leash is authored, not an engine field — expressed via `distanceFromAnchor` guards | Task 3, Task 6 | Any reintroduction of a `leashRange`-style field re-forecloses behavior-state-graph's decision | AC 4 |
 | Guard window is zero-alloc on a between-strides tick — anchor distance and cached reachability feed `refresh` without allocating (refresh writes slots by index) | Task 2, Task 5 | The due-tick `find_path` runs A* and allocates a `NavPath`; that allocation is explicitly outside the zero-alloc contract, so the alloc-probe measures a non-due tick where the cached verdict is reused | AC 9 |
@@ -594,9 +596,9 @@ recommended grammar (Coordination) as a separate follow-up, not part of this spe
 | Leave then re-enter `patrol` | cursor persists across the intervening states | resumes at the retained cursor (return-to-patrol continues the route) |
 | Empty `points` + `patrol` motion | parse time | validation error, pathed |
 | Reachability cache vs a retained target's movement | retained target moves reachable→unreachable between acquisition strides | `targetReachable` holds the last due-tick verdict up to one stride band; refreshed next due tick — accepted |
-| Reachability, no navmesh on the map | `nav_graph == None` | reads `true` (chase degrades as today), no probe run |
+| Reachability, no navmesh on the map | `nav_graph == None`, including a retained target on a non-due tick with a restored cache | reads `false`, clears the cache immediately, and runs no probe |
 | Reachability, target lost | `hasTarget` false this tick | reads `false`; cache cleared |
-| Alloc probe, due tick with navmesh + target | acquisition-due → `find_path` runs | allocations occur (A* `NavPath`); zero-alloc holds only between strides / with no navmesh — the alloc-probe fixture targets a non-due tick |
+| Alloc probe, due tick with navmesh + target | acquisition-due → `find_path` runs | allocations occur (A* `NavPath`); zero-alloc holds only between strides — no-nav ticks also skip the probe |
 | Retreat, target lost on a non-due tick | `retreat` non-engaged drops the target; non-due tick → `hasTarget` false | any-state `not hasTarget` stand-down (targets `patrol`) fires → routes to `patrol`, continues toward home; not stranded in place |
 | Faction flips to friendly mid-chase | `@state.faction` written == enemy faction; next guard eval | `@brain.targetHostile` reads `false`; the authored `select(targetHostile, false, true)` stand-down drops the retained target; the fresh scan never re-offers it |
 | Faction write source vs the AI tick | game-logic order: trigger dispatch / touch → `run_ai_tick` → `agent_steering::tick` (`sim/mod.rs`) | a trigger-command / touch-reaction `@state.faction` write lands before the tick — read the same tick by the candidacy scan and `targetHostile`; an `on_impact` write inside the AI apply pass is read by ALL brains the NEXT tick uniformly (the compute pass completes before any apply-pass mutation — no intra-tick enemy-order dependence) |
@@ -718,8 +720,8 @@ export const sentry = defineEntity({
   so the two ranges stay independently authorable — a sentry may be targetable at one range yet
   only engage from patrol at a tighter one.
 - **Reachability: fact ships, demo waits (decided).** `@brain.targetReachable` is the nav
-  floor's `find_path` verdict, correct by construction (the same verdict chase already acts on),
-  so it ships with this spec — not a ground-truth oracle. It inherits pursuit's wraparound
+  floor's `find_path` verdict when a nav graph exists and `false` otherwise, so it ships with
+  this spec — not a ground-truth oracle. It inherits pursuit's wraparound
   false-negative around freestanding walls until `E10--pursuit-wraparound-blocked` lands; only
   the authored reference *demo* (the `waiting` barrier-hold) waits on that fix, per AC 11.
   The same rule settles the softer `E10--mandatory-vertex-wedge-escapes` dependency: it keeps a

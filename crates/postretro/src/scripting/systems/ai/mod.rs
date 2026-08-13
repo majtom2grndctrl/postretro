@@ -166,6 +166,9 @@ fn patrol_steering(brain: &mut BrainComponent, position: Vec3) -> SteeringIntent
     brain.patrol_cursor %= point_count;
     let mut goal = patrol_goal(brain);
     if crate::nav::distance_xz(position, goal) <= POSITION_GOAL_ARRIVAL_EPSILON {
+        if point_count == 1 {
+            return SteeringIntent::Clear;
+        }
         advance_patrol_cursor(brain, point_count, mode);
         goal = patrol_goal(brain);
     }
@@ -520,17 +523,21 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // Reachability is the nav floor's pathfinder verdict, cached on the
         // existing acquisition stride. It deliberately mirrors the same
         // `find_path` capability chase consumes, rather than claiming a
-        // stronger ground-truth answer. A map without navigation keeps chase's
-        // direct-destination degradation and therefore reads reachable.
-        let target_reachable = match target {
-            Some(target) if evaluate_acquisition => {
-                let reachable = nav_graph
-                    .is_none_or(|graph| find_path(graph, snap.position, target.position).is_some());
+        // stronger ground-truth answer. An absent nav graph has no route query,
+        // so it is immediately unreachable even if a restored brain retained a
+        // cached result from an earlier map or acquisition stride.
+        let target_reachable = match (target, nav_graph) {
+            (Some(_), None) => {
+                brain.target_reachable = false;
+                false
+            }
+            (Some(target), Some(graph)) if evaluate_acquisition => {
+                let reachable = find_path(graph, snap.position, target.position).is_some();
                 brain.target_reachable = reachable;
                 reachable
             }
-            Some(_) => brain.target_reachable,
-            None => {
+            (Some(_), Some(_)) => brain.target_reachable,
+            (None, _) => {
                 brain.target_reachable = false;
                 false
             }

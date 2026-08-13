@@ -650,11 +650,12 @@ retention across ticks, combat-slot participation and incumbency, and target
 facing all key on it. A `hold` + `attack` state stands its ground and swings, so
 it keeps its target, keeps its slot, and turns to face what it is hitting.
 
-**Animation.** A state plays its own `animation` name, with one substitution: a
-*locomotion* state (`chaseTarget` motion and **no** `action`) plays the graph's
-rest animation — the `initial` state's — while it is standing still, because its
-own animation is a travel cycle that would slide in place. Every other state,
-including a `chaseTarget` state that declares an action, always plays its own.
+**Animation.** A state plays its own `animation` name, with one substitution: an
+actionless *locomotion* state (`chaseTarget`, `moveToAnchor`, or `patrol` motion
+with **no** `action`) plays the graph's rest animation — the `initial` state's —
+while it is standing still, because its own animation is a travel cycle that
+would slide in place. Every other state, including a `chaseTarget` state that
+declares an action, always plays its own.
 
 **v1 limitation — two or more locomotion states.** `states` is authored as an
 object, but the engine resolves it as a `BTreeMap`: states are ordered
@@ -722,7 +723,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetDied` | `@brain.targetDied` | `boolean` | Whether the selected target's death sweep latch has fired; `false` with no target or no health component. Meaningful only when `hasTarget` is true. |
 | `brain.distanceFromAnchor` | `@brain.distanceFromAnchor` | `number` | XZ distance in metres from this brain's spawn-time home anchor. Always meaningful, including with no selected target. Use it for an authored leash or retreat; it is not an engine leash field. |
 | `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
-| `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target and `true` on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
+| `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;

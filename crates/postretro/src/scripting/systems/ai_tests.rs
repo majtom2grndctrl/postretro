@@ -554,16 +554,16 @@ fn target_reachability_is_false_without_a_selected_target() {
 }
 
 #[test]
-fn target_reachability_is_true_without_a_navmesh() {
+fn target_reachability_is_false_without_a_navmesh_even_off_stride_with_a_restored_cache() {
     let graph = reachability_graph();
     let mut registry = EntityRegistry::new();
-    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
-    let enemy = spawn_enemy(
-        &mut registry,
-        Vec3::new(1.0, 0.0, 1.0),
-        BrainComponent::from_graph(&graph),
-        50.0,
-    );
+    let target = spawn_player(&mut registry, Vec3::new(17.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.acquired_target = Some(target);
+    brain.target_reachable = true;
+    // A 16 m retained target uses the four-tick band; this is a non-due tick.
+    brain.think_stride_counter = 0;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
     let mut runtime = AiRuntime::new();
 
     run_ai_tick(&mut registry, &mut runtime, 0.016);
@@ -572,10 +572,10 @@ fn target_reachability_is_true_without_a_navmesh() {
         .get_component::<BrainComponent>(enemy)
         .expect("enemy keeps its brain");
     assert!(
-        brain.target_reachable,
-        "no navmesh keeps direct chase reachable"
+        !brain.target_reachable,
+        "an absent navmesh clears a restored cached verdict before a non-due tick can reuse it"
     );
-    assert_eq!(brain.state_name(), Some("chase"));
+    assert_eq!(brain.state_name(), Some("hold"));
 }
 
 #[test]
@@ -5880,6 +5880,7 @@ fn patrol_single_point_persists_cursor_and_clamps_a_stale_saved_cursor() {
     let mut brain = authored_brain(&graph, "position");
     brain.patrol_cursor = 99;
     let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    agent_steering::set_destination(&mut registry, enemy, Vec3::new(5.0, 0.0, 0.0));
 
     run_ai_tick(&mut registry, &mut runtime, 0.016);
     let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
@@ -5891,7 +5892,11 @@ fn patrol_single_point_persists_cursor_and_clamps_a_stale_saved_cursor() {
         brain.patrol_direction, 1,
         "a fresh ping-pong route starts forward"
     );
-    assert_eq!(enemy_destination(&registry, enemy), Some(Vec3::ZERO));
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "an arrived one-point patrol clears a stale destination and stands still"
+    );
 
     let mut graph = patrol_graph(vec![[0.0, 0.0], [3.0, 0.0]], PatrolMode::Loop);
     graph.states.insert(

@@ -917,8 +917,10 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         position,
         ..Transform::default()
     });
+    let mut brain = BrainComponent::from_graph(&enemy_graph(0.0, "alert"));
+    brain.home_anchor = position;
     registry
-        .set_component(id, BrainComponent::from_graph(&enemy_graph(0.0, "alert")))
+        .set_component(id, brain)
         .expect("enemy brain component should attach");
     registry
         .entity_state_mut(id)
@@ -1252,8 +1254,10 @@ fn spawn_driven_agent(
         position,
         ..Transform::default()
     });
+    let mut brain = brain_in_state(&driven_agent_graph(), state);
+    brain.home_anchor = position;
     registry
-        .set_component(enemy, brain_in_state(&driven_agent_graph(), state))
+        .set_component(enemy, brain)
         .expect("driven agent brain should attach");
     registry
         .entity_state_mut(enemy)
@@ -1269,6 +1273,30 @@ fn spawn_driven_agent(
         .set_component(enemy, driven_agent_mesh(animation_state))
         .expect("driven agent mesh should attach");
     enemy
+}
+
+#[test]
+fn determinism_enemy_helpers_seed_home_anchor_from_spawn_position() {
+    let mut registry = EntityRegistry::new();
+    let enemy_position = Vec3::new(-3.0, 1.0, 2.0);
+    let driven_position = Vec3::new(4.0, 1.0, -5.0);
+    let enemy = spawn_enemy(&mut registry, enemy_position);
+    let driven = spawn_driven_agent(&mut registry, driven_position, ALERT_STATE, "locomotion");
+
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .home_anchor,
+        enemy_position
+    );
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(driven)
+            .expect("driven agent keeps its brain")
+            .home_anchor,
+        driven_position
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

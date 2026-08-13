@@ -53,8 +53,7 @@ pub(crate) struct BrainFacts {
     /// fact convention.
     pub target_hostile: bool,
     /// Whether the selected target is routeable by the nav floor's pathfinder.
-    /// `false` without a target; maps without a navmesh report `true` so the
-    /// chase motion keeps its direct-destination behavior.
+    /// `false` without a target or when the map has no navmesh.
     pub target_reachable: bool,
 }
 

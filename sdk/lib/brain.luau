@@ -32,7 +32,7 @@ local BrainSdk = {}
 --- `distanceFromAnchor` (number; the enemy's XZ distance from its spawn-time
 --- home anchor, including untargeted), and `targetHostile` (boolean; true
 --- when the selected target's faction differs, false with no target), and
---- `targetReachable` (boolean; false with no target, true with no navmesh;
+--- `targetReachable` (boolean; false with no target or no navmesh;
 --- the pathfinder's cached verdict rather than ground-truth reachability).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),

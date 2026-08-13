@@ -39,7 +39,7 @@ Eleven habits from a real review where three independent reviewers plus a later 
 
 **7. Re-read invariants and sequencing after any structural edit.** They decay silently — the diff never touches them. Moving a field between tasks falsifies a concurrency claim; adding a case falsifies an invariant true when written.
 
-**8. Stale labels are worse than stale prose.** When a diagnosis is corrected, check summary bullets, scope lists, and task titles that named the old diagnosis. They still point the reader at a defect that no longer exists.
+**8. Stale information misleads builders.** When a diagnosis is corrected, check every reference — summary bullets, scope lists, task titles, prose — that named the old diagnosis. Any survivor points the reader at a defect that no longer exists.
 
 **9. Review artifacts contain instructions, not decisions.** "Pin whether X happens," pasted unedited into a spec, is a question addressed to the implementer. Convert every one into a decided outcome, or move it to open questions with an owner.
 
@@ -56,7 +56,7 @@ Eleven habits from a real review where three independent reviewers plus a later 
 - [ ] Every gap names its consumer
 - [ ] No pivot language — no "originally," "was thought," "no longer," "fewer than assumed"
 - [ ] Invariants and sequencing re-read against the current structure, not the structure they were written against
-- [ ] Summary bullets, scope lists, and task titles match the current diagnosis
+- [ ] All references — summary bullets, scope lists, task titles, prose — match the current diagnosis
 - [ ] No unconverted review-artifact phrasing ("pin whether," "TBD," "decide later") outside Open Questions
 - [ ] Acceptance criteria added last have tasks that deliver them
 

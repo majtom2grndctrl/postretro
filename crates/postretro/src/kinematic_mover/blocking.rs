@@ -13,7 +13,7 @@ use postretro_entities::{
     BlockPolicy, ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     Transform,
 };
-use postretro_foundation::{DamagePayload, PlayerMovementComponent};
+use postretro_foundation::{DamagePayload, GroundRef, PlayerMovementComponent};
 
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{
@@ -21,6 +21,11 @@ use crate::collision::moving::{
     deepest_mover_push_penetration, mover_pose_for_translation_leg,
 };
 use crate::movement::mover_push_is_blocked_by_static;
+
+// A rider leaves a moving base with jump plus inherited base velocity. 150 ms
+// covers the handful of fixed movement ticks needed to clear a mover travelling
+// at roughly twice jump velocity, without masking a later path re-entry.
+const RIDER_GRACE_MS: f32 = 150.0;
 
 /// Host-local mover transition kinds. Task 6 resolves each entry through the
 /// mover's authored named-event address; connected clients never emit entries.
@@ -44,12 +49,13 @@ impl MoverEventKind {
     }
 }
 
-/// Host-only crush clocks, keyed by the full generation-aware identities of
-/// both the mover and its victim. They are intentionally not component state:
-/// peers reconcile motion and health, never this decision cadence.
+/// Host-only blocking timers, keyed by full generation-aware mover and actor
+/// identities. They are not component state: peers reconcile outcomes, never
+/// these decision timers.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MoverBlockingState {
     crush_elapsed_ms: HashMap<(EntityId, EntityId), f32>,
+    rider_grace_ms: HashMap<(EntityId, EntityId), f32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,8 +72,12 @@ struct MoverPolicySnapshot {
 }
 
 impl MoverBlockingState {
+    /// Discard host-only policy timers when the mover table is reset for a new
+    /// level lifetime. Per-tick empty-snapshot cleanup intentionally preserves
+    /// rider grace, because it may span a tick with no active movers.
     pub(crate) fn clear(&mut self) {
         self.crush_elapsed_ms.clear();
+        self.rider_grace_ms.clear();
     }
 
     fn has_crush_cadence_for(&self, mover: EntityId) -> bool {
@@ -80,6 +90,12 @@ impl MoverBlockingState {
         self.crush_elapsed_ms.contains_key(&(mover, victim))
     }
 
+    fn has_rider_grace(&self, mover: EntityId, player: EntityId) -> bool {
+        self.rider_grace_ms
+            .get(&(mover, player))
+            .is_some_and(|remaining_ms| *remaining_ms > 0.0)
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_test_cadence(&mut self, mover: EntityId, victim: EntityId) {
         self.crush_elapsed_ms.insert((mover, victim), 75.0);
@@ -87,7 +103,7 @@ impl MoverBlockingState {
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.crush_elapsed_ms.is_empty()
+        self.crush_elapsed_ms.is_empty() && self.rider_grace_ms.is_empty()
     }
 }
 
@@ -164,12 +180,13 @@ pub(crate) fn run_mover_blocking_pass(
             )
         })
         .collect();
+    let player_capsules = player_capsules(registry);
+    refresh_rider_grace(blocking_state, registry, &player_capsules, tick_dt);
     if movers.is_empty() {
-        blocking_state.clear();
+        blocking_state.crush_elapsed_ms.clear();
         return;
     }
 
-    let player_capsules = player_capsules(registry);
     let agent_capsules = agent_capsules(registry);
     let mut contacted_stop_movers = HashSet::new();
     let mut reverse_contacts: HashMap<EntityId, glam::Vec3> = HashMap::new();
@@ -183,7 +200,7 @@ pub(crate) fn run_mover_blocking_pass(
             continue;
         };
 
-        for (player_entity, position, capsule) in &player_capsules {
+        for (player_entity, position, capsule, player_ground) in &player_capsules {
             let contact = leading_mover_contact_penetration(
                 collider,
                 mover_poses,
@@ -197,6 +214,12 @@ pub(crate) fn run_mover_blocking_pass(
                     let Some(contact) = contact else {
                         continue;
                     };
+                    if *player_ground == GroundRef::Mover(mover.mover_id)
+                        || (*player_ground == GroundRef::Airborne
+                            && blocking_state.has_rider_grace(mover.entity, *player_entity))
+                    {
+                        continue;
+                    }
                     note_reactive_contact(
                         mover.entity,
                         mover,
@@ -361,6 +384,69 @@ pub(crate) fn run_mover_blocking_pass(
                     .is_ok()
                 && is_blocking_victim(registry, *victim)
         });
+    blocking_state
+        .rider_grace_ms
+        .retain(|(mover, player), remaining_ms| {
+            *remaining_ms > 0.0
+                && registry
+                    .get_component::<KinematicMoverComponent>(*mover)
+                    .is_ok()
+                && registry
+                    .get_component::<PlayerMovementComponent>(*player)
+                    .is_ok()
+        });
+}
+
+fn refresh_rider_grace(
+    blocking_state: &mut MoverBlockingState,
+    registry: &EntityRegistry,
+    players: &[(EntityId, glam::Vec3, Capsule, GroundRef)],
+    tick_dt: f32,
+) {
+    let tick_ms = (tick_dt * 1000.0).max(0.0);
+    blocking_state
+        .rider_grace_ms
+        .retain(|(mover, player), remaining_ms| {
+            let Ok(mover) = registry.get_component::<KinematicMoverComponent>(*mover) else {
+                return false;
+            };
+            let Ok(player) = registry.get_component::<PlayerMovementComponent>(*player) else {
+                return false;
+            };
+            match player.ground {
+                GroundRef::Mover(ground_mover_id) if ground_mover_id == mover.mover_id => {
+                    *remaining_ms = RIDER_GRACE_MS;
+                    true
+                }
+                GroundRef::Mover(_) | GroundRef::World => false,
+                GroundRef::Airborne => {
+                    *remaining_ms -= tick_ms;
+                    *remaining_ms > 0.0
+                }
+            }
+        });
+
+    for (player, _, _, ground) in players {
+        let GroundRef::Mover(mover_id) = ground else {
+            continue;
+        };
+        let Some(mover) = registry
+            .iter_with_kind(ComponentKind::KinematicMover)
+            .find_map(|(entity, value)| {
+                let ComponentValue::KinematicMover(mover) = value else {
+                    return None;
+                };
+                (mover.mover_id == *mover_id).then_some(entity)
+            })
+        else {
+            continue;
+        };
+
+        blocking_state
+            .rider_grace_ms
+            .entry((mover, *player))
+            .or_insert(RIDER_GRACE_MS);
+    }
 }
 
 fn note_reactive_contact(
@@ -468,7 +554,7 @@ fn crush_hit_is_due(
     true
 }
 
-fn player_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsule)> {
+fn player_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsule, GroundRef)> {
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .filter_map(|(entity, _)| {
@@ -484,6 +570,7 @@ fn player_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Caps
                     Point::new(0.0, movement.capsule.half_height, 0.0),
                     movement.capsule.radius,
                 ),
+                movement.ground,
             ))
         })
         .collect()
@@ -612,6 +699,19 @@ mod tests {
     impl MoverPoseSource for SingleMoverPose {
         fn pose(&self, mover_id: u32) -> Option<crate::collision::moving::MoverPose> {
             (mover_id == self.mover_id).then_some(self.pose)
+        }
+    }
+
+    struct TwoMoverPoses {
+        first: SingleMoverPose,
+        second: SingleMoverPose,
+    }
+
+    impl MoverPoseSource for TwoMoverPoses {
+        fn pose(&self, mover_id: u32) -> Option<crate::collision::moving::MoverPose> {
+            self.first
+                .pose(mover_id)
+                .or_else(|| self.second.pose(mover_id))
         }
     }
 
@@ -819,6 +919,17 @@ mod tests {
         player
     }
 
+    fn set_player_ground(registry: &mut EntityRegistry, player: EntityId, ground: GroundRef) {
+        let mut movement = registry
+            .get_component::<PlayerMovementComponent>(player)
+            .expect("player movement remains attached")
+            .clone();
+        movement.ground = ground;
+        registry
+            .set_component(player, movement)
+            .expect("player movement updates");
+    }
+
     fn add_enemy(registry: &mut EntityRegistry, health: Option<f32>) -> EntityId {
         let enemy = registry.spawn(Transform {
             position: Vec3::new(0.0, 1.0, 0.0),
@@ -864,9 +975,11 @@ mod tests {
         let mover_id = 42;
         let mut registry = EntityRegistry::new();
         let mover_entity = registry.spawn(Transform::default());
-        let mut mover = mover(mover_id);
-        mover.block_policy = BlockPolicy::Stop;
-        registry.set_component(mover_entity, mover).unwrap();
+        let mut blocking_mover = mover(mover_id);
+        blocking_mover.block_policy = BlockPolicy::Stop;
+        registry
+            .set_component(mover_entity, blocking_mover)
+            .unwrap();
         let player = add_player(&mut registry, None);
 
         let collider = swept_wall(mover_id);
@@ -913,6 +1026,565 @@ mod tests {
                 .blocked
         );
         assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    // Regression: a platform treated its own passenger as an obstruction and
+    // entered the replicated stop hold.
+    #[test]
+    fn grounded_player_does_not_block_its_stop_mover() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Stop;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&swept_wall(mover_id)),
+                &moving_contact_pose(mover_id),
+                &mut state,
+                0.1,
+                &mut events,
+                &mut |_| {},
+            );
+        }
+
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn grounded_player_does_not_reverse_its_mover() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Reverse;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &moving_contact_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .direction_sign,
+            1
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn reactive_exemption_follows_live_ground_and_only_matches_its_mover() {
+        let mover_id = 42;
+        let other_mover_id = 7;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut blocking_mover = mover(mover_id);
+        blocking_mover.block_policy = BlockPolicy::Stop;
+        registry
+            .set_component(mover_entity, blocking_mover)
+            .unwrap();
+        let other_mover_entity = registry.spawn(Transform::default());
+        let mut other_mover = mover(other_mover_id);
+        other_mover.started = false;
+        registry
+            .set_component(other_mover_entity, other_mover)
+            .unwrap();
+        let player = add_player(&mut registry, None);
+        let collider = swept_wall(mover_id);
+        let poses = moving_contact_pose(mover_id);
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+        assert!(events.is_empty());
+
+        set_player_ground(&mut registry, player, GroundRef::World);
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+
+        let mut blocking_mover = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap()
+            .clone();
+        blocking_mover.blocked = false;
+        registry
+            .set_component(mover_entity, blocking_mover)
+            .unwrap();
+        set_player_ground(&mut registry, player, GroundRef::Mover(other_mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked,
+            "a player riding another mover remains an obstruction"
+        );
+    }
+
+    #[test]
+    fn airborne_rider_grace_keeps_a_departing_player_from_stopping_then_expires() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Stop;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        let collider = swept_wall(mover_id);
+        let poses = moving_contact_pose(mover_id);
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+        for _ in 0..2 {
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&collider),
+                &poses,
+                &mut state,
+                0.1,
+                &mut events,
+                &mut |_| {},
+            );
+        }
+
+        set_player_ground(&mut registry, player, GroundRef::Airborne);
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+        assert!(events.is_empty(), "a fresh grace window skips the contact");
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.051,
+            &mut events,
+            &mut |_| {},
+        );
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked,
+            "the bounded airborne exemption expires after RIDER_GRACE_MS"
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    // Regression: an idle mover did not remember its rider before a trigger
+    // started it during the rider's airborne departure.
+    #[test]
+    fn idle_mover_refreshes_rider_grace_before_it_starts() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Stop;
+        mover.started = false;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        let collider = swept_wall(mover_id);
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &stationary_contact_pose(mover_id),
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+
+        set_player_ground(&mut registry, player, GroundRef::Airborne);
+        let mut started_mover = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap()
+            .clone();
+        started_mover.started = true;
+        registry.set_component(mover_entity, started_mover).unwrap();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &moving_contact_pose(mover_id),
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn airborne_rider_grace_keeps_a_departing_player_from_reversing() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Reverse;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, None);
+        let collider = swept_wall(mover_id);
+        let poses = moving_contact_pose(mover_id);
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        set_player_ground(&mut registry, player, GroundRef::Airborne);
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.1,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .direction_sign,
+            1
+        );
+        assert!(events.is_empty());
+
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.051,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .direction_sign,
+            -1,
+            "reverse policy reacts after rider grace expires"
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+    }
+
+    // Regression: transferring from mover A to B left A's grace active after
+    // departing B, exempting two movers at once.
+    #[test]
+    fn rider_transfer_keeps_airborne_grace_only_for_the_last_mover() {
+        let first_mover_id = 42;
+        let second_mover_id = 7;
+        let mut registry = EntityRegistry::new();
+        let first_mover_entity = registry.spawn(Transform::default());
+        let mut first_mover = mover(first_mover_id);
+        first_mover.block_policy = BlockPolicy::Stop;
+        first_mover.started = false;
+        registry
+            .set_component(first_mover_entity, first_mover)
+            .unwrap();
+        let second_mover_entity = registry.spawn(Transform::default());
+        let mut second_mover = mover(second_mover_id);
+        second_mover.block_policy = BlockPolicy::Stop;
+        second_mover.started = false;
+        registry
+            .set_component(second_mover_entity, second_mover)
+            .unwrap();
+        let player = add_player(&mut registry, None);
+        let first_collider = swept_wall(first_mover_id);
+        let second_collider = swept_wall(second_mover_id);
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(first_mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            &[first_collider, second_collider],
+            &stationary_contact_pose(first_mover_id),
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        set_player_ground(&mut registry, player, GroundRef::Mover(second_mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            &[swept_wall(first_mover_id), swept_wall(second_mover_id)],
+            &stationary_contact_pose(first_mover_id),
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+
+        for mover_entity in [first_mover_entity, second_mover_entity] {
+            let mut started_mover = registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap()
+                .clone();
+            started_mover.started = true;
+            registry.set_component(mover_entity, started_mover).unwrap();
+        }
+        set_player_ground(&mut registry, player, GroundRef::Airborne);
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            &[swept_wall(first_mover_id), swept_wall(second_mover_id)],
+            &TwoMoverPoses {
+                first: moving_contact_pose(first_mover_id),
+                second: moving_contact_pose(second_mover_id),
+            },
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(first_mover_entity)
+                .unwrap()
+                .blocked,
+            "the earlier mover is a genuine obstruction after transfer"
+        );
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(second_mover_entity)
+                .unwrap()
+                .blocked,
+            "only the last ridden mover keeps grace"
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, first_mover_id)]);
+    }
+
+    #[test]
+    fn airborne_rider_grace_does_not_exempt_a_different_mover() {
+        let riding_mover_id = 42;
+        let other_mover_id = 7;
+        let mut registry = EntityRegistry::new();
+        let riding_mover_entity = registry.spawn(Transform::default());
+        let mut riding_mover = mover(riding_mover_id);
+        riding_mover.block_policy = BlockPolicy::Stop;
+        registry
+            .set_component(riding_mover_entity, riding_mover)
+            .unwrap();
+        let other_mover_entity = registry.spawn(Transform::default());
+        let mut other_mover = mover(other_mover_id);
+        other_mover.block_policy = BlockPolicy::Stop;
+        registry
+            .set_component(other_mover_entity, other_mover)
+            .unwrap();
+        let player = add_player(&mut registry, None);
+        let riding_collider = swept_wall(riding_mover_id);
+        let other_collider = swept_wall(other_mover_id);
+        let riding_poses = moving_contact_pose(riding_mover_id);
+        let other_poses = moving_contact_pose(other_mover_id);
+        let poses = TwoMoverPoses {
+            first: riding_poses,
+            second: other_poses,
+        };
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(riding_mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            &[riding_collider, other_collider],
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        events.clear();
+        let mut other_mover = registry
+            .get_component::<KinematicMoverComponent>(other_mover_entity)
+            .unwrap()
+            .clone();
+        other_mover.blocked = false;
+        registry
+            .set_component(other_mover_entity, other_mover)
+            .unwrap();
+
+        set_player_ground(&mut registry, player, GroundRef::Airborne);
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            &[swept_wall(riding_mover_id), swept_wall(other_mover_id)],
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+
+        assert!(
+            !registry
+                .get_component::<KinematicMoverComponent>(riding_mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(other_mover_entity)
+                .unwrap()
+                .blocked
+        );
+        assert_eq!(events, vec![(MoverEventKind::Blocked, other_mover_id)]);
+    }
+
+    #[test]
+    fn airborne_rider_grace_does_not_suppress_a_ceiling_crush() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        registry.set_component(mover_entity, mover).unwrap();
+        let player = add_player(&mut registry, Some(100.0));
+        let collider = swept_wall(mover_id);
+        let poses = moving_contact_pose(mover_id);
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+        set_player_ground(&mut registry, player, GroundRef::Airborne);
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+
+        let health = registry
+            .get_component::<HealthComponent>(player)
+            .unwrap()
+            .current;
+        assert!(
+            (health - 90.0).abs() <= f32::EPSILON,
+            "expected 90 health after one crush hit, got {health}"
+        );
+        assert_eq!(events, vec![(MoverEventKind::Crushed, mover_id)]);
     }
 
     // Regression: policy evaluation on an inactive pose could restart a
@@ -987,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn completing_crusher_keeps_its_final_moving_contact_tick() {
+    fn grounded_player_is_crushed_when_static_geometry_blocks_the_push() {
         let mover_id = 42;
         let mut registry = EntityRegistry::new();
         let mover_entity = registry.spawn(Transform::default());
@@ -997,6 +1669,7 @@ mod tests {
         mover.crush_damage = 10.0;
         registry.set_component(mover_entity, mover).unwrap();
         let player = add_player(&mut registry, Some(100.0));
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
 
         run_mover_blocking_pass(
             &mut registry,
@@ -1594,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn crush_policy_skips_player_that_can_clear_the_push() {
+    fn grounded_player_riding_crusher_is_unharmed_when_the_push_is_clear() {
         let mover_id = 42;
         let mut registry = EntityRegistry::new();
         let mover_entity = registry.spawn(Transform::default());
@@ -1605,6 +2278,7 @@ mod tests {
             .set_component(mover_entity, mover)
             .expect("mover attaches");
         let player = add_player(&mut registry, Some(100.0));
+        set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
 
         let collider = swept_wall(mover_id);
         let clear_world = CollisionWorld::new();

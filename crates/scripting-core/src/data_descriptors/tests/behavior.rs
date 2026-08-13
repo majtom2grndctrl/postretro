@@ -684,7 +684,7 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
         "the shipped reference enemy authors both disengagement paths"
     );
 
-    assert_eq!(ts.initial, "idle");
+    assert_eq!(ts.initial, "patrol");
     assert_eq!(ts.move_speed, 3.0);
     assert_eq!(ts.engagement_radius, Some(2.0));
     let attack = ts.attack.expect("the reference enemy attacks");
@@ -694,12 +694,20 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     );
 
     assert_eq!(
+        ts.patrol,
+        Some(PatrolDescriptor {
+            points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
+            mode: PatrolMode::PingPong,
+        }),
+        "the shipped enemy's route is a short anchor-relative ping-pong patrol"
+    );
+    assert_eq!(
         ts.states.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["alert", "attack", "idle"],
-        "three states, and no `death` state — death is not a graph transition"
+        vec!["alert", "attack", "patrol", "retreat"],
+        "the reference graph has patrol, pursuit, attack, and retreat; death remains outside the graph"
     );
     for (name, animation, motion, action) in [
-        ("idle", "idle", MotionVerb::Hold, None),
+        ("patrol", "walk", MotionVerb::Patrol, None),
         ("alert", "walk", MotionVerb::ChaseTarget, None),
         (
             "attack",
@@ -707,6 +715,7 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
             MotionVerb::ChaseTarget,
             Some(ActionVerb::Attack),
         ),
+        ("retreat", "walk", MotionVerb::MoveToAnchor, None),
     ] {
         let state = &ts.states[name];
         assert_eq!(state.animation, animation, "`{name}` animation");
@@ -721,17 +730,18 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
             .iter()
             .map(|edge| edge.to.as_str())
             .collect::<Vec<_>>(),
-        vec!["idle", "idle", "idle"],
-        "the ordered any-state edges stand down on target loss, target death, then range"
+        vec!["patrol", "patrol"],
+        "the ordered any-state edges stand down on target loss, then a friendly target, into patrol"
     );
     assert!(
-        ts.candidate_filter.is_some(),
-        "the reference graph filters dead candidates and bounds acquisition"
+        ts.candidate_filter.is_none(),
+        "the reference leaves fresh candidate policy open and demonstrates its authored patrol policy"
     );
     for (state, targets) in [
-        ("idle", vec!["attack", "alert"]),
-        ("alert", vec!["attack", "idle"]),
-        ("attack", vec!["alert"]),
+        ("patrol", vec!["alert"]),
+        ("alert", vec!["attack", "retreat"]),
+        ("attack", vec!["retreat", "alert"]),
+        ("retreat", vec!["patrol"]),
     ] {
         assert_eq!(
             ts.states[state]

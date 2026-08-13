@@ -26,8 +26,16 @@ export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
 const REFERENCE_DETECTION_RANGE = 16;
 /** Distance within which its melee swing connects, in metres. */
 const REFERENCE_ATTACK_RANGE = 2;
-/** Graph-authored acquisition and stand-down radius, in metres. */
-const REFERENCE_AGGRO_RANGE = 50;
+/** Authored distance from the spawn anchor that begins a retreat, in metres. */
+const REFERENCE_LEASH_RANGE = 20;
+/**
+ * The retreat-to-patrol threshold, in metres. It deliberately exceeds the
+ * engine's 0.5 m position-goal arrival epsilon: a smaller guard would wedge
+ * after steering clears at that epsilon.
+ */
+const REFERENCE_RETURN_ARRIVAL_EPSILON = 1;
+/** Acquisition and stand-down radius for the separate pose-fixture graph. */
+const POSE_FIXTURE_AGGRO_RANGE = 50;
 
 /**
  * The map-placeable reference enemy: a full health + animated-mesh + behavior-
@@ -45,44 +53,40 @@ const REFERENCE_AGGRO_RANGE = 50;
  * model's real clip names. Every `behavior.states.*.animation` names one of
  * them — the cross-component link the brain drives each tick.
  *
- * The graph is the reference authoring of the classic three-state pursuit
- * shape:
+ * The graph is the reference authoring of an untargeted patrol that engages,
+ * retreats to its spawn anchor, and resumes its route:
  *
  * ```text
- *   ANY   --(!hasTarget || targetDied || dist > aggroRange)--> idle (interrupt)
- *   idle  --(acquisitionDue && dist <= attackRange)-->  attack
- *   idle  --(acquisitionDue && dist <= detectionRange)--> alert
- *   alert --(dist <= attackRange)-->                    attack
- *   alert --(dist >  aggroRange)-->                     idle
- *   attack --(dist >  attackRange)-->                   alert
+ *   ANY     --(!hasTarget || !targetHostile)--> patrol (interrupt)
+ *   patrol  --(acquisitionDue && dist <= detectionRange)--> alert
+ *   alert   --(dist <= attackRange)--> attack
+ *   alert/attack --(distanceFromAnchor > leash)--> retreat
+ *   retreat --(distanceFromAnchor <= arrivalEpsilon)--> patrol
  * ```
  *
- * Three authoring notes worth copying:
+ * Authoring notes worth copying:
  *
- * - **`acquisitionDue` conjunction.** Detection is time-sliced by the engine's
- *   think stride, so both `idle` edges only fire on an acquisition tick. The IR
- *   has no `and` opcode yet, so the conjunction is spelled
- *   `select(cond, inner, false)`. The attack-range edge is
- *   deliberately NOT gated: they must answer every tick, so a strided
- *   acquisition gap can never suppress an in-range swing or hold a fled player
- *   under pursuit.
- * - **`idle → attack` is declared first.** Guards are first-true-wins in
- *   declaration order, so the "already in contact range on the tick we notice
- *   them" edge has to precede the plain detection edge to be reachable.
- * - **The stand-down interrupts are declared first of all.** Interrupts run
- *   before any state-local guard, so losing the target outranks every range
- *   edge and the enemy stands down in ONE tick. It is not optional polish:
- *   `brain.targetDistance` reads a `1e9` sentinel with no target, and that
- *   sentinel is ONE-DIRECTIONAL. `le`/`lt` guards read false untargeted (safe,
- *   which is why the entry edges need no `hasTarget` conjunction), but
- *   `gt`/`ge` guards read TRUE — so the target-distance stand-down guard could
- *   fire on target loss without the earlier interrupt. The IR has no `not`
- *   opcode, so the negation
- *   is spelled `select(hasTarget, false, true)`. The target
- *   facts are meaningful only under `hasTarget`: they read zero (and
- *   `targetDied` reads false) untargeted. Test death with the sweep's
- *   `targetDied` latch, never `le(targetHealth, 0)`, which also fires with no
- *   target and misses the latch's full definition.
+ * - **Anchor and patrol.** The home anchor is this entity's spawn position, so
+ *   the anchor-relative route works wherever the map places it. The cursor is
+ *   brain state, not state-entry state: leaving and re-entering `patrol`
+ *   resumes the route instead of restarting it.
+ * - **Stand down into the active untargeted state.** Both any-state interrupts
+ *   target `patrol`, the state this graph rests in. A stand-down to some other
+ *   state would re-fire every tick after returning to patrol and oscillate.
+ *   The `not hasTarget` row must be first. The friendly-flip row uses
+ *   `select(targetHostile, false, true)`, which is true for *both* friendly and
+ *   untargeted targets (unlike `targetDied`), so it must follow that row and
+ *   share its destination.
+ * - **Fresh acquisition is strided.** `targetDistance`, `targetHostile`, and
+ *   `targetReachable` are target-side facts. On a non-engaged patrol tick
+ *   between scans they hold no-target values, so detection must conjunct
+ *   `acquisitionDue`. `targetReachable` exists too, but its pathfinder verdict
+ *   has a known wraparound limitation; this reference intentionally omits the
+ *   reachability waiting demo until that pursuit fix lands.
+ * - **Leash and arrival are authored.** There is no engine leash field: this
+ *   graph enters `retreat` through `distanceFromAnchor`. Its return guard must
+ *   be at least the engine position-goal arrival epsilon (0.5 m); a smaller
+ *   threshold wedges because movement clears at the engine epsilon first.
  *
  * There is no `death` state: death is not a graph transition. The engine's
  * death sweep latches a zero-HP enemy and the authored impact policy plays the
@@ -90,16 +94,9 @@ const REFERENCE_AGGRO_RANGE = 50;
  * entirely to that policy's `despawn` effect, and the behavior block carries no
  * despawn field of its own.
  *
- * The graph owns candidacy and disengagement separately. `candidateFilter`
- * runs once for every candidate the engine offers and only decides whether it
- * is eligible; it neither ranks candidates nor drops the target already held.
- * The state exits and interrupts above are the graph's disengagement policy.
- * There is no engine-side range limit on an authored `chaseTarget` state, so
- * its range edges and the third interrupt are authored stand-down policy.
- *
- * `candidate.distance <= REFERENCE_AGGRO_RANGE` is this graph's authored
- * acquisition radius. The matching third interrupt is its authored stand-down
- * policy for a retained target.
+ * `@state.faction` is intentionally absent from this graph. It is an opaque,
+ * interim identity seed underneath the durable `targetHostile` fact; write
+ * policy against the fact rather than depending on the numeric representation.
  */
 export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: REFERENCE_ENEMY_CLASSNAME,
@@ -153,7 +150,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     // The behavior state graph. Ranges are in metres; cooldown in ms; moveSpeed
     // in m/s. Every `animation` names a `mesh.animations` key above.
     behavior: {
-      initial: "idle",
+      initial: "patrol",
       moveSpeed: 3,
       attack: { damage: 8, range: REFERENCE_ATTACK_RANGE, cooldownMs: 1200 },
       // Where engaged chasers STAND: the radius of the ring of combat slots the
@@ -165,52 +162,27 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
       // its pack. A pure-pursuit graph (`chaseTarget`, no `action`) has no
       // `attack.range` to fall back on and wants this field outright.
       engagementRadius: REFERENCE_ATTACK_RANGE,
-      // Candidate eligibility is per graph and only narrows the engine's offer
-      // set. Dead pawns are never newly acquired; the distance clause is this
-      // graph's authored acquisition radius, not a descriptor range field.
-      candidateFilter: runtime.select(
-        candidate.died,
-        false,
-        runtime.le(candidate.distance, REFERENCE_AGGRO_RANGE),
-      ),
-      // Stand down the instant the target is gone. Declared first so it
-      // outranks every state-local guard — see the doc comment above for why
-      // the `gt` disengage guards below cannot do this job themselves.
+      patrol: {
+        mode: "pingPong",
+        points: [[0, 0], [6, 0], [6, 6]],
+      },
+      // Both stand-downs target the untargeted-active resting state. They are
+      // skipped while already patrolling, so the cursor keeps advancing.
       interrupts: [
         {
-          to: "idle",
+          to: "patrol",
           when: runtime.select(brain.hasTarget, false, true),
         },
-        // The death sweep's latch is false untargeted. Do not compare
-        // `targetHealth` to zero: target facts are zero with no target too.
-        { to: "idle", when: brain.targetDied },
-        // Candidate eligibility applies only while acquiring. This graph owns
-        // its retained-target limit explicitly, after target-loss and
-        // target-death handling.
         {
-          to: "idle",
-          when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+          to: "patrol",
+          when: runtime.select(brain.targetHostile, false, true),
         },
       ],
       states: {
-        // At rest. `initial` doubles as the state the engine forces when the
-        // aggro gate closes — that gate is the only thing that overrides guard
-        // evaluation — and as the animation a travelling state falls back to at
-        // a standstill, so it is authored rest-appropriate. Losing the target
-        // is NOT such an override: guards keep running, which is why the
-        // stand-down above is authored as an ordinary interrupt.
-        idle: {
-          animation: "idle",
-          motion: "hold",
+        patrol: {
+          animation: "walk",
+          motion: "patrol",
           transitions: [
-            {
-              to: "attack",
-              when: runtime.select(
-                brain.acquisitionDue,
-                runtime.le(brain.targetDistance, REFERENCE_ATTACK_RANGE),
-                false,
-              ),
-            },
             {
               to: "alert",
               when: runtime.select(
@@ -221,9 +193,6 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
             },
           ],
         },
-        // Pursuit. No action of its own, so the engine treats it as the
-        // locomotion state: it plays `walk` while travelling and yields to the
-        // `idle` rest animation when stopped.
         alert: {
           animation: "walk",
           motion: "chaseTarget",
@@ -233,8 +202,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               when: runtime.le(brain.targetDistance, REFERENCE_ATTACK_RANGE),
             },
             {
-              to: "idle",
-              when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+              to: "retreat",
+              when: runtime.gt(brain.distanceFromAnchor, REFERENCE_LEASH_RANGE),
             },
           ],
         },
@@ -246,8 +215,27 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           action: "attack",
           transitions: [
             {
+              to: "retreat",
+              when: runtime.gt(brain.distanceFromAnchor, REFERENCE_LEASH_RANGE),
+            },
+            {
               to: "alert",
               when: runtime.gt(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+            },
+          ],
+        },
+        // Retreat never relies on target facts: this position-goal state is
+        // non-engaged, drops its target, and returns to the persisted patrol.
+        retreat: {
+          animation: "walk",
+          motion: "moveToAnchor",
+          transitions: [
+            {
+              to: "patrol",
+              when: runtime.le(
+                brain.distanceFromAnchor,
+                REFERENCE_RETURN_ARRIVAL_EPSILON,
+              ),
             },
           ],
         },
@@ -263,8 +251,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
  * the animated mesh's pose inputs. This is a triangle marker, not production
  * character art.
  *
- * It uses the same direct behavior graph as the map-placeable reference enemy
- * so its animated mesh receives the exact production brain inputs.
+ * It keeps a minimal direct behavior graph so its animated mesh receives the
+ * production brain inputs without duplicating the reference enemy's patrol.
  */
 export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: POSE_FIXTURE_ENEMY_CLASSNAME,
@@ -300,14 +288,14 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
       candidateFilter: runtime.select(
         candidate.died,
         false,
-        runtime.le(candidate.distance, REFERENCE_AGGRO_RANGE),
+        runtime.le(candidate.distance, POSE_FIXTURE_AGGRO_RANGE),
       ),
       interrupts: [
         { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
         { to: "idle", when: brain.targetDied },
         {
           to: "idle",
-          when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+          when: runtime.gt(brain.targetDistance, POSE_FIXTURE_AGGRO_RANGE),
         },
       ],
       states: {
@@ -343,7 +331,7 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
             },
             {
               to: "idle",
-              when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+              when: runtime.gt(brain.targetDistance, POSE_FIXTURE_AGGRO_RANGE),
             },
           ],
         },

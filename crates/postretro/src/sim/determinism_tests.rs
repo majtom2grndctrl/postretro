@@ -1198,6 +1198,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 7.0,
             range: 2.0,

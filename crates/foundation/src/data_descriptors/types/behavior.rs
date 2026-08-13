@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::de::{MapAccess, Visitor};
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::brain::bind_brain_guard;
@@ -22,6 +22,10 @@ use crate::ir::{IrNode, IrType};
 pub enum MotionVerb {
     /// Steer toward the selected target's combat slot (today's Chase).
     ChaseTarget,
+    /// Steer toward this brain's spawn anchor, stopping when it arrives.
+    MoveToAnchor,
+    /// Visit the graph's anchor-relative patrol points in order.
+    Patrol,
     /// Clear the navigation destination and stand still.
     Hold,
     /// Touch neither destination nor steering — terminal presentation.
@@ -35,8 +39,10 @@ impl MotionVerb {
     /// The array is hand-written, but `motion_verb_all_is_exhaustive` below
     /// pins it to a successor chain over an exhaustive `match`, so a new
     /// variant missing from `ALL` fails that test instead of compiling clean.
-    pub const ALL: [MotionVerb; 3] = [
+    pub const ALL: [MotionVerb; 5] = [
         MotionVerb::ChaseTarget,
+        MotionVerb::MoveToAnchor,
+        MotionVerb::Patrol,
         MotionVerb::Hold,
         MotionVerb::Freeze,
     ];
@@ -75,6 +81,81 @@ pub struct AttackParams {
     pub cooldown_ms: f32,
 }
 
+/// How an authored patrol route moves when it reaches an endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PatrolMode {
+    /// Continue from the last point at the first point.
+    Loop,
+    /// Reverse direction at each endpoint.
+    PingPong,
+}
+
+impl PatrolMode {
+    /// Every patrol endpoint mode, for generated SDK union drift guards.
+    pub const ALL: [PatrolMode; 2] = [PatrolMode::Loop, PatrolMode::PingPong];
+}
+
+/// Anchor-relative XZ positions followed by [`MotionVerb::Patrol`] states.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PatrolDescriptor {
+    /// Anchor-relative `[x, z]` positions in metres, visited in order.
+    #[serde(deserialize_with = "deserialize_patrol_points")]
+    pub points: Vec<[f32; 2]>,
+    /// Endpoint behavior for routes with more than one point.
+    pub mode: PatrolMode,
+}
+
+/// The Luau bridge represents an empty table as `{}` rather than `[]`, because
+/// there is no element that establishes its sequence shape. Treat that one
+/// empty-map spelling as an empty route so graph validation can report the same
+/// authored `patrol.points` error QuickJS gets. A non-empty map remains invalid:
+/// patrol points are always an ordered sequence.
+fn deserialize_patrol_points<'de, D>(deserializer: D) -> Result<Vec<[f32; 2]>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct PatrolPointsVisitor;
+
+    impl<'de> Visitor<'de> for PatrolPointsVisitor {
+        type Value = Vec<[f32; 2]>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an ordered sequence of [x, z] patrol points")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut points = Vec::new();
+            while let Some(point) = sequence.next_element()? {
+                points.push(point);
+            }
+            Ok(points)
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            if map
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_none()
+            {
+                Ok(Vec::new())
+            } else {
+                Err(serde::de::Error::custom(
+                    "patrol points must be an ordered sequence, not an object",
+                ))
+            }
+        }
+    }
+
+    deserializer.deserialize_any(PatrolPointsVisitor)
+}
+
 /// One authored edge: a destination state plus the guard that selects it.
 ///
 /// `when` is the raw foundation [`IrNode`] per the descriptor-partition rule
@@ -95,12 +176,12 @@ pub struct TransitionDescriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorStateDescriptor {
     /// Mesh animation-state name requested while this state is current — with
-    /// one substitution: a LOCOMOTION state (`chaseTarget` motion and no
-    /// `action`) at a standstill plays the graph's rest animation instead,
+    /// one substitution: a LOCOMOTION state (`chaseTarget`, `moveToAnchor`, or
+    /// `patrol` motion with no `action`) at a standstill plays the graph's rest animation instead,
     /// because its own animation is a travel cycle that would slide in place.
     /// The rest animation is the `initial` state's, which is what makes
     /// `initial`'s animation the graph's rest pose. Every other state — a
-    /// `chaseTarget` state that declares an action included — always plays its
+    /// locomotion-verb state that declares an action included — always plays its
     /// own name.
     ///
     /// Names are resolved against `components.mesh.animations` at SPAWN, not
@@ -134,7 +215,7 @@ pub struct BehaviorStateDescriptor {
 /// the ordered guards between them, and optional candidate eligibility.
 ///
 /// Wire keys are camelCase: `initial`, `states`, `interrupts`,
-/// `candidateFilter`, `attack`, `engagementRadius`, `moveSpeed`.
+/// `candidateFilter`, `patrol`, `attack`, `engagementRadius`, `moveSpeed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorGraphDescriptor {
@@ -169,6 +250,10 @@ pub struct BehaviorGraphDescriptor {
     /// and never participates in ranking.
     #[serde(default)]
     pub candidate_filter: Option<IrNode>,
+    /// Optional anchor-relative patrol route. A state selecting
+    /// [`MotionVerb::Patrol`] requires this block to contain at least one point.
+    #[serde(default)]
+    pub patrol: Option<PatrolDescriptor>,
     /// Tuning for the `attack` action verb. REQUIRED when some state declares
     /// that action; permitted (and meaningful) even when none does, because
     /// `attack.range` is what [`BehaviorGraphDescriptor::engagement_radius`]
@@ -287,6 +372,8 @@ impl BehaviorGraphDescriptor {
     /// - `moveSpeed` is finite `> 0`; a present `engagementRadius` is finite `> 0`;
     /// - `attack` numerics are finite (`damage >= 0`, `range`/`cooldownMs > 0`),
     ///   and the block is present whenever a state declares the attack action;
+    /// - every patrol point component is finite, and a `patrol` state has a
+    ///   non-empty patrol block;
     /// - every guard binds against `BrainValidationScope` and produces a Bool;
     /// - a present candidate filter binds against `CandidateValidationScope` and
     ///   produces a Bool.
@@ -324,6 +411,17 @@ impl BehaviorGraphDescriptor {
             validate_positive("attack.range", attack.range)?;
             validate_positive("attack.cooldownMs", attack.cooldown_ms)?;
         }
+        if let Some(patrol) = self.patrol.as_ref() {
+            for (index, point) in patrol.points.iter().enumerate() {
+                if !point[0].is_finite() || !point[1].is_finite() {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.behavior.patrol.points[{index}]` must contain finite x/z components, got {point:?}"
+                        ),
+                    });
+                }
+            }
+        }
 
         for (index, interrupt) in self.interrupts.iter().enumerate() {
             let path = format!("interrupts[{index}]");
@@ -346,6 +444,25 @@ impl BehaviorGraphDescriptor {
                         "`components.behavior.states.{name}.action` is \"attack\", so `components.behavior.attack` is required"
                     ),
                 });
+            }
+            if state.motion == MotionVerb::Patrol {
+                match self.patrol.as_ref() {
+                    Some(patrol) if !patrol.points.is_empty() => {}
+                    Some(_) => {
+                        return Err(DescriptorError::InvalidShape {
+                            reason: format!(
+                                "`components.behavior.states.{name}.motion` is \"patrol\", so `components.behavior.patrol.points` must declare at least one point"
+                            ),
+                        });
+                    }
+                    None => {
+                        return Err(DescriptorError::InvalidShape {
+                            reason: format!(
+                                "`components.behavior.states.{name}.motion` is \"patrol\", so `components.behavior.patrol` is required"
+                            ),
+                        });
+                    }
+                }
             }
             for (index, transition) in state.transitions.iter().enumerate() {
                 let path = format!("states.{name}.transitions[{index}]");
@@ -473,7 +590,9 @@ mod tests {
     fn motion_verb_all_is_exhaustive() {
         fn next(verb: MotionVerb) -> Option<MotionVerb> {
             match verb {
-                MotionVerb::ChaseTarget => Some(MotionVerb::Hold),
+                MotionVerb::ChaseTarget => Some(MotionVerb::MoveToAnchor),
+                MotionVerb::MoveToAnchor => Some(MotionVerb::Patrol),
+                MotionVerb::Patrol => Some(MotionVerb::Hold),
                 MotionVerb::Hold => Some(MotionVerb::Freeze),
                 MotionVerb::Freeze => None,
             }
@@ -504,6 +623,25 @@ mod tests {
             walked,
             ActionVerb::ALL,
             "`ActionVerb::ALL` must hold every variant, in successor order"
+        );
+    }
+
+    #[test]
+    fn patrol_mode_all_is_exhaustive() {
+        fn next(mode: PatrolMode) -> Option<PatrolMode> {
+            match mode {
+                PatrolMode::Loop => Some(PatrolMode::PingPong),
+                PatrolMode::PingPong => None,
+            }
+        }
+        let mut walked = vec![PatrolMode::Loop];
+        while let Some(mode) = next(*walked.last().expect("the walk is seeded")) {
+            walked.push(mode);
+        }
+        assert_eq!(
+            walked,
+            PatrolMode::ALL,
+            "`PatrolMode::ALL` must hold every variant, in successor order"
         );
     }
 
@@ -547,6 +685,7 @@ mod tests {
             ]),
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,
@@ -556,6 +695,38 @@ mod tests {
     #[test]
     fn a_well_formed_graph_validates() {
         graph().validate().expect("graph validates");
+    }
+
+    #[test]
+    fn patrol_states_require_a_non_empty_patrol_block_with_finite_points() {
+        let mut missing = graph();
+        missing.states.get_mut("chase").unwrap().motion = MotionVerb::Patrol;
+        let err = missing.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("components.behavior.states.chase.motion")
+                && err.contains("components.behavior.patrol"),
+            "{err}"
+        );
+
+        let mut empty = graph();
+        empty.states.get_mut("chase").unwrap().motion = MotionVerb::Patrol;
+        empty.patrol = Some(PatrolDescriptor {
+            points: Vec::new(),
+            mode: PatrolMode::Loop,
+        });
+        let err = empty.validate().unwrap_err().to_string();
+        assert!(err.contains("components.behavior.patrol.points"), "{err}");
+
+        let mut non_finite = graph();
+        non_finite.patrol = Some(PatrolDescriptor {
+            points: vec![[f32::NAN, 1.0]],
+            mode: PatrolMode::PingPong,
+        });
+        let err = non_finite.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("components.behavior.patrol.points[0]"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -619,6 +790,7 @@ mod tests {
 
         // An `attack` block supplies the fallback for an authored attack graph.
         let with_attack = BehaviorGraphDescriptor {
+            patrol: None,
             attack: Some(AttackParams {
                 damage: 8.0,
                 range: 2.2,

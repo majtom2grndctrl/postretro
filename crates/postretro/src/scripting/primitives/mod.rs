@@ -362,6 +362,14 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "chaseTarget",
             "Steer toward the selected target's combat slot.",
         )
+        .variant(
+            "moveToAnchor",
+            "Steer toward the enemy's spawn anchor, then stand on arrival.",
+        )
+        .variant(
+            "patrol",
+            "Follow the graph's anchor-relative patrol points in order.",
+        )
         .variant("hold", "Clear the navigation destination and stand still.")
         .variant(
             "freeze",
@@ -382,6 +390,18 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("damage", "f32", "Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).")
         .field("range", "f32", "Distance within which the attack lands, in metres. Must be finite and > 0.")
         .field("cooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
+        .finish();
+    registry
+        .register_enum("PatrolMode")
+        .doc("How a patrol route continues when it reaches an endpoint.")
+        .variant("loop", "Wrap from the final point back to the first.")
+        .variant("pingPong", "Reverse direction at each endpoint.")
+        .finish();
+    registry
+        .register_type("PatrolDescriptor")
+        .doc("Anchor-relative XZ positions followed by `patrol` motion states.")
+        .field("points", "Vec<[f32; 2]>", "Anchor-relative `[x, z]` positions in metres. A graph that selects `patrol` must declare at least one finite point.")
+        .field("mode", "PatrolMode", "Endpoint behavior for the route.")
         .finish();
     registry
         .register_type("TransitionDescriptor")
@@ -405,6 +425,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("states", "BehaviorStates", "Declared states keyed by author-chosen name. Must be non-empty.")
         .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
+        .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any state uses `\"patrol\"` motion.")
         .field("attack?", "AttackParams", "Attack tuning for the `attack` action verb. Required exactly when some state declares that action.")
         .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.")

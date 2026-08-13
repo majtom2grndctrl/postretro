@@ -120,22 +120,28 @@ pub(super) fn initial_index(graph: &BehaviorGraphDescriptor) -> Option<usize> {
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
     match motion {
         MotionVerb::ChaseTarget => SteeringIntent::Chase,
+        // Position goals need per-brain state and a position, both unavailable
+        // to this pure classifier. The tick resolves their actual destinations.
+        MotionVerb::MoveToAnchor | MotionVerb::Patrol => SteeringIntent::Clear,
         MotionVerb::Hold => SteeringIntent::Clear,
         MotionVerb::Freeze => SteeringIntent::Hold,
     }
 }
 
-/// Whether `state` is a LOCOMOTION state: it chases, and takes no action of its
-/// own while doing so.
+/// Whether `state` is a LOCOMOTION state: it pursues a target or fixed position
+/// goal, and takes no action of its own while doing so.
 ///
 /// Such a state's animation is a travel cycle, which is only correct while the
 /// agent is actually travelling — so it yields to the graph's rest animation at
 /// a standstill ([`animation_for_state`]), and it is the state off-host
-/// presentation derives its walk-playback reference from. A chasing state that
-/// DOES declare an action is not locomotion: its animation plays regardless of
-/// speed.
+/// presentation derives its walk-playback reference from. A locomotion-verb
+/// state that DOES declare an action is not locomotion: its animation plays
+/// regardless of speed.
 fn is_locomotion_state(state: &BehaviorStateDescriptor) -> bool {
-    state.motion == MotionVerb::ChaseTarget && state.action.is_none()
+    matches!(
+        state.motion,
+        MotionVerb::ChaseTarget | MotionVerb::MoveToAnchor | MotionVerb::Patrol
+    ) && state.action.is_none()
 }
 
 /// The graph's locomotion animation-state name: the first locomotion state's, in
@@ -144,8 +150,8 @@ fn is_locomotion_state(state: &BehaviorStateDescriptor) -> bool {
 /// "First" here is `BTreeMap` iteration order over `graph.states` — lexicographic
 /// by state name, NOT authored order and NOT the state the brain is actually in.
 /// For a graph with a single locomotion state this is exact; for a graph with
-/// two or more (e.g. a `patrol` and a `pursue`, both `chaseTarget` with distinct
-/// animations), it collapses them to whichever name sorts first, regardless of
+/// two or more (e.g. a `patrol` and a `pursue` with distinct travel animations),
+/// it collapses them to whichever name sorts first, regardless of
 /// which one is live — so an enemy walking `pursue`'s "run" cycle can still
 /// report "walk" here, and renaming a state can silently flip the answer. Both
 /// consumers (`sim/mod.rs`'s walk-playback rate scaling and `netcode/mod.rs`'s

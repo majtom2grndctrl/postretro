@@ -47,7 +47,7 @@ use crate::nav::NavGraph;
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use combat_slots::resolve_combat_slots;
-use engine_floor::SteeringIntent;
+use engine_floor::{POSITION_GOAL_ARRIVAL_EPSILON, SteeringIntent};
 use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use graph_eval::{
     action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
@@ -65,7 +65,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
     EntityRegistry, Transform,
 };
-use postretro_foundation::{ActionVerb, DamagePayload};
+use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
 use targeting::{
     TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
     target_distance,
@@ -108,6 +108,90 @@ impl LocomotionIntent {
 
 fn should_switch_animation(state_changed: bool, moving: bool, latch: bool) -> bool {
     state_changed || moving != latch
+}
+
+/// Resolve a state motion whose destination depends on per-brain state. Unlike
+/// [`steering_for`], this runs in the compute pass where the spawn anchor,
+/// patrol descriptor, and persistent patrol cursor are all available.
+fn position_goal_steering(
+    motion: MotionVerb,
+    brain: &mut BrainComponent,
+    position: Vec3,
+) -> SteeringIntent {
+    match motion {
+        MotionVerb::MoveToAnchor => (crate::nav::distance_xz(position, brain.home_anchor)
+            <= POSITION_GOAL_ARRIVAL_EPSILON)
+            .then_some(SteeringIntent::Clear)
+            .unwrap_or(SteeringIntent::MoveTo(brain.home_anchor)),
+        MotionVerb::Patrol => patrol_steering(brain, position),
+        // This resolver owns only motion modes with per-brain position goals.
+        // Every other mode remains the pure graph evaluator's responsibility.
+        MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => steering_for(motion),
+    }
+}
+
+/// Resolve the next patrol point and preserve the route phase on the brain.
+/// A malformed hand-built graph degrades to standing still; descriptor
+/// validation rejects the same shape before authored data reaches this path.
+fn patrol_steering(brain: &mut BrainComponent, position: Vec3) -> SteeringIntent {
+    let Some(patrol) = brain.graph.patrol.as_ref() else {
+        return SteeringIntent::Clear;
+    };
+    let point_count = patrol.points.len();
+    if point_count == 0 {
+        return SteeringIntent::Clear;
+    }
+    let mode = patrol.mode;
+
+    // A saved brain may outlive a descriptor edit that shortens the route.
+    // Preserve its phase rather than resetting it before indexing.
+    brain.patrol_cursor %= point_count;
+    let mut goal = patrol_goal(brain);
+    if crate::nav::distance_xz(position, goal) <= POSITION_GOAL_ARRIVAL_EPSILON {
+        advance_patrol_cursor(brain, point_count, mode);
+        goal = patrol_goal(brain);
+    }
+    SteeringIntent::MoveTo(goal)
+}
+
+fn patrol_goal(brain: &BrainComponent) -> Vec3 {
+    let patrol = brain
+        .graph
+        .patrol
+        .as_ref()
+        .expect("patrol goal is only requested for a present non-empty route");
+    let [x, z] = patrol.points[brain.patrol_cursor];
+    brain.home_anchor + Vec3::new(x, 0.0, z)
+}
+
+fn advance_patrol_cursor(brain: &mut BrainComponent, point_count: usize, mode: PatrolMode) {
+    if point_count == 1 {
+        return;
+    }
+
+    match mode {
+        PatrolMode::Loop => {
+            brain.patrol_cursor = (brain.patrol_cursor + 1) % point_count;
+        }
+        PatrolMode::PingPong if brain.patrol_direction >= 0 => {
+            brain.patrol_direction = 1;
+            if brain.patrol_cursor + 1 == point_count {
+                brain.patrol_direction = -1;
+                brain.patrol_cursor -= 1;
+            } else {
+                brain.patrol_cursor += 1;
+            }
+        }
+        PatrolMode::PingPong => {
+            brain.patrol_direction = -1;
+            if brain.patrol_cursor == 0 {
+                brain.patrol_direction = 1;
+                brain.patrol_cursor = 1;
+            } else {
+                brain.patrol_cursor -= 1;
+            }
+        }
+    }
 }
 
 /// Per-enemy snapshot captured under the immutable iterator borrow so the
@@ -464,7 +548,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 })
                 .unwrap_or(current_index);
             let steering = state_at(&brain.graph, next_index)
-                .map(|state| steering_for(state.motion))
+                .map(|state| state.motion)
+                .map(|motion| position_goal_steering(motion, &mut brain, snap.position))
                 .unwrap_or(SteeringIntent::Clear);
             // A chase with nothing to chase degrades to a stand-down: with no
             // target there is nothing to move relative to, and leaving the intent
@@ -569,9 +654,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         };
 
         // Steering: chase sets the destination to a selected combat slot when
-        // one is available, otherwise to the raw target position. Clear stands
-        // down; hold releases the agent on the tick it takes over and leaves it
-        // untouched thereafter.
+        // one is available, otherwise to the raw target position. Fixed
+        // position goals write their resolved destination directly. Clear
+        // stands down; hold releases the agent on the tick it takes over and
+        // leaves it untouched thereafter.
         // `set_destination`/`clear_destination` no-op when the enemy carries no
         // agent component.
         match outcome.steering {
@@ -610,6 +696,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     }
                 }
             }
+            SteeringIntent::MoveTo(goal) => {
+                agent_steering::set_destination(registry, outcome.id, goal);
+            }
             SteeringIntent::Clear => {
                 agent_steering::clear_destination(registry, outcome.id);
             }
@@ -634,13 +723,16 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
         // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
         // so without this the model keeps its spawn heading and moonwalks toward
-        // its selected target. Orient it believably each tick it is engaged:
+        // its selected target. Orient it believably each tick it is engaged, or
+        // while it is travelling under a fixed position goal:
         //   - Moving (XZ speed above the epsilon): face the velocity direction, so
         //     it faces where it is going even when routing around obstacles. The
         //     velocity is read from `path_state` (last tick's resolved velocity) —
         //     a one-tick lag on facing that is imperceptible.
         //   - Stopped but engaged (near-zero XZ speed — arrived/blocked/swinging):
         //     face this enemy's selected target.
+        //   - A stopped position-goal mover leaves facing untouched, even when
+        //     the target scan happened to find a nearby pawn.
         //   - Standing down: leave facing untouched.
         // The test is ENGAGEMENT, not the chase intent: a state that stands its
         // ground and swings must turn toward what it is hitting, or it lands
@@ -652,30 +744,25 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // propagates a non-finite current yaw — between them, no NaN can reach
         // `Transform.rotation`, which the renderer feeds straight into the model
         // matrix and which nothing else re-seats.
-        if outcome.engaged {
-            if let Some(path) = path_state.as_ref() {
-                let facing =
-                    if locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON {
-                        // Moving: face the direction of travel.
-                        yaw_rotation_toward(path.velocity)
-                    } else {
-                        // Stopped but engaged: face this enemy's selected target
-                        // (if one exists).
-                        outcome
-                            .target
-                            .and_then(|target| yaw_rotation_toward(target.position - path.position))
-                    };
-                if let Some(target_rotation) = facing {
-                    if let Ok(mut transform) =
-                        registry.get_component::<Transform>(outcome.id).cloned()
-                    {
-                        let current_yaw = yaw_from_rotation(transform.rotation);
-                        let target_yaw = yaw_from_rotation(target_rotation);
-                        let slewed_yaw =
-                            slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
-                        transform.rotation = Quat::from_rotation_y(slewed_yaw);
-                        let _ = registry.set_component(outcome.id, transform);
-                    }
+        if let Some(path) = path_state.as_ref() {
+            let moving = locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON;
+            let facing = match outcome.steering {
+                SteeringIntent::MoveTo(_) if moving => yaw_rotation_toward(path.velocity),
+                SteeringIntent::MoveTo(_) => None,
+                _ if outcome.engaged && moving => yaw_rotation_toward(path.velocity),
+                _ if outcome.engaged => outcome
+                    .target
+                    .and_then(|target| yaw_rotation_toward(target.position - path.position)),
+                _ => None,
+            };
+            if let Some(target_rotation) = facing {
+                if let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
+                {
+                    let current_yaw = yaw_from_rotation(transform.rotation);
+                    let target_yaw = yaw_from_rotation(target_rotation);
+                    let slewed_yaw = slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
+                    transform.rotation = Quat::from_rotation_y(slewed_yaw);
+                    let _ = registry.set_component(outcome.id, transform);
                 }
             }
         }

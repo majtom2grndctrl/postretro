@@ -335,10 +335,14 @@ export type HealthDescriptor = {
   zoneMultipliers: { [string]: number }?,
 }
 
---- What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `hold`, `freeze`.
+--- What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`.
 export type MotionVerb =
   --- Steer toward the selected target's combat slot.
   "chaseTarget"
+  --- Steer toward the enemy's spawn anchor, then stand on arrival.
+  | "moveToAnchor"
+  --- Follow the graph's anchor-relative patrol points in order.
+  | "patrol"
   --- Clear the navigation destination and stand still.
   | "hold"
   --- Touch neither destination nor steering — terminal presentation.
@@ -357,6 +361,21 @@ export type AttackParams = {
   range: number,
   --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
   cooldownMs: number,
+}
+
+--- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.
+export type PatrolMode =
+  --- Wrap from the final point back to the first.
+  "loop"
+  --- Reverse direction at each endpoint.
+  | "pingPong"
+
+--- Anchor-relative XZ positions followed by `patrol` motion states.
+export type PatrolDescriptor = {
+  --- Anchor-relative `[x, z]` positions in metres. A graph that selects `patrol` must declare at least one finite point.
+  points: {{number}},
+  --- Endpoint behavior for the route.
+  mode: PatrolMode,
 }
 
 --- One authored graph edge: a destination state plus the guard that selects it. Guards are evaluated every tick — nothing a state is doing ever blocks evaluation — and the first true guard in declaration order wins.
@@ -391,6 +410,8 @@ export type BehaviorGraphDescriptor = {
   interrupts: {TransitionDescriptor}?,
   --- Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.
   candidateFilter: RuntimeValue?,
+  --- Optional anchor-relative patrol route. Required with at least one point when any state uses `"patrol"` motion.
+  patrol: PatrolDescriptor?,
   --- Attack tuning for the `attack` action verb. Required exactly when some state declares that action.
   attack: AttackParams?,
   --- Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.

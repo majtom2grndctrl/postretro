@@ -97,6 +97,91 @@ fn lua_entity_descriptor_parses_a_behavior_graph() {
 }
 
 #[test]
+fn both_runtimes_parse_patrol_authoring_and_reject_missing_or_empty_routes() {
+    let js_patrol = js_behavior(JS_NEAR_GUARD, "")
+        .replace(r#"motion: "chaseTarget""#, r#"motion: "patrol""#)
+        .replace(
+            "moveSpeed: 3,",
+            r#"moveSpeed: 3, patrol: { points: [[1.5, -2]], mode: "pingPong" },"#,
+        );
+    let lua_patrol = lua_behavior(LUA_NEAR_GUARD, "")
+        .replace(r#"motion = "chaseTarget""#, r#"motion = "patrol""#)
+        .replace(
+            "moveSpeed = 3,",
+            r#"moveSpeed = 3, patrol = { points = {{1.5, -2}}, mode = "pingPong" },"#,
+        );
+    let js_graph = eval_js(&js_patrol, |ctx, value| {
+        entity_descriptor_from_js(ctx, value)
+            .unwrap()
+            .behavior
+            .unwrap()
+    });
+    let lua_graph = eval_lua(&lua_patrol, |value| {
+        entity_descriptor_from_lua(value).unwrap().behavior.unwrap()
+    });
+    assert_eq!(js_graph, lua_graph, "the two descriptor bridges stay twins");
+    assert_eq!(js_graph.states["chase"].motion, MotionVerb::Patrol);
+    assert_eq!(
+        js_graph.patrol,
+        Some(PatrolDescriptor {
+            points: vec![[1.5, -2.0]],
+            mode: PatrolMode::PingPong,
+        })
+    );
+
+    let js_missing =
+        js_behavior(JS_NEAR_GUARD, "").replace(r#"motion: "chaseTarget""#, r#"motion: "patrol""#);
+    let lua_missing = lua_behavior(LUA_NEAR_GUARD, "")
+        .replace(r#"motion = "chaseTarget""#, r#"motion = "patrol""#);
+    let js_empty = js_missing.replace(
+        "moveSpeed: 3,",
+        r#"moveSpeed: 3, patrol: { points: [], mode: "loop" },"#,
+    );
+    let lua_empty = lua_missing.replace(
+        "moveSpeed = 3,",
+        r#"moveSpeed = 3, patrol = { points = {}, mode = "loop" },"#,
+    );
+
+    for error in [
+        js_error(&js_missing),
+        lua_error(&lua_missing),
+        js_error(&js_empty),
+        lua_error(&lua_empty),
+    ] {
+        assert!(
+            error.contains("components.behavior") && error.contains("patrol"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn both_runtimes_name_nested_non_finite_patrol_points() {
+    let js = js_error(
+        &js_behavior(JS_NEAR_GUARD, "")
+            .replace(r#"motion: "chaseTarget""#, r#"motion: "patrol""#)
+            .replace(
+                "moveSpeed: 3,",
+                r#"moveSpeed: 3, patrol: { points: [[Infinity, 0]], mode: "loop" },"#,
+            ),
+    );
+    let lua = lua_error(
+        &lua_behavior(LUA_NEAR_GUARD, "")
+            .replace(r#"motion = "chaseTarget""#, r#"motion = "patrol""#)
+            .replace(
+                "moveSpeed = 3,",
+                r#"moveSpeed = 3, patrol = { points = {{math.huge, 0}}, mode = "loop" },"#,
+            ),
+    );
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("non-finite number at `patrol.points[0][0]`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn both_runtimes_reject_invalid_or_non_boolean_candidate_filters_with_the_authored_path() {
     let js_invalid = js_behavior(JS_NEAR_GUARD, "").replace(
         "moveSpeed: 3,",

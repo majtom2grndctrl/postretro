@@ -36,7 +36,8 @@ use postretro_foundation::{
     BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
     BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor, BehaviorStateDescriptor,
     BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor, bind,
+    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
+    TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -119,6 +120,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
             edge(TEST_IDLE_STATE, target_beyond(aggro_range)),
         ],
         candidate_filter: Some(candidate_is_alive_within(aggro_range)),
+        patrol: None,
         attack: Some(AttackParams {
             damage: TEST_ATTACK_DAMAGE,
             range: TEST_ATTACK_RANGE,
@@ -370,6 +372,12 @@ fn enemy_yaw(reg: &EntityRegistry, enemy: EntityId) -> f32 {
 fn set_enemy_yaw(reg: &mut EntityRegistry, enemy: EntityId, yaw: f32) {
     let mut transform = *reg.get_component::<Transform>(enemy).unwrap();
     transform.rotation = glam::Quat::from_rotation_y(yaw);
+    reg.set_component(enemy, transform).unwrap();
+}
+
+fn set_enemy_position(reg: &mut EntityRegistry, enemy: EntityId, position: Vec3) {
+    let mut transform = *reg.get_component::<Transform>(enemy).unwrap();
+    transform.position = position;
     reg.set_component(enemy, transform).unwrap();
 }
 
@@ -3616,6 +3624,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,
@@ -3766,6 +3775,7 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
         candidate_filter: Some(IrNode::Const {
             value: IrValue::Bool(false),
         }),
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -3875,6 +3885,7 @@ fn raw_nearest_offer_prices_stride_while_guards_read_the_farther_eligible_target
                 value: IrValue::Number(30.0),
             }),
         }),
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: TEST_MOVE_SPEED,
@@ -3979,6 +3990,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
                 value: IrValue::Bool(true),
             }),
         }),
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4151,6 +4163,7 @@ fn a_time_in_state_guard_exits_on_the_first_tick_the_window_elapses() {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4218,6 +4231,7 @@ fn interrupt_graph(interrupts: Vec<TransitionDescriptor>) -> BehaviorGraphDescri
         ]),
         interrupts,
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4425,6 +4439,7 @@ fn petrifying_graph() -> BehaviorGraphDescriptor {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4580,6 +4595,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             edge("idle", target_beyond(AGGRO_RANGE)),
         ],
         candidate_filter: Some(candidate_is_alive_within(AGGRO_RANGE)),
+        patrol: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: ATTACK_RANGE,
@@ -5091,6 +5107,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         )]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,
@@ -5174,5 +5191,294 @@ fn a_standing_attack_state_retains_its_target_and_faces_it() {
             .has_destination,
         "engagement turns and retains; it does not steer — that stays the \
          motion verb's job"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Position-goal motion verbs: anchor return and authored patrol routes.
+// ---------------------------------------------------------------------------
+
+fn position_goal_graph(
+    motion: MotionVerb,
+    patrol: Option<PatrolDescriptor>,
+) -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "position".to_string(),
+        states: BTreeMap::from([(
+            "position".to_string(),
+            authored_state("locomotion", motion, None, Vec::new()),
+        )]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        patrol,
+        attack: None,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+fn patrol_graph(points: Vec<[f32; 2]>, mode: PatrolMode) -> BehaviorGraphDescriptor {
+    position_goal_graph(MotionVerb::Patrol, Some(PatrolDescriptor { points, mode }))
+}
+
+fn enemy_destination(registry: &EntityRegistry, enemy: EntityId) -> Option<Vec3> {
+    registry
+        .get_component::<AgentComponent>(enemy)
+        .expect("enemy has an agent")
+        .destination
+}
+
+#[test]
+fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
+    for (motion, patrol) in [
+        (MotionVerb::MoveToAnchor, None),
+        (
+            MotionVerb::Patrol,
+            Some(PatrolDescriptor {
+                points: vec![[0.0, 0.0]],
+                mode: PatrolMode::Loop,
+            }),
+        ),
+    ] {
+        let mut graph = position_goal_graph(motion, patrol);
+        graph.initial = "idle".to_string();
+        graph.states.insert(
+            "idle".to_string(),
+            authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+        );
+        let position_index = graph_state_index(&graph, "position").unwrap();
+        assert_eq!(
+            animation_for_state(&graph, position_index, false),
+            Some("idle"),
+            "{motion:?} yields its travel clip to the rest pose when stopped"
+        );
+        assert_eq!(
+            animation_for_state(&graph, position_index, true),
+            Some("locomotion")
+        );
+        assert_eq!(locomotion_animation(&graph), Some("locomotion"));
+    }
+}
+
+#[test]
+fn move_to_anchor_clears_on_arrival_and_reissues_after_a_later_push() {
+    let graph = position_goal_graph(MotionVerb::MoveToAnchor, None);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(2.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_destination(&registry, enemy), Some(Vec3::ZERO));
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.acquired_target, None,
+        "position goals are non-engaged"
+    );
+    assert_eq!(
+        brain.combat_slot, None,
+        "position goals claim no combat slot"
+    );
+    assert_ne!(brain.acquired_target, Some(pawn));
+
+    set_enemy_position(
+        &mut registry,
+        enemy,
+        Vec3::new(POSITION_GOAL_ARRIVAL_EPSILON, 0.0, 0.0),
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "arrival clears rather than latches a stale destination"
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "still arrived stays clear"
+    );
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(1.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(Vec3::ZERO),
+        "a later external push past epsilon reissues the anchor goal"
+    );
+}
+
+#[test]
+fn patrol_loop_and_ping_pong_advance_cursor_through_anchor_relative_points() {
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let loop_graph = patrol_graph(vec![[0.0, 0.0], [2.0, 0.0]], PatrolMode::Loop);
+    let loop_enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&loop_graph, "position"),
+        50.0,
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(loop_enemy)
+            .unwrap()
+            .patrol_cursor,
+        1
+    );
+    assert_eq!(
+        enemy_destination(&registry, loop_enemy),
+        Some(Vec3::new(2.0, 0.0, 0.0))
+    );
+    set_enemy_position(&mut registry, loop_enemy, Vec3::new(2.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(loop_enemy)
+            .unwrap()
+            .patrol_cursor,
+        0,
+        "loop wraps after the final point"
+    );
+    assert_eq!(enemy_destination(&registry, loop_enemy), Some(Vec3::ZERO));
+
+    let ping_graph = patrol_graph(
+        vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+        PatrolMode::PingPong,
+    );
+    let ping_enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&ping_graph, "position"),
+        50.0,
+    );
+    for (position, cursor, direction, destination) in [
+        (Vec3::ZERO, 1, 1, Vec3::new(1.0, 0.0, 0.0)),
+        (Vec3::new(1.0, 0.0, 0.0), 2, 1, Vec3::new(2.0, 0.0, 0.0)),
+        (Vec3::new(2.0, 0.0, 0.0), 1, -1, Vec3::new(1.0, 0.0, 0.0)),
+        (Vec3::new(1.0, 0.0, 0.0), 0, -1, Vec3::ZERO),
+        (Vec3::ZERO, 1, 1, Vec3::new(1.0, 0.0, 0.0)),
+    ] {
+        set_enemy_position(&mut registry, ping_enemy, position);
+        run_ai_tick(&mut registry, &mut runtime, 0.016);
+        let brain = registry
+            .get_component::<BrainComponent>(ping_enemy)
+            .unwrap();
+        assert_eq!(brain.patrol_cursor, cursor);
+        assert_eq!(brain.patrol_direction, direction);
+        assert_eq!(enemy_destination(&registry, ping_enemy), Some(destination));
+    }
+}
+
+#[test]
+fn patrol_single_point_persists_cursor_and_clamps_a_stale_saved_cursor() {
+    let graph = patrol_graph(vec![[0.0, 0.0]], PatrolMode::PingPong);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut brain = authored_brain(&graph, "position");
+    brain.patrol_cursor = 99;
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.patrol_cursor, 0,
+        "a stale cursor is normalized before indexing"
+    );
+    assert_eq!(
+        brain.patrol_direction, 1,
+        "a fresh ping-pong route starts forward"
+    );
+    assert_eq!(enemy_destination(&registry, enemy), Some(Vec3::ZERO));
+
+    let mut graph = patrol_graph(vec![[0.0, 0.0], [3.0, 0.0]], PatrolMode::Loop);
+    graph.states.insert(
+        "rest".to_string(),
+        authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+    );
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .patrol_cursor,
+        1
+    );
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .clone();
+    brain.state_index = graph_state_index(&graph, "rest").unwrap();
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .clone();
+    brain.state_index = graph_state_index(&graph, "position").unwrap();
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .patrol_cursor,
+        1,
+        "leaving and re-entering patrol preserves its route phase"
+    );
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(Vec3::new(3.0, 0.0, 0.0))
+    );
+}
+
+#[test]
+fn position_goal_facing_uses_travel_only_and_never_falls_through_to_a_target() {
+    let graph = position_goal_graph(MotionVerb::MoveToAnchor, None);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(0.0, 0.0, 2.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    set_enemy_yaw(&mut registry, enemy, std::f32::consts::PI);
+    set_agent_velocity(&mut registry, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert!(
+        yaw_distance(enemy_yaw(&registry, enemy), std::f32::consts::PI) < EPS,
+        "an arrived position goal must not turn toward the nearest scanned pawn"
+    );
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(2.0, 0.0, 0.0));
+    set_agent_velocity(&mut registry, enemy, Vec3::NEG_X);
+    run_ticks_until_facing_converges(
+        &mut registry,
+        &mut runtime,
+        enemy,
+        Vec3::NEG_X,
+        "a travelling position goal faces its travel velocity",
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "position-goal facing does not make the state engaged"
     );
 }

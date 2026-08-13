@@ -38,6 +38,15 @@ pub struct BrainComponent {
     /// field, so they keep the neutral origin anchor when it is absent.
     #[serde(default = "default_home_anchor")]
     pub home_anchor: Vec3,
+    /// Current point in the graph's patrol route. Host-only persistent state so
+    /// returning to a patrol state resumes its prior route phase.
+    #[serde(default)]
+    pub patrol_cursor: usize,
+    /// Direction used by ping-pong patrol routes. Old brains that predate this
+    /// field must start forward rather than deserialize the integer default of
+    /// zero, which would leave ping-pong routes stationary.
+    #[serde(default = "default_patrol_direction")]
+    pub patrol_direction: i8,
     /// Milliseconds remaining before the brain may attack again. Counts down each
     /// tick; `0.0` means an attack is available. Seeded to `0.0` (ready) at spawn.
     pub attack_cooldown_remaining_ms: f32,
@@ -57,9 +66,10 @@ pub struct BrainComponent {
     /// so absent values default open.
     #[serde(default = "default_aggro_armed")]
     pub aggro_armed: bool,
-    /// Currently acquired player pawn. Set only while the current state chases
-    /// (a `chaseTarget` motion verb), so near-equidistant co-op players do not
-    /// cause per-think target churn. Cleared when aggro drops.
+    /// Currently acquired player pawn. Set only while the current state engages
+    /// that pawn (chasing it or acting against it), so near-equidistant co-op
+    /// players do not cause per-think target churn. Fixed position-goal states
+    /// deliberately never retain a target. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
     /// Last accepted combat-position slot around the acquired target. Retained
@@ -111,6 +121,8 @@ impl BrainComponent {
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
         Self {
             home_anchor: Vec3::ZERO,
+            patrol_cursor: 0,
+            patrol_direction: 1,
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
             locomotion_moving: false,
@@ -153,6 +165,10 @@ const fn default_aggro_armed() -> bool {
 
 const fn default_home_anchor() -> Vec3 {
     Vec3::ZERO
+}
+
+const fn default_patrol_direction() -> i8 {
+    1
 }
 
 /// Public spawn seam for an authored `components.behavior` graph.
@@ -328,6 +344,7 @@ mod tests {
             ]),
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: Some(AttackParams {
                 damage: 5.0,
                 range: 2.0,
@@ -336,6 +353,27 @@ mod tests {
             engagement_radius: None,
             move_speed: 4.0,
         }
+    }
+
+    #[test]
+    fn patrol_state_defaults_forward_for_fresh_and_pre_patrol_brains() {
+        let graph = authored_graph();
+        let fresh = BrainComponent::from_graph(&graph);
+        assert_eq!(fresh.patrol_cursor, 0);
+        assert_eq!(fresh.patrol_direction, 1);
+
+        let mut legacy = serde_json::to_value(fresh).expect("brain serializes");
+        legacy
+            .as_object_mut()
+            .expect("brain is an object")
+            .remove("patrol_cursor");
+        legacy
+            .as_object_mut()
+            .expect("brain is an object")
+            .remove("patrol_direction");
+        let restored: BrainComponent = serde_json::from_value(legacy).expect("legacy brain loads");
+        assert_eq!(restored.patrol_cursor, 0);
+        assert_eq!(restored.patrol_direction, 1);
     }
 
     #[test]

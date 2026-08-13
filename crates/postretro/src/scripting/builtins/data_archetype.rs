@@ -581,11 +581,16 @@ pub(crate) fn attach_descriptor_components(
     };
     if let Some(move_speed) = brain_move_speed {
         let aggro_armed = ai_aggro_armed_on_spawn(entity);
+        let home_anchor = registry
+            .get_component::<Transform>(id)
+            .expect("newly spawned descriptor entity carries a Transform")
+            .position;
         if let Ok(mut brain) = registry
             .get_component::<postretro_entities::components::brain::BrainComponent>(id)
             .cloned()
         {
             brain.aggro_armed = aggro_armed;
+            brain.home_anchor = home_anchor;
             let _ = registry.set_component(id, brain);
         }
 
@@ -3079,6 +3084,13 @@ mod tests {
         let brain = reg.get_component::<BrainComponent>(id).unwrap();
         assert_eq!(*brain.graph, authored, "the authored graph is retained");
         assert_eq!(brain.state_name(), Some(authored.initial.as_str()));
+        assert_eq!(
+            brain.home_anchor,
+            reg.get_component::<Transform>(id)
+                .expect("behavior enemy has a transform")
+                .position,
+            "host brain anchors to its spawn transform rather than descriptor data"
+        );
     }
 
     #[test]

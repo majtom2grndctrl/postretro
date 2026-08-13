@@ -802,6 +802,7 @@ mod tests {
             time_in_state_ms: 320.0,
             attack_cooldown_ms: 0.0,
             acquisition_due,
+            distance_from_anchor: 0.0,
         };
         let mut answers = Vec::new();
         for brain in [brain.clone(), restored] {
@@ -854,6 +855,7 @@ mod tests {
             time_in_state_ms: 0.0,
             attack_cooldown_ms: 0.0,
             acquisition_due: true,
+            distance_from_anchor: 0.0,
         };
 
         // Warm any one-time lazy state so the measured window is pure work.

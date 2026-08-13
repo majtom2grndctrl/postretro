@@ -48,6 +48,9 @@ export interface BrainInputs {
   /** `true` once the selected target's death sweep has handled it; false with
    * no target (boolean). */
   readonly targetDied: RuntimeRead;
+  /** XZ distance from this enemy's spawn-time home anchor; zero at home and
+   * meaningful even without a selected target (number). */
+  readonly distanceFromAnchor: RuntimeRead;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -74,6 +77,7 @@ export const brain: BrainInputs = Object.freeze({
   targetHealth: Object.freeze(runtime.read("@brain.targetHealth")),
   targetMaxHealth: Object.freeze(runtime.read("@brain.targetMaxHealth")),
   targetDied: Object.freeze(runtime.read("@brain.targetDied")),
+  distanceFromAnchor: Object.freeze(runtime.read("@brain.distanceFromAnchor")),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

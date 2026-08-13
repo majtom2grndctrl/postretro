@@ -44,6 +44,10 @@ pub(crate) struct BrainFacts {
     pub attack_cooldown_ms: f32,
     /// `true` on the think-stride ticks where acquisition is re-evaluated.
     pub acquisition_due: bool,
+    /// XZ distance from the enemy's current position to its spawn-time home
+    /// anchor. Computed by the AI tick every tick, independently of target
+    /// selection and acquisition stride.
+    pub distance_from_anchor: f32,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -131,6 +135,7 @@ impl BrainScope {
             IrValue::Number(target_health.map_or(0.0, |health| health.current)),
             IrValue::Number(target_health.map_or(0.0, |health| health.max)),
             IrValue::Bool(target_health.is_some_and(|health| health.death_handled)),
+            IrValue::Number(facts.distance_from_anchor),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -202,11 +207,12 @@ mod tests {
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::Transform;
     use postretro_foundation::{
-        BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_HAS_TARGET_INPUT,
-        BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT,
-        BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
-        BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
-        CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
+        BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
+        BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
+        BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+        BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
+        BakedIr, BindError, BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind,
+        bind_brain_guard, eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -279,6 +285,7 @@ mod tests {
             time_in_state_ms: 250.0,
             attack_cooldown_ms: 400.0,
             acquisition_due: true,
+            distance_from_anchor: 12.5,
         }
     }
 
@@ -379,6 +386,7 @@ mod tests {
             BRAIN_TARGET_HEALTH_INPUT => IrValue::Number(target_health.current),
             BRAIN_TARGET_MAX_HEALTH_INPUT => IrValue::Number(target_health.max),
             BRAIN_TARGET_DIED_INPUT => IrValue::Bool(target_health.death_handled),
+            BRAIN_DISTANCE_FROM_ANCHOR_INPUT => IrValue::Number(facts.distance_from_anchor),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

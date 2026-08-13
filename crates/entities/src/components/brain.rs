@@ -32,6 +32,12 @@ use super::mesh::MeshComponent;
 /// rest; the AI tick (`scripting/systems/ai/`) drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BrainComponent {
+    /// The world position at which this brain spawned. Host-only simulation
+    /// state: authored guards read the enemy's XZ distance from it, while
+    /// clients never evaluate guards. Old serialized brains predate this
+    /// field, so they keep the neutral origin anchor when it is absent.
+    #[serde(default = "default_home_anchor")]
+    pub home_anchor: Vec3,
     /// Milliseconds remaining before the brain may attack again. Counts down each
     /// tick; `0.0` means an attack is available. Seeded to `0.0` (ready) at spawn.
     pub attack_cooldown_remaining_ms: f32,
@@ -104,6 +110,7 @@ impl BrainComponent {
     /// Seeded in the graph's `initial` state with every timer at rest.
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
         Self {
+            home_anchor: Vec3::ZERO,
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
             locomotion_moving: false,
@@ -142,6 +149,10 @@ pub fn graph_state_index(graph: &BehaviorGraphDescriptor, name: &str) -> Option<
 
 const fn default_aggro_armed() -> bool {
     true
+}
+
+const fn default_home_anchor() -> Vec3 {
+    Vec3::ZERO
 }
 
 /// Public spawn seam for an authored `components.behavior` graph.
@@ -338,12 +349,27 @@ mod tests {
             "the seeded index addresses `initial` in the resolved state list"
         );
         assert_eq!(brain.time_in_state_ms, 0.0);
+        assert_eq!(brain.home_anchor, Vec3::ZERO);
         assert_eq!(*brain.graph, graph, "the graph is retained verbatim");
         assert_eq!(
             brain.graph.engagement_radius(),
             2.0,
             "with no `engagementRadius` the graph falls back to its `attack.range`"
         );
+    }
+
+    #[test]
+    fn deserializing_a_pre_anchor_brain_defaults_to_the_origin() {
+        let brain = BrainComponent::from_graph(&authored_graph());
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .remove("home_anchor");
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-anchor brain deserializes");
+        assert_eq!(restored.home_anchor, Vec3::ZERO);
     }
 
     #[test]

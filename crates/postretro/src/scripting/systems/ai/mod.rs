@@ -322,6 +322,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
+        // A home-distance guard is about the evaluating enemy alone, not its
+        // target or the acquisition stride. Compute it once from this tick's
+        // immutable position snapshot before either branch can suppress target
+        // work.
+        let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_state_index = brain.state_index;
         let prior_acquired_target = brain.acquired_target;
         let (target, evaluate_acquisition) = if brain.aggro_armed {
@@ -449,6 +454,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     time_in_state_ms: brain.time_in_state_ms,
                     attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
                     acquisition_due: evaluate_acquisition,
+                    distance_from_anchor,
                 },
             );
             let next_index = programs

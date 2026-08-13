@@ -1183,6 +1183,8 @@ export type BrainInputs = {
   targetMaxHealth: RuntimeRead,
   --- `true` once the selected target's death sweep has handled it; false with no target (boolean).
   targetDied: RuntimeRead,
+  --- XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number).
+  distanceFromAnchor: RuntimeRead,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

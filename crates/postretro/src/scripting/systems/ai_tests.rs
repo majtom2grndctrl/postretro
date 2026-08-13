@@ -32,11 +32,11 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_HAS_TARGET_INPUT,
-    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr,
-    BehaviorGraphDescriptor, BehaviorStateDescriptor, BindingScope, BoundProgram,
-    CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor,
-    IrNode, IrValue, MotionVerb, TransitionDescriptor, bind,
+    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
+    BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+    BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor, BehaviorStateDescriptor,
+    BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
+    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -266,6 +266,8 @@ fn spawn_enemy(
         position: pos,
         ..Transform::default()
     });
+    let mut brain = brain;
+    brain.home_anchor = pos;
     reg.set_component(id, brain).unwrap();
     reg.set_component(id, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
         .unwrap();
@@ -423,6 +425,7 @@ fn step_graph(
             time_in_state_ms: 0.0,
             attack_cooldown_ms: 0.0,
             acquisition_due,
+            distance_from_anchor: 0.0,
         },
     );
 
@@ -997,6 +1000,51 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
 // Acceptance: direct graph acquisition sets destination; its authored
 // stand-down interrupt clears it (via path_state).
 // ---------------------------------------------------------------------------
+
+#[test]
+fn distance_from_anchor_guard_tracks_spawn_anchor_without_a_selected_target() {
+    let mut graph = tuning();
+    let beyond_anchor = IrNode::Gt {
+        a: Box::new(brain_input(BRAIN_DISTANCE_FROM_ANCHOR_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(3.0),
+        }),
+    };
+    graph
+        .states
+        .get_mut(TEST_IDLE_STATE)
+        .expect("fixture declares idle")
+        .transitions = vec![edge(TEST_ALERT_STATE, beyond_anchor)];
+    graph.interrupts.clear();
+    graph.candidate_filter = None;
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::new(10.0, 7.0, -4.0),
+        brain_with(graph, TEST_IDLE_STATE),
+        50.0,
+    );
+
+    // No player exists: the fact must still read zero at the spawn anchor.
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), TEST_IDLE_STATE);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+
+    // An external transform move leaves the spawn anchor fixed. Y does not
+    // contribute, so this is exactly four XZ units from the original anchor.
+    let mut transform = *reg
+        .get_component::<Transform>(enemy)
+        .expect("enemy has a transform");
+    transform.position = Vec3::new(14.0, 99.0, -4.0);
+    reg.set_component(enemy, transform)
+        .expect("enemy remains live");
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), TEST_ALERT_STATE);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+}
 
 #[test]
 fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it() {

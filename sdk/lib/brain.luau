@@ -28,7 +28,9 @@ local BrainSdk = {}
 --- `targetDistance` (number; `1e9` with no target),
 --- `timeInStateMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
 --- `maxHealth`, `targetHealth` and `targetMaxHealth` (zero with no target or
---- health component), and `targetDied` (boolean; false with no target).
+--- health component), `targetDied` (boolean; false with no target), and
+--- `distanceFromAnchor` (number; the enemy's XZ distance from its spawn-time
+--- home anchor, including untargeted).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -40,6 +42,7 @@ BrainSdk.brain = table.freeze({
   targetHealth = input("@brain.targetHealth"),
   targetMaxHealth = input("@brain.targetMaxHealth"),
   targetDied = input("@brain.targetDied"),
+  distanceFromAnchor = input("@brain.distanceFromAnchor"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

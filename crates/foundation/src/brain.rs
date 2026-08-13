@@ -49,6 +49,9 @@ pub const BRAIN_TARGET_MAX_HEALTH_INPUT: &str = "@brain.targetMaxHealth";
 /// Whether the selected target's death sweep latch has fired, or `false` with
 /// no target or no target health component.
 pub const BRAIN_TARGET_DIED_INPUT: &str = "@brain.targetDied";
+/// The enemy's XZ distance from its spawn-time home anchor. Unlike target-side
+/// facts, this remains meaningful while no target is selected.
+pub const BRAIN_DISTANCE_FROM_ANCHOR_INPUT: &str = "@brain.distanceFromAnchor";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -79,7 +82,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 10] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 11] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_STATE_MS_INPUT, IrType::Number),
@@ -90,6 +93,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 10] = [
     (BRAIN_TARGET_HEALTH_INPUT, IrType::Number),
     (BRAIN_TARGET_MAX_HEALTH_INPUT, IrType::Number),
     (BRAIN_TARGET_DIED_INPUT, IrType::Bool),
+    (BRAIN_DISTANCE_FROM_ANCHOR_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -211,6 +215,15 @@ mod tests {
                 "`{name}` projects its declared type"
             );
         }
+    }
+
+    #[test]
+    fn distance_from_anchor_appends_at_fixed_slot_ten() {
+        assert_eq!(
+            BRAIN_INPUTS[10],
+            (BRAIN_DISTANCE_FROM_ANCHOR_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
     }
 
     #[test]

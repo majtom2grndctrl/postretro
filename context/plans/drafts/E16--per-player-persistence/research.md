@@ -16,7 +16,6 @@ Findings behind the spec's decisions and code-grounding for its claims.
 | `player_options.player_id` is an `Option<[u8; 16]>` generated once per device and persisted | `context/lib/player_options.md` line 30; `crates/postretro/src/session/mod.rs` lines 423–424 |
 | A connected client does not write the save file | `main.rs` line 1445: `should_save_persisted_state(can_save, is_connected_client) = can_save && !is_connected_client` |
 | `clear_released_seat_slot_values` is called at six sites in `main.rs` | Lines 4049, 4124, 4147, 5460, 5630, 5641 — after `finish_host_poll` and after admission |
-| The currency spec named this call site as the capture hook | `context/plans/done/E16--per-player-currency/index.md` Task 1, final paragraph |
 | `SlotRecord` exposes `per_seat_value(seat)`, `set_per_seat_value(seat, value)`, `clear_per_seat_value(seat)` | `crates/entities/src/slot_table.rs` |
 | `SlotTable::clear_per_seat_values(seat)` iterates all slots | Same file |
 | `SeatTable::admit_or_reclaim` takes `ConnectClaim` and stores it | `crates/postretro/src/netcode/seat.rs` line 209 |
@@ -29,13 +28,9 @@ Findings behind the spec's decisions and code-grounding for its claims.
 
 ## Seat claim accessibility
 
-The `SeatTable` stores a `ConnectClaim` per seat (set at admission). Verify whether there is a public accessor to read a seat's stored claim by player id:
+The `SeatTable` stores a `ConnectClaim` per seat (set at admission). The revised design (each player saves their own values) eliminates the need for the host to read a guest's `PlayerClaimId` at capture time — the host no longer captures guest per-owner values. The host reads only its own `PlayerClaimId` from `player_options.player_id` for `Seat(0)`.
 
-- `admit_or_reclaim` stores the claim internally (`self.seats[idx].claim = incoming_claim`).
-- Need to verify: is there a `claim_for_seat(seat) -> Option<&ConnectClaim>` accessor? If not, Task 2 must add one or thread the claim through the release path.
-- The release path (`release_seat`) already surfaces the released `Seat` values. The capture function needs the `PlayerClaimId` for those seats, which means either the seat table exposes claims, or the release path surfaces them alongside the seat values.
-
-This is a plumbing detail for Task 2 — the task paragraph names it as an open verification.
+The join-seed host-apply path does not need the guest's claim either — the seed arrives on a known connection, and the host writes values to the seat assigned to that connection. The `PlayerClaimId` inside the seed is implicit (the client's own identity, used as the save-file key on the client's device).
 
 ## Crate graph for `PersistedValue` in the wire module
 
@@ -61,6 +56,15 @@ The currency spec's research.md documents that the "second shape" (device-local 
 
 This spec addresses both:
 1. Uses `PlayerClaimId`, a device-scoped identity that outlives sessions.
-2. Preserves the client-no-save rule; the host saves on behalf, and the join seed carries values back.
+2. Scopes the Phase 3.5 rule rather than reversing it. The rule's intent — prevent clients persisting replicated server-authoritative state — is preserved. Global slots remain host-authoritative; the client never saves them. Per-owner values are the player's own data, not replicated server state, so the client saves those. The periodic client save (~60 s) limits progress loss on abnormal termination.
 
 The currency spec's concern that "a client-to-host state write is a stated Phase 3.5 non-goal" applies to runtime state writes, not to a one-time join-seed apply at admission. The join seed is host-validated and host-applied — the client asserts values, the host decides whether to accept them, matching the authority model.
+
+## Eliminated complexity
+
+The revised design (each player saves their own values) eliminates several mechanisms the earlier draft required:
+- **`CapturedPerOwnerState`** — no capture-at-release needed; the host does not save guest data.
+- **Capture wiring at six `clear_released_seat_slot_values` call sites** — no capture hook needed.
+- **`claim_for_seat` accessor on `SeatTable`** — the host does not need to read a guest's `PlayerClaimId`.
+- **Reconciliation** — two hosts never write the same player's save file, so no conflict arises.
+- **Host saving guest values** — each guest saves their own values periodically and at clean exit.

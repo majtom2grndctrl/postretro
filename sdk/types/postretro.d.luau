@@ -373,7 +373,7 @@ export type PatrolMode =
 --- Anchor-relative XZ positions followed by `patrol` motion states.
 export type PatrolDescriptor = {
   --- Anchor-relative `[x, z]` positions in metres. A graph that selects `patrol` must declare at least one finite point.
-  points: {{number}},
+  points: {{number, number}},
   --- Endpoint behavior for the route.
   mode: PatrolMode,
 }
@@ -392,7 +392,7 @@ export type BehaviorStateDescriptor = {
   animation: string,
   --- What this state does with steering.
   motion: MotionVerb,
-  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block.
+  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
   action: ActionVerb?,
   --- State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.
   transitions: {TransitionDescriptor}?,
@@ -414,7 +414,7 @@ export type BehaviorGraphDescriptor = {
   patrol: PatrolDescriptor?,
   --- Attack tuning for the `attack` action verb. Required exactly when some state declares that action.
   attack: AttackParams?,
-  --- Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.
+  --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,
   --- Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.
   engagementRadius: number?,

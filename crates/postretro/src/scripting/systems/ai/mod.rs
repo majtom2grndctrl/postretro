@@ -486,9 +486,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     &brain,
                     nearest_for_stride.map(|candidate| candidate.distance),
                 );
-                // The raw candidate only prices the stride. A graph-filtered
-                // selection becomes a target only on a due tick; otherwise
-                // `BrainFacts` stay untargeted rather than borrowing it.
+                // The raw nearest hostile offer prices the stride. A
+                // graph-filtered selection becomes a target only on a due
+                // tick; otherwise `BrainFacts` stay untargeted rather than
+                // borrowing it.
                 (
                     evaluate_acquisition.then_some(nearest_selection).flatten(),
                     evaluate_acquisition,

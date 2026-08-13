@@ -400,7 +400,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("PatrolDescriptor")
         .doc("Anchor-relative XZ positions followed by `patrol` motion states.")
-        .field("points", "Vec<[f32; 2]>", "Anchor-relative `[x, z]` positions in metres. A graph that selects `patrol` must declare at least one finite point.")
+        // `PatrolPoint` is the typedef-only name for the runtime `[f32; 2]`.
+        // It preserves exact tuple arity in Luau without changing the existing
+        // array-like SDK spelling of unrelated fixed arrays.
+        .field("points", "Vec<PatrolPoint>", "Anchor-relative `[x, z]` positions in metres. A graph that selects `patrol` must declare at least one finite point.")
         .field("mode", "PatrolMode", "Endpoint behavior for the route.")
         .finish();
     registry
@@ -414,7 +417,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("One authored graph state: the animation it requests, what it does with motion and actions, and its ordered outgoing transitions.")
         .field("animation", "String", "Mesh animation-state name requested while this state is current. Must name a state declared in `components.mesh.animations`; resolved at spawn, where an unknown name warns and the prior animation is kept.")
         .field("motion", "MotionVerb", "What this state does with steering.")
-        .field("action?", "ActionVerb", "Optional action performed while this state is current. `\"attack\"` requires the graph's `attack` block.")
+        .field("action?", "ActionVerb", "Optional action performed while this state is current. `\"attack\"` requires the graph's `attack` block. Must be omitted when `motion` is `\"moveToAnchor\"` or `\"patrol\"`; position goals are non-engaged.")
         .field("transitions?", "Vec<TransitionDescriptor>", "State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.")
         .field("onEnter?", "String", "Optional named-event address fired through the post-tick drain when a transition changes the brain into this state. Initial spawn does not fire it.")
         .finish();
@@ -427,7 +430,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any state uses `\"patrol\"` motion.")
         .field("attack?", "AttackParams", "Attack tuning for the `attack` action verb. Required exactly when some state declares that action.")
-        .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
+        .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.")
         .finish();
     registry

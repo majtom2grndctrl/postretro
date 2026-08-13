@@ -577,7 +577,7 @@ defineEntity({
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. `points` is a non-empty list of `[x, z]` metre offsets from the spawn anchor; `mode` is `"loop"` or `"pingPong"`. Required whenever a state uses `"patrol"`. The per-enemy cursor persists when the graph leaves and re-enters patrol. |
 | `attack` | `{ damage, range, cooldownMs }` (optional) | Tuning for the `attack` action verb. **Required** whenever any state declares `action: "attack"`. Permitted even when none does, because `attack.range` is what `engagementRadius` falls back to. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `range` and `cooldownMs` must be finite and `> 0`. |
 | `engagementRadius` | `number` (optional) | Radius in metres of the ring of combat slots the engine spreads engaged agents around their target. Finite and `> 0`. See *`attack.range` vs `engagementRadius`* below. |
-| `moveSpeed` | `number` | Pursuit movement speed in metres/sec, seeding the navigation agent. Finite and `> 0`. |
+| `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
 Each entry in `states`:
 
@@ -585,7 +585,7 @@ Each entry in `states`:
 |-------|------|-------------|
 | `animation` | `string` | Non-empty. Names a key of `components.mesh.animations`. That link is checked at **spawn**, not at load (it is cross-component): an unknown name warns once and keeps the previous animation — it never aborts the spawn. |
 | `motion` | `"chaseTarget" \| "moveToAnchor" \| "patrol" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
-| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. |
+| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are always non-engaged. |
 | `transitions` | `Transition[]` (optional) | State-local edges, evaluated in declaration order after the graph's interrupts. Omit for a state with no exits. |
 | `onEnter` | `string` (optional) | A named-event address fired through the post-tick event drain when the brain **changes into** this state. It is a *change*, not an entry: the brain is seeded directly in `initial` at spawn with no transition, so an `onEnter` on `initial` does **not** fire then. It does fire when the aggro gate forces the brain back to `initial` from somewhere else. Use it for reaction cues, not spawn-time setup. |
 
@@ -603,6 +603,7 @@ index:
 | A state's `animation` is an empty string | Rejected. |
 | A **state-local** transition whose `to` is the state that declares it | Rejected — see *Evaluation rules*. |
 | A state declares `action: "attack"` with no `attack` block on the graph | Rejected. |
+| A `moveToAnchor` or `patrol` state declares any `action` | Rejected, with the state's `action` and `motion` paths. Position goals are non-engaged. |
 | A state selects `motion: "patrol"` without a `patrol` block, with no points, or with a non-finite point component | Rejected, with the `patrol` path. |
 | `moveSpeed`, `engagementRadius`, `attack.range`, `attack.cooldownMs` not finite and `> 0`; `attack.damage` not finite and `>= 0` | Rejected. |
 | A guard that names an unknown input, mismatches operand types, or whose root produces a number rather than a boolean | Rejected, with the path. |
@@ -629,7 +630,8 @@ stops the agent: it clears the destination, so the agent settles in place.
 `freeze` writes nothing, so an agent already walking somewhere keeps walking
 there.
 
-`moveToAnchor` and `patrol` are **position goals**, not engagement. They drop a
+`moveToAnchor` and `patrol` are **position goals**, not engagement. They cannot
+declare an `action`; validation rejects that combination. They drop a
 retained target, take no combat slot, and face only their travel direction; an
 arrived or blocked position goal does not turn to face a nearby pawn. Arrival is
 not latched: `moveToAnchor` clears its destination while it is within the
@@ -645,17 +647,23 @@ once per `attack.cooldownMs`, only while the target is inside `attack.range`, an
 only while it is still alive. A graph with no `attack` block never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is
-`motion: "chaseTarget"` **or** any `action`, not the motion verb alone. Target
+`motion: "chaseTarget"` **or** any action on a non-position-goal state. Target
 retention across ticks, combat-slot participation and incumbency, and target
 facing all key on it. A `hold` + `attack` state stands its ground and swings, so
 it keeps its target, keeps its slot, and turns to face what it is hitting.
 
 **Animation.** A state plays its own `animation` name, with one substitution: an
-actionless *locomotion* state (`chaseTarget`, `moveToAnchor`, or `patrol` motion
-with **no** `action`) plays the graph's rest animation — the `initial` state's —
+*locomotion* state (actionless `chaseTarget`, or the always-actionless
+`moveToAnchor` / `patrol`) plays the graph's rest animation — the `initial` state's —
 while it is standing still, because its own animation is a travel cycle that
 would slide in place. Every other state, including a `chaseTarget` state that
 declares an action, always plays its own.
+
+Set `components.mesh.defaultState` to the `initial` state's animation. A
+mismatch warns at spawn and immediately reseeds the mesh to the graph's rest
+pose. When the active untargeted state is locomotion, use a distinct `idle`
+initial state that hands off to it; this preserves a travel cycle while moving
+and a real rest pose while stopped.
 
 **v1 limitation — two or more locomotion states.** `states` is authored as an
 object, but the engine resolves it as a `BTreeMap`: states are ordered
@@ -739,10 +747,11 @@ Reading any other name is a load error.
 
 ### Faction and hostility
 
-Fresh target acquisition filters player pawns by hostility, but it never
-re-checks a target already retained. Retention is graph policy: put an ordered
-any-state stand-down over `brain.targetHostile` beside the ordinary lost-target
-interrupt:
+Fresh target acquisition filters player pawns by hostility; the nearest hostile
+offer determines its think-stride cadence, so a nearby friendly cannot make a
+farther hostile scan more often. It never re-checks a target already retained.
+Retention is graph policy: put an ordered any-state stand-down over
+`brain.targetHostile` beside the ordinary lost-target interrupt:
 
 ```typescript
 interrupts: [

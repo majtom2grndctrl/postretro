@@ -176,13 +176,14 @@ pub struct TransitionDescriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorStateDescriptor {
     /// Mesh animation-state name requested while this state is current — with
-    /// one substitution: a LOCOMOTION state (`chaseTarget`, `moveToAnchor`, or
-    /// `patrol` motion with no `action`) at a standstill plays the graph's rest animation instead,
+    /// one substitution: a LOCOMOTION state (actionless `chaseTarget`, or the
+    /// always-actionless `moveToAnchor` / `patrol`) at a standstill plays the
+    /// graph's rest animation instead,
     /// because its own animation is a travel cycle that would slide in place.
     /// The rest animation is the `initial` state's, which is what makes
-    /// `initial`'s animation the graph's rest pose. Every other state — a
-    /// locomotion-verb state that declares an action included — always plays its
-    /// own name.
+    /// `initial`'s animation the graph's rest pose. Every other state, including
+    /// a `chaseTarget` state that declares an action, always plays its own
+    /// animation. Position-goal motion cannot be combined with an action.
     ///
     /// Names are resolved against `components.mesh.animations` at SPAWN, not
     /// here (cross-component); an unknown name warns and keeps the prior
@@ -374,6 +375,7 @@ impl BehaviorGraphDescriptor {
     ///   and the block is present whenever a state declares the attack action;
     /// - every patrol point component is finite, and a `patrol` state has a
     ///   non-empty patrol block;
+    /// - position-goal states (`moveToAnchor` / `patrol`) declare no action;
     /// - every guard binds against `BrainValidationScope` and produces a Bool;
     /// - a present candidate filter binds against `CandidateValidationScope` and
     ///   produces a Bool.
@@ -435,6 +437,18 @@ impl BehaviorGraphDescriptor {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
                         "`components.behavior.states.{name}.animation` must be a non-empty string"
+                    ),
+                });
+            }
+            let position_goal_motion = match state.motion {
+                MotionVerb::MoveToAnchor => Some("moveToAnchor"),
+                MotionVerb::Patrol => Some("patrol"),
+                MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => None,
+            };
+            if let (Some(motion), Some(_)) = (position_goal_motion, state.action) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.states.{name}.action` must be omitted when `components.behavior.states.{name}.motion` is \"{motion}\"; position-goal states are non-engaged"
                     ),
                 });
             }
@@ -727,6 +741,35 @@ mod tests {
             err.contains("components.behavior.patrol.points[0]"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn position_goal_states_reject_actions_with_the_state_path() {
+        for motion in [MotionVerb::MoveToAnchor, MotionVerb::Patrol] {
+            let mut invalid = graph();
+            let state = invalid.states.get_mut("chase").unwrap();
+            state.motion = motion;
+            state.action = Some(ActionVerb::Attack);
+            invalid.attack = Some(AttackParams {
+                damage: 8.0,
+                range: 2.0,
+                cooldown_ms: 1200.0,
+            });
+            if motion == MotionVerb::Patrol {
+                invalid.patrol = Some(PatrolDescriptor {
+                    points: vec![[0.0, 0.0]],
+                    mode: PatrolMode::Loop,
+                });
+            }
+
+            let error = invalid.validate().unwrap_err().to_string();
+            assert!(
+                error.contains("components.behavior.states.chase.action")
+                    && error.contains("components.behavior.states.chase.motion")
+                    && error.contains("position-goal states are non-engaged"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

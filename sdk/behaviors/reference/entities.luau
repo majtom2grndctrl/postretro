@@ -52,10 +52,11 @@ local POSE_FIXTURE_AGGRO_RANGE = 50
 --- retreats to its spawn anchor, and resumes its route:
 ---
 --- ```text
+---   idle    --(always)--> patrol
 ---   ANY     --(!hasTarget || !targetHostile)--> patrol (interrupt)
 ---   patrol  --(acquisitionDue && dist <= DETECTION_RANGE)--> alert
+---   alert/attack --(distanceFromAnchor > leash)--> retreat (first)
 ---   alert   --(dist <= ATTACK_RANGE)--> attack
----   alert/attack --(distanceFromAnchor > leash)--> retreat
 ---   retreat --(distanceFromAnchor <= arrivalEpsilon)--> patrol
 --- ```
 ---
@@ -65,9 +66,13 @@ local POSE_FIXTURE_AGGRO_RANGE = 50
 ---   the anchor-relative route works wherever the map places it. The cursor is
 ---   brain state, not state-entry state: leaving and re-entering `patrol`
 ---   resumes the route instead of restarting it.
+--- * **Rest pose.** The transient `idle` initial state supplies the graph's rest
+---   animation and agrees with the mesh default. The active patrol still names
+---   its walk cycle, but substitutes `idle` whenever locomotion is stopped.
 --- * **Stand down into the active untargeted state.** Both any-state interrupts
----   target `patrol`, the state this graph rests in. A stand-down to some other
----   state would re-fire every tick after returning to patrol and oscillate.
+---   target `patrol`, the state this graph actively patrols in while untargeted.
+---   A stand-down to some other state would re-fire every tick after returning
+---   to patrol and oscillate.
 ---   The `not hasTarget` row must be first. The friendly-flip row uses
 ---   `select(targetHostile, false, true)`, which is true for *both* friendly and
 ---   untargeted targets (unlike `targetDied`), so it must follow that row and
@@ -79,9 +84,11 @@ local POSE_FIXTURE_AGGRO_RANGE = 50
 ---   has a known wraparound limitation; this reference intentionally omits the
 ---   reachability waiting demo until that pursuit fix lands.
 --- * **Leash and arrival are authored.** There is no engine leash field: this
----   graph enters `retreat` through `distanceFromAnchor`. Its return guard must
----   be at least the engine position-goal arrival epsilon (0.5 m); a smaller
----   threshold wedges because movement clears at the engine epsilon first.
+---   graph enters `retreat` through `distanceFromAnchor`. The leash edge comes
+---   before the attack-range edge so an enemy beyond its leash retreats even
+---   when its target is also in melee range. Its return guard must be at least
+---   the engine position-goal arrival epsilon (0.5 m); a smaller threshold
+---   wedges because movement clears at the engine epsilon first.
 ---
 --- There is no `death` state: death is not a graph transition. The engine's
 --- death sweep latches a zero-HP enemy and the authored impact policy plays the
@@ -137,7 +144,7 @@ M.referenceEnemyEntity = defineEntity({
     -- The behavior state graph. Ranges are in metres; cooldown in ms; moveSpeed
     -- in m/s. Every `animation` names a `mesh.animations` key above.
     behavior = {
-      initial = "patrol",
+      initial = "idle",
       moveSpeed = 3,
       attack = { damage = 8, range = ATTACK_RANGE, cooldownMs = 1200 },
       -- Where engaged chasers STAND: the radius of the ring of combat slots the
@@ -160,6 +167,19 @@ M.referenceEnemyEntity = defineEntity({
         { to = "patrol", when = runtime.select(brain.targetHostile, false, true) },
       },
       states = {
+        -- The initial state's animation is the graph's rest pose. This
+        -- one-tick authored handoff keeps that pose distinct from patrol's
+        -- travel cycle without changing the generic graph semantics.
+        idle = {
+          animation = "idle",
+          motion = "hold",
+          transitions = {
+            {
+              to = "patrol",
+              when = runtime.constant(true),
+            },
+          },
+        },
         patrol = {
           animation = "walk",
           motion = "patrol",
@@ -178,8 +198,8 @@ M.referenceEnemyEntity = defineEntity({
           animation = "walk",
           motion = "chaseTarget",
           transitions = {
-            { to = "attack", when = runtime.le(brain.targetDistance, ATTACK_RANGE) },
             { to = "retreat", when = runtime.gt(brain.distanceFromAnchor, LEASH_RANGE) },
+            { to = "attack", when = runtime.le(brain.targetDistance, ATTACK_RANGE) },
           },
         },
         -- Contact damage on the graph's `attack` cooldown while closing the

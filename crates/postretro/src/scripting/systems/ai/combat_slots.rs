@@ -1,3 +1,6 @@
+// Batch combat-slot allocation and incumbent hold tracking for engaged enemies.
+// See: context/lib/entity_model.md §7c (enemy brain component)
+
 use std::collections::HashMap;
 
 use glam::Vec3;

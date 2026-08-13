@@ -883,4 +883,10 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
         assert!(output.contains("points"));
         assert!(output.contains("patrol"));
     }
+    assert!(ts.contains("points: ReadonlyArray<readonly [number, number]>;"));
+    assert!(luau.contains("points: {{number, number}},"));
+    assert!(
+        !luau.contains("points: {{number}},"),
+        "patrol points must retain their fixed `[x, z]` arity"
+    );
 }

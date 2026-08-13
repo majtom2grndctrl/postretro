@@ -64,24 +64,28 @@ fn nearest_target_candidate(
             target_candidate(registry, entity, from, visible)
         })
         .fold((None, None), |(mut nearest, mut eligible), candidate| {
+            // Hostility defines the engine's offered set for fresh acquisition.
+            // A friendly pawn therefore prices neither selection nor its think
+            // stride. Retained lookup stays above this scan and deliberately
+            // never re-gates its target on hostility.
+            let hostile = registry
+                .get_component::<EntityStateComponent>(candidate.target.entity)
+                .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD))
+                != enemy_faction;
+            if !hostile {
+                return (nearest, eligible);
+            }
             if nearest.is_none_or(|current: TargetCandidate| {
                 candidate.distance.total_cmp(&current.distance).is_lt()
             }) {
                 nearest = Some(candidate);
             }
-            // Hostility and graph candidacy are eligibility only for a fresh
-            // ranking scan. The raw nearest offer remains intact for think
-            // stride pricing, while retained lookup stays above this scan and
-            // never re-gates its target on either policy.
-            let hostile = registry
-                .get_component::<EntityStateComponent>(candidate.target.entity)
-                .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD))
-                != enemy_faction;
-            let filter_allows = hostile
-                && candidate_filter.is_none_or(|filter| {
-                    candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
-                    eval_value(filter, candidate_scope) == IrValue::Bool(true)
-                });
+            // Graph candidacy narrows selection without repricing the raw
+            // nearest hostile offer that drives think-stride cost.
+            let filter_allows = candidate_filter.is_none_or(|filter| {
+                candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
+                eval_value(filter, candidate_scope) == IrValue::Bool(true)
+            });
             if filter_allows
                 && eligible.is_none_or(|current: TargetCandidate| {
                     candidate.distance.total_cmp(&current.distance).is_lt()
@@ -119,11 +123,12 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 /// [`ComponentKind::PlayerMovement`] pawns by nearest XZ distance from `from`.
 /// The optional predicate is the future visibility/relevance seam intended for
 /// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
-/// re-threading the FSM. It returns the unfiltered nearest offered candidate
-/// for think-stride pricing and the selected target. Candidate filters admit
-/// fresh candidates only; a retained candidate is resolved independently and
-/// stays eligible until graph state policy stands it down. On a due tick, a
-/// meaningfully closer eligible candidate may replace the retained target.
+/// re-threading the FSM. It returns the nearest hostile offer, unfiltered by
+/// graph candidacy, for think-stride pricing and the selected target. Candidate
+/// filters admit fresh candidates only; a retained candidate is resolved
+/// independently and stays eligible until graph state policy stands it down.
+/// On a due tick, a meaningfully closer eligible candidate may replace the
+/// retained target.
 /// This path intentionally does not consult the registry's local-player marker,
 /// which is client-side convenience state.
 pub(crate) fn select_target(
@@ -265,7 +270,7 @@ mod tests {
             .unwrap()
             .set(super::super::FACTION_STATE_FIELD, 1.0);
 
-        let (_, selected) = select_target(
+        let (nearest_for_stride, selected) = select_target(
             &registry,
             Vec3::ZERO,
             1.0,
@@ -278,6 +283,11 @@ mod tests {
             selected.map(|target| target.entity),
             Some(hostile),
             "a nearer friendly cannot mask a farther hostile candidate"
+        );
+        assert_eq!(
+            nearest_for_stride.map(|candidate| candidate.target.entity),
+            Some(hostile),
+            "a friendly is not an offered candidate and cannot price the stride"
         );
 
         registry

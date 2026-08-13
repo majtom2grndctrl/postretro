@@ -30,13 +30,13 @@ the work.
   XZ offsets, so a route is placement-independent) and `mode` (`loop` | `pingPong`).
   The engine tracks a per-brain patrol cursor. `patrol` motion with no block, or an
   empty `points` list, is a parse error in both runtimes.
-- **Stand-down destination is the untargeted-active resting state.** An any-state
+- **Stand-down destination is the untargeted-active state.** An any-state
   `not hasTarget` / `not targetHostile` stand-down interrupt must target the graph's
-  untargeted-active resting state — the `patrol` state when a route is authored, else
+  untargeted-active state — the `patrol` state when a route is authored, else
   `idle`. `select_transition` skips a graph-wide interrupt only where `interrupt.to ==
-  current`, so a stand-down whose destination is *not* the state the enemy rests in
+  current`, so a stand-down whose destination is *not* the active untargeted state
   re-fires every tick that state is live: an `idle↔patrol` oscillation that never walks
-  the route. Authoring constraint, taught by the reference comments; the multiple-resting-state
+  the route. Authoring constraint, taught by the reference comments; the multiple-active-state
   general fix is deferred (Open questions).
 - **New brain facts** (three, appended in order at `BRAIN_INPUTS` indices 10
   `distanceFromAnchor`, 11 `targetHostile`, 12 `targetReachable`; `targetHostile` belongs to
@@ -184,7 +184,8 @@ Retention drop is authored instead, over `@brain.targetHostile`.
   walls, so a demo built on it would misfire at every wall corner.
 - [ ] **Faction hostility gate.** On a fresh acquisition scan an enemy admits a
   `PlayerMovement` candidate only while hostile to it per `@state.faction`, so a friendly
-  pawn never masks a hostile one and is never freshly acquired; the retained-target lookup
+  pawn never masks a hostile one, is never freshly acquired, and does not price the think
+  stride; the nearest hostile offer determines the cadence. The retained-target lookup
   applies no faction test. A retained target whose faction is written (through the E16
   `@state` path) to equal the enemy's faction is dropped by the reference enemy's authored
   `select(targetHostile, false, true)` stand-down interrupt on the next guard eval — not
@@ -349,6 +350,8 @@ each offered candidate read its `@state.faction`
 (`registry.get_component::<EntityStateComponent>(entity)`, absent → 0.0) and admit it only
 when it differs from the evaluating enemy's faction — under nearest-target ranking this is
 necessary, since without it a nearer friendly pawn masks a hostile one behind it. The
+nearest hostile offer, before authored candidate filtering, prices the unengaged think stride;
+a friendly pawn does not change acquisition cadence. The
 retained lookup applies no faction test (its alive/died checks are unchanged), so a retained
 target is never re-gated on hostility. Thread the enemy's faction scalar as a new `f32`
 parameter `select_target` → `nearest_target_candidate` (read once per enemy in the compute
@@ -372,7 +375,7 @@ reads `false` untargeted), so an authored `select(targetHostile, false, true)` s
 reads true and fires exactly when the retained target is not hostile. Retention drop is then
 authored: the reference enemy (Task 6) carries an any-state interrupt
 `select(targetHostile, false, true)` → stand-down. This is the same *shape* as the shipped
-`targetDied` stand-down (an any-state interrupt over a target-side bool → resting state), but
+`targetDied` stand-down (an any-state interrupt over a target-side bool → untargeted state), but
 the untargeted polarity differs: `targetDied` reads `false` with no target and so does not
 fire, whereas `select(targetHostile, false, true)` reads `true` untargeted, so it fires on
 untargeted-*or*-friendly. It is correct in the reference only because the earlier-declared
@@ -433,10 +436,13 @@ pathfinder's current capability, not ground truth.
 ### Task 6: Reference authoring, tests, diagnostics, docs
 
 Author the reference enemy (`sdk/behaviors/reference/entities.{ts,luau}`, both spellings
-identical) to demonstrate the new vocabulary. `patrol` is the untargeted-active resting state:
-a `patrol` block (`pingPong` over a short route) and a `patrol` state that acquires on a fresh
-scan (`patrol → alert` on `le(targetDistance, detection)`). A `retreat` state (`moveToAnchor`)
-is reached from `alert`/`attack` on `gt(distanceFromAnchor, leash)` and exits *only* on
+identical) to demonstrate the new vocabulary. A transient `idle` initial state supplies the
+graph's rest animation, agrees with the mesh `defaultState`, and hands off unconditionally to
+`patrol`. `patrol` remains the untargeted-active state: a `patrol` block (`pingPong` over a short
+route) and a `patrol` state that acquires on a fresh scan (`patrol → alert` on
+`le(targetDistance, detection)`). A `retreat` state (`moveToAnchor`)
+is reached from `alert`/`attack` on `gt(distanceFromAnchor, leash)`; that edge precedes
+`alert → attack`, so simultaneous leash and attack-range guards retreat. It exits *only* on
 `le(distanceFromAnchor, arrivalEps)` → `patrol` (home reached, resume patrol) — no
 target-distance exit, since `retreat` is non-engaged and holds no target across strides;
 re-engagement rides the any-state stand-down back to `patrol` and then `patrol → alert`. The
@@ -445,7 +451,7 @@ friendly-flip drop, the `targetDied` shape) both target `patrol`, so they are sk
 (`to == current`) and do not oscillate. Its comments are the de-facto authoring docs — they
 must teach that the anchor is the spawn position, that leash is a `distanceFromAnchor` guard
 (not an engine field), the patrol cursor's persistence, that a stand-down interrupt must target
-the untargeted-active resting state or it oscillates, that an authored arrival guard threshold
+the untargeted-active state or it oscillates, that an authored arrival guard threshold
 must be `>= POSITION_GOAL_ARRIVAL_EPSILON` (a smaller threshold wedges — the resolver `Clear`s
 at the epsilon and never reaches it), that retention drop on a friendly flip is authored
 over `@brain.targetHostile` (and that `select(targetHostile, false, true)` fires on
@@ -601,6 +607,8 @@ recommended grammar (Coordination) as a separate follow-up, not part of this spe
 | Alloc probe, due tick with navmesh + target | acquisition-due → `find_path` runs | allocations occur (A* `NavPath`); zero-alloc holds only between strides — no-nav ticks also skip the probe |
 | Retreat, target lost on a non-due tick | `retreat` non-engaged drops the target; non-due tick → `hasTarget` false | any-state `not hasTarget` stand-down (targets `patrol`) fires → routes to `patrol`, continues toward home; not stranded in place |
 | Faction flips to friendly mid-chase | `@state.faction` written == enemy faction; next guard eval | `@brain.targetHostile` reads `false`; the authored `select(targetHostile, false, true)` stand-down drops the retained target; the fresh scan never re-offers it |
+| Near friendly and farther hostile, no retained target | the friendly distance reaches its stride boundary while the hostile distance does not | `acquisitionDue` stays false; the nearest hostile offer alone prices the cadence |
+| Alert target is both in attack range and beyond the leash | ordered local edges: leash retreat before attack | first-true-wins enters `retreat` immediately |
 | Faction write source vs the AI tick | game-logic order: trigger dispatch / touch → `run_ai_tick` → `agent_steering::tick` (`sim/mod.rs`) | a trigger-command / touch-reaction `@state.faction` write lands before the tick — read the same tick by the candidacy scan and `targetHostile`; an `on_impact` write inside the AI apply pass is read by ALL brains the NEXT tick uniformly (the compute pass completes before any apply-pass mutation — no intra-tick enemy-order dependence) |
 | Enemy moved by a script | transform changes, `home_anchor` unchanged | `distanceFromAnchor` grows; home stays the spawn point |
 | `patrol` exited or entered this tick | steering resolver runs on the post-transition state's motion | on the tick `patrol` is exited, the cursor does not advance; on the tick `patrol` is entered, the resolver runs, so the cursor may advance on entry if already within epsilon of `points[cursor]` |
@@ -621,7 +629,7 @@ export const sentry = defineEntity({
     health: { max: 60 },
     mesh: { /* model, animation states incl. "walk", "idle" */ },
     behavior: {
-      initial: "patrol",
+      initial: "idle",
       moveSpeed: 3,
       attack: { damage: 8, range: 2, cooldownMs: 1200 }, // singular until multi-attack lands the map
       engagementRadius: 2,
@@ -632,8 +640,8 @@ export const sentry = defineEntity({
       // (to == current) instead of yanking the enemy out every tick.
       patrol: { mode: "pingPong", points: [[0, 0], [6, 0], [6, 6]] },
       interrupts: [
-        // Any-state stand-downs route to the untargeted resting state `patrol`,
-        // NOT `idle`: a stand-down whose `to` is not the state the enemy rests in
+        // Any-state stand-downs route to the active untargeted state `patrol`,
+        // NOT `idle`: a stand-down whose `to` is not the active state
         // re-fires every tick that state is live (idle<->patrol oscillation).
         { to: "patrol", when: runtime.select(brain.hasTarget, false, true) },
         // Authored retention drop: stand down when the retained target is no
@@ -648,6 +656,12 @@ export const sentry = defineEntity({
         { to: "patrol", when: runtime.select(brain.targetHostile, false, true) },
       ],
       states: {
+        // The initial state supplies the graph rest pose and matches the mesh
+        // default; its unconditional handoff enters the active patrol.
+        idle: {
+          animation: "idle", motion: "hold",
+          transitions: [{ to: "patrol", when: runtime.constant(true) }],
+        },
         // Untargeted: walk the patrol route; acquire on a fresh scan.
         patrol: {
           animation: "walk", motion: "patrol",
@@ -662,9 +676,9 @@ export const sentry = defineEntity({
         alert: {
           animation: "walk", motion: "chaseTarget",
           transitions: [
-            { to: "attack",  when: runtime.le(brain.targetDistance, 2) },
             // Leash: authored, not an engine field.
             { to: "retreat", when: runtime.gt(brain.distanceFromAnchor, 20) },
+            { to: "attack",  when: runtime.le(brain.targetDistance, 2) },
             // Barrier hold (add once the wraparound nav fix lands):
             // { to: "waiting", when: runtime.select(brain.targetReachable, false, true) },
           ],
@@ -729,12 +743,12 @@ export const sentry = defineEntity({
   fix), while the fact does not. General rule: the fact ships; an authored reachability *demo*
   waits on whatever nav fix its feel needs.
 - **State-scoped interrupts — deferred to statecharts.** The general fix for multiple
-  untargeted-active resting states (an interrupt carrying the states it applies to or excludes)
+  untargeted-active states (an interrupt carrying the states it applies to or excludes)
   is the **Hierarchical behavior (statecharts)** roadmap spec's `"*"` scoped transitions; the
-  single-resting-state convention holds here (search is out of scope, so one resting state
+  single-active-state convention holds here (search is out of scope, so one active state
   suffices), and the first real consumer arrives with perception. A companion `behavior_lints`
   finding — an any-state `not hasTarget` / `not targetHostile` stand-down whose `to` is not the
-  graph's untargeted-active resting state — could catch the oscillation at authoring time, but
+  graph's untargeted-active state — could catch the oscillation at authoring time, but
   identifying that state statically is not clearly cheap; noted, not scoped.
 - **Hierarchical composites — forward compatibility (owner, before promotion).** The flat
   state model is v1; the endpoint is a recursive statechart — composite activities, orthogonal

@@ -1,3 +1,6 @@
+// Enemy visual-facing yaw helpers for brain-driven movement and actions.
+// See: context/lib/entity_model.md §7c (enemy brain component)
+
 use glam::{Quat, Vec3};
 
 /// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering

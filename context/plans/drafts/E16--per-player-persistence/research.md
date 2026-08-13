@@ -15,7 +15,7 @@ Findings behind the spec's decisions and code-grounding for its claims.
 | `PlayerClaimId` is `[u8; 16]`, carried in `ConnectClaim` | `crates/net/src/wire/control.rs` lines 22, 32–35 |
 | `player_options.player_id` is an `Option<[u8; 16]>` generated once per device and persisted | `context/lib/player_options.md` line 30; `crates/postretro/src/session/mod.rs` lines 423–424 |
 | A connected client does not write the save file | `main.rs` line 1445: `should_save_persisted_state(can_save, is_connected_client) = can_save && !is_connected_client` |
-| `clear_released_seat_slot_values` is called at five sites in `main.rs` | Lines 4049, 4124, 4147, 5460, 5630, 5641 — after `finish_host_poll` and after admission |
+| `clear_released_seat_slot_values` is called at six sites in `main.rs` | Lines 4049, 4124, 4147, 5460, 5630, 5641 — after `finish_host_poll` and after admission |
 | The currency spec named this call site as the capture hook | `context/plans/done/E16--per-player-currency/index.md` Task 1, final paragraph |
 | `SlotRecord` exposes `per_seat_value(seat)`, `set_per_seat_value(seat, value)`, `clear_per_seat_value(seat)` | `crates/entities/src/slot_table.rs` |
 | `SlotTable::clear_per_seat_values(seat)` iterates all slots | Same file |

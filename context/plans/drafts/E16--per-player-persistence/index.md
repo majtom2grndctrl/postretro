@@ -92,7 +92,7 @@ Per-owner slot values die with the session. A player's earned currency, XP, or p
 
 ### Task 1: Unlock `perOwner + persist` and extend the on-disk format
 
-Remove the `perOwner + persist` rejection in `store_bridge.rs` (the `if per_owner && persist { return Err(…) }` guard). Update the SDK typedefs in both TypeScript (`expected.d.ts`) and Luau (`expected.d.luau`) to allow `persist?: boolean` on `perOwner: true` slot variants — the `persist?: never` constraint on those union arms becomes `persist?: boolean`. The remaining combination rejections (`perOwner + accumulate`, `perOwner + network: "shared"`) stay in place.
+Remove the `perOwner + persist` rejection in `store_bridge.rs` (the `if per_owner && persist { return Err(…) }` guard). Update the SDK typedefs in both TypeScript (`expected.d.ts`) and Luau (`expected.d.luau`) to allow `persist?: boolean` on `perOwner: true` slot variants — the TypeScript `persist?: never` constraint on those union arms becomes `persist?: boolean` (Luau equivalent: `persist: nil?` becomes `persist: boolean?`). The remaining combination rejections (`perOwner + accumulate`, `perOwner + network: "shared"`) stay in place.
 
 Extend `PersistedState` with a `per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>` field, `serde(default)` and `serde(skip_serializing_if = "BTreeMap::is_empty")`. Outer key: durable slot key. Inner key: hex-encoded `PlayerClaimId`. Bump `CURRENT_STATE_VERSION` from 2 to 3. Update the version check in `overlay_persisted_state`: accept both 2 and 3. A version-2 document has no `per_owner` field; `serde(default)` yields an empty map, so global-slot restore proceeds unchanged and per-owner slots start at defaults. A version-3+ document beyond `CURRENT_STATE_VERSION` is still rejected.
 
@@ -110,7 +110,7 @@ Wire the capture into the `clear_released_seat_slot_values` call sites. Before t
 3. For each slot in the slot table that is `perOwner + persist`, reads that seat's per-owner entry via `record.per_seat_value(seat)` and converts it to a `PersistedValue`.
 4. Inserts the entry into `CapturedPerOwnerState` under `(hex_player_id, durable_key)`.
 
-The five existing `clear_released_seat_slot_values` call sites in `main.rs` gain the capture call immediately before the clear. The function needs `&SlotTable`, `&SeatTable` (for claim lookup), `Option<&StoreIdentityLedger>` (for durable keys), `&BTreeSet<String>` (committed membership), and `&mut CapturedPerOwnerState`. Thread `CapturedPerOwnerState` from the session through the same path `StateStoreLifecycle` takes.
+The six existing `clear_released_seat_slot_values` call sites in `main.rs` gain the capture call immediately before the clear. The function needs `&SlotTable`, `&SeatTable` (for claim lookup), `Option<&StoreIdentityLedger>` (for durable keys), `&BTreeSet<String>` (committed membership), and `&mut CapturedPerOwnerState`. Thread `CapturedPerOwnerState` from the session through the same path `StateStoreLifecycle` takes.
 
 Extend `collect_persisted_state` to populate the `per_owner` field of `PersistedState`. After the existing global-slot collection loop, add a second pass:
 1. For each `perOwner + persist` slot in the table (filter by `is_persisted_per_owner_slot`), iterate live seats' per-owner entries.
@@ -167,11 +167,7 @@ Update the dev mod's per-player XP slot declaration in `content/dev/scripts/comb
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — the format extension and `CapturedPerOwnerState` type that every later task consumes.
-**Phase 2 (concurrent):** Task 2 and Task 3 — capture/collect and restore are independent over the shared types from Task 1. Task 2 extends the save side; Task 3 extends the restore side. Both touch `state_persistence.rs` but in disjoint functions.
-
-*Correction: Task 2 and Task 3 both modify `state_persistence.rs`.* Task 2 adds `capture_released_seat_slot_values` and extends `collect_persisted_state`. Task 3 extends `overlay_persisted_state` and wires the save path. These touch disjoint functions, but concurrent edits to the same file risk merge conflicts. **Sequence them: Task 2 first (save side), then Task 3 (restore side).**
-
-**Phase 2 (sequential):** Task 2 — capture and collect.
+**Phase 2 (sequential):** Task 2 — capture and collect. Both Task 2 and Task 3 modify `state_persistence.rs` in disjoint functions; sequencing them avoids merge conflicts.
 **Phase 3 (sequential):** Task 3 — restore and save-path wiring.
 **Phase 4 (sequential):** Task 4 — join seed. Consumes the save/restore infrastructure from Tasks 2–3 and adds the wire message. The client's send path reads from the loaded `PersistedState` (Task 3's restore produces); the host's apply path writes per-seat storage (Task 2's collect reads from).
 **Phase 5 (sequential):** Task 5 — reference persistence. Consumes all of it.
@@ -183,7 +179,7 @@ Update the dev mod's per-player XP slot declaration in `content/dev/scripts/comb
 | A per-owner value saved to disk is keyed by a durable cross-session identity, not by session-scoped `Seat` | Task 1 (hex `PlayerClaimId` keying), Task 2 (capture resolves claim) | Any path that writes per-owner entries using `Seat` as the key instead of `PlayerClaimId` breaks cross-session identity | AC 6 |
 | Global-slot persistence is behaviorally unchanged | Task 1 (format extension is additive), Task 2/3 (per-owner passes are separate loops) | A per-owner code path that touches `record.value` instead of `per_seat_values` corrupts global slots | AC 4 |
 | A connected client never writes the save file | Shipped Phase 3.5 rule (`should_save_persisted_state`) | Any new save call site that skips the `is_connected_client` check | AC 7 (host saves on behalf), AC 13 (join seed is the client's restore path) |
-| Capture happens before clear at every release path | Task 2 (five call sites wired) | A new release path that clears without capturing loses a guest's progress | AC 7 |
+| Capture happens before clear at every release path | Task 2 (six call sites wired) | A new release path that clears without capturing loses a guest's progress | AC 7 |
 | The join seed does not overwrite a held seat's live values | Task 4 (reclaim-within-hold-window skip) | A reclaim path that applies the seed before checking hold status loses in-session progress | AC 11 |
 | Version-2 save files load without error | Task 1 (`serde(default)` on `per_owner`, version check accepts 2 and 3) | A version check that rejects 2 breaks existing saves | AC 5 |
 

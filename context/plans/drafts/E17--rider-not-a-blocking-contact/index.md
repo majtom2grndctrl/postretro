@@ -50,3 +50,8 @@ A player riding on top of a kinematic mover must not be treated as an obstructio
 ## Open questions
 
 - None blocking. The stop/reverse-into-ceiling non-protection (Out of scope) is a deliberate accepted edge, symmetric with the ratified crush decision; revisit only if playtesting surfaces a stop-elevator-into-ceiling scenario that feels wrong.
+
+### Accepted edges (verified by depth review, no AC falsified)
+
+- **Airborne rider on a fast upward mover.** The exemption keys on `GroundRef::Mover(id)`, and jumping clears ground to `Airborne` for that tick (`set_grounded(false)`). On a Stop/Reverse mover whose per-tick rise plus the one-tick prospective sweep extension outruns the rider's jump displacement (roughly, mover speed within jump velocity), the leading sweep reaches the airborne rider and the mover reacts — the "elevator reacts to its passenger" symptom partially returns for *jump-on-fast-elevator*. No rider AC is falsified (all are scoped to "grounded on"). Accepted; a playtest report of "the lift stops when I hop on it" is this edge, not a regression. Widening the fix (exempt a rider airborne-from-this-mover for a short grace) is a deliberate scope increase, out of this one-pager.
+- **Command-starved remote pawn.** A remote pawn with no command this tick is not simulated, so it keeps last tick's `ground` (possibly a stale `Mover(id)`) and is briefly exempt while frozen in the mover's path — but it is also not carried, so an upward mover simply rises through it until its next simulated tick re-resolves ground. Self-correcting and consistent with existing starvation behavior; the spec's "every *simulated* pawn" wording already covers it. No change.

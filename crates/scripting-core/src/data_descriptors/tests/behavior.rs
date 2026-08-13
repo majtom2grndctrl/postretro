@@ -2,6 +2,7 @@
 
 use super::super::*;
 use super::common::*;
+use crate::ir::{IrNode, IrValue};
 
 // --- components.behavior (both parsers) ----------------------------------
 //
@@ -94,6 +95,141 @@ fn lua_entity_descriptor_parses_a_behavior_graph() {
     assert_eq!(graph.attack.expect("attack block").cooldown_ms, 1200.0);
     assert_eq!(graph.engagement_radius, None);
     assert_eq!(graph.engagement_radius(), 2.0);
+}
+
+#[test]
+fn both_runtimes_parse_patrol_authoring_and_reject_missing_or_empty_routes() {
+    let js_patrol = js_behavior(JS_NEAR_GUARD, "")
+        .replace(r#"motion: "chaseTarget""#, r#"motion: "patrol""#)
+        .replace(
+            "moveSpeed: 3,",
+            r#"moveSpeed: 3, patrol: { points: [[1.5, -2]], mode: "pingPong" },"#,
+        );
+    let lua_patrol = lua_behavior(LUA_NEAR_GUARD, "")
+        .replace(r#"motion = "chaseTarget""#, r#"motion = "patrol""#)
+        .replace(
+            "moveSpeed = 3,",
+            r#"moveSpeed = 3, patrol = { points = {{1.5, -2}}, mode = "pingPong" },"#,
+        );
+    let js_graph = eval_js(&js_patrol, |ctx, value| {
+        entity_descriptor_from_js(ctx, value)
+            .unwrap()
+            .behavior
+            .unwrap()
+    });
+    let lua_graph = eval_lua(&lua_patrol, |value| {
+        entity_descriptor_from_lua(value).unwrap().behavior.unwrap()
+    });
+    assert_eq!(js_graph, lua_graph, "the two descriptor bridges stay twins");
+    assert_eq!(js_graph.states["chase"].motion, MotionVerb::Patrol);
+    assert_eq!(
+        js_graph.patrol,
+        Some(PatrolDescriptor {
+            points: vec![[1.5, -2.0]],
+            mode: PatrolMode::PingPong,
+        })
+    );
+
+    let js_missing =
+        js_behavior(JS_NEAR_GUARD, "").replace(r#"motion: "chaseTarget""#, r#"motion: "patrol""#);
+    let lua_missing = lua_behavior(LUA_NEAR_GUARD, "")
+        .replace(r#"motion = "chaseTarget""#, r#"motion = "patrol""#);
+    let js_empty = js_missing.replace(
+        "moveSpeed: 3,",
+        r#"moveSpeed: 3, patrol: { points: [], mode: "loop" },"#,
+    );
+    let lua_empty = lua_missing.replace(
+        "moveSpeed = 3,",
+        r#"moveSpeed = 3, patrol = { points = {}, mode = "loop" },"#,
+    );
+
+    for error in [
+        js_error(&js_missing),
+        lua_error(&lua_missing),
+        js_error(&js_empty),
+        lua_error(&lua_empty),
+    ] {
+        assert!(
+            error.contains("components.behavior") && error.contains("patrol"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions() {
+    let js_chase = js_behavior(JS_NEAR_GUARD, "").replace(
+        r#"motion: "chaseTarget""#,
+        r#"motion: "chaseTarget", action: "attack""#,
+    );
+    let lua_chase = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        r#"motion = "chaseTarget""#,
+        r#"motion = "chaseTarget", action = "attack""#,
+    );
+    let js_graph = eval_js(&js_chase, |ctx, value| {
+        entity_descriptor_from_js(ctx, value)
+            .unwrap()
+            .behavior
+            .unwrap()
+    });
+    let lua_graph = eval_lua(&lua_chase, |value| {
+        entity_descriptor_from_lua(value).unwrap().behavior.unwrap()
+    });
+    assert_eq!(js_graph, lua_graph, "the two descriptor bridges stay twins");
+    assert_eq!(
+        js_graph.states["chase"].action,
+        Some(ActionVerb::Attack),
+        "chaseTarget keeps its intended action semantics"
+    );
+
+    for (js_motion, lua_motion) in [
+        (r#"motion: "moveToAnchor""#, r#"motion = "moveToAnchor""#),
+        (r#"motion: "patrol""#, r#"motion = "patrol""#),
+    ] {
+        let js = js_behavior(JS_NEAR_GUARD, "").replace(
+            r#"motion: "chaseTarget""#,
+            &format!(r#"{js_motion}, action: "attack""#),
+        );
+        let lua = lua_behavior(LUA_NEAR_GUARD, "").replace(
+            r#"motion = "chaseTarget""#,
+            &format!(r#"{lua_motion}, action = "attack""#),
+        );
+
+        for error in [js_error(&js), lua_error(&lua)] {
+            assert!(
+                error.contains("components.behavior.states.chase.action")
+                    && error.contains("components.behavior.states.chase.motion")
+                    && error.contains("position-goal states are non-engaged"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_runtimes_name_nested_non_finite_patrol_points() {
+    let js = js_error(
+        &js_behavior(JS_NEAR_GUARD, "")
+            .replace(r#"motion: "chaseTarget""#, r#"motion: "patrol""#)
+            .replace(
+                "moveSpeed: 3,",
+                r#"moveSpeed: 3, patrol: { points: [[Infinity, 0]], mode: "loop" },"#,
+            ),
+    );
+    let lua = lua_error(
+        &lua_behavior(LUA_NEAR_GUARD, "")
+            .replace(r#"motion = "chaseTarget""#, r#"motion = "patrol""#)
+            .replace(
+                "moveSpeed = 3,",
+                r#"moveSpeed = 3, patrol = { points = {{math.huge, 0}}, mode = "loop" },"#,
+            ),
+    );
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("non-finite number at `patrol.points[0][0]`"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -591,6 +727,17 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
             .max,
         70.0
     );
+    let mesh_default_state = ts_descriptor
+        .mesh
+        .as_ref()
+        .expect("the reference enemy has an animated mesh")
+        .default_state
+        .clone();
+    assert_eq!(
+        mesh_default_state.as_deref(),
+        Some("idle"),
+        "the mesh spawns in the graph's authored rest pose"
+    );
     let ts = ts_descriptor
         .behavior
         .expect("the TS reference enemy carries a behavior graph");
@@ -600,6 +747,15 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     );
 
     assert_eq!(ts.initial, "idle");
+    assert_eq!(
+        ts.states
+            .get(&ts.initial)
+            .expect("initial names a declared state")
+            .animation
+            .as_str(),
+        mesh_default_state.as_deref().unwrap(),
+        "the initial state's rest animation agrees with mesh.defaultState"
+    );
     assert_eq!(ts.move_speed, 3.0);
     assert_eq!(ts.engagement_radius, Some(2.0));
     let attack = ts.attack.expect("the reference enemy attacks");
@@ -609,12 +765,21 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     );
 
     assert_eq!(
+        ts.patrol,
+        Some(PatrolDescriptor {
+            points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
+            mode: PatrolMode::PingPong,
+        }),
+        "the shipped enemy's route is a short anchor-relative ping-pong patrol"
+    );
+    assert_eq!(
         ts.states.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["alert", "attack", "idle"],
-        "three states, and no `death` state — death is not a graph transition"
+        vec!["alert", "attack", "idle", "patrol", "retreat"],
+        "the reference graph has a distinct rest pose plus patrol, pursuit, attack, and retreat; death remains outside the graph"
     );
     for (name, animation, motion, action) in [
         ("idle", "idle", MotionVerb::Hold, None),
+        ("patrol", "walk", MotionVerb::Patrol, None),
         ("alert", "walk", MotionVerb::ChaseTarget, None),
         (
             "attack",
@@ -622,6 +787,7 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
             MotionVerb::ChaseTarget,
             Some(ActionVerb::Attack),
         ),
+        ("retreat", "walk", MotionVerb::MoveToAnchor, None),
     ] {
         let state = &ts.states[name];
         assert_eq!(state.animation, animation, "`{name}` animation");
@@ -636,17 +802,19 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
             .iter()
             .map(|edge| edge.to.as_str())
             .collect::<Vec<_>>(),
-        vec!["idle", "idle", "idle"],
-        "the ordered any-state edges stand down on target loss, target death, then range"
+        vec!["patrol", "patrol"],
+        "the ordered any-state edges stand down on target loss, then a friendly target, into patrol"
     );
     assert!(
-        ts.candidate_filter.is_some(),
-        "the reference graph filters dead candidates and bounds acquisition"
+        ts.candidate_filter.is_none(),
+        "the reference leaves fresh candidate policy open and demonstrates its authored patrol policy"
     );
     for (state, targets) in [
-        ("idle", vec!["attack", "alert"]),
-        ("alert", vec!["attack", "idle"]),
-        ("attack", vec!["alert"]),
+        ("idle", vec!["patrol"]),
+        ("patrol", vec!["alert"]),
+        ("alert", vec!["retreat", "attack"]),
+        ("attack", vec!["retreat", "alert"]),
+        ("retreat", vec!["patrol"]),
     ] {
         assert_eq!(
             ts.states[state]
@@ -658,6 +826,13 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
             "`{state}` edge targets, in declaration order"
         );
     }
+    assert_eq!(
+        ts.states["idle"].transitions[0].when,
+        IrNode::Const {
+            value: IrValue::Bool(true),
+        },
+        "the transient rest state hands off to the active patrol unconditionally"
+    );
 }
 
 /// The E21 pose-modifier fixture is a real, shipped animated mesh rather than a

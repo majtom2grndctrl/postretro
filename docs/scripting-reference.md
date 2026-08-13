@@ -486,9 +486,10 @@ the brain changes state. **Currently, the offer set is player pawns.** A future
 engine-owned perception predicate will narrow that set to candidates an enemy
 can perceive. The engine makes no aliveness judgement while choosing among the
 current offer set: an unfiltered graph can select a dead pawn, though the attack
-gate still will not hit one. A graph's optional `candidateFilter` decides which
-offered candidates are worth engaging; it can only narrow the offer set and
-never ranks candidates or drops a target already retained.
+gate still will not hit one. Fresh acquisition also offers only pawns whose
+faction is hostile to the evaluating enemy. A graph's optional `candidateFilter`
+decides which offered candidates are worth engaging; it can only narrow the
+offer set and never ranks candidates or drops a target already retained.
 
 Guards are [runtime values](#runtime-values) — the same `runtime.*` builders as
 dash fields, bound against a brain-fact namespace instead of the movement one.
@@ -573,17 +574,18 @@ defineEntity({
 | `states` | `{ [name]: BehaviorState }` | The declared states, keyed by a name you choose. Must declare at least one. Duplicate names are rejected. |
 | `interrupts` | `Transition[]` (optional) | Any-state edges, evaluated in declaration order **before** the current state's own transitions. Defaults to none. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
+| `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. `points` is a non-empty list of `[x, z]` metre offsets from the spawn anchor; `mode` is `"loop"` or `"pingPong"`. Required whenever a state uses `"patrol"`. The per-enemy cursor persists when the graph leaves and re-enters patrol. |
 | `attack` | `{ damage, range, cooldownMs }` (optional) | Tuning for the `attack` action verb. **Required** whenever any state declares `action: "attack"`. Permitted even when none does, because `attack.range` is what `engagementRadius` falls back to. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `range` and `cooldownMs` must be finite and `> 0`. |
 | `engagementRadius` | `number` (optional) | Radius in metres of the ring of combat slots the engine spreads engaged agents around their target. Finite and `> 0`. See *`attack.range` vs `engagementRadius`* below. |
-| `moveSpeed` | `number` | Pursuit movement speed in metres/sec, seeding the navigation agent. Finite and `> 0`. |
+| `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
 Each entry in `states`:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `animation` | `string` | Non-empty. Names a key of `components.mesh.animations`. That link is checked at **spawn**, not at load (it is cross-component): an unknown name warns once and keeps the previous animation — it never aborts the spawn. |
-| `motion` | `"chaseTarget" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
-| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. |
+| `motion` | `"chaseTarget" \| "moveToAnchor" \| "patrol" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
+| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are always non-engaged. |
 | `transitions` | `Transition[]` (optional) | State-local edges, evaluated in declaration order after the graph's interrupts. Omit for a state with no exits. |
 | `onEnter` | `string` (optional) | A named-event address fired through the post-tick event drain when the brain **changes into** this state. It is a *change*, not an entry: the brain is seeded directly in `initial` at spawn with no transition, so an `onEnter` on `initial` does **not** fire then. It does fire when the aggro gate forces the brain back to `initial` from somewhere else. Use it for reaction cues, not spawn-time setup. |
 
@@ -601,6 +603,8 @@ index:
 | A state's `animation` is an empty string | Rejected. |
 | A **state-local** transition whose `to` is the state that declares it | Rejected — see *Evaluation rules*. |
 | A state declares `action: "attack"` with no `attack` block on the graph | Rejected. |
+| A `moveToAnchor` or `patrol` state declares any `action` | Rejected, with the state's `action` and `motion` paths. Position goals are non-engaged. |
+| A state selects `motion: "patrol"` without a `patrol` block, with no points, or with a non-finite point component | Rejected, with the `patrol` path. |
 | `moveSpeed`, `engagementRadius`, `attack.range`, `attack.cooldownMs` not finite and `> 0`; `attack.damage` not finite and `>= 0` | Rejected. |
 | A guard that names an unknown input, mismatches operand types, or whose root produces a number rather than a boolean | Rejected, with the path. |
 | An unknown key anywhere in the block, or a duplicate state name | Rejected. |
@@ -616,6 +620,8 @@ of its modes a state selects.
 | `motion` | At runtime |
 |----------|-----------|
 | `"chaseTarget"` | Steer toward the target's assigned combat slot. With no target this degrades to a stand-down (there is nothing to move relative to). |
+| `"moveToAnchor"` | Steer toward this brain's spawn-time home anchor, then stand when it arrives. The anchor is host-only brain state; placing the entity authors its home. |
+| `"patrol"` | Steer through the graph-wide anchor-relative route, advancing its persistent cursor in `"loop"` or `"pingPong"` order. |
 | `"hold"` | Stand still by **clearing** the navigation destination. |
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
 
@@ -624,36 +630,52 @@ stops the agent: it clears the destination, so the agent settles in place.
 `freeze` writes nothing, so an agent already walking somewhere keeps walking
 there.
 
+`moveToAnchor` and `patrol` are **position goals**, not engagement. They cannot
+declare an `action`; validation rejects that combination. They drop a
+retained target, take no combat slot, and face only their travel direction; an
+arrived or blocked position goal does not turn to face a nearby pawn. Arrival is
+not latched: `moveToAnchor` clears its destination while it is within the
+engine's `POSITION_GOAL_ARRIVAL_EPSILON` (currently 0.5 m), then issues the
+anchor goal again if something pushes it back out. If an authored transition
+leaves a position-goal state on arrival, its distance threshold must be **at
+least** that engine epsilon. A smaller threshold wedges: steering has already
+cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
+
 Action verbs are likewise closed; `"attack"` is the only one today. It applies
 `attack.damage` to the selected target through the engine's damage chokepoint —
 once per `attack.cooldownMs`, only while the target is inside `attack.range`, and
 only while it is still alive. A graph with no `attack` block never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is
-`motion: "chaseTarget"` **or** any `action`, not the motion verb alone. Target
-retention across ticks, combat-slot participation and incumbency, and facing all
-key on it. A `hold` + `attack` state stands its ground and swings, so it keeps
-its target, keeps its slot, and turns to face what it is hitting.
+`motion: "chaseTarget"` **or** any action on a non-position-goal state. Target
+retention across ticks, combat-slot participation and incumbency, and target
+facing all key on it. A `hold` + `attack` state stands its ground and swings, so
+it keeps its target, keeps its slot, and turns to face what it is hitting.
 
-**Animation.** A state plays its own `animation` name, with one substitution: a
-*locomotion* state (`chaseTarget` motion and **no** `action`) plays the graph's
-rest animation — the `initial` state's — while it is standing still, because its
-own animation is a travel cycle that would slide in place. Every other state,
-including a `chaseTarget` state that declares an action, always plays its own.
+**Animation.** A state plays its own `animation` name, with one substitution: an
+*locomotion* state (actionless `chaseTarget`, or the always-actionless
+`moveToAnchor` / `patrol`) plays the graph's rest animation — the `initial` state's —
+while it is standing still, because its own animation is a travel cycle that
+would slide in place. Every other state, including a `chaseTarget` state that
+declares an action, always plays its own.
+
+Set `components.mesh.defaultState` to the `initial` state's animation. A
+mismatch warns at spawn and immediately reseeds the mesh to the graph's rest
+pose. When the active untargeted state is locomotion, use a distinct `idle`
+initial state that hands off to it; this preserves a travel cycle while moving
+and a real rest pose while stopped.
 
 **v1 limitation — two or more locomotion states.** `states` is authored as an
 object, but the engine resolves it as a `BTreeMap`: states are ordered
-lexicographically by name, not by authoring order. This is invisible with a
-single locomotion state (every reference enemy shipped today has exactly one),
-but a graph's *travel* animation — the reference walk-playback rate scaling
-uses — is derived from the **first** locomotion state in that lexicographic
-order. Author two, say `patrol` (`chaseTarget`, no action, plays `"walk"`) and
-`pursue` (`chaseTarget`, no action, plays `"run"`), and the graph's travel
-animation always resolves to `patrol`'s `"walk"` — even while the brain is
-actually in `pursue` — because `"patrol" < "pursue"`. Rate scaling then scales
-the wrong clip, and renaming either state can silently flip which one wins.
-Stick to one locomotion state per graph until you need a second; if you add
-one, expect this.
+lexicographically by name, not by authoring order. A graph's *travel* animation
+— the walk-playback rate scaling uses — is derived from the **first** locomotion
+state in that lexicographic order. Author `patrol` (plays `"walk"`) and `pursue`
+(plays `"run"`), and travel animation always resolves to `patrol`'s `"walk"` —
+even while the brain is actually in `pursue` — because `"patrol" < "pursue"`.
+Rate scaling then scales the wrong clip, and renaming either state can silently
+flip which one wins. The shipped reference enemy uses the same `"walk"` clip
+for patrol, alert, and retreat, so it is unaffected; use one travel clip per
+graph until distinct locomotion clips are needed.
 
 ### Evaluation rules
 
@@ -707,6 +729,9 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetHealth` | `@brain.targetHealth` | `number` | The selected target's current hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
 | `brain.targetMaxHealth` | `@brain.targetMaxHealth` | `number` | The selected target's maximum hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
 | `brain.targetDied` | `@brain.targetDied` | `boolean` | Whether the selected target's death sweep latch has fired; `false` with no target or no health component. Meaningful only when `hasTarget` is true. |
+| `brain.distanceFromAnchor` | `@brain.distanceFromAnchor` | `number` | XZ distance in metres from this brain's spawn-time home anchor. Always meaningful, including with no selected target. Use it for an authored leash or retreat; it is not an engine leash field. |
+| `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
+| `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -720,12 +745,42 @@ does not document them.
 
 Reading any other name is a load error.
 
+### Faction and hostility
+
+Fresh target acquisition filters player pawns by hostility; the nearest hostile
+offer determines its think-stride cadence, so a nearby friendly cannot make a
+farther hostile scan more often. It never re-checks a target already retained.
+Retention is graph policy: put an ordered any-state stand-down over
+`brain.targetHostile` beside the ordinary lost-target interrupt:
+
+```typescript
+interrupts: [
+  { to: "patrol", when: runtime.select(brain.hasTarget, false, true) },
+  { to: "patrol", when: runtime.select(brain.targetHostile, false, true) },
+],
+```
+
+The order and shared destination are load-bearing. The second expression is true
+for an untargeted *or* friendly target, while `brain.targetDied` is false
+untargeted; keeping the explicit `hasTarget` row first makes the policy legible,
+and targeting the active untargeted state prevents an idle/patrol oscillation.
+
+`@state.faction` is an **interim opaque numeric identity token**, not the
+permanent author-facing allegiance model. The current floor treats differing
+identities as hostile; enemies begin at identity `1` and a player with no field
+reads as `0`. Author durable behavior through `brain.targetHostile` (and future
+candidate-hostility facts), not equality tests on the numeric field. Named
+alliances, neutrality, and diplomacy belong to the planned Faction & relationship
+model and can replace that storage beneath the fact without changing your
+retention guards.
+
 ### The no-target trap
 
 **This is the single most important thing in this section.**
 
 With no selected target, `brain.hasTarget` reads `false`, every target-health
-fact reads `0`, `brain.targetDied` reads `false`, and
+fact reads `0`, `brain.targetDied`, `brain.targetHostile`, and
+`brain.targetReachable` read `false`, and
 `brain.targetDistance` reads a `1e9` sentinel. Never infer target presence from
 the zero values: `brain.hasTarget` is the sole presence test. The sentinel is
 **one-directional**:
@@ -766,6 +821,25 @@ Do **not** spell this `runtime.le(brain.targetHealth, 0)`: that expression also
 fires when there is no target, because target health reads zero then, and it
 does not carry the engine death sweep's complete definition.
 
+On a non-engaged state such as `patrol`, target-side facts are meaningful only
+on an acquisition scan. Between strided scans they hold their no-target values,
+so a detection or re-acquisition guard using `targetDistance`, `targetHostile`,
+or `targetReachable` must conjunct `brain.acquisitionDue`:
+
+```typescript
+runtime.select(
+  brain.acquisitionDue,
+  runtime.le(brain.targetDistance, 16),
+  false,
+)
+```
+
+`targetReachable` is available for authored routing, but the shipped reference
+enemy intentionally does not show a `waiting`/barrier-hold state yet. Its result
+inherits the pathfinder's freestanding-wall wraparound false-negative until the
+pursuit repair lands; do not treat it as a ground-truth visibility or geometry
+oracle.
+
 ### `attack.range` vs `engagementRadius`
 
 Two separate knobs that are easy to conflate:
@@ -786,6 +860,15 @@ pursuers should crowd tighter or hang back, author `engagementRadius` outright.
 Author it explicitly even when it equals `attack.range`: they are separate knobs,
 and a graph that later retunes its swing reach should not silently re-space its
 pack.
+
+### Recommended future attack-map grammar
+
+The currently shipped grammar is the singular `attack` block and
+`action: "attack"` shown above. The planned multi-attack surface should replace
+that with a named map — `attacks: Record<string, AttackParams>` — and an action
+reference such as `action: { attack: "melee" }`. Treat this as coordination
+guidance for future descriptors, not syntax accepted by the current runtime:
+there should be no privileged singular fallback once the named map lands.
 
 ### The level-wide pursuer
 

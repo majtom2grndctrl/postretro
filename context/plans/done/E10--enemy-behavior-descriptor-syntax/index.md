@@ -30,20 +30,20 @@ the work.
   XZ offsets, so a route is placement-independent) and `mode` (`loop` | `pingPong`).
   The engine tracks a per-brain patrol cursor. `patrol` motion with no block, or an
   empty `points` list, is a parse error in both runtimes.
-- **Stand-down destination is the untargeted-active resting state.** An any-state
+- **Stand-down destination is the untargeted-active state.** An any-state
   `not hasTarget` / `not targetHostile` stand-down interrupt must target the graph's
-  untargeted-active resting state — the `patrol` state when a route is authored, else
+  untargeted-active state — the `patrol` state when a route is authored, else
   `idle`. `select_transition` skips a graph-wide interrupt only where `interrupt.to ==
-  current`, so a stand-down whose destination is *not* the state the enemy rests in
+  current`, so a stand-down whose destination is *not* the active untargeted state
   re-fires every tick that state is live: an `idle↔patrol` oscillation that never walks
-  the route. Authoring constraint, taught by the reference comments; the multiple-resting-state
+  the route. Authoring constraint, taught by the reference comments; the multiple-active-state
   general fix is deferred (Open questions).
 - **New brain facts** (three, appended in order at `BRAIN_INPUTS` indices 10
   `distanceFromAnchor`, 11 `targetHostile`, 12 `targetReachable`; `targetHostile` belongs to
   the faction hook below): `@brain.distanceFromAnchor` (Number; the enemy's XZ distance
   from `home_anchor`, always meaningful, `0` at the anchor) and `@brain.targetReachable`
   (Bool; whether the nav floor can path enemy→selected-target this tick, `false`
-  untargeted, `true` with no navmesh). Each lands in the foundation table +
+  untargeted or with no navmesh). Each lands in the foundation table +
   `BrainValidationScope`, the runtime `BrainScope` refresh, `BrainFacts`, and the SDK
   `brain` prelude (TS + Luau).
 - **Minimal faction hook** (two parts, split along the fresh-scan / retained-lookup
@@ -172,18 +172,20 @@ Retention drop is authored instead, over `@brain.targetHostile`.
   routes through the any-state stand-down to `patrol`, which steers back toward home;
   re-engagement then fires from `patrol → alert` on a fresh acquisition, not from a
   `retreat → alert` edge.
-- [ ] **targetReachable.** With a selected target the fact reads the nav floor's `find_path`
-  verdict (enemy→target); it reads `false` with no target and `true` with no navmesh present;
-  it is recomputed on the think-stride acquisition cadence and a between-strides tick reuses
-  the cached value. The fact is correct by construction — it reports the same verdict chase
-  steering already acts on — and ships with this spec. The authored routing demo — a
+- [ ] **targetReachable.** With a selected target and navmesh the fact reads the nav floor's
+  `find_path` verdict (enemy→target); it reads `false` with no target or no navmesh present,
+  clearing any restored or non-due cached verdict immediately. It is recomputed on the
+  think-stride acquisition cadence and a between-strides tick reuses the cached value only
+  while navigation is present. The fact ships with this spec as the nav-floor verdict, not a
+  ground-truth reachability oracle. The authored routing demo — a
   `select(targetReachable, false, true)` guard routing to a hold state when the target is
   unpathable and back when it becomes pathable — is gated on `E10--pursuit-wraparound-blocked`
   (AC 11): until that fix the verdict inherits pursuit's false-negative around freestanding
   walls, so a demo built on it would misfire at every wall corner.
 - [ ] **Faction hostility gate.** On a fresh acquisition scan an enemy admits a
   `PlayerMovement` candidate only while hostile to it per `@state.faction`, so a friendly
-  pawn never masks a hostile one and is never freshly acquired; the retained-target lookup
+  pawn never masks a hostile one, is never freshly acquired, and does not price the think
+  stride; the nearest hostile offer determines the cadence. The retained-target lookup
   applies no faction test. A retained target whose faction is written (through the E16
   `@state` path) to equal the enemy's faction is dropped by the reference enemy's authored
   `select(targetHostile, false, true)` stand-down interrupt on the next guard eval — not
@@ -348,6 +350,8 @@ each offered candidate read its `@state.faction`
 (`registry.get_component::<EntityStateComponent>(entity)`, absent → 0.0) and admit it only
 when it differs from the evaluating enemy's faction — under nearest-target ranking this is
 necessary, since without it a nearer friendly pawn masks a hostile one behind it. The
+nearest hostile offer, before authored candidate filtering, prices the unengaged think stride;
+a friendly pawn does not change acquisition cadence. The
 retained lookup applies no faction test (its alive/died checks are unchanged), so a retained
 target is never re-gated on hostility. Thread the enemy's faction scalar as a new `f32`
 parameter `select_target` → `nearest_target_candidate` (read once per enemy in the compute
@@ -371,7 +375,7 @@ reads `false` untargeted), so an authored `select(targetHostile, false, true)` s
 reads true and fires exactly when the retained target is not hostile. Retention drop is then
 authored: the reference enemy (Task 6) carries an any-state interrupt
 `select(targetHostile, false, true)` → stand-down. This is the same *shape* as the shipped
-`targetDied` stand-down (an any-state interrupt over a target-side bool → resting state), but
+`targetDied` stand-down (an any-state interrupt over a target-side bool → untargeted state), but
 the untargeted polarity differs: `targetDied` reads `false` with no target and so does not
 fire, whereas `select(targetHostile, false, true)` reads `true` untargeted, so it fires on
 untargeted-*or*-friendly. It is correct in the reference only because the earlier-declared
@@ -405,21 +409,22 @@ Task 4 through `BrainValidationScope`, the `BrainScope` `fixed` array + `refresh
 new `BrainFacts.target_reachable: bool`, the SDK `brain` prelude (TS + Luau), the SDK typedef
 fixtures, the drift tests, and the `expected_fixed_value` oracle (its no-`_` panic arm forces
 a matching case). Compute reachability in the compute pass: when the brain is
-armed, has a selected target, and the tick is acquisition-due (reuse the existing
-`evaluate_acquisition` stride gate — do not add a stride constant), call the nav floor's
-`find_path(nav_graph, snap.position, target_pos).is_some()` and cache it on a new
+armed, has a selected target, a nav graph is present, and the tick is acquisition-due (reuse
+the existing `evaluate_acquisition` stride gate — do not add a stride constant), call the nav
+floor's `find_path(nav_graph, snap.position, target_pos).is_some()` and cache it on a new
 `BrainComponent.target_reachable: bool` field marked `#[serde(default)]` (or
 `#[serde(skip)]` — it is a recomputed cache that need not persist, and a plain field
 with no default would reject any save written before it existed); between strides
-reuse the cache. With no
-selected target the fact reads `false`; with no `nav_graph` (a map without a navmesh) it
-reads `true`, preserving today's chase-degradation behavior. This is the one per-enemy nav
-query added; it is strided and cached so an idle-strided distant enemy pays it at most once
-per stride band, within the combat-positioning query budget.
+reuse the cache. With no selected target the fact reads `false`; with no `nav_graph` (a map
+without a navmesh) it also reads `false` immediately and clears the cache before a non-due
+retained-target tick can reuse it. This intentional implementation correction does not add
+no-nav direct steering or pursuit behavior; `E10--pursuit-wraparound-blocked` owns pursuit
+route correctness. This is the one per-enemy nav query added; it is strided and cached so an
+idle-strided distant enemy pays it at most once per stride band, within the combat-positioning
+query budget.
 **The fact ships here; only its reference demo waits.** `@brain.targetReachable` is defined
-as the nav floor's `find_path` verdict (cached) and reports it faithfully — the *same* verdict
-chase steering already consumes (`E10--pursuit-wraparound-blocked` confirms pursuit itself
-freezes on the same false `None`, through the same `find_path`). It is not a ground-truth
+as the nav floor's `find_path` verdict (cached when a nav graph exists); without a nav graph it
+conservatively reports `false`. It is not a ground-truth
 reachability oracle. That draft fixes a `find_path` repair failure that returns a false `None`
 for a genuinely-routable wraparound around a freestanding wall; until it lands, the verdict
 inherits pursuit's known wraparound limitation around such walls. The fact and its wiring
@@ -431,10 +436,13 @@ pathfinder's current capability, not ground truth.
 ### Task 6: Reference authoring, tests, diagnostics, docs
 
 Author the reference enemy (`sdk/behaviors/reference/entities.{ts,luau}`, both spellings
-identical) to demonstrate the new vocabulary. `patrol` is the untargeted-active resting state:
-a `patrol` block (`pingPong` over a short route) and a `patrol` state that acquires on a fresh
-scan (`patrol → alert` on `le(targetDistance, detection)`). A `retreat` state (`moveToAnchor`)
-is reached from `alert`/`attack` on `gt(distanceFromAnchor, leash)` and exits *only* on
+identical) to demonstrate the new vocabulary. A transient `idle` initial state supplies the
+graph's rest animation, agrees with the mesh `defaultState`, and hands off unconditionally to
+`patrol`. `patrol` remains the untargeted-active state: a `patrol` block (`pingPong` over a short
+route) and a `patrol` state that acquires on a fresh scan (`patrol → alert` on
+`le(targetDistance, detection)`). A `retreat` state (`moveToAnchor`)
+is reached from `alert`/`attack` on `gt(distanceFromAnchor, leash)`; that edge precedes
+`alert → attack`, so simultaneous leash and attack-range guards retreat. It exits *only* on
 `le(distanceFromAnchor, arrivalEps)` → `patrol` (home reached, resume patrol) — no
 target-distance exit, since `retreat` is non-engaged and holds no target across strides;
 re-engagement rides the any-state stand-down back to `patrol` and then `patrol → alert`. The
@@ -443,7 +451,7 @@ friendly-flip drop, the `targetDied` shape) both target `patrol`, so they are sk
 (`to == current`) and do not oscillate. Its comments are the de-facto authoring docs — they
 must teach that the anchor is the spawn position, that leash is a `distanceFromAnchor` guard
 (not an engine field), the patrol cursor's persistence, that a stand-down interrupt must target
-the untargeted-active resting state or it oscillates, that an authored arrival guard threshold
+the untargeted-active state or it oscillates, that an authored arrival guard threshold
 must be `>= POSITION_GOAL_ARRIVAL_EPSILON` (a smaller threshold wedges — the resolver `Clear`s
 at the epsilon and never reaches it), that retention drop on a friendly flip is authored
 over `@brain.targetHostile` (and that `select(targetHostile, false, true)` fires on
@@ -572,7 +580,7 @@ recommended grammar (Coordination) as a separate follow-up, not part of this spe
 | `BRAIN_INPUTS` is append-only and the runtime `BrainScope.fixed` array length equals the table length, so table and refresh grow together in index order | Task 2 (index 10), Task 4 (index 11), Task 5 (index 12) | Any new fact must append and add its refresh slot in the same edit, or the crate will not compile; `expected_fixed_value` (no `_` arm) and the resolution-parity drift test guard it | AC 8, 9 |
 | Facts are read-only; faction is the only new mutable `@state`, written solely through the E16 `setState`/`entity_state_mut` path, never by a guard | Task 4 | Any guard-side write; any new reaction claiming faction | AC 6 |
 | Hostility filters fresh acquisition only, on the ranking scan (`entity_model.md` §7c); retention is stood down by an authored interrupt over `@brain.targetHostile`, never re-gated by candidacy | Task 4 (`nearest_target_candidate` filter + `@brain.targetHostile` fact) | Any move of the hostility test into the shared `target_candidate` gate — which the retained lookup also calls — would re-gate retention against §7c | AC 6 |
-| No-target / no-nav conventions: `distanceFromAnchor` always meaningful; `targetHostile` `false` untargeted; `targetReachable` `false` untargeted, `true` with no navmesh | Task 2, Task 4, Task 5 | The refresh must apply these before eval, matching the `BRAIN_NO_TARGET_DISTANCE` sentinel precedent | AC 1, 5, 6 |
+| No-target / no-nav conventions: `distanceFromAnchor` always meaningful; `targetHostile` `false` untargeted; `targetReachable` `false` untargeted or with no navmesh, with the absent-nav result taking priority over a cache | Task 2, Task 4, Task 5 | The refresh must apply these before eval, matching the `BRAIN_NO_TARGET_DISTANCE` sentinel precedent | AC 1, 5, 6 |
 | All new state (anchor, patrol cursor, reachability cache, faction) is host-only sim state; no wire/replication field; clients see animation-state names only | Task 2, 3, 4, 5 | Any snapshot/replication edit that serializes these onto the wire | AC 10 |
 | Leash is authored, not an engine field — expressed via `distanceFromAnchor` guards | Task 3, Task 6 | Any reintroduction of a `leashRange`-style field re-forecloses behavior-state-graph's decision | AC 4 |
 | Guard window is zero-alloc on a between-strides tick — anchor distance and cached reachability feed `refresh` without allocating (refresh writes slots by index) | Task 2, Task 5 | The due-tick `find_path` runs A* and allocates a `NavPath`; that allocation is explicitly outside the zero-alloc contract, so the alloc-probe measures a non-due tick where the cached verdict is reused | AC 9 |
@@ -594,11 +602,13 @@ recommended grammar (Coordination) as a separate follow-up, not part of this spe
 | Leave then re-enter `patrol` | cursor persists across the intervening states | resumes at the retained cursor (return-to-patrol continues the route) |
 | Empty `points` + `patrol` motion | parse time | validation error, pathed |
 | Reachability cache vs a retained target's movement | retained target moves reachable→unreachable between acquisition strides | `targetReachable` holds the last due-tick verdict up to one stride band; refreshed next due tick — accepted |
-| Reachability, no navmesh on the map | `nav_graph == None` | reads `true` (chase degrades as today), no probe run |
+| Reachability, no navmesh on the map | `nav_graph == None`, including a retained target on a non-due tick with a restored cache | reads `false`, clears the cache immediately, and runs no probe |
 | Reachability, target lost | `hasTarget` false this tick | reads `false`; cache cleared |
-| Alloc probe, due tick with navmesh + target | acquisition-due → `find_path` runs | allocations occur (A* `NavPath`); zero-alloc holds only between strides / with no navmesh — the alloc-probe fixture targets a non-due tick |
+| Alloc probe, due tick with navmesh + target | acquisition-due → `find_path` runs | allocations occur (A* `NavPath`); zero-alloc holds only between strides — no-nav ticks also skip the probe |
 | Retreat, target lost on a non-due tick | `retreat` non-engaged drops the target; non-due tick → `hasTarget` false | any-state `not hasTarget` stand-down (targets `patrol`) fires → routes to `patrol`, continues toward home; not stranded in place |
 | Faction flips to friendly mid-chase | `@state.faction` written == enemy faction; next guard eval | `@brain.targetHostile` reads `false`; the authored `select(targetHostile, false, true)` stand-down drops the retained target; the fresh scan never re-offers it |
+| Near friendly and farther hostile, no retained target | the friendly distance reaches its stride boundary while the hostile distance does not | `acquisitionDue` stays false; the nearest hostile offer alone prices the cadence |
+| Alert target is both in attack range and beyond the leash | ordered local edges: leash retreat before attack | first-true-wins enters `retreat` immediately |
 | Faction write source vs the AI tick | game-logic order: trigger dispatch / touch → `run_ai_tick` → `agent_steering::tick` (`sim/mod.rs`) | a trigger-command / touch-reaction `@state.faction` write lands before the tick — read the same tick by the candidacy scan and `targetHostile`; an `on_impact` write inside the AI apply pass is read by ALL brains the NEXT tick uniformly (the compute pass completes before any apply-pass mutation — no intra-tick enemy-order dependence) |
 | Enemy moved by a script | transform changes, `home_anchor` unchanged | `distanceFromAnchor` grows; home stays the spawn point |
 | `patrol` exited or entered this tick | steering resolver runs on the post-transition state's motion | on the tick `patrol` is exited, the cursor does not advance; on the tick `patrol` is entered, the resolver runs, so the cursor may advance on entry if already within epsilon of `points[cursor]` |
@@ -619,7 +629,7 @@ export const sentry = defineEntity({
     health: { max: 60 },
     mesh: { /* model, animation states incl. "walk", "idle" */ },
     behavior: {
-      initial: "patrol",
+      initial: "idle",
       moveSpeed: 3,
       attack: { damage: 8, range: 2, cooldownMs: 1200 }, // singular until multi-attack lands the map
       engagementRadius: 2,
@@ -630,8 +640,8 @@ export const sentry = defineEntity({
       // (to == current) instead of yanking the enemy out every tick.
       patrol: { mode: "pingPong", points: [[0, 0], [6, 0], [6, 6]] },
       interrupts: [
-        // Any-state stand-downs route to the untargeted resting state `patrol`,
-        // NOT `idle`: a stand-down whose `to` is not the state the enemy rests in
+        // Any-state stand-downs route to the active untargeted state `patrol`,
+        // NOT `idle`: a stand-down whose `to` is not the active state
         // re-fires every tick that state is live (idle<->patrol oscillation).
         { to: "patrol", when: runtime.select(brain.hasTarget, false, true) },
         // Authored retention drop: stand down when the retained target is no
@@ -646,6 +656,12 @@ export const sentry = defineEntity({
         { to: "patrol", when: runtime.select(brain.targetHostile, false, true) },
       ],
       states: {
+        // The initial state supplies the graph rest pose and matches the mesh
+        // default; its unconditional handoff enters the active patrol.
+        idle: {
+          animation: "idle", motion: "hold",
+          transitions: [{ to: "patrol", when: runtime.constant(true) }],
+        },
         // Untargeted: walk the patrol route; acquire on a fresh scan.
         patrol: {
           animation: "walk", motion: "patrol",
@@ -660,9 +676,9 @@ export const sentry = defineEntity({
         alert: {
           animation: "walk", motion: "chaseTarget",
           transitions: [
-            { to: "attack",  when: runtime.le(brain.targetDistance, 2) },
             // Leash: authored, not an engine field.
             { to: "retreat", when: runtime.gt(brain.distanceFromAnchor, 20) },
+            { to: "attack",  when: runtime.le(brain.targetDistance, 2) },
             // Barrier hold (add once the wraparound nav fix lands):
             // { to: "waiting", when: runtime.select(brain.targetReachable, false, true) },
           ],
@@ -718,8 +734,8 @@ export const sentry = defineEntity({
   so the two ranges stay independently authorable — a sentry may be targetable at one range yet
   only engage from patrol at a tighter one.
 - **Reachability: fact ships, demo waits (decided).** `@brain.targetReachable` is the nav
-  floor's `find_path` verdict, correct by construction (the same verdict chase already acts on),
-  so it ships with this spec — not a ground-truth oracle. It inherits pursuit's wraparound
+  floor's `find_path` verdict when a nav graph exists and `false` otherwise, so it ships with
+  this spec — not a ground-truth oracle. It inherits pursuit's wraparound
   false-negative around freestanding walls until `E10--pursuit-wraparound-blocked` lands; only
   the authored reference *demo* (the `waiting` barrier-hold) waits on that fix, per AC 11.
   The same rule settles the softer `E10--mandatory-vertex-wedge-escapes` dependency: it keeps a
@@ -727,12 +743,12 @@ export const sentry = defineEntity({
   fix), while the fact does not. General rule: the fact ships; an authored reachability *demo*
   waits on whatever nav fix its feel needs.
 - **State-scoped interrupts — deferred to statecharts.** The general fix for multiple
-  untargeted-active resting states (an interrupt carrying the states it applies to or excludes)
+  untargeted-active states (an interrupt carrying the states it applies to or excludes)
   is the **Hierarchical behavior (statecharts)** roadmap spec's `"*"` scoped transitions; the
-  single-resting-state convention holds here (search is out of scope, so one resting state
+  single-active-state convention holds here (search is out of scope, so one active state
   suffices), and the first real consumer arrives with perception. A companion `behavior_lints`
   finding — an any-state `not hasTarget` / `not targetHostile` stand-down whose `to` is not the
-  graph's untargeted-active resting state — could catch the oscillation at authoring time, but
+  graph's untargeted-active state — could catch the oscillation at authoring time, but
   identifying that state statically is not clearly cheap; noted, not scoped.
 - **Hierarchical composites — forward compatibility (owner, before promotion).** The flat
   state model is v1; the endpoint is a recursive statechart — composite activities, orthogonal

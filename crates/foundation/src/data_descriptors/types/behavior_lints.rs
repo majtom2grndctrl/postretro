@@ -123,6 +123,7 @@ mod tests {
             states,
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,

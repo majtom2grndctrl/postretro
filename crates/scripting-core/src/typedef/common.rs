@@ -113,6 +113,12 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "BehaviorStateDescriptor" => "BehaviorStateDescriptor".to_string(),
         "TransitionDescriptor" => "TransitionDescriptor".to_string(),
         "AttackParams" => "AttackParams".to_string(),
+        // SDK-only structural spelling of the runtime `[f32; 2]` patrol point.
+        // Keep it nominal here so unrelated fixed arrays retain their existing
+        // Luau array-like declarations.
+        "PatrolPoint" => "readonly [number, number]".to_string(),
+        "PatrolDescriptor" => "PatrolDescriptor".to_string(),
+        "PatrolMode" => "PatrolMode".to_string(),
         "MotionVerb" => "MotionVerb".to_string(),
         "ActionVerb" => "ActionVerb".to_string(),
         "BehaviorStates" => "{ readonly [state: string]: BehaviorStateDescriptor }".to_string(),
@@ -260,6 +266,9 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "BehaviorStateDescriptor" => "BehaviorStateDescriptor".to_string(),
         "TransitionDescriptor" => "TransitionDescriptor".to_string(),
         "AttackParams" => "AttackParams".to_string(),
+        "PatrolPoint" => "{number, number}".to_string(),
+        "PatrolDescriptor" => "PatrolDescriptor".to_string(),
+        "PatrolMode" => "PatrolMode".to_string(),
         "MotionVerb" => "MotionVerb".to_string(),
         "ActionVerb" => "ActionVerb".to_string(),
         "BehaviorStates" => "{ [string]: BehaviorStateDescriptor }".to_string(),

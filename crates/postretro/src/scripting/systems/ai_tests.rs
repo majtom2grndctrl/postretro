@@ -14,7 +14,9 @@ use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use super::candidate_scope::CandidateScope;
+use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
 use super::engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
+use super::facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -30,11 +32,12 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_HAS_TARGET_INPUT,
-    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr,
-    BehaviorGraphDescriptor, BehaviorStateDescriptor, BindingScope, BoundProgram,
+    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
+    BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+    BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
+    BakedIr, BehaviorGraphDescriptor, BehaviorStateDescriptor, BindingScope, BoundProgram,
     CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor,
-    IrNode, IrValue, MotionVerb, TransitionDescriptor, bind,
+    IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -117,6 +120,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
             edge(TEST_IDLE_STATE, target_beyond(aggro_range)),
         ],
         candidate_filter: Some(candidate_is_alive_within(aggro_range)),
+        patrol: None,
         attack: Some(AttackParams {
             damage: TEST_ATTACK_DAMAGE,
             range: TEST_ATTACK_RANGE,
@@ -264,7 +268,12 @@ fn spawn_enemy(
         position: pos,
         ..Transform::default()
     });
+    let mut brain = brain;
+    brain.home_anchor = pos;
     reg.set_component(id, brain).unwrap();
+    reg.entity_state_mut(id)
+        .expect("spawned enemy carries entity state")
+        .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
     reg.set_component(id, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
         .unwrap();
     reg.set_component(id, enemy_mesh()).unwrap();
@@ -369,6 +378,12 @@ fn set_enemy_yaw(reg: &mut EntityRegistry, enemy: EntityId, yaw: f32) {
     reg.set_component(enemy, transform).unwrap();
 }
 
+fn set_enemy_position(reg: &mut EntityRegistry, enemy: EntityId, position: Vec3) {
+    let mut transform = *reg.get_component::<Transform>(enemy).unwrap();
+    transform.position = position;
+    reg.set_component(enemy, transform).unwrap();
+}
+
 /// Force the enemy agent's live velocity (what `path_state` reports), so a facing
 /// test can stage a "moving" agent without running the steering tick.
 fn set_agent_velocity(reg: &mut EntityRegistry, enemy: EntityId, velocity: Vec3) {
@@ -421,6 +436,9 @@ fn step_graph(
             time_in_state_ms: 0.0,
             attack_cooldown_ms: 0.0,
             acquisition_due,
+            distance_from_anchor: 0.0,
+            target_hostile: true,
+            target_reachable: true,
         },
     );
 
@@ -438,6 +456,247 @@ fn step_graph(
         .expect("the selected index is declared")
         .clone();
     (name, steering_for(motion))
+}
+
+/// A graph whose authored transition makes the runtime reachability fact
+/// observable: a selected but unrouteable target moves from chase to hold.
+fn reachability_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "chase".to_string(),
+        states: BTreeMap::from([
+            (
+                "chase".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge("hold", target_is_unreachable())],
+                ),
+            ),
+            (
+                "hold".to_string(),
+                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        patrol: None,
+        attack: None,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+/// A chase-only graph keeps the selected target retained across stride bands,
+/// letting the cache test move it between a due and non-due tick.
+fn reachability_cache_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "chase".to_string(),
+        states: BTreeMap::from([(
+            "chase".to_string(),
+            authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+        )]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        patrol: None,
+        attack: None,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+fn target_is_unreachable() -> IrNode {
+    IrNode::Select {
+        cond: Box::new(brain_input(BRAIN_TARGET_REACHABLE_INPUT)),
+        a: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(true),
+        }),
+    }
+}
+
+fn reachability_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
+    NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 64,
+        dim_z: 64,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions,
+        portals: Vec::new(),
+    })
+}
+
+#[test]
+fn target_reachability_is_false_without_a_selected_target() {
+    let graph = reachability_cache_graph();
+    let mut registry = EntityRegistry::new();
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.target_reachable = true;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert!(
+        !registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable,
+        "losing the selected target clears the cached reachability verdict"
+    );
+}
+
+#[test]
+fn target_reachability_is_false_without_a_navmesh_even_off_stride_with_a_restored_cache() {
+    let graph = reachability_graph();
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::new(17.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.acquired_target = Some(target);
+    brain.target_reachable = true;
+    // A 16 m retained target uses the four-tick band; this is a non-due tick.
+    brain.think_stride_counter = 0;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert!(
+        !brain.target_reachable,
+        "an absent navmesh clears a restored cached verdict before a non-due tick can reuse it"
+    );
+    assert_eq!(brain.state_name(), Some("hold"));
+}
+
+#[test]
+fn target_reachability_uses_the_nav_pathfinder_verdict() {
+    let single_region = reachability_nav_graph(vec![NavRegion {
+        x0: 0,
+        z0: 0,
+        x1: 8,
+        z1: 8,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    }]);
+    let disconnected_regions = reachability_nav_graph(vec![
+        NavRegion {
+            x0: 0,
+            z0: 0,
+            x1: 4,
+            z1: 4,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+        NavRegion {
+            x0: 5,
+            z0: 0,
+            x1: 8,
+            z1: 4,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+    ]);
+
+    for (nav_graph, expected_reachable, expected_state) in [
+        (&single_region, true, "chase"),
+        (&disconnected_regions, false, "hold"),
+    ] {
+        let graph = reachability_graph();
+        let mut registry = EntityRegistry::new();
+        spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+        let enemy = spawn_enemy(
+            &mut registry,
+            Vec3::new(1.0, 0.0, 1.0),
+            BrainComponent::from_graph(&graph),
+            50.0,
+        );
+        let mut runtime = AiRuntime::new();
+
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(nav_graph), None);
+
+        let brain = registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain");
+        assert_eq!(brain.target_reachable, expected_reachable);
+        assert_eq!(brain.state_name(), Some(expected_state));
+    }
+}
+
+#[test]
+fn target_reachability_cache_holds_until_the_next_acquisition_tick() {
+    let graph = reachability_cache_graph();
+    let nav_graph = reachability_nav_graph(vec![
+        NavRegion {
+            x0: 0,
+            z0: 0,
+            x1: 30,
+            z1: 10,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+        NavRegion {
+            x0: 0,
+            z0: 40,
+            x1: 30,
+            z1: 50,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        },
+    ]);
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::new(17.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.think_stride_counter = 3;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    // Distance 16 uses the four-tick band. Counter 3 makes this first tick due,
+    // so the reachable starting location seeds the cache.
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    assert!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    );
+
+    // The retained target moves to a disconnected region. Its new far-band
+    // stride is not due on this tick, so the fact must reuse the cached true
+    // verdict instead of issuing another path query.
+    set_enemy_position(&mut registry, target, Vec3::new(17.0, 0.0, 41.0));
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert_eq!(brain.acquired_target, Some(target));
+    assert!(
+        brain.target_reachable,
+        "non-due tick retains the cached verdict"
+    );
+
+    // Set the existing stride counter to its next far-band due boundary. This
+    // is the first tick allowed to refresh the cache against the moved target.
+    let mut brain = brain.clone();
+    brain.think_stride_counter = 11;
+    registry.set_component(enemy, brain).expect("enemy is live");
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    assert!(
+        !registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable,
+        "the next due tick replaces the cache with the disconnected-path verdict"
+    );
 }
 
 #[test]
@@ -777,6 +1036,7 @@ fn select_target_returns_single_player_pawn() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         None,
@@ -798,6 +1058,7 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         None,
@@ -821,6 +1082,7 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         None,
@@ -845,6 +1107,7 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         None,
@@ -869,6 +1132,7 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         None,
@@ -908,6 +1172,7 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
     let (_, target) = select_target(
         &registry,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         Some(&filter),
@@ -933,6 +1198,7 @@ fn candidate_filter_is_never_evaluated_for_a_retained_target() {
     let (_, target) = select_target(
         &registry,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         Some(retained),
         None,
         Some(&filter),
@@ -968,6 +1234,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     let (_, selected) = select_target(
         &inside,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         Some(&filter),
@@ -983,6 +1250,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     let (_, selected) = select_target(
         &outside,
         Vec3::ZERO,
+        ENEMY_DEFAULT_FACTION,
         None,
         None,
         Some(&filter),
@@ -991,10 +1259,178 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     assert!(selected.is_none(), "R + epsilon is ineligible");
 }
 
+#[test]
+fn faction_seed_is_transparent_and_target_hostility_tracks_a_retained_target() {
+    let mut graph = tuning();
+    graph.states.get_mut(TEST_IDLE_STATE).unwrap().transitions = vec![edge(
+        TEST_ALERT_STATE,
+        brain_input(BRAIN_TARGET_HOSTILE_INPUT),
+    )];
+    graph.interrupts = vec![
+        edge(TEST_IDLE_STATE, target_lost()),
+        edge(
+            TEST_IDLE_STATE,
+            IrNode::Select {
+                cond: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                a: Box::new(IrNode::Const {
+                    value: IrValue::Bool(false),
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Bool(true),
+                }),
+            },
+        ),
+    ];
+    graph.candidate_filter = None;
+
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, TEST_IDLE_STATE),
+        50.0,
+    );
+    assert_eq!(
+        registry
+            .get_component::<EntityStateComponent>(enemy)
+            .expect("spawned enemy carries entity state")
+            .get(FACTION_STATE_FIELD),
+        ENEMY_DEFAULT_FACTION,
+        "the shared enemy assembly helper seeds faction one"
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        TEST_ALERT_STATE,
+        "an absent player faction reads zero, so the default enemy faction acquires it as hostile"
+    );
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(player));
+
+    // This models a trigger/touch reaction: its faction write happened before
+    // the AI compute pass, so the retained-target fact sees it this same tick.
+    registry
+        .entity_state_mut(player)
+        .expect("player carries entity state")
+        .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        TEST_IDLE_STATE,
+        "the retained target is still selected for this tick, but targetHostile lets the authored interrupt stand down"
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "the idle state disengages after the authored targetHostile interrupt"
+    );
+}
+
+#[test]
+fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
+    let mut graph = tuning();
+    graph.interrupts = vec![
+        edge(TEST_IDLE_STATE, target_lost()),
+        edge(TEST_IDLE_STATE, target_is_not_hostile()),
+    ];
+    graph.candidate_filter = None;
+
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, TEST_ATTACK_STATE),
+        50.0,
+    );
+    let second = spawn_enemy(
+        &mut registry,
+        Vec3::new(0.0, 0.0, 1.0),
+        authored_brain(&graph, TEST_ATTACK_STATE),
+        50.0,
+    );
+
+    // AI snapshots every outcome before it enters this apply-pass callback.
+    // The first impact makes the player friendly, but both precomputed guards
+    // still see the old hostile fact and complete the current attack tick.
+    let events = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        None,
+        |registry| {
+            registry
+                .entity_state_mut(player)
+                .expect("player carries entity state")
+                .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
+        },
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT, ENEMY_ATTACK_EVENT]);
+    assert_eq!(enemy_state_name(&registry, first), TEST_ATTACK_STATE);
+    assert_eq!(enemy_state_name(&registry, second), TEST_ATTACK_STATE);
+
+    // Next tick's compute pass reads the new faction uniformly. Retention is
+    // still available long enough for the authored targetHostile interrupt to
+    // stand both brains down; fresh-scan hostility never re-gates retention.
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&registry, first), TEST_IDLE_STATE);
+    assert_eq!(enemy_state_name(&registry, second), TEST_IDLE_STATE);
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance: direct graph acquisition sets destination; its authored
 // stand-down interrupt clears it (via path_state).
 // ---------------------------------------------------------------------------
+
+#[test]
+fn distance_from_anchor_guard_tracks_spawn_anchor_without_a_selected_target() {
+    let mut graph = tuning();
+    let beyond_anchor = IrNode::Gt {
+        a: Box::new(brain_input(BRAIN_DISTANCE_FROM_ANCHOR_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(3.0),
+        }),
+    };
+    graph
+        .states
+        .get_mut(TEST_IDLE_STATE)
+        .expect("fixture declares idle")
+        .transitions = vec![edge(TEST_ALERT_STATE, beyond_anchor)];
+    graph.interrupts.clear();
+    graph.candidate_filter = None;
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::new(10.0, 7.0, -4.0),
+        brain_with(graph, TEST_IDLE_STATE),
+        50.0,
+    );
+
+    // No player exists: the fact must still read zero at the spawn anchor.
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), TEST_IDLE_STATE);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+
+    // An external transform move leaves the spawn anchor fixed. Y does not
+    // contribute, so this is exactly four XZ units from the original anchor.
+    let mut transform = *reg
+        .get_component::<Transform>(enemy)
+        .expect("enemy has a transform");
+    transform.position = Vec3::new(14.0, 99.0, -4.0);
+    reg.set_component(enemy, transform)
+        .expect("enemy remains live");
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), TEST_ALERT_STATE);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+}
 
 #[test]
 fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it() {
@@ -3471,6 +3907,24 @@ fn target_beyond(distance: f32) -> IrNode {
     }
 }
 
+fn anchor_within(distance: f32) -> IrNode {
+    IrNode::Le {
+        a: Box::new(brain_input(BRAIN_DISTANCE_FROM_ANCHOR_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(distance),
+        }),
+    }
+}
+
+fn anchor_beyond(distance: f32) -> IrNode {
+    IrNode::Gt {
+        a: Box::new(brain_input(BRAIN_DISTANCE_FROM_ANCHOR_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(distance),
+        }),
+    }
+}
+
 fn when_acquisition_due(inner: IrNode) -> IrNode {
     IrNode::Select {
         cond: Box::new(brain_input(BRAIN_ACQUISITION_DUE_INPUT)),
@@ -3484,6 +3938,18 @@ fn when_acquisition_due(inner: IrNode) -> IrNode {
 fn target_lost() -> IrNode {
     IrNode::Select {
         cond: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+        a: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(true),
+        }),
+    }
+}
+
+fn target_is_not_hostile() -> IrNode {
+    IrNode::Select {
+        cond: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
         a: Box::new(IrNode::Const {
             value: IrValue::Bool(false),
         }),
@@ -3566,6 +4032,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,
@@ -3716,6 +4183,7 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
         candidate_filter: Some(IrNode::Const {
             value: IrValue::Bool(false),
         }),
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -3825,6 +4293,7 @@ fn raw_nearest_offer_prices_stride_while_guards_read_the_farther_eligible_target
                 value: IrValue::Number(30.0),
             }),
         }),
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: TEST_MOVE_SPEED,
@@ -3856,6 +4325,57 @@ fn raw_nearest_offer_prices_stride_while_guards_read_the_farther_eligible_target
     );
     assert_eq!(enemy_acquired_target(&registry, enemy), Some(eligible));
     assert_ne!(enemy_acquired_target(&registry, enemy), Some(rejected));
+}
+
+// Regression: a nearby friendly pawn used to price an unengaged brain's
+// acquisition stride even though hostility excluded it from fresh selection.
+#[test]
+fn nearest_hostile_offer_prices_stride_without_a_near_friendly_forcing_acquisition_due() {
+    let graph = target_probe_graph();
+    let mut registry = EntityRegistry::new();
+    let friendly_position = Vec3::new(20.0, 0.0, 0.0);
+    let hostile_position = Vec3::new(35.0, 0.0, 0.0);
+    let friendly = spawn_player(&mut registry, friendly_position);
+    let hostile = spawn_player(&mut registry, hostile_position);
+    registry
+        .entity_state_mut(friendly)
+        .expect("player carries entity state")
+        .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
+
+    let friendly_stride = think_stride_for_distance(distance_xz(friendly_position, Vec3::ZERO));
+    let hostile_stride = think_stride_for_distance(distance_xz(hostile_position, Vec3::ZERO));
+    assert!(friendly_stride > 1 && hostile_stride > friendly_stride);
+
+    let mut brain = authored_brain(&graph, "rest");
+    brain.think_stride_counter = friendly_stride - 1;
+    assert_ne!(
+        brain.think_stride_counter.wrapping_add(1) % hostile_stride,
+        0,
+        "the nearby-friendly due boundary must be off-stride for the hostile offer",
+    );
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&registry, enemy), "rest");
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain")
+        .clone();
+    brain.think_stride_counter = hostile_stride - 1;
+    registry.set_component(enemy, brain).unwrap();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&registry, enemy), "charge");
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        Some(hostile),
+        "the default-faction player remains hostile and determines the cadence",
+    );
 }
 
 // Regression: the raw nearest candidate used to price an off-stride tick bypassed
@@ -3929,6 +4449,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
                 value: IrValue::Bool(true),
             }),
         }),
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4101,6 +4622,7 @@ fn a_time_in_state_guard_exits_on_the_first_tick_the_window_elapses() {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4168,6 +4690,7 @@ fn interrupt_graph(interrupts: Vec<TransitionDescriptor>) -> BehaviorGraphDescri
         ]),
         interrupts,
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4375,6 +4898,7 @@ fn petrifying_graph() -> BehaviorGraphDescriptor {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -4468,10 +4992,12 @@ fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
 /// builds through `runtime.select` / `runtime.le` / `runtime.gt` over `brain.*`.
 ///
 /// Detection is conjoined with `@brain.acquisitionDue` (the IR has no `and`
-/// opcode, so conjunction is `select(cond, inner, false)`); attack-range edges
-/// remain ungated. The ordered interrupts stand down for target loss, then the
-/// death latch, then the 50 m graph-authored retained-target limit. Its candidate
-/// filter excludes dead pawns and bounds fresh acquisition to that same range.
+/// opcode, so conjunction is `select(cond, inner, false)`). The ordered
+/// interrupts stand down into the active untargeted patrol, first for target
+/// loss and then for a retained target that turns friendly. The transient idle
+/// initial state supplies the rest pose before handing off to patrol. Alert and
+/// attack enter the authored anchor-distance retreat, whose only local exit
+/// resumes the ping-pong patrol.
 ///
 /// This is the source-shape oracle, so a drifted transcription would assert
 /// nothing —
@@ -4480,7 +5006,8 @@ fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const DETECTION_RANGE: f32 = 16.0;
     const ATTACK_RANGE: f32 = 2.0;
-    const AGGRO_RANGE: f32 = 50.0;
+    const LEASH_RANGE: f32 = 20.0;
+    const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
     BehaviorGraphDescriptor {
         initial: "idle".to_string(),
         states: BTreeMap::from([
@@ -4490,13 +5017,24 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "idle",
                     MotionVerb::Hold,
                     None,
-                    vec![
-                        edge("attack", when_acquisition_due(target_within(ATTACK_RANGE))),
-                        edge(
-                            "alert",
-                            when_acquisition_due(target_within(DETECTION_RANGE)),
-                        ),
-                    ],
+                    vec![edge(
+                        "patrol",
+                        IrNode::Const {
+                            value: IrValue::Bool(true),
+                        },
+                    )],
+                ),
+            ),
+            (
+                "patrol".to_string(),
+                authored_state(
+                    "walk",
+                    MotionVerb::Patrol,
+                    None,
+                    vec![edge(
+                        "alert",
+                        when_acquisition_due(target_within(DETECTION_RANGE)),
+                    )],
                 ),
             ),
             (
@@ -4506,8 +5044,8 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     MotionVerb::ChaseTarget,
                     None,
                     vec![
+                        edge("retreat", anchor_beyond(LEASH_RANGE)),
                         edge("attack", target_within(ATTACK_RANGE)),
-                        edge("idle", target_beyond(AGGRO_RANGE)),
                     ],
                 ),
             ),
@@ -4517,19 +5055,34 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "attack",
                     MotionVerb::ChaseTarget,
                     Some(ActionVerb::Attack),
-                    vec![edge("alert", target_beyond(ATTACK_RANGE))],
+                    vec![
+                        edge("retreat", anchor_beyond(LEASH_RANGE)),
+                        edge("alert", target_beyond(ATTACK_RANGE)),
+                    ],
+                ),
+            ),
+            (
+                "retreat".to_string(),
+                authored_state(
+                    "walk",
+                    MotionVerb::MoveToAnchor,
+                    None,
+                    vec![edge("patrol", anchor_within(RETURN_ARRIVAL_EPSILON))],
                 ),
             ),
         ]),
-        // This order is author-visible policy: loss and the death latch outrank
-        // the distance stand-down, which is then responsible for the retained
-        // target limit.
+        // This order is author-visible policy: target loss must precede the
+        // untargeted-or-friendly polarity of targetHostile, and both must land
+        // on the active untargeted resting state.
         interrupts: vec![
-            edge("idle", target_lost()),
-            edge("idle", brain_input(BRAIN_TARGET_DIED_INPUT)),
-            edge("idle", target_beyond(AGGRO_RANGE)),
+            edge("patrol", target_lost()),
+            edge("patrol", target_is_not_hostile()),
         ],
-        candidate_filter: Some(candidate_is_alive_within(AGGRO_RANGE)),
+        candidate_filter: None,
+        patrol: Some(PatrolDescriptor {
+            points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
+            mode: PatrolMode::PingPong,
+        }),
         attack: Some(AttackParams {
             damage: 8.0,
             range: ATTACK_RANGE,
@@ -4671,7 +5224,7 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
 }
 
 #[test]
-fn the_direct_reference_graph_exercises_the_shipped_pursuit_shape() {
+fn the_direct_reference_graph_exercises_the_shipped_patrol_and_pursuit_shape() {
     let authored = trace_reference_fixture(BrainComponent::from_graph(&reference_behavior_graph()));
 
     // The fixture has to actually exercise the loop, or "identical" is vacuous.
@@ -4683,8 +5236,8 @@ fn the_direct_reference_graph_exercises_the_shipped_pursuit_shape() {
         .collect();
     assert_eq!(
         states,
-        vec!["alert", "attack", "idle"],
-        "the approach must visit rest, pursuit, and contact"
+        vec!["alert", "attack", "patrol"],
+        "the approach must visit active rest, pursuit, and contact"
     );
     let damage_ticks: Vec<usize> = authored
         .windows(2)
@@ -4699,12 +5252,12 @@ fn the_direct_reference_graph_exercises_the_shipped_pursuit_shape() {
     assert!(
         authored.iter().any(|row| row.animation == "attack")
             && authored.iter().any(|row| row.animation == "idle"),
-        "the fixture must switch animation at least once"
+        "the fixture must switch between its distinct rest and attack animations"
     );
 }
 
-/// Both target loss and the 50 m retained-target limit must stand a graph down
-/// in one tick rather than walking `attack` through its local exit first.
+/// Target loss must stand the graph down into its active patrol in one tick
+/// rather than walking `attack` through an unrelated local exit first.
 #[test]
 fn reference_graph_stands_down_from_attack_in_one_tick_when_the_target_is_lost() {
     let graph = reference_behavior_graph();
@@ -4719,56 +5272,71 @@ fn reference_graph_stands_down_from_attack_in_one_tick_when_the_target_is_lost()
 
     assert_eq!(
         enemy_state_name(&reg, enemy),
-        "idle",
+        "patrol",
         "losing the target must stand the brain down in ONE tick, not walk it \
          back through the pursuit state on the distance sentinel",
     );
-    assert_ne!(
-        enemy_animation(&reg, enemy),
-        graph.states["alert"].animation,
-        "the travel animation must never be requested on the way down; there is \
-         nothing to travel toward",
-    );
     assert_eq!(
         enemy_animation(&reg, enemy),
-        graph.states["idle"].animation,
-        "the stand-down lands on the graph's rest animation",
+        graph.states[&graph.initial].animation,
+        "a stationary patrol substitutes the graph's distinct rest animation",
     );
-    assert!(
-        !agent_steering::path_state(&reg, enemy)
-            .expect("agent present")
-            .has_destination,
-        "a stood-down enemy holds no destination",
+    assert_eq!(
+        enemy_destination(&reg, enemy),
+        Some(Vec3::new(6.0, 0.0, 0.0)),
+        "the active patrol stand-down resumes its persisted route instead of parking",
     );
 }
 
 #[test]
-fn reference_graph_stands_down_from_chase_and_attack_in_one_tick_beyond_its_authored_range() {
+fn reference_graph_enters_retreat_from_chase_and_attack_beyond_its_authored_leash() {
     for state in ["alert", "attack"] {
         let graph = reference_behavior_graph();
         let mut reg = EntityRegistry::new();
         let mut runtime = AiRuntime::new();
-        let target = spawn_player(&mut reg, Vec3::new(51.0, 0.0, 0.0));
+        let target = spawn_player(&mut reg, Vec3::new(25.0, 0.0, 0.0));
         let mut brain = authored_brain(&graph, state);
         brain.acquired_target = Some(target);
         brain.think_stride_counter = 0;
         let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+        set_enemy_position(&mut reg, enemy, Vec3::new(21.0, 0.0, 0.0));
 
         run_ai_tick(&mut reg, &mut runtime, 0.016);
 
         assert_eq!(
             enemy_state_name(&reg, enemy),
-            "idle",
-            "the ordered targetDistance > 50 interrupt must stand `{state}` down in one tick",
+            "retreat",
+            "the authored distanceFromAnchor leash must route `{state}` to retreat in one tick",
         );
         assert_eq!(enemy_acquired_target(&reg, enemy), None);
-        assert!(
-            !agent_steering::path_state(&reg, enemy)
-                .expect("agent present")
-                .has_destination,
-            "the one-tick stand-down from `{state}` clears steering",
+        assert_eq!(
+            enemy_destination(&reg, enemy),
+            Some(Vec3::ZERO),
+            "retreat from `{state}` begins steering toward the spawn anchor",
         );
     }
+}
+
+#[test]
+fn reference_alert_prioritizes_leash_retreat_when_attack_range_is_also_true() {
+    let graph = reference_behavior_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let target = spawn_player(&mut reg, Vec3::new(21.5, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "alert");
+    brain.acquired_target = Some(target);
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    set_enemy_position(&mut reg, enemy, Vec3::new(21.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "retreat",
+        "first-true-wins must choose the leash edge before the simultaneously true attack edge",
+    );
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert_eq!(enemy_destination(&reg, enemy), Some(Vec3::ZERO));
 }
 
 // ---------------------------------------------------------------------------
@@ -5041,6 +5609,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         )]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,
@@ -5125,4 +5694,563 @@ fn a_standing_attack_state_retains_its_target_and_faces_it() {
         "engagement turns and retains; it does not steer — that stays the \
          motion verb's job"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Position-goal motion verbs: anchor return and authored patrol routes.
+// ---------------------------------------------------------------------------
+
+fn position_goal_graph(
+    motion: MotionVerb,
+    patrol: Option<PatrolDescriptor>,
+) -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "position".to_string(),
+        states: BTreeMap::from([(
+            "position".to_string(),
+            authored_state("locomotion", motion, None, Vec::new()),
+        )]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        patrol,
+        attack: None,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+fn patrol_graph(points: Vec<[f32; 2]>, mode: PatrolMode) -> BehaviorGraphDescriptor {
+    position_goal_graph(MotionVerb::Patrol, Some(PatrolDescriptor { points, mode }))
+}
+
+/// The reference enemy's authored policy in a compact test fixture: patrol is
+/// the active untargeted state, engagement may cross the authored leash, and a
+/// position-goal retreat returns to the persistent route.
+fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
+    const DETECTION: f32 = 16.0;
+    const ATTACK_RANGE: f32 = 2.0;
+    const LEASH: f32 = 4.0;
+    const ARRIVAL: f32 = 1.0;
+
+    BehaviorGraphDescriptor {
+        initial: "patrol".to_string(),
+        states: BTreeMap::from([
+            (
+                "patrol".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::Patrol,
+                    None,
+                    vec![edge(
+                        "alert",
+                        when_acquisition_due(target_within(DETECTION)),
+                    )],
+                ),
+            ),
+            (
+                "alert".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![
+                        edge("attack", target_within(ATTACK_RANGE)),
+                        edge("retreat", anchor_beyond(LEASH)),
+                    ],
+                ),
+            ),
+            (
+                "attack".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::ChaseTarget,
+                    Some(ActionVerb::Attack),
+                    vec![
+                        edge("retreat", anchor_beyond(LEASH)),
+                        edge("alert", target_beyond(ATTACK_RANGE)),
+                    ],
+                ),
+            ),
+            (
+                "retreat".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::MoveToAnchor,
+                    None,
+                    vec![edge("patrol", anchor_within(ARRIVAL))],
+                ),
+            ),
+        ]),
+        // The lost-target row deliberately precedes the friendly-flip row.
+        // Both must target patrol, the active untargeted state, to avoid a
+        // patrol/rest oscillation after the target disappears.
+        interrupts: vec![
+            edge("patrol", target_lost()),
+            edge("patrol", target_is_not_hostile()),
+        ],
+        candidate_filter: None,
+        patrol: Some(PatrolDescriptor {
+            points: vec![[0.0, 0.0], [3.0, 0.0]],
+            mode: PatrolMode::PingPong,
+        }),
+        attack: Some(AttackParams {
+            damage: TEST_ATTACK_DAMAGE,
+            range: ATTACK_RANGE,
+            cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+        }),
+        engagement_radius: Some(ATTACK_RANGE),
+        move_speed: TEST_MOVE_SPEED,
+    }
+}
+
+fn enemy_destination(registry: &EntityRegistry, enemy: EntityId) -> Option<Vec3> {
+    registry
+        .get_component::<AgentComponent>(enemy)
+        .expect("enemy has an agent")
+        .destination
+}
+
+#[test]
+fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
+    for (motion, patrol) in [
+        (MotionVerb::MoveToAnchor, None),
+        (
+            MotionVerb::Patrol,
+            Some(PatrolDescriptor {
+                points: vec![[0.0, 0.0]],
+                mode: PatrolMode::Loop,
+            }),
+        ),
+    ] {
+        let mut graph = position_goal_graph(motion, patrol);
+        graph.initial = "idle".to_string();
+        graph.states.insert(
+            "idle".to_string(),
+            authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+        );
+        let position_index = graph_state_index(&graph, "position").unwrap();
+        assert_eq!(
+            animation_for_state(&graph, position_index, false),
+            Some("idle"),
+            "{motion:?} yields its travel clip to the rest pose when stopped"
+        );
+        assert_eq!(
+            animation_for_state(&graph, position_index, true),
+            Some("locomotion")
+        );
+        assert_eq!(locomotion_animation(&graph), Some("locomotion"));
+    }
+}
+
+// Regression: an action on a position goal made the evaluator retain targets
+// and claim combat slots even though position-goal states are non-engaged.
+#[test]
+fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
+    for (motion, patrol) in [
+        (MotionVerb::MoveToAnchor, None),
+        (
+            MotionVerb::Patrol,
+            Some(PatrolDescriptor {
+                points: vec![[0.0, 0.0]],
+                mode: PatrolMode::Loop,
+            }),
+        ),
+    ] {
+        let mut graph = position_goal_graph(motion, patrol);
+        graph.states.get_mut("position").unwrap().action = Some(ActionVerb::Attack);
+        graph.attack = Some(AttackParams {
+            damage: TEST_ATTACK_DAMAGE,
+            range: TEST_ATTACK_RANGE,
+            cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+        });
+        let index = graph_state_index(&graph, "position").unwrap();
+
+        assert!(!engages(&graph, index), "{motion:?} remains non-engaged");
+        assert_eq!(
+            action_for_state(&graph, index),
+            None,
+            "{motion:?} cannot execute an action"
+        );
+    }
+
+    let mut chase = position_goal_graph(MotionVerb::ChaseTarget, None);
+    chase.states.get_mut("position").unwrap().action = Some(ActionVerb::Attack);
+    let index = graph_state_index(&chase, "position").unwrap();
+    assert!(
+        engages(&chase, index),
+        "chaseTarget action semantics remain engaged"
+    );
+    assert_eq!(action_for_state(&chase, index), Some(ActionVerb::Attack));
+}
+
+#[test]
+fn move_to_anchor_clears_on_arrival_and_reissues_after_a_later_push() {
+    let graph = position_goal_graph(MotionVerb::MoveToAnchor, None);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(2.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_destination(&registry, enemy), Some(Vec3::ZERO));
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.acquired_target, None,
+        "position goals are non-engaged"
+    );
+    assert_eq!(
+        brain.combat_slot, None,
+        "position goals claim no combat slot"
+    );
+    assert_ne!(brain.acquired_target, Some(pawn));
+
+    set_enemy_position(
+        &mut registry,
+        enemy,
+        Vec3::new(POSITION_GOAL_ARRIVAL_EPSILON, 0.0, 0.0),
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "arrival clears rather than latches a stale destination"
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "still arrived stays clear"
+    );
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(1.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(Vec3::ZERO),
+        "a later external push past epsilon reissues the anchor goal"
+    );
+}
+
+#[test]
+fn patrol_loop_and_ping_pong_advance_cursor_through_anchor_relative_points() {
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let loop_graph = patrol_graph(vec![[0.0, 0.0], [2.0, 0.0]], PatrolMode::Loop);
+    let loop_enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&loop_graph, "position"),
+        50.0,
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(loop_enemy)
+            .unwrap()
+            .patrol_cursor,
+        1
+    );
+    assert_eq!(
+        enemy_destination(&registry, loop_enemy),
+        Some(Vec3::new(2.0, 0.0, 0.0))
+    );
+    set_enemy_position(&mut registry, loop_enemy, Vec3::new(2.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(loop_enemy)
+            .unwrap()
+            .patrol_cursor,
+        0,
+        "loop wraps after the final point"
+    );
+    assert_eq!(enemy_destination(&registry, loop_enemy), Some(Vec3::ZERO));
+
+    let ping_graph = patrol_graph(
+        vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+        PatrolMode::PingPong,
+    );
+    let ping_enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&ping_graph, "position"),
+        50.0,
+    );
+    for (position, cursor, direction, destination) in [
+        (Vec3::ZERO, 1, 1, Vec3::new(1.0, 0.0, 0.0)),
+        (Vec3::new(1.0, 0.0, 0.0), 2, 1, Vec3::new(2.0, 0.0, 0.0)),
+        (Vec3::new(2.0, 0.0, 0.0), 1, -1, Vec3::new(1.0, 0.0, 0.0)),
+        (Vec3::new(1.0, 0.0, 0.0), 0, -1, Vec3::ZERO),
+        (Vec3::ZERO, 1, 1, Vec3::new(1.0, 0.0, 0.0)),
+    ] {
+        set_enemy_position(&mut registry, ping_enemy, position);
+        run_ai_tick(&mut registry, &mut runtime, 0.016);
+        let brain = registry
+            .get_component::<BrainComponent>(ping_enemy)
+            .unwrap();
+        assert_eq!(brain.patrol_cursor, cursor);
+        assert_eq!(brain.patrol_direction, direction);
+        assert_eq!(enemy_destination(&registry, ping_enemy), Some(destination));
+    }
+}
+
+#[test]
+fn patrol_single_point_persists_cursor_and_clamps_a_stale_saved_cursor() {
+    let graph = patrol_graph(vec![[0.0, 0.0]], PatrolMode::PingPong);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut brain = authored_brain(&graph, "position");
+    brain.patrol_cursor = 99;
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    agent_steering::set_destination(&mut registry, enemy, Vec3::new(5.0, 0.0, 0.0));
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.patrol_cursor, 0,
+        "a stale cursor is normalized before indexing"
+    );
+    assert_eq!(
+        brain.patrol_direction, 1,
+        "a fresh ping-pong route starts forward"
+    );
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "an arrived one-point patrol clears a stale destination and stands still"
+    );
+
+    let mut graph = patrol_graph(vec![[0.0, 0.0], [3.0, 0.0]], PatrolMode::Loop);
+    graph.states.insert(
+        "rest".to_string(),
+        authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+    );
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .patrol_cursor,
+        1
+    );
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .clone();
+    brain.state_index = graph_state_index(&graph, "rest").unwrap();
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .clone();
+    brain.state_index = graph_state_index(&graph, "position").unwrap();
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .patrol_cursor,
+        1,
+        "leaving and re-entering patrol preserves its route phase"
+    );
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(Vec3::new(3.0, 0.0, 0.0))
+    );
+}
+
+#[test]
+fn position_goal_facing_uses_travel_only_and_never_falls_through_to_a_target() {
+    let graph = position_goal_graph(MotionVerb::MoveToAnchor, None);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(0.0, 0.0, 2.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    set_enemy_yaw(&mut registry, enemy, std::f32::consts::PI);
+    set_agent_velocity(&mut registry, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert!(
+        yaw_distance(enemy_yaw(&registry, enemy), std::f32::consts::PI) < EPS,
+        "an arrived position goal must not turn toward the nearest scanned pawn"
+    );
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(2.0, 0.0, 0.0));
+    set_agent_velocity(&mut registry, enemy, Vec3::NEG_X);
+    run_ticks_until_facing_converges(
+        &mut registry,
+        &mut runtime,
+        enemy,
+        Vec3::NEG_X,
+        "a travelling position goal faces its travel velocity",
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "position-goal facing does not make the state engaged"
+    );
+}
+
+#[test]
+fn patrol_stand_down_interrupt_is_skipped_while_the_route_cursor_advances() {
+    let mut graph = patrol_graph(vec![[0.0, 0.0], [3.0, 0.0]], PatrolMode::PingPong);
+    graph.interrupts = vec![edge("position", target_lost())];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert_eq!(brain.state_name(), Some("position"));
+    assert_eq!(brain.patrol_cursor, 1);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(Vec3::new(3.0, 0.0, 0.0))
+    );
+}
+
+#[test]
+fn retreat_returns_to_patrol_at_the_anchor_and_resumes_its_route() {
+    let graph = retreat_patrol_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "alert"),
+        50.0,
+    );
+
+    // The target drew the engaged enemy farther than its graph-authored leash.
+    // Alert chooses retreat and the position goal points directly at home.
+    set_enemy_position(&mut registry, enemy, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&registry, enemy), "retreat");
+    assert_eq!(enemy_destination(&registry, enemy), Some(Vec3::ZERO));
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+
+    // The authored guard uses 1 m, safely above the engine's 0.5 m resolver
+    // epsilon. Arrival switches to patrol, whose cursor continues with point 1.
+    set_enemy_position(&mut registry, enemy, Vec3::new(0.5, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&registry, enemy), "patrol");
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(Vec3::new(3.0, 0.0, 0.0))
+    );
+}
+
+fn retreat_patrol_tick_trace() -> (String, usize, i8, Option<Vec3>) {
+    let graph = retreat_patrol_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "alert"),
+        50.0,
+    );
+
+    set_enemy_position(&mut registry, enemy, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    set_enemy_position(&mut registry, enemy, Vec3::new(0.5, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    (
+        brain.state_name().expect("declared state").to_string(),
+        brain.patrol_cursor,
+        brain.patrol_direction,
+        enemy_destination(&registry, enemy),
+    )
+}
+
+#[test]
+fn retreat_and_patrol_ticks_are_deterministic_for_identical_host_inputs() {
+    assert_eq!(retreat_patrol_tick_trace(), retreat_patrol_tick_trace());
+}
+
+#[test]
+fn retreat_with_no_non_due_target_stands_down_to_patrol_instead_of_stranding() {
+    let graph = retreat_patrol_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(30.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "retreat");
+    // The 30 m nearest offer is in a strided band. Counter zero makes the next
+    // tick non-due, so a non-engaged retreat reads its no-target facts even
+    // while the pawn remains in the registry.
+    brain.think_stride_counter = 0;
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    set_enemy_position(&mut registry, enemy, Vec3::new(5.0, 0.0, 0.0));
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&registry, enemy), "patrol");
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    assert_eq!(enemy_destination(&registry, enemy), Some(Vec3::ZERO));
+}
+
+#[test]
+fn an_arrival_guard_below_the_engine_epsilon_leaves_a_position_goal_wedged() {
+    let mut graph = position_goal_graph(MotionVerb::MoveToAnchor, None);
+    graph.states.get_mut("position").unwrap().transitions = vec![edge(
+        "done",
+        anchor_within(POSITION_GOAL_ARRIVAL_EPSILON * 0.5),
+    )];
+    graph.states.insert(
+        "done".to_string(),
+        authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+    );
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    set_enemy_position(
+        &mut registry,
+        enemy,
+        Vec3::new(POSITION_GOAL_ARRIVAL_EPSILON, 0.0, 0.0),
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&registry, enemy), "position");
+    assert_eq!(enemy_destination(&registry, enemy), None);
 }

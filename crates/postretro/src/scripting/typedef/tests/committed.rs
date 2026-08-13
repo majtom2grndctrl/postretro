@@ -163,6 +163,10 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
         for needle in [
             "BehaviorGraphDescriptor",
             "candidateFilter",
+            "PatrolDescriptor",
+            "PatrolMode",
+            "moveToAnchor",
+            "pingPong",
             "retained-target stand-down",
         ] {
             assert!(

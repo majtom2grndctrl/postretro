@@ -32,6 +32,21 @@ use super::mesh::MeshComponent;
 /// rest; the AI tick (`scripting/systems/ai/`) drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BrainComponent {
+    /// The world position at which this brain spawned. Host-only simulation
+    /// state: authored guards read the enemy's XZ distance from it, while
+    /// clients never evaluate guards. Old serialized brains predate this
+    /// field, so they keep the neutral origin anchor when it is absent.
+    #[serde(default = "default_home_anchor")]
+    pub home_anchor: Vec3,
+    /// Current point in the graph's patrol route. Host-only persistent state so
+    /// returning to a patrol state resumes its prior route phase.
+    #[serde(default)]
+    pub patrol_cursor: usize,
+    /// Direction used by ping-pong patrol routes. Old brains that predate this
+    /// field must start forward rather than deserialize the integer default of
+    /// zero, which would leave ping-pong routes stationary.
+    #[serde(default = "default_patrol_direction")]
+    pub patrol_direction: i8,
     /// Milliseconds remaining before the brain may attack again. Counts down each
     /// tick; `0.0` means an attack is available. Seeded to `0.0` (ready) at spawn.
     pub attack_cooldown_remaining_ms: f32,
@@ -51,9 +66,17 @@ pub struct BrainComponent {
     /// so absent values default open.
     #[serde(default = "default_aggro_armed")]
     pub aggro_armed: bool,
-    /// Currently acquired player pawn. Set only while the current state chases
-    /// (a `chaseTarget` motion verb), so near-equidistant co-op players do not
-    /// cause per-think target churn. Cleared when aggro drops.
+    /// Cached nav-path verdict for the selected target. It is recomputed on
+    /// acquisition-due ticks and deliberately omitted from serialized brain
+    /// state so a restored brain never trusts a path query from an older map
+    /// position or nav graph.
+    #[serde(skip)]
+    pub target_reachable: bool,
+    /// Currently acquired player pawn. Set only while the current state engages
+    /// that pawn (chasing it or acting against it), so near-equidistant co-op
+    /// players do not cause per-think target churn. Position-goal states cannot
+    /// declare actions and deliberately never retain a target. Cleared when
+    /// aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
     /// Last accepted combat-position slot around the acquired target. Retained
@@ -104,10 +127,14 @@ impl BrainComponent {
     /// Seeded in the graph's `initial` state with every timer at rest.
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
         Self {
+            home_anchor: Vec3::ZERO,
+            patrol_cursor: 0,
+            patrol_direction: 1,
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
             locomotion_moving: false,
             aggro_armed: true,
+            target_reachable: false,
             acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
@@ -142,6 +169,14 @@ pub fn graph_state_index(graph: &BehaviorGraphDescriptor, name: &str) -> Option<
 
 const fn default_aggro_armed() -> bool {
     true
+}
+
+const fn default_home_anchor() -> Vec3 {
+    Vec3::ZERO
+}
+
+const fn default_patrol_direction() -> i8 {
+    1
 }
 
 /// Public spawn seam for an authored `components.behavior` graph.
@@ -317,6 +352,7 @@ mod tests {
             ]),
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: Some(AttackParams {
                 damage: 5.0,
                 range: 2.0,
@@ -325,6 +361,27 @@ mod tests {
             engagement_radius: None,
             move_speed: 4.0,
         }
+    }
+
+    #[test]
+    fn patrol_state_defaults_forward_for_fresh_and_pre_patrol_brains() {
+        let graph = authored_graph();
+        let fresh = BrainComponent::from_graph(&graph);
+        assert_eq!(fresh.patrol_cursor, 0);
+        assert_eq!(fresh.patrol_direction, 1);
+
+        let mut legacy = serde_json::to_value(fresh).expect("brain serializes");
+        legacy
+            .as_object_mut()
+            .expect("brain is an object")
+            .remove("patrol_cursor");
+        legacy
+            .as_object_mut()
+            .expect("brain is an object")
+            .remove("patrol_direction");
+        let restored: BrainComponent = serde_json::from_value(legacy).expect("legacy brain loads");
+        assert_eq!(restored.patrol_cursor, 0);
+        assert_eq!(restored.patrol_direction, 1);
     }
 
     #[test]
@@ -338,11 +395,48 @@ mod tests {
             "the seeded index addresses `initial` in the resolved state list"
         );
         assert_eq!(brain.time_in_state_ms, 0.0);
+        assert_eq!(brain.home_anchor, Vec3::ZERO);
         assert_eq!(*brain.graph, graph, "the graph is retained verbatim");
         assert_eq!(
             brain.graph.engagement_radius(),
             2.0,
             "with no `engagementRadius` the graph falls back to its `attack.range`"
+        );
+    }
+
+    #[test]
+    fn deserializing_a_pre_anchor_brain_defaults_to_the_origin() {
+        let brain = BrainComponent::from_graph(&authored_graph());
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .remove("home_anchor");
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-anchor brain deserializes");
+        assert_eq!(restored.home_anchor, Vec3::ZERO);
+    }
+
+    #[test]
+    fn target_reachability_cache_is_recomputed_after_deserialize() {
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.target_reachable = true;
+
+        let serialized = serde_json::to_value(&brain).expect("brain serializes");
+        assert!(
+            !serialized
+                .as_object()
+                .expect("brain serializes as an object")
+                .contains_key("target_reachable"),
+            "the nav verdict is a cache, not persisted simulation data"
+        );
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("brain deserializes");
+        assert!(
+            !restored.target_reachable,
+            "a restored brain recomputes reachability on its next acquisition tick"
         );
     }
 

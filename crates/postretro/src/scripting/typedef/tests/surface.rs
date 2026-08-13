@@ -807,15 +807,15 @@ fn candidate_input_typedefs_match_the_foundation_table() {
 
 /// Drift guard for the behavior-graph verb vocabularies. The registry
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
-/// `MotionVerb` / `ActionVerb` enums, so this test derives the expected union
+/// `MotionVerb` / `ActionVerb` / `PatrolMode` enums, so this test derives the expected union
 /// members from the enums themselves — `ALL` enumerates the variants and serde
 /// supplies each wire name, exactly as the descriptor parsers see them. A
 /// variant added in foundation and forgotten in the registry fails here.
 #[test]
-fn behavior_verb_typedefs_match_the_foundation_enums() {
+fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
-    use postretro_foundation::data_descriptors::{ActionVerb, MotionVerb};
+    use postretro_foundation::data_descriptors::{ActionVerb, MotionVerb, PatrolMode};
 
     fn wire<T: serde::Serialize>(variant: &T) -> String {
         serde_json::to_value(variant)
@@ -862,6 +862,7 @@ fn behavior_verb_typedefs_match_the_foundation_enums() {
 
     let motion: Vec<String> = MotionVerb::ALL.iter().map(wire).collect();
     let action: Vec<String> = ActionVerb::ALL.iter().map(wire).collect();
+    let patrol_modes: Vec<String> = PatrolMode::ALL.iter().map(wire).collect();
     for output in [&ts, &luau] {
         assert_eq!(
             union_members(output, "MotionVerb"),
@@ -873,5 +874,19 @@ fn behavior_verb_typedefs_match_the_foundation_enums() {
             action,
             "emitted `ActionVerb` union does not match `ActionVerb::ALL`"
         );
+        assert_eq!(
+            union_members(output, "PatrolMode"),
+            patrol_modes,
+            "emitted `PatrolMode` union does not match `PatrolMode::ALL`"
+        );
+        assert!(output.contains("export type PatrolDescriptor ="));
+        assert!(output.contains("points"));
+        assert!(output.contains("patrol"));
     }
+    assert!(ts.contains("points: ReadonlyArray<readonly [number, number]>;"));
+    assert!(luau.contains("points: {{number, number}},"));
+    assert!(
+        !luau.contains("points: {{number}},"),
+        "patrol points must retain their fixed `[x, z]` arity"
+    );
 }

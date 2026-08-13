@@ -78,7 +78,9 @@ pub(super) fn state_at(
 }
 
 /// Whether the state at `index` is ENGAGED with a target: it chases toward one,
-/// or it takes an action against one.
+/// or it takes an action against one. Position goals are always non-engaged;
+/// descriptor validation rejects actions on them, and this classifier preserves
+/// that contract for hand-built or restored graphs too.
 ///
 /// This is the engine floor's "is this brain fighting" test, and it is
 /// deliberately NOT the same question as "does this state steer". Two distinct
@@ -97,8 +99,10 @@ pub(super) fn state_at(
 /// A resting or frozen state that takes no action is neither, so such a brain
 /// re-ranks candidates from scratch instead of honoring a stale acquired id.
 pub(super) fn engages(graph: &BehaviorGraphDescriptor, index: usize) -> bool {
-    state_at(graph, index).is_some_and(|state| {
-        steering_for(state.motion) == SteeringIntent::Chase || state.action.is_some()
+    state_at(graph, index).is_some_and(|state| match state.motion {
+        MotionVerb::MoveToAnchor | MotionVerb::Patrol => false,
+        MotionVerb::ChaseTarget => true,
+        MotionVerb::Hold | MotionVerb::Freeze => state.action.is_some(),
     })
 }
 
@@ -120,22 +124,29 @@ pub(super) fn initial_index(graph: &BehaviorGraphDescriptor) -> Option<usize> {
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
     match motion {
         MotionVerb::ChaseTarget => SteeringIntent::Chase,
+        // Position goals need per-brain state and a position, both unavailable
+        // to this pure classifier. The tick resolves their actual destinations.
+        MotionVerb::MoveToAnchor | MotionVerb::Patrol => SteeringIntent::Clear,
         MotionVerb::Hold => SteeringIntent::Clear,
         MotionVerb::Freeze => SteeringIntent::Hold,
     }
 }
 
-/// Whether `state` is a LOCOMOTION state: it chases, and takes no action of its
-/// own while doing so.
+/// Whether `state` is a LOCOMOTION state: it pursues a target without acting,
+/// or follows an always-actionless fixed position goal.
 ///
 /// Such a state's animation is a travel cycle, which is only correct while the
 /// agent is actually travelling — so it yields to the graph's rest animation at
 /// a standstill ([`animation_for_state`]), and it is the state off-host
-/// presentation derives its walk-playback reference from. A chasing state that
-/// DOES declare an action is not locomotion: its animation plays regardless of
-/// speed.
+/// presentation derives its walk-playback reference from. A `chaseTarget`
+/// state that declares an action is not locomotion: its animation plays
+/// regardless of speed. Descriptor validation forbids actions on position goals.
 fn is_locomotion_state(state: &BehaviorStateDescriptor) -> bool {
-    state.motion == MotionVerb::ChaseTarget && state.action.is_none()
+    match state.motion {
+        MotionVerb::ChaseTarget => state.action.is_none(),
+        MotionVerb::MoveToAnchor | MotionVerb::Patrol => true,
+        MotionVerb::Hold | MotionVerb::Freeze => false,
+    }
 }
 
 /// The graph's locomotion animation-state name: the first locomotion state's, in
@@ -144,8 +155,8 @@ fn is_locomotion_state(state: &BehaviorStateDescriptor) -> bool {
 /// "First" here is `BTreeMap` iteration order over `graph.states` — lexicographic
 /// by state name, NOT authored order and NOT the state the brain is actually in.
 /// For a graph with a single locomotion state this is exact; for a graph with
-/// two or more (e.g. a `patrol` and a `pursue`, both `chaseTarget` with distinct
-/// animations), it collapses them to whichever name sorts first, regardless of
+/// two or more (e.g. a `patrol` and a `pursue` with distinct travel animations),
+/// it collapses them to whichever name sorts first, regardless of
 /// which one is live — so an enemy walking `pursue`'s "run" cycle can still
 /// report "walk" here, and renaming a state can silently flip the answer. Both
 /// consumers (`sim/mod.rs`'s walk-playback rate scaling and `netcode/mod.rs`'s
@@ -191,5 +202,9 @@ pub(super) fn action_for_state(
     graph: &BehaviorGraphDescriptor,
     index: usize,
 ) -> Option<ActionVerb> {
-    state_at(graph, index)?.action
+    let state = state_at(graph, index)?;
+    match state.motion {
+        MotionVerb::MoveToAnchor | MotionVerb::Patrol => None,
+        MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => state.action,
+    }
 }

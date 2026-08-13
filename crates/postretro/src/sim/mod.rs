@@ -1420,6 +1420,7 @@ mod tests {
             ]),
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: None,
             engagement_radius: None,
             move_speed,

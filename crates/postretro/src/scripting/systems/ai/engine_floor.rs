@@ -4,6 +4,11 @@
 // graph picks a motion verb, and this module owns what the engine does with it.
 // See: context/lib/entity_model.md §2 (engine components)
 
+use glam::Vec3;
+
+/// XZ distance within which a fixed position goal counts as reached.
+pub(crate) const POSITION_GOAL_ARRIVAL_EPSILON: f32 = 0.5;
+
 /// Think-stride bands. Target acquisition is time-sliced by player distance:
 /// near enemies re-evaluate every tick, mid enemies every few ticks, distant
 /// enemies rarely. Retained-target reads and attack-in-range/cooldown checks
@@ -40,7 +45,7 @@ pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
 /// (`graph_eval::steering_for`) carries no registry dependency — the tick
 /// wrapper translates the intent into `set_destination`/`clear_destination`
 /// calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SteeringIntent {
     /// Chase: the wrapper prefers a combat slot around the selected target and
     /// falls back to the target position. The `chaseTarget` motion verb — but
@@ -48,6 +53,8 @@ pub(crate) enum SteeringIntent {
     /// [`SteeringIntent::Clear`], since there is nothing to move relative to and
     /// the agent would otherwise keep walking to a stale destination.
     Chase,
+    /// Steer toward an engine-resolved fixed world-space position.
+    MoveTo(Vec3),
     /// Stand down: the wrapper clears the agent destination. The `hold` motion
     /// verb, what the engine floor forces when the aggro gate closes, and what a
     /// target-less chase degrades to.

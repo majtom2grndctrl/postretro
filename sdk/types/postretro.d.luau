@@ -335,10 +335,14 @@ export type HealthDescriptor = {
   zoneMultipliers: { [string]: number }?,
 }
 
---- What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `hold`, `freeze`.
+--- What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`.
 export type MotionVerb =
   --- Steer toward the selected target's combat slot.
   "chaseTarget"
+  --- Steer toward the enemy's spawn anchor, then stand on arrival.
+  | "moveToAnchor"
+  --- Follow the graph's anchor-relative patrol points in order.
+  | "patrol"
   --- Clear the navigation destination and stand still.
   | "hold"
   --- Touch neither destination nor steering — terminal presentation.
@@ -359,6 +363,21 @@ export type AttackParams = {
   cooldownMs: number,
 }
 
+--- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.
+export type PatrolMode =
+  --- Wrap from the final point back to the first.
+  "loop"
+  --- Reverse direction at each endpoint.
+  | "pingPong"
+
+--- Anchor-relative XZ positions followed by `patrol` motion states.
+export type PatrolDescriptor = {
+  --- Anchor-relative `[x, z]` positions in metres. A graph that selects `patrol` must declare at least one finite point.
+  points: {{number, number}},
+  --- Endpoint behavior for the route.
+  mode: PatrolMode,
+}
+
 --- One authored graph edge: a destination state plus the guard that selects it. Guards are evaluated every tick — nothing a state is doing ever blocks evaluation — and the first true guard in declaration order wins.
 export type TransitionDescriptor = {
   --- Destination state name. Must name a state declared in the same `states` map.
@@ -373,7 +392,7 @@ export type BehaviorStateDescriptor = {
   animation: string,
   --- What this state does with steering.
   motion: MotionVerb,
-  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block.
+  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
   action: ActionVerb?,
   --- State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.
   transitions: {TransitionDescriptor}?,
@@ -391,9 +410,11 @@ export type BehaviorGraphDescriptor = {
   interrupts: {TransitionDescriptor}?,
   --- Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.
   candidateFilter: RuntimeValue?,
+  --- Optional anchor-relative patrol route. Required with at least one point when any state uses `"patrol"` motion.
+  patrol: PatrolDescriptor?,
   --- Attack tuning for the `attack` action verb. Required exactly when some state declares that action.
   attack: AttackParams?,
-  --- Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.
+  --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,
   --- Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.
   engagementRadius: number?,
@@ -1859,6 +1880,12 @@ export type BrainInputs = {
   targetMaxHealth: RuntimeRead,
   --- `true` once the selected target's death sweep has handled it; false with no target (boolean).
   targetDied: RuntimeRead,
+  --- XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number).
+  distanceFromAnchor: RuntimeRead,
+  --- `true` when the selected target's faction differs from this enemy's; false with no target (boolean).
+  targetHostile: RuntimeRead,
+  --- `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean).
+  targetReachable: RuntimeRead,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

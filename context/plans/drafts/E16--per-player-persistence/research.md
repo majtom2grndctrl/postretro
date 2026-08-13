@@ -25,6 +25,10 @@ Findings behind the spec's decisions and code-grounding for its claims.
 | The identity ledger maps authored slot names to opaque durable keys | `context/lib/scripting.md` §5; `crates/scripting-core/src/store_identity.rs` |
 | `main.rs` is ~10,700 lines | `wc -l` output |
 | The SDK typedefs enforce `persist?: never` on `perOwner: true` variants | Generated `expected.d.ts` and `expected.d.luau` |
+| `levelLoad` fires at install stage 13 in `install_world_cpu` | `crates/postretro/src/startup/lifecycle_world_cpu.rs` ~line 423 |
+| Connected client suppresses boot pawn (`suppress_boot_pawn = true`) | `lifecycle_world_cpu.rs` ~line 303 |
+| `SlotEvent::Participating` handler runs seat lookup then pawn spawn as distinct steps | `main.rs` ~lines 5499–5615 |
+| The `Participating` handler threads carried loadout at the same seam | Same handler, before `host_handle_accept_descriptor_at_placement` |
 
 ## Seat claim accessibility
 
@@ -59,6 +63,16 @@ This spec addresses both:
 2. Scopes the Phase 3.5 rule rather than reversing it. The rule's intent — prevent clients persisting replicated server-authoritative state — is preserved. Global slots remain host-authoritative; the client never saves them. Per-owner values are the player's own data, not replicated server state, so the client saves those. The periodic client save (~60 s) limits progress loss on abnormal termination.
 
 The currency spec's concern that "a client-to-host state write is a stated Phase 3.5 non-goal" applies to runtime state writes, not to a one-time join-seed apply at admission. The join seed is host-validated and host-applied — the client asserts values, the host decides whether to accept them, matching the authority model.
+
+## Level-load timing and join-seed application seam
+
+The `levelLoad` reaction fires at install stage 13 in `install_world_cpu` (`lifecycle_world_cpu.rs` ~423), during content installation — not during the `Participating` handler. On the client, the boot pawn is suppressed (`suppress_boot_pawn = true`); per-owner values arrive from the host via replication after the pawn materializes.
+
+On the host, the `SlotEvent::Participating` handler (`main.rs` ~5499–5615) runs a distinct sequence: cleanup → guard → seat lookup → pawn spawn → replication registration → presentation resolve → tuning send. The pawn spawn is a discrete call site. The join seed slots in between seat lookup and pawn spawn — the same seam where the carried loadout is already threaded.
+
+The original concern — that `levelLoad` might fire before the seed arrives — dissolves because `levelLoad` and pawn spawn are in different phases of the pipeline. `levelLoad` fires during install; pawn spawn happens when `Participating` fires, which is after install completes and parity is confirmed. The seed is applied at the best available moment (before pawn spawn, if buffered), with graceful degradation (defaults + late apply via `set_per_seat_value`) if the seed arrives on a subsequent poll.
+
+Parity declarations and `JoinSeed` messages travel separate channels (parity through the net crate's internal evaluation; seed through the app-protocol reliable channel), so delivery order is not guaranteed. The buffering design handles both orderings.
 
 ## Eliminated complexity
 

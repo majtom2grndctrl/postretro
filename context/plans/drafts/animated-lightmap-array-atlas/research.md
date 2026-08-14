@@ -3,6 +3,17 @@
 Grounding for `index.md`. Anchors were read from source at draft time; treat line numbers as
 starting points, not addresses.
 
+**Re-anchored 2026-08-14** against `main` at `0fd7e0f`. Every seam was re-read. All wire-format
+(`level-format`), GPU (`renderer`, shaders), and `render-cpu` files are byte-identical to the
+draft's base (`b1327fd`), so their behavioral claims hold unchanged. Only `level-compiler`'s
+`pipeline.rs` and `lightmap_bake.rs` moved (delta-SH coarsening, seam-smoothing, entity
+serialization); the plan's load-bearing anchor — `pipeline.rs` discarding `layer_count` with the
+"single-layer" comment — survives at `:699`. The delta-SH probe coarsening that landed since the
+draft touches only sections 27/41/45 and never enters section 25, so the "animated indirect is
+layer-independent, out of scope" position stands. `STAGE_VERSION` is currently `5`; the golden
+`--ignored` failure is still red for the pre-existing reason in Open questions. Line-number drift
+elsewhere is cosmetic and left as first-approximation addresses per the note above.
+
 ## Layer data flow across the four seams
 
 ```mermaid
@@ -40,7 +51,7 @@ Every arrow above has a read call site in the anchors below.
 | Leaf grouping by `Chart.leaf_index`, first-seen order | `lightmap_bake.rs:873` |
 | Constants: `MIN_ATLAS_DIMENSION` 64, `MAX_ATLAS_DIMENSION` 8192, `MAX_ATLAS_LAYERS` 256 | `lightmap_bake.rs:30,35,41` |
 | Determinism keyed on chart order + `max_dim`; tie-break on chart index | `lightmap_bake.rs:944` |
-| `layer_count: _` discard, with the now-false comment | `pipeline.rs:697` |
+| `layer_count: _` discard, with the now-false comment | `pipeline.rs:699` (comment `:697-698`) |
 
 Layer counter is **monotonic** — a small leaf after a large one opens a fresh layer rather than
 backfilling. Relevant to slot density: occupied static layers can be sparse.
@@ -71,7 +82,7 @@ backfilling. Relevant to slot density: occupied static layers can be sparse.
 | Version constant — **2**, bumped for `direction_oct` | `:10-15` |
 | Encode: LE, all counts in the fixed header, no per-array prefix | `:158-192` |
 | Decode: version **exact equality**, hard error; single up-front `needed` size | `:194-278` |
-| `is_consistent` — prefix sum only, no coordinate or layer awareness | `:125-156` |
+| `is_consistent` — prefix sum + per-entry `(offset, count)` bounds into `texel_lights`; no coordinate or layer awareness | `:125-156` |
 | Layout doc block still says `version (= 1)` | `:73` |
 
 Graceful-version precedent: `level-format/src/trigger_volumes.rs` — const at `:5`, appended fields
@@ -107,7 +118,7 @@ version-dependent.
 | `filter_usable_section` — log-and-drop degradation posture to mirror | `lightmap.rs:324-358` |
 | `SINGLE-LAYER LIMITATION` comment | `shaders/forward.wgsl:216-233` |
 | The layer-0 guard | `forward.wgsl:944-954` |
-| `sample_lightmap_animated(uv)` — no layer param, unlike the static sibling | `forward.wgsl:243-245`, static at `:238-240` |
+| `sample_lightmap_animated(uv)` — no layer param, unlike `sample_lightmap_irradiance(uv, layer)` | `forward.wgsl:243-245`, `sample_lightmap_irradiance` at `:238` |
 | Adapter floors: `REQUIRED_MAX_TEXTURE_ARRAY_LAYERS = 256`, `array_layers_sufficient` | `renderer_init_resources.rs:14`, `:19-21` |
 | `max_storage_textures_per_shader_stage >= 4` required; compose uses 2 | `renderer_init_resources.rs:181-188` |
 
@@ -129,12 +140,16 @@ this.
 
 **Break on stride or header change** — `level-format/src/animated_light_weight_maps.rs`:
 `empty_section_round_trips` (`:426`, asserts `bytes.len() == HEADER_SIZE`), `byte_layout_matches_sizes`
-(`:435`, asserts `HEADER + n·20 + m·8 + k·12`), `rejects_bad_version` (`:482` — also rejects `1`,
-so a companion asserting v2 *succeeds* is needed), plus the shared `sample_section()` fixture
+(`:435`, asserts `HEADER + n·20 + m·8 + k·12`), `rejects_bad_version` (`:482` — sets version `999`,
+so it still guards the "unsupported version rejected" AC after the bump; but nothing asserts the
+current v2 payload *succeeds*, which is exactly the graceful-decode path v3 must add a test for),
+plus the shared `sample_section()` fixture
 (`:297-389`) and every rect literal in it.
 
 **Break on rect growth** — `level-compiler/src/animated_light_weight_maps.rs`:
-`byte_size_under_8_mib_budget` (`:1149`) is where 20→24 shows up first. Direct `chunk_atlas_rect`
+`byte_size_under_8_mib_budget` (`:1148`) carries no stride literal — it only asserts
+`section.to_bytes().len() < 8 MiB`, so the 20→24 growth reaches it through the encoded length, not an
+editable constant; it is the first budget test the larger rect can push. Direct `chunk_atlas_rect`
 tests at `:1285`, `:1362`, `:1410` construct `ChartPlacement` literals and are the natural
 insertion point for layer coverage. `render-cpu`'s `mk_rect` helper (`:175`) hardcodes
 `atlas_x: 0, atlas_y: 0`.

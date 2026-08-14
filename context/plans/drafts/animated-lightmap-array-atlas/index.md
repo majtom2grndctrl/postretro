@@ -59,7 +59,12 @@ measurements, and corrections to earlier readings are in `research.md`.
 - The `AnimatedLightChunks` section (24). Its records need no layer — the layer lives on the rect.
 - A 2D-dispatch fallback for the 65535 workgroup ceiling. The guard stays a hard error; this plan
   only ensures it counts the newly-included tiles.
-- Animated **indirect** (delta-SH sections 41/45). Already layer-independent.
+- Animated **indirect** lighting. It rides world-space delta-SH — the animated-light SH
+  compose (section 27, `DeltaShVolumes`) — not the weight-map atlas, so it is already
+  layer-independent. The direct SH-delta volumes (`DirectShDeltaVolumes` 41,
+  `AnimatedDirectShDeltaVolumes` 45) are likewise world-space and untouched. The delta-SH probe
+  coarsening that landed since this draft was written operates only on 27/41/45 and never enters
+  section 25.
 - Retiring the duplicated stride constants in the compiler's byte-size log. Updated in lockstep
   here; unifying them is separate.
 

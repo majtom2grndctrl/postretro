@@ -134,6 +134,8 @@ Each successful commit also replaces current declaration membership. Persistence
 
 Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
 
+Per-owner slots may declare `persist: true`. Per-owner persistence saves and restores values keyed by `PlayerClaimId` (hex-encoded device-local identity) rather than session-scoped `Seat`. The on-disk format (`state.json` version 3) carries a `per_owner` section keyed by durable slot key, then hex player identity, then value — extending the existing `slots` section without altering it. Each player saves only their own per-owner values. A connected client saves its per-owner values periodically (~60 s) and at clean exit; it never saves global slots. A connecting client carries saved per-owner values as a join seed (`ClientControlMessage::JoinSeed`) so player progress is portable across hosts. See `plans/ready/E16--per-player-persistence/`.
+
 ### Engine State SDK
 
 Scripts obtain engine-owned state references with `getGameState()` from `"postretro"`. It returns an immutable generated tree of descriptor references such as `getGameState().player.health`, not live values. Property access never reads current engine state.

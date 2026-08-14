@@ -32,7 +32,7 @@ Three channels, fixed layout, agreed by both peers (the layout is folded into th
 
 | Channel | Delivery | Carries |
 |---------|----------|---------|
-| Control | reliable-ordered | join traffic both ways: compatibility declarations client→server; level changes, divergence causes, and the replicated tuning payload server→client |
+| Control | reliable-ordered | join traffic both ways: compatibility declarations and join seed client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
 | Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests, time-sync probes |
 
@@ -407,8 +407,9 @@ mover replay provenance advances it to 12, and E17's replicated mover `blocked`
 phase advances it to 13. The static-kinematic handshake field uses `WIRE_VERSION`
 12; mover replay provenance advances it to 13, E15's tagged Control layout advances
 it to 14, and participation-framed traffic advances it to 15. E16's `drop_pressed`
-input edge advances it to 16, and E17's `blocked` phase advances it to 17. Earlier
-peers are refused by both handshake gates.
+input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
+`JoinSeed` variant on `ClientControlMessage` advances it to 18. Earlier peers are
+refused by both handshake gates.
 
 ## Phase boundaries
 

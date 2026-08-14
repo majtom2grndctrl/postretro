@@ -297,9 +297,9 @@ policies; they exercise two distinct recipient paths.
    each HUD shows only that player's XP, so the XP readouts diverge, while the
    shared team-kill count agrees for both clients. They are the same reward policy;
    the declaration and `.byPlayer(impact.source)` address make XP per-player,
-   while the plain `teamKills` update remains one session pot. XP is session-scoped:
-   it survives only the current seat's hold/reclaim window and does not persist to
-   disk until the per-player persistence work lands.
+   while the plain `teamKills` update remains one session pot. XP persists across
+   sessions and travels with its player to a new host through the join seed;
+   `teamKills` remains session-scoped.
 
 ## Why the chain is `progress → named event → applyDamage`, not a simpler trigger
 

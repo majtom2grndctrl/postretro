@@ -240,6 +240,11 @@ pub struct FrameUniforms {
     /// this total additionally includes promoted static lights appended after
     /// the dynamic records.
     pub total_light_count: u32,
+    /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
+    /// forward shader. Encoded as a u32 (0 = normal, non-zero = forced) in
+    /// the trailing 124..128 uniform slot. It affects only world static
+    /// specular; SDF and dynamic/mover paths have independent visibility.
+    pub spec_shadowmask_force_one: bool,
 }
 
 pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -270,7 +275,8 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
     let total_off = TOTAL_LIGHT_COUNT_OFFSET as usize;
     bytes[total_off..total_off + 4].copy_from_slice(&u.total_light_count.to_ne_bytes());
-    // 124..128 stays zero — explicit pad rounding the tail row to 16 bytes.
+    let spec_shadowmask_force_one: u32 = u.spec_shadowmask_force_one as u32;
+    bytes[124..128].copy_from_slice(&spec_shadowmask_force_one.to_ne_bytes());
     bytes
 }
 
@@ -296,6 +302,7 @@ mod tests {
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
             total_light_count: 0,
+            spec_shadowmask_force_one: false,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -317,6 +324,7 @@ mod tests {
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
             total_light_count: 0,
+            spec_shadowmask_force_one: false,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
         assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
@@ -345,6 +353,7 @@ mod tests {
                 dynamic_direct_isolation: DynamicDirectIsolation::Combined,
                 has_direct: false,
                 total_light_count: 0,
+                spec_shadowmask_force_one: false,
             });
             assert_eq!(
                 u32::from_ne_bytes(data[104..108].try_into().unwrap()),
@@ -352,6 +361,29 @@ mod tests {
             );
             assert!(data[120..128].iter().all(|&b| b == 0));
         }
+    }
+
+    #[test]
+    fn uniform_data_encodes_spec_shadowmask_force_one_at_correct_offset() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
+            total_light_count: 0,
+            spec_shadowmask_force_one: true,
+        });
+
+        assert_eq!(u32::from_ne_bytes(data[124..128].try_into().unwrap()), 1,);
     }
 
     #[test]
@@ -372,6 +404,7 @@ mod tests {
                 dynamic_direct_isolation: DynamicDirectIsolation::Combined,
                 has_direct: false,
                 total_light_count: 0,
+                spec_shadowmask_force_one: false,
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(decoded, mode as u32);
@@ -396,6 +429,7 @@ mod tests {
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
             total_light_count: 0,
+            spec_shadowmask_force_one: false,
         });
 
         assert_eq!(SdfShadowMode::ShadowmaskRawPoolVisibility as u32, 6);
@@ -419,6 +453,7 @@ mod tests {
             dynamic_direct_isolation: DynamicDirectIsolation::IndirectOnly,
             has_direct: true,
             total_light_count: 11,
+            spec_shadowmask_force_one: false,
         });
         let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
         assert!((scale - 0.25).abs() < 1e-6);
@@ -452,6 +487,7 @@ mod tests {
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
             total_light_count: light_count,
+            spec_shadowmask_force_one: false,
         });
 
         let mut floats = Vec::new();
@@ -498,6 +534,7 @@ mod tests {
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
             total_light_count: 0,
+            spec_shadowmask_force_one: false,
         });
         let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
         assert!((t - script_time).abs() < 1e-6);

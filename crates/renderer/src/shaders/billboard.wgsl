@@ -10,9 +10,9 @@
 // `view_proj`, `camera_position`, `total_light_count`, and the dynamic-direct tail
 // (`direct_scale` / `dynamic_direct_isolation` / `has_direct`); the rest are
 // declared so the field offsets line up with the Rust `Uniforms` writer (a
-// 3-way byte contract: render/mod.rs + forward.wgsl + billboard.wgsl). The
-// existing `lighting_isolation` stays the forward/static control and is NOT
-// reused here.
+// 4-way byte contract: Rust writer + forward.wgsl + billboard.wgsl +
+// wireframe.wgsl). The existing `lighting_isolation` stays the forward/static
+// control and is NOT reused here.
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
@@ -34,7 +34,9 @@ struct Uniforms {
     has_direct: u32,
     // Dynamic-tier records plus promoted static records appended after them.
     total_light_count: u32,
-    _dyn_pad1: u32,
+    // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), inert
+    // here so the shared group-0 Uniforms layout remains 128 bytes.
+    _spec_shadowmask_force_one_inert: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

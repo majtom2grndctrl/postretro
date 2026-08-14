@@ -282,6 +282,7 @@ impl Renderer {
             dynamic_direct_scale: full.dynamic_direct_scale,
             dynamic_direct_isolation: full.dynamic_direct_isolation,
             has_direct: full.sh_volume_resources.has_direct,
+            spec_shadowmask_force_one: full.spec_shadowmask_force_one,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
         full.last_camera_position = camera_position;

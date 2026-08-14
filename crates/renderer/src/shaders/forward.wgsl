@@ -49,16 +49,18 @@ struct Uniforms {
     // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
     // These belong to the DYNAMIC (entity / billboard) path and are NOT read by
     // the forward fragment. They are declared here only to keep the shared
-    // group-0 `Uniforms` byte layout in lockstep (the 3-way contract: Rust
-    // writer + forward.wgsl + billboard.wgsl). The first field repurposes the
-    // former `_sdf_pad1` slot; the rest land in a fresh 16-byte row so the
-    // struct stride is exactly 128 — wgpu rejects the pipeline if the CPU-side
-    // `UNIFORM_SIZE` and WGSL-derived stride drift.
+    // group-0 `Uniforms` byte layout in lockstep (the 4-way contract: Rust
+    // writer + forward.wgsl + billboard.wgsl + wireframe.wgsl). The first
+    // field repurposes the former `_sdf_pad1` slot; the rest land in a fresh
+    // 16-byte row so the struct stride is exactly 128 — wgpu rejects the
+    // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
     dynamic_direct_scale: f32,
     dynamic_direct_isolation: u32,
     has_direct: u32,
     total_light_count: u32,
-    _dyn_pad1: u32,
+    // Dev toggle: force static-light shadowmask visibility to 1.0 for the
+    // manual pre-change A/B. It affects only the static world specular path.
+    spec_shadowmask_force_one: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -638,6 +640,9 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
 // Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
 // A dropped/no-mask channel samples as fully lit, preserving the prior behavior.
 fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>) -> f32 {
+    if uniforms.spec_shadowmask_force_one != 0u {
+        return 1.0;
+    }
     if round(sl.cone_cos.z) >= SHADOWMASK_CHANNEL_DROPPED {
         return 1.0;
     }

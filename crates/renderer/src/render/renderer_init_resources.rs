@@ -604,6 +604,7 @@ pub(crate) fn build_initial_uniform_data(
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,
+        spec_shadowmask_force_one: false,
     })
 }
 

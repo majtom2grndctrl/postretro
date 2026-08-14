@@ -56,6 +56,11 @@ fn route_out_of_disk(
 
 const MIN_XZ_LEN_SQ: f32 = 1e-8;
 
+/// Moves an in-disk terminal to the corridor-facing standoff so its onward
+/// chord does not re-enter the endpoint disk.
+///
+/// The adjacent corridor waypoint is primary; degenerate XZ direction falls
+/// back to the terminal's radial direction, then the portal normal.
 fn project_out_of_disk(
     obstacle: FunnelEndpoint,
     terminal: Vec3,
@@ -63,25 +68,23 @@ fn project_out_of_disk(
     clearance_radius: f32,
 ) -> Option<Vec3> {
     let raw_endpoint = obstacle.raw_endpoint?;
+    let toward_xz = Vec3::new(toward.x - raw_endpoint.x, 0.0, toward.z - raw_endpoint.z);
     let radial = Vec3::new(
         terminal.x - raw_endpoint.x,
         0.0,
         terminal.z - raw_endpoint.z,
     );
-    let direction = if radial.length_squared() > MIN_XZ_LEN_SQ {
+    let direction = if toward_xz.length_squared() > MIN_XZ_LEN_SQ {
+        toward_xz.normalize()
+    } else if radial.length_squared() > MIN_XZ_LEN_SQ {
         radial.normalize()
     } else {
-        let toward_xz = Vec3::new(toward.x - raw_endpoint.x, 0.0, toward.z - raw_endpoint.z);
-        if toward_xz.length_squared() > MIN_XZ_LEN_SQ {
-            toward_xz.normalize()
+        let portal_interior = obstacle.portal_interior_xz?;
+        let normal = Vec3::new(-portal_interior.z, 0.0, portal_interior.x);
+        if normal.length_squared() > MIN_XZ_LEN_SQ {
+            normal.normalize()
         } else {
-            let portal_interior = obstacle.portal_interior_xz?;
-            let normal = Vec3::new(-portal_interior.z, 0.0, portal_interior.x);
-            if normal.length_squared() > MIN_XZ_LEN_SQ {
-                normal.normalize()
-            } else {
-                return None;
-            }
+            return None;
         }
     };
     Some(Vec3::new(
@@ -206,8 +209,9 @@ pub(super) fn ensure_endpoint_clearance(
 #[cfg(test)]
 mod tests {
     use super::{project_out_of_disk, route_out_of_disk};
-    use crate::nav::distance_xz;
+    use crate::nav::{NavGraph, distance_xz, find_path};
     use glam::Vec3;
+    use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
     const EPS: f32 = 1e-4;
     fn approx_eq(a: f32, b: f32) -> bool {
@@ -215,6 +219,59 @@ mod tests {
     }
     fn approx_xz(a: Vec3, b: Vec3) -> bool {
         approx_eq(a.x, b.x) && approx_eq(a.z, b.z)
+    }
+
+    fn region(x0: u32, z0: u32, x1: u32, z1: u32) -> NavRegion {
+        NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: 0.0,
+            floor_y_max: 0.5,
+        }
+    }
+
+    fn wall_wraparound_section() -> NavMeshSection {
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 0.1,
+            dim_x: 160,
+            dim_z: 160,
+            agent_radius: 0.3,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            // Four walkable regions wrap the left end of a freestanding wall:
+            // near side -> wall end -> far-side relay -> far side.
+            regions: vec![
+                region(0, 0, 80, 20),
+                region(0, 20, 30, 70),
+                region(0, 70, 25, 73),
+                region(0, 75, 80, 110),
+            ],
+            portals: vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [0.0, 0.0, 2.0],
+                    right: [3.0, 0.0, 2.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [0.0, 0.0, 7.0],
+                    right: [3.0, 0.0, 7.0],
+                },
+                NavPortal {
+                    region_a: 2,
+                    region_b: 3,
+                    left: [0.0, 0.0, 7.3],
+                    right: [3.0, 0.0, 7.3],
+                },
+            ],
+        }
     }
 
     #[test]
@@ -269,5 +326,77 @@ mod tests {
             approx_eq(projected.y, terminal.y),
             "terminal Y is preserved: {projected:?}"
         );
+    }
+
+    // Regression: far-side endpoint standoff projection exhausted clearance repair around a wall.
+    #[test]
+    fn find_path_routes_wall_wraparound_from_far_side_eroded_goal() {
+        let graph = NavGraph::from_section(&wall_wraparound_section());
+        let clearance = graph.agent_params().radius + crate::collision::SKIN_DISTANCE;
+        let wall_end = Vec3::new(3.0, 0.0, 7.0);
+        let neighboring_endpoint = Vec3::new(3.0, 0.0, 7.3);
+        let start = Vec3::new(7.0, 0.0, 1.0);
+        let goal = Vec3::new(3.1, 0.0, 7.25);
+
+        // The overlapping endpoints are on the wall side; each around-end gate
+        // remains 3 m wide, leaving a generous channel on the other side.
+        assert!(
+            3.0 > 2.0 * clearance + 1.0,
+            "wall-end throat must be comfortably wider than two clearances"
+        );
+        assert!(
+            graph.region_at(goal).is_none() && graph.resolve_region_at(goal) == Some(3),
+            "far-side goal must exercise snapped eroded-band resolution"
+        );
+        assert!(
+            distance_xz(goal, wall_end) < clearance,
+            "far-side goal must sit inside the wall-end endpoint disk"
+        );
+        let radial_standoff = wall_end
+            + Vec3::new(goal.x - wall_end.x, 0.0, goal.z - wall_end.z).normalize() * clearance;
+        assert!(
+            distance_xz(radial_standoff, neighboring_endpoint) < clearance,
+            "radial standoff must land inside the overlapping neighbor disk"
+        );
+
+        let path = find_path(&graph, start, goal)
+            .expect("corridor-facing far-side standoff must preserve the wraparound route");
+        assert!(
+            path.len() >= 3,
+            "wall wraparound must remain a multi-waypoint route: {path:?}"
+        );
+        assert!(
+            !approx_xz(*path.last().expect("path has a goal standoff"), goal),
+            "in-disk far-side goal must project to a standoff: {path:?}"
+        );
+        assert!(
+            approx_eq(
+                distance_xz(
+                    *path.last().expect("path has a goal standoff"),
+                    neighboring_endpoint
+                ),
+                clearance
+            ),
+            "goal standoff must remain exactly on the neighbor disk boundary: {path:?}"
+        );
+
+        let raw_endpoints = [
+            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::new(3.0, 0.0, 2.0),
+            Vec3::new(0.0, 0.0, 7.0),
+            wall_end,
+            Vec3::new(0.0, 0.0, 7.3),
+            neighboring_endpoint,
+        ];
+        for segment in path.windows(2) {
+            for raw_endpoint in raw_endpoints {
+                let segment_clearance =
+                    super::super::segment_point_distance_xz(segment[0], segment[1], raw_endpoint);
+                assert!(
+                    segment_clearance + EPS >= clearance,
+                    "segment {segment:?} cuts endpoint {raw_endpoint:?}; path={path:?}"
+                );
+            }
+        }
     }
 }

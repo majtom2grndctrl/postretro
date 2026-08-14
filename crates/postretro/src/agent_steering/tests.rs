@@ -2358,6 +2358,63 @@ fn drifted_destination_replan_failure_keeps_agent_moving_on_stale_path() {
 }
 
 #[test]
+fn arrived_path_replan_failure_clears_completed_state_and_holds_position() {
+    // Regression: an agent that had already arrived retained its completed path
+    // after a newly admitted replan failed, reporting arrived/has-path instead
+    // of blocked for the live unreachable destination.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let reachable = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_destination(&mut registry, id, reachable);
+
+    for _ in 0..600 {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        if path_state(&registry, id).unwrap().arrived {
+            break;
+        }
+    }
+    assert!(
+        path_state(&registry, id).unwrap().arrived,
+        "fixture: the first destination must complete before the failed replan"
+    );
+
+    // This is beyond the navmesh's endpoint snap tolerance, so the drift-driven
+    // replan is admitted immediately and fails.
+    let unroutable = Vec3::new(7.0, rest_y(&params), 20.0);
+    set_destination(&mut registry, id, unroutable);
+    let before = agent_position(&registry, id);
+    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let state = path_state(&registry, id).unwrap();
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+
+    assert_eq!(result.replans, 1, "the drifted destination is admitted");
+    assert!(!state.has_path, "a completed stale path is not retained");
+    assert!(!state.arrived, "the old arrival state is cleared");
+    assert!(state.blocked, "the live unroutable destination is blocked");
+    assert!(agent.path.is_empty());
+    assert!(agent.mandatory_waypoints.is_empty());
+    assert_eq!(agent.waypoint_cursor, 0);
+    assert_eq!(agent.steer_velocity, Vec3::ZERO);
+    assert_eq!(agent.stuck_ticks, 0);
+    assert_eq!(agent.unstick_window_remaining, 0);
+
+    for _ in 0..10 {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    }
+    let after = agent_position(&registry, id);
+    assert!(
+        distance_xz(before, after) < STUCK_PROGRESS_EPSILON,
+        "the blocked agent holds safely instead of following the old endpoint: \
+         before={before:?}, after={after:?}"
+    );
+}
+
+#[test]
 fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
     // Regression: a failed plan can leave an alert enemy as
     // arrived=false/has_path=false/blocked=true. If the agent later sits on the

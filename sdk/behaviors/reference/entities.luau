@@ -26,7 +26,9 @@ local DETECTION_RANGE = 16
 --- Distance within which its melee swing connects, in metres.
 local ATTACK_RANGE = 2
 --- Authored distance from the spawn anchor that begins a retreat, in metres.
-local LEASH_RANGE = 20
+--- Kept high so the movement-feel fixture can exercise obstacle routing before
+--- a reference enemy turns back toward its anchor.
+local LEASH_RANGE = 100
 --- The retreat-to-patrol threshold. It deliberately exceeds the engine's 0.5 m
 --- position-goal arrival epsilon: a smaller guard wedges after steering clears.
 local RETURN_ARRIVAL_EPSILON = 1

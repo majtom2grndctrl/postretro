@@ -444,14 +444,26 @@ pub(crate) fn tick(
                     // GENUINE no-route (a disconnected or far-off-mesh
                     // destination — or a map with no navmesh at all), never a
                     // mere near-wall wobble. Path failure must stay TRANSIENT:
-                    // any existing path is KEPT — the agent follows its last
-                    // good route (stale-but-moving) instead of freezing — and
-                    // the cooldown (set above) gates the next retry, with the
-                    // drift / topology / direct-routable admission clauses able
-                    // to retry sooner. `blocked` reports the no-route state
-                    // only when there is nothing left to follow; a pathless
-                    // blocked agent holds position rather than marching into
-                    // geometry toward the raw destination.
+                    // a still-moving existing path is KEPT — the agent follows
+                    // its last good route (stale-but-moving) instead of
+                    // freezing — and the cooldown (set above) gates the next
+                    // retry, with the drift / topology / direct-routable
+                    // admission clauses able to retry sooner. A completed path
+                    // cannot provide that useful motion, though: discard its
+                    // obsolete cursor/steering state and report the live
+                    // destination as blocked rather than retaining a false
+                    // arrived/has-path result.
+                    if agent.arrived {
+                        agent.path.clear();
+                        agent.mandatory_waypoints.clear();
+                        agent.waypoint_cursor = 0;
+                        agent.arrived = false;
+                        agent.steer_velocity = Vec3::ZERO;
+                        agent.stuck_ticks = 0;
+                        agent.unstick_window_remaining = 0;
+                    }
+                    // A pathless blocked agent holds position rather than
+                    // marching into geometry toward the raw destination.
                     agent.blocked = agent.path.is_empty();
                 }
             }

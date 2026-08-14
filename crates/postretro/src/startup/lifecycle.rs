@@ -1593,6 +1593,7 @@ mod tests {
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
                 state_store_lifecycle: Default::default(),
+                persisted_state: None,
                 progress_tracker: ProgressTracker::new(),
                 pending_death_events: Vec::new(),
                 crossing_detector: CrossingDetector::new(),

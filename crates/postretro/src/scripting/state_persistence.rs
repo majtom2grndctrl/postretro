@@ -11,10 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
+use postretro_net::wire::PlayerClaimId;
 use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
 /// Current on-disk state format. Increment only with an explicit migration or invalidation policy.
-pub(crate) const CURRENT_STATE_VERSION: u32 = 2;
+pub(crate) const CURRENT_STATE_VERSION: u32 = 3;
+const OLDEST_SUPPORTED_STATE_VERSION: u32 = 2;
 const STATE_FILENAME: &str = "state.json";
 
 /// Process-lifetime gate for the one-time restore and clean-exit save.
@@ -63,11 +65,13 @@ fn state_path_from_data_dir(data_dir: Option<&Path>, mod_id: &str) -> Option<Pat
 pub(crate) struct PersistedState {
     version: u32,
     slots: BTreeMap<String, PersistedValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-enum PersistedValue {
+pub(crate) enum PersistedValue {
     Boolean(bool),
     Number(f64),
     String(String),
@@ -132,6 +136,7 @@ pub(crate) fn collect_persisted_state(
         state: PersistedState {
             version: CURRENT_STATE_VERSION,
             slots,
+            per_owner: BTreeMap::new(),
         },
         warnings,
     }
@@ -148,7 +153,7 @@ pub(crate) fn overlay_persisted_state(
     identity: Option<&StoreIdentityLedger>,
     committed_store_slots: &BTreeSet<String>,
 ) -> Vec<String> {
-    if persisted.version != CURRENT_STATE_VERSION {
+    if !(OLDEST_SUPPORTED_STATE_VERSION..=CURRENT_STATE_VERSION).contains(&persisted.version) {
         return vec![format!(
             "state file version {} is not supported (current version is {}); ignoring file",
             persisted.version, CURRENT_STATE_VERSION
@@ -181,15 +186,9 @@ pub(crate) fn overlay_persisted_state(
             continue;
         };
 
-        if !record.schema.persist {
+        if !is_persisted_mod_slot(record) {
             warnings.push(format!(
-                "state file targets non-persistent slot `{name}`; ignoring it"
-            ));
-            continue;
-        }
-        if record.schema.readonly || record.schema.ownership != SlotOwnership::Mod {
-            warnings.push(format!(
-                "state file targets readonly or engine-owned slot `{name}`; ignoring it"
+                "state file targets non-persistent, per-owner, readonly, or engine-owned slot `{name}`; ignoring it"
             ));
             continue;
         }
@@ -246,8 +245,52 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 
 fn is_persisted_mod_slot(record: &SlotRecord) -> bool {
     record.schema.persist
+        && !record.schema.per_owner
         && !record.schema.readonly
         && record.schema.ownership == SlotOwnership::Mod
+}
+
+fn is_persisted_per_owner_slot(record: &SlotRecord) -> bool {
+    record.schema.persist
+        && record.schema.per_owner
+        && !record.schema.readonly
+        && record.schema.ownership == SlotOwnership::Mod
+}
+
+/// Encode the opaque player claim as the stable 32-character JSON map key.
+pub(crate) fn encode_player_claim_id(player_id: &PlayerClaimId) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(player_id.0.len() * 2);
+    for byte in player_id.0 {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+/// Decode a 32-character hexadecimal player-claim map key.
+pub(crate) fn decode_player_claim_id(encoded: &str) -> Option<PlayerClaimId> {
+    if encoded.len() != 32 {
+        return None;
+    }
+
+    let mut player_id = [0; 16];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        player_id[index] = (high << 4) | low;
+    }
+    Some(PlayerClaimId(player_id))
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn value_for_save(
@@ -385,6 +428,12 @@ mod tests {
         })
     }
 
+    fn per_owner_mod_slot(persist: bool) -> SlotRecord {
+        let mut record = mod_slot(SlotType::Number, SlotValue::Number(0.0), persist, None);
+        record.schema.per_owner = true;
+        record
+    }
+
     fn declare_fixture(table: &mut SlotTable) {
         table
             .insert_namespace(
@@ -465,6 +514,87 @@ mod tests {
     }
 
     #[test]
+    fn persisted_state_roundtrips_per_owner_entries() {
+        let persisted = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::from([(
+                "kglobal0000000001".to_string(),
+                PersistedValue::Boolean(true),
+            )]),
+            per_owner: BTreeMap::from([(
+                "kplayer0000000001".to_string(),
+                BTreeMap::from([(
+                    "00112233445566778899aabbccddeeff".to_string(),
+                    PersistedValue::Number(42.0),
+                )]),
+            )]),
+        };
+
+        let serialized = serde_json::to_vec(&persisted).unwrap();
+        let restored: PersistedState = serde_json::from_slice(&serialized).unwrap();
+
+        assert_eq!(restored, persisted);
+    }
+
+    #[test]
+    fn version_two_document_defaults_per_owner_and_restores_global_slots() {
+        let persisted: PersistedState = serde_json::from_value(serde_json::json!({
+            "version": 2,
+            "slots": { "k0000000000000001": 42.0 }
+        }))
+        .unwrap();
+        assert!(persisted.per_owner.is_empty());
+
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        assert!(
+            overlay_persisted_state(
+                &mut table,
+                &persisted,
+                Some(&fixture_identity()),
+                &identity_membership(Some(&fixture_identity())),
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            table.get("game.score").unwrap().value,
+            Some(SlotValue::Number(42.0))
+        );
+    }
+
+    #[test]
+    fn player_claim_id_hex_roundtrips() {
+        let player_id = PlayerClaimId([
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ]);
+
+        let encoded = encode_player_claim_id(&player_id);
+        assert_eq!(encoded, "00112233445566778899aabbccddeeff");
+        assert_eq!(decode_player_claim_id(&encoded), Some(player_id));
+        assert_eq!(
+            decode_player_claim_id("00112233445566778899AABBCCDDEEFF"),
+            Some(player_id)
+        );
+        assert!(decode_player_claim_id("00112233445566778899aabbccddee").is_none());
+        assert!(decode_player_claim_id("00112233445566778899aabbccddeefg").is_none());
+    }
+
+    #[test]
+    fn persistence_filters_keep_per_owner_slots_out_of_global_state() {
+        let global_persistent = mod_slot(SlotType::Boolean, SlotValue::Boolean(false), true, None);
+        let per_owner_persistent = per_owner_mod_slot(true);
+        let per_owner_runtime_only = per_owner_mod_slot(false);
+
+        assert!(is_persisted_mod_slot(&global_persistent));
+        assert!(!is_persisted_per_owner_slot(&global_persistent));
+        assert!(!is_persisted_mod_slot(&per_owner_persistent));
+        assert!(is_persisted_per_owner_slot(&per_owner_persistent));
+        assert!(!is_persisted_mod_slot(&per_owner_runtime_only));
+        assert!(!is_persisted_per_owner_slot(&per_owner_runtime_only));
+    }
+
+    #[test]
     fn persisted_slots_roundtrip_over_fresh_declarations() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("state.json");
@@ -541,6 +671,7 @@ mod tests {
                 ),
                 ("kffffffffffffffff".to_string(), PersistedValue::Number(1.0)),
             ]),
+            per_owner: BTreeMap::new(),
         };
 
         let warnings = overlay_persisted_state(
@@ -571,6 +702,7 @@ mod tests {
                 "k0000000000000001".to_string(),
                 PersistedValue::Number(99.0),
             )]),
+            per_owner: BTreeMap::new(),
         };
         assert_eq!(
             overlay_persisted_state(
@@ -593,6 +725,7 @@ mod tests {
                 "k0000000000000001".to_string(),
                 PersistedValue::Number(f64::NAN),
             )]),
+            per_owner: BTreeMap::new(),
         };
         assert_eq!(
             overlay_persisted_state(
@@ -615,6 +748,7 @@ mod tests {
                 "k0000000000000005".to_string(),
                 PersistedValue::Array(vec![0.0, f64::INFINITY]),
             )]),
+            per_owner: BTreeMap::new(),
         };
         assert_eq!(
             overlay_persisted_state(
@@ -646,6 +780,7 @@ mod tests {
         let json: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(json["version"], CURRENT_STATE_VERSION);
         assert_eq!(json["slots"], serde_json::json!({}));
+        assert!(json.get("per_owner").is_none());
     }
 
     #[test]
@@ -659,6 +794,7 @@ mod tests {
                 "k0000000000000001".to_string(),
                 PersistedValue::Number(500.0),
             )]),
+            per_owner: BTreeMap::new(),
         };
 
         let warnings = overlay_persisted_state(
@@ -723,6 +859,7 @@ mod tests {
                 ),
                 ("k0000000000000008".to_string(), PersistedValue::Number(1.0)),
             ]),
+            per_owner: BTreeMap::new(),
         };
         let warnings =
             overlay_persisted_state(&mut table, &persisted, Some(&identity), &membership);
@@ -814,6 +951,7 @@ mod tests {
                 "k0123456789abcdef".to_string(),
                 PersistedValue::Number(42.0),
             )]),
+            per_owner: BTreeMap::new(),
         };
 
         let warnings = overlay_persisted_state(
@@ -839,6 +977,7 @@ mod tests {
             &PersistedState {
                 version: 1,
                 slots: BTreeMap::from([("game.score".to_string(), PersistedValue::Number(42.0))]),
+                per_owner: BTreeMap::new(),
             },
             Some(&fixture_identity()),
             &identity_membership(Some(&fixture_identity())),

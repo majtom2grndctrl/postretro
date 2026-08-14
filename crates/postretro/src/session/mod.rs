@@ -36,7 +36,7 @@ use crate::scripting::reactions::registry::{
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
 };
-use crate::scripting::state_persistence::StateStoreLifecycle;
+use crate::scripting::state_persistence::{PersistedState, StateStoreLifecycle};
 use crate::scripting_systems;
 use crate::startup::StartupTimings;
 use crate::{audio, netcode, options};
@@ -109,6 +109,10 @@ pub(crate) struct Session {
 
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
+
+    /// Boot-loaded state retained for per-owner saves and join-seed assembly.
+    /// The document remains main-thread-only with the rest of the session.
+    pub(crate) persisted_state: Option<PersistedState>,
 
     /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
     pub(crate) progress_tracker: ProgressTracker,
@@ -489,6 +493,7 @@ impl Session {
             scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             state_store_lifecycle: StateStoreLifecycle::default(),
+            persisted_state: None,
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),
             crossing_detector: CrossingDetector::new(),

@@ -354,6 +354,7 @@ impl App {
                                 for warning in warnings {
                                     log::warn!("[State] {warning}");
                                 }
+                                session.persisted_state = Some(persisted);
                                 log::info!(
                                     "[State] restored persistent slots from {}",
                                     state_path.display()

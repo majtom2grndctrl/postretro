@@ -341,10 +341,10 @@ export type LevelManifest = {
 --- is reserved for global slots.
 export type StoreSlotSchema = (
   { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
-  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
   | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
   | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: nil?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
 ) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,

@@ -7,7 +7,7 @@ use winit::event_loop::ActiveEventLoop;
 use crate::App;
 use crate::render;
 use crate::scripting::state_persistence::{
-    load_persisted_state, overlay_persisted_state, state_path,
+    load_persisted_state, overlay_persisted_state, persisted_state_version_is_supported, state_path,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
 
@@ -345,19 +345,32 @@ impl App {
                     if let Some(state_path) = state_path(&mod_id) {
                         match load_persisted_state(&state_path) {
                             Ok(Some(persisted)) => {
+                                let local_player_id = if matches!(
+                                    session.net_endpoint.as_ref(),
+                                    Some(crate::netcode::NetEndpoint::Client { .. })
+                                ) {
+                                    None
+                                } else {
+                                    session.player_options.player_id
+                                };
                                 let warnings = overlay_persisted_state(
                                     &mut session.scripting.script_ctx.slot_table.borrow_mut(),
                                     &persisted,
                                     identity.as_ref(),
                                     &committed_store_slots,
+                                    local_player_id,
+                                    postretro_foundation::Seat(0),
                                 );
                                 for warning in warnings {
                                     log::warn!("[State] {warning}");
                                 }
-                                log::info!(
-                                    "[State] restored persistent slots from {}",
-                                    state_path.display()
-                                );
+                                if persisted_state_version_is_supported(&persisted) {
+                                    session.persisted_state = Some(persisted);
+                                    log::info!(
+                                        "[State] restored persistent slots from {}",
+                                        state_path.display()
+                                    );
+                                }
                             }
                             Ok(None) => {}
                             Err(error) => log::warn!(

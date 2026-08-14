@@ -18,6 +18,7 @@ export const progression = defineStore("progression", {
     type: "number",
     default: 0,
     perOwner: true,
+    persist: true,
     network: "ownerPrivate",
   },
   teamKills: {

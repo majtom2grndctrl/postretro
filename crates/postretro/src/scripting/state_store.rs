@@ -251,10 +251,15 @@ mod tests {
             "per-owner-mixed",
             serde_json::json!({
                 "good": { "type": "number", "default": 1, "perOwner": true },
-                "bad": { "type": "number", "default": 0, "perOwner": true, "persist": true },
+                "bad": {
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "accumulate": { "op": "input", "name": "@dt" }
+                },
             }),
         )
-        .expect_err("invalid perOwner declaration must reject the entire store");
+        .expect_err("perOwner accumulator declaration must reject the entire store");
         assert!(err.to_string().contains("bad"));
         assert!(
             ctx.slot_table

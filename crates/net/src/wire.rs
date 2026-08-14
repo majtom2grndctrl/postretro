@@ -31,7 +31,7 @@ use bitcode::{Decode, Encode};
 mod control;
 pub use control::{
     ClientControlMessage, ClientSwitchDeclaration, ClosingCause, ConnectClaim,
-    DISPLAY_NAME_MAX_BYTES, DivergenceReason, HoldingCause, NETCODE_USER_DATA_BYTES,
+    DISPLAY_NAME_MAX_BYTES, DivergenceReason, HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES,
     ParityDeclaration, PlayerClaimId, ProtocolVersion, RosterEntry, ServerControlMessage,
     ServerSwitchAccepted, ServerSwitchRefused, SessionId, SessionRosterMessage,
     decode_connect_claim, encode_connect_claim,

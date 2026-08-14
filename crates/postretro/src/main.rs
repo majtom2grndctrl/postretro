@@ -93,7 +93,7 @@ mod scripting_systems;
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt::Write as _;
 #[cfg(test)]
 use std::path::Path;
@@ -120,7 +120,9 @@ use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
-    collect_persisted_state, save_persisted_state, state_path,
+    apply_join_seed, collect_per_owner_state, collect_persisted_state,
+    collected_per_owner_only_state, merge_per_owner_state, retain_saved_per_owner_state,
+    save_persisted_state, state_path, sync_client_per_owner_projection,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -1434,16 +1436,127 @@ fn update_debug_chase_agent_destination(
     agent_steering::set_destination(registry, agent, target);
 }
 
-/// Whether the clean-exit handler should write persistent slots to `state.json`
-/// (M15 Phase 3.5 Task 5). The save runs only when the state-store lifecycle has
-/// committed declarations and restore (`can_save`) AND this process is not a
-/// connected client. A connected client's replicated slots (`player.health`,
-/// `player.maxHealth`, shared mod slots) are server-authoritative values applied
-/// through the replicated-state path, not local edits — persisting them would write
-/// another peer's authoritative state into this client's save file. Single-player
-/// (`is_connected_client == false`) and the host both save unchanged.
+/// Whether clean exit should save the global persistent-slot projection. A
+/// connected client skips this path because those values are host-authoritative;
+/// its device-local per-owner values use the separate private save path.
 fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
     can_save && !is_connected_client
+}
+
+/// Apply one host-validated join seed to an admitted seat. The host registry is
+/// authoritative: unknown durable keys and any schema-incompatible entries are
+/// warned and skipped before owner-private replication observes the values.
+fn apply_host_join_seed(
+    script_ctx: &postretro_entities::ScriptCtx,
+    identity: Option<&postretro_scripting_core::store_identity::StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    seat: Seat,
+    slots: BTreeMap<String, postretro_net::wire::JoinSeedValue>,
+) {
+    for warning in apply_join_seed(
+        &mut script_ctx.slot_table.borrow_mut(),
+        identity,
+        committed_store_slots,
+        seat,
+        slots,
+    ) {
+        log::warn!("[Net] {warning}");
+    }
+}
+
+/// Save a connected client's own persistent per-owner values. This is kept
+/// separate from `should_save_persisted_state`: global slots remain
+/// host-authoritative, while the durable player-owned values belong in the
+/// local device's document.
+fn save_connected_client_per_owner_state(session: &mut crate::session::Session) {
+    if !session.state_store_lifecycle.can_save() {
+        return;
+    }
+    let Some((_, _, Some(local_seat))) = session
+        .net_endpoint
+        .as_ref()
+        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
+    else {
+        return;
+    };
+    let Some(local_player_id) = session.player_options.player_id else {
+        // A process without a durable player identity must not manufacture a
+        // per-owner key or write a document it cannot later identify.
+        return;
+    };
+    let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
+        log::warn!("[State] no committed mod manifest; skipping persistent per-owner state save");
+        return;
+    };
+    let mod_id = mod_id.to_owned();
+    let Some(state_path) = state_path(&mod_id) else {
+        if session.state_store_lifecycle.disable_persistence() {
+            log::warn!(
+                "[State] platform data directory is unavailable; persistent state is disabled for this run"
+            );
+        }
+        return;
+    };
+
+    let identity = session.scripting.script_runtime.store_identity().cloned();
+    let committed_store_slots = session
+        .scripting
+        .script_runtime
+        .committed_store_slots()
+        .clone();
+    let script_ctx = session.scripting.script_ctx.clone();
+    let collected = collect_per_owner_state(
+        &script_ctx.slot_table.borrow(),
+        identity.as_ref(),
+        &committed_store_slots,
+        local_seat,
+        local_player_id,
+    );
+    for warning in collected.warnings {
+        log::warn!("[State] {warning}");
+    }
+
+    let save_state =
+        collected_per_owner_only_state(session.persisted_state.as_ref(), collected.per_owner);
+    match save_persisted_state(&state_path, &save_state) {
+        Ok(()) => {
+            // Keep boot-loaded globals in memory for their own lifecycle, but
+            // advance the retained per-owner document used by future client
+            // saves and join-seed assembly.
+            retain_saved_per_owner_state(&mut session.persisted_state, save_state);
+            log::info!(
+                "[State] saved persistent per-owner slots to {}",
+                state_path.display()
+            );
+        }
+        Err(error) => log::warn!(
+            "[State] failed to save persistent per-owner slots to {}: {error}",
+            state_path.display()
+        ),
+    }
+}
+
+/// Advance the connected-client private-save cadence after all game-logic work
+/// has settled for the frame. The caller owns the exact post-command-drain
+/// location; this helper owns only role/participation gating and synchronous I/O.
+fn maybe_save_connected_client_per_owner_state(
+    session: &mut crate::session::Session,
+    frame_dt: std::time::Duration,
+) {
+    let Some((connected, participating, _)) = session
+        .net_endpoint
+        .as_ref()
+        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
+    else {
+        return;
+    };
+    session.per_owner_save_timer.observe_connection(connected);
+    if session
+        .per_owner_save_timer
+        .advance(frame_dt, connected && participating)
+    {
+        save_connected_client_per_owner_state(session);
+    }
 }
 
 // --- ApplicationHandler ---
@@ -2921,6 +3034,18 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
+                // Connected-client per-owner persistence runs exactly after the
+                // second command drain: every fixed tick and same-frame crossing
+                // write has settled, and neither the SlotTable nor registry
+                // RefCell is borrowed. Keep this synchronous on the main thread
+                // so it cannot race clean exit or the retained state document.
+                if let Some(session) = self.session.as_mut() {
+                    maybe_save_connected_client_per_owner_state(
+                        session,
+                        std::time::Duration::from_secs_f32(frame_dt),
+                    );
+                }
+
                 if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
@@ -3893,18 +4018,25 @@ impl ApplicationHandler for App {
         // Saving before declarations commit and restore completes could replace
         // a valid state file with an empty or default-only snapshot.
         //
-        // A connected client must NOT persist replicated slot writes to `state.json`
-        // (M15 Phase 3.5 Task 5): its `player.health` / `player.maxHealth` and any
-        // shared mod slots are server-authoritative values applied through the
-        // replicated-state path, not local edits to save. Bitcode stays live-wire only,
-        // and save-game sync for net sessions is a non-goal. Single-player (`None`) and
-        // the host (`NetEndpoint::Host`) save unchanged — only `NetEndpoint::Client`
-        // skips the clean-exit save.
+        // A connected client must NOT persist replicated global slot writes to
+        // `state.json`: its `player.health` /
+        // `player.maxHealth` and shared mod slots are server-authoritative
+        // values applied through the replicated-state path. Its own
+        // per-owner values are the narrow exception below, keyed by its
+        // durable player identity and saved without global slots.
         let can_save = self
             .session
             .as_ref()
             .is_some_and(|session| session.state_store_lifecycle.can_save());
-        if should_save_persisted_state(can_save, self.is_connected_client()) {
+        let is_connected_client = self.is_connected_client();
+        if is_connected_client {
+            if let Some(session) = self.session.as_mut() {
+                // Private owner values are intentionally outside the legacy
+                // global-save gate: a client never writes global slots, but it
+                // does retain its own durable progression on clean exit.
+                save_connected_client_per_owner_state(session);
+            }
+        } else if should_save_persisted_state(can_save, is_connected_client) {
             let session = self
                 .session
                 .as_mut()
@@ -3919,13 +4051,26 @@ impl ApplicationHandler for App {
                     .clone();
                 let script_ctx = session.scripting.script_ctx.clone();
                 if let Some(state_path) = state_path(&mod_id) {
-                    let collected = collect_persisted_state(
+                    let mut collected = collect_persisted_state(
                         &script_ctx.slot_table.borrow(),
                         identity.as_ref(),
                         &committed_store_slots,
                     );
                     for warning in collected.warnings {
                         log::warn!("[State] {warning}");
+                    }
+                    if let Some(local_player_id) = session.player_options.player_id {
+                        let per_owner = collect_per_owner_state(
+                            &script_ctx.slot_table.borrow(),
+                            identity.as_ref(),
+                            &committed_store_slots,
+                            postretro_foundation::Seat(0),
+                            local_player_id,
+                        );
+                        for warning in per_owner.warnings {
+                            log::warn!("[State] {warning}");
+                        }
+                        merge_per_owner_state(&mut collected.state, per_owner.per_owner);
                     }
                     match save_persisted_state(&state_path, &collected.state) {
                         Ok(()) => {
@@ -4029,14 +4174,25 @@ impl App {
             .session
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())?;
-        let poll = {
+        let (poll, client_connected) = {
             let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
             let mut registry = script_ctx.registry.borrow_mut();
             let poll = endpoint
                 .poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry);
             endpoint.warn_once_if_mod_identity_missing();
-            poll
+            let client_connected = endpoint
+                .client_per_owner_save_context()
+                .map(|(connected, _, _)| connected);
+            (poll, client_connected)
         };
+        if let Some(connected) = client_connected
+            && let Some(session) = self.session.as_mut()
+        {
+            // Loading and frontend frames have no periodic save, but still
+            // observe a transport reconnection so the resumed cadence starts
+            // from zero rather than carrying pre-disconnect elapsed time.
+            session.per_owner_save_timer.observe_connection(connected);
+        }
         if let netcode::WorldLessPoll::Client(controls) = &poll {
             netcode::client_drain_control(self, controls.clone());
         }
@@ -4055,6 +4211,12 @@ impl App {
             let Some(session) = self.session.as_mut() else {
                 return Some(poll);
             };
+            let join_seed_identity = session.scripting.script_runtime.store_identity().cloned();
+            let join_seed_membership = session
+                .scripting
+                .script_runtime
+                .committed_store_slots()
+                .clone();
             let mut seat_table = session.seat_table.as_mut();
             let Some(netcode::NetEndpoint::Host {
                 server,
@@ -4070,6 +4232,7 @@ impl App {
                 pending_hit_declarations,
                 weaponless_fire_logged,
                 last_sent_tuning,
+                join_seeds: join_seed_state,
                 ..
             }) = session.net_endpoint.as_mut()
             else {
@@ -4077,6 +4240,7 @@ impl App {
             };
             let mut registry = script_ctx.registry.borrow_mut();
             for client_id in &host_poll.disconnects {
+                join_seed_state.remove_client(*client_id);
                 let durable_pawn = seat_table
                     .as_deref()
                     .and_then(|seats| seats.pawn_for_client(*client_id));
@@ -4125,24 +4289,90 @@ impl App {
                     &mut script_ctx.slot_table.borrow_mut(),
                     admission.released_seats,
                 );
+                if admission.reclaimed {
+                    join_seed_state.mark_reclaimed(*client_id);
+                }
             }
-            netcode::host_handle_lifecycle(
-                &mut registry,
-                allocator,
-                replicable,
-                replication,
-                state_slots,
-                slot_pawns,
-                command_queues,
-                owners,
-                weapon_owners,
-                open_shots,
-                pending_hit_declarations,
-                weaponless_fire_logged,
-                last_sent_tuning,
-                seat_table.as_deref_mut(),
-                &host_poll.lifecycle,
-            );
+            for (client_id, arrival) in
+                join_seed_state.route_poll(host_poll, |id| server.is_participating(id))
+            {
+                match arrival {
+                    netcode::JoinSeedArrival::Buffered => {}
+                    netcode::JoinSeedArrival::Apply(slots) => {
+                        let Some(seat) = seat_table
+                            .as_deref()
+                            .and_then(|seats| seats.seat_for_client(client_id))
+                        else {
+                            log::warn!(
+                                "[Net] join seed for participating client {client_id} has no admitted seat; dropping it"
+                            );
+                            continue;
+                        };
+                        apply_host_join_seed(
+                            &script_ctx,
+                            join_seed_identity.as_ref(),
+                            &join_seed_membership,
+                            seat,
+                            slots,
+                        );
+                    }
+                    netcode::JoinSeedArrival::DroppedConsumed => log::warn!(
+                        "[Net] dropping post-consumption join seed from client {client_id}"
+                    ),
+                    netcode::JoinSeedArrival::DroppedReclaimed => log::info!(
+                        "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
+                    ),
+                }
+            }
+            for event in &host_poll.lifecycle {
+                netcode::host_handle_lifecycle(
+                    &mut registry,
+                    allocator,
+                    replicable,
+                    replication,
+                    state_slots,
+                    slot_pawns,
+                    command_queues,
+                    owners,
+                    weapon_owners,
+                    open_shots,
+                    pending_hit_declarations,
+                    weaponless_fire_logged,
+                    last_sent_tuning,
+                    seat_table.as_deref_mut(),
+                    std::slice::from_ref(event),
+                );
+                match event {
+                    postretro_net::slots::SlotEvent::Closed { client_id, .. } => {
+                        join_seed_state.remove_client(*client_id);
+                    }
+                    postretro_net::slots::SlotEvent::Demoted { .. } => {}
+                    postretro_net::slots::SlotEvent::Participating { client_id } => {
+                        if !server.is_current_participation_entry(event) {
+                            continue;
+                        }
+                        let Some(seat) = seat_table
+                            .as_deref()
+                            .and_then(|seats| seats.seat_for_client(*client_id))
+                        else {
+                            continue;
+                        };
+                        match join_seed_state.on_participating(*client_id) {
+                            netcode::ParticipationSeed::None => {}
+                            netcode::ParticipationSeed::Apply(slots) => apply_host_join_seed(
+                                &script_ctx,
+                                join_seed_identity.as_ref(),
+                                &join_seed_membership,
+                                seat,
+                                slots,
+                            ),
+                            netcode::ParticipationSeed::DroppedReclaimed => log::info!(
+                                "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
+                            ),
+                        }
+                    }
+                }
+            }
             if let Some(seats) = seat_table {
                 clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
@@ -5364,6 +5594,8 @@ impl App {
             script_runtime.store_identity(),
             script_runtime.committed_store_slots(),
         );
+        let join_seed_identity = script_runtime.store_identity().cloned();
+        let join_seed_membership = script_runtime.committed_store_slots().clone();
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -5387,6 +5619,7 @@ impl App {
                 demo_mover: _,
                 state_slots,
                 last_sent_tuning,
+                join_seeds: join_seed_state,
                 missing_identity_warned: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
@@ -5404,6 +5637,7 @@ impl App {
                             || !poll.handshakes.is_empty()
                             || !poll.lifecycle.is_empty()
                             || !poll.switch_declarations.is_empty()
+                            || !poll.join_seeds.is_empty()
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
                             // A transport disconnect ends the short-lived client-id
@@ -5411,6 +5645,7 @@ impl App {
                             // considered. A closed admitted slot therefore cannot mint
                             // a durable seat from historical control traffic.
                             for client_id in &poll.disconnects {
+                                join_seed_state.remove_client(*client_id);
                                 let durable_pawn = seat_table
                                     .as_deref()
                                     .and_then(|seats| seats.pawn_for_client(*client_id));
@@ -5461,6 +5696,9 @@ impl App {
                                             &mut script_ctx.slot_table.borrow_mut(),
                                             admission.released_seats,
                                         );
+                                        if admission.reclaimed {
+                                            join_seed_state.mark_reclaimed(*client_id);
+                                        }
                                         log::info!(
                                             "[Net] client {client_id} admitted; awaiting content parity"
                                         );
@@ -5473,6 +5711,37 @@ impl App {
                                             "[Net] client {client_id} held for content parity: {cause:?}"
                                         );
                                     }
+                                }
+                            }
+                            for (client_id, arrival) in
+                                join_seed_state.route_poll(&poll, |id| server.is_participating(id))
+                            {
+                                match arrival {
+                                    netcode::JoinSeedArrival::Buffered => {}
+                                    netcode::JoinSeedArrival::Apply(slots) => {
+                                        let Some(seat) = seat_table
+                                            .as_deref()
+                                            .and_then(|seats| seats.seat_for_client(client_id))
+                                        else {
+                                            log::warn!(
+                                                "[Net] join seed for participating client {client_id} has no admitted seat; dropping it"
+                                            );
+                                            continue;
+                                        };
+                                        apply_host_join_seed(
+                                            &script_ctx,
+                                            join_seed_identity.as_ref(),
+                                            &join_seed_membership,
+                                            seat,
+                                            slots,
+                                        );
+                                    }
+                                    netcode::JoinSeedArrival::DroppedConsumed => log::warn!(
+                                        "[Net] dropping post-consumption join seed from client {client_id}"
+                                    ),
+                                    netcode::JoinSeedArrival::DroppedReclaimed => log::info!(
+                                        "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
+                                    ),
                                 }
                             }
                             // Preserve edge order. One poll can contain entry followed
@@ -5496,6 +5765,15 @@ impl App {
                                     seat_table.as_deref_mut(),
                                     std::slice::from_ref(event),
                                 );
+                                match event {
+                                    postretro_net::slots::SlotEvent::Closed {
+                                        client_id, ..
+                                    } => {
+                                        join_seed_state.remove_client(*client_id);
+                                    }
+                                    postretro_net::slots::SlotEvent::Demoted { .. } => {}
+                                    postretro_net::slots::SlotEvent::Participating { .. } => {}
+                                }
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
                                     event
                                 else {
@@ -5520,6 +5798,21 @@ impl App {
                                     );
                                     continue;
                                 };
+                                match join_seed_state.on_participating(*client_id) {
+                                    netcode::ParticipationSeed::None => {}
+                                    netcode::ParticipationSeed::Apply(slots) => {
+                                        apply_host_join_seed(
+                                            &script_ctx,
+                                            join_seed_identity.as_ref(),
+                                            &join_seed_membership,
+                                            seat,
+                                            slots,
+                                        );
+                                    }
+                                    netcode::ParticipationSeed::DroppedReclaimed => log::info!(
+                                        "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
+                                    ),
+                                }
                                 let pawn = if host_spawn_points.is_empty() {
                                     netcode::host_handle_accept(
                                         &mut registry,
@@ -5693,6 +5986,7 @@ impl App {
                 tuning,
                 tuning_generation,
                 applied_movement_tuning_generation,
+                session_status,
                 ..
             }) => {
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
@@ -5748,6 +6042,15 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                if apply_outcome.replicated_state_changed
+                    && let Some(local_seat) = session_status.local_seat()
+                {
+                    // State replication publishes only this client's scalar
+                    // owner-private projection. Keep the local seat cache in
+                    // sync so persistence reads the same seat-addressed source
+                    // as an authoritative host without learning other seats.
+                    sync_client_per_owner_projection(&mut slot_table, local_seat);
+                }
                 if apply_outcome.armed_local_pawn.is_some()
                     && tuning
                         .as_deref()
@@ -6018,6 +6321,7 @@ impl App {
             demo_mover,
             state_slots,
             last_sent_tuning: _,
+            join_seeds: _,
             missing_identity_warned: _,
         }) = session.net_endpoint.as_mut()
         else {
@@ -7059,20 +7363,19 @@ mod tests {
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::runtime::ScriptRuntimeConfig;
 
-    // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
-    // single-player and the host still save. `is_connected_client` is `true` only for
-    // `NetEndpoint::Client`, so this gate is the role-aware switch at the save call site.
+    // A connected client skips the global clean-exit save; its private
+    // per-owner path remains enabled. Single-player and the host save both.
     #[test]
-    fn connected_client_skips_state_save_while_single_player_and_host_save() {
+    fn connected_client_skips_global_state_save_while_single_player_and_host_save() {
         // Single-player (no endpoint) and host (not a connected client) save.
         assert!(
             should_save_persisted_state(true, false),
             "single-player / host saves when the lifecycle permits"
         );
-        // A connected client never saves, even when the lifecycle would otherwise allow.
+        // A connected client never saves the global projection.
         assert!(
             !should_save_persisted_state(true, true),
-            "a connected client skips the clean-exit save"
+            "a connected client skips the global clean-exit save"
         );
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));

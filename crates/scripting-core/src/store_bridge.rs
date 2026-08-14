@@ -425,13 +425,6 @@ fn validate_slot_schema(
             reason: format!("defineStore: slot name `{slot_name}` must not contain `:`"),
         });
     }
-    if per_owner && persist {
-        return Err(ScriptError::InvalidArgument {
-            reason: format!(
-                "defineStore: slot `{slot_name}` may not declare `perOwner` when `persist` is true"
-            ),
-        });
-    }
     if per_owner && accumulate.is_some() {
         return Err(ScriptError::InvalidArgument {
             reason: format!(
@@ -1046,6 +1039,7 @@ mod tests {
                     "type": "number",
                     "default": 0,
                     "perOwner": true,
+                    "persist": true,
                     "network": "ownerPrivate"
                 },
                 "killStreak": { "type": "number", "default": 0, "perOwner": true },
@@ -1056,6 +1050,7 @@ mod tests {
 
         let schemas: BTreeMap<_, _> = declaration.records.into_iter().collect();
         assert!(schemas["xp"].schema.per_owner);
+        assert!(schemas["xp"].schema.persist);
         assert_eq!(
             schemas["xp"].schema.network,
             ReplicationScope::OwnerPrivatePlayer
@@ -1096,11 +1091,6 @@ mod tests {
                     "network": "shared"
                 }),
                 "may not combine `perOwner: true` with `network: \"shared\"`",
-            ),
-            (
-                "tokens",
-                serde_json::json!({ "type": "number", "default": 0, "perOwner": true, "persist": true }),
-                "may not declare `perOwner` when `persist` is true",
             ),
         ] {
             let mut store = serde_json::Map::new();

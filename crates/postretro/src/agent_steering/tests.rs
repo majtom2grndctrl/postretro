@@ -1,5 +1,5 @@
-// Steering-tick tests: path-following around geometry, arrived/blocked status,
-// crowd separation, the replan budget, and the replan-starvation fairness gate.
+// Steering-tick tests: geometry path-following and static far-side wraparound pursuit;
+// arrived/blocked status, crowd separation, replan budget, and replan-starvation fairness gate.
 // Also covers funnel corner-offset clearance, mandatory-clearance-vertex
 // easing/full-speed rounding, and chase-freeze (stale-path retention).
 //

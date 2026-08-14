@@ -1,11 +1,17 @@
+// Clearance repair for funnel paths around portal endpoint disks.
+// See: context/lib/build_pipeline.md §Navigation bake
+
 use glam::Vec3;
 
 use crate::nav::distance_xz;
 
 use super::{FunnelEndpoint, FunnelGate, NavPath, segment_point_distance_xz};
 
+// Keep all clearance predicates on the same side of floating-point boundaries.
 const CLEARANCE_EPS: f32 = 1e-5;
 
+// Keep the bevel on the adjacent corridor side. The portal normal is a
+// constrained tangent surrogate, not a free turning direction.
 fn bevel_point(corner: FunnelEndpoint, toward: Vec3, clearance_radius: f32) -> Option<Vec3> {
     let raw_endpoint = corner.raw_endpoint?;
     let portal_interior = corner.portal_interior_xz?;
@@ -19,6 +25,7 @@ fn bevel_point(corner: FunnelEndpoint, toward: Vec3, clearance_radius: f32) -> O
     Some(corner.point + corridor_side * clearance_radius)
 }
 
+// Add a fixed repair vertex only when this chord enters the endpoint disk.
 fn clearance_bevel(corner: FunnelEndpoint, toward: Vec3, clearance_radius: f32) -> Option<Vec3> {
     let raw_endpoint = corner.raw_endpoint?;
     if segment_point_distance_xz(toward, corner.point, raw_endpoint) + CLEARANCE_EPS
@@ -29,6 +36,8 @@ fn clearance_bevel(corner: FunnelEndpoint, toward: Vec3, clearance_radius: f32) 
     bevel_point(corner, toward, clearance_radius)
 }
 
+// Preserve the vertex's portal-axis coordinate and slide along the normal to
+// the disk boundary; changing that axis would violate its funnel constraint.
 fn route_out_of_disk(
     obstacle: FunnelEndpoint,
     vertex: Vec3,
@@ -54,6 +63,7 @@ fn route_out_of_disk(
     ))
 }
 
+// Treat near-zero XZ headings as directionless so terminal standoffs stay finite.
 const MIN_XZ_LEN_SQ: f32 = 1e-8;
 
 /// Moves an in-disk terminal to the corridor-facing standoff so its onward
@@ -100,6 +110,8 @@ struct PathPoint {
     mandatory: bool,
 }
 
+/// Repairs endpoint-disk incursions while retaining each repair turn as a fixed,
+/// mandatory vertex, so later smoothing cannot shortcut its clearance.
 pub(super) fn ensure_endpoint_clearance(
     path: &[FunnelEndpoint],
     gates: &[FunnelGate],
@@ -120,6 +132,9 @@ pub(super) fn ensure_endpoint_clearance(
         .collect();
     if clearance_radius > f32::EPSILON {
         let mut segment_index = 0;
+        // Overlapping endpoint disks can revisit prior segments; bound repair churn
+        // so non-converging or unrepresentable clearance repair returns `None`
+        // rather than spinning.
         let mut repairs_remaining = obstacles.len().saturating_mul(4).max(1);
         while segment_index + 1 < repaired.len() {
             let start = repaired[segment_index].point;

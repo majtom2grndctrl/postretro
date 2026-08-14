@@ -109,6 +109,12 @@ pub struct ServerPoll {
     pub join_seeds: Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
 }
 
+type ControlMessages = (
+    Vec<HandshakeOutcome>,
+    Vec<(ClientId, ClientSwitchDeclaration)>,
+    Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
+);
+
 /// Synchronous server transport. It knows only opaque declarations and slot ids.
 pub struct NetServer {
     server: RenetServer,
@@ -306,13 +312,7 @@ impl NetServer {
         }
     }
 
-    fn process_control_messages(
-        &mut self,
-    ) -> (
-        Vec<HandshakeOutcome>,
-        Vec<(ClientId, ClientSwitchDeclaration)>,
-        Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
-    ) {
+    fn process_control_messages(&mut self) -> ControlMessages {
         let mut outcomes = Vec::new();
         let mut switch_declarations = Vec::new();
         let mut join_seeds = Vec::new();

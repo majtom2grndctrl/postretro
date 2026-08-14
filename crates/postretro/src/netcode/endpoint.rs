@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 use postretro_foundation::Seat;
 use postretro_net::wire::JoinSeedValue;
 
+use crate::scripting::state_persistence::{
+    overlay_client_local_per_owner_state, sync_client_per_owner_projection,
+};
+
 /// The active network endpoint held by `App`. `None` for single-player; a
 /// `Host`/`Client` variant once the role's transport is constructed.
 ///
@@ -257,6 +261,8 @@ pub(crate) enum CurrentSwitchResolution {
 pub(crate) struct ClientApplyFrameOutcome {
     pub(crate) materialized_remote_entity_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
+    /// At least one replicated state-slot value was committed this frame.
+    pub(crate) replicated_state_changed: bool,
     /// Host slot identity carried with the latest fresh owner-private cooldown.
     pub(crate) owner_private_weapon_cooldown_slot: Option<usize>,
     /// Final authoritative mover correction per mover received this frame.
@@ -424,16 +430,55 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                 let Some(session) = app.session.as_mut() else {
                     continue;
                 };
-                let Some(NetEndpoint::Client { session_status, .. }) =
-                    session.net_endpoint.as_mut()
-                else {
-                    continue;
+                let (changed, open_seats, newly_assigned_seat) = {
+                    let Some(NetEndpoint::Client { session_status, .. }) =
+                        session.net_endpoint.as_mut()
+                    else {
+                        continue;
+                    };
+                    let previous_seat = session_status.local_seat();
+                    let (changed, open_seats) = apply_client_session_roster(
+                        session_status,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        roster,
+                    );
+                    let local_seat = session_status.local_seat();
+                    let newly_assigned_seat = if previous_seat != local_seat {
+                        local_seat
+                    } else {
+                        None
+                    };
+                    (changed, open_seats, newly_assigned_seat)
                 };
-                let (changed, open_seats) = apply_client_session_roster(
-                    session_status,
-                    &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                    roster,
-                );
+                if let (Some(local_seat), Some(persisted)) =
+                    (newly_assigned_seat, session.persisted_state.as_ref())
+                {
+                    let identity = session.scripting.script_runtime.store_identity().cloned();
+                    let membership = session
+                        .scripting
+                        .script_runtime
+                        .committed_store_slots()
+                        .clone();
+                    for warning in overlay_client_local_per_owner_state(
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        persisted,
+                        identity.as_ref(),
+                        &membership,
+                        session.player_options.player_id,
+                        local_seat,
+                    ) {
+                        log::warn!("[State] {warning}");
+                    }
+                }
+                if let Some(local_seat) = newly_assigned_seat {
+                    // Control and snapshot channels are independently ordered.
+                    // If owner-private state arrived first, seat assignment must
+                    // project that retained scalar without waiting for a delta.
+                    sync_client_per_owner_projection(
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        local_seat,
+                    );
+                }
                 if changed {
                     log::info!("[Net] {open_seats} session seats remain open");
                 }

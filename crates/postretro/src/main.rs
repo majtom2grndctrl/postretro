@@ -1436,14 +1436,9 @@ fn update_debug_chase_agent_destination(
     agent_steering::set_destination(registry, agent, target);
 }
 
-/// Whether the clean-exit handler should write persistent slots to `state.json`
-/// (M15 Phase 3.5 Task 5). The save runs only when the state-store lifecycle has
-/// committed declarations and restore (`can_save`) AND this process is not a
-/// connected client. A connected client's replicated slots (`player.health`,
-/// `player.maxHealth`, shared mod slots) are server-authoritative values applied
-/// through the replicated-state path, not local edits — persisting them would write
-/// another peer's authoritative state into this client's save file. Single-player
-/// (`is_connected_client == false`) and the host both save unchanged.
+/// Whether clean exit should save the global persistent-slot projection. A
+/// connected client skips this path because those values are host-authoritative;
+/// its device-local per-owner values use the separate private save path.
 fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
     can_save && !is_connected_client
 }
@@ -1527,7 +1522,7 @@ fn save_connected_client_per_owner_state(session: &mut crate::session::Session) 
         Ok(()) => {
             // Keep boot-loaded globals in memory for their own lifecycle, but
             // advance the retained per-owner document used by future client
-            // saves (and Task 3's join-seed assembly).
+            // saves and join-seed assembly.
             retain_saved_per_owner_state(&mut session.persisted_state, save_state);
             log::info!(
                 "[State] saved persistent per-owner slots to {}",
@@ -4024,7 +4019,7 @@ impl ApplicationHandler for App {
         // a valid state file with an empty or default-only snapshot.
         //
         // A connected client must NOT persist replicated global slot writes to
-        // `state.json` (M15 Phase 3.5 Task 5): its `player.health` /
+        // `state.json`: its `player.health` /
         // `player.maxHealth` and shared mod slots are server-authoritative
         // values applied through the replicated-state path. Its own
         // per-owner values are the narrow exception below, keyed by its
@@ -4298,6 +4293,7 @@ impl App {
                     join_seed_state.mark_reclaimed(*client_id);
                 }
             }
+            join_seed_state.prepare_lifecycle(&host_poll.lifecycle);
             for (client_id, slots) in &host_poll.join_seeds {
                 let entering_participation = host_poll.lifecycle.iter().any(|event| {
                     matches!(
@@ -4358,11 +4354,14 @@ impl App {
                     std::slice::from_ref(event),
                 );
                 match event {
-                    postretro_net::slots::SlotEvent::Closed { client_id, .. }
-                    | postretro_net::slots::SlotEvent::Demoted { client_id, .. } => {
-                        join_seed_state.clear_generation(*client_id);
+                    postretro_net::slots::SlotEvent::Closed { client_id, .. } => {
+                        join_seed_state.remove_client(*client_id);
                     }
+                    postretro_net::slots::SlotEvent::Demoted { .. } => {}
                     postretro_net::slots::SlotEvent::Participating { client_id } => {
+                        if !server.is_current_participation_entry(event) {
+                            continue;
+                        }
                         let Some(seat) = seat_table
                             .as_deref()
                             .and_then(|seats| seats.seat_for_client(*client_id))
@@ -5725,6 +5724,7 @@ impl App {
                                     }
                                 }
                             }
+                            join_seed_state.prepare_lifecycle(&poll.lifecycle);
                             for (client_id, slots) in &poll.join_seeds {
                                 let entering_participation = poll.lifecycle.iter().any(|event| {
                                     matches!(
@@ -5790,12 +5790,10 @@ impl App {
                                 match event {
                                     postretro_net::slots::SlotEvent::Closed {
                                         client_id, ..
-                                    }
-                                    | postretro_net::slots::SlotEvent::Demoted {
-                                        client_id, ..
                                     } => {
-                                        join_seed_state.clear_generation(*client_id);
+                                        join_seed_state.remove_client(*client_id);
                                     }
+                                    postretro_net::slots::SlotEvent::Demoted { .. } => {}
                                     postretro_net::slots::SlotEvent::Participating { .. } => {}
                                 }
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
@@ -6066,7 +6064,9 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
-                if let Some(local_seat) = session_status.local_seat() {
+                if apply_outcome.replicated_state_changed
+                    && let Some(local_seat) = session_status.local_seat()
+                {
                     // State replication publishes only this client's scalar
                     // owner-private projection. Keep the local seat cache in
                     // sync so persistence reads the same seat-addressed source
@@ -7385,20 +7385,19 @@ mod tests {
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::runtime::ScriptRuntimeConfig;
 
-    // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
-    // single-player and the host still save. `is_connected_client` is `true` only for
-    // `NetEndpoint::Client`, so this gate is the role-aware switch at the save call site.
+    // A connected client skips the global clean-exit save; its private
+    // per-owner path remains enabled. Single-player and the host save both.
     #[test]
-    fn connected_client_skips_state_save_while_single_player_and_host_save() {
+    fn connected_client_skips_global_state_save_while_single_player_and_host_save() {
         // Single-player (no endpoint) and host (not a connected client) save.
         assert!(
             should_save_persisted_state(true, false),
             "single-player / host saves when the lifecycle permits"
         );
-        // A connected client never saves, even when the lifecycle would otherwise allow.
+        // A connected client never saves the global projection.
         assert!(
             !should_save_persisted_state(true, true),
-            "a connected client skips the clean-exit save"
+            "a connected client skips the global clean-exit save"
         );
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));

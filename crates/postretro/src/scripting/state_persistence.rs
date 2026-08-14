@@ -11,7 +11,9 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
+use postretro_entities::slot_table::{
+    ReplicationScope, SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue,
+};
 use postretro_foundation::Seat;
 use postretro_net::wire::{JoinSeedValue, PlayerClaimId};
 use postretro_scripting_core::store_identity::StoreIdentityLedger;
@@ -276,6 +278,9 @@ pub(crate) fn join_seed_from_persisted_state(
     let Some(persisted) = persisted else {
         return slots;
     };
+    if !persisted_state_version_is_supported(persisted) {
+        return slots;
+    }
 
     for (durable_key, player_values) in &persisted.per_owner {
         let Some(value) = player_values.get(&local_player_id) else {
@@ -361,7 +366,7 @@ pub(crate) fn collected_per_owner_only_state(
     for (durable_key, player_values) in collected {
         per_owner
             .entry(durable_key)
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .extend(player_values);
     }
 
@@ -398,7 +403,7 @@ pub(crate) fn merge_per_owner_state(
         state
             .per_owner
             .entry(durable_key)
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .extend(player_values);
     }
 }
@@ -409,7 +414,8 @@ pub(crate) fn merge_per_owner_state(
 /// path as the authoritative host without ever inventing another player's data.
 pub(crate) fn sync_client_per_owner_projection(table: &mut SlotTable, local_seat: Seat) {
     for (_, record) in table.iter_mut() {
-        if !record.schema.per_owner {
+        if !record.schema.per_owner || record.schema.network != ReplicationScope::OwnerPrivatePlayer
+        {
             continue;
         }
         let Some(value) = record.value.clone() else {
@@ -419,6 +425,36 @@ pub(crate) fn sync_client_per_owner_projection(table: &mut SlotTable, local_seat
             record.set_per_seat_value(local_seat, value);
         }
     }
+}
+
+/// Restore device-local per-owner values after a connected client learns its
+/// host-assigned seat. Owner-private slots arrive through host replication;
+/// only local-only slots need this second, seat-aware overlay.
+pub(crate) fn overlay_client_local_per_owner_state(
+    table: &mut SlotTable,
+    persisted: &PersistedState,
+    identity: Option<&StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    local_player_id: Option<[u8; 16]>,
+    local_seat: Seat,
+) -> Vec<String> {
+    if !persisted_state_version_is_supported(persisted) {
+        return vec![unsupported_state_version_warning(persisted.version)];
+    }
+
+    let authored_by_key = authored_names_by_durable_key(identity, committed_store_slots);
+    overlay_per_owner_state(
+        table,
+        persisted,
+        &authored_by_key,
+        local_player_id,
+        local_seat,
+        true,
+    )
+}
+
+pub(crate) fn persisted_state_version_is_supported(persisted: &PersistedState) -> bool {
+    (OLDEST_SUPPORTED_STATE_VERSION..=CURRENT_STATE_VERSION).contains(&persisted.version)
 }
 
 /// Overlay a decoded save document onto already-declared slots.
@@ -434,23 +470,11 @@ pub(crate) fn overlay_persisted_state(
     local_player_id: Option<[u8; 16]>,
     local_seat: Seat,
 ) -> Vec<String> {
-    if !(OLDEST_SUPPORTED_STATE_VERSION..=CURRENT_STATE_VERSION).contains(&persisted.version) {
-        return vec![format!(
-            "state file version {} is not supported (current version is {}); ignoring file",
-            persisted.version, CURRENT_STATE_VERSION
-        )];
+    if !persisted_state_version_is_supported(persisted) {
+        return vec![unsupported_state_version_warning(persisted.version)];
     }
 
-    let authored_by_key = identity
-        .map(|ledger| {
-            ledger
-                .slots
-                .iter()
-                .filter(|(name, _)| committed_store_slots.contains(name.as_str()))
-                .map(|(name, key)| (key.as_str(), name.as_str()))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let authored_by_key = authored_names_by_durable_key(identity, committed_store_slots);
 
     let mut warnings = Vec::new();
     for (durable_key, persisted_value) in &persisted.slots {
@@ -485,10 +509,46 @@ pub(crate) fn overlay_persisted_state(
         }
     }
 
+    warnings.extend(overlay_per_owner_state(
+        table,
+        persisted,
+        &authored_by_key,
+        local_player_id,
+        local_seat,
+        false,
+    ));
+    warnings
+}
+
+fn authored_names_by_durable_key<'a>(
+    identity: Option<&'a StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+) -> BTreeMap<&'a str, &'a str> {
+    identity
+        .map(|ledger| {
+            ledger
+                .slots
+                .iter()
+                .filter(|(name, _)| committed_store_slots.contains(name.as_str()))
+                .map(|(name, key)| (key.as_str(), name.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn overlay_per_owner_state(
+    table: &mut SlotTable,
+    persisted: &PersistedState,
+    authored_by_key: &BTreeMap<&str, &str>,
+    local_player_id: Option<[u8; 16]>,
+    local_seat: Seat,
+    local_only: bool,
+) -> Vec<String> {
     let Some(local_player_id) = local_player_id else {
-        return warnings;
+        return Vec::new();
     };
     let local_player_id = PlayerClaimId(local_player_id);
+    let mut warnings = Vec::new();
     for (durable_key, player_values) in &persisted.per_owner {
         let Some(name) = authored_by_key.get(durable_key.as_str()).copied() else {
             warnings.push(format!(
@@ -509,6 +569,9 @@ pub(crate) fn overlay_persisted_state(
             ));
             continue;
         }
+        if local_only && record.schema.network != ReplicationScope::None {
+            continue;
+        }
 
         for (encoded_player_id, persisted_value) in player_values {
             if decode_player_claim_id(encoded_player_id) != Some(local_player_id) {
@@ -527,6 +590,12 @@ pub(crate) fn overlay_persisted_state(
         }
     }
     warnings
+}
+
+fn unsupported_state_version_warning(version: u32) -> String {
+    format!(
+        "state file version {version} is not supported (current version is {CURRENT_STATE_VERSION}); ignoring file"
+    )
 }
 
 pub(crate) fn load_persisted_state(
@@ -1088,7 +1157,13 @@ mod tests {
                 "k0000000000000001".to_string(),
                 PersistedValue::Number(99.0),
             )]),
-            per_owner: BTreeMap::new(),
+            per_owner: BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                BTreeMap::from([(
+                    encode_player_claim_id(&PlayerClaimId(player_id(0x77))),
+                    PersistedValue::Number(77.0),
+                )]),
+            )]),
         };
         assert_eq!(
             overlay_persisted_state(
@@ -1105,6 +1180,10 @@ mod tests {
         assert_eq!(
             table.get("game.score").unwrap().value,
             Some(SlotValue::Number(10.0))
+        );
+        // Regression: rejected documents remained available to seed a host join.
+        assert!(
+            join_seed_from_persisted_state(Some(&bad_version), Some(player_id(0x77))).is_empty()
         );
 
         let non_finite = PersistedState {
@@ -1296,6 +1375,80 @@ mod tests {
         );
     }
 
+    // Regression: connected restore cached local-only progress under Seat(0),
+    // while periodic and exit saves read the host-assigned roster seat.
+    #[test]
+    fn connected_local_only_restore_uses_the_assigned_roster_seat() {
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let local_id = player_id(0x66);
+        let local_key = encode_player_claim_id(&PlayerClaimId(local_id));
+        let assigned_seat = Seat(7);
+        let persisted = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::new(),
+            per_owner: BTreeMap::from([
+                (
+                    "k0000000000000010".to_string(),
+                    BTreeMap::from([(local_key.clone(), PersistedValue::Number(42.0))]),
+                ),
+                (
+                    "k0000000000000011".to_string(),
+                    BTreeMap::from([(local_key, PersistedValue::String("rookie".to_string()))]),
+                ),
+            ]),
+        };
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        table.get_mut("game.rank").unwrap().schema.network = ReplicationScope::OwnerPrivatePlayer;
+        table
+            .get_mut("game.rank")
+            .unwrap()
+            .set_per_seat_value(assigned_seat, SlotValue::Enum("veteran".to_string()));
+
+        assert!(
+            overlay_client_local_per_owner_state(
+                &mut table,
+                &persisted,
+                Some(&identity),
+                &membership,
+                Some(local_id),
+                assigned_seat,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(assigned_seat),
+            Some(&SlotValue::Number(42.0))
+        );
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(Seat(0)),
+            Some(&SlotValue::Number(0.0)),
+            "connected restore does not use the single-player seat"
+        );
+        assert_eq!(
+            table
+                .get("game.rank")
+                .unwrap()
+                .per_seat_value(assigned_seat),
+            Some(&SlotValue::Enum("veteran".to_string())),
+            "local restore does not overwrite an owner-private host projection"
+        );
+
+        let collected = collect_per_owner_state(
+            &table,
+            Some(&identity),
+            &membership,
+            assigned_seat,
+            local_id,
+        );
+        assert_eq!(
+            collected.per_owner["k0000000000000010"]
+                [&encode_player_claim_id(&PlayerClaimId(local_id))],
+            PersistedValue::Number(42.0)
+        );
+    }
+
     #[test]
     fn per_owner_overlay_applies_global_validation_and_skips_runtime_only_slots() {
         let identity = fixture_identity();
@@ -1441,6 +1594,7 @@ mod tests {
     fn client_projection_populates_the_local_seat_cache_without_global_fallback() {
         let mut table = SlotTable::new();
         declare_fixture(&mut table);
+        table.get_mut("game.xp").unwrap().schema.network = ReplicationScope::OwnerPrivatePlayer;
         table
             .get_mut("game.xp")
             .unwrap()

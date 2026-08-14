@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use postretro_net::slots::SlotEvent;
 use postretro_net::wire::JoinSeedValue;
 
 /// Per-connection join seeds held until the host knows the player's durable
@@ -29,6 +30,19 @@ pub(crate) enum ParticipationSeed {
 }
 
 impl HostJoinSeeds {
+    /// Retire old participation generations before ingesting this poll's seeds.
+    /// Control is reliable-ordered, so a seed delivered with a later entry edge
+    /// belongs to the generation after any earlier demotion in the same poll.
+    pub(crate) fn prepare_lifecycle(&mut self, events: &[SlotEvent]) {
+        for event in events {
+            match event {
+                SlotEvent::Demoted { client_id, .. } => self.clear_generation(*client_id),
+                SlotEvent::Closed { client_id, .. } => self.remove_client(*client_id),
+                SlotEvent::Participating { .. } => {}
+            }
+        }
+    }
+
     /// Mark an admission that reclaimed a held seat. That seat's carried live
     /// state wins over every persisted seed from the reconnecting client.
     pub(crate) fn mark_reclaimed(&mut self, client_id: u64) {
@@ -159,6 +173,37 @@ mod tests {
         assert!(matches!(
             seeds.receive(7, seed(99.0), false),
             JoinSeedArrival::Buffered
+        ));
+    }
+
+    // Regression: a fresh seed was rejected by the prior generation's consumed marker.
+    #[test]
+    fn same_poll_demotion_then_participation_accepts_fresh_generation_seed() {
+        use postretro_net::wire::HoldingCause;
+
+        let mut seeds = HostJoinSeeds::default();
+        assert!(matches!(
+            seeds.receive(7, seed(1.0), true),
+            JoinSeedArrival::Apply(_)
+        ));
+
+        seeds.prepare_lifecycle(&[
+            SlotEvent::Demoted {
+                client_id: 7,
+                cause: HoldingCause::LevelIdentity {
+                    expected: "new-map".to_string(),
+                    received: "old-map".to_string(),
+                },
+            },
+            SlotEvent::Participating { client_id: 7 },
+        ]);
+        assert!(matches!(
+            seeds.receive(7, seed(2.0), false),
+            JoinSeedArrival::Buffered
+        ));
+        assert!(matches!(
+            seeds.on_participating(7),
+            ParticipationSeed::Apply(values) if values == seed(2.0)
         ));
     }
 }

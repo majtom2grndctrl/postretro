@@ -878,6 +878,7 @@ pub(crate) fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
+            frame_outcome.replicated_state_changed |= !state_outcome.fresh_slots.is_empty();
             if state_outcome.fresh_weapon_cooldown_slot.is_some() {
                 frame_outcome.owner_private_weapon_cooldown_slot =
                     state_outcome.fresh_weapon_cooldown_slot;

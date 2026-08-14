@@ -113,13 +113,16 @@ follow-up ticket, not this spec.
 
 ## File sizes / split
 
-`nav/path.rs`: 1732 total, `#[cfg(test)]` boundary at ~824 → **~823 production lines** (already past
-the ~800 split-before-extend threshold; the fix + tests push further). Split the clearance-repair
-cluster (`CLEARANCE_EPS`, `segment_point_distance_xz`, `bevel_point`, `clearance_bevel`,
-`route_out_of_disk`, `MIN_XZ_LEN_SQ`, `project_out_of_disk`, `PathPoint`, `ensure_endpoint_clearance`)
-to `nav/path/clearance.rs`. Seam symbols the cluster reaches across: `FunnelEndpoint`/`FunnelGate`,
-`distance_xz`, the `NavPath` return type, and the `find_path`/`funnel` calls into
-`ensure_endpoint_clearance`. Other files (for reference): `combat_positioning.rs` 837,
+`nav/path.rs`: 1732 total, `#[cfg(test)]` boundary at ~824 → **~823 non-test lines** (already past
+the `development_guide.md` §2.1 600-line source-line threshold — test files are exempt; the fix +
+tests push further). Split the clearance-repair cluster (`CLEARANCE_EPS`, `bevel_point`,
+`clearance_bevel`, `route_out_of_disk`, `MIN_XZ_LEN_SQ`, `project_out_of_disk`, `PathPoint`,
+`ensure_endpoint_clearance`) to `nav/path/clearance.rs` (~335 lines out, leaving path.rs source
+~490 < 600). `segment_point_distance_xz` STAYS in `path.rs` — it is the shared clearance oracle that
+find_path-level tests remaining in `path.rs` also call — reached from `clearance.rs` via `super::`.
+Seam symbols the cluster reaches across: `FunnelEndpoint`/`FunnelGate`, `segment_point_distance_xz`,
+`distance_xz` (in `nav/mod.rs`), the `NavPath` return type, and the `find_path`/`funnel` calls into
+`ensure_endpoint_clearance` (which gains `pub(super)`). Other files (for reference): `combat_positioning.rs` 837,
 `agent_steering.rs` 1093 (+ `agent_steering/tests.rs` 2612), `nav/mod.rs` 514; the AI system is now
 a directory (`scripting/systems/ai/mod.rs` plus `combat_slots.rs`, `targeting.rs`, `brain_*.rs`,
 `graph_eval.rs`, `candidate_scope.rs`, `engine_floor.rs`, `facing.rs`).

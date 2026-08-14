@@ -909,6 +909,14 @@ impl NetClient {
         self.client.is_connected()
     }
 
+    /// Whether the host has activated the current participation generation.
+    /// Gameplay-local work such as private persistence must pause while a
+    /// parity demotion leaves the transport connection open.
+    #[must_use]
+    pub fn is_participating(&self) -> bool {
+        self.active_participation_epoch.is_some()
+    }
+
     #[must_use]
     pub fn admission_sent(&self) -> bool {
         self.admission_sent

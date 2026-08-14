@@ -5,12 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
+use postretro_foundation::Seat;
 use postretro_net::wire::PlayerClaimId;
 use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
@@ -18,6 +20,7 @@ use postretro_scripting_core::store_identity::StoreIdentityLedger;
 pub(crate) const CURRENT_STATE_VERSION: u32 = 3;
 const OLDEST_SUPPORTED_STATE_VERSION: u32 = 2;
 const STATE_FILENAME: &str = "state.json";
+pub(crate) const PER_OWNER_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Process-lifetime gate for the one-time restore and clean-exit save.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,6 +49,43 @@ impl StateStoreLifecycle {
         let was_enabled = !self.persistence_disabled;
         self.persistence_disabled = true;
         was_enabled
+    }
+}
+
+/// Frame-driven cadence for a connected client's private save document.
+///
+/// The timer is deliberately main-thread-only: state collection and the atomic
+/// file replacement occur against the same settled frame snapshot. Connection
+/// recovery clears accumulated time without changing whether participation has
+/// made the timer eligible to run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PerOwnerSaveTimer {
+    elapsed: Duration,
+    was_connected: bool,
+}
+
+impl PerOwnerSaveTimer {
+    pub(crate) fn observe_connection(&mut self, connected: bool) {
+        if connected && !self.was_connected {
+            self.elapsed = Duration::ZERO;
+        }
+        self.was_connected = connected;
+    }
+
+    /// Advance only during an active participation generation. Returns `true`
+    /// once when the save is due, resetting the cadence for the next interval.
+    pub(crate) fn advance(&mut self, frame_dt: Duration, participating: bool) -> bool {
+        if !participating {
+            return false;
+        }
+
+        self.elapsed = self.elapsed.saturating_add(frame_dt);
+        if self.elapsed < PER_OWNER_SAVE_INTERVAL {
+            return false;
+        }
+
+        self.elapsed = Duration::ZERO;
+        true
     }
 }
 
@@ -142,6 +182,132 @@ pub(crate) fn collect_persisted_state(
     }
 }
 
+/// Collect one player's persistent per-owner slots. The session-scoped seat is
+/// used only to select the live value; the saved key is the durable player id.
+pub(crate) fn collect_per_owner_state(
+    table: &SlotTable,
+    identity: Option<&StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    local_seat: Seat,
+    local_player_id: [u8; 16],
+) -> CollectedPerOwnerState {
+    let mut per_owner = BTreeMap::new();
+    let mut warnings = Vec::new();
+    let encoded_player_id = encode_player_claim_id(&PlayerClaimId(local_player_id));
+
+    for (name, record) in table.iter() {
+        if !is_persisted_per_owner_slot(record) || !committed_store_slots.contains(name) {
+            continue;
+        }
+
+        let Some(value) = record.per_seat_value(local_seat) else {
+            warnings.push(format!(
+                "persistent per-owner state slot `{name}` has no current value; omitting it"
+            ));
+            continue;
+        };
+
+        let Some(durable_key) = identity.and_then(|ledger| ledger.durable_key(name)) else {
+            warnings.push(format!(
+                "persistent per-owner state slot `{name}` has no durable identity; omitting it"
+            ));
+            continue;
+        };
+
+        match value_for_save(name, record, value) {
+            Ok(value) => {
+                per_owner
+                    .entry(durable_key.to_owned())
+                    .or_insert_with(BTreeMap::new)
+                    .insert(encoded_player_id.clone(), value);
+            }
+            Err(warning) => warnings.push(warning),
+        }
+    }
+
+    CollectedPerOwnerState {
+        per_owner,
+        warnings,
+    }
+}
+
+pub(crate) struct CollectedPerOwnerState {
+    pub(crate) per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Build the client-only document. It preserves retained player entries while
+/// replacing this player's freshly collected values, and never carries globals.
+pub(crate) fn collected_per_owner_only_state(
+    retained: Option<&PersistedState>,
+    collected: BTreeMap<String, BTreeMap<String, PersistedValue>>,
+) -> PersistedState {
+    let mut per_owner = retained
+        .map(|state| state.per_owner.clone())
+        .unwrap_or_default();
+    for (durable_key, player_values) in collected {
+        per_owner
+            .entry(durable_key)
+            .or_insert_with(BTreeMap::new)
+            .extend(player_values);
+    }
+
+    PersistedState {
+        version: CURRENT_STATE_VERSION,
+        // A client must never write the host-authoritative global projection,
+        // even if it loaded those entries during an earlier single-player run.
+        slots: BTreeMap::new(),
+        per_owner,
+    }
+}
+
+/// Record a successful client-private save in the retained boot document while
+/// preserving any global section that document carried.
+pub(crate) fn retain_saved_per_owner_state(
+    retained: &mut Option<PersistedState>,
+    saved: PersistedState,
+) {
+    if let Some(retained) = retained.as_mut() {
+        retained.per_owner = saved.per_owner;
+    } else {
+        *retained = Some(saved);
+    }
+}
+
+/// Merge freshly collected entries into a save document without touching its
+/// global section. Used by the host clean-exit path, which saves its local
+/// player alongside the existing global collector.
+pub(crate) fn merge_per_owner_state(
+    state: &mut PersistedState,
+    per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
+) {
+    for (durable_key, player_values) in per_owner {
+        state
+            .per_owner
+            .entry(durable_key)
+            .or_insert_with(BTreeMap::new)
+            .extend(player_values);
+    }
+}
+
+/// Mirror the client-visible scalar projection of each per-owner slot into the
+/// local seat cache. Replication intentionally exposes only this client's
+/// scalar value; the cache lets persistence use the same seat-addressed read
+/// path as the authoritative host without ever inventing another player's data.
+pub(crate) fn sync_client_per_owner_projection(table: &mut SlotTable, local_seat: Seat) {
+    for (_, record) in table.iter_mut() {
+        if !record.schema.per_owner {
+            continue;
+        }
+        let Some(value) = record.value.clone() else {
+            continue;
+        };
+        if record.per_seat_value(local_seat) != Some(&value) {
+            record.set_per_seat_value(local_seat, value);
+        }
+    }
+}
+
 /// Overlay a decoded save document onto already-declared slots.
 ///
 /// Invalid entries are left at their current declared/default value and
@@ -152,6 +318,8 @@ pub(crate) fn overlay_persisted_state(
     persisted: &PersistedState,
     identity: Option<&StoreIdentityLedger>,
     committed_store_slots: &BTreeSet<String>,
+    local_player_id: Option<[u8; 16]>,
+    local_seat: Seat,
 ) -> Vec<String> {
     if !(OLDEST_SUPPORTED_STATE_VERSION..=CURRENT_STATE_VERSION).contains(&persisted.version) {
         return vec![format!(
@@ -201,6 +369,48 @@ pub(crate) fn overlay_persisted_state(
                 }
             }
             Err(warning) => warnings.push(warning),
+        }
+    }
+
+    let Some(local_player_id) = local_player_id else {
+        return warnings;
+    };
+    let local_player_id = PlayerClaimId(local_player_id);
+    for (durable_key, player_values) in &persisted.per_owner {
+        let Some(name) = authored_by_key.get(durable_key.as_str()).copied() else {
+            warnings.push(format!(
+                "state file contains unknown durable key `{durable_key}`; ignoring it"
+            ));
+            continue;
+        };
+        let Some(record) = table.get_mut(name) else {
+            warnings.push(format!(
+                "state file durable key `{durable_key}` targets unavailable slot `{name}`; ignoring it"
+            ));
+            continue;
+        };
+
+        if !is_persisted_per_owner_slot(record) {
+            warnings.push(format!(
+                "state file targets non-persistent, global, readonly, or engine-owned per-owner slot `{name}`; ignoring it"
+            ));
+            continue;
+        }
+
+        for (encoded_player_id, persisted_value) in player_values {
+            if decode_player_claim_id(encoded_player_id) != Some(local_player_id) {
+                continue;
+            }
+
+            match restored_value(name, record, persisted_value) {
+                Ok((value, warning)) => {
+                    record.set_per_seat_value(local_seat, value);
+                    if let Some(warning) = warning {
+                        warnings.push(warning);
+                    }
+                }
+                Err(warning) => warnings.push(warning),
+            }
         }
     }
     warnings
@@ -429,7 +639,16 @@ mod tests {
     }
 
     fn per_owner_mod_slot(persist: bool) -> SlotRecord {
-        let mut record = mod_slot(SlotType::Number, SlotValue::Number(0.0), persist, None);
+        per_owner_mod_slot_with_type(SlotType::Number, SlotValue::Number(0.0), persist, None)
+    }
+
+    fn per_owner_mod_slot_with_type(
+        slot_type: SlotType,
+        default: SlotValue,
+        persist: bool,
+        range: Option<NumericRange>,
+    ) -> SlotRecord {
+        let mut record = mod_slot(slot_type, default, persist, range);
         record.schema.per_owner = true;
         record
     }
@@ -488,6 +707,38 @@ mod tests {
                         "scratch".to_string(),
                         mod_slot(SlotType::Boolean, SlotValue::Boolean(false), false, None),
                     ),
+                    (
+                        "xp".to_string(),
+                        per_owner_mod_slot_with_type(
+                            SlotType::Number,
+                            SlotValue::Number(0.0),
+                            true,
+                            Some(NumericRange {
+                                min: 0.0,
+                                max: 100.0,
+                            }),
+                        ),
+                    ),
+                    (
+                        "rank".to_string(),
+                        per_owner_mod_slot_with_type(
+                            SlotType::Enum {
+                                values: vec!["rookie".to_string(), "veteran".to_string()],
+                            },
+                            SlotValue::Enum("rookie".to_string()),
+                            true,
+                            None,
+                        ),
+                    ),
+                    (
+                        "session_xp".to_string(),
+                        per_owner_mod_slot_with_type(
+                            SlotType::Number,
+                            SlotValue::Number(0.0),
+                            false,
+                            None,
+                        ),
+                    ),
                 ],
             )
             .unwrap();
@@ -502,8 +753,18 @@ mod tests {
                 ("game.enabled".to_string(), "k0000000000000003".to_string()),
                 ("game.label".to_string(), "k0000000000000004".to_string()),
                 ("game.curve".to_string(), "k0000000000000005".to_string()),
+                ("game.xp".to_string(), "k0000000000000010".to_string()),
+                ("game.rank".to_string(), "k0000000000000011".to_string()),
+                (
+                    "game.session_xp".to_string(),
+                    "k0000000000000012".to_string(),
+                ),
             ]),
         }
+    }
+
+    fn player_id(byte: u8) -> [u8; 16] {
+        [byte; 16]
     }
 
     fn identity_membership(identity: Option<&StoreIdentityLedger>) -> BTreeSet<String> {
@@ -553,6 +814,8 @@ mod tests {
                 &persisted,
                 Some(&fixture_identity()),
                 &identity_membership(Some(&fixture_identity())),
+                None,
+                Seat(0),
             )
             .is_empty()
         );
@@ -624,7 +887,15 @@ mod tests {
         declare_fixture(&mut fresh);
         let loaded = load_persisted_state(&path).unwrap().unwrap();
         assert!(
-            overlay_persisted_state(&mut fresh, &loaded, Some(&identity), &membership).is_empty()
+            overlay_persisted_state(
+                &mut fresh,
+                &loaded,
+                Some(&identity),
+                &membership,
+                None,
+                Seat(0)
+            )
+            .is_empty()
         );
 
         assert_eq!(
@@ -679,6 +950,8 @@ mod tests {
             &persisted,
             Some(&identity),
             &identity_membership(Some(&identity)),
+            None,
+            Seat(0),
         );
         assert_eq!(warnings.len(), 3);
         assert_eq!(
@@ -710,6 +983,8 @@ mod tests {
                 &bad_version,
                 Some(&identity),
                 &identity_membership(Some(&identity)),
+                None,
+                Seat(0),
             )
             .len(),
             1
@@ -733,6 +1008,8 @@ mod tests {
                 &non_finite,
                 Some(&identity),
                 &identity_membership(Some(&identity)),
+                None,
+                Seat(0),
             )
             .len(),
             1
@@ -756,6 +1033,8 @@ mod tests {
                 &non_finite_array,
                 Some(&identity),
                 &identity_membership(Some(&identity)),
+                None,
+                Seat(0),
             )
             .len(),
             1
@@ -802,12 +1081,292 @@ mod tests {
             &persisted,
             Some(&identity),
             &identity_membership(Some(&identity)),
+            None,
+            Seat(0),
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(
             table.get("game.score").unwrap().value,
             Some(SlotValue::Number(100.0))
         );
+    }
+
+    #[test]
+    fn per_owner_roundtrip_restores_only_the_matching_player_and_preserves_others() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let local_id = player_id(0x11);
+        let other_id = player_id(0x22);
+        let local_seat = Seat(7);
+
+        let mut source = SlotTable::new();
+        declare_fixture(&mut source);
+        let xp = source.get_mut("game.xp").unwrap();
+        xp.set_per_seat_value(local_seat, SlotValue::Number(42.0));
+        xp.set_per_seat_value(Seat(8), SlotValue::Number(99.0));
+
+        let collected =
+            collect_per_owner_state(&source, Some(&identity), &membership, local_seat, local_id);
+        assert!(collected.warnings.is_empty());
+        assert_eq!(
+            collected.per_owner,
+            BTreeMap::from([
+                (
+                    "k0000000000000010".to_string(),
+                    BTreeMap::from([(
+                        encode_player_claim_id(&PlayerClaimId(local_id)),
+                        PersistedValue::Number(42.0),
+                    )]),
+                ),
+                (
+                    "k0000000000000011".to_string(),
+                    BTreeMap::from([(
+                        encode_player_claim_id(&PlayerClaimId(local_id)),
+                        PersistedValue::String("rookie".to_string()),
+                    )]),
+                ),
+            ]),
+            "collection reads only the local session seat, keyed by the durable player id"
+        );
+
+        let retained = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::from([(
+                "k0000000000000001".to_string(),
+                PersistedValue::Number(88.0),
+            )]),
+            per_owner: BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                BTreeMap::from([(
+                    encode_player_claim_id(&PlayerClaimId(other_id)),
+                    PersistedValue::Number(17.0),
+                )]),
+            )]),
+        };
+        let client_document = collected_per_owner_only_state(Some(&retained), collected.per_owner);
+        assert!(
+            client_document.slots.is_empty(),
+            "clients never save globals"
+        );
+        assert_eq!(
+            client_document.per_owner["k0000000000000010"]
+                [&encode_player_claim_id(&PlayerClaimId(other_id))],
+            PersistedValue::Number(17.0),
+            "the retained document keeps another player's entry"
+        );
+        save_persisted_state(&path, &client_document).unwrap();
+
+        let loaded = load_persisted_state(&path).unwrap().unwrap();
+        let mut fresh = SlotTable::new();
+        declare_fixture(&mut fresh);
+        assert!(
+            overlay_persisted_state(
+                &mut fresh,
+                &loaded,
+                Some(&identity),
+                &membership,
+                Some(local_id),
+                local_seat,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            fresh.get("game.xp").unwrap().per_seat_value(local_seat),
+            Some(&SlotValue::Number(42.0))
+        );
+        assert_eq!(
+            fresh.get("game.xp").unwrap().per_seat_value(Seat(8)),
+            Some(&SlotValue::Number(0.0)),
+            "the other player's retained entry is not loaded into this session"
+        );
+    }
+
+    #[test]
+    fn per_owner_overlay_applies_global_validation_and_skips_runtime_only_slots() {
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let local_id = player_id(0x33);
+        let local_key = encode_player_claim_id(&PlayerClaimId(local_id));
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        let persisted = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::new(),
+            per_owner: BTreeMap::from([
+                (
+                    "k0000000000000010".to_string(),
+                    BTreeMap::from([(local_key.clone(), PersistedValue::Number(500.0))]),
+                ),
+                (
+                    "k0000000000000011".to_string(),
+                    BTreeMap::from([(local_key.clone(), PersistedValue::String("legend".into()))]),
+                ),
+                (
+                    "k0000000000000012".to_string(),
+                    BTreeMap::from([(local_key, PersistedValue::Number(99.0))]),
+                ),
+            ]),
+        };
+
+        let warnings = overlay_persisted_state(
+            &mut table,
+            &persisted,
+            Some(&identity),
+            &membership,
+            Some(local_id),
+            Seat(3),
+        );
+        assert_eq!(
+            warnings.len(),
+            3,
+            "clamp, invalid enum, and runtime-only slot warn"
+        );
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(Seat(3)),
+            Some(&SlotValue::Number(100.0)),
+            "per-owner numeric restore clamps through the shared validator"
+        );
+        assert_eq!(
+            table.get("game.rank").unwrap().per_seat_value(Seat(3)),
+            Some(&SlotValue::Enum("rookie".to_string())),
+            "invalid enum values retain the declared default"
+        );
+        assert_eq!(
+            table
+                .get("game.session_xp")
+                .unwrap()
+                .per_seat_value(Seat(3)),
+            Some(&SlotValue::Number(0.0)),
+            "per-owner but non-persistent slots never restore"
+        );
+
+        let wrong_type = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::new(),
+            per_owner: BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                BTreeMap::from([(
+                    encode_player_claim_id(&PlayerClaimId(local_id)),
+                    PersistedValue::String("not-a-number".into()),
+                )]),
+            )]),
+        };
+        assert_eq!(
+            overlay_persisted_state(
+                &mut table,
+                &wrong_type,
+                Some(&identity),
+                &membership,
+                Some(local_id),
+                Seat(3),
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(Seat(3)),
+            Some(&SlotValue::Number(100.0)),
+            "a type mismatch does not replace the validated live value"
+        );
+    }
+
+    #[test]
+    fn client_private_document_merges_retained_entries_without_global_slots() {
+        let local_id = player_id(0x44);
+        let other_id = player_id(0x55);
+        let retained = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::from([("k0000000000000001".to_string(), PersistedValue::Number(6.0))]),
+            per_owner: BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                BTreeMap::from([
+                    (
+                        encode_player_claim_id(&PlayerClaimId(local_id)),
+                        PersistedValue::Number(3.0),
+                    ),
+                    (
+                        encode_player_claim_id(&PlayerClaimId(other_id)),
+                        PersistedValue::Number(9.0),
+                    ),
+                ]),
+            )]),
+        };
+        let saved = collected_per_owner_only_state(
+            Some(&retained),
+            BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                BTreeMap::from([(
+                    encode_player_claim_id(&PlayerClaimId(local_id)),
+                    PersistedValue::Number(12.0),
+                )]),
+            )]),
+        );
+
+        assert!(saved.slots.is_empty());
+        assert_eq!(
+            saved.per_owner["k0000000000000010"][&encode_player_claim_id(&PlayerClaimId(local_id))],
+            PersistedValue::Number(12.0)
+        );
+        assert_eq!(
+            saved.per_owner["k0000000000000010"][&encode_player_claim_id(&PlayerClaimId(other_id))],
+            PersistedValue::Number(9.0)
+        );
+
+        let mut retained = Some(retained);
+        retain_saved_per_owner_state(&mut retained, saved);
+        let retained = retained.unwrap();
+        assert_eq!(
+            retained.slots.get("k0000000000000001"),
+            Some(&PersistedValue::Number(6.0)),
+            "the retained boot document keeps globals in memory even though the client file does not"
+        );
+    }
+
+    #[test]
+    fn client_projection_populates_the_local_seat_cache_without_global_fallback() {
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        table
+            .get_mut("game.xp")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(25.0)));
+        table
+            .get_mut("game.score")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(88.0)));
+
+        sync_client_per_owner_projection(&mut table, Seat(4));
+
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(Seat(4)),
+            Some(&SlotValue::Number(25.0))
+        );
+        assert_eq!(
+            table.get("game.score").unwrap().value,
+            Some(SlotValue::Number(88.0)),
+            "the helper does not route globals through a seat map"
+        );
+    }
+
+    #[test]
+    fn periodic_client_save_timer_is_participation_gated_and_resets_on_reconnect() {
+        let mut timer = PerOwnerSaveTimer::default();
+        timer.observe_connection(true);
+        assert!(!timer.advance(Duration::from_secs(59), true));
+        assert!(timer.advance(Duration::from_secs(1), true));
+        assert!(timer.advance(Duration::from_secs(60), true));
+
+        assert!(!timer.advance(Duration::from_secs(59), true));
+        assert!(!timer.advance(Duration::from_secs(120), false));
+        assert!(timer.advance(Duration::from_secs(1), true));
+
+        assert!(!timer.advance(Duration::from_secs(30), true));
+        timer.observe_connection(false);
+        timer.observe_connection(true);
+        assert!(!timer.advance(Duration::from_secs(59), true));
+        assert!(timer.advance(Duration::from_secs(1), true));
     }
 
     #[test]
@@ -861,8 +1420,14 @@ mod tests {
             ]),
             per_owner: BTreeMap::new(),
         };
-        let warnings =
-            overlay_persisted_state(&mut table, &persisted, Some(&identity), &membership);
+        let warnings = overlay_persisted_state(
+            &mut table,
+            &persisted,
+            Some(&identity),
+            &membership,
+            None,
+            Seat(0),
+        );
 
         assert_eq!(warnings.len(), 3);
         assert_eq!(
@@ -924,6 +1489,8 @@ mod tests {
                 &persisted,
                 Some(&renamed_identity),
                 &identity_membership(Some(&renamed_identity)),
+                None,
+                Seat(0),
             )
             .is_empty()
         );
@@ -959,6 +1526,8 @@ mod tests {
             &persisted,
             None,
             &BTreeSet::from(["story.score".to_string()]),
+            None,
+            Seat(0),
         );
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("k0123456789abcdef"));
@@ -981,6 +1550,8 @@ mod tests {
             },
             Some(&fixture_identity()),
             &identity_membership(Some(&fixture_identity())),
+            None,
+            Seat(0),
         );
 
         assert_eq!(warnings.len(), 1);

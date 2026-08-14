@@ -120,7 +120,9 @@ use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
-    collect_persisted_state, save_persisted_state, state_path,
+    collect_per_owner_state, collect_persisted_state, collected_per_owner_only_state,
+    merge_per_owner_state, retain_saved_per_owner_state, save_persisted_state, state_path,
+    sync_client_per_owner_projection,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -1444,6 +1446,101 @@ fn update_debug_chase_agent_destination(
 /// (`is_connected_client == false`) and the host both save unchanged.
 fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
     can_save && !is_connected_client
+}
+
+/// Save a connected client's own persistent per-owner values. This is kept
+/// separate from `should_save_persisted_state`: global slots remain
+/// host-authoritative, while the durable player-owned values belong in the
+/// local device's document.
+fn save_connected_client_per_owner_state(session: &mut crate::session::Session) {
+    if !session.state_store_lifecycle.can_save() {
+        return;
+    }
+    let Some((_, _, Some(local_seat))) = session
+        .net_endpoint
+        .as_ref()
+        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
+    else {
+        return;
+    };
+    let Some(local_player_id) = session.player_options.player_id else {
+        // A process without a durable player identity must not manufacture a
+        // per-owner key or write a document it cannot later identify.
+        return;
+    };
+    let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
+        log::warn!("[State] no committed mod manifest; skipping persistent per-owner state save");
+        return;
+    };
+    let mod_id = mod_id.to_owned();
+    let Some(state_path) = state_path(&mod_id) else {
+        if session.state_store_lifecycle.disable_persistence() {
+            log::warn!(
+                "[State] platform data directory is unavailable; persistent state is disabled for this run"
+            );
+        }
+        return;
+    };
+
+    let identity = session.scripting.script_runtime.store_identity().cloned();
+    let committed_store_slots = session
+        .scripting
+        .script_runtime
+        .committed_store_slots()
+        .clone();
+    let script_ctx = session.scripting.script_ctx.clone();
+    let collected = collect_per_owner_state(
+        &script_ctx.slot_table.borrow(),
+        identity.as_ref(),
+        &committed_store_slots,
+        local_seat,
+        local_player_id,
+    );
+    for warning in collected.warnings {
+        log::warn!("[State] {warning}");
+    }
+
+    let save_state =
+        collected_per_owner_only_state(session.persisted_state.as_ref(), collected.per_owner);
+    match save_persisted_state(&state_path, &save_state) {
+        Ok(()) => {
+            // Keep boot-loaded globals in memory for their own lifecycle, but
+            // advance the retained per-owner document used by future client
+            // saves (and Task 3's join-seed assembly).
+            retain_saved_per_owner_state(&mut session.persisted_state, save_state);
+            log::info!(
+                "[State] saved persistent per-owner slots to {}",
+                state_path.display()
+            );
+        }
+        Err(error) => log::warn!(
+            "[State] failed to save persistent per-owner slots to {}: {error}",
+            state_path.display()
+        ),
+    }
+}
+
+/// Advance the connected-client private-save cadence after all game-logic work
+/// has settled for the frame. The caller owns the exact post-command-drain
+/// location; this helper owns only role/participation gating and synchronous I/O.
+fn maybe_save_connected_client_per_owner_state(
+    session: &mut crate::session::Session,
+    frame_dt: std::time::Duration,
+) {
+    let Some((connected, participating, _)) = session
+        .net_endpoint
+        .as_ref()
+        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
+    else {
+        return;
+    };
+    session.per_owner_save_timer.observe_connection(connected);
+    if session
+        .per_owner_save_timer
+        .advance(frame_dt, connected && participating)
+    {
+        save_connected_client_per_owner_state(session);
+    }
 }
 
 // --- ApplicationHandler ---
@@ -2921,6 +3018,18 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
+                // Connected-client per-owner persistence runs exactly after the
+                // second command drain: every fixed tick and same-frame crossing
+                // write has settled, and neither the SlotTable nor registry
+                // RefCell is borrowed. Keep this synchronous on the main thread
+                // so it cannot race clean exit or the retained state document.
+                if let Some(session) = self.session.as_mut() {
+                    maybe_save_connected_client_per_owner_state(
+                        session,
+                        std::time::Duration::from_secs_f32(frame_dt),
+                    );
+                }
+
                 if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
@@ -3893,18 +4002,25 @@ impl ApplicationHandler for App {
         // Saving before declarations commit and restore completes could replace
         // a valid state file with an empty or default-only snapshot.
         //
-        // A connected client must NOT persist replicated slot writes to `state.json`
-        // (M15 Phase 3.5 Task 5): its `player.health` / `player.maxHealth` and any
-        // shared mod slots are server-authoritative values applied through the
-        // replicated-state path, not local edits to save. Bitcode stays live-wire only,
-        // and save-game sync for net sessions is a non-goal. Single-player (`None`) and
-        // the host (`NetEndpoint::Host`) save unchanged — only `NetEndpoint::Client`
-        // skips the clean-exit save.
+        // A connected client must NOT persist replicated global slot writes to
+        // `state.json` (M15 Phase 3.5 Task 5): its `player.health` /
+        // `player.maxHealth` and shared mod slots are server-authoritative
+        // values applied through the replicated-state path. Its own
+        // per-owner values are the narrow exception below, keyed by its
+        // durable player identity and saved without global slots.
         let can_save = self
             .session
             .as_ref()
             .is_some_and(|session| session.state_store_lifecycle.can_save());
-        if should_save_persisted_state(can_save, self.is_connected_client()) {
+        let is_connected_client = self.is_connected_client();
+        if is_connected_client {
+            if let Some(session) = self.session.as_mut() {
+                // Private owner values are intentionally outside the legacy
+                // global-save gate: a client never writes global slots, but it
+                // does retain its own durable progression on clean exit.
+                save_connected_client_per_owner_state(session);
+            }
+        } else if should_save_persisted_state(can_save, is_connected_client) {
             let session = self
                 .session
                 .as_mut()
@@ -3919,13 +4035,26 @@ impl ApplicationHandler for App {
                     .clone();
                 let script_ctx = session.scripting.script_ctx.clone();
                 if let Some(state_path) = state_path(&mod_id) {
-                    let collected = collect_persisted_state(
+                    let mut collected = collect_persisted_state(
                         &script_ctx.slot_table.borrow(),
                         identity.as_ref(),
                         &committed_store_slots,
                     );
                     for warning in collected.warnings {
                         log::warn!("[State] {warning}");
+                    }
+                    if let Some(local_player_id) = session.player_options.player_id {
+                        let per_owner = collect_per_owner_state(
+                            &script_ctx.slot_table.borrow(),
+                            identity.as_ref(),
+                            &committed_store_slots,
+                            postretro_foundation::Seat(0),
+                            local_player_id,
+                        );
+                        for warning in per_owner.warnings {
+                            log::warn!("[State] {warning}");
+                        }
+                        merge_per_owner_state(&mut collected.state, per_owner.per_owner);
                     }
                     match save_persisted_state(&state_path, &collected.state) {
                         Ok(()) => {
@@ -4029,14 +4158,25 @@ impl App {
             .session
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())?;
-        let poll = {
+        let (poll, client_connected) = {
             let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
             let mut registry = script_ctx.registry.borrow_mut();
             let poll = endpoint
                 .poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry);
             endpoint.warn_once_if_mod_identity_missing();
-            poll
+            let client_connected = endpoint
+                .client_per_owner_save_context()
+                .map(|(connected, _, _)| connected);
+            (poll, client_connected)
         };
+        if let Some(connected) = client_connected
+            && let Some(session) = self.session.as_mut()
+        {
+            // Loading and frontend frames have no periodic save, but still
+            // observe a transport reconnection so the resumed cadence starts
+            // from zero rather than carrying pre-disconnect elapsed time.
+            session.per_owner_save_timer.observe_connection(connected);
+        }
         if let netcode::WorldLessPoll::Client(controls) = &poll {
             netcode::client_drain_control(self, controls.clone());
         }
@@ -5693,6 +5833,7 @@ impl App {
                 tuning,
                 tuning_generation,
                 applied_movement_tuning_generation,
+                session_status,
                 ..
             }) => {
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
@@ -5748,6 +5889,13 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                if let Some(local_seat) = session_status.local_seat() {
+                    // State replication publishes only this client's scalar
+                    // owner-private projection. Keep the local seat cache in
+                    // sync so persistence reads the same seat-addressed source
+                    // as an authoritative host without learning other seats.
+                    sync_client_per_owner_projection(&mut slot_table, local_seat);
+                }
                 if apply_outcome.armed_local_pawn.is_some()
                     && tuning
                         .as_deref()

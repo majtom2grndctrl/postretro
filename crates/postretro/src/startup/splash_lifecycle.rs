@@ -350,6 +350,8 @@ impl App {
                                     &persisted,
                                     identity.as_ref(),
                                     &committed_store_slots,
+                                    session.player_options.player_id,
+                                    postretro_foundation::Seat(0),
                                 );
                                 for warning in warnings {
                                     log::warn!("[State] {warning}");

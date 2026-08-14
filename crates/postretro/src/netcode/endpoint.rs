@@ -2,6 +2,7 @@
 // See: context/lib/networking.md
 
 use super::*;
+use postretro_foundation::Seat;
 
 /// The active network endpoint held by `App`. `None` for single-player; a
 /// `Host`/`Client` variant once the role's transport is constructed.
@@ -182,6 +183,14 @@ impl ClientSessionStatus {
     #[must_use]
     pub(crate) fn open_seats(&self) -> Option<u32> {
         self.roster.as_ref().map(|roster| roster.open_seats)
+    }
+
+    #[must_use]
+    pub(crate) fn local_seat(&self) -> Option<Seat> {
+        self.roster
+            .as_ref()
+            .and_then(|roster| roster.your_seat)
+            .map(Seat)
     }
 }
 
@@ -465,6 +474,26 @@ fn apply_client_switch_resolution(
 }
 
 impl NetEndpoint {
+    /// Connected-client state needed by main-thread-only private persistence.
+    /// The roster's seat is session-scoped and selects a live value only; the
+    /// persistence key remains the local durable player claim.
+    #[must_use]
+    pub(crate) fn client_per_owner_save_context(&self) -> Option<(bool, bool, Option<Seat>)> {
+        let Self::Client {
+            client,
+            session_status,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some((
+            client.is_connected(),
+            client.is_participating(),
+            session_status.local_seat(),
+        ))
+    }
+
     /// Send a client-local switch declaration over reliable Control. The client
     /// transport refuses to queue it before participation, so an old level cannot
     /// leak a selection into a newly promoted pawn.

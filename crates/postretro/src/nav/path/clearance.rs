@@ -274,6 +274,41 @@ mod tests {
         }
     }
 
+    fn wall_end_pinch_section() -> NavMeshSection {
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 0.1,
+            dim_x: 80,
+            dim_z: 80,
+            agent_radius: 0.3,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            // The only route from the near side to the far side turns around a
+            // wall end through this deliberately narrow middle throat.
+            regions: vec![
+                region(0, 0, 70, 20),
+                region(0, 20, 27, 25),
+                region(0, 25, 70, 70),
+            ],
+            portals: vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [0.0, 0.0, 2.0],
+                    right: [2.7, 0.0, 2.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [2.7, 0.0, 2.45],
+                    right: [7.0, 0.0, 2.45],
+                },
+            ],
+        }
+    }
+
     #[test]
     fn route_out_of_disk_slides_vertex_to_boundary_along_portal_normal() {
         let gates = super::super::inset_portals(
@@ -398,5 +433,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Regression: corridor-biased terminal projection must not thread a sub-clearance wall-end pinch.
+    #[test]
+    fn wall_end_pinch_returns_none_below_clearance_width() {
+        let graph = NavGraph::from_section(&wall_end_pinch_section());
+        let clearance = graph.agent_params().radius + crate::collision::SKIN_DISTANCE;
+        let near_corner = Vec3::new(2.7, 0.0, 2.0);
+        let far_corner = Vec3::new(2.7, 0.0, 2.45);
+
+        assert!(
+            distance_xz(near_corner, far_corner) + EPS < 2.0 * clearance,
+            "fixture throat must remain strictly narrower than two clearances"
+        );
+
+        let start = Vec3::new(5.0, 0.0, 1.0);
+        let goal = Vec3::new(5.0, 0.0, 4.0);
+        assert_eq!(graph.region_at(start), Some(0));
+        assert_eq!(graph.region_at(goal), Some(2));
+        assert!(
+            find_path(&graph, start, goal).is_none(),
+            "a sub-2*clearance wall-end throat must remain unroutable"
+        );
     }
 }

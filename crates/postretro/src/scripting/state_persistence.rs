@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
 use postretro_foundation::Seat;
-use postretro_net::wire::PlayerClaimId;
+use postretro_net::wire::{JoinSeedValue, PlayerClaimId};
 use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
 /// Current on-disk state format. Increment only with an explicit migration or invalidation policy.
@@ -117,6 +117,31 @@ pub(crate) enum PersistedValue {
     String(String),
     Array(Vec<f64>),
     Unsupported(Value),
+}
+
+impl From<JoinSeedValue> for PersistedValue {
+    fn from(value: JoinSeedValue) -> Self {
+        match value {
+            JoinSeedValue::Boolean(value) => Self::Boolean(value),
+            JoinSeedValue::Number(value) => Self::Number(value),
+            JoinSeedValue::String(value) => Self::String(value),
+            JoinSeedValue::Array(value) => Self::Array(value),
+        }
+    }
+}
+
+impl TryFrom<PersistedValue> for JoinSeedValue {
+    type Error = ();
+
+    fn try_from(value: PersistedValue) -> Result<Self, Self::Error> {
+        match value {
+            PersistedValue::Boolean(value) => Ok(Self::Boolean(value)),
+            PersistedValue::Number(value) => Ok(Self::Number(value)),
+            PersistedValue::String(value) => Ok(Self::String(value)),
+            PersistedValue::Array(value) => Ok(Self::Array(value)),
+            PersistedValue::Unsupported(_) => Err(()),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -234,6 +259,94 @@ pub(crate) fn collect_per_owner_state(
 pub(crate) struct CollectedPerOwnerState {
     pub(crate) per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
     pub(crate) warnings: Vec<String>,
+}
+
+/// Extract one local player's retained per-owner values for the Control-channel
+/// join seed. JSON-only unsupported values cannot cross bitcode, so preserve
+/// them on disk but omit them from the wire payload with an actionable warning.
+pub(crate) fn join_seed_from_persisted_state(
+    persisted: Option<&PersistedState>,
+    local_player_id: Option<[u8; 16]>,
+) -> BTreeMap<String, JoinSeedValue> {
+    let Some(local_player_id) = local_player_id else {
+        return BTreeMap::new();
+    };
+    let local_player_id = encode_player_claim_id(&PlayerClaimId(local_player_id));
+    let mut slots = BTreeMap::new();
+    let Some(persisted) = persisted else {
+        return slots;
+    };
+
+    for (durable_key, player_values) in &persisted.per_owner {
+        let Some(value) = player_values.get(&local_player_id) else {
+            continue;
+        };
+        match JoinSeedValue::try_from(value.clone()) {
+            Ok(value) => {
+                slots.insert(durable_key.clone(), value);
+            }
+            Err(()) => log::warn!(
+                "[State] join seed skips unsupported persisted value for durable key `{durable_key}`"
+            ),
+        }
+    }
+    slots
+}
+
+/// Validate and apply an admitted player's join seed through the same durable
+/// identity and schema checks used by the restore path. A join seed is stricter
+/// about bounded numbers: out-of-range values are rejected rather than clamped
+/// so a client cannot turn a stale or malicious value into a host-side write.
+pub(crate) fn apply_join_seed(
+    table: &mut SlotTable,
+    identity: Option<&StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    seat: Seat,
+    slots: BTreeMap<String, JoinSeedValue>,
+) -> Vec<String> {
+    let authored_by_key = identity
+        .map(|ledger| {
+            ledger
+                .slots
+                .iter()
+                .filter(|(name, _)| committed_store_slots.contains(name.as_str()))
+                .map(|(name, key)| (key.as_str(), name.as_str()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut warnings = Vec::new();
+
+    for (durable_key, seed_value) in slots {
+        let Some(name) = authored_by_key.get(durable_key.as_str()).copied() else {
+            warnings.push(format!(
+                "join seed contains unknown durable key `{durable_key}`; ignoring it"
+            ));
+            continue;
+        };
+        let Some(record) = table.get_mut(name) else {
+            warnings.push(format!(
+                "join seed durable key `{durable_key}` targets unavailable slot `{name}`; ignoring it"
+            ));
+            continue;
+        };
+        if !is_persisted_per_owner_slot(record) {
+            warnings.push(format!(
+                "join seed targets non-persistent, global, readonly, or engine-owned slot `{name}`; ignoring it"
+            ));
+            continue;
+        }
+
+        let persisted_value = PersistedValue::from(seed_value);
+        match restored_value(name, record, &persisted_value) {
+            Ok((_value, Some(warning))) => warnings.push(format!(
+                "join seed value for slot `{name}` is out of range; ignoring it ({warning})"
+            )),
+            Ok((value, None)) => record.set_per_seat_value(seat, value),
+            Err(warning) => warnings.push(format!("join seed {warning}")),
+        }
+    }
+
+    warnings
 }
 
 /// Build the client-only document. It preserves retained player entries while
@@ -1662,5 +1775,107 @@ mod tests {
         let document: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(document["slots"]["k0000000000000001"], 7.0);
+    }
+
+    #[test]
+    fn join_seed_uses_only_the_local_players_retained_values() {
+        let local_id = player_id(0x11);
+        let other_id = player_id(0x22);
+        let persisted = PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::new(),
+            per_owner: BTreeMap::from([
+                (
+                    "k0000000000000010".to_string(),
+                    BTreeMap::from([
+                        (
+                            encode_player_claim_id(&PlayerClaimId(local_id)),
+                            PersistedValue::Number(42.0),
+                        ),
+                        (
+                            encode_player_claim_id(&PlayerClaimId(other_id)),
+                            PersistedValue::Number(99.0),
+                        ),
+                    ]),
+                ),
+                (
+                    "k0000000000000011".to_string(),
+                    BTreeMap::from([(
+                        encode_player_claim_id(&PlayerClaimId(local_id)),
+                        PersistedValue::Unsupported(serde_json::json!({ "legacy": true })),
+                    )]),
+                ),
+            ]),
+        };
+
+        assert_eq!(
+            join_seed_from_persisted_state(Some(&persisted), Some(local_id)),
+            BTreeMap::from([("k0000000000000010".to_string(), JoinSeedValue::Number(42.0),)])
+        );
+        assert!(join_seed_from_persisted_state(None, Some(local_id)).is_empty());
+        assert!(join_seed_from_persisted_state(Some(&persisted), None).is_empty());
+    }
+
+    #[test]
+    fn join_seed_applies_only_valid_persistent_per_owner_entries() {
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+
+        let warnings = apply_join_seed(
+            &mut table,
+            Some(&identity),
+            &membership,
+            Seat(7),
+            BTreeMap::from([
+                ("k0000000000000010".to_string(), JoinSeedValue::Number(42.0)),
+                ("k0000000000000011".to_string(), JoinSeedValue::Number(7.0)),
+                ("k0000000000000012".to_string(), JoinSeedValue::Number(5.0)),
+                ("kmadeup000000000".to_string(), JoinSeedValue::Boolean(true)),
+            ]),
+        );
+
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(Seat(7)),
+            Some(&SlotValue::Number(42.0))
+        );
+        assert_eq!(
+            table.get("game.rank").unwrap().per_seat_value(Seat(7)),
+            Some(&SlotValue::Enum("rookie".to_string()))
+        );
+        assert_eq!(
+            table
+                .get("game.session_xp")
+                .unwrap()
+                .per_seat_value(Seat(7)),
+            Some(&SlotValue::Number(0.0))
+        );
+    }
+
+    #[test]
+    fn join_seed_rejects_out_of_range_numbers_instead_of_clamping_them() {
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+
+        let warnings = apply_join_seed(
+            &mut table,
+            Some(&identity),
+            &membership,
+            Seat(7),
+            BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                JoinSeedValue::Number(500.0),
+            )]),
+        );
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(
+            table.get("game.xp").unwrap().per_seat_value(Seat(7)),
+            Some(&SlotValue::Number(0.0))
+        );
     }
 }

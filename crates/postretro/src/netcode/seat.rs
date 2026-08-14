@@ -109,6 +109,9 @@ pub(crate) struct HoldDeadline(pub(crate) Duration);
 pub(crate) struct SeatAdmission {
     pub(crate) seat: Seat,
     pub(crate) released_seats: Vec<Seat>,
+    /// Whether this connection reclaimed an in-hold seat whose per-owner values
+    /// remain live and must not be overwritten by a persisted join seed.
+    pub(crate) reclaimed: bool,
 }
 
 /// Durable host-local player identities for one running session.
@@ -219,6 +222,7 @@ impl SeatTable {
             return Some(SeatAdmission {
                 seat,
                 released_seats: Vec::new(),
+                reclaimed: false,
             });
         }
 
@@ -264,6 +268,7 @@ impl SeatTable {
                 return Some(SeatAdmission {
                     seat: winner,
                     released_seats,
+                    reclaimed: true,
                 });
             }
 
@@ -316,6 +321,7 @@ impl SeatTable {
         Some(SeatAdmission {
             seat,
             released_seats: Vec::new(),
+            reclaimed: false,
         })
     }
 

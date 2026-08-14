@@ -2,7 +2,10 @@
 // See: context/lib/networking.md
 
 use super::*;
+use std::collections::BTreeMap;
+
 use postretro_foundation::Seat;
+use postretro_net::wire::JoinSeedValue;
 
 /// The active network endpoint held by `App`. `None` for single-player; a
 /// `Host`/`Client` variant once the role's transport is constructed.
@@ -121,6 +124,9 @@ pub(crate) enum NetEndpoint {
         /// change detector only: demotion removes the entry and promotion sends a
         /// fresh payload.
         last_sent_tuning: HashMap<u64, TuningPayload>,
+        /// Per-connection persisted values received during parity. The engine
+        /// owns this buffer because applying a seed requires the slot registry.
+        join_seeds: HostJoinSeeds,
         missing_identity_warned: bool,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
@@ -579,6 +585,7 @@ impl NetEndpoint {
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                     last_sent_tuning: HashMap::new(),
+                    join_seeds: HostJoinSeeds::default(),
                     missing_identity_warned: false,
                 }))
             }
@@ -647,6 +654,14 @@ impl NetEndpoint {
         match self {
             Self::Host { server, .. } => server.set_level_parity(level),
             Self::Client { client, .. } => client.set_level_parity(level),
+        }
+    }
+
+    /// Install the client-owned per-owner persistence seed to send with the
+    /// next parity declaration. This is intentionally a no-op for hosts.
+    pub(crate) fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
+        if let Self::Client { client, .. } = self {
+            client.set_join_seed(slots);
         }
     }
 

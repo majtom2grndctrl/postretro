@@ -543,6 +543,16 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
+        let join_seed = {
+            let session = self
+                .session
+                .as_ref()
+                .expect("session installed before level install");
+            crate::scripting::state_persistence::join_seed_from_persisted_state(
+                session.persisted_state.as_ref(),
+                session.player_options.player_id,
+            )
+        };
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -556,6 +566,7 @@ impl App {
                 .active_level_source
                 .as_ref()
                 .expect("active level source retained before parity installation");
+            endpoint.set_join_seed(join_seed);
             endpoint.set_level_parity(Some((
                 level_identity(source, &self.content_root),
                 level_content_digest,

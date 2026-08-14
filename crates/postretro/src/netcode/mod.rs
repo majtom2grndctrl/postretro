@@ -16,6 +16,7 @@ mod endpoint;
 pub(crate) mod frame_order;
 mod host;
 mod interpolation;
+mod join_seed;
 mod lifecycle;
 mod movement_state;
 mod prediction;
@@ -78,6 +79,7 @@ pub(crate) use host::{
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, MAX_DELAY_MICROS};
+pub(crate) use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };

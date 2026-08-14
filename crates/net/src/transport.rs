@@ -1,7 +1,7 @@
 // Polled, registry-blind renet transport and E15 two-stage control gate.
 // See: context/lib/networking.md
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -16,8 +16,9 @@ use renet_netcode::{
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
-    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, NETCODE_USER_DATA_BYTES,
-    ParityDeclaration, ParticipationFrame, ServerControlFrame, ServerControlMessage,
+    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, JoinSeedValue,
+    NETCODE_USER_DATA_BYTES, ParityDeclaration, ParticipationFrame, ServerControlFrame,
+    ServerControlMessage,
 };
 
 pub use crate::handshake::*;
@@ -103,6 +104,9 @@ pub struct ServerPoll {
     /// Registry-blind reliable controls from currently participating clients.
     /// Engine code resolves the client id into a pawn and validates its state.
     pub switch_declarations: Vec<(ClientId, ClientSwitchDeclaration)>,
+    /// Registry-blind join seeds. The engine owns buffering, validation, and
+    /// per-seat application because the transport has no slot declarations.
+    pub join_seeds: Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
 }
 
 /// Synchronous server transport. It knows only opaque declarations and slot ids.
@@ -236,7 +240,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations) = self.process_control_messages();
+        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -246,6 +250,7 @@ impl NetServer {
             handshakes,
             lifecycle,
             switch_declarations,
+            join_seeds,
         })
     }
 
@@ -306,11 +311,13 @@ impl NetServer {
     ) -> (
         Vec<HandshakeOutcome>,
         Vec<(ClientId, ClientSwitchDeclaration)>,
+        Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
     ) {
         let mut outcomes = Vec::new();
         let mut switch_declarations = Vec::new();
+        let mut join_seeds = Vec::new();
         let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
-            return (outcomes, switch_declarations);
+            return (outcomes, switch_declarations, join_seeds);
         };
         let expected_protocol = protocol_version();
 
@@ -405,6 +412,13 @@ impl NetServer {
                             switch_declarations.push((client_id, declaration));
                         }
                     }
+                    ClientControlMessage::JoinSeed { slots } => {
+                        // The engine validates the durable keys against its
+                        // committed declarations and applies only eligible
+                        // per-owner values. This transport is intentionally
+                        // registry-blind, so pass the opaque map through.
+                        join_seeds.push((client_id, slots));
+                    }
                 }
                 if self.mod_digest.is_none() {
                     break;
@@ -428,7 +442,7 @@ impl NetServer {
                 }
             }
         }
-        (outcomes, switch_declarations)
+        (outcomes, switch_declarations, join_seeds)
     }
 
     fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
@@ -732,7 +746,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations) = self.process_control_messages();
+        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -741,6 +755,7 @@ impl NetServer {
             handshakes,
             lifecycle,
             switch_declarations,
+            join_seeds,
         }
     }
 }
@@ -794,6 +809,8 @@ pub struct NetClient {
     transport: NetcodeClientTransport,
     admission_sent: bool,
     parity_sent: bool,
+    join_seed_sent: bool,
+    join_seed: BTreeMap<String, JoinSeedValue>,
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
@@ -827,6 +844,8 @@ impl NetClient {
             transport,
             admission_sent: false,
             parity_sent: false,
+            join_seed_sent: false,
+            join_seed: BTreeMap::new(),
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
@@ -851,7 +870,16 @@ impl NetClient {
         if self.level_parity != level {
             self.level_parity = level;
             self.parity_sent = false;
+            self.join_seed_sent = false;
         }
+    }
+
+    /// Replace the values to carry with the next content-parity declaration.
+    /// An empty map is a meaningful seed: it explicitly starts a player at the
+    /// host's declared defaults when no local persistence exists.
+    pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
+        self.join_seed = slots;
+        self.join_seed_sent = false;
     }
 
     #[deprecated(note = "use set_mod_digest and set_level_parity")]
@@ -892,6 +920,15 @@ impl NetClient {
                     })),
                 );
                 self.parity_sent = true;
+                if !self.join_seed_sent {
+                    self.client.send_message(
+                        Channel::Control,
+                        wire::encode(&ClientControlMessage::JoinSeed {
+                            slots: self.join_seed.clone(),
+                        }),
+                    );
+                    self.join_seed_sent = true;
+                }
             }
         }
     }
@@ -1154,6 +1191,11 @@ mod tests {
                 client_id: RELAY_CLIENT_ID
             }]
         );
+        assert_eq!(
+            poll.join_seeds,
+            vec![(RELAY_CLIENT_ID, BTreeMap::new())],
+            "a client with no retained values still sends an explicit empty join seed"
+        );
         assert!(server.is_participating(RELAY_CLIENT_ID));
         (server, client)
     }
@@ -1210,6 +1252,24 @@ mod tests {
                 },
             )]
         );
+    }
+
+    #[test]
+    fn join_seed_reaches_the_server_poll_without_transport_interpretation() {
+        let (mut server, mut client) = participate_relay_pair();
+        let slots =
+            BTreeMap::from([("kplayer0000000001".to_string(), JoinSeedValue::Number(42.0))]);
+        client.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::JoinSeed {
+                slots: slots.clone(),
+            }),
+        );
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+
+        assert_eq!(poll.join_seeds, vec![(RELAY_CLIENT_ID, slots)]);
     }
 
     // Regression: parity retained while Pending was never reconsidered when the

@@ -158,6 +158,9 @@ mod tests {
     use super::*;
     use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
     use postretro_level_loader::{FalloffModel, LightType, ShadowType};
+    use postretro_lighting::spec_buffer::{
+        SPEC_LIGHT_SHADOWMASK_NONE, SPEC_LIGHT_SIZE, pack_spec_lights,
+    };
     use postretro_render_data::geometry::BvhTree;
 
     fn light(is_dynamic: bool) -> MapLight {
@@ -185,7 +188,11 @@ mod tests {
     }
 
     #[test]
-    fn spec_light_shadowmask_channels_scatter_into_compacted_static_order() {
+    fn dynamic_prefix_selected_static_keeps_shadowmask_alignment_through_spec_packing() {
+        // Regression: frame capture used to pass a prefiltered static list with
+        // selection indices still expressed against `world.lights`. A dynamic
+        // light before this selected static light then made both lookup and
+        // channel placement address the wrong list.
         let lights = vec![light(true), light(false)];
         let entity_shadow_lights = [1];
         let atlas = ShadowmaskAtlasSection {
@@ -224,7 +231,17 @@ mod tests {
             texture_materials: &[],
         };
 
-        assert_eq!(build_spec_light_shadowmask_channels(&geometry), vec![2]);
+        let selection_spec_indices =
+            build_selection_spec_light_indices(&lights, &entity_shadow_lights);
+        assert_eq!(selection_spec_indices, vec![0]);
+
+        let channels = build_spec_light_shadowmask_channels(&geometry);
+        assert_eq!(channels, vec![2]);
+
+        let spec_bytes = pack_spec_lights(&lights, &channels);
+        assert_eq!(spec_bytes.len(), SPEC_LIGHT_SIZE);
+        assert_eq!(read_f32(&spec_bytes, 56), 2.0);
+        assert_ne!(read_f32(&spec_bytes, 56), SPEC_LIGHT_SHADOWMASK_NONE);
     }
 
     #[test]

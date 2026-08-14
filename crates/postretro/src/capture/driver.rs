@@ -74,11 +74,13 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         &texture_materials,
     );
     renderer.normalize_world_uvs(&mut world);
-    let static_lights = capture_static_lights(&world.lights);
     let geometry = LevelGeometry {
-        lights: &static_lights,
+        // `entity_shadow_lights` indexes the full authored light list. Keep
+        // that index space intact here; the renderer owns the `!is_dynamic`
+        // compaction used by static spec-light packing.
+        lights: &world.lights,
         light_influences: &[],
-        entity_shadow_lights: &[],
+        entity_shadow_lights: &world.entity_shadow_lights,
         ..level_world_to_geometry(&world, &texture_materials)
     };
     renderer.install_level_geometry(&geometry);
@@ -149,19 +151,6 @@ fn derive_texture_materials(
             }
             material
         })
-        .collect()
-}
-
-/// Keep authored static lights in source order. `pack_spec_lights` uses this
-/// same `!is_dynamic` compaction, so PRL chunk-light indices remain aligned.
-/// Runtime direct lights and entity-shadow inputs stay outside v1 capture.
-fn capture_static_lights(
-    lights: &[postretro_level_loader::MapLight],
-) -> Vec<postretro_level_loader::MapLight> {
-    lights
-        .iter()
-        .filter(|light| !light.is_dynamic)
-        .cloned()
         .collect()
 }
 
@@ -503,34 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_static_lights_preserves_static_compact_order() {
-        let lights = [
-            test_light(false, postretro_level_loader::ShadowType::Sdf, 1.0),
-            test_light(
-                true,
-                postretro_level_loader::ShadowType::StaticLightMap,
-                2.0,
-            ),
-            test_light(
-                false,
-                postretro_level_loader::ShadowType::StaticLightMap,
-                3.0,
-            ),
-        ];
-
-        let captured = capture_static_lights(&lights);
-
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0].intensity, 1.0);
-        assert_eq!(
-            captured[0].shadow_type,
-            postretro_level_loader::ShadowType::Sdf
-        );
-        assert_eq!(captured[1].intensity, 3.0);
-        assert!(captured.iter().all(|light| !light.is_dynamic));
-    }
-
-    #[test]
     fn output_must_not_alias_map_or_scene_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let map = directory.path().join("level.prl");
@@ -618,30 +579,6 @@ mod tests {
             1,
             "successful capture removes its temporary sibling"
         );
-    }
-
-    fn test_light(
-        is_dynamic: bool,
-        shadow_type: postretro_level_loader::ShadowType,
-        intensity: f32,
-    ) -> postretro_level_loader::MapLight {
-        postretro_level_loader::MapLight {
-            origin: [0.0; 3],
-            light_type: postretro_level_loader::LightType::Point,
-            intensity,
-            color: [1.0; 3],
-            falloff_model: postretro_level_loader::FalloffModel::Linear,
-            falloff_range: 8.0,
-            cone_angle_inner: 0.0,
-            cone_angle_outer: 0.0,
-            cone_direction: [0.0, 0.0, -1.0],
-            is_dynamic,
-            casts_entity_shadows: false,
-            animated_slot: None,
-            tags: Vec::new(),
-            cell_index: 0,
-            shadow_type,
-        }
     }
 
     fn assert_mat4_approx_eq(actual: Mat4, expected: Mat4, epsilon: f32) {

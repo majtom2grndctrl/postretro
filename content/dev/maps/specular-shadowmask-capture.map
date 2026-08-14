@@ -1,0 +1,98 @@
+// Game: Postretro
+// Format: Standard
+// Headless specular-shadowmask capture fixture.
+// A selected static point light shines through the center blocker onto the
+// north wall. The wall point at quake (416, 512, 192) is shadowed; the capture
+// camera approaches it from a grazing angle, while looking around the blocker.
+// The matching GPU-gated scene lives inline in crates/postretro/tests/capture_frame.rs.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"ambient_color" "0 0 0"
+"wad" ""
+"_tb_mod" "dev"
+// brush 0
+{
+( -32 544 -32 ) ( -32 -32 0 ) ( -32 -32 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 -32 ) ( 1056 -32 0 ) ( 1056 -32 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 -32 ) ( 1056 544 -32 ) ( -32 544 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 0 ) ( 1056 -32 0 ) ( -32 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 544 -32 ) ( -32 544 0 ) ( -32 544 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 -32 -32 ) ( 1056 544 0 ) ( 1056 544 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 1
+{
+( -32 544 384 ) ( -32 -32 416 ) ( -32 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 384 ) ( 1056 -32 416 ) ( 1056 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 384 ) ( 1056 544 384 ) ( -32 544 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 416 ) ( 1056 -32 416 ) ( -32 -32 416 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 544 384 ) ( -32 544 416 ) ( -32 544 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 -32 384 ) ( 1056 544 416 ) ( 1056 544 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 2
+{
+( -32 544 0 ) ( -32 -32 384 ) ( -32 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 0 ) ( 0 -32 384 ) ( 0 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 0 ) ( 0 544 0 ) ( -32 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 384 ) ( 0 -32 384 ) ( -32 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 544 0 ) ( -32 544 384 ) ( -32 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -32 0 ) ( 0 544 384 ) ( 0 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 3
+{
+( 1024 544 0 ) ( 1024 -32 384 ) ( 1024 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 -32 0 ) ( 1056 -32 384 ) ( 1056 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 -32 0 ) ( 1056 544 0 ) ( 1024 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 544 384 ) ( 1056 -32 384 ) ( 1024 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 544 0 ) ( 1024 544 384 ) ( 1024 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 -32 0 ) ( 1056 544 384 ) ( 1056 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 4
+{
+( 0 0 0 ) ( 0 -32 384 ) ( 0 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -32 0 ) ( 1024 -32 384 ) ( 1024 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -32 0 ) ( 1024 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 384 ) ( 1024 -32 384 ) ( 0 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 0 0 ) ( 0 0 384 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 -32 0 ) ( 1024 0 384 ) ( 1024 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 5
+{
+( 0 544 0 ) ( 0 512 384 ) ( 0 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 512 0 ) ( 1024 512 384 ) ( 1024 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 512 0 ) ( 1024 544 0 ) ( 0 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 544 384 ) ( 1024 512 384 ) ( 0 512 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 544 0 ) ( 0 544 384 ) ( 0 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 512 0 ) ( 1024 544 384 ) ( 1024 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 6
+{
+( 368 400 112 ) ( 368 336 272 ) ( 368 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 336 272 ) ( 464 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 400 112 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 400 272 ) ( 464 336 272 ) ( 368 336 272 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 400 112 ) ( 368 400 272 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 336 112 ) ( 464 400 272 ) ( 464 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "64 160 160"
+"angle" "45"
+}
+// entity 2 -- selected baked point light. The blocker occludes its direct path
+// to the north-wall center, which produces the shadowmask sample used by the
+// static specular loop.
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "416 240 192"
+"light" "600"
+"_color" "255 244 214"
+"_falloff_range" "1000"
+"_light_size" "0"
+"delay" "0"
+"style" "0"
+}

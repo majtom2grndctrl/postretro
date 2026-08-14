@@ -1,12 +1,14 @@
 # E10 — Pursuit Goes `blocked` on a Wraparound Route
 
 > **Draft.** Deferred out of E10 play-testing; identified as a prerequisite for further enemy
-> movement work. Fixes the far-side pinch-gap residual in `nav/path.rs` that freezes pursuit
-> around a freestanding wall. Lineage: the shipped `E10--slow-agent-arrival-stuck`
-> (arrival-deceleration feel) and `E10--enemy-stuck-recovery` (tangent-bias unstick) each own a
-> distinct pursuit-motion failure; this spec owns the pathing-repair freeze neither addresses —
-> and which stuck-recovery cannot reach by construction (see Direction). Code grounding and
-> fix-option analysis in [`research.md`](./research.md).
+> movement work. A named residual of the shipped parent `E10--navmesh-capsule-clearance`
+> (Euclidean erosion + funnel corner-offset), which explicitly scoped this "two-corner freeze"
+> out. Fixes the far-side pinch-gap residual in `nav/path.rs` that freezes pursuit around a
+> freestanding wall. Lineage: the shipped `E10--slow-agent-arrival-stuck` (arrival-deceleration
+> feel) and `E10--enemy-stuck-recovery` (tangent-bias unstick) each own a distinct pursuit-motion
+> failure; this spec owns the pathing-repair freeze neither addresses — and which stuck-recovery
+> cannot reach by construction (see Direction). Code grounding and fix-option analysis in
+> [`research.md`](./research.md).
 
 ## Goal
 
@@ -31,9 +33,16 @@ onward chord re-cuts the same disk, and the axis-aligned bevel vocabulary cannot
 standoff around to the corridor side — so the repair re-bevels until its budget exhausts and
 bails to `None`.
 
-**Prior commitments this coexists with.** The `blocked && !has_path` state this spec eliminates
-is deliberately outside every existing recovery path, so the fix is load-bearing — nothing else
-rescues it:
+**Prior commitments this coexists with.** The clearance-repair vocabulary this refines
+(`ensure_endpoint_clearance`, `project_out_of_disk`, `bevel_point`) is owned by the shipped parent
+`E10--navmesh-capsule-clearance`, which landed both the bake-time Euclidean erosion and the
+runtime funnel corner-offset repair. This spec touches only the runtime projection seam — it does
+none of that spec's out-of-scope items (corridor re-derivation, per-archetype radii, dynamic
+clearance queries) — and preserves the class-1/class-2 line (code-fix vs author-widens) that
+mirrors the parent's own authoring boundary.
+
+The `blocked && !has_path` state this spec eliminates is deliberately outside every existing
+recovery path, so the fix is load-bearing — nothing else rescues it:
 - `has_stuck_recovery_intent` (`agent_steering.rs`) gates the tangent-bias unstick on
   `!agent.path.is_empty() && !agent.blocked && goal_speed > ε && steer_velocity ≠ 0`. A frozen
   agent has an empty path and `blocked == true`, so recovery never arms — the `else` arm resets
@@ -54,6 +63,12 @@ blast radius and is not the far-side-standoff cause; it stays a conditional foll
 questions). Raising `repairs_remaining` (option iv) is a confirmed no-op — the budget is
 exhausted because the vocabulary cannot express the route, not because 4× is too few. A
 tangent/visibility string-pull rewrite over disks (option iii) is over-engineering for this bug.
+Fixing it on the **construction side** — in funnel-waypoint generation, so the terminal never
+snaps into a far-side disk — is the rival most aligned with the parent's "traversable by
+construction" northstar, but it loses here: the funnel already emits a valid taut polyline
+post-erosion, so the `None` is provably in the post-funnel projection seam, not in generation;
+touching generation is the same whole-repair blast radius option iii warns against, while the
+projection bias targets the documented cause in one function.
 
 ## Background (the mechanism)
 

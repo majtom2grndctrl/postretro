@@ -3781,6 +3781,7 @@ dependencies = [
  "mlua",
  "postretro-entities",
  "postretro-foundation",
+ "postretro-level-format",
  "postretro-level-loader",
  "postretro-render-data",
  "postretro-scripting-core",

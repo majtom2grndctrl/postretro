@@ -271,7 +271,8 @@ impl Renderer {
         full.level_light_influences = dynamic_influences;
 
         let spec_lights_data = {
-            let packed = pack_spec_lights(geometry.lights);
+            let shadowmask_channels = shadowmask::build_spec_light_shadowmask_channels(geometry);
+            let packed = pack_spec_lights(geometry.lights, &shadowmask_channels);
             if packed.is_empty() {
                 vec![0u8; SPEC_LIGHT_SIZE]
             } else {

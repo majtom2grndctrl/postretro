@@ -1,7 +1,7 @@
 // Renderer-side CPU packing for static-light shadowmask world receipt.
 // Governing context: context/lib/rendering_pipeline.md
 
-use super::renderer_types::{PromotedShadowPoolKind, PromotedStaticLightRecord};
+use super::renderer_types::{LevelGeometry, PromotedShadowPoolKind, PromotedStaticLightRecord};
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::MapLight;
 
@@ -38,6 +38,45 @@ pub(crate) fn build_selection_spec_light_indices(
                 .unwrap_or(FORWARD_SHADOWMASK_INVALID_INDEX)
         })
         .collect()
+}
+
+/// Build the compacted `spec_lights` shadowmask-channel table. Atlas channels
+/// arrive in `entity_shadow_lights` selection order, while `spec_lights`
+/// removes dynamic lights, so this is deliberately a scatter rather than a
+/// direct copy.
+///
+/// Section presence is derived from `LevelGeometry` here instead of from the
+/// renderer resource state: level reload resets that state before spec-light
+/// packing, while a present-but-rejected atlas binds a fully-lit placeholder
+/// and must retain its authored channel.
+pub(crate) fn build_spec_light_shadowmask_channels(geometry: &LevelGeometry<'_>) -> Vec<u8> {
+    let mut spec_channels = vec![
+        SHADOWMASK_CHANNEL_DROPPED;
+        geometry
+            .lights
+            .iter()
+            .filter(|light| !light.is_dynamic)
+            .count()
+    ];
+    let Some(atlas) = geometry.shadowmask_atlas else {
+        return spec_channels;
+    };
+
+    let selection_spec_indices =
+        build_selection_spec_light_indices(geometry.lights, geometry.entity_shadow_lights);
+    for (selection_index, spec_index) in selection_spec_indices.into_iter().enumerate() {
+        if spec_index == FORWARD_SHADOWMASK_INVALID_INDEX {
+            continue;
+        }
+        let Some(channel) = atlas.channels.get(selection_index).copied() else {
+            continue;
+        };
+        if let Some(slot) = spec_channels.get_mut(spec_index as usize) {
+            *slot = channel;
+        }
+    }
+
+    spec_channels
 }
 
 fn spec_light_index_for_global_light(lights: &[MapLight], global_index: usize) -> Option<u32> {
@@ -117,7 +156,9 @@ fn push_f32(out: &mut Vec<u8>, value: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
     use postretro_level_loader::{FalloffModel, LightType, ShadowType};
+    use postretro_render_data::geometry::BvhTree;
 
     fn light(is_dynamic: bool) -> MapLight {
         MapLight {
@@ -141,6 +182,49 @@ mod tests {
 
     fn read_f32(bytes: &[u8], offset: usize) -> f32 {
         f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn spec_light_shadowmask_channels_scatter_into_compacted_static_order() {
+        let lights = vec![light(true), light(false)];
+        let entity_shadow_lights = [1];
+        let atlas = ShadowmaskAtlasSection {
+            width: 1,
+            height: 1,
+            layer_count: 1,
+            channels: vec![2],
+            data: vec![255; 4],
+        };
+        let bvh = BvhTree {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            root_node_index: 0,
+        };
+        let geometry = LevelGeometry {
+            vertices: &[],
+            indices: &[],
+            bvh: &bvh,
+            lights: &lights,
+            light_influences: &[],
+            sh_volume: None,
+            lightmap: None,
+            chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
+            delta_sh_volumes: None,
+            direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
+            entity_shadow_lights: &entity_shadow_lights,
+            shadowmask_atlas: Some(&atlas),
+            sdf_atlas: None,
+            lightmap_mode: postretro_level_loader::LightmapMode::default(),
+            cell_draw_index: None,
+            kinematic_geometry: None,
+            texture_materials: &[],
+        };
+
+        assert_eq!(build_spec_light_shadowmask_channels(&geometry), vec![2]);
     }
 
     #[test]

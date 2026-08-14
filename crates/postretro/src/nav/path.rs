@@ -531,7 +531,7 @@ const MIN_XZ_LEN_SQ: f32 = 1e-8;
 /// a distinct overlapping disk and be re-projected. `ensure_endpoint_clearance`'s
 /// repair budget bounds that churn to a clean `None` — never a spin, panic, or
 /// grazing path — surfacing as the far-side pinch-gap re-freeze tracked in
-/// `context/plans/drafts/E10--pursuit-wraparound-blocked`. Ping-pong is structurally
+/// `context/plans/ready/E10--pursuit-wraparound-blocked`. Ping-pong is structurally
 /// impossible only where `cell_size > 2 * clearance`.
 fn project_out_of_disk(
     obstacle: FunnelEndpoint,

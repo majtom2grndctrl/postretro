@@ -1,7 +1,7 @@
 # E10 — Pursuit Goes `blocked` on a Wraparound Route
 
-> **Draft.** Deferred out of E10 play-testing; identified as a prerequisite for further enemy
-> movement work. A named residual of the shipped parent `E10--navmesh-capsule-clearance`
+> **Ready.** Reviewed (direction, structural three-lens, implementability) and promoted from drafts.
+> Deferred out of E10 play-testing; identified as a prerequisite for further enemy movement work. A named residual of the shipped parent `E10--navmesh-capsule-clearance`
 > (Euclidean erosion + funnel corner-offset), which explicitly scoped this "two-corner freeze"
 > out. Fixes the far-side pinch-gap residual in `nav/path.rs` that freezes pursuit around a
 > freestanding wall. Lineage: the shipped `E10--slow-agent-arrival-stuck` (arrival-deceleration
@@ -309,5 +309,3 @@ I1, verifiable with the existing per-segment oracle
   `grounded_candidate_position` would let enemies take near-wall cover slots instead of walking the
   raw-target fallback straight at the player — worth a sibling ticket if corner-combat positioning
   feels flat after this fix.
-- **Promotion cleanup.** At promotion, update the `project_out_of_disk` doc comment's draft-path
-  reference (`context/plans/drafts/E10--pursuit-wraparound-blocked`) to the `ready/` path.

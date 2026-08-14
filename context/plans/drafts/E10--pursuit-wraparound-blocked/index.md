@@ -44,18 +44,20 @@ mirrors the parent's own authoring boundary.
 The `blocked && !has_path` state this spec eliminates is deliberately outside every existing
 recovery path, so the fix is load-bearing — nothing else rescues it:
 - `has_stuck_recovery_intent` (`agent_steering.rs`) gates the tangent-bias unstick on
-  `!agent.path.is_empty() && !agent.blocked && goal_speed > ε && steer_velocity ≠ 0`. A frozen
-  agent has an empty path and `blocked == true`, so recovery never arms — the `else` arm resets
-  `stuck_ticks`/`unstick_window_remaining` and the agent holds position (`agent_steering.rs`,
-  the "pathless blocked agent" branch).
+  `!agent.path.is_empty() && !agent.blocked && goal_speed > STUCK_INTENT_SPEED_EPSILON &&
+  steer_velocity ≠ 0`. A frozen agent has an empty path and `blocked == true`, so recovery never
+  arms — the `else` arm resets `stuck_ticks`/`unstick_window_remaining` and the agent holds
+  position (`agent_steering.rs`, the "pathless blocked agent" branch).
 - The replan-admission clause `blocked_destination_now_directly_routable` re-admits a blocked
   agent only when its current position and destination resolve to the **same** region. The
   wraparound target sits in a **different** region reachable solely by the around-the-end route
   `find_path` rejects, so that clause never fires either. The agent rides only the staleness
   cooldown, re-calling `find_path`, which keeps returning `None`.
 
-  This is why the steering integration test (Task 3) is a real diagnostic: an agent can only
-  reach the far region by a genuine `find_path` route, never by recovery wandering.
+  The only other write that clears `blocked` is `clear_destination` (agent gives up the chase).
+  So while the target stays live and within leash, `blocked` can flip true→false ONLY through a
+  genuine `find_path` route (Invariant I2) — which is why the steering integration test (Task 3)
+  is a real diagnostic, and why it must hold the target set and in-leash for the whole run.
 
 **Alternatives rejected.** A true-tangent bevel between the two endpoint disks (research option i)
 would also address an oblique marginal-gap pinch, but it is a larger change with whole-repair
@@ -97,21 +99,23 @@ target IS reachable — the `None` is a repair failure.
 
 ### In scope
 
-- **Split `nav/path.rs` first.** It is at ~823 production lines (past the ~800 split-before-extend
-  threshold; the fix + tests push further). Extract the clearance-repair cluster (`CLEARANCE_EPS`,
+- **Split `nav/path.rs` first.** It is at ~823 production lines — well past the `development_guide.md`
+  §2.1 split threshold (~600+ lines: split before adding more code), and §2.5 applies too (this spec
+  adds test code to an already-large file). Extract the clearance-repair cluster (`CLEARANCE_EPS`,
   `segment_point_distance_xz`, `bevel_point`, `clearance_bevel`, `route_out_of_disk`,
   `MIN_XZ_LEN_SQ`, `project_out_of_disk`, `PathPoint`, `ensure_endpoint_clearance`) into a sibling
   `nav/path/clearance.rs`, leaving the core A*/SSF funnel in `path.rs`. Behavior-preserving; the
   seam is `FunnelEndpoint`/`FunnelGate` plus the `find_path` call and the shared helpers the
-  cluster reaches (`distance_xz`, the `NavPath` return type).
+  cluster reaches (`distance_xz`, the `NavPath` return type). See Task 1 for the two visibility
+  edits the move requires.
 - **Corridor-biased terminal projection.** Redirect `project_out_of_disk` so a terminal snapped
   into a wall-end endpoint's clearance disk projects to a standoff on the CORRIDOR side (toward the
   adjacent waypoint the call sites already pass as `toward`), not radially outward — so the onward
   chord does not re-cut the disk. The true target stays on `AgentComponent.destination` (unchanged).
-- **Wraparound regression coverage.** A `find_path` fixture for a freestanding-wall
-  wrap-to-far-middle route (currently `None`) that now returns `Some` with every segment clearing
-  every wide endpoint; and a steering-level test that a chaser on such a route reaches the far
-  region without ever latching `blocked && !has_path`.
+- **Wraparound regression coverage.** A `find_path` wraparound fixture (in `clearance.rs` tests,
+  authored red→green with the fix) and an unthreadable-pinch characterization test; plus a
+  steering integration test in `crates/postretro/src/agent_steering/tests.rs` that a chaser on a
+  routable wraparound reaches the far region without ever latching `blocked && !has_path`.
 
 ### Out of scope
 
@@ -119,10 +123,11 @@ target IS reachable — the `None` is a repair failure.
   (`combat_positioning.rs`) grounds candidates with strict `region_at`, not the snapping
   `resolve_region_at`. Confirmed a latent targeting-QUALITY defect (drops good near-wall cover
   slots), NOT the freeze cause — a `combat_slot` is only ever `Some` for a candidate that already
-  round-tripped through `find_path` (`combat_positioning.rs`, `evaluate`-path `find_path` gate),
-  and the apply pass's `outcome.combat_slot.unwrap_or(target.position)` fallback
-  (`scripting/systems/ai/mod.rs`) routes the raw target through the same `find_path`, so fixing
-  `find_path` unfreezes pursuit regardless of slot scoring. File as a separate follow-up.
+  round-tripped through `find_path` (`combat_positioning.rs`, the `let path = find_path(...)?;`
+  gate in the candidate-evaluate path), and the apply pass's
+  `outcome.combat_slot.unwrap_or(target.position)` fallback (`scripting/systems/ai/mod.rs`) routes
+  the raw target through the same `find_path`, so fixing `find_path` unfreezes pursuit regardless
+  of slot scoring. File as a separate follow-up.
 - **Genuinely-unroutable pinches (class 2).** A wall-end passage narrower than `2 * clearance`
   (0.84 m under production defaults `agent_radius` 0.4, `cell_size` 0.25, `SKIN_DISTANCE` 0.02)
   has no clearance-safe crossing; only bake-time/authoring widening fixes it.
@@ -136,22 +141,26 @@ target IS reachable — the `None` is a repair failure.
 - [ ] `find_path` on a freestanding-wall wrap-to-far-middle fixture — where the around-the-end
       corridor is wider than `2 * clearance` and the goal sits in the far-side eroded band —
       returns `Some`, and every emitted segment clears every wide-portal endpoint by the
-      effective clearance (within epsilon). The same query returns `None` before the fix.
-- [ ] A chasing agent following that route reaches the goal's region and never latches
-      `blocked && !has_path && speed≈0` on any tick while the target is live and within leash.
-      Reaching the far region is achievable only via a real `find_path` route: stuck-recovery
-      cannot arm on a pathless blocked agent, so it cannot mask a still-broken `find_path`.
+      effective clearance (within epsilon). The same query returns `None` before the fix (the
+      fixture is authored red→green in Task 2).
+- [ ] A chasing agent, driven by the steering tick against a **static** target planted in the
+      far-side wraparound region, never latches `blocked && !has_path` on ANY tick — including
+      tick 0 — while the target stays set and within leash; and its tick-0 plan is the genuine
+      wraparound route (path length ≥ 3, crossing the far portal), not a trivial same-region
+      direct route. Success is judged by the agent's XZ distance reaching the live target's
+      far-region arrival band, not by the `arrived` flag alone. See Test orderings P1–P3, P6.
 - [ ] A genuinely-unroutable sub-`2 * clearance` pinch still returns `None`
       (`find_path_returns_none_for_unthreadable_pinch_gap_limit` stays green).
 - [ ] The split (Task 1) is behavior-preserving: every existing `nav::` funnel/clearance/path
-      test passes with no edits beyond module paths.
+      test passes with no edits beyond module paths, plus the two visibility edits named in Task 1.
 - [ ] After the projection change (Task 2), the terminal-standoff regressions
       (`find_path_projects_start_inside_wide_endpoint_disk_to_a_standoff`,
       `find_path_projects_goal_inside_wide_endpoint_disk_to_a_standoff`) and the coincident-terminal
-      fallback (`project_out_of_disk_uses_portal_normal_for_fully_coincident_terminal`) pass without
-      edits — they assert projected-off-raw, on/outside the disk boundary, and onward-chord-clears,
-      not a radial coordinate, so the corridor-biased projection preserves them.
-- [ ] `nav/path.rs` production code drops below the ~800-line threshold after the split; the
+      fallback (`project_out_of_disk_uses_portal_normal_for_fully_coincident_terminal`) pass with no
+      assertion edits (module relocation aside) — they assert projected-off-raw, on/outside the disk
+      boundary, and onward-chord-clears, not a radial coordinate, so the corridor-biased projection
+      preserves them.
+- [ ] `nav/path.rs` production code drops well below the 600-line threshold after the split; the
       clearance cluster lives in its own module.
 
 ## Tasks
@@ -160,70 +169,97 @@ target IS reachable — the `None` is a repair failure.
 Behavior-preserving extraction of the clearance-repair block (`CLEARANCE_EPS`,
 `segment_point_distance_xz`, `bevel_point`, `clearance_bevel`, `route_out_of_disk`,
 `MIN_XZ_LEN_SQ`, `project_out_of_disk`, `PathPoint`, `ensure_endpoint_clearance`) into a new
-`crates/postretro/src/nav/path/clearance.rs` submodule (`path.rs` gains `mod clearance;`;
-`path.rs` + a `path/` directory coexist under the Rust 2018 module convention), leaving the core
-A*/SSF funnel (`find_path`, `astar_corridor`, `funnel`, `inset_portals`,
-`FunnelEndpoint`/`FunnelGate`) in `path.rs`. Give the new module `use super::…` for the symbols
-the cluster reaches across the seam: `FunnelEndpoint`, `FunnelGate`, `distance_xz`, and the
-`NavPath` return type; keep `find_path`/`funnel` in `path.rs` calling `ensure_endpoint_clearance`
-across the seam. Move the clearance-specific `#[cfg(test)]` cases (the `route_out_of_disk` and
-`project_out_of_disk` unit tests) alongside their code; leave the `find_path`-level tests in
-`path.rs`. No logic changes; every `nav::` test stays green with only module-path edits.
+`crates/postretro/src/nav/path/clearance.rs` submodule (`path.rs` gains `mod clearance;`; a `path.rs`
+file and a sibling `path/` directory coexist under the module system), leaving the core A*/SSF
+funnel (`find_path`, `astar_corridor`, `funnel`, `inset_portals`, `FunnelEndpoint`/`FunnelGate`) in
+`path.rs`. Two visibility edits the move requires: (1) `ensure_endpoint_clearance` gains `pub(super)`
+so the parent `find_path`/`funnel` can still call it across the seam; (2) the child module reads
+`path.rs`-private items via `super::` (`FunnelEndpoint`, `FunnelGate`, `NavPath` and their private
+fields — a child sees ancestor privates, no `pub` needed) and `distance_xz` via `crate::nav::` (it
+lives in `nav/mod.rs`). Move the clearance-specific `#[cfg(test)]` cases (the `route_out_of_disk`
+and `project_out_of_disk` unit tests) alongside their code; those moved tests also reach the
+parent's `inset_portals` via `super::inset_portals`. Leave the `find_path`-level tests in `path.rs`.
+No logic changes; every `nav::` test stays green with only module-path edits.
 
-### Task 2: Corridor-biased terminal projection
-In `project_out_of_disk` (now in `clearance.rs`), change the standoff direction so a terminal
-inside a wall-end endpoint's clearance disk projects toward the corridor side rather than
-radially. Use the `toward` argument — the adjacent waypoint, already passed at both call sites in
-`ensure_endpoint_clearance` (start terminal: `toward = end`; goal terminal: `toward = start`) — to
-select the disk-boundary point that faces the onward route, so the following chord
-`(standoff → next_waypoint)` clears the disk. Preserve the existing degenerate fallbacks
-(coincident terminal → `toward` → portal normal) and the clearance-safe guarantee (standoff still
-`clearance_radius` from `raw_endpoint`, on/outside the boundary) — Invariant I1. The emitted
-terminal may differ from the raw start/goal; the true target remains on the steering
-`destination` (no consumer change — engagement keys off raw target distance). The existing
-terminal-standoff tests assert properties, not a radial coordinate (see AC), so this change needs
-no edits to them.
+### Task 2: Corridor-biased terminal projection (with its red→green fixture)
+In `project_out_of_disk` (now in `clearance.rs`), invert the direction chain so a terminal inside a
+wall-end endpoint's clearance disk projects toward the corridor rather than radially. Make the
+corridor direction **primary**: `dir = normalize_xz(toward - raw_endpoint)` — where `toward` is the
+adjacent waypoint already passed at both call sites in `ensure_endpoint_clearance` (start terminal:
+`toward = end`; goal terminal: `toward = start`) — giving the standoff
+`raw_endpoint + dir * clearance_radius`, so the standoff sits on the segment toward the onward
+waypoint and the following chord `(standoff → next_waypoint)` runs tangent to the disk. When
+`toward` is degenerate (coincident with `raw_endpoint` in XZ) fall back to the radial
+`normalize_xz(terminal - raw_endpoint)`; when that too is degenerate, the portal normal (today's
+final fallback). This reorders today's chain (radial primary, `toward` only at the disk center).
+Exact vector construction remains an implementation decision so long as it holds Invariant I1; the
+formula above is the recommended construction. The emitted terminal may differ from the raw
+start/goal; the true target remains on the steering `destination` (no consumer change — engagement
+keys off raw target distance). Also author here, red→green, the `find_path` wraparound fixture that
+proves the fix (In scope, AC 1): the fixture returns `None` before this change and `Some` after, so
+write it against the pre-change module (red), land the projection change, and confirm green — the
+pre-fix `None` is witnessed in this task, not deferred. The existing terminal-standoff tests assert
+properties, not a radial coordinate (see AC 5), so this change needs no edits to them.
 
-### Task 3: Wraparound fixtures and regressions
-Add, in the clearance module's tests: (a) a `find_path` wraparound fixture — 3–4 regions around a
-wall-shaped hole, `agent_radius` tuned so the around-the-end corridor exceeds `2 * clearance`,
-goal in the far-side eroded band — asserting `Some` plus per-segment clearance against every wide
-endpoint (reuse the `L_CORRIDOR_ENDPOINTS`-style per-segment oracle); (b) a characterization test
-that a sub-`2 * clearance` wall-end pinch still returns `None`; (c) a steering integration test
-(reusing the `ConcaveCorner`/`section` fixture style in `agent_steering/tests.rs`, which already
-ticks an agent against a `nav_graph` and tracks `has_path`/`arrived`/`blocked`) that a chaser on
-the routable wraparound reaches the goal region without latching `blocked && !has_path` — and note
-in the test that stuck-recovery does not arm for a pathless blocked agent, so reaching the far
-region proves a real route (Invariant I2). The wraparound `find_path` fixture must fail before
-Task 2 and pass after. Epsilon comparisons only; `<subject>_<verb>_<expected_outcome>` names; a
-one-line comment on each naming what it guards.
+### Task 3: Wraparound and pinch regressions
+Add: (a) in the `clearance.rs` test module, a characterization test that a sub-`2 * clearance`
+wall-end pinch still returns `None` (a class-2 tripwire distinct from the AC 1 wraparound fixture);
+epsilon comparisons only. (b) In `crates/postretro/src/agent_steering/tests.rs` — reusing the
+`ConcaveCorner`/`section` fixture style, which already ticks an agent against a `nav_graph` and
+tracks `has_path`/`arrived`/`blocked` — a steering integration test with a **static** target planted
+in the far-side wraparound region and exactly one replan-contending agent (so the replan budget is
+provably not the gate, and the tick bound is loose in the sibling-test convention, not an exact
+count). Assert, per the Test orderings table: `blocked && !has_path` is false on every tick
+including tick 0 (P2); the tick-0 plan is the genuine wraparound route, `path.len() >= 3` crossing
+the far portal, mirroring the `path.len() >= 3` guard the sibling concave tests use (P1); success
+judged by the agent's XZ distance reaching the live target's far-region band, target held at rest so
+the band is achievable (P2); the target stays set and within leash for the whole run so no
+`clear_destination` can vacuously clear `blocked` (P6). A one-line comment on each test names what
+it guards; `<subject>_<verb>_<expected_outcome>` names. Do NOT author the freeze regression against
+a moving target — a moving target's tick-0 same-region `find_path` returns `Some` even pre-fix and
+would hide the break (P8); moving-target pursuit is a separate test.
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — the behavior-preserving split; Task 2 edits the extracted
 `clearance.rs`, so it must exist first.
-**Phase 2 (sequential):** Task 2 — the projection fix in `clearance.rs`.
-**Phase 3 (sequential):** Task 3 — fixtures consume the fixed projection (the wraparound
-`find_path` fixture must fail pre-Task-2, pass post).
+**Phase 2 (sequential):** Task 2 — the projection fix plus its red→green wraparound `find_path`
+fixture, both in `clearance.rs`.
+**Phase 3 (sequential):** Task 3 — the class-2 characterization test and the steering integration
+test consume the fixed projection.
 
 ## Invariants
 
 | # | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|-----------|----------------|---------------------------|-------------|
 | I1 | A projected terminal standoff sits exactly `clearance_radius` from `raw_endpoint` (on/outside the disk boundary), AND the onward chord to the adjacent waypoint clears the disk by the effective clearance. | Task 2 (corridor-biased projection) | Threatened if the corridor-biased direction is placed inside the disk or off-boundary; the degenerate fallbacks must still emit a finite on-boundary point. | AC 1, AC 5 (per-segment oracle + standoff-regression properties) |
-| I2 | The `blocked && !has_path` freeze is only ever cleared by a genuine `find_path` route, never by stuck-recovery or a replan-admission clause. | Prior commitments (`has_stuck_recovery_intent`, `blocked_destination_now_directly_routable`) | Preserved — this spec adds no recovery path; the steering test must not let recovery mask a broken `find_path`. | AC 2 |
-| I3 | Class-2 geometry (wall-end gap `< 2 * clearance`) still returns `None`; the fix widens only class-1 (vocabulary-too-weak) coverage. | Task 2 (change is direction-only, not a clearance relaxation) | Threatened if the projection ever emits a standoff closer than `clearance_radius`. | AC 3 |
+| I2 | While the target stays live and in-leash, the `blocked && !has_path` freeze flips true→false ONLY through a genuine `find_path` route — never via stuck-recovery, a replan-admission clause, or `clear_destination`. | Prior commitments (`has_stuck_recovery_intent`, `blocked_destination_now_directly_routable`, `clear_destination`) | Preserved — this spec adds no recovery path; the steering test must hold the target set + in-leash so no `clear_destination` masks a broken `find_path`. | AC 2 (Test orderings P6) |
+| I3 | Class-2 geometry (wall-end gap `< 2 * clearance`) still returns `None`; the fix widens only class-1 coverage. Warrant: Task 2 alters ONLY terminal projection, while the class-2 pinch fixture's `None` originates in the interior throat repair (`clearance_bevel`/`bevel_point` along the portal normal), which Task 2 does not touch — so it stays `None` by construction. | Task 2 (terminal-only change) | Threatened only if the projection ever emits a standoff closer than `clearance_radius` (I1 forbids it). | AC 3 |
+
+## Test orderings
+
+Rows the Task-3 steering test must state. `find_path`'s trivial same-region `NavPath::direct` route
+is the trap: it returns `Some` even before the fix, so only a static, different-region target
+exercises the broken wraparound funnel call.
+
+| # | Scenario | Ordering / setup | Expected outcome |
+|---|----------|------------------|------------------|
+| P1 | Static wraparound, first plan | 1 agent; static destination in the far wraparound region; tick 0 admits (never-planned ⇒ drift-driven) and calls the wraparound funnel `find_path` | tick-0 `blocked == false`, `has_path == true`, `path.len() >= 3` (genuine funnel). Pre-Task-2 the same call is `None` ⇒ `blocked == true` (regression tripwire). |
+| P2 | Never frozen over the run | continue P1 to arrival | on EVERY tick `!(blocked && !has_path && speed≈0)`; success = live-target XZ distance enters the far-region arrival band, not the `arrived` flag alone. |
+| P3 | Broken `find_path` fails loudly (negative) | if the wraparound `find_path` were still `None`: cooldown re-admits at each `REPLAN_STALENESS_TICKS`, all re-fail deterministically (same pos/dest) | `blocked` stays latched ⇒ the test fails, proving it cannot silently pass on a broken funnel. |
+| P6 | Leash held for the whole run | target stays set and within leash every tick | no `clear_destination`; the only observed `blocked` true→false is the admitted-replan `Some` arm (I2 kept genuinely, not via giving up the chase). |
+| P8 | Moving-target variant is a SEPARATE test | a moving target's tick-0 same-region `find_path` is `Some` pre-fix | do NOT guard the wraparound fix with a moving target; moving-target pursuit lives in its own test with the target coming to rest. |
 
 ## Rough sketch
 
 The fix lives in `project_out_of_disk`. Today `direction = normalize_xz(terminal - raw_endpoint)`
 (radial), with `toward` consulted only when the terminal coincides with the disk center. Change:
-when a non-degenerate `toward` exists, place the standoff on the disk boundary in the half-plane
-toward the corridor — e.g. the boundary point nearest the terminal but constrained to the corridor
-side of the endpoint, or a direction blended toward `normalize_xz(toward - raw_endpoint)` — so
-`(standoff → next_waypoint)` no longer crosses the disk. Exact vector construction is an
-implementation decision; the invariant to hold is I1, verifiable with the existing per-segment
-oracle (`segment_point_distance_xz(...) + CLEARANCE_EPS >= clearance_radius`).
+make `toward` primary — `dir = normalize_xz(toward - raw_endpoint)`, standoff
+`raw_endpoint + dir * clearance_radius` — so the standoff sits toward the corridor and
+`(standoff → next_waypoint)` runs tangent to the disk rather than re-cutting it; fall back to the
+radial direction when `toward` is degenerate, then to the portal normal. The invariant to hold is
+I1, verifiable with the existing per-segment oracle
+(`segment_point_distance_xz(...) + CLEARANCE_EPS >= clearance_radius`).
 
 ## Open questions
 

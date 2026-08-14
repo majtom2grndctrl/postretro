@@ -4293,26 +4293,15 @@ impl App {
                     join_seed_state.mark_reclaimed(*client_id);
                 }
             }
-            join_seed_state.prepare_lifecycle(&host_poll.lifecycle);
-            for (client_id, slots) in &host_poll.join_seeds {
-                let entering_participation = host_poll.lifecycle.iter().any(|event| {
-                    matches!(
-                        event,
-                        postretro_net::slots::SlotEvent::Participating {
-                            client_id: entering_client
-                        } if entering_client == client_id
-                    )
-                });
-                match join_seed_state.receive(
-                    *client_id,
-                    slots.clone(),
-                    server.is_participating(*client_id) && !entering_participation,
-                ) {
+            for (client_id, arrival) in
+                join_seed_state.route_poll(host_poll, |id| server.is_participating(id))
+            {
+                match arrival {
                     netcode::JoinSeedArrival::Buffered => {}
                     netcode::JoinSeedArrival::Apply(slots) => {
                         let Some(seat) = seat_table
                             .as_deref()
-                            .and_then(|seats| seats.seat_for_client(*client_id))
+                            .and_then(|seats| seats.seat_for_client(client_id))
                         else {
                             log::warn!(
                                 "[Net] join seed for participating client {client_id} has no admitted seat; dropping it"
@@ -5724,26 +5713,15 @@ impl App {
                                     }
                                 }
                             }
-                            join_seed_state.prepare_lifecycle(&poll.lifecycle);
-                            for (client_id, slots) in &poll.join_seeds {
-                                let entering_participation = poll.lifecycle.iter().any(|event| {
-                                    matches!(
-                                        event,
-                                        postretro_net::slots::SlotEvent::Participating {
-                                            client_id: entering_client
-                                        } if entering_client == client_id
-                                    )
-                                });
-                                match join_seed_state.receive(
-                                    *client_id,
-                                    slots.clone(),
-                                    server.is_participating(*client_id) && !entering_participation,
-                                ) {
+                            for (client_id, arrival) in
+                                join_seed_state.route_poll(&poll, |id| server.is_participating(id))
+                            {
+                                match arrival {
                                     netcode::JoinSeedArrival::Buffered => {}
                                     netcode::JoinSeedArrival::Apply(slots) => {
                                         let Some(seat) = seat_table
                                             .as_deref()
-                                            .and_then(|seats| seats.seat_for_client(*client_id))
+                                            .and_then(|seats| seats.seat_for_client(client_id))
                                         else {
                                             log::warn!(
                                                 "[Net] join seed for participating client {client_id} has no admitted seat; dropping it"

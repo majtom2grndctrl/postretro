@@ -331,8 +331,10 @@ export type LevelManifest = {
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
---- a finite-number array. `persist` saves on clean exit; `readonly` blocks
---- script writes. A mod-owned persisted writable or replicated slot requires
+--- a finite-number array. `persist` saves global slots on clean exit. On
+--- connected clients, `perOwner = true, persist = true` saves the local
+--- owner's value every ~60 seconds and on clean exit; it travels via that
+--- player's join seed. `readonly` blocks script writes. A mod-owned persisted writable or replicated slot requires
 --- a minted `<mod-root>/identity.json` entry; run
 --- `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when
 --- renaming the store or slot.

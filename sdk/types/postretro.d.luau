@@ -1447,8 +1447,10 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle)
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
---- a finite-number array. `persist` saves on clean exit; `readonly` blocks
---- script writes. `perOwner = true` gives each player seat an independent
+--- a finite-number array. `persist` saves global slots on clean exit. On
+--- connected clients, `perOwner = true, persist = true` saves the local
+--- owner's value every ~60 seconds and on clean exit; it travels via that
+--- player's join seed. `readonly` blocks script writes. `perOwner = true` gives each player seat an independent
 --- host-side value and permits only omitted `network` or
 --- `network = "ownerPrivate"`; `network = "shared"` is for global slots. A mod-owned
 --- persisted writable or replicated slot requires a minted

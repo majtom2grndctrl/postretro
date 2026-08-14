@@ -18,8 +18,10 @@ pub const DISPLAY_NAME_MAX_BYTES: usize = 200;
 
 /// A player-controlled durable identity carried in a connection claim.
 ///
-/// The bytes are opaque. Consumers may retain or compare the whole value, but
-/// must not parse, slice, order, or derive from them.
+/// The bytes are semantically opaque. Consumers may retain or compare the
+/// whole value, but must not parse, slice, order, or derive meaning from it.
+/// Persistence boundaries may encode or decode the complete 16-byte value as
+/// canonical lowercase hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct PlayerClaimId(pub [u8; 16]);
 

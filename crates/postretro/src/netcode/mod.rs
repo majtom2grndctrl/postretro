@@ -20,6 +20,7 @@ mod join_seed;
 mod lifecycle;
 mod movement_state;
 mod prediction;
+mod presentation;
 mod reconcile;
 mod remote_materialize;
 mod replication;
@@ -84,6 +85,9 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub(crate) use prediction::ClientPrediction;
+pub(crate) use presentation::{
+    ingest_client_presentation_messages, route_host_presentation_spawns,
+};
 pub(crate) use state_slots::ReplicatedSlotIdentity;
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
@@ -395,6 +399,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
 
 fn discard_world_less_snapshots(client: &mut NetClient) {
     drop(client.drain_snapshots());
+    drop(client.drain_presentation());
 }
 
 fn replace_client_tuning(

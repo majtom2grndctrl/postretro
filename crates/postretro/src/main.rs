@@ -5608,6 +5608,7 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
+        let presentation_templates = session.presentation_templates();
         let script_runtime = &session.scripting.script_runtime;
         let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
             script_runtime.committed_mod_identity().map(|(id, _)| id),
@@ -6014,6 +6015,7 @@ impl App {
                 // its own monotonic clock for send/receive microseconds.
                 let client_tick = script_ctx.frame.get() as u32;
                 let shot_verdicts = netcode::client_drive_time_sync(client, time_sync, client_tick);
+                let presentation_messages = client.drain_presentation();
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
                 // baseline, apply replicated state-slot records through the store-write
@@ -6022,6 +6024,11 @@ impl App {
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = script_ctx.registry.borrow_mut();
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
+                netcode::ingest_client_presentation_messages(
+                    &mut registry,
+                    presentation_messages,
+                    &presentation_templates,
+                );
                 for verdict in shot_verdicts {
                     let _ = self.client_predicted_shots.apply_verdict(
                         &mut registry,
@@ -6354,6 +6361,7 @@ impl App {
         // no-op on an ordinary host.
         {
             let mut registry = script_ctx.registry.borrow_mut();
+            netcode::route_host_presentation_spawns(&mut registry, server, owners);
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
             if weapon_owners.has_attachment_changes() {
                 let descriptors = script_ctx.data_registry.borrow();

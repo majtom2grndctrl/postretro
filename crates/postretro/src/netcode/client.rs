@@ -243,6 +243,9 @@ pub(crate) struct ClientReplication {
     /// `mover_id`. This is distinct from the live per-tick side-table; replay can
     /// read it through the `MoverPoseSource` seam.
     mover_history: MoverHistoryBuffer,
+    /// Off-by-default remote-interpolation continuity diagnostics (see `netdiag`).
+    /// Inert unless `postretro::netdiag=debug`; pure observability, never gameplay.
+    netdiag: crate::netcode::netdiag::RemoteInterpDiag,
 }
 
 #[derive(Debug, Clone)]
@@ -1594,6 +1597,9 @@ impl ClientReplication {
         frame_anim_time: f64,
     ) -> InterpolationSampleStats {
         let mut stats = InterpolationSampleStats::default();
+        // Diagnostics-only: open this render frame's interpolation window at the
+        // resolved target tick. No effect on the sampled poses.
+        self.netdiag.begin_frame(render_server_tick);
         self.presented_player_inputs.aim_pitches.clear();
         self.presented_player_inputs.heading_yaws.clear();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
@@ -1615,6 +1621,13 @@ impl ClientReplication {
                 continue; // no samples buffered yet
             };
             let _ = registry.set_presentation_transform(entity_id, pose.transform);
+            // Diagnostics-only: record the presented remote pose to detect stepped /
+            // low-effective-rate interpolation output (position + orientation).
+            self.netdiag.record_remote(
+                network_id.0,
+                pose.transform.position,
+                pose.transform.rotation,
+            );
             stats.presented += 1;
             self.update_remote_enemy_walk_playback_rate(
                 registry,

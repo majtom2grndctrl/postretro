@@ -196,6 +196,9 @@ pub(crate) struct ClientPrediction {
     /// so the correction is continuous on screen without lying to the simulation.
     /// Owned here, never on `App`/`main.rs` — the source-layout gate.
     presentation_offset: Vec3,
+    /// Off-by-default client input send-rate diagnostics (see `netdiag`). Inert
+    /// unless `postretro::netdiag=debug`; observability only.
+    send_diag: crate::netcode::netdiag::ClientSendDiag,
 }
 
 impl ClientPrediction {
@@ -246,6 +249,17 @@ impl ClientPrediction {
 
     pub(crate) fn peek_next_client_tick(&self) -> u32 {
         self.next_client_tick
+    }
+
+    /// Diagnostics: one per-fixed-tick predicted `Input` send (`client_predict_tick`).
+    pub(crate) fn diag_record_predict_send(&mut self) {
+        self.send_diag.record_predict_send();
+    }
+
+    /// Diagnostics: one same-frame zero-tick fire `Input` send
+    /// (`client_send_input_command`).
+    pub(crate) fn diag_record_fire_send(&mut self) {
+        self.send_diag.record_fire_path_send();
     }
 
     /// Whether prediction is armed and may drive the local pawn this frame. Before

@@ -19,6 +19,7 @@ mod interpolation;
 mod join_seed;
 mod lifecycle;
 mod movement_state;
+mod netdiag;
 mod prediction;
 mod reconcile;
 mod remote_materialize;
@@ -1124,6 +1125,7 @@ pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
     let client_tick = prediction.next_client_tick();
     let input = sim_command_to_input(command, client_tick, aim_pitch);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    prediction.diag_record_predict_send();
 
     // 2. Before the local baseline arms prediction, drive no provisional pawn.
     let Some(armed) = prediction.armed() else {
@@ -1202,6 +1204,7 @@ pub(crate) fn client_send_input_command(
     let client_tick = prediction.next_client_tick();
     let input = sim_command_to_input(command, client_tick, aim_pitch);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    prediction.diag_record_fire_send();
     Some(client_tick)
 }
 

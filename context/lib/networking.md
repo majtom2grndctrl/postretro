@@ -142,6 +142,10 @@ They stay separate rather than folded together because same-map-different-conten
 
 The digest is deliberately not a hash of the compiled level bytes. That would turn a cross-platform bake difference into a hard connection failure.
 
+### Presentation events vs. replicated state
+
+Combat feedback the player reads and forgets — floating damage numbers, damaged-enemy health/shield facts — is **presented, not replicated**: the host pushes it as transient events on a dedicated unreliable `Channel::Presentation` (its own tagged `ServerPresentationMessage` family, one family per channel like `ServerControlMessage`), addressed fire-and-forget to the one client that earned it, loss- and reorder-tolerant. The replicated component set is unchanged — enemy health/state stay host-only. A client *simulates against* replicated state but only *displays* a pushed presentation fact, so a cosmetic never enters a digest or blocks a join (this is the other half of "presentation is not" a replication candidate, above). Design intent; `plans/ready/E16--combat-presentation-substrate`.
+
 ### Mod identity
 
 The manifest declares a stable id and a version. **The id gates** — it is the namespace that makes a catalog id resolvable, so peers must declare the same one. **The version never gates.** It rides the same message and serves display and diagnostics only; exact-version equality would refuse a friend on the previous build over a change no client simulates. Because a gating and a non-gating value share one message, the no-compare rule is commented at the comparison site rather than left to inference.

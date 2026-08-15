@@ -49,16 +49,18 @@ struct Uniforms {
     // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
     // These belong to the DYNAMIC (entity / billboard) path and are NOT read by
     // the forward fragment. They are declared here only to keep the shared
-    // group-0 `Uniforms` byte layout in lockstep (the 3-way contract: Rust
-    // writer + forward.wgsl + billboard.wgsl). The first field repurposes the
-    // former `_sdf_pad1` slot; the rest land in a fresh 16-byte row so the
-    // struct stride is exactly 128 — wgpu rejects the pipeline if the CPU-side
-    // `UNIFORM_SIZE` and WGSL-derived stride drift.
+    // group-0 `Uniforms` byte layout in lockstep (the 4-way contract: Rust
+    // writer + forward.wgsl + billboard.wgsl + wireframe.wgsl). The first
+    // field repurposes the former `_sdf_pad1` slot; the rest land in a fresh
+    // 16-byte row so the struct stride is exactly 128 — wgpu rejects the
+    // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
     dynamic_direct_scale: f32,
     dynamic_direct_isolation: u32,
     has_direct: u32,
     total_light_count: u32,
-    _dyn_pad1: u32,
+    // Dev toggle: force static-light shadowmask visibility to 1.0 for the
+    // manual pre-change A/B. It affects only the static world specular path.
+    spec_shadowmask_force_one: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -106,13 +108,13 @@ struct MaterialUniform {
 @group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
 
 // Static light buffer: specular + per-light SDF diffuse for sdf-tagged lights.
-// Four vec4 slots (64 B stride); see postretro/src/lighting/spec_buffer.rs
+// Four vec4 slots (64 B stride); see crates/lighting/src/spec_buffer.rs
 // for the CPU-side layout.
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
     cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer); non-spot carries 1/-1 (full bright)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none); non-spot carries 1/-1 (full bright)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -635,6 +637,32 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
     }
 }
 
+// Rejected or absent shadowmask resources bind a one-layer all-white texture.
+// Clamp baked multi-layer vertex indices so that fallback always samples that
+// fully-visible layer instead of addressing outside the bound texture.
+fn sample_shadowmask_atlas(lightmap_uv: vec2<f32>, lightmap_layer: u32) -> vec4<f32> {
+    let last_layer = textureNumLayers(shadowmask_atlas) - 1u;
+    let safe_layer = min(lightmap_layer, last_layer);
+    return textureSample(
+        shadowmask_atlas,
+        lightmap_filtering_sampler,
+        lightmap_uv,
+        i32(safe_layer),
+    );
+}
+
+// Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
+// A dropped/no-mask channel samples as fully lit, preserving the prior behavior.
+fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>) -> f32 {
+    if uniforms.spec_shadowmask_force_one != 0u {
+        return 1.0;
+    }
+    if round(sl.cone_cos.z) >= SHADOWMASK_CHANNEL_DROPPED {
+        return 1.0;
+    }
+    return shadowmask_channel_value(mask, u32(round(sl.cone_cos.z)));
+}
+
 fn shadowmask_direct(
     sl: SpecLight,
     world_pos: vec3<f32>,
@@ -848,7 +876,7 @@ fn shadowmask_union_subtraction(
             continue;
         }
 
-        let mask = textureSample(shadowmask_atlas, lightmap_filtering_sampler, lightmap_uv, i32(lightmap_layer));
+        let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
         let baked_vis = shadowmask_channel_value(mask, channel);
         let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
         // The raw-pool diagnostic follows the union's promoted-light coverage;
@@ -1069,6 +1097,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let V = normalize(uniforms.camera_position - in.world_position);
         let spec_int = sample_color(spec_texture, in.uv, ddx, ddy).r;
         let spec_exp = max(material.shininess, 1.0);
+        // Hoisted because every static specular light shares this fragment's
+        // lightmap UV/layer. Undo this if specular gains per-light UVs.
+        let specular_shadowmask = sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer);
 
         // Chunk lookup when the offline index is populated; otherwise walk
         // the full spec buffer.
@@ -1112,22 +1143,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
             let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
-            // Specular is shadowed by the light's OWN technique (invariant 9). An
-            // `sdf`-tagged light's specular multiplies by the SAME per-light
-            // visibility slice its diffuse used — resolved through the shared
-            // `sdf_sel` selection so slot/channel line up by construction; the
-            // slice is already sampled (`sdf_factor`), so this is near-zero cost
-            // and removes specular-through-walls for sdf lights. Non-`sdf`
-            // (`static_light_map`) lights' specular stays unshadowed (they carry
-            // no runtime visibility; baked = free) — a known limitation — so
-            // `sdf_visibility_for_light` returns 1.0 for them. The dev force-lit
-            // toggle (and `SdfShadowMode::Off`) forces 1.0, matching the diffuse.
-            let is_sdf = sdf_select_is_sdf(sl);
-            let visibility = select(
-                sdf_visibility_for_light(sdf_sel, sdf_factor, light_idx),
-                1.0,
-                sdf_force_lit || !is_sdf,
-            );
+            // Exactly one technique applies: SDF lights retain the per-light
+            // visibility slice shared with their diffuse term; other static
+            // lights use the baked shadowmask recorded on the SpecLight.
+            var visibility = 1.0;
+            if sdf_select_is_sdf(sl) {
+                visibility = sdf_visibility_for_light(sdf_sel, sdf_factor, light_idx);
+                if sdf_force_lit {
+                    visibility = 1.0;
+                }
+            } else if use_lightmap {
+                visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask);
+            }
             let contribution = blinn_phong(
                 L, V, N_bump, sl.color_and_pad.xyz, spec_exp, spec_int
             ) * (atten * cone * visibility);

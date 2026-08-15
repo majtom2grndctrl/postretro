@@ -21,7 +21,7 @@ use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::impact_policy::ImpactPolicyRuntime;
-use crate::nav::{NavGraph, distance_xz};
+use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_state_index};
 use postretro_entities::components::health::HealthComponent;
@@ -2633,6 +2633,103 @@ impl OpenFloor {
     }
 }
 
+/// A low-walled interior corral. The player can clear the walls with the test
+/// pawn's jump, but the baked agent navigation deliberately has no portal from
+/// the exterior into the interior.
+struct JumpableCorral;
+
+impl JumpableCorral {
+    const EXTENT: f32 = 12.0;
+    const INTERIOR_MIN: f32 = 4.0;
+    const INTERIOR_MAX: f32 = 8.0;
+    const WALL_HEIGHT: f32 = 0.6;
+
+    fn collision_world() -> CollisionWorld {
+        let mut points = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(Self::EXTENT, 0.0, 0.0),
+            Point::new(Self::EXTENT, 0.0, Self::EXTENT),
+            Point::new(0.0, 0.0, Self::EXTENT),
+        ];
+        let mut tris = vec![[0u32, 1, 2], [0, 2, 3]];
+        let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
+            let base = points.len() as u32;
+            points.push(Point::new(x0, 0.0, z0));
+            points.push(Point::new(x1, 0.0, z1));
+            points.push(Point::new(x1, Self::WALL_HEIGHT, z1));
+            points.push(Point::new(x0, Self::WALL_HEIGHT, z0));
+            tris.push([base, base + 1, base + 2]);
+            tris.push([base, base + 2, base + 3]);
+            tris.push([base, base + 2, base + 1]);
+            tris.push([base, base + 3, base + 2]);
+        };
+        push_wall(
+            Self::INTERIOR_MIN,
+            Self::INTERIOR_MIN,
+            Self::INTERIOR_MAX,
+            Self::INTERIOR_MIN,
+        );
+        push_wall(
+            Self::INTERIOR_MAX,
+            Self::INTERIOR_MIN,
+            Self::INTERIOR_MAX,
+            Self::INTERIOR_MAX,
+        );
+        push_wall(
+            Self::INTERIOR_MAX,
+            Self::INTERIOR_MAX,
+            Self::INTERIOR_MIN,
+            Self::INTERIOR_MAX,
+        );
+        push_wall(
+            Self::INTERIOR_MIN,
+            Self::INTERIOR_MAX,
+            Self::INTERIOR_MIN,
+            Self::INTERIOR_MIN,
+        );
+        CollisionWorld {
+            mesh: TriMesh::new(points, tris),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn nav_graph() -> NavGraph {
+        NavGraph::from_section(&NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 1.0,
+            dim_x: 12,
+            dim_z: 12,
+            agent_radius: 0.35,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            // The exterior strip is sufficient for the agent-side engagement
+            // ring points; the separate interior region contains the player.
+            // No portal crosses the enclosing collision wall.
+            regions: vec![
+                NavRegion {
+                    x0: 0,
+                    z0: 0,
+                    x1: 4,
+                    z1: 12,
+                    floor_y_min: 0.0,
+                    floor_y_max: 0.25,
+                },
+                NavRegion {
+                    x0: 4,
+                    z0: 4,
+                    x1: 8,
+                    z1: 8,
+                    floor_y_min: 0.0,
+                    floor_y_max: 0.25,
+                },
+            ],
+            portals: vec![],
+        })
+    }
+}
+
 /// Resting capsule-center height above the floor for the canonical agent, so a
 /// spawned chaser starts grounded and gravity does not dominate the first ticks.
 fn chaser_rest_y() -> f32 {
@@ -2837,6 +2934,75 @@ fn ai_combat_positioning_near_enemy_uses_engagement_band_not_target_center() {
         path.distance_to_destination > distance_xz(path.position, player_pos),
         "destination should be a band slot, not a push into the player capsule"
     );
+}
+
+// Regression: a player can jump into a collision-bounded corral that has no
+// navigation entrance for an enemy. Combat positioning must not keep a
+// reachable exterior-side ring point while steering falsely reports arrival on
+// the unreachable raw target.
+#[test]
+fn ai_corral_target_rejects_wall_side_slots_and_reports_raw_destination_blocked() {
+    let world = JumpableCorral::collision_world();
+    let graph = JumpableCorral::nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let rest_y = chaser_rest_y();
+    let player_pos = Vec3::new(5.5, rest_y, 6.0);
+    let enemy_pos = Vec3::new(2.0, rest_y, 6.0);
+    let player = spawn_player(&mut reg, player_pos);
+    let enemy = spawn_enemy(
+        &mut reg,
+        enemy_pos,
+        brain_with(tuning(), TEST_ALERT_STATE),
+        50.0,
+    );
+
+    assert!(
+        player_movement_descriptor().air.jump_velocity.powi(2) / (2.0 * -STEER_GRAVITY)
+            > JumpableCorral::WALL_HEIGHT,
+        "fixture wall must be physically jumpable by the player"
+    );
+    assert!(
+        find_path(&graph, enemy_pos, player_pos).is_none(),
+        "fixture's raw target destination must be nav-unreachable"
+    );
+
+    for tick_index in 0..3 {
+        run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+        let tick = agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        if tick_index == 0 {
+            assert_eq!(
+                tick.replans, 1,
+                "the initial raw-target route must be replanned and rejected"
+            );
+        }
+
+        let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+        assert_eq!(brain.acquired_target, Some(player));
+        assert_eq!(
+            brain.combat_slot, None,
+            "no wall-side slot is tactically reachable"
+        );
+
+        let agent = reg.get_component::<AgentComponent>(enemy).unwrap();
+        assert_eq!(
+            agent.destination,
+            Some(player_pos),
+            "slot rejection falls back to the raw target"
+        );
+        assert_eq!(agent.planned_destination, Some(player_pos));
+
+        let state = agent_steering::path_state(&reg, enemy).unwrap();
+        assert!(state.has_destination);
+        assert!(
+            state.blocked && !state.has_path && !state.arrived,
+            "unreachable raw destination must expose a blocked, pathless live state on tick {tick_index}: {state:?}"
+        );
+        assert!(
+            !(state.arrived && !state.blocked && state.has_path),
+            "unreachable raw destination must never retain the misleading arrived/path state"
+        );
+    }
 }
 
 #[test]
@@ -5006,7 +5172,7 @@ fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const DETECTION_RANGE: f32 = 16.0;
     const ATTACK_RANGE: f32 = 2.0;
-    const LEASH_RANGE: f32 = 20.0;
+    const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
     BehaviorGraphDescriptor {
         initial: "idle".to_string(),
@@ -5294,12 +5460,12 @@ fn reference_graph_enters_retreat_from_chase_and_attack_beyond_its_authored_leas
         let graph = reference_behavior_graph();
         let mut reg = EntityRegistry::new();
         let mut runtime = AiRuntime::new();
-        let target = spawn_player(&mut reg, Vec3::new(25.0, 0.0, 0.0));
+        let target = spawn_player(&mut reg, Vec3::new(105.0, 0.0, 0.0));
         let mut brain = authored_brain(&graph, state);
         brain.acquired_target = Some(target);
         brain.think_stride_counter = 0;
         let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
-        set_enemy_position(&mut reg, enemy, Vec3::new(21.0, 0.0, 0.0));
+        set_enemy_position(&mut reg, enemy, Vec3::new(101.0, 0.0, 0.0));
 
         run_ai_tick(&mut reg, &mut runtime, 0.016);
 
@@ -5322,11 +5488,11 @@ fn reference_alert_prioritizes_leash_retreat_when_attack_range_is_also_true() {
     let graph = reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
-    let target = spawn_player(&mut reg, Vec3::new(21.5, 0.0, 0.0));
+    let target = spawn_player(&mut reg, Vec3::new(101.5, 0.0, 0.0));
     let mut brain = authored_brain(&graph, "alert");
     brain.acquired_target = Some(target);
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
-    set_enemy_position(&mut reg, enemy, Vec3::new(21.0, 0.0, 0.0));
+    set_enemy_position(&mut reg, enemy, Vec3::new(101.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut runtime, 0.016);
 

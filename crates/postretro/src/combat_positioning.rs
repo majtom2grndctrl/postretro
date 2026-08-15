@@ -8,7 +8,9 @@ use std::cmp::Ordering;
 
 use glam::Vec3;
 
-use crate::collision::{CapsulePlacement, CollisionWorld, capsule_static_placement_center};
+use crate::collision::{
+    CapsulePlacement, CollisionWorld, SKIN_DISTANCE, capsule_static_placement_center,
+};
 use crate::nav::{NavGraph, distance_xz, find_path};
 
 const RING_DIRECTIONS: [Vec3; 8] = [
@@ -267,9 +269,12 @@ fn score_candidate(
         return None;
     }
     let path = find_path(query.nav_graph, query.agent_pos, position)?;
+    let target_distance = distance_xz(position, query.target_pos);
+    if !has_tactically_direct_target_path(query, placement, position, target_distance) {
+        return None;
+    }
     let path_cost = path_length(&path);
-    let attack_band_error =
-        (distance_xz(position, query.target_pos) - query.engagement_radius).abs();
+    let attack_band_error = (target_distance - query.engagement_radius).abs();
     let score = attack_band_error + path_cost * query.path_length_score_weight;
     Some(CombatCandidate {
         position,
@@ -279,6 +284,34 @@ fn score_candidate(
         generation_index,
         is_incumbent,
     })
+}
+
+fn has_tactically_direct_target_path(
+    query: &CombatQuery<'_>,
+    placement: CapsulePlacement,
+    position: Vec3,
+    target_distance: f32,
+) -> bool {
+    let Some(target_path) = find_path(query.nav_graph, position, query.target_pos) else {
+        // The funnel can conservatively refuse a route when a moving endpoint
+        // grazes a clearance disk, even while its regions remain connected.
+        // Keep a reachable slot in that narrow case so pursuit keeps moving;
+        // a disconnected corral still has no shared component and is rejected.
+        return query
+            .nav_graph
+            .endpoints_are_topologically_connected(position, query.target_pos);
+    };
+
+    // A local engagement may bend around one clearance disk at a nearby portal
+    // endpoint. One capsule-clearance diameter (including the collision skin)
+    // admits that bounded repair, but not a route that walks around a wall whose
+    // far end is remote from the candidate-to-target engagement segment.
+    let max_path_length = tactically_direct_path_length_limit(placement, target_distance);
+    path_length(&target_path) <= max_path_length
+}
+
+fn tactically_direct_path_length_limit(placement: CapsulePlacement, target_distance: f32) -> f32 {
+    target_distance + 2.0 * (placement.radius + SKIN_DISTANCE)
 }
 
 fn grounded_candidate_position(
@@ -433,6 +466,33 @@ mod tests {
         NavGraph::from_section(&nav_section(vec![nav_region(0, 0, 12, 12)], vec![]))
     }
 
+    fn portal(region_a: u32, region_b: u32, left: [f32; 3], right: [f32; 3]) -> NavPortal {
+        NavPortal {
+            region_a,
+            region_b,
+            left,
+            right,
+        }
+    }
+
+    fn wall_detour_nav_graph() -> NavGraph {
+        NavGraph::from_section(&nav_section(
+            vec![
+                nav_region(0, 0, 3, 8),
+                nav_region(0, 8, 3, 12),
+                nav_region(3, 8, 5, 12),
+                nav_region(5, 8, 8, 12),
+                nav_region(5, 0, 8, 8),
+            ],
+            vec![
+                portal(0, 1, [0.0, 0.0, 8.0], [3.0, 0.0, 8.0]),
+                portal(1, 2, [3.0, 0.0, 12.0], [3.0, 0.0, 8.0]),
+                portal(2, 3, [5.0, 0.0, 12.0], [5.0, 0.0, 8.0]),
+                portal(3, 4, [8.0, 0.0, 8.0], [5.0, 0.0, 8.0]),
+            ],
+        ))
+    }
+
     fn floor_world() -> CollisionWorld {
         let points = vec![
             Point::new(-20.0, 0.0, -20.0),
@@ -583,6 +643,80 @@ mod tests {
             candidates.is_empty(),
             "disconnected candidates must be filtered out: {candidates:?}"
         );
+    }
+
+    // Regression: a corral wall left a reachable ring point on the agent side,
+    // even though that point had no navigation connection to the raw target.
+    #[test]
+    fn combat_candidates_reject_agent_side_slot_disconnected_from_target() {
+        let nav_graph = NavGraph::from_section(&nav_section(
+            vec![nav_region(0, 0, 4, 8), nav_region(4, 0, 8, 8)],
+            vec![],
+        ));
+        let world = floor_world();
+        let target = Vec3::new(5.0, REST_Y, 5.0);
+        let agent_side_slot = Vec3::new(3.0, REST_Y, 5.0);
+
+        assert!(
+            find_path(&nav_graph, Vec3::new(1.0, REST_Y, 5.0), agent_side_slot).is_some(),
+            "fixture slot must remain reachable by the agent"
+        );
+        let candidates = combat_candidates(&query(
+            &nav_graph,
+            &world,
+            Vec3::new(1.0, REST_Y, 5.0),
+            target,
+        ));
+
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| !approx_xz(candidate.position, agent_side_slot)),
+            "target-disconnected slot must be rejected: {candidates:?}"
+        );
+    }
+
+    // Regression: a slot across a wall shared the target's nav component, but
+    // reaching the target required a long route around the wall end.
+    #[test]
+    fn combat_candidates_reject_same_component_slot_with_long_target_detour() {
+        let nav_graph = wall_detour_nav_graph();
+        let world = floor_world();
+        let slot = Vec3::new(2.5, REST_Y, 5.0);
+        let target = Vec3::new(5.5, REST_Y, 5.0);
+        let target_path = find_path(&nav_graph, slot, target).expect("fixture must be connected");
+        assert!(
+            path_length(&target_path)
+                > tactically_direct_path_length_limit(
+                    capsule_placement(&nav_graph).expect("valid fixture agent"),
+                    distance_xz(slot, target),
+                ) + EPS,
+            "fixture route must exceed the tactical detour bound: {target_path:?}"
+        );
+        let mut incumbent_only = query_with(1, &nav_graph, &world, slot, target, Some(slot), &[]);
+        incumbent_only.scan_challengers = false;
+
+        assert!(
+            combat_candidates(&incumbent_only).is_empty(),
+            "long-detour incumbent must be rejected"
+        );
+    }
+
+    // Regression: the tactical target-path guard must preserve an ordinary
+    // close slot whose navigation path is the direct engagement segment.
+    #[test]
+    fn combat_candidates_accept_near_unobstructed_target_slot() {
+        let nav_graph = open_nav_graph();
+        let world = floor_world();
+        let slot = Vec3::new(3.0, REST_Y, 5.0);
+        let target = Vec3::new(5.0, REST_Y, 5.0);
+        let mut incumbent_only = query_with(1, &nav_graph, &world, slot, target, Some(slot), &[]);
+        incumbent_only.scan_challengers = false;
+
+        let candidates = combat_candidates(&incumbent_only);
+
+        assert_eq!(candidates.len(), 1);
+        assert!(approx_xz(candidates[0].position, slot));
     }
 
     #[test]

@@ -828,6 +828,13 @@ pub(super) struct FullRenderer {
     /// env flag at construction so a headless/no-UI run can exercise it too.
     pub(super) sdf_force_visibility_one: bool,
 
+    /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
+    /// forward world-specular path. Panel checkbox; surfaces through
+    /// `FrameUniforms.spec_shadowmask_force_one`. Seeded from
+    /// `POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE` for repeatable headless A/B
+    /// captures. SDF and dynamic/mover paths remain unaffected.
+    pub(super) spec_shadowmask_force_one: bool,
+
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     pub(super) vsync_enabled: bool,
 

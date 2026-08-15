@@ -21,6 +21,7 @@ script-ffi = [
 glam.workspace = true
 log.workspace = true
 postretro-level-loader = { path = "../level-loader", default-features = false }
+postretro-level-format.workspace = true
 postretro-render-data.workspace = true
 postretro-foundation = { path = "../foundation", default-features = false, optional = true }
 postretro-entities = { path = "../entities", default-features = false, optional = true }

@@ -26,8 +26,12 @@ export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
 const REFERENCE_DETECTION_RANGE = 16;
 /** Distance within which its melee swing connects, in metres. */
 const REFERENCE_ATTACK_RANGE = 2;
-/** Authored distance from the spawn anchor that begins a retreat, in metres. */
-const REFERENCE_LEASH_RANGE = 20;
+/**
+ * Authored distance from the spawn anchor that begins a retreat, in metres.
+ * Kept high so the movement-feel fixture can exercise obstacle routing before
+ * a reference enemy turns back toward its anchor.
+ */
+const REFERENCE_LEASH_RANGE = 100;
 /**
  * The retreat-to-patrol threshold, in metres. It deliberately exceeds the
  * engine's 0.5 m position-goal arrival epsilon: a smaller guard would wedge

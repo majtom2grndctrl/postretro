@@ -498,6 +498,21 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
                 renderer.set_sdf_force_visibility_one(force_vis);
             }
 
+            // Forces only static-light shadowmask visibility to 1.0 for the
+            // specular-shadowmask pre-change A/B. SDF and dynamic/mover paths
+            // stay untouched. Also settable headless via
+            // POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE=1.
+            let mut force_spec_shadowmask = renderer.spec_shadowmask_force_one();
+            if ui
+                .checkbox(
+                    &mut force_spec_shadowmask,
+                    "Specular shadowmask: force visibility 1.0",
+                )
+                .changed()
+            {
+                renderer.set_spec_shadowmask_force_one(force_spec_shadowmask);
+            }
+
             // Pins `uniforms.time` so all curve-driven animation holds still.
             // Diagnostic aid: if a flickering artifact freezes too, it is
             // time/animation-driven; if it keeps moving, it is not.

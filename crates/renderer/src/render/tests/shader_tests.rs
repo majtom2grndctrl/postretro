@@ -147,6 +147,15 @@ fn forward_wgsl_struct_strides_match_cpu_layout() {
         "forward.wgsl GpuLight stride ({light_span}) must match GPU_LIGHT_SIZE ({})",
         postretro_lighting::GPU_LIGHT_SIZE,
     );
+
+    let spec_light_span = seen
+        .get("SpecLight")
+        .copied()
+        .expect("forward shader should declare struct SpecLight");
+    assert_eq!(
+        spec_light_span as usize, SPEC_LIGHT_SIZE,
+        "forward.wgsl SpecLight stride ({spec_light_span}) must match SPEC_LIGHT_SIZE ({SPEC_LIGHT_SIZE})",
+    );
 }
 
 #[test]
@@ -357,6 +366,50 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
                 "if use_lightmap || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
             ),
         "raw pool visibility must be a grayscale early-return diagnostic independent of lighting isolation"
+    );
+}
+
+#[test]
+fn forward_shader_shadowmask_fallback_clamps_multilayer_indices() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    let helper_start = src
+        .find("fn sample_shadowmask_atlas(")
+        .expect("forward shader must centralize shadowmask atlas sampling");
+    let helper_end = src[helper_start..]
+        .find("fn shadowmask_visibility_for_spec_light(")
+        .map(|offset| helper_start + offset)
+        .expect("shadowmask sampling helper must precede spec-light visibility");
+    let helper = &src[helper_start..helper_end];
+
+    assert!(
+        helper.contains("textureNumLayers(shadowmask_atlas) - 1u")
+            && helper.contains("min(lightmap_layer, last_layer)")
+            && helper.contains("i32(safe_layer)"),
+        "shadowmask sampling must clamp baked layer indices to the bound texture's last layer",
+    );
+    assert_eq!(
+        src.matches("sample_shadowmask_atlas(").count(),
+        3,
+        "the helper definition plus union and specular call sites must be the only shadowmask samples",
+    );
+    assert_eq!(
+        src.matches("textureSample(\n        shadowmask_atlas,")
+            .count(),
+        1,
+        "all shadowmask reads must route through the layer-safe helper",
+    );
+
+    let fs = &src[src
+        .find("fn fs_main(")
+        .expect("forward shader must declare fs_main")..];
+    assert!(
+        fs.contains("sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer)"),
+        "world specular must use the layer-safe all-visible fallback sample",
+    );
+    assert!(
+        src.contains("round(sl.cone_cos.z) >= SHADOWMASK_CHANNEL_DROPPED")
+            && src.contains("return 1.0;"),
+        "absent/dropped atlas channels must retain the fully-lit sentinel path",
     );
 }
 

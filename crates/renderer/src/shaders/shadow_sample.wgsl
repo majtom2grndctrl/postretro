@@ -29,7 +29,8 @@
 // samples more than one texel — a 3×3 box of comparison samples spaced
 // `SPOT_SHADOW_PCF_RADIUS` texels apart antialiases the shadow edge rather than
 // stair-stepping a single texel. A module-scope const (not a uniform) keeps the
-// group-0 `Uniforms` 3-way byte contract untouched; the depth BIAS stays
+// group-0 `Uniforms` 4-way byte contract (Rust writer + forward.wgsl +
+// billboard.wgsl + wireframe.wgsl) untouched; the depth BIAS stays
 // per-pool (the depth pipeline's `DepthBiasState`), so only the radius is shared.
 const SPOT_SHADOW_PCF_RADIUS: f32 = 1.0;
 

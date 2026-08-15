@@ -371,11 +371,19 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
 /// Golden regression for the script-light-membership seam: an unflagged static
 /// light in a map with no data script must keep its pre-feature baked output.
 ///
-/// The checked-in baseline was produced from commit `33e3a152` with
+/// The checked-in baseline was regenerated from commit `19d0bd3` with
 /// `prl-build --no-cache` on this exact map. Its SHA-256 is
-/// `9264a3b23d806d50b2f33ae52a7a3720d7f5237e01255f4b48abdf22c1f89c19`.
+/// `d4cb2750c74c58e1357d6dd98cde8f8d0bb73f0222aa45beab53299d81963b80`.
 /// Byte-for-byte comparison prevents script-membership plumbing from changing
 /// the output for static lights that it does not target.
+///
+/// The prior baseline (`33e3a152`, SHA `9264a3b2…`) went stale from engine
+/// evolution unrelated to script membership — a newly-emitted
+/// `AnimatedDirectShDeltaVolumes` section, delta-SH probe coarsening, and
+/// deterministic BVH/navmesh/texture-cache-key changes. The lightmap and
+/// animated weight-map sections (22/24/25) this test exists to guard were
+/// byte-identical across that drift, so regenerating re-baselines the
+/// unrelated sections without weakening the guarantee.
 #[test]
 #[ignore = "cold prl-build bake; run on demand with -- --ignored"]
 fn mixed_fixture_without_script_membership_matches_pre_feature_golden_prl() {

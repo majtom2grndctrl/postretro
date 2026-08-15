@@ -659,6 +659,10 @@ pub(crate) fn build_full_renderer(
             .ok()
             .as_deref()
             == Some("1"),
+        spec_shadowmask_force_one: std::env::var("POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE")
+            .ok()
+            .as_deref()
+            == Some("1"),
         vsync_enabled: true,
         has_geometry,
         debug_frame: 0,

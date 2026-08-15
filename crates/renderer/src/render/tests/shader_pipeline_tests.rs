@@ -303,3 +303,30 @@ fn wireframe_wgsl_uniforms_match_forward_layout() {
         "wireframe.wgsl Uniforms stride ({uniforms_span}) must match UNIFORM_SIZE ({UNIFORM_SIZE})",
     );
 }
+
+/// Billboard shares the camera uniform buffer with the forward pass, so its
+/// WGSL mirror must retain the 128-byte `Uniforms` span.
+#[test]
+fn billboard_wgsl_uniforms_match_forward_layout() {
+    const BILLBOARD_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/billboard.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_sample.wgsl"),
+    );
+
+    let module = naga::front::wgsl::parse_str(BILLBOARD_SHADER_SOURCE)
+        .expect("billboard shader should parse as WGSL");
+    let uniforms_span = module
+        .types
+        .iter()
+        .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
+            (Some(name), naga::TypeInner::Struct { span, .. }) if name == "Uniforms" => Some(*span),
+            _ => None,
+        })
+        .expect("billboard shader should declare struct Uniforms");
+
+    assert_eq!(
+        uniforms_span, 128,
+        "billboard.wgsl Uniforms span ({uniforms_span}) must remain 128 bytes",
+    );
+}

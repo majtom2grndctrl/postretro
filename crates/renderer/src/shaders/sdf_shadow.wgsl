@@ -79,7 +79,7 @@ struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ sdf)
     cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type
-    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none)
 };
 @group(2) @binding(0) var<storage, read> spec_lights: array<SpecLight>;
 

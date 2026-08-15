@@ -88,6 +88,21 @@ impl Renderer {
         self.full().sdf_force_visibility_one
     }
 
+    /// Dev toggle (panel checkbox): force static-light shadowmask visibility
+    /// to 1.0 in the forward world-specular path for a pre-change visual A/B.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_spec_shadowmask_force_one(&mut self, force: bool) {
+        if self.full().spec_shadowmask_force_one != force {
+            self.full_mut().spec_shadowmask_force_one = force;
+            log::info!("[Renderer] Specular shadowmask force visibility 1.0: {force}");
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn spec_shadowmask_force_one(&self) -> bool {
+        self.full().spec_shadowmask_force_one
+    }
+
     #[cfg(feature = "dev-tools")]
     pub fn freeze_time(&self) -> bool {
         self.full().freeze_time

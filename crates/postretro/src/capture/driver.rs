@@ -74,11 +74,12 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         &texture_materials,
     );
     renderer.normalize_world_uvs(&mut world);
-    let static_lights = capture_static_lights(&world.lights);
+    let (static_lights, static_entity_shadow_lights) =
+        capture_static_lights_and_shadow_selection(&world.lights, &world.entity_shadow_lights);
     let geometry = LevelGeometry {
         lights: &static_lights,
         light_influences: &[],
-        entity_shadow_lights: &[],
+        entity_shadow_lights: &static_entity_shadow_lights,
         ..level_world_to_geometry(&world, &texture_materials)
     };
     renderer.install_level_geometry(&geometry);
@@ -127,6 +128,36 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Preserve capture's static-only light input while translating global PRL
+/// selection indices into the same compact static-light index space. Keep one
+/// output selection entry per input entry so shadowmask channels stay aligned.
+fn capture_static_lights_and_shadow_selection(
+    lights: &[postretro_level_loader::MapLight],
+    entity_shadow_lights: &[u32],
+) -> (Vec<postretro_level_loader::MapLight>, Vec<u32>) {
+    let mut global_to_static = vec![u32::MAX; lights.len()];
+    let mut static_lights = Vec::with_capacity(lights.len());
+    for (global_index, light) in lights.iter().enumerate() {
+        if light.is_dynamic {
+            continue;
+        }
+        global_to_static[global_index] = static_lights.len() as u32;
+        static_lights.push(light.clone());
+    }
+
+    let static_entity_shadow_lights = entity_shadow_lights
+        .iter()
+        .map(|&global_index| {
+            global_to_static
+                .get(global_index as usize)
+                .copied()
+                .unwrap_or(u32::MAX)
+        })
+        .collect();
+
+    (static_lights, static_entity_shadow_lights)
+}
+
 fn derive_texture_materials(
     texture_names: &[String],
 ) -> Vec<postretro_render_data::material::Material> {
@@ -149,19 +180,6 @@ fn derive_texture_materials(
             }
             material
         })
-        .collect()
-}
-
-/// Keep authored static lights in source order. `pack_spec_lights` uses this
-/// same `!is_dynamic` compaction, so PRL chunk-light indices remain aligned.
-/// Runtime direct lights and entity-shadow inputs stay outside v1 capture.
-fn capture_static_lights(
-    lights: &[postretro_level_loader::MapLight],
-) -> Vec<postretro_level_loader::MapLight> {
-    lights
-        .iter()
-        .filter(|light| !light.is_dynamic)
-        .cloned()
         .collect()
 }
 
@@ -502,32 +520,32 @@ mod tests {
         assert_ne!(narrow_projection, wide_projection);
     }
 
+    // Regression: passing the full light list fixed shadowmask indexing but
+    // also introduced dynamic lights into captures that were static-only.
     #[test]
-    fn capture_static_lights_preserves_static_compact_order() {
+    fn capture_lights_remain_static_only_and_remap_shadow_selection() {
         let lights = [
-            test_light(false, postretro_level_loader::ShadowType::Sdf, 1.0),
-            test_light(
-                true,
-                postretro_level_loader::ShadowType::StaticLightMap,
-                2.0,
-            ),
-            test_light(
-                false,
-                postretro_level_loader::ShadowType::StaticLightMap,
-                3.0,
-            ),
+            test_light(true, 1.0),
+            test_light(false, 2.0),
+            test_light(true, 3.0),
+            test_light(false, 4.0),
         ];
 
-        let captured = capture_static_lights(&lights);
+        let (captured, selection) =
+            capture_static_lights_and_shadow_selection(&lights, &[3, 0, 1, 99]);
 
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0].intensity, 1.0);
-        assert_eq!(
-            captured[0].shadow_type,
-            postretro_level_loader::ShadowType::Sdf
+        assert_eq!(captured.len(), 2, "capture must retain two static lights");
+        assert!(
+            (captured[0].intensity - 2.0).abs() < f32::EPSILON
+                && (captured[1].intensity - 4.0).abs() < f32::EPSILON,
+            "capture must retain the pre-change static-only compact order",
         );
-        assert_eq!(captured[1].intensity, 3.0);
         assert!(captured.iter().all(|light| !light.is_dynamic));
+        assert_eq!(
+            selection,
+            vec![1, u32::MAX, 0, u32::MAX],
+            "selection order must stay channel-aligned while indices move into compact static space",
+        );
     }
 
     #[test]
@@ -620,11 +638,7 @@ mod tests {
         );
     }
 
-    fn test_light(
-        is_dynamic: bool,
-        shadow_type: postretro_level_loader::ShadowType,
-        intensity: f32,
-    ) -> postretro_level_loader::MapLight {
+    fn test_light(is_dynamic: bool, intensity: f32) -> postretro_level_loader::MapLight {
         postretro_level_loader::MapLight {
             origin: [0.0; 3],
             light_type: postretro_level_loader::LightType::Point,
@@ -640,7 +654,7 @@ mod tests {
             animated_slot: None,
             tags: Vec::new(),
             cell_index: 0,
-            shadow_type,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 

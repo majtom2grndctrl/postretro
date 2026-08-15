@@ -55,6 +55,7 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
+mod presentation_projection;
 mod weapon;
 
 mod render;

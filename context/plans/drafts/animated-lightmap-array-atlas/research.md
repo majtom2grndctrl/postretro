@@ -3,16 +3,24 @@
 Grounding for `index.md`. Anchors were read from source at draft time; treat line numbers as
 starting points, not addresses.
 
-**Re-anchored 2026-08-14** against `main` at `0fd7e0f`. Every seam was re-read. All wire-format
-(`level-format`), GPU (`renderer`, shaders), and `render-cpu` files are byte-identical to the
-draft's base (`b1327fd`), so their behavioral claims hold unchanged. Only `level-compiler`'s
-`pipeline.rs` and `lightmap_bake.rs` moved (delta-SH coarsening, seam-smoothing, entity
-serialization); the plan's load-bearing anchor — `pipeline.rs` discarding `layer_count` with the
-"single-layer" comment — survives at `:699`. The delta-SH probe coarsening that landed since the
-draft touches only sections 27/41/45 and never enters section 25, so the "animated indirect is
-layer-independent, out of scope" position stands. `STAGE_VERSION` is currently `5`; the golden
-`--ignored` failure is still red for the pre-existing reason in Open questions. Line-number drift
-elsewhere is cosmetic and left as first-approximation addresses per the note above.
+**Re-anchored 2026-08-15** against `main` merged into this branch (`main` at `19d0bd3`). Every seam
+was re-read. `level-format`'s section files and `render-cpu`'s validator are byte-identical to the
+draft's base (`b1327fd`), so their behavioral claims hold unchanged. Files that moved —
+`level-compiler`'s `pipeline.rs` and `lightmap_bake.rs` (delta-SH coarsening, seam-smoothing, entity
+serialization), and `renderer`'s `lighting/lightmap.rs`, `shaders/forward.wgsl`, and
+`render/tests/shader_tests.rs` (specular-shadowmask + nav work merged from `main`) — were each
+re-verified: every animated-lightmap anchor survived, drifting in line number only. The load-bearing
+`pipeline.rs` `layer_count: _` discard survives at `:699`; the forward layer-0 guard is now at
+`:979`, `sample_lightmap_animated` at `:245`, `sample_lightmap_irradiance(uv, layer)` at `:240`, the
+`SINGLE-LAYER LIMITATION` comment at `:218`; `lightmap.rs` still exposes a 7-entry group-4 BGL with
+animated bindings 3/5 at `D2` and `bgl_entries_pin_sampler_split` still never asserts
+`view_dimension`; the shadowmask literal-string test survives at `shader_tests.rs:344`. The delta-SH
+probe coarsening touches only sections 27/41/45 and never enters section 25, so the "animated
+indirect is layer-independent, out of scope" position stands. `STAGE_VERSION` is currently `5`. The
+golden `--ignored` failure was characterized: its delta is stale-engine drift confined to
+SH/nav/BVH/cache-key sections plus the new section 45, with sections 22/24/25 byte-identical — see
+Open questions. Line-number drift elsewhere is cosmetic and left as first-approximation addresses per
+the note above.
 
 ## Layer data flow across the four seams
 

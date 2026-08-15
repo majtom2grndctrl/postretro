@@ -260,13 +260,23 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
   A layer cap alone cannot bound VRAM. The plan therefore carries both a bake-time slot cap and a
   load-time byte budget, but neither number is chosen. Pick the cap from measured layer counts on
   real content rather than from the static 256.
-- **The golden PRL is currently red for an unrelated reason.**
-  `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` is one of two
+- **The golden PRL is stale from engine evolution, not a regression — regenerate on `main` before
+  Task 1.** `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` is one of two
   pre-existing `--ignored` failures on `main` (see
-  `context/plans/done/switch-entity/out-of-scope-findings.md` §1).
-  A wire-format change requires regenerating that golden, and regenerating a golden that is already
-  failing would absorb an unrelated regression permanently. Resolve or characterize that failure
-  before Task 1 lands, and diff the byte delta rather than accepting a fresh bake.
+  `context/plans/done/switch-entity/out-of-scope-findings.md` §1). Characterized 2026-08-15 with a
+  section-level byte diff of a cold `--no-cache` bake against the checked-in golden (bake confirmed
+  deterministic across two runs). The delta is confined to lighting/nav evolution that landed since
+  the golden was baked at `33e3a152`: a newly-emitted `AnimatedDirectShDeltaVolumes` section (45),
+  the delta-SH probe coarsening shrinking `OctahedralShVolume` (34: 96 200 → 9 972 B) and shifting
+  `DeltaShVolumes` (27: +72 B), plus deterministic changes to `TextureCacheKeys` (32), `Bvh` (19),
+  and `NavMesh` (36). The sections this plan touches — `Lightmap` (22), `AnimatedLightChunks` (24),
+  and `AnimatedLightWeightMaps` (25) — are **byte-identical**, so the golden's actual guarantee
+  (script-membership plumbing must not change an un-targeted static light's output) still holds; the
+  emissive-slot hypothesis in the findings doc is superseded (`Geometry`/`TextureNames` unchanged).
+  Because the delta is unrelated legitimate change, regenerate the golden on `main` as a
+  pre-requisite so that Task 1's own regen shows a delta **confined to section 25's new `layer`
+  field** — the check the acceptance criterion demands. Regenerating without this first would let
+  Task 1's diff bury the section-25 change under section 45 + SH coarsening.
 - **Whether Task 5's fixture joins `GATE_FIXTURES`.** Recommendation: no. Those gates bake every
   fixture twice, and dropping one oversized fixture cut them 7× recently. Profile first if revisited.
 - **Animated weight maps are in no `GATE_FIXTURES` byte comparison**, despite four gate fixtures

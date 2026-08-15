@@ -208,13 +208,13 @@ pub struct FrameUniforms {
     pub lighting_isolation: LightingIsolation,
     pub indirect_scale: f32,
     /// Bitset of `SDF_SHADOW_FLAG_*` controlling the forward shader's SDF
-    /// shadow-factor multiplies. Bit 0 gates the animated-baked term; bit 1
-    /// gates the static-lightmap term (independent because the static-term
-    /// multiply must skip a shadowed-mode lightmap to avoid double shadows).
+    /// shadow path. Bit 0 (`SDF_SHADOW_FLAG_ATLAS_PRESENT`) marks a loaded
+    /// atlas; when clear, the forward shader treats SDF visibility as fully lit.
+    /// Other bits are unused.
     pub sdf_shadow_flags: u32,
     /// `SdfShadowMode` debug selector. Encoded as the enum's `u32` repr; keep
     /// the enum variants above as the source of truth for mode ids. Overlays
-    /// the per-term flags above: `Off` forces both SDF multiplies to 1.0;
+    /// the atlas-present flag above: `Off` forces SDF visibility to 1.0;
     /// visualization modes replace the shaded color output with diagnostic
     /// views.
     pub sdf_shadow_mode: SdfShadowMode,

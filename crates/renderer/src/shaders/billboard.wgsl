@@ -60,7 +60,10 @@ struct SpecLight {
     position_and_range: vec4<f32>,
     color_and_pad: vec4<f32>,
     cone_dir_and_type: vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos: vec4<f32>,          // x = cos(inner), y = cos(outer); non-spot carries 1/-1
+    // x = cos(inner), y = cos(outer), z = shadowmask channel (0..3) or
+    // none sentinel (4); z is inert and unread in the billboard path.
+    // Non-spot lights carry 1/-1 in x/y.
+    cone_cos: vec4<f32>,
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 

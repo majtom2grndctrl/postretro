@@ -74,13 +74,12 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         &texture_materials,
     );
     renderer.normalize_world_uvs(&mut world);
+    let (static_lights, static_entity_shadow_lights) =
+        capture_static_lights_and_shadow_selection(&world.lights, &world.entity_shadow_lights);
     let geometry = LevelGeometry {
-        // `entity_shadow_lights` indexes the full authored light list. Keep
-        // that index space intact here; the renderer owns the `!is_dynamic`
-        // compaction used by static spec-light packing.
-        lights: &world.lights,
+        lights: &static_lights,
         light_influences: &[],
-        entity_shadow_lights: &world.entity_shadow_lights,
+        entity_shadow_lights: &static_entity_shadow_lights,
         ..level_world_to_geometry(&world, &texture_materials)
     };
     renderer.install_level_geometry(&geometry);
@@ -127,6 +126,36 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     write_capture_png(output_path, &rgba, width, height)?;
 
     Ok(())
+}
+
+/// Preserve capture's static-only light input while translating global PRL
+/// selection indices into the same compact static-light index space. Keep one
+/// output selection entry per input entry so shadowmask channels stay aligned.
+fn capture_static_lights_and_shadow_selection(
+    lights: &[postretro_level_loader::MapLight],
+    entity_shadow_lights: &[u32],
+) -> (Vec<postretro_level_loader::MapLight>, Vec<u32>) {
+    let mut global_to_static = vec![u32::MAX; lights.len()];
+    let mut static_lights = Vec::with_capacity(lights.len());
+    for (global_index, light) in lights.iter().enumerate() {
+        if light.is_dynamic {
+            continue;
+        }
+        global_to_static[global_index] = static_lights.len() as u32;
+        static_lights.push(light.clone());
+    }
+
+    let static_entity_shadow_lights = entity_shadow_lights
+        .iter()
+        .map(|&global_index| {
+            global_to_static
+                .get(global_index as usize)
+                .copied()
+                .unwrap_or(u32::MAX)
+        })
+        .collect();
+
+    (static_lights, static_entity_shadow_lights)
 }
 
 fn derive_texture_materials(
@@ -491,6 +520,34 @@ mod tests {
         assert_ne!(narrow_projection, wide_projection);
     }
 
+    // Regression: passing the full light list fixed shadowmask indexing but
+    // also introduced dynamic lights into captures that were static-only.
+    #[test]
+    fn capture_lights_remain_static_only_and_remap_shadow_selection() {
+        let lights = [
+            test_light(true, 1.0),
+            test_light(false, 2.0),
+            test_light(true, 3.0),
+            test_light(false, 4.0),
+        ];
+
+        let (captured, selection) =
+            capture_static_lights_and_shadow_selection(&lights, &[3, 0, 1, 99]);
+
+        assert_eq!(captured.len(), 2, "capture must retain two static lights");
+        assert!(
+            (captured[0].intensity - 2.0).abs() < f32::EPSILON
+                && (captured[1].intensity - 4.0).abs() < f32::EPSILON,
+            "capture must retain the pre-change static-only compact order",
+        );
+        assert!(captured.iter().all(|light| !light.is_dynamic));
+        assert_eq!(
+            selection,
+            vec![1, u32::MAX, 0, u32::MAX],
+            "selection order must stay channel-aligned while indices move into compact static space",
+        );
+    }
+
     #[test]
     fn output_must_not_alias_map_or_scene_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -579,6 +636,26 @@ mod tests {
             1,
             "successful capture removes its temporary sibling"
         );
+    }
+
+    fn test_light(is_dynamic: bool, intensity: f32) -> postretro_level_loader::MapLight {
+        postretro_level_loader::MapLight {
+            origin: [0.0; 3],
+            light_type: postretro_level_loader::LightType::Point,
+            intensity,
+            color: [1.0; 3],
+            falloff_model: postretro_level_loader::FalloffModel::Linear,
+            falloff_range: 8.0,
+            cone_angle_inner: 0.0,
+            cone_angle_outer: 0.0,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic,
+            casts_entity_shadows: false,
+            animated_slot: None,
+            tags: Vec::new(),
+            cell_index: 0,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
+        }
     }
 
     fn assert_mat4_approx_eq(actual: Mat4, expected: Mat4, epsilon: f32) {

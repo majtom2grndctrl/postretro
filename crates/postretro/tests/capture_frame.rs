@@ -75,14 +75,58 @@ fn hdr_capture_writes_png_at_requested_dimensions() {
     );
 }
 
-// Manual A/B gate for specular-shadowmask occlusion:
+// Manual A/B gate for specular-shadowmask occlusion. The source fixture exists
+// only on this branch, so bake it once and hand the exact PRL plus its material
+// cache to both binaries through a shared standard dev-layout artifact tree:
 //
-// 1. Capture this scene on pre-change main normally and on this branch with
-//    `POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE=1`; the PNG bytes must match on the
-//    same GPU adapter.
-// 2. Disable the toggle on this branch; the blocker shadow on the north-wall
-//    grazing highlight must visibly darken. No golden is committed because
-//    adapter rounding makes rendered output unsuitable for default CI.
+// ```sh
+// BRANCH_WT=/absolute/path/to/specular-branch
+// MAIN_WT=/absolute/path/to/clean-main-worktree
+// BASELINE_REV=main
+// HANDOFF_DIR="$(mktemp -d)"
+// git -C "$BRANCH_WT" worktree add --detach "$MAIN_WT" "$BASELINE_REV"
+// mkdir -p "$HANDOFF_DIR/content/dev/maps" "$HANDOFF_DIR/baked/materials"
+// (
+//   cd "$BRANCH_WT"
+//   cargo run --quiet -p postretro-level-compiler --bin prl-build -- \
+//     content/dev/maps/specular-shadowmask-capture.map \
+//     -o "$HANDOFF_DIR/content/dev/maps/specular-shadowmask-capture.prl" \
+//     --no-tui
+// )
+// cp -R "$BRANCH_WT/baked/materials/." "$HANDOFF_DIR/baked/materials/"
+// cat > "$HANDOFF_DIR/scene.json" <<EOF
+// {
+//   "map": "$HANDOFF_DIR/content/dev/maps/specular-shadowmask-capture.prl",
+//   "camera": {
+//     "position": [-4.064, 4.064, -1.626],
+//     "yaw_deg": 45.0,
+//     "pitch_deg": 5.0,
+//     "fov_deg": 80.0
+//   },
+//   "resolution": [64, 48],
+//   "output": "$HANDOFF_DIR/capture.png"
+// }
+// EOF
+// (cd "$MAIN_WT" && cargo build -p postretro --features capture)
+// (cd "$BRANCH_WT" && cargo build -p postretro --features capture)
+// "$MAIN_WT/target/debug/postretro" --capture "$HANDOFF_DIR/scene.json"
+// mv "$HANDOFF_DIR/capture.png" "$HANDOFF_DIR/baseline.png"
+// POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE=1 \
+//   "$BRANCH_WT/target/debug/postretro" --capture "$HANDOFF_DIR/scene.json"
+// mv "$HANDOFF_DIR/capture.png" "$HANDOFF_DIR/forced.png"
+// cmp "$HANDOFF_DIR/baseline.png" "$HANDOFF_DIR/forced.png"
+// "$BRANCH_WT/target/debug/postretro" --capture "$HANDOFF_DIR/scene.json"
+// mv "$HANDOFF_DIR/capture.png" "$HANDOFF_DIR/occluded.png"
+// ```
+//
+// Run both binaries on the same GPU adapter. The PRL path deliberately remains
+// under `<handoff>/content/dev/maps`: capture derives `<handoff>/baked/materials`
+// from that layout, so both binaries load the copied specular material instead
+// of the black placeholder. A successful `cmp` proves byte identity without
+// requiring pre-change main to contain this test or source map. In
+// `occluded.png`, the blocker shadow on the north-wall grazing highlight must
+// visibly darken relative to `forced.png`. No golden is committed because
+// adapter rounding makes rendered output unsuitable for default CI.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
 fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {

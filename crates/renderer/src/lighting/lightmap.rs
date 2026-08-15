@@ -33,7 +33,8 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 /// Static-light shadowmask atlas (Rgba8Unorm), layer-matched to the lightmap
-/// irradiance atlas. Sampled by the forward union-subtraction term.
+/// irradiance atlas. Sampled by forward union-subtraction and static
+/// world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
@@ -369,7 +370,8 @@ fn filter_usable_shadowmask_section(
             if !fits {
                 log::error!(
                     "[Renderer] ShadowmaskAtlas {}x{} exceeds device maxTextureDimension2D {}; \
-                         disabling entity-to-world static-light shadowmask for this level",
+                         disabling entity-to-world static-light shadowmask; static world specular \
+                         falls back to fully lit for this level",
                     s.width,
                     s.height,
                     max_texture_dimension_2d,
@@ -383,7 +385,7 @@ fn filter_usable_shadowmask_section(
                 log::error!(
                     "[Renderer] ShadowmaskAtlas has {} layer(s), exceeding device \
                          maxTextureArrayLayers {}; disabling entity-to-world static-light \
-                         shadowmask for this level",
+                         shadowmask; static world specular falls back to fully lit for this level",
                     s.layer_count,
                     max_texture_array_layers,
                 );

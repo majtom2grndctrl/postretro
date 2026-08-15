@@ -1,7 +1,7 @@
 //! App-side lifetime, projection, and temporary draw assembly for presentation spawns.
 
-use glam::Mat4;
-use postretro_entities::{EntityRegistry, PresentationSpawn};
+use glam::{Mat4, Vec2};
+use postretro_entities::{EntityRegistry, PresentationEasing, PresentationSpawn};
 use postretro_renderer::PresentationDrawInput;
 
 use crate::presentation_projection::project_world_to_screen;
@@ -25,6 +25,7 @@ struct LivePresentationSpawn {
     spawn: PresentationSpawn,
     spawn_time_seconds: f64,
     intake_sequence: u64,
+    scatter: Vec2,
 }
 
 impl PresentationPool {
@@ -71,10 +72,12 @@ impl PresentationPool {
             self.spawns.remove(oldest);
         }
 
+        let scatter = scatter_offset(spawn.scatter_radius, self.next_intake_sequence);
         self.spawns.push(LivePresentationSpawn {
             spawn,
             spawn_time_seconds: self.frame_time_seconds,
             intake_sequence: self.next_intake_sequence,
+            scatter,
         });
         self.next_intake_sequence = self.next_intake_sequence.wrapping_add(1);
     }
@@ -108,7 +111,10 @@ impl PresentationPool {
 
             let lifetime = lifetime_seconds(&live.spawn);
             let age = self.age_seconds(live);
-            let progress = (age / lifetime).clamp(0.0, 1.0) as f32;
+            let progress = eased_progress(
+                (age / lifetime).clamp(0.0, 1.0) as f32,
+                live.spawn.motion.easing,
+            );
             let rise = finite_or_zero(live.spawn.motion.rise_pixels) * progress;
             let alpha = fade_alpha(&live.spawn, age, lifetime);
 
@@ -116,7 +122,7 @@ impl PresentationPool {
                 instance_id: live.intake_sequence,
                 template: live.spawn.template.clone(),
                 facts: live.spawn.facts.clone(),
-                anchor: [anchor.x, anchor.y - rise],
+                anchor: [anchor.x + live.scatter.x, anchor.y + live.scatter.y - rise],
                 opacity: alpha,
             });
         }
@@ -184,6 +190,44 @@ fn finite_or_zero(value: f32) -> f32 {
     value.is_finite().then_some(value).unwrap_or(0.0)
 }
 
+fn eased_progress(progress: f32, easing: PresentationEasing) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    match easing {
+        PresentationEasing::Linear => progress,
+        PresentationEasing::EaseIn => progress * progress * progress,
+        PresentationEasing::EaseOut => {
+            let inverse = 1.0 - progress;
+            1.0 - inverse * inverse * inverse
+        }
+        PresentationEasing::EaseInOut => {
+            if progress < 0.5 {
+                4.0 * progress * progress * progress
+            } else {
+                let inverse = -2.0 * progress + 2.0;
+                1.0 - inverse * inverse * inverse / 2.0
+            }
+        }
+    }
+}
+
+fn scatter_offset(radius: f32, sequence: u64) -> Vec2 {
+    let radius = finite_or_zero(radius).max(0.0);
+    if radius == 0.0 {
+        return Vec2::ZERO;
+    }
+
+    // A stateless integer mix gives intake-order-stable scatter without adding
+    // producer RNG or a mutable random stream to the renderer bridge.
+    let mut bits = sequence.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    bits = (bits ^ (bits >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    bits ^= bits >> 31;
+    let angle = (bits as f32 / u64::MAX as f32) * std::f32::consts::TAU;
+    let distance_bits = bits.rotate_left(29);
+    let distance = (distance_bits as f32 / u64::MAX as f32).sqrt() * radius;
+    Vec2::new(angle.cos() * distance, angle.sin() * distance)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -202,11 +246,16 @@ mod tests {
             world_anchor: anchor,
             template: PresentationTemplateHandle::from(template),
             facts: BTreeMap::new(),
+            presenter: None,
             lifetime_seconds,
-            motion: PresentationMotion { rise_pixels: 12.0 },
+            motion: PresentationMotion {
+                rise_pixels: 12.0,
+                easing: PresentationEasing::Linear,
+            },
             fade: PresentationFade {
                 duration_seconds: 0.5,
             },
+            scatter_radius: 0.0,
         }
     }
 

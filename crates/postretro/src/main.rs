@@ -9909,6 +9909,7 @@ mod tests {
                     trigger_events: Vec::new(),
                     trigger_pools: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
+                    presentation_templates: Vec::new(),
                     theme: ModThemeTokens {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),
                         ..Default::default()

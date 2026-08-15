@@ -695,6 +695,8 @@ export type ModManifest = {
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
+  --- Passive world-presentation templates. They never participate in modal UI input or focus.
+  presentationTemplates: {PresentationTemplate}?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
@@ -1251,6 +1253,7 @@ export type RuntimeExpressionRefs = {
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "present", target: "@impact.target", args: { template: string, value: any } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
@@ -1294,6 +1297,24 @@ export type ImpactEvent = {
   isOverride: boolean,
   levels: {string}?,
   override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
+--- Passive renderer-owned template data returned through ModManifest only.
+export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
+export type PresentationTemplate = {
+  id: string,
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
+}
+export type PresentationTemplateProps = {
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1485,6 +1506,7 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
+  presentationTemplates: {PresentationTemplate}?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,
@@ -1953,6 +1975,10 @@ export type PostretroUiModule = {
   Tree: (props: TreeProps, root: WidgetDescriptor) -> AnchoredTreeDescriptor,
   --- Build a UI-tree registration object for `ModManifest.uiTrees` or `setupLevel().uiTrees`.
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
+  --- Build an explicit-id passive presentation template. It is manifest data, not a modal UI tree.
+  definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
+  --- Add a passive visual effect to an impact policy `do` array.
+  present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),
   --- Compose bind-only options onto a state ref; pure and never reads live state.
   bindState: ((ComputedRef<number>, NumberStateBindOptions?) -> ComputedRef<number> & NumberStateBindOptions)

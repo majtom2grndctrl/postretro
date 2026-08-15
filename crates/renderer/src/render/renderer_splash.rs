@@ -93,6 +93,16 @@ impl Renderer {
         self.full_mut().presentation_inputs = inputs;
     }
 
+    /// Install the committed manifest snapshot used to resolve passive
+    /// presentation handles. The renderer owns all widget layout and font work;
+    /// this API transfers only VM-free descriptor data.
+    pub fn set_presentation_templates(
+        &mut self,
+        templates: Vec<postretro_scripting_core::data_descriptors::PresentationTemplate>,
+    ) {
+        self.full_mut().ui.replace_presentation_templates(templates);
+    }
+
     /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack
     /// layer against the current surface viewport — the reverse twin of the
     /// app→renderer snapshot. The App reads this after a gameplay render (which

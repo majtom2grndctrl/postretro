@@ -378,6 +378,7 @@ export type RuntimeExpressionRefs = {
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "present", target: "@impact.target", args: { template: string, value: any } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
@@ -421,6 +422,24 @@ export type ImpactEvent = {
   isOverride: boolean,
   levels: {string}?,
   override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
+--- Passive renderer-owned template data returned through ModManifest only.
+export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
+export type PresentationTemplate = {
+  id: string,
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
+}
+export type PresentationTemplateProps = {
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -746,6 +765,7 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
+  presentationTemplates: {PresentationTemplate}?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,

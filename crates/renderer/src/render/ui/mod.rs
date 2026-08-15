@@ -9,6 +9,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use postretro_scripting_core::data_descriptors::PresentationTemplate;
 use postretro_ui::UiTexture;
 use postretro_ui::text::FontSystem;
 
@@ -222,6 +223,16 @@ pub(crate) struct UiPass {
     /// intentionally separate from `gameplay_trees`: it retains only taffy
     /// measurement/tween state, never a modal tree, focus list, or input state.
     presentation_layouts: std::collections::HashMap<u64, PresentationLayout>,
+    /// Registered manifest data keyed by its stable handle. This is intentionally
+    /// a renderer-side layout registry, not a UI tree/modal registry.
+    presentation_templates: std::collections::HashMap<
+        postretro_entities::PresentationTemplateHandle,
+        PresentationTemplate,
+    >,
+    /// Unknown handles can arrive from future producers. Warn once and leave
+    /// them invisible instead of failing a render frame.
+    warned_missing_presentation_templates:
+        std::collections::HashSet<postretro_entities::PresentationTemplateHandle>,
 }
 
 /// One retained gameplay UI tree plus the descriptor it was built from. The
@@ -251,57 +262,6 @@ struct PresentationLayout {
     template: postretro_entities::PresentationTemplateHandle,
     theme_generation: u64,
     layout: tree::PresentationTemplateLayout,
-}
-
-/// Narrow Task 3 fixture while Task 4's registered presentation-template
-/// descriptor is not available. It is intentionally unreachable from scripting
-/// and accepts one explicit internal handle only; Task 4 removes it when the
-/// real registry supplies template subtrees.
-fn temporary_presentation_template(
-    handle: &postretro_entities::PresentationTemplateHandle,
-) -> Option<descriptor::Widget> {
-    use descriptor::{
-        Align, BindSource, ColorValue, ContainerWidget, LocalState, SpacingValue, TextBind,
-        TextWidget, Widget,
-    };
-
-    (handle.0 == "__task3.damage-number-fixture").then(|| {
-        Widget::VStack(ContainerWidget {
-            gap: SpacingValue::Literal(0.0),
-            padding: SpacingValue::Literal(0.0),
-            align: Align::Start,
-            fill: None,
-            border: None,
-            id: None,
-            focus_neighbors: Default::default(),
-            focus: None,
-            restore_on_return: false,
-            local_state: Some(LocalState {
-                scope: "presentation".to_string(),
-                cells: Default::default(),
-            }),
-            visible_when: None,
-            role: None,
-            children: vec![Widget::Text(TextWidget {
-                content: "0".to_string(),
-                font_size: 24.0,
-                color: ColorValue::Literal([1.0, 0.35, 0.1, 1.0]),
-                id: None,
-                focus_neighbors: Default::default(),
-                font: None,
-                bind: Some(TextBind {
-                    source: BindSource::Local {
-                        local: "value".to_string(),
-                    },
-                    format: None,
-                    tween: None,
-                }),
-                style_ranges: None,
-                visible_when: None,
-                role: None,
-            })],
-        })
-    })
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -737,6 +697,8 @@ impl UiPass {
             depth_size: [0, 0],
             gameplay_trees: Vec::new(),
             presentation_layouts: std::collections::HashMap::new(),
+            presentation_templates: std::collections::HashMap::new(),
+            warned_missing_presentation_templates: std::collections::HashSet::new(),
         }
     }
 
@@ -760,6 +722,28 @@ impl UiPass {
         ttf_bytes: Vec<u8>,
     ) -> bool {
         self.text.register_font(font_system, family, ttf_bytes)
+    }
+
+    /// Replace the whole manifest-owned passive-template snapshot. Existing
+    /// instance layouts deliberately rebuild: an author can hot-reload a
+    /// widget subtree while its current transient remains live.
+    pub fn replace_presentation_templates(&mut self, templates: Vec<PresentationTemplate>) {
+        self.presentation_templates.clear();
+        self.warned_missing_presentation_templates.clear();
+        self.presentation_layouts.clear();
+        for template in templates {
+            let handle = postretro_entities::PresentationTemplateHandle::from(template.id.clone());
+            if self
+                .presentation_templates
+                .insert(handle.clone(), template)
+                .is_some()
+            {
+                log::warn!(
+                    "[Renderer] duplicate presentation template `{}` replaced during registry install",
+                    handle.0
+                );
+            }
+        }
     }
 
     /// Lay out ONE modal-stack layer's descriptor tree through the RETAINED
@@ -853,9 +837,6 @@ impl UiPass {
     /// Each instance owns its fact snapshot; no value is read from the gameplay
     /// slot table, and this path has no retained-tree/focus/input interaction.
     ///
-    /// Task 4 replaces `temporary_presentation_template` with the registered
-    /// authoring surface. Keeping that fixture constrained here lets Task 3 prove
-    /// the renderer-owned FontSystem/layout boundary before templates exist.
     #[allow(clippy::too_many_arguments)]
     pub fn layout_presentation_inputs(
         &mut self,
@@ -873,7 +854,16 @@ impl UiPass {
 
         for input in inputs {
             active.insert(input.instance_id);
-            let Some(template) = temporary_presentation_template(&input.template) else {
+            let Some(template) = self.presentation_templates.get(&input.template) else {
+                if self
+                    .warned_missing_presentation_templates
+                    .insert(input.template.clone())
+                {
+                    log::warn!(
+                        "[Renderer] passive presentation template `{}` is not registered; skipping draw",
+                        input.template.0
+                    );
+                }
                 self.presentation_layouts.remove(&input.instance_id);
                 continue;
             };
@@ -889,7 +879,10 @@ impl UiPass {
                     PresentationLayout {
                         template: input.template.clone(),
                         theme_generation,
-                        layout: tree::PresentationTemplateLayout::from_widget(&template, theme),
+                        layout: tree::PresentationTemplateLayout::from_widget(
+                            &template.root,
+                            theme,
+                        ),
                     },
                 );
             }

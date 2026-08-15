@@ -56,6 +56,13 @@ pub(crate) enum ImpactEffect {
     PlayAnimation {
         state: String,
     },
+    /// A passive visual command. The policy runtime intercepts it while the
+    /// dispatch and scripting context are still available, so it must never
+    /// attempt to resolve a registry target through this generic applier.
+    Present {
+        template: String,
+        value: f32,
+    },
     /// Owner-addressed store writes resolve their destination seat through the
     /// policy runtime, where the ScriptCtx slot table is available. They must
     /// never reach this registry-only applier.
@@ -83,6 +90,11 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
         }
         ImpactEffect::PlayAnimation { state } => {
             let _ = play_animation(registry, target, state);
+        }
+        ImpactEffect::Present { .. } => {
+            // Presentation effects are consumed by ImpactPolicyRuntime before
+            // this registry-only fallback. Keeping this harmless makes a
+            // malformed/manual command degrade rather than panic.
         }
         ImpactEffect::SetOwnerSlot { .. } => {
             unreachable!("owner slot writes are intercepted by ImpactPolicyRuntime")

@@ -4,11 +4,15 @@
 use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
-use postretro_entities::{EntityRegistry, ScriptCtx, SlotValue};
+use postretro_entities::{
+    EntityRegistry, PresentationFact, PresentationFade, PresentationMotion, PresentationPresenter,
+    PresentationSpawn, PresentationTemplateHandle, ScriptCtx, SlotValue, Transform,
+};
 use postretro_foundation::ir::{
     BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
 };
 use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
+use postretro_scripting_core::data_descriptors::PresentationTemplate;
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use postretro_scripting_core::store_bridge::validate_slot_value;
 use serde_json::{Map, Value};
@@ -28,6 +32,7 @@ pub(crate) struct ImpactPolicyRuntime {
     /// ids on the wire; this is only the internal composition/logging prefix.
     mod_id: Option<String>,
     global_events: Vec<ImpactEventDescriptor>,
+    presentation_templates: HashMap<String, PresentationTemplate>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
     scope: EntityScope,
@@ -63,6 +68,10 @@ enum BoundEffect {
     },
     PlayAnimation {
         state: String,
+    },
+    Present {
+        template: String,
+        value: BoundProgram<EntityScope>,
     },
     GrantHealth {
         amount: BoundProgram<EntityScope>,
@@ -102,6 +111,7 @@ impl ImpactPolicyRuntime {
             ctx,
             mod_id: None,
             global_events: Vec::new(),
+            presentation_templates: HashMap::new(),
             level_events: Vec::new(),
             active_level_tags: Vec::new(),
             policies: Vec::new(),
@@ -130,6 +140,36 @@ impl ImpactPolicyRuntime {
     pub(crate) fn replace_global_events(&mut self, events: Vec<ImpactEventDescriptor>) {
         self.global_events = events;
         self.rebuild();
+    }
+
+    /// Replace the renderer-consumed passive template snapshot committed by
+    /// mod init. Invalid descriptors were already contained by the manifest
+    /// drain; retaining only one template per id keeps an unexpected duplicate
+    /// harmless for runtime callers as well.
+    pub(crate) fn replace_presentation_templates(&mut self, templates: Vec<PresentationTemplate>) {
+        self.presentation_templates.clear();
+        for template in templates {
+            if let Err(error) = template.validate() {
+                log::warn!(
+                    "[Impact] presentation template `{}` was ignored: {error}",
+                    template.id
+                );
+                continue;
+            }
+            if self
+                .presentation_templates
+                .insert(template.id.clone(), template)
+                .is_some()
+            {
+                log::warn!("[Impact] duplicate presentation template was replaced");
+            }
+        }
+    }
+
+    /// Snapshot the committed definitions for the renderer-owned UI layout
+    /// cache. Template widgets are never laid out in this policy runtime.
+    pub(crate) fn presentation_templates(&self) -> Vec<PresentationTemplate> {
+        self.presentation_templates.values().cloned().collect()
     }
 
     /// Replace the per-level descriptors after `setupLevel()` finishes. Global
@@ -272,7 +312,9 @@ impl ImpactPolicyRuntime {
                 for effect in &group.effects {
                     let planned = plan_effect(effect, &self.scope);
                     match effect {
-                        BoundEffect::PlayAnimation { .. } => self.presentation.push(planned),
+                        BoundEffect::PlayAnimation { .. } | BoundEffect::Present { .. } => {
+                            self.presentation.push(planned)
+                        }
                         BoundEffect::Write(_)
                         | BoundEffect::SetOwnerSlot { .. }
                         | BoundEffect::SetHealth { .. }
@@ -295,10 +337,13 @@ impl ImpactPolicyRuntime {
         presentation: bool,
     ) {
         let ctx = self.ctx.clone();
-        let effects = if presentation {
-            &mut self.presentation
+        // Drain this lane before executing it: presentation application needs
+        // an immutable template lookup while the lane itself is otherwise a
+        // mutable borrow of `self`.
+        let mut effects = if presentation {
+            std::mem::take(&mut self.presentation)
         } else {
-            &mut self.consequential
+            std::mem::take(&mut self.consequential)
         };
         effects.reverse();
         while let Some(effect) = effects.pop() {
@@ -318,6 +363,10 @@ impl ImpactPolicyRuntime {
                     );
                 }
                 PlannedEffect::Command { recipient, effect } => {
+                    if let ImpactEffect::Present { template, value } = effect {
+                        self.apply_presentation_spawn(registry, dispatch, &template, value);
+                        continue;
+                    }
                     let recipient = match recipient {
                         CommandRecipient::Target => Some(dispatch.target),
                         CommandRecipient::Source => {
@@ -359,6 +408,53 @@ impl ImpactPolicyRuntime {
             return;
         };
         record.set_per_seat_value(seat, value);
+    }
+
+    /// Presentation's numeric fact was frozen by `plan_effect` before any
+    /// consequences applied. Only the anchor deliberately comes from the live
+    /// target here: staged scripted despawn preserves Transform until the
+    /// app-owned frame-end removal pass.
+    fn apply_presentation_spawn(
+        &self,
+        registry: &mut EntityRegistry,
+        dispatch: &ImpactDispatch,
+        template_id: &str,
+        value: f32,
+    ) {
+        let Some(template) = self.presentation_templates.get(template_id) else {
+            log::warn!(
+                "[Impact] presentation template `{template_id}` is not registered; spawn skipped"
+            );
+            return;
+        };
+        let Ok(transform) = registry.get_component::<Transform>(dispatch.target) else {
+            log::warn!(
+                "[Impact] target has no world transform; presentation `{template_id}` was skipped"
+            );
+            return;
+        };
+
+        let mut facts = postretro_entities::PresentationFacts::new();
+        facts.insert("value".to_string(), PresentationFact::Number(value));
+        registry.push_presentation_spawn(PresentationSpawn {
+            world_anchor: transform.position,
+            template: PresentationTemplateHandle::from(template.id.clone()),
+            facts,
+            presenter: dispatch
+                .source
+                .map(|source| PresentationPresenter(source.to_raw())),
+            lifetime_seconds: template.lifetime_ms as f32 / 1_000.0,
+            motion: PresentationMotion {
+                rise_pixels: template.motion.rise,
+                easing: template.motion.easing,
+            },
+            fade: PresentationFade {
+                duration_seconds: template.lifetime_ms.saturating_sub(template.fade.start_ms)
+                    as f32
+                    / 1_000.0,
+            },
+            scatter_radius: template.spawn_scatter.radius,
+        });
     }
 }
 
@@ -464,6 +560,25 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
             require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
             Ok(BoundEffect::PlayAnimation {
                 state: required_string(args, "clip", "playAnim args")?.to_string(),
+            })
+        }
+        "present" => {
+            require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
+            let template = required_string(args, "template", "present args")?;
+            if template.is_empty() {
+                return Err("present `template` must be nonempty".to_string());
+            }
+            let value = bind_read(
+                args.get("value")
+                    .ok_or_else(|| "present args is missing `value`".to_string())?,
+                scope,
+            )?;
+            if value.root_type != IrType::Number {
+                return Err("present `value` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::Present {
+                template: template.to_string(),
+                value,
             })
         }
         "setHealth" => {
@@ -638,6 +753,13 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
                 state: state.clone(),
             },
         },
+        BoundEffect::Present { template, value } => PlannedEffect::Command {
+            recipient: CommandRecipient::Target,
+            effect: ImpactEffect::Present {
+                template: template.clone(),
+                value: number(eval_value(value, scope)),
+            },
+        },
         BoundEffect::GrantHealth { amount } => PlannedEffect::Command {
             recipient: CommandRecipient::Source,
             effect: ImpactEffect::GrantHealth {
@@ -795,6 +917,29 @@ mod tests {
             "target": "@impact.source",
             "args": { "type": pool, "amount": amount },
         })
+    }
+
+    fn present(template: &str, value: Value) -> Value {
+        json!({
+            "primitive": "present",
+            "target": "@impact.target",
+            "args": { "template": template, "value": value },
+        })
+    }
+
+    fn presentation_template(id: &str) -> PresentationTemplate {
+        serde_json::from_value(json!({
+            "id": id,
+            "root": {
+                "kind": "text", "content": "0", "fontSize": 24.0,
+                "color": [1.0, 0.35, 0.1, 1.0]
+            },
+            "lifetimeMs": 750,
+            "motion": { "rise": 18.0, "easing": "easeOut" },
+            "fade": { "startMs": 500 },
+            "spawnScatter": { "radius": 0.25 },
+        }))
+        .expect("presentation template test fixture must deserialize")
     }
 
     fn number_slot(value: f32) -> SlotRecord {
@@ -1231,6 +1376,107 @@ mod tests {
                 .current,
             99.0,
             "the published engine slot matches the post-damage component value",
+        );
+    }
+
+    #[test]
+    fn presentation_value_is_captured_at_plan_time_before_kill_changes_target_state() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        let anchor = glam::Vec3::new(3.0, 4.0, 5.0);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut transform = *registry
+                .get_component::<Transform>(target)
+                .expect("target has transform");
+            transform.position = anchor;
+            registry
+                .set_component(target, transform)
+                .expect("target transform updates");
+        }
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![presentation_template("damageNumber")]);
+        runtime.replace_global_events(vec![event(
+            "kill-number",
+            "crate",
+            vec![
+                present("damageNumber", input("@impact.healthAfter")),
+                json!({
+                    "primitive": "setHealth", "target": "@impact.target",
+                    "args": { "value": number(25.0) },
+                }),
+                json!({ "primitive": "despawn", "target": "@impact.target", "args": {} }),
+            ],
+        )]);
+
+        let mut damage = DamageContext::new("kill-number", DamageProducer::InTick);
+        damage.attacker = Some(source);
+        apply_damage_with_context(
+            &mut ctx.registry.borrow_mut(),
+            target,
+            &DamagePayload { amount: 100.0 },
+            damage,
+        );
+        evaluate_pending(&ctx, &mut runtime);
+
+        let mut registry = ctx.registry.borrow_mut();
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .expect("staged removal keeps target alive")
+                .current,
+            25.0,
+            "consequence phase changed live health before the presentation apply intercept"
+        );
+        assert!(
+            registry.get_component::<Transform>(target).is_ok(),
+            "staged scripted despawn leaves the anchor readable through presentation apply"
+        );
+        let spawns = registry.take_presentation_spawns();
+        assert_eq!(spawns.len(), 1);
+        let spawn = &spawns[0];
+        assert_eq!(spawn.template.0, "damageNumber");
+        assert_eq!(spawn.world_anchor, anchor);
+        assert_eq!(
+            spawn.facts.get("value"),
+            Some(&PresentationFact::Number(0.0)),
+            "the visual retained the plan-time killing-blow scalar, not the later health write"
+        );
+        assert_eq!(
+            spawn.presenter,
+            Some(PresentationPresenter(source.to_raw())),
+            "the dispatch source is retained as the presentation presenter"
+        );
+    }
+
+    #[test]
+    fn presentation_without_transform_skips_the_spawn() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        ctx.registry
+            .borrow_mut()
+            .remove_component::<Transform>(target)
+            .expect("test target initially has a transform");
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![presentation_template("damageNumber")]);
+        runtime.replace_global_events(vec![event(
+            "missing-anchor",
+            "crate",
+            vec![present("damageNumber", input("@impact.healthAfter"))],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert!(
+            ctx.registry
+                .borrow_mut()
+                .take_presentation_spawns()
+                .is_empty(),
+            "a target without an anchor degrades to a skipped passive presentation"
         );
     }
 

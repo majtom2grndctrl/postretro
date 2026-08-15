@@ -688,10 +688,18 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // boolean sugar introduces only `select` nodes.
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { defineImpactEvent, defineStore, update } from "postretro";
+        import { definePresentationTemplate, present } from "postretro/ui";
         import type { Impact, ImpactEvent } from "postretro";
 
         const counters = defineStore("impact", {
           broken: { type: "number", default: 0 },
+        });
+        const damageNumber = definePresentationTemplate({
+          root: { kind: "text", content: "0", fontSize: 24, color: [1, 0.35, 0.1, 1] },
+          lifetimeMs: 750,
+          motion: { rise: 18, easing: "easeOut" },
+          fade: { startMs: 500 },
+          spawnScatter: { radius: 0.25 },
         });
         const breakable = (impact: Impact) => {
           const hits = impact.target.state("hits");
@@ -709,6 +717,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.target.playAnim("shatter"),
                 update(counters.broken, (current) => current.plus(1)),
                 impact.target.despawn(),
+                present(damageNumber, impact.target.healthAfter),
               ],
             },
           ];
@@ -744,9 +753,17 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
+        local UI = require("postretro/ui")
 
         local counters = Postretro.defineStore("impact", {
           broken = { type = "number", default = 0 },
+        })
+        local damageNumber = UI.definePresentationTemplate("damageNumber", {
+          root = { kind = "text", content = "0", fontSize = 24, color = {1, 0.35, 0.1, 1} },
+          lifetimeMs = 750,
+          motion = { rise = 18, easing = "easeOut" },
+          fade = { startMs = 500 },
+          spawnScatter = { radius = 0.25 },
         })
         local function breakable(impact)
           local hits = impact.target:state("hits")
@@ -768,6 +785,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                   return current:plus(1)
                 end),
                 impact.target:despawn(),
+                UI.present(damageNumber, impact.target.healthAfter),
               },
             },
           }
@@ -928,6 +946,18 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 },
             },
         })
+    );
+    assert_eq!(
+        base["policy"][1]["do"][6],
+        serde_json::json!({
+            "primitive": "present",
+            "target": "@impact.target",
+            "args": {
+                "template": "damageNumber",
+                "value": { "op": "input", "name": "@impact.healthAfter" },
+            },
+        }),
+        "present must lower identically through the public UI module",
     );
     assert_eq!(
         typescript["independent"]["policy"][0]["do"],

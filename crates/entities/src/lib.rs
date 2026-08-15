@@ -31,8 +31,9 @@ pub use data_descriptors::*;
 pub use data_registry::{DataRegistry, ScopedCrossing, ScopedReaction};
 pub use engine_state_catalog::*;
 pub use postretro_foundation::{
-    MAX_PENDING_PRESENTATION_SPAWNS, PoseInputs, PresentationFact, PresentationFacts,
-    PresentationFade, PresentationMotion, PresentationSpawn, PresentationTemplateHandle,
+    MAX_PENDING_PRESENTATION_SPAWNS, PoseInputs, PresentationEasing, PresentationFact,
+    PresentationFacts, PresentationFade, PresentationMotion, PresentationPresenter,
+    PresentationSpawn, PresentationTemplateHandle,
 };
 pub use provenance::*;
 pub use reactions::system_commands::{

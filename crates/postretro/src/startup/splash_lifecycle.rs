@@ -250,6 +250,9 @@ impl App {
         // leaves this `None` and therefore makes NO setter call, so the renderer
         // keeps its active profile.
         let committed_render_profile: postretro_scripting_core::runtime::ModRenderProfile;
+        let committed_presentation_templates: Vec<
+            postretro_scripting_core::data_descriptors::PresentationTemplate,
+        >;
         // Switching is App-owned input policy, so lift it out of the runtime
         // manifest before the registry drain mutably borrows the session.
         let committed_switching: postretro_foundation::SwitchingDescriptor;
@@ -298,6 +301,7 @@ impl App {
                 // shared extractor also used by the headless observability path, so
                 // the two cannot drift. See: context/lib/boot_sequence.md §3.
                 session.scripting.drain_manifest_registrations();
+                committed_presentation_templates = session.scripting.presentation_templates();
                 // `frontend` is session-owned now; the `manifest` borrow below
                 // aliases `session.scripting.script_runtime`, so lift the committed frontend
                 // into a local and assign `session.frontend` after that borrow ends
@@ -401,6 +405,9 @@ impl App {
             self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
         self.apply_mod_bloom_render_profile(committed_render_profile);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_presentation_templates(committed_presentation_templates);
+        }
         self.switching = committed_switching;
         if let Some(session) = self.session.as_mut() {
             session.scripting.mover_auto_close_ms = committed_mover_auto_close_ms;

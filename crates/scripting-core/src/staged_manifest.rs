@@ -14,7 +14,8 @@ use super::data_descriptors::{
     drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua, drain_render_profile_js,
+    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
     drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
@@ -335,6 +336,7 @@ fn run_staged_manifest_build(
         trigger_events: manifest.trigger_events,
         trigger_pools: manifest.trigger_pools,
         ui_trees: manifest.ui_trees,
+        presentation_templates: manifest.presentation_templates,
         theme: manifest.theme,
         frontend: manifest.frontend,
         store_declarations: manifest.store_declarations,
@@ -513,6 +515,14 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let presentation_templates =
+        drain_presentation_templates_js(ctx, &obj, "default mod manifest export").map_err(
+            |e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` default mod manifest export `presentationTemplates` invalid: {e}"
+                ),
+            },
+        )?;
     let theme = drain_theme_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -613,6 +623,7 @@ fn manifest_from_js_value<'js>(
         switching,
         entities,
         ui_trees,
+        presentation_templates,
         theme,
         frontend,
         fonts,
@@ -759,6 +770,14 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let presentation_templates =
+        drain_presentation_templates_lua(&table, "returned mod manifest").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `presentationTemplates` invalid: {e}"
+                ),
+            }
+        })?;
     let theme = drain_theme_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `theme` invalid: {e}"),
@@ -850,6 +869,7 @@ fn run_staged_mod_init_luau(
         switching,
         entities,
         ui_trees,
+        presentation_templates,
         theme,
         frontend,
         fonts,

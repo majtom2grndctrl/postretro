@@ -696,6 +696,8 @@ declare module "postretro" {
     entities?: ReadonlyArray<EntityTypeDescriptor>;
     /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
     uiTrees?: ReadonlyArray<ModUiTree>;
+    /** Passive world-presentation templates. They never participate in modal UI input or focus. */
+    presentationTemplates?: ReadonlyArray<PresentationTemplate>;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
@@ -1439,6 +1441,17 @@ declare module "postretro" {
     accessibleName?: string;
     role?: WidgetRole;
   };
+  /** Motion easing used by passive world-anchored presentation templates. */
+  export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  /** VM-free passive template resolved by the impact and renderer registries. */
+  export type PresentationTemplate = {
+    id: string;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: PresentationEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+  };
   /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
@@ -1658,6 +1671,7 @@ declare module "postretro/ui" {
     CrossingParams,
     Reaction,
     CrossingDescriptor,
+    NumberValue,
     RuntimeValue,
   } from "postretro";
 
@@ -1736,6 +1750,25 @@ declare module "postretro/ui" {
   export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
   export type ReactionHandleRef = { name: string };
   export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+  export type PresentationTemplateProps = {
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: WidgetEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+  };
+  export type PresentationTemplate<Name extends string = string> = Readonly<{
+    id: Name;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: WidgetEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+  }>;
+  /** TypeScript derives the stable id from a direct const binding. */
+  export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
+  /** Add a passive visual effect to an impact policy `do:` array. */
+  export function present(template: PresentationTemplate, value: NumberValue): Effect;
 
   /** Props for `Text`. `content` is the fallback/display string; `fontSize` is a finite logical-px number defaulting to 12; `color` is an RGBA tuple or color token defaulting to white. `bind` may replace rendered content from state; `styleRanges` recolors by normalized value. */
   export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };

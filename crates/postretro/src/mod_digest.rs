@@ -251,6 +251,7 @@ mod tests {
             switching: Default::default(),
             entities: vec![entity_descriptor()],
             ui_trees: Vec::new(),
+            presentation_templates: Vec::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
             fonts: ModFontAssets::default(),

@@ -15,6 +15,7 @@ declare module "postretro/ui" {
     CrossingParams,
     Reaction,
     CrossingDescriptor,
+    NumberValue,
     RuntimeValue,
   } from "postretro";
 
@@ -93,6 +94,25 @@ declare module "postretro/ui" {
   export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
   export type ReactionHandleRef = { name: string };
   export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+  export type PresentationTemplateProps = {
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: WidgetEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+  };
+  export type PresentationTemplate<Name extends string = string> = Readonly<{
+    id: Name;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: WidgetEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+  }>;
+  /** TypeScript derives the stable id from a direct const binding. */
+  export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
+  /** Add a passive visual effect to an impact policy `do:` array. */
+  export function present(template: PresentationTemplate, value: NumberValue): Effect;
 
   /** Props for `Text`. `content` is the fallback/display string; `fontSize` is a finite logical-px number defaulting to 12; `color` is an RGBA tuple or color token defaulting to white. `bind` may replace rendered content from state; `styleRanges` recolors by normalized value. */
   export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };

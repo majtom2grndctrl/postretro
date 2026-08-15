@@ -591,6 +591,52 @@ pub fn drain_ui_trees_lua(
     Ok(out)
 }
 
+/// Luau twin of [`drain_presentation_templates_js`]. Invalid entries are
+/// contained to the entry so a passive visual cannot make mod init fail.
+pub fn drain_presentation_templates_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<PresentationTemplate>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "presentationTemplates", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = dense_lua_prefix_len(&arr, "presentationTemplates", scope)?;
+    let mut seen_ids = BTreeSet::new();
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+        match presentation_template_from_lua(value) {
+            Ok(template) if !seen_ids.insert(template.id.clone()) => log::warn!(
+                "[Scripting] {scope}: `presentationTemplates[{i}]` duplicates `{}` and was skipped",
+                template.id
+            ),
+            Ok(template) => out.push(template),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: `presentationTemplates[{i}]` is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    log_lua_array_extras(&arr, len, "presentationTemplates", scope)?;
+    Ok(out)
+}
+
+/// Deserialize one Luau presentation template through the standard VM-free
+/// bridge, then validate its authored timing and motion bounds.
+pub fn presentation_template_from_lua(
+    value: LuaValue,
+) -> Result<PresentationTemplate, DescriptorError> {
+    let json = conv::lua_to_json(value).map_err(lua_err)?;
+    let template = serde_json::from_value::<PresentationTemplate>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation template must match its descriptor shape: {error}"),
+        }
+    })?;
+    template
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(template)
+}
+
 /// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from Luau.
 /// The `tree` field is converted via the G1a `anchored_tree_from_lua_value`
 /// bridge. Returns a named [`DescriptorError`] (never panics) on malformed input.

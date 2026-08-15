@@ -12,8 +12,9 @@ use std::path::PathBuf;
 
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
-    EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree,
-    SwitchingDescriptor, TriggerEventDescriptor, TriggerPoolDescriptor,
+    EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
+    PresentationTemplate, RegisteredUiTree, SwitchingDescriptor, TriggerEventDescriptor,
+    TriggerPoolDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -88,6 +89,10 @@ pub struct ModManifestResult {
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
     /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot caller in `main.rs`.
     pub ui_trees: Vec<RegisteredUiTree>,
+    /// Passive presentation templates registered through `ModManifest.presentationTemplates`.
+    /// They are resolved by the impact planner and renderer; unlike UI trees,
+    /// they never enter the modal/input registry.
+    pub presentation_templates: Vec<PresentationTemplate>,
     /// Theme tokens from the mod manifest's `theme` field. Default (empty) when
     /// absent. Drained into the `ThemeDescriptor` merge by the boot caller.
     pub theme: ModThemeTokens,

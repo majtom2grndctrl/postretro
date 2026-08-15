@@ -827,7 +827,7 @@ impl ScriptingCore {
             .script_runtime
             .committed_mod_identity()
             .map(|(id, _)| id.to_string());
-        let events = {
+        let (events, presentation_templates) = {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
             };
@@ -847,10 +847,24 @@ impl ScriptingCore {
             data_registry
                 .replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
             data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
-            std::mem::take(&mut manifest.events)
+            (
+                std::mem::take(&mut manifest.events),
+                std::mem::take(&mut manifest.presentation_templates),
+            )
         };
         self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
+        self.impact_policy_runtime
+            .replace_presentation_templates(presentation_templates);
+    }
+
+    /// Renderer-facing copy of the committed passive template registry. The
+    /// policy runtime resolves spawn handles while the renderer independently
+    /// owns widget layout, so callers only transfer this VM-free snapshot.
+    pub(crate) fn presentation_templates(
+        &self,
+    ) -> Vec<postretro_scripting_core::data_descriptors::PresentationTemplate> {
+        self.impact_policy_runtime.presentation_templates()
     }
 }
 

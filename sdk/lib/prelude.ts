@@ -72,6 +72,13 @@ export type {
 export { Tree, defineUiTree } from "./ui/tree";
 
 export type {
+  PresentationTemplateProps,
+  PresentationTemplate,
+} from "./ui/presentation";
+export { definePresentationTemplate } from "./ui/presentation";
+export { present } from "./data_script";
+
+export type {
   LocalStateHandle,
   LocalStateBundle,
   StateBindOptionsFor,

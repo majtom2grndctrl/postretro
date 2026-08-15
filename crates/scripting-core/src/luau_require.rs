@@ -475,6 +475,8 @@ mod tests {
                 "Grid",
                 "Tree",
                 "defineUiTree",
+                "definePresentationTemplate",
+                "present",
                 "getGameState",
                 "bindState",
                 "stateEquals",

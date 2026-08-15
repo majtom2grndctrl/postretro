@@ -43,16 +43,45 @@ pub enum PresentationFact {
 /// to renderer state.
 pub type PresentationFacts = BTreeMap<String, PresentationFact>;
 
+/// Opaque source identity stamped by an impact presenter. The packed value
+/// avoids a foundation dependency on the entity registry while retaining the
+/// sender choice required by a future addressed transport path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PresentationPresenter(pub u32);
+
+/// Easing applied to a transient presentation instance's authored motion.
+/// Kept in the VM-free payload because the app-side pool owns its frame-time
+/// animation, while scripts merely retain the authored descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PresentationEasing {
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
+impl Default for PresentationEasing {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
 /// Screen-space motion applied by the app-side transient pool.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PresentationMotion {
     /// Total upward displacement in device pixels over the transient lifetime.
     pub rise_pixels: f32,
+    /// Curve applied to the transient lifetime fraction before rise is sampled.
+    pub easing: PresentationEasing,
 }
 
 impl Default for PresentationMotion {
     fn default() -> Self {
-        Self { rise_pixels: 0.0 }
+        Self {
+            rise_pixels: 0.0,
+            easing: PresentationEasing::Linear,
+        }
     }
 }
 
@@ -79,7 +108,13 @@ pub struct PresentationSpawn {
     pub world_anchor: Vec3,
     pub template: PresentationTemplateHandle,
     pub facts: PresentationFacts,
+    /// Local presentation does not dereference this. It is carried from the
+    /// dispatch so the source/presenter decision is not lost before transport.
+    pub presenter: Option<PresentationPresenter>,
     pub lifetime_seconds: f32,
     pub motion: PresentationMotion,
     pub fade: PresentationFade,
+    /// Maximum deterministic world-space horizontal scatter applied by the
+    /// app-side pool when the instance enters its live bounded ring.
+    pub scatter_radius: f32,
 }

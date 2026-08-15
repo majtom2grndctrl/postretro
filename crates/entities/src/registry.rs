@@ -1453,9 +1453,11 @@ mod tests {
             world_anchor: Vec3::ZERO,
             template: template.into(),
             facts: BTreeMap::new(),
+            presenter: None,
             lifetime_seconds: 1.0,
             motion: PresentationMotion::default(),
             fade: PresentationFade::default(),
+            scatter_radius: 0.0,
         };
 
         registry.push_presentation_spawn(spawn("first"));
@@ -1476,9 +1478,11 @@ mod tests {
                 world_anchor: Vec3::ZERO,
                 template: format!("template-{index}").into(),
                 facts: BTreeMap::new(),
+                presenter: None,
                 lifetime_seconds: 1.0,
                 motion: PresentationMotion::default(),
                 fade: PresentationFade::default(),
+                scatter_radius: 0.0,
             });
         }
 

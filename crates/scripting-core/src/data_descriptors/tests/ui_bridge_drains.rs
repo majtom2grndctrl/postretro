@@ -4,6 +4,64 @@ use super::super::*;
 use super::common::*;
 
 #[test]
+fn presentation_template_wire_round_trips_for_js_and_luau() {
+    let js = r#"({
+        id: "damageNumber", lifetimeMs: 750,
+        root: { kind: "text", content: "0", fontSize: 24, color: [1, 0.35, 0.1, 1] },
+        motion: { rise: 18, easing: "easeOut" },
+        fade: { startMs: 500 }, spawnScatter: { radius: 0.25 }
+    })"#;
+    let from_js = eval_js(js, |ctx, value| {
+        presentation_template_from_js(ctx, value).expect("JS template must parse")
+    });
+
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua
+        .load(PRESENTATION_SRC)
+        .eval()
+        .expect("presentation SDK must evaluate");
+    lua.globals().set("P", presentation).unwrap();
+    let lua_value: LuaValue = lua
+        .load(
+            r#"return P.definePresentationTemplate("damageNumber", {
+                root = { kind = "text", content = "0", fontSize = 24, color = {1, 0.35, 0.1, 1} },
+                lifetimeMs = 750,
+                motion = { rise = 18, easing = "easeOut" },
+                fade = { startMs = 500 }, spawnScatter = { radius = 0.25 },
+            })"#,
+        )
+        .eval::<LuaValue>()
+        .expect("Luau template must parse");
+    let from_lua = presentation_template_from_lua(lua_value).expect("Luau template must parse");
+
+    assert_eq!(from_js, from_lua);
+    assert_eq!(
+        serde_json::to_value(&from_js).unwrap(),
+        serde_json::json!({
+            "id": "damageNumber",
+            "root": { "kind": "text", "content": "0", "fontSize": 24.0_f32, "color": [1.0_f32, 0.35_f32, 0.1_f32, 1.0_f32] },
+            "lifetimeMs": 750,
+            "motion": { "rise": 18.0, "easing": "easeOut" },
+            "fade": { "startMs": 500 },
+            "spawnScatter": { "radius": 0.25 },
+        })
+    );
+}
+
+#[test]
+fn malformed_presentation_template_degrades_at_manifest_drain() {
+    let templates = eval_js(
+        r#"({ presentationTemplates: [{ id: "bad", root: { kind: "spacer" }, lifetimeMs: 10, motion: { rise: 0, easing: "linear" }, fade: { startMs: 11 }, spawnScatter: { radius: 0 } }] })"#,
+        |ctx, value| {
+            let object = Object::from_value(value).unwrap();
+            drain_presentation_templates_js(ctx, &object, "test manifest").unwrap()
+        },
+    );
+    assert!(templates.is_empty());
+}
+
+#[test]
 fn js_bridge_capture_envelope_and_interactive_widgets_round_trip() {
     // A capture-mode tree with initialFocus + a grid of interactive widgets,
     // covering button/slider/bar, color tokens, binds, and styleRanges.

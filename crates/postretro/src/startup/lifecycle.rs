@@ -2785,6 +2785,7 @@ mod tests {
                     tree: postretro_ui::demo::build_frontend_menu_descriptor(),
                     always_on: false,
                 }],
+                presentation_templates: Vec::new(),
                 theme: Default::default(),
                 frontend: Some(Frontend {
                     menu_tree: "newMenu".to_string(),

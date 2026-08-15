@@ -28,3 +28,14 @@
     accessibleName?: string;
     role?: WidgetRole;
   };
+  /** Motion easing used by passive world-anchored presentation templates. */
+  export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  /** VM-free passive template resolved by the impact and renderer registries. */
+  export type PresentationTemplate = {
+    id: string;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: PresentationEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+  };

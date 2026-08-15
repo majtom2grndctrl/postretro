@@ -108,7 +108,7 @@ struct MaterialUniform {
 @group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
 
 // Static light buffer: specular + per-light SDF diffuse for sdf-tagged lights.
-// Four vec4 slots (64 B stride); see postretro/src/lighting/spec_buffer.rs
+// Four vec4 slots (64 B stride); see crates/lighting/src/spec_buffer.rs
 // for the CPU-side layout.
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
@@ -637,6 +637,20 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
     }
 }
 
+// Rejected or absent shadowmask resources bind a one-layer all-white texture.
+// Clamp baked multi-layer vertex indices so that fallback always samples that
+// fully-visible layer instead of addressing outside the bound texture.
+fn sample_shadowmask_atlas(lightmap_uv: vec2<f32>, lightmap_layer: u32) -> vec4<f32> {
+    let last_layer = textureNumLayers(shadowmask_atlas) - 1u;
+    let safe_layer = min(lightmap_layer, last_layer);
+    return textureSample(
+        shadowmask_atlas,
+        lightmap_filtering_sampler,
+        lightmap_uv,
+        i32(safe_layer),
+    );
+}
+
 // Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
 // A dropped/no-mask channel samples as fully lit, preserving the prior behavior.
 fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>) -> f32 {
@@ -862,7 +876,7 @@ fn shadowmask_union_subtraction(
             continue;
         }
 
-        let mask = textureSample(shadowmask_atlas, lightmap_filtering_sampler, lightmap_uv, i32(lightmap_layer));
+        let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
         let baked_vis = shadowmask_channel_value(mask, channel);
         let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
         // The raw-pool diagnostic follows the union's promoted-light coverage;
@@ -1085,12 +1099,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let spec_exp = max(material.shininess, 1.0);
         // Hoisted because every static specular light shares this fragment's
         // lightmap UV/layer. Undo this if specular gains per-light UVs.
-        let specular_shadowmask = textureSample(
-            shadowmask_atlas,
-            lightmap_filtering_sampler,
-            in.lightmap_uv,
-            i32(in.lightmap_layer),
-        );
+        let specular_shadowmask = sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer);
 
         // Chunk lookup when the offline index is populated; otherwise walk
         // the full spec buffer.

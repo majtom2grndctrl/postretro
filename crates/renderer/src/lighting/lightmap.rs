@@ -55,8 +55,8 @@ pub struct LightmapResources {
     #[allow(dead_code)]
     pub present: bool,
     /// Whether a real ShadowmaskAtlas was uploaded (false = 1x1x1 fully-visible
-    /// placeholder). CPU-side promoted metadata also gates the shader off when
-    /// false, so the dummy texture is never a behavioral fallback.
+    /// placeholder). Rejected or absent shadowmask data uses this all-visible
+    /// fallback so static specular remains fully lit.
     pub shadowmask_present: bool,
     /// Static dominant-direction atlas texture (Rgba8Unorm, octahedral in rg).
     /// Its sole consumer — the SDF pass's static dominant-direction trace — was
@@ -631,6 +631,20 @@ mod tests {
         }
     }
 
+    fn fake_shadowmask_section(
+        width: u32,
+        height: u32,
+        layer_count: u32,
+    ) -> ShadowmaskAtlasSection {
+        ShadowmaskAtlasSection {
+            width,
+            height,
+            layer_count,
+            channels: vec![0],
+            data: Vec::new(),
+        }
+    }
+
     /// Atlas-fits-device guard: a section that exceeds the granted
     /// `max_texture_dimension_2d` is dropped so the caller falls through to the
     /// neutral placeholder, rather than panicking on texture creation. Pure
@@ -733,6 +747,36 @@ mod tests {
         assert!(
             filter_usable_section(Some(&at_limit), 8192, 4).is_some(),
             "atlas exactly at the granted layer limit must be retained",
+        );
+    }
+
+    #[test]
+    fn rejected_multilayer_shadowmask_uses_placeholder_path() {
+        // Regression: a rejected two-layer atlas used to bind a one-layer
+        // placeholder while the shader still sampled baked layer 1 directly.
+        let oversize = fake_shadowmask_section(16_384, 64, 2);
+        assert!(
+            filter_usable_shadowmask_section(Some(&oversize), 8192, 256).is_none(),
+            "oversize multi-layer shadowmask must use the all-visible placeholder path",
+        );
+
+        let too_many_layers = fake_shadowmask_section(64, 64, 8);
+        assert!(
+            filter_usable_shadowmask_section(Some(&too_many_layers), 8192, 4).is_none(),
+            "over-layer-limit shadowmask must use the all-visible placeholder path",
+        );
+    }
+
+    #[test]
+    fn usable_multilayer_shadowmask_keeps_real_resource() {
+        let section = fake_shadowmask_section(64, 64, 2);
+        assert!(
+            filter_usable_shadowmask_section(Some(&section), 8192, 256).is_some(),
+            "in-limit multi-layer shadowmask must keep its authored atlas",
+        );
+        assert!(
+            filter_usable_shadowmask_section(None, 8192, 256).is_none(),
+            "absent shadowmask must use the all-visible placeholder path",
         );
     }
 

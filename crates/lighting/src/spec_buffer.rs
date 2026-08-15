@@ -222,8 +222,9 @@ mod tests {
     fn packs_shadowmask_channel_into_cone_cos_z() {
         let bytes = pack_spec_lights(&[sample()], &[2]);
 
-        assert_eq!(read_f32(&bytes, 56), 2.0);
-        assert_ne!(read_f32(&bytes, 56), SPEC_LIGHT_SHADOWMASK_NONE);
+        let shadowmask_channel = read_f32(&bytes, 56);
+        assert!((shadowmask_channel - 2.0).abs() < f32::EPSILON);
+        assert!((shadowmask_channel - SPEC_LIGHT_SHADOWMASK_NONE).abs() >= f32::EPSILON);
     }
 
     #[test]

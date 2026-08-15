@@ -207,7 +207,7 @@ mod tests {
             leaves: Vec::new(),
             root_node_index: 0,
         };
-        let geometry = LevelGeometry {
+        let mut geometry = LevelGeometry {
             vertices: &[],
             indices: &[],
             bvh: &bvh,
@@ -242,6 +242,16 @@ mod tests {
         assert_eq!(spec_bytes.len(), SPEC_LIGHT_SIZE);
         assert_eq!(read_f32(&spec_bytes, 56), 2.0);
         assert_ne!(read_f32(&spec_bytes, 56), SPEC_LIGHT_SHADOWMASK_NONE);
+
+        geometry.shadowmask_atlas = None;
+        let absent_channels = build_spec_light_shadowmask_channels(&geometry);
+        assert_eq!(absent_channels, vec![SHADOWMASK_CHANNEL_DROPPED]);
+        let absent_spec_bytes = pack_spec_lights(&lights, &absent_channels);
+        assert_eq!(
+            read_f32(&absent_spec_bytes, 56),
+            SPEC_LIGHT_SHADOWMASK_NONE,
+            "absent atlas must pack the fully-lit SpecLight sentinel",
+        );
     }
 
     #[test]

@@ -82,7 +82,19 @@
 "origin" "64 160 160"
 "angle" "45"
 }
-// entity 2 -- selected baked point light. The blocker occludes its direct path
+// entity 2 -- deliberately negligible dynamic prefix. Its only purpose is to
+// ensure the selected baked light's global world.lights index differs from its
+// compacted static-spec-light index in the headless capture path.
+{
+"classname" "light_dynamic"
+"origin" "32 32 320"
+"light" "1"
+"_color" "255 255 255"
+"_falloff_range" "1"
+"delay" "0"
+"style" "0"
+}
+// entity 3 -- selected baked point light. The blocker occludes its direct path
 // to the north-wall center, which produces the shadowmask sample used by the
 // static specular loop.
 {

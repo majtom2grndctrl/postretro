@@ -5608,7 +5608,7 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
-        let presentation_templates = session.presentation_templates();
+        let presentation_templates = session.scripting.presentation_templates();
         let script_runtime = &session.scripting.script_runtime;
         let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
             script_runtime.committed_mod_identity().map(|(id, _)| id),

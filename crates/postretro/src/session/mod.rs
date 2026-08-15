@@ -107,6 +107,11 @@ pub(crate) struct Session {
     /// NEVER the authoritative store. See: context/lib/ui.md §3/§6.
     pub(crate) presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
+    /// App-side transient presentation lifetime owner. It drains the registry
+    /// intake during Render and emits CPU draw data; renderer state stays out of
+    /// this session-owned bridge.
+    pub(crate) presentation_pool: crate::presentation_pool::PresentationPool,
+
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
 
@@ -496,6 +501,7 @@ impl Session {
             font_system: postretro_ui::text::build_font_system(),
             scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
+            presentation_pool: crate::presentation_pool::PresentationPool::default(),
             state_store_lifecycle: StateStoreLifecycle::default(),
             per_owner_save_timer: PerOwnerSaveTimer::default(),
             persisted_state: None,

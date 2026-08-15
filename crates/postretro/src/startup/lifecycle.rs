@@ -1603,6 +1603,7 @@ mod tests {
                 },
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
+                presentation_pool: crate::presentation_pool::PresentationPool::default(),
                 state_store_lifecycle: Default::default(),
                 persisted_state: None,
                 per_owner_save_timer: Default::default(),

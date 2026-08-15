@@ -880,7 +880,11 @@ impl Renderer {
         // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
         // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
         // with all layers' glyphs concatenated in painter order, sidesteps it.
-        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
+        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len() + 1);
+        // Presentation is a passive world-facing layer, not a retained modal.
+        // Fold it first so HUD and modal trees remain visually above it, while
+        // focus export continues to inspect only the retained top tree below.
+        layer_draws.push(std::mem::take(&mut full.presentation_draw));
         for (layer, tree) in stack.iter().enumerate() {
             // Image widgets measure from the renderer-owned image registry. A
             // missing key still collapses, but the registry now warns once when

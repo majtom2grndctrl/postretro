@@ -72,6 +72,13 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
+    /// Store one frame of app-produced passive presentation draw data. It is
+    /// folded with retained gameplay UI during the render pass, but never enters
+    /// the focus or hit-test export path.
+    pub fn set_presentation_draw_data(&mut self, draw: postretro_ui::tree::UiDrawData) {
+        self.full_mut().presentation_draw = draw;
+    }
+
     /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack
     /// layer against the current surface viewport — the reverse twin of the
     /// app→renderer snapshot. The App reads this after a gameplay render (which

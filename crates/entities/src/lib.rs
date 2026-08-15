@@ -30,7 +30,10 @@ pub use ctx::ScriptCtx;
 pub use data_descriptors::*;
 pub use data_registry::{DataRegistry, ScopedCrossing, ScopedReaction};
 pub use engine_state_catalog::*;
-pub use postretro_foundation::PoseInputs;
+pub use postretro_foundation::{
+    MAX_PENDING_PRESENTATION_SPAWNS, PoseInputs, PresentationFact, PresentationFacts,
+    PresentationFade, PresentationMotion, PresentationSpawn, PresentationTemplateHandle,
+};
 pub use provenance::*;
 pub use reactions::system_commands::{
     SystemCommandFireContext, SystemCommandQueue, SystemReactionCommand,

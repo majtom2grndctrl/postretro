@@ -686,6 +686,7 @@ pub(crate) fn build_full_renderer(
         ui,
         ui_images: ui::UiImageRegistry::default(),
         ui_snapshot: ui::UiReadSnapshot::default(),
+        presentation_draw: ui::tree::UiDrawData::default(),
         ui_theme: ui::theme::UiTheme::engine_default(),
         ui_theme_generation: 0,
         fog,

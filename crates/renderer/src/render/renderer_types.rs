@@ -948,6 +948,11 @@ pub(super) struct FullRenderer {
     /// both render signatures stay stable.
     pub(super) ui_snapshot: ui::UiReadSnapshot,
 
+    /// Frame-local passive presentation draw data from the app-side pool. This
+    /// is deliberately separate from the retained UI snapshot: it has no tree,
+    /// focus, hit-test, or input state.
+    pub(super) presentation_draw: ui::tree::UiDrawData,
+
     /// Active UI theme: the token table every descriptor tree resolves its
     /// color/spacing/font slots against at build time. Defaults to
     /// `UiTheme::engine_default()` at construction; `set_ui_theme` installs an

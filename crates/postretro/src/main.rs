@@ -3359,16 +3359,16 @@ impl ApplicationHandler for App {
                     // borrow it once here (disjoint from the `renderer` borrow of
                     // `self.renderer` and from the other `self` fields read below).
                     let session = self.session.as_mut().expect("running session installed");
-                    let presentation_draw = {
+                    let presentation_inputs = {
                         let mut registry = script_ctx.registry.borrow_mut();
-                        session.presentation_pool.advance_and_build_draw_data(
+                        session.presentation_pool.advance_and_collect_inputs(
                             &mut registry,
                             frame_dt,
                             view_proj,
                             presentation_viewport,
                         )
                     };
-                    renderer.set_presentation_draw_data(presentation_draw);
+                    renderer.set_presentation_draw_inputs(presentation_inputs);
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
@@ -4918,7 +4918,7 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
-        renderer.set_presentation_draw_data(postretro_ui::tree::UiDrawData::default());
+        renderer.set_presentation_draw_inputs(Vec::new());
         let present_handle = match renderer.render_frame_indirect(
             &mut session.font_system,
             CameraCullVisibility {

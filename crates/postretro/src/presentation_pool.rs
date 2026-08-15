@@ -2,7 +2,7 @@
 
 use glam::Mat4;
 use postretro_entities::{EntityRegistry, PresentationSpawn};
-use postretro_ui::{UiInstance, tree::UiDrawData};
+use postretro_renderer::PresentationDrawInput;
 
 use crate::presentation_projection::project_world_to_screen;
 
@@ -37,17 +37,18 @@ impl PresentationPool {
         }
     }
 
-    /// Drain registry intake, advance the frame-time clock, and emit this
-    /// frame's passive draw data. Intake occurs before the clock advances so a
-    /// new spawn starts at age zero, then advances by this same render frame's
-    /// delta alongside all older instances.
-    pub(crate) fn advance_and_build_draw_data(
+    /// Drain registry intake, advance the frame-time clock, and expose this
+    /// frame's passive renderer inputs. Intake occurs before the clock advances
+    /// so a new spawn starts at age zero, then advances by this same render
+    /// frame's delta alongside all older instances. The pool deliberately does
+    /// not lay out templates: FontSystem and UI assets remain renderer-owned.
+    pub(crate) fn advance_and_collect_inputs(
         &mut self,
         registry: &mut EntityRegistry,
         frame_dt_seconds: f32,
         view_projection: Mat4,
         viewport_size: [u32; 2],
-    ) -> UiDrawData {
+    ) -> Vec<PresentationDrawInput> {
         for spawn in registry.take_presentation_spawns() {
             self.intake(spawn);
         }
@@ -58,7 +59,7 @@ impl PresentationPool {
             age_seconds_at(frame_time_seconds, live) < lifetime_seconds(&live.spawn)
         });
 
-        self.build_temporary_draw_data(view_projection, viewport_size)
+        self.collect_draw_inputs(view_projection, viewport_size)
     }
 
     fn intake(&mut self, spawn: PresentationSpawn) {
@@ -92,12 +93,12 @@ impl PresentationPool {
             .expect("a full presentation pool has at least one live spawn")
     }
 
-    fn build_temporary_draw_data(
+    fn collect_draw_inputs(
         &self,
         view_projection: Mat4,
         viewport_size: [u32; 2],
-    ) -> UiDrawData {
-        let mut draw = UiDrawData::default();
+    ) -> Vec<PresentationDrawInput> {
+        let mut inputs = Vec::with_capacity(self.spawns.len());
         for live in &self.spawns {
             let Some(anchor) =
                 project_world_to_screen(live.spawn.world_anchor, view_projection, viewport_size)
@@ -111,17 +112,15 @@ impl PresentationPool {
             let rise = finite_or_zero(live.spawn.motion.rise_pixels) * progress;
             let alpha = fade_alpha(&live.spawn, age, lifetime);
 
-            // Temporary Task 2 seam: Task 3 replaces this one quad with the
-            // renderer-side one-shot template lowering. The pool intentionally
-            // retains the template and facts even though this seam cannot read
-            // them yet.
-            draw.push_quad(UiInstance::panel(
-                [anchor.x - 8.0, anchor.y - 8.0 - rise, 16.0, 16.0],
-                [1.0, 0.35, 0.1, alpha],
-                [0.0; 4],
-            ));
+            inputs.push(PresentationDrawInput {
+                instance_id: live.intake_sequence,
+                template: live.spawn.template.clone(),
+                facts: live.spawn.facts.clone(),
+                anchor: [anchor.x, anchor.y - rise],
+                opacity: alpha,
+            });
         }
-        draw
+        inputs
     }
 
     fn age_seconds(&self, live: &LivePresentationSpawn) -> f64 {
@@ -222,10 +221,10 @@ mod tests {
         let mut pool = PresentationPool::new(2);
         registry.push_presentation_spawn(spawn("first", Vec3::ZERO, 1.0));
         registry.push_presentation_spawn(spawn("second", Vec3::ZERO, 1.0));
-        let _ = pool.advance_and_build_draw_data(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
 
         registry.push_presentation_spawn(spawn("third", Vec3::ZERO, 1.0));
-        let _ = pool.advance_and_build_draw_data(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
 
         assert_eq!(pool.live_template_names(), ["second", "third"]);
     }
@@ -236,15 +235,14 @@ mod tests {
         let mut pool = PresentationPool::new(1);
         registry.push_presentation_spawn(spawn("impact", Vec3::ZERO, 0.2));
 
-        let first =
-            pool.advance_and_build_draw_data(&mut registry, 0.1, Mat4::IDENTITY, [800, 600]);
-        assert_eq!(first.quads.len(), 1);
+        let first = pool.advance_and_collect_inputs(&mut registry, 0.1, Mat4::IDENTITY, [800, 600]);
+        assert_eq!(first.len(), 1);
         assert!((pool.live_ages_seconds()[0] - 0.1).abs() < f64::from(EPSILON));
-        assert!((first.quads.instances[0].color[3] - 0.5).abs() < EPSILON);
+        assert!((first[0].opacity - 0.5).abs() < EPSILON);
 
         let expired =
-            pool.advance_and_build_draw_data(&mut registry, 0.11, Mat4::IDENTITY, [800, 600]);
-        assert!(expired.quads.is_empty());
+            pool.advance_and_collect_inputs(&mut registry, 0.11, Mat4::IDENTITY, [800, 600]);
+        assert!(expired.is_empty());
         assert!(pool.live_ages_seconds().is_empty());
     }
 
@@ -256,15 +254,15 @@ mod tests {
         registry.push_presentation_spawn(spawn("behind", Vec3::new(0.0, 0.0, 2.0), 1.0));
         registry.push_presentation_spawn(spawn("offscreen", Vec3::new(100.0, 0.0, -2.0), 1.0));
 
-        let draw = pool.advance_and_build_draw_data(
+        let inputs = pool.advance_and_collect_inputs(
             &mut registry,
             0.0,
             camera_view_projection(),
             [800, 600],
         );
 
-        assert_eq!(draw.quads.len(), 1);
-        assert!((draw.quads.instances[0].rect[0] - 392.0).abs() < EPSILON);
-        assert!((draw.quads.instances[0].rect[1] - 292.0).abs() < EPSILON);
+        assert_eq!(inputs.len(), 1);
+        assert!((inputs[0].anchor[0] - 400.0).abs() < EPSILON);
+        assert!((inputs[0].anchor[1] - 300.0).abs() < EPSILON);
     }
 }

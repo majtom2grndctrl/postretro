@@ -245,6 +245,40 @@ impl UiDrawData {
         self.paint_order.push(UiPaintOp::Text { index });
     }
 
+    /// Append another draw list after translating it in device pixels and
+    /// modulating its opacity. Presentation templates lower around `[0, 0]`;
+    /// the renderer uses this to place the result at a projected world anchor
+    /// without changing taffy's template-relative layout coordinates.
+    pub fn append_translated(&mut self, source: &UiDrawData, offset: [f32; 2], opacity: f32) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        for op in &source.paint_order {
+            match *op {
+                UiPaintOp::Quad { index } => {
+                    let mut instance = source.quads.instances[index];
+                    instance.rect[0] += offset[0];
+                    instance.rect[1] += offset[1];
+                    instance.color[3] *= opacity;
+                    self.push_quad(instance);
+                }
+                UiPaintOp::Image { batch, index } => {
+                    let (asset, list) = &source.images[batch];
+                    let mut instance = list.instances[index];
+                    instance.rect[0] += offset[0];
+                    instance.rect[1] += offset[1];
+                    instance.color[3] *= opacity;
+                    self.push_image(asset, instance);
+                }
+                UiPaintOp::Text { index } => {
+                    let mut text = source.texts[index].clone();
+                    text.position[0] += offset[0];
+                    text.position[1] += offset[1];
+                    text.color[3] = (f32::from(text.color[3]) * opacity).round() as u8;
+                    self.push_text(text);
+                }
+            }
+        }
+    }
+
     /// Mutable handle to the quad list for `asset`, creating an empty list in
     /// first-seen order if the key is new. Kept for tests and readback helpers
     /// that only care about grouped image output. Production collection uses

@@ -217,6 +217,11 @@ pub(crate) struct UiPass {
     /// The boot splash deliberately does NOT use this; it renders through
     /// `BootSplashPass`, outside gameplay UI and the retained tree stack.
     gameplay_trees: Vec<RetainedGameplayTree>,
+
+    /// Per-live-instance layout state for passive world presentations. This is
+    /// intentionally separate from `gameplay_trees`: it retains only taffy
+    /// measurement/tween state, never a modal tree, focus list, or input state.
+    presentation_layouts: std::collections::HashMap<u64, PresentationLayout>,
 }
 
 /// One retained gameplay UI tree plus the descriptor it was built from. The
@@ -236,6 +241,67 @@ struct RetainedGameplayTree {
     /// The retained taffy-backed tree, carrying its layout cache, last viewport,
     /// per-bound-node last-resolved values, and cached draw list across frames.
     tree: tree::UiTree,
+}
+
+/// Renderer-local cache for one app-owned transient presentation. Task 4
+/// replaces the temporary template resolver below with registered descriptors;
+/// retaining this small layout state is still necessary for fact-driven text
+/// remeasurement and tween continuity across the transient's lifetime.
+struct PresentationLayout {
+    template: postretro_entities::PresentationTemplateHandle,
+    theme_generation: u64,
+    layout: tree::PresentationTemplateLayout,
+}
+
+/// Narrow Task 3 fixture while Task 4's registered presentation-template
+/// descriptor is not available. It is intentionally unreachable from scripting
+/// and accepts one explicit internal handle only; Task 4 removes it when the
+/// real registry supplies template subtrees.
+fn temporary_presentation_template(
+    handle: &postretro_entities::PresentationTemplateHandle,
+) -> Option<descriptor::Widget> {
+    use descriptor::{
+        Align, BindSource, ColorValue, ContainerWidget, LocalState, SpacingValue, TextBind,
+        TextWidget, Widget,
+    };
+
+    (handle.0 == "__task3.damage-number-fixture").then(|| {
+        Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
+            local_state: Some(LocalState {
+                scope: "presentation".to_string(),
+                cells: Default::default(),
+            }),
+            visible_when: None,
+            role: None,
+            children: vec![Widget::Text(TextWidget {
+                content: "0".to_string(),
+                font_size: 24.0,
+                color: ColorValue::Literal([1.0, 0.35, 0.1, 1.0]),
+                id: None,
+                focus_neighbors: Default::default(),
+                font: None,
+                bind: Some(TextBind {
+                    source: BindSource::Local {
+                        local: "value".to_string(),
+                    },
+                    format: None,
+                    tween: None,
+                }),
+                style_ranges: None,
+                visible_when: None,
+                role: None,
+            })],
+        })
+    })
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -670,6 +736,7 @@ impl UiPass {
             depth_view: None,
             depth_size: [0, 0],
             gameplay_trees: Vec::new(),
+            presentation_layouts: std::collections::HashMap::new(),
         }
     }
 
@@ -780,6 +847,71 @@ impl UiPass {
                 cell_values,
                 time_seconds,
             )
+    }
+
+    /// Lower app-projected passive presentation instances into one draw list.
+    /// Each instance owns its fact snapshot; no value is read from the gameplay
+    /// slot table, and this path has no retained-tree/focus/input interaction.
+    ///
+    /// Task 4 replaces `temporary_presentation_template` with the registered
+    /// authoring surface. Keeping that fixture constrained here lets Task 3 prove
+    /// the renderer-owned FontSystem/layout boundary before templates exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_presentation_inputs(
+        &mut self,
+        font_system: &mut FontSystem,
+        inputs: &[super::PresentationDrawInput],
+        viewport: [u32; 2],
+        image_sizes: &tree::ImageSizes,
+        image_sizes_generation: u64,
+        theme: &theme::UiTheme,
+        theme_generation: u64,
+        time_seconds: f64,
+    ) -> tree::UiDrawData {
+        let mut draw = tree::UiDrawData::default();
+        let mut active = std::collections::HashSet::with_capacity(inputs.len());
+
+        for input in inputs {
+            active.insert(input.instance_id);
+            let Some(template) = temporary_presentation_template(&input.template) else {
+                self.presentation_layouts.remove(&input.instance_id);
+                continue;
+            };
+            let rebuild = match self.presentation_layouts.get(&input.instance_id) {
+                Some(cached) => {
+                    cached.template != input.template || cached.theme_generation != theme_generation
+                }
+                None => true,
+            };
+            if rebuild {
+                self.presentation_layouts.insert(
+                    input.instance_id,
+                    PresentationLayout {
+                        template: input.template.clone(),
+                        theme_generation,
+                        layout: tree::PresentationTemplateLayout::from_widget(&template, theme),
+                    },
+                );
+            }
+
+            let cached = self
+                .presentation_layouts
+                .get_mut(&input.instance_id)
+                .expect("presentation layout inserted or retained above");
+            let cells = cached.layout.fact_cell_values(&input.facts);
+            let relative = cached.layout.build_draw_data(
+                viewport,
+                font_system,
+                image_sizes,
+                image_sizes_generation,
+                &cells,
+                time_seconds,
+            );
+            draw.append_translated(&relative, input.anchor, input.opacity);
+        }
+        self.presentation_layouts
+            .retain(|instance_id, _| active.contains(instance_id));
+        draw
     }
 
     /// Export the flat hit-test / focus rect list for the TOP stack layer (the

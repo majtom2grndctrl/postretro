@@ -7,6 +7,19 @@
 
 use super::*;
 
+/// One live, app-projected passive presentation instance for this render frame.
+/// The app owns its lifetime and producer-stamped facts; the renderer owns its
+/// template layout and font measurement before folding the resulting draw data
+/// into the UI composition.
+#[derive(Debug, Clone)]
+pub struct PresentationDrawInput {
+    pub instance_id: u64,
+    pub template: postretro_entities::PresentationTemplateHandle,
+    pub facts: postretro_entities::PresentationFacts,
+    pub anchor: [f32; 2],
+    pub opacity: f32,
+}
+
 impl Renderer {
     /// Present an acquired frame handle. Surface ownership stays inside the
     /// renderer; callers only decide whether to present a returned handle.
@@ -72,11 +85,12 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
-    /// Store one frame of app-produced passive presentation draw data. It is
-    /// folded with retained gameplay UI during the render pass, but never enters
-    /// the focus or hit-test export path.
-    pub fn set_presentation_draw_data(&mut self, draw: postretro_ui::tree::UiDrawData) {
-        self.full_mut().presentation_draw = draw;
+    /// Store this frame's app-produced passive presentation instances. The
+    /// renderer resolves their template draw data later, where it owns the
+    /// `FontSystem`, UI theme, and image registry. They never enter the retained
+    /// gameplay-tree or focus/hit-test path.
+    pub fn set_presentation_draw_inputs(&mut self, inputs: Vec<PresentationDrawInput>) {
+        self.full_mut().presentation_inputs = inputs;
     }
 
     /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack

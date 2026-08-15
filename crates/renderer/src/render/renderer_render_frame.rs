@@ -882,9 +882,19 @@ impl Renderer {
         // with all layers' glyphs concatenated in painter order, sidesteps it.
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len() + 1);
         // Presentation is a passive world-facing layer, not a retained modal.
-        // Fold it first so HUD and modal trees remain visually above it, while
+        // Lower it first so HUD and modal trees remain visually above it, while
         // focus export continues to inspect only the retained top tree below.
-        layer_draws.push(std::mem::take(&mut full.presentation_draw));
+        let presentation_draw = full.ui.layout_presentation_inputs(
+            font_system,
+            &full.presentation_inputs,
+            ui_viewport,
+            full.ui_images.image_sizes(),
+            full.ui_images.image_sizes_generation(),
+            &full.ui_theme,
+            full.ui_theme_generation,
+            full.ui_snapshot.time_seconds,
+        );
+        layer_draws.push(presentation_draw);
         for (layer, tree) in stack.iter().enumerate() {
             // Image widgets measure from the renderer-owned image registry. A
             // missing key still collapses, but the registry now warns once when

@@ -20,7 +20,7 @@ use super::draw::{
     linear_rgba_to_srgb_u8, project_quad, project_rect, resolve_panel_fill, resolve_text,
     style_text_value, style_value,
 };
-use super::node_context::NodeContext;
+use super::node_context::{NodeContext, VisibilityState};
 use super::predicate::resolve_predicate;
 use super::ui_tree::UiTree;
 
@@ -56,313 +56,336 @@ impl UiTree {
         let scale = super::super::layout::device_scale(device_size);
         let canvas_origin = canvas_origin(device_size, scale);
 
-        // styleRange band colors were pre-resolved to literals at build time, so
-        // the draw-time evaluator never looks a token up; this inert theme satisfies
-        // its `&UiTheme` parameter without
-        // re-introducing the theme to the per-frame walk.
-        let inert_theme = UiTheme::engine_default();
-
-        let walk = DrawWalkCtx {
-            canvas_origin,
+        collect_draw_data_from_layout(
+            &self.taffy,
+            self.root,
+            root_origin,
             scale,
+            canvas_origin,
             slot_values,
             cell_values,
             time_seconds,
-            inert_theme: &inert_theme,
-        };
-
-        let mut data = UiDrawData::default();
-        self.collect_node(self.root, root_origin, &walk, &mut data);
-        data
+            &self.visibility,
+        )
     }
+}
 
-    pub(super) fn collect_node(
-        &self,
-        node: NodeId,
-        ref_origin: [f32; 2],
-        walk: &DrawWalkCtx<'_>,
-        data: &mut UiDrawData,
-    ) {
-        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (normally
-        // a false `visibleWhen`) and its entire subtree draw nothing — skip the
-        // whole subtree so zero quads/glyphs are emitted. An exit-fading Bar stays
-        // drawable while its predicate is false; otherwise the node remains in the
-        // taffy tree but is hidden, so this only affects the draw, not structure.
-        if self.is_display_none(node) {
-            return;
-        }
-        let DrawWalkCtx {
-            canvas_origin,
-            scale,
-            slot_values,
-            cell_values,
-            time_seconds,
-            inert_theme,
-        } = *walk;
-        let layout = self.taffy.layout(node).expect("node has computed layout");
-        let context = self.taffy.get_node_context(node);
+/// Read a pre-computed taffy subtree into device-pixel draw data. Both the
+/// retained gameplay tree and the presentation one-shot layout use this exact
+/// lowering path; callers choose the root origin and canvas origin. Presentation
+/// passes `[0.0, 0.0]` for both origins so its returned list is relative to its
+/// world-projected anchor rather than the retained UI letterbox canvas.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_draw_data_from_layout(
+    taffy: &taffy::prelude::TaffyTree<NodeContext>,
+    root: NodeId,
+    root_origin: [f32; 2],
+    scale: f32,
+    canvas_origin: [f32; 2],
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+    time_seconds: f64,
+    visibility: &HashMap<NodeId, VisibilityState>,
+) -> UiDrawData {
+    // styleRange band colors were pre-resolved to literals at build time, so
+    // the draw-time evaluator never looks a token up; this inert theme satisfies
+    // its `&UiTheme` parameter without re-introducing the theme to the per-frame
+    // walk.
+    let inert_theme = UiTheme::engine_default();
+    let walk = DrawWalkCtx {
+        canvas_origin,
+        scale,
+        slot_values,
+        cell_values,
+        time_seconds,
+        inert_theme: &inert_theme,
+    };
+    let mut data = UiDrawData::default();
+    collect_node(taffy, root, root_origin, &walk, visibility, &mut data);
+    data
+}
 
-        match context {
-            Some(NodeContext::Panel {
-                fill,
-                border,
-                bind_scope,
-                bind,
-                last_resolved,
-                tween,
-                style_ranges,
-                style_state,
-            }) => {
-                // A bound panel resolves its fill from the slot snapshot; an
-                // absent/malformed slot falls back to the literal `fill`. For a
-                // TWEENED bind whose driver has produced an eased display fill
-                // (`tween` is `Some` and `last_resolved` holds it), render that
-                // eased fill instead of re-resolving the raw slot — so the
-                // per-channel easing reaches the draw. The fresh/splash path never
-                // populates `tween`, so it resolves the target directly (inert).
-                let mut fill = match (tween, last_resolved) {
-                    (Some(_), Some(eased)) => *eased,
-                    _ => resolve_panel_fill(
-                        bind.as_ref(),
-                        bind_scope.as_deref(),
-                        *fill,
-                        slot_values,
-                        cell_values,
-                    ),
-                };
-                // styleRanges overrides the fill: the bound numeric
-                // value maps to a band color + pulse/flash. Its band colors were
-                // pre-resolved to literals at build, so the evaluator's theme arg
-                // is inert here. The base color is the resolved `fill` above (a
-                // band with no color keeps it).
-                if let Some(ranges) = style_ranges {
-                    if let Some(value) = style_value(
-                        bind.as_ref(),
-                        bind_scope.as_deref(),
-                        slot_values,
-                        cell_values,
-                    ) {
-                        fill = evaluate(
-                            ranges,
-                            value,
-                            fill,
-                            inert_theme,
-                            &mut style_state.borrow_mut(),
-                            time_seconds,
-                        );
-                    }
-                }
-                data.push_quad(project_quad(
-                    ref_origin,
-                    layout,
-                    scale,
-                    canvas_origin,
-                    fill,
-                    border.as_ref(),
-                ));
-            }
-            Some(NodeContext::Image { asset }) => {
-                // White-tinted image quad grouped by its `asset` key so the
-                // renderer can bind the matching texture for that group. UV/full-
-                // texture defaults apply. Quads for the same key concatenate into
-                // one batch; the renderer resolves the key→bind-group at encode.
-                let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.push_image(asset, UiInstance::image(rect));
-            }
-            Some(NodeContext::Bar {
-                bind_scope,
-                bind,
-                max,
-                fill,
-                background,
-                exit_fade: _,
-                last_resolved,
-                last_max_resolved: _,
-                tween,
-                style_ranges,
-                style_state,
-            }) => {
-                let exit = self
-                    .visibility
-                    .get(&node)
-                    .and_then(|state| state.bar_exit_fade.as_ref())
-                    .and_then(|fade| {
-                        fade.alpha_at(time_seconds).map(|alpha| {
-                            (
-                                alpha,
-                                fade.captured_value
-                                    .expect("active exit fade captures its bar value"),
-                                fade.captured_max
-                                    .expect("active exit fade captures its bar denominator"),
-                            )
-                        })
-                    });
-                // Background quad fills the whole laid-out rect.
-                let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                let mut background_color = *background;
-                if let Some((alpha, _, _)) = exit {
-                    background_color[3] *= alpha;
-                }
-                data.push_quad(UiInstance::panel(rect, background_color, [0.0; 4]));
+fn collect_node(
+    taffy: &taffy::prelude::TaffyTree<NodeContext>,
+    node: NodeId,
+    ref_origin: [f32; 2],
+    walk: &DrawWalkCtx<'_>,
+    visibility: &HashMap<NodeId, VisibilityState>,
+    data: &mut UiDrawData,
+) {
+    // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (normally
+    // a false `visibleWhen`) and its entire subtree draw nothing — skip the
+    // whole subtree so zero quads/glyphs are emitted. An exit-fading Bar stays
+    // drawable while its predicate is false; otherwise the node remains in the
+    // taffy tree but is hidden, so this only affects the draw, not structure.
+    if taffy.style(node).expect("node has a style").display == taffy::prelude::Display::None {
+        return;
+    }
+    let DrawWalkCtx {
+        canvas_origin,
+        scale,
+        slot_values,
+        cell_values,
+        time_seconds,
+        inert_theme,
+    } = *walk;
+    let layout = taffy.layout(node).expect("node has computed layout");
+    let context = taffy.get_node_context(node);
 
-                // The displayed value: the eased tween display when active (the
-                // styleRanges/fill-fraction contract reads the value the widget
-                // RENDERS, which mid-tween is the display value), else the raw slot
-                // `Number`. The fresh/splash path never tweens, so it reads the slot.
-                let (value, max_value) = match exit {
-                    Some((_, value, max)) => (value, max),
-                    None => (
-                        match (tween, last_resolved) {
-                            (Some(_), Some(displayed)) => *displayed,
-                            _ => bar_slot_value(
-                                bind,
-                                bind_scope.as_deref(),
-                                slot_values,
-                                cell_values,
-                            ),
-                        },
-                        bar_max_value(max, slot_values),
-                    ),
-                };
-                let fraction = if max_value > 0.0 {
-                    (value / max_value).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-
-                // styleRanges recolors the fill from the normalized displayed
-                // fraction. Text/panel pass their displayed scalar directly; a
-                // bar's rendered scalar is its fill fraction.
-                let mut fill_color = *fill;
-                if let Some(ranges) = style_ranges {
-                    fill_color = evaluate(
+    match context {
+        Some(NodeContext::Panel {
+            fill,
+            border,
+            bind_scope,
+            bind,
+            last_resolved,
+            tween,
+            style_ranges,
+            style_state,
+        }) => {
+            // A bound panel resolves its fill from the slot snapshot; an
+            // absent/malformed slot falls back to the literal `fill`. For a
+            // TWEENED bind whose driver has produced an eased display fill
+            // (`tween` is `Some` and `last_resolved` holds it), render that
+            // eased fill instead of re-resolving the raw slot — so the
+            // per-channel easing reaches the draw. The fresh/splash path never
+            // populates `tween`, so it resolves the target directly (inert).
+            let mut fill = match (tween, last_resolved) {
+                (Some(_), Some(eased)) => *eased,
+                _ => resolve_panel_fill(
+                    bind.as_ref(),
+                    bind_scope.as_deref(),
+                    *fill,
+                    slot_values,
+                    cell_values,
+                ),
+            };
+            // styleRanges overrides the fill: the bound numeric
+            // value maps to a band color + pulse/flash. Its band colors were
+            // pre-resolved to literals at build, so the evaluator's theme arg
+            // is inert here. The base color is the resolved `fill` above (a
+            // band with no color keeps it).
+            if let Some(ranges) = style_ranges {
+                if let Some(value) = style_value(
+                    bind.as_ref(),
+                    bind_scope.as_deref(),
+                    slot_values,
+                    cell_values,
+                ) {
+                    fill = evaluate(
                         ranges,
-                        fraction,
-                        fill_color,
+                        value,
+                        fill,
                         inert_theme,
                         &mut style_state.borrow_mut(),
                         time_seconds,
                     );
                 }
-                if let Some((alpha, _, _)) = exit {
-                    fill_color[3] *= alpha;
-                }
-
-                // Fill quad: same top-left/height, width scaled by the fraction.
-                // Snap to whole device pixels like the background rect.
-                let fill_width = (rect[2] * fraction).round();
-                if fill_width > 0.0 {
-                    let fill_rect = [rect[0], rect[1], fill_width, rect[3]];
-                    data.push_quad(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
-                }
             }
-            Some(NodeContext::Text {
-                content,
-                font_size,
-                color,
-                family,
-                bind_scope,
-                bind,
-                last_resolved,
-                tween,
-                style_ranges,
-                style_state,
-                predicate_bind,
-                predicate_scope,
-            }) => {
-                // A bound text node resolves its drawn string from the slot
-                // snapshot (through the optional `{}` format template); an absent
-                // slot falls back to the literal `content`. Layout already used
-                // the literal `content` (or the resolved/displayed string in
-                // `last_resolved`) for measurement (see `measure_node`), so
-                // resolution only swaps the rendered string, never the geometry.
-                //
-                // For a TWEENED bind whose driver has produced a displayed value
-                // (`tween` is `Some`, with the rounded/formatted display string in
-                // `last_resolved`), render that string so the eased value reaches
-                // the draw and matches what the measure seam shaped. The
-                // fresh/splash path never populates `tween`, so it resolves the
-                // target directly (inert).
-                let resolved = match (tween, last_resolved) {
-                    (Some(_), Some(displayed)) => displayed.clone(),
-                    _ => resolve_text(
-                        bind.as_ref(),
-                        bind_scope.as_deref(),
-                        content,
-                        slot_values,
-                        cell_values,
-                    ),
-                };
-                // styleRanges overrides the run's color: the bound
-                // value (the eased tween display when a tween is active, else the
-                // raw slot number) maps to a band color + pulse/flash. Band colors
-                // were pre-resolved to literals at build, so the theme arg is inert.
-                let color = match style_ranges {
-                    Some(ranges) => {
-                        // A button's `bind` Predicate (M13 G2) is the styleRanges
-                        // value source when present: resolve it to 0.0/1.0 (the
-                        // author-wired self-highlight). An ordinary text node has no
-                        // predicate, so it reads the bound numeric slot via
-                        // `style_text_value` (the eased tween display when active).
-                        let value = match predicate_bind {
-                            Some(p) => Some(resolve_predicate(
-                                &p.source,
-                                p.equals.as_ref(),
-                                predicate_scope.as_deref(),
-                                slot_values,
-                                cell_values,
-                            )),
-                            None => style_text_value(
-                                bind.as_ref(),
-                                bind_scope.as_deref(),
-                                tween.as_ref(),
-                                slot_values,
-                                cell_values,
-                            ),
-                        };
-                        match value {
-                            Some(value) => evaluate(
-                                ranges,
-                                value,
-                                *color,
-                                inert_theme,
-                                &mut style_state.borrow_mut(),
-                                time_seconds,
-                            ),
-                            None => *color,
-                        }
+            data.push_quad(project_quad(
+                ref_origin,
+                layout,
+                scale,
+                canvas_origin,
+                fill,
+                border.as_ref(),
+            ));
+        }
+        Some(NodeContext::Image { asset }) => {
+            // White-tinted image quad grouped by its `asset` key so the
+            // renderer can bind the matching texture for that group. UV/full-
+            // texture defaults apply. Quads for the same key concatenate into
+            // one batch; the renderer resolves the key→bind-group at encode.
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            data.push_image(asset, UiInstance::image(rect));
+        }
+        Some(NodeContext::Bar {
+            bind_scope,
+            bind,
+            max,
+            fill,
+            background,
+            exit_fade: _,
+            last_resolved,
+            last_max_resolved: _,
+            tween,
+            style_ranges,
+            style_state,
+        }) => {
+            let exit = visibility
+                .get(&node)
+                .and_then(|state| state.bar_exit_fade.as_ref())
+                .and_then(|fade| {
+                    fade.alpha_at(time_seconds).map(|alpha| {
+                        (
+                            alpha,
+                            fade.captured_value
+                                .expect("active exit fade captures its bar value"),
+                            fade.captured_max
+                                .expect("active exit fade captures its bar denominator"),
+                        )
+                    })
+                });
+            // Background quad fills the whole laid-out rect.
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let mut background_color = *background;
+            if let Some((alpha, _, _)) = exit {
+                background_color[3] *= alpha;
+            }
+            data.push_quad(UiInstance::panel(rect, background_color, [0.0; 4]));
+
+            // The displayed value: the eased tween display when active (the
+            // styleRanges/fill-fraction contract reads the value the widget
+            // RENDERS, which mid-tween is the display value), else the raw slot
+            // `Number`. The fresh/splash path never tweens, so it reads the slot.
+            let (value, max_value) = match exit {
+                Some((_, value, max)) => (value, max),
+                None => (
+                    match (tween, last_resolved) {
+                        (Some(_), Some(displayed)) => *displayed,
+                        _ => bar_slot_value(bind, bind_scope.as_deref(), slot_values, cell_values),
+                    },
+                    bar_max_value(max, slot_values),
+                ),
+            };
+            let fraction = if max_value > 0.0 {
+                (value / max_value).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            // styleRanges recolors the fill from the normalized displayed
+            // fraction. Text/panel pass their displayed scalar directly; a
+            // bar's rendered scalar is its fill fraction.
+            let mut fill_color = *fill;
+            if let Some(ranges) = style_ranges {
+                fill_color = evaluate(
+                    ranges,
+                    fraction,
+                    fill_color,
+                    inert_theme,
+                    &mut style_state.borrow_mut(),
+                    time_seconds,
+                );
+            }
+            if let Some((alpha, _, _)) = exit {
+                fill_color[3] *= alpha;
+            }
+
+            // Fill quad: same top-left/height, width scaled by the fraction.
+            // Snap to whole device pixels like the background rect.
+            let fill_width = (rect[2] * fraction).round();
+            if fill_width > 0.0 {
+                let fill_rect = [rect[0], rect[1], fill_width, rect[3]];
+                data.push_quad(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
+            }
+        }
+        Some(NodeContext::Text {
+            content,
+            font_size,
+            color,
+            family,
+            bind_scope,
+            bind,
+            last_resolved,
+            tween,
+            style_ranges,
+            style_state,
+            predicate_bind,
+            predicate_scope,
+        }) => {
+            // A bound text node resolves its drawn string from the slot
+            // snapshot (through the optional `{}` format template); an absent
+            // slot falls back to the literal `content`. Layout already used
+            // the literal `content` (or the resolved/displayed string in
+            // `last_resolved`) for measurement (see `measure_node`), so
+            // resolution only swaps the rendered string, never the geometry.
+            //
+            // For a TWEENED bind whose driver has produced a displayed value
+            // (`tween` is `Some`, with the rounded/formatted display string in
+            // `last_resolved`), render that string so the eased value reaches
+            // the draw and matches what the measure seam shaped. The
+            // fresh/splash path never populates `tween`, so it resolves the
+            // target directly (inert).
+            let resolved = match (tween, last_resolved) {
+                (Some(_), Some(displayed)) => displayed.clone(),
+                _ => resolve_text(
+                    bind.as_ref(),
+                    bind_scope.as_deref(),
+                    content,
+                    slot_values,
+                    cell_values,
+                ),
+            };
+            // styleRanges overrides the run's color: the bound
+            // value (the eased tween display when a tween is active, else the
+            // raw slot number) maps to a band color + pulse/flash. Band colors
+            // were pre-resolved to literals at build, so the theme arg is inert.
+            let color = match style_ranges {
+                Some(ranges) => {
+                    // A button's `bind` Predicate (M13 G2) is the styleRanges
+                    // value source when present: resolve it to 0.0/1.0 (the
+                    // author-wired self-highlight). An ordinary text node has no
+                    // predicate, so it reads the bound numeric slot via
+                    // `style_text_value` (the eased tween display when active).
+                    let value = match predicate_bind {
+                        Some(p) => Some(resolve_predicate(
+                            &p.source,
+                            p.equals.as_ref(),
+                            predicate_scope.as_deref(),
+                            slot_values,
+                            cell_values,
+                        )),
+                        None => style_text_value(
+                            bind.as_ref(),
+                            bind_scope.as_deref(),
+                            tween.as_ref(),
+                            slot_values,
+                            cell_values,
+                        ),
+                    };
+                    match value {
+                        Some(value) => evaluate(
+                            ranges,
+                            value,
+                            *color,
+                            inert_theme,
+                            &mut style_state.borrow_mut(),
+                            time_seconds,
+                        ),
+                        None => *color,
                     }
-                    None => *color,
-                };
-                // Device-pixel top-left + device-scaled font size; color converts
-                // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
-                // laid out in flow (its container's `align` centers it on the
-                // measured run width), so no per-node centering shift is applied.
-                let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.push_text(UiText::new(
-                    resolved,
-                    [rect[0], rect[1]],
-                    font_size * scale,
-                    linear_rgba_to_srgb_u8(color),
-                    // The theme-resolved family carried on the node (from the
-                    // widget's `font` token, or `primary` when it names none), so the
-                    // drawn line shapes against the same registered face the
-                    // measure seam sized it with.
-                    family.clone(),
-                ));
-            }
-            None => {}
+                }
+                None => *color,
+            };
+            // Device-pixel top-left + device-scaled font size; color converts
+            // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
+            // laid out in flow (its container's `align` centers it on the
+            // measured run width), so no per-node centering shift is applied.
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            data.push_text(UiText::new(
+                resolved,
+                [rect[0], rect[1]],
+                font_size * scale,
+                linear_rgba_to_srgb_u8(color),
+                // The theme-resolved family carried on the node (from the
+                // widget's `font` token, or `primary` when it names none), so the
+                // drawn line shapes against the same registered face the
+                // measure seam sized it with.
+                family.clone(),
+            ));
         }
+        None => {}
+    }
 
-        // Recurse into children: each child's reference origin is this node's
-        // reference origin plus the child's taffy-relative location.
-        for child in self.taffy.children(node).expect("node children resolve") {
-            let child_layout = self.taffy.layout(child).expect("child has layout");
-            let child_origin = [
-                ref_origin[0] + child_layout.location.x,
-                ref_origin[1] + child_layout.location.y,
-            ];
-            self.collect_node(child, child_origin, walk, data);
-        }
+    // Recurse into children: each child's reference origin is this node's
+    // reference origin plus the child's taffy-relative location.
+    for child in taffy.children(node).expect("node children resolve") {
+        let child_layout = taffy.layout(child).expect("child has layout");
+        let child_origin = [
+            ref_origin[0] + child_layout.location.x,
+            ref_origin[1] + child_layout.location.y,
+        ];
+        collect_node(taffy, child, child_origin, walk, visibility, data);
     }
 }

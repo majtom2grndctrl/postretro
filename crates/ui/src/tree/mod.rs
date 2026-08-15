@@ -19,6 +19,8 @@ mod draw;
 mod node_context;
 /// Bind/predicate resolution against the per-frame slot + cell snapshot.
 mod predicate;
+/// Passive, tree-free layout state for world-anchored presentation templates.
+mod presentation_layout;
 /// Theme-token resolution, value-tween easing, and shared container styling.
 mod style;
 /// The retained `UiTree` struct, the layout/draw gate, and the per-frame diff.
@@ -44,6 +46,7 @@ pub use draw::{
 // crate (focus-engine tests), so the non-test build sees the re-export as unused.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub use draw::FocusNeighbors;
+pub use presentation_layout::PresentationTemplateLayout;
 pub use ui_tree::UiTree;
 
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)

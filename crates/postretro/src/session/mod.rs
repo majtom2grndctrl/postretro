@@ -116,6 +116,10 @@ pub(crate) struct Session {
     /// separate from the pool because a removed overlay must still remember its
     /// terminal `NetworkId` until the reorder horizon has elapsed.
     pub(crate) client_overlay_facts: crate::netcode::ClientOverlayFactState,
+    /// Host-only recipient and change bookkeeping for remote damaged-enemy
+    /// overlay facts. Kept outside the registry so it cannot leak EntityIds onto
+    /// the wire or affect the host-owned local overlay.
+    pub(crate) host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
@@ -508,6 +512,7 @@ impl Session {
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             presentation_pool: crate::presentation_pool::PresentationPool::default(),
             client_overlay_facts: crate::netcode::ClientOverlayFactState::default(),
+            host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker::default(),
             state_store_lifecycle: StateStoreLifecycle::default(),
             per_owner_save_timer: PerOwnerSaveTimer::default(),
             persisted_state: None,

@@ -43,13 +43,41 @@ pub(crate) struct ImpactPolicyRuntime {
     /// Dispatch-driven tracking input. This is populated at the same
     /// synchronous impact evaluation point as `present`, never by taking the
     /// destructive registry dispatch queue a second time.
-    pending_overlay_damage: Vec<EntityId>,
+    pending_overlay_damage: Vec<DamagedEnemyOverlayDamage>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
     scope: EntityScope,
     policies: Vec<BoundImpactPolicy>,
     consequential: Vec<PlannedEffect>,
     presentation: Vec<PlannedEffect>,
+}
+
+/// One dispatch-driven damaged-enemy refresh. The host presentation sender
+/// resolves `source` through `MovementOwners` after Task 6 has settled the
+/// frame's overlay facts; local and unowned sources intentionally remain local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DamagedEnemyOverlayDamage {
+    pub(crate) entity: EntityId,
+    pub(crate) source: Option<EntityId>,
+}
+
+/// One authoritative fact sample from Task 6's post-tick overlay stamp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DamagedEnemyOverlayFact {
+    pub(crate) entity: EntityId,
+    pub(crate) health_fraction: f32,
+    pub(crate) shield_fraction: f32,
+    pub(crate) has_shield: bool,
+    pub(crate) alive: bool,
+}
+
+/// The post-tick handoff from the host overlay lifecycle to the remote
+/// presentation sender. It contains no wire identity: only netcode owns the
+/// `EntityId` to non-recycled `NetworkId` conversion.
+#[derive(Debug, Default)]
+pub(crate) struct DamagedEnemyOverlayFrame {
+    pub(crate) damage: Vec<DamagedEnemyOverlayDamage>,
+    pub(crate) facts: Vec<DamagedEnemyOverlayFact>,
 }
 
 struct BoundImpactPolicy {
@@ -428,7 +456,10 @@ impl ImpactPolicyRuntime {
         dispatch: ImpactDispatch,
     ) {
         if !self.presentation_overlays.is_empty() {
-            self.pending_overlay_damage.push(dispatch.target);
+            self.pending_overlay_damage.push(DamagedEnemyOverlayDamage {
+                entity: dispatch.target,
+                source: dispatch.source,
+            });
         }
         let tags = {
             let Ok(tags) = registry.get_tags(dispatch.target) else {
@@ -631,15 +662,18 @@ impl ImpactPolicyRuntime {
         registry: &EntityRegistry,
         hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
         anim_time: f64,
-    ) {
-        let pending_damage = std::mem::take(&mut self.pending_overlay_damage);
+    ) -> DamagedEnemyOverlayFrame {
+        let mut frame = DamagedEnemyOverlayFrame {
+            damage: std::mem::take(&mut self.pending_overlay_damage),
+            facts: Vec::new(),
+        };
         let Some(binding) = self.presentation_overlays.first_mut() else {
-            return;
+            return frame;
         };
 
-        for entity in pending_damage {
+        for damage in &frame.damage {
             pool.refresh_overlay(
-                entity,
+                damage.entity,
                 binding.template.clone(),
                 binding.linger_seconds,
                 binding.max_visible,
@@ -650,10 +684,24 @@ impl ImpactPolicyRuntime {
             let Ok(health) = registry
                 .get_component::<postretro_entities::components::health::HealthComponent>(entity)
             else {
+                frame.facts.push(DamagedEnemyOverlayFact {
+                    entity,
+                    health_fraction: 0.0,
+                    shield_fraction: 0.0,
+                    has_shield: false,
+                    alive: false,
+                });
                 pool.evict_overlay(entity);
                 continue;
             };
             if health.current <= 0.0 {
+                frame.facts.push(DamagedEnemyOverlayFact {
+                    entity,
+                    health_fraction: 0.0,
+                    shield_fraction: 0.0,
+                    has_shield: false,
+                    alive: false,
+                });
                 pool.evict_overlay(entity);
                 continue;
             }
@@ -699,7 +747,15 @@ impl ImpactPolicyRuntime {
                 anchor,
                 binding.hide_at_full && health.current == health.max,
             );
+            frame.facts.push(DamagedEnemyOverlayFact {
+                entity,
+                health_fraction,
+                shield_fraction,
+                has_shield,
+                alive: true,
+            });
         }
+        frame
     }
 }
 

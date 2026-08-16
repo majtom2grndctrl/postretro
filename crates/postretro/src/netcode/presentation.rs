@@ -1,7 +1,7 @@
 // Host-to-client routing and engine conversion for passive presentation events.
 // See: context/lib/networking.md
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use glam::Vec3;
 use postretro_entities::{
@@ -15,11 +15,14 @@ use postretro_net::wire::{
 };
 use postretro_scripting_core::data_descriptors::PresentationTemplate;
 
-use crate::impact_policy::ClientOverlayConfig;
+use crate::impact_policy::{
+    ClientOverlayConfig, DamagedEnemyOverlayDamage, DamagedEnemyOverlayFact,
+    DamagedEnemyOverlayFrame,
+};
 use crate::presentation_pool::PresentationPool;
 use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
 
-use super::{ClientReplication, MovementOwners};
+use super::{ClientReplication, MovementOwners, NetworkIdAllocator, ReplicableSet};
 
 /// Retain terminal enemy ids past the presentation channel's expected reorder
 /// horizon. The id allocator never recycles, so this must remain a bounded
@@ -51,6 +54,28 @@ impl ClientOverlayFact {
             shield_fraction,
             has_shield,
             alive,
+        }
+    }
+}
+
+/// Per-recipient fact tuple last placed on the unreliable presentation lane.
+/// It is deliberately separate from the local keyed-overlay map: host state
+/// remembers delivery suppression, not any client-side presentation state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OverlayFactTuple {
+    health_fraction: f32,
+    shield_fraction: f32,
+    has_shield: bool,
+    alive: bool,
+}
+
+impl From<DamagedEnemyOverlayFact> for OverlayFactTuple {
+    fn from(fact: DamagedEnemyOverlayFact) -> Self {
+        Self {
+            health_fraction: fact.health_fraction,
+            shield_fraction: fact.shield_fraction,
+            has_shield: fact.has_shield,
+            alive: fact.alive,
         }
     }
 }
@@ -91,6 +116,162 @@ impl ClientOverlayFactState {
     pub(crate) fn advance_terminal_ttl_for_test(&mut self, frame_dt_seconds: f32) {
         self.advance_terminal_ttl(frame_dt_seconds);
     }
+}
+/// Clients that earned a bar for one currently tracked enemy. The stored wire
+/// identity survives the entity's host-side removal long enough to send its
+/// terminal fact, while `NetworkId` itself remains non-recycled.
+#[derive(Debug)]
+struct OverlayFactRecipients {
+    network_id: NetworkId,
+    clients: HashSet<u64>,
+}
+
+/// Host-only suppression and ownership bookkeeping for damaged-enemy facts.
+///
+/// Entries are bounded to Task 6's live keyed overlays. A late joiner never
+/// enters this map, because only a source currently owned by that client records
+/// a recipient.
+#[derive(Debug, Default)]
+pub(crate) struct HostOverlayFactTracker {
+    recipients: HashMap<EntityId, OverlayFactRecipients>,
+    last_sent: HashMap<(u64, NetworkId), OverlayFactTuple>,
+}
+
+impl HostOverlayFactTracker {
+    /// Fold this frame's dispatch ownership into the tracked recipient set,
+    /// then produce only fact tuples that differ for the exact client/enemy
+    /// pair. The caller sends each returned event on `Channel::Presentation`.
+    fn collect_changed(
+        &mut self,
+        frame: &DamagedEnemyOverlayFrame,
+        allocator: &mut NetworkIdAllocator,
+        replicable: &ReplicableSet,
+        owners: &MovementOwners,
+    ) -> Vec<(u64, ServerPresentationMessage)> {
+        for damage in &frame.damage {
+            let Some(client_id) = damage.source.and_then(|source| owners.owner_of(source)) else {
+                continue;
+            };
+            if !replicable.contains(damage.entity) {
+                continue;
+            }
+            // A just-registered dynamic enemy may not have reached the later
+            // snapshot-production pass yet. Stamp it here so its first earned
+            // overlay fact still carries the same stable NetworkId that pass
+            // will serialize this frame.
+            let network_id = allocator.stamp(damage.entity);
+            if self
+                .recipients
+                .get(&damage.entity)
+                .is_some_and(|recipients| recipients.network_id != network_id)
+            {
+                self.remove_tracking(damage.entity);
+            }
+            self.recipients
+                .entry(damage.entity)
+                .or_insert_with(|| OverlayFactRecipients {
+                    network_id,
+                    clients: HashSet::new(),
+                })
+                .clients
+                .insert(client_id);
+        }
+
+        let mut messages = Vec::new();
+        for fact in &frame.facts {
+            let Some(recipients) = self.recipients.get(&fact.entity) else {
+                continue;
+            };
+            let tuple = OverlayFactTuple::from(*fact);
+            let network_id = recipients.network_id;
+            let mut clients: Vec<_> = recipients.clients.iter().copied().collect();
+            clients.sort_unstable();
+            for client_id in clients {
+                let key = (client_id, network_id);
+                if self.last_sent.get(&key) == Some(&tuple) {
+                    continue;
+                }
+                self.last_sent.insert(key, tuple);
+                messages.push((client_id, overlay_fact_message(network_id, tuple)));
+            }
+            if !tuple.alive {
+                self.remove_tracking(fact.entity);
+            }
+        }
+        messages
+    }
+
+    /// Prune receipt and suppression state once Task 6 no longer tracks an
+    /// overlay, or when a recipient's pawn is no longer owned by a connected
+    /// client. This is driveable independently of the transport for bounded-map
+    /// tests and catches linger expiry on the next post-tick overlay pass.
+    pub(crate) fn advance(
+        &mut self,
+        tracked_entities: impl IntoIterator<Item = EntityId>,
+        owners: &MovementOwners,
+    ) {
+        let tracked: HashSet<_> = tracked_entities.into_iter().collect();
+        self.recipients.retain(|entity, recipients| {
+            if !tracked.contains(entity) {
+                return false;
+            }
+            recipients.clients.retain(|client_id| {
+                owners
+                    .iter()
+                    .any(|(_, owner_client_id)| owner_client_id == *client_id)
+            });
+            !recipients.clients.is_empty()
+        });
+        let recipients = &self.recipients;
+        self.last_sent.retain(|(client_id, enemy_id), _| {
+            recipients.values().any(|recipients| {
+                recipients.network_id == *enemy_id && recipients.clients.contains(client_id)
+            })
+        });
+    }
+
+    fn remove_tracking(&mut self, entity: EntityId) {
+        let Some(recipients) = self.recipients.remove(&entity) else {
+            return;
+        };
+        self.last_sent
+            .retain(|(_, enemy_id), _| *enemy_id != recipients.network_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.last_sent.len()
+    }
+}
+
+fn overlay_fact_message(enemy_id: NetworkId, fact: OverlayFactTuple) -> ServerPresentationMessage {
+    ServerPresentationMessage {
+        payload: ServerPresentationPayload::OverlayFact {
+            enemy_id,
+            health_fraction: fact.health_fraction,
+            shield_fraction: fact.shield_fraction,
+            has_shield: fact.has_shield,
+            alive: fact.alive,
+        },
+    }
+}
+
+/// Send the frame's changed host facts to the exact remote clients that
+/// damaged the still-tracked enemy. Presentation delivery is intentionally
+/// fire-and-forget: a failed send is a dropped cosmetic, never retained work.
+pub(crate) fn send_host_overlay_facts(
+    tracker: &mut HostOverlayFactTracker,
+    server: &mut NetServer,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &ReplicableSet,
+    owners: &MovementOwners,
+    frame: &DamagedEnemyOverlayFrame,
+    tracked_entities: impl IntoIterator<Item = EntityId>,
+) {
+    for (client_id, message) in tracker.collect_changed(frame, allocator, replicable, owners) {
+        let _ = server.send_presentation(client_id, message);
+    }
+    tracker.advance(tracked_entities, owners);
 }
 
 /// Drain the host's presentation intake once per frame and route each transient
@@ -678,5 +859,156 @@ mod tests {
         assert!((health - 0.35).abs() < FLOAT_EPSILON);
         assert!((shield - 0.6).abs() < FLOAT_EPSILON);
         assert_eq!(facts.get("hasShield"), Some(&PresentationFact::Bool(true)));
+    }
+
+    fn overlay_frame(
+        damage: Vec<DamagedEnemyOverlayDamage>,
+        fact: DamagedEnemyOverlayFact,
+    ) -> DamagedEnemyOverlayFrame {
+        DamagedEnemyOverlayFrame {
+            damage,
+            facts: vec![fact],
+        }
+    }
+
+    fn live_overlay_fact(entity: EntityId, health_fraction: f32) -> DamagedEnemyOverlayFact {
+        DamagedEnemyOverlayFact {
+            entity,
+            health_fraction,
+            shield_fraction: 0.25,
+            has_shield: true,
+            alive: true,
+        }
+    }
+
+    #[test]
+    fn overlay_facts_reach_only_damaging_clients_and_only_on_change() {
+        let enemy = EntityId::from_raw(10);
+        let first_pawn = EntityId::from_raw(11);
+        let second_pawn = EntityId::from_raw(12);
+        let host_pawn = EntityId::from_raw(13);
+        let mut allocator = NetworkIdAllocator::new();
+        let enemy_id = allocator.stamp(enemy);
+        let mut replicable = ReplicableSet::new();
+        replicable.register(enemy);
+        let mut owners = MovementOwners::new();
+        owners.set(first_pawn, 41);
+        owners.set(second_pawn, 73);
+        let mut tracker = HostOverlayFactTracker::default();
+        let fact = live_overlay_fact(enemy, 0.8);
+
+        let first = tracker.collect_changed(
+            &overlay_frame(
+                vec![DamagedEnemyOverlayDamage {
+                    entity: enemy,
+                    source: Some(first_pawn),
+                }],
+                fact,
+            ),
+            &mut allocator,
+            &replicable,
+            &owners,
+        );
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].0, 41);
+        assert_eq!(
+            &first[0].1.payload,
+            &ServerPresentationPayload::OverlayFact {
+                enemy_id,
+                health_fraction: 0.8,
+                shield_fraction: 0.25,
+                has_shield: true,
+                alive: true,
+            }
+        );
+
+        // A host-owned hit is local-only. It must not cause an addressed
+        // event, and an unchanged fact never re-sends to the first client.
+        let unchanged = tracker.collect_changed(
+            &overlay_frame(
+                vec![DamagedEnemyOverlayDamage {
+                    entity: enemy,
+                    source: Some(host_pawn),
+                }],
+                fact,
+            ),
+            &mut allocator,
+            &replicable,
+            &owners,
+        );
+        assert!(unchanged.is_empty());
+
+        // A second remote client earns its own initial fact; the first client
+        // remains suppressed because its tuple did not change.
+        let second = tracker.collect_changed(
+            &overlay_frame(
+                vec![DamagedEnemyOverlayDamage {
+                    entity: enemy,
+                    source: Some(second_pawn),
+                }],
+                fact,
+            ),
+            &mut allocator,
+            &replicable,
+            &owners,
+        );
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].0, 73);
+
+        // A terminal fact reaches each earned recipient once and immediately
+        // prunes the host's suppression state.
+        let dead = DamagedEnemyOverlayFact {
+            alive: false,
+            ..fact
+        };
+        let terminal = tracker.collect_changed(
+            &overlay_frame(Vec::new(), dead),
+            &mut allocator,
+            &replicable,
+            &owners,
+        );
+        assert_eq!(
+            terminal
+                .iter()
+                .map(|(client_id, _)| *client_id)
+                .collect::<Vec<_>>(),
+            vec![41, 73]
+        );
+        assert!(terminal.iter().all(|(_, message)| matches!(
+            &message.payload,
+            ServerPresentationPayload::OverlayFact { alive: false, .. }
+        )));
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[test]
+    fn overlay_fact_bookkeeping_prunes_when_tracking_expires() {
+        let enemy = EntityId::from_raw(10);
+        let pawn = EntityId::from_raw(11);
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(enemy);
+        let mut replicable = ReplicableSet::new();
+        replicable.register(enemy);
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, 41);
+        let mut tracker = HostOverlayFactTracker::default();
+        let fact = live_overlay_fact(enemy, 0.8);
+
+        tracker.collect_changed(
+            &overlay_frame(
+                vec![DamagedEnemyOverlayDamage {
+                    entity: enemy,
+                    source: Some(pawn),
+                }],
+                fact,
+            ),
+            &mut allocator,
+            &replicable,
+            &owners,
+        );
+        assert_eq!(tracker.len(), 1);
+
+        tracker.advance([], &owners);
+        assert_eq!(tracker.len(), 0);
     }
 }

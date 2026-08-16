@@ -2900,20 +2900,43 @@ impl ApplicationHandler for App {
                 // Render while a create-then-kill is removed before it draws.
                 if !self.is_connected_client() {
                     let session = self.session.as_mut().expect("running session installed");
-                    let registry = script_ctx.registry.borrow();
-                    let (scripting, presentation_pool, hit_zone_store) = (
-                        &mut session.scripting,
-                        &mut session.presentation_pool,
-                        &session.hit_zone_store,
-                    );
-                    scripting
-                        .impact_policy_runtime
-                        .update_damaged_enemy_overlays(
-                            presentation_pool,
-                            &registry,
-                            hit_zone_store,
-                            frame_anim_time,
+                    let overlay_frame = {
+                        let registry = script_ctx.registry.borrow();
+                        session
+                            .scripting
+                            .impact_policy_runtime
+                            .update_damaged_enemy_overlays(
+                                &mut session.presentation_pool,
+                                &registry,
+                                &session.hit_zone_store,
+                                frame_anim_time,
+                            )
+                    };
+
+                    // The local host overlay above is still the authoritative
+                    // lifecycle owner. Remote clients receive only changed facts for
+                    // targets they personally damaged, on the dedicated unreliable
+                    // presentation channel. This is deliberately outside snapshot
+                    // replication: a missed cosmetic fact never blocks game state.
+                    let tracked_entities = session.presentation_pool.tracked_overlay_ids();
+                    if let Some(netcode::NetEndpoint::Host {
+                        server,
+                        allocator,
+                        replicable,
+                        owners,
+                        ..
+                    }) = session.net_endpoint.as_mut()
+                    {
+                        netcode::send_host_overlay_facts(
+                            &mut session.host_overlay_fact_tracker,
+                            server,
+                            allocator,
+                            replicable,
+                            owners,
+                            &overlay_frame,
+                            tracked_entities,
                         );
+                    }
                 }
 
                 // Drain collected post-tick events after all ticks complete so

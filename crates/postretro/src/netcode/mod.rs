@@ -86,7 +86,8 @@ pub(crate) use lifecycle::{
 };
 pub(crate) use prediction::ClientPrediction;
 pub(crate) use presentation::{
-    ClientOverlayFactState, ingest_client_presentation_messages, route_host_presentation_spawns,
+    ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
+    route_host_presentation_spawns, send_host_overlay_facts,
 };
 pub(crate) use state_slots::ReplicatedSlotIdentity;
 // Correction-classification API + thresholds and the reconcile entry point.

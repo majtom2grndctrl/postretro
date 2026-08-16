@@ -345,9 +345,7 @@ impl ImpactPolicyRuntime {
                 );
                 continue;
             };
-            let source = match overlay.over {
-                PresentationOverlaySource::DamagedEnemies(source) => source,
-            };
+            let PresentationOverlaySource::DamagedEnemies(source) = overlay.over;
             match bind_damaged_enemies_overlay(
                 PresentationTemplateHandle::from(template.id.clone()),
                 world_anchor,
@@ -714,9 +712,11 @@ impl ImpactPolicyRuntime {
                     let max = number_from_ir(eval_value(&shield.max, &binding.scope));
                     let has_shield = max.is_finite() && max > 0.0;
                     (
-                        has_shield
-                            .then(|| fraction_or_zero(value, max))
-                            .unwrap_or(0.0),
+                        if has_shield {
+                            fraction_or_zero(value, max)
+                        } else {
+                            0.0
+                        },
                         has_shield,
                     )
                 });
@@ -817,7 +817,7 @@ fn number_from_ir(value: IrValue) -> f32 {
 fn fraction_or_zero(value: f32, max: f32) -> f32 {
     if value.is_finite() && max.is_finite() && max > 0.0 {
         let fraction = value / max;
-        fraction.is_finite().then_some(fraction).unwrap_or(0.0)
+        if fraction.is_finite() { fraction } else { 0.0 }
     } else {
         0.0
     }

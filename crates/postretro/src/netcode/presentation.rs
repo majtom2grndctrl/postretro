@@ -15,9 +15,10 @@ use postretro_net::wire::{
 };
 use postretro_scripting_core::data_descriptors::PresentationTemplate;
 
+#[cfg(test)]
+use crate::impact_policy::DamagedEnemyOverlayDamage;
 use crate::impact_policy::{
-    ClientOverlayConfig, DamagedEnemyOverlayDamage, DamagedEnemyOverlayFact,
-    DamagedEnemyOverlayFrame,
+    ClientOverlayConfig, DamagedEnemyOverlayFact, DamagedEnemyOverlayFrame,
 };
 use crate::presentation_pool::PresentationPool;
 use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};

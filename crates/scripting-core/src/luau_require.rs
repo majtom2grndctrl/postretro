@@ -476,6 +476,8 @@ mod tests {
                 "Tree",
                 "defineUiTree",
                 "definePresentationTemplate",
+                "damagedEnemies",
+                "defineOverlay",
                 "present",
                 "getGameState",
                 "bindState",

@@ -353,7 +353,7 @@ fn fade_alpha(spawn: &PresentationSpawn, age_seconds: f64, lifetime_seconds: f64
 }
 
 fn finite_or_zero(value: f32) -> f32 {
-    value.is_finite().then_some(value).unwrap_or(0.0)
+    if value.is_finite() { value } else { 0.0 }
 }
 
 fn eased_progress(progress: f32, easing: PresentationEasing) -> f32 {

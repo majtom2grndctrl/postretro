@@ -52,19 +52,14 @@ pub struct PresentationPresenter(pub u32);
 /// Easing applied to a transient presentation instance's authored motion.
 /// Kept in the VM-free payload because the app-side pool owns its frame-time
 /// animation, while scripts merely retain the authored descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PresentationEasing {
+    #[default]
     Linear,
     EaseIn,
     EaseOut,
     EaseInOut,
-}
-
-impl Default for PresentationEasing {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 
 /// Screen-space motion applied by the app-side transient pool.

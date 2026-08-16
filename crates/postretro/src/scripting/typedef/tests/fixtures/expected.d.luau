@@ -697,7 +697,7 @@ export type ModManifest = {
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
-  --- Fact-driven host/single-player enemy-status overlays.
+  --- Fact-driven enemy-status overlays. Host/single-player presentation only; malformed entries are skipped.
   presentationOverlays: {PresentationOverlay}?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,

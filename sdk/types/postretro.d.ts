@@ -698,7 +698,7 @@ declare module "postretro" {
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
     presentationTemplates?: ReadonlyArray<PresentationTemplate>;
-    /** Fact-driven host/single-player enemy-status overlays. */
+    /** Fact-driven enemy-status overlays. Host/single-player presentation only; malformed entries are skipped. */
     presentationOverlays?: ReadonlyArray<PresentationOverlay>;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;

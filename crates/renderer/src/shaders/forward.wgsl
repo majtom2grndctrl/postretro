@@ -247,7 +247,7 @@ fn sample_lightmap_animated(uv: vec2<f32>, slot: u32) -> vec3<f32> {
 }
 
 fn animated_slot_for_static_layer(static_layer: u32) -> u32 {
-    const INVALID_SLOT: u32 = 0xFFFF_FFFFu;
+    const INVALID_SLOT: u32 = 0xffffffffu;
     if static_layer >= 256u {
         return INVALID_SLOT;
     }
@@ -981,7 +981,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var lm_anim = vec3<f32>(0.0);
         var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
         let animated_slot = animated_slot_for_static_layer(in.lightmap_layer);
-        if animated_slot != 0xFFFF_FFFFu {
+        if animated_slot != 0xffffffffu {
             lm_anim = sample_lightmap_animated(in.lightmap_uv, animated_slot);
             anim_dir_sample = textureSample(
                 animated_lm_direction,

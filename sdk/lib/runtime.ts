@@ -30,6 +30,14 @@ import type { StateRef } from "./data_script";
  * auto-wrapped into a `const` node. */
 type Operand = RuntimeValue | StateRef<unknown> | number | boolean;
 
+function input(name: string | StateRef<unknown>): RuntimeRead {
+  if (typeof name === "string") return { op: "input", name };
+  const owner = "owner" in name ? name.owner : undefined;
+  return owner === undefined
+    ? { op: "input", name: name.slot }
+    : { op: "input", name: name.slot, owner };
+}
+
 /** Wrap a bare `number`/`boolean` literal into a `const` node; pass an existing
  * node through unchanged. The wrapping rule is identical in `runtime.luau` so
  * the two runtimes canonicalize to byte-identical IR. */
@@ -38,7 +46,7 @@ function wrap(value: Operand): RuntimeValue {
     return { op: "const", value };
   }
   if (value !== null && typeof value === "object" && "slot" in value && typeof value.slot === "string") {
-    return { op: "input", name: value.slot };
+    return input(value as StateRef<unknown>);
   }
   return value;
 }
@@ -52,7 +60,7 @@ export const runtime = {
   },
   /** Named-input leaf, bound to live state by name in the Rust evaluator. */
   read(name: string | StateRef<unknown>): RuntimeRead {
-    return { op: "input", name: typeof name === "string" ? name : name.slot };
+    return input(name);
   },
   /** `a + b` (number). */
   add(a: Operand, b: Operand): RuntimeAdd {

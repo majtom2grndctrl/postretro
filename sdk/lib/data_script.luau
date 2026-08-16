@@ -65,10 +65,10 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A non-empty
 --- `tag` targets matching entities. Tag-targeted primitives include
---- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`,
 --- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
 --- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
---- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- `grantHealth`, `grantAmmo`, and `addSlot` may instead target `@activators`. True system
 --- reactions carry neither `tag` nor `target` and enqueue typed engine commands
 --- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
 --- `args`
@@ -215,8 +215,8 @@ export type TriggerEventParams = {
 }
 export type Reaction<S> = NamedReactionDescriptor
 
-export type NumberValue = number | NumberRef
-export type BoolValue = boolean | BoolRef
+export type NumberValue = number | NumberRef | RuntimeValue
+export type BoolValue = boolean | BoolRef | RuntimeValue
 
 export type NumberRef = {
   plus: (self: NumberRef, n: NumberValue) -> NumberRef,
@@ -234,20 +234,32 @@ export type NumberRef = {
 }
 
 export type BoolRef = {
+  --- `and`, `or`, and `not` are Luau keywords. Call this as
+  --- `ref["and"](ref, other)`, not `ref:and(other)`.
   ["and"]: (self: BoolRef, other: BoolValue) -> BoolRef,
   ["or"]: (self: BoolRef, other: BoolValue) -> BoolRef,
   ["not"]: (self: BoolRef) -> BoolRef,
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
 
+--- Lift raw `runtime.*` output into the fluent impact-expression algebra.
+--- The `number` and `bool` helpers select the expected result kind; Rust
+--- validates the resulting IR when it binds the descriptor.
+export type RuntimeExpressionRefs = {
+  number: (value: RuntimeValue) -> NumberRef,
+  bool: (value: RuntimeValue) -> BoolRef,
+}
+
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "present", target: "@impact.target", args: { template: string, value: any } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
-  | { primitive: "slot.add", args: { slot: string, delta: any } }
+  | { primitive: "slot.set", args: { slot: string, value: any } }
+  | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
 -- not an Effect, and every value that type-checks lowers to one closed wire arm.
@@ -281,10 +293,6 @@ export type SourceHandle = {
   --- skips this effect; app-drain impacts run no policy in v1. Amount
   --- expressions remain impact-target scoped; v1 has no source facts.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
-}
-
-export type NumberSlot = {
-  add: (self: NumberSlot, delta: NumberValue) -> Effect,
 }
 
 export type Impact = {
@@ -324,26 +332,45 @@ export type LevelManifest = {
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
---- a finite-number array. `persist` saves on clean exit; `readonly` blocks
---- script writes.
+--- a finite-number array. `persist` saves global slots on clean exit. On
+--- connected clients, `perOwner = true, persist = true` saves the local
+--- owner's value every ~60 seconds and on clean exit; it travels via that
+--- player's join seed. `readonly` blocks script writes. A mod-owned persisted writable or replicated slot requires
+--- a minted `<mod-root>/identity.json` entry; run
+--- `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when
+--- renaming the store or slot.
+--- `perOwner = true` creates a separate host-side value for each player seat.
+--- It permits omitted `network` (host-local) or `"ownerPrivate"`; `"shared"`
+--- is reserved for global slots.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, accumulate: nil? }
-  | { type: "number", readonly: false?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
 ) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,
   schema: { [string]: StoreSlotSchema },
 }
-export type ReadonlyStateRef<T> = { slot: string, __stateRefValueBrand: T? }
-export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
-export type StateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
+export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
+export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
+export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: "@impact.source" }
+export type OwnerAddressedRef<T> = Ref<T> & { owner: "@impact.source" }
+type StoreComputedRef<T> = ComputedRef<T> & {
+  byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>,
+}
+type StoreRef<T> = Ref<T> & {
+  byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T>,
+}
+export type StateRef<T> = StoreComputedRef<T> | StoreRef<T>
 export type StoreDefinition = {
-  declaration: StoreDeclaration,
-  state: { [string]: StateRef<any> },
+  [string]: StateRef<any>,
 }
 
 local DataScriptSdk = {}
+local storeDeclarations = setmetatable({}, { __mode = "k" })
 
 -- Opaque target tokens are distinct frozen tables. Builders compare identity
 -- to lower the matching token and leave a mismatched sentinel visible for Rust
@@ -419,6 +446,16 @@ function DataScriptSdk.grantAmmo(target: ActivatorsTarget | string, ammoType: st
   end
   local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "grantAmmo", target = wireTarget, args = { type = ammoType, amount = amount } }
+end
+
+--- Add a delta to a per-owner numeric slot for current trigger activators or
+--- every player pawn with a tag.
+function DataScriptSdk.addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "addSlot", tag = target, args = { slot = slot.slot, delta = delta } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "addSlot", target = wireTarget, args = { slot = slot.slot, delta = delta } }
 end
 
 --- Selects a live enemy group addressed when a reaction fires.
@@ -537,14 +574,14 @@ local function numberNode(value: NumberValue): any
   if type(value) == "number" then
     return constant(value)
   end
-  return numberNodes[value]
+  return numberNodes[value] or value
 end
 
 local function boolNode(value: BoolValue): any
   if type(value) == "boolean" then
     return constant(value)
   end
-  return boolNodes[value]
+  return boolNodes[value] or value
 end
 
 local function numberRef(node: any): NumberRef
@@ -606,6 +643,27 @@ boolRef = function(node: any): BoolRef
   boolNodes[ref] = node
   return table.freeze(ref) :: any
 end
+
+function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): NumberRef | BoolRef
+  local node = { op = "input", name = ref.slot }
+  if (ref :: any).owner ~= nil then
+    node.owner = (ref :: any).owner
+  end
+  if ref.kind == "number" then
+    return numberRef(node)
+  end
+  return boolRef(node)
+end
+
+--- Public lifting helpers keep the raw-node adapters private to the SDK.
+DataScriptSdk.fromRuntime = table.freeze({
+  number = function(value: RuntimeValue): NumberRef
+    return numberRef(value)
+  end,
+  bool = function(value: RuntimeValue): BoolRef
+    return boolRef(value)
+  end,
+}) :: RuntimeExpressionRefs
 
 local IMPACT_EFFECT_CAPABILITY: ImpactEffectCapability = table.freeze({ __impactEffectCapability = true })
 
@@ -674,6 +732,15 @@ local IMPACT: Impact = table.freeze({
   amount = numberRef({ op = "input", name = "@impact.amount" }),
 })
 
+--- Spawn a passive presentation at the current impact target. The impact
+--- runtime captures `value` before any following despawn and stamps source.
+function DataScriptSdk.present(template: { id: string }, value: NumberValue): Effect
+  if type(template) ~= "table" or type(template.id) ~= "string" or #template.id == 0 then
+    error("present: template must come from definePresentationTemplate", 2)
+  end
+  return impactEffect("present", { template = template.id, value = numberNode(value) })
+end
+
 local lowerImpactPolicy: (policy: {EffectOrGroup}) -> {EffectOrGroup}
 
 local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}, levels: {string}?, isOverride: boolean): ImpactEvent
@@ -732,58 +799,62 @@ lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
   return lowered
 end
 
-function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
-  return table.freeze({
-    add = function(_self: NumberSlot, delta: NumberValue): Effect
-      local wire = {
-        primitive = "slot.add",
-        args = {
-          slot = ref.slot,
-          delta = numberNode(delta),
-        },
-      } :: any
-      return function(capability: ImpactEffectCapability): ImpactEffectWire
-        if capability ~= IMPACT_EFFECT_CAPABILITY then
-          error("impact effects can only be lowered by the SDK", 2)
-        end
-        return wire
-      end
-    end,
-  })
+function DataScriptSdk.set(ref: Ref<number>, value: NumberValue): Effect
+  local wire = {
+    primitive = "slot.set",
+    args = {
+      slot = ref.slot,
+      value = numberNode(value),
+    },
+  } :: any
+  if (ref :: any).owner ~= nil then
+    wire.target = (ref :: any).owner
+  end
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
 end
 
-local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes"
+--- Build a read-modify-write effect. `build` receives `cur` during impact plan
+--- phase, before effects apply. Owner-addressed reads resolve the live per-seat
+--- map; `cur` is not a frozen snapshot.
+function DataScriptSdk.update(ref: Ref<number>, build: (cur: NumberRef) -> NumberValue): Effect
+  return DataScriptSdk.set(ref, build(DataScriptSdk.read(ref) :: NumberRef))
+end
+
+--- Build a deferred impact-effect group guarded by a Bool expression.
+function DataScriptSdk.when(cond: BoolRef, effects: {Effect}): GatedEffect
+  return { when = cond, ["do"] = effects }
+end
+
+local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
+local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
 
 local function validateImpactEventId(id: string)
-  local segments = 1
-  local segmentLength = 0
-  local valid = #id > 0 and #id <= 128
+  local valid = #id > 0 and #id <= 64
   for i = 1, #id do
     local byte = string.byte(id, i)
-    if byte == string.byte(":") then
-      valid = valid and segmentLength > 0
-      segments += 1
-      segmentLength = 0
-    else
-      local allowed = (byte >= 48 and byte <= 57)
-        or (byte >= 65 and byte <= 90)
-        or (byte >= 97 and byte <= 122)
-        or byte == 95 or byte == 46 or byte == 45
-      valid = valid and allowed
-      segmentLength += 1
-    end
+    local allowed = (byte >= 48 and byte <= 57)
+      or (byte >= 65 and byte <= 90)
+      or (byte >= 97 and byte <= 122)
+      or byte == 95 or byte == 46 or byte == 45
+    valid = valid and allowed
   end
-  valid = valid and segments >= 2 and segmentLength > 0
   if not valid then
     error(IMPACT_EVENT_ID_DIAGNOSTIC, 3)
   end
 end
 
-function DataScriptSdk.defineImpactEvent(
-  id: string,
-  filter: ImpactEventFilter,
-  build: (Impact) -> {EffectOrGroup}
-): ImpactEvent
+--- Define a pure impact-policy descriptor. The engine prefixes its single-segment
+--- authored id with the mod id. Luau requires the explicit-id form.
+function DataScriptSdk.defineImpactEvent(...: any): ImpactEvent
+  if select("#", ...) == 2 then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local id, filter, build = ...
   validateImpactEventId(id)
   local eventFilter = table.freeze({ tag = filter.tag })
   local policy = lowerImpactPolicy(build(IMPACT))
@@ -916,11 +987,23 @@ end
 --- `config.name`, `config.id`, and `config.version` are required. The id gates
 --- multiplayer admission; the version is display-only and never compared. The
 --- first committed id and version remain active across staged reloads. Optional
---- arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`,
---- `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine
---- side effects until the manifest is returned and validated.
-function DataScriptSdk.defineMod(config: ModManifest): ModManifest
-  return config
+--- arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`,
+--- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+--- effects until the manifest is returned and validated.
+function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
+  if config.stores == nil then
+    return config
+  end
+
+  local manifest = table.clone(config)
+  local stores = {}
+  for key, entry in pairs(config.stores) do
+    local declaration = if type(entry) == "table" then storeDeclarations[entry] else nil
+    stores[key] = if declaration ~= nil then declaration else entry
+  end
+  manifest.stores = stores
+  return manifest
 end
 
 --- Identity builder for a mod map catalog. `entries` are `ModMapEntry` tables
@@ -983,13 +1066,41 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
   return table.freeze(clone)
 end
 
+local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): StateRef<any>
+  local ref = { slot = slot, kind = kind }
+  local methods = {
+    byPlayer = function(_self: any, owner: SourceHandle): OwnerAddressedRef<any>
+      if not perOwner then
+        error("state slot `" .. slot .. "` is global and cannot be addressed with byPlayer", 2)
+      end
+      return table.freeze({
+        slot = slot,
+        kind = kind,
+        owner = if owner == IMPACT_SOURCE then "@impact.source" else "@invalid",
+      }) :: any
+    end,
+  }
+  return table.freeze(setmetatable(ref, { __index = methods })) :: any
+end
+
 --- Pure state-store builder. `namespace` prefixes every returned state ref as
---- `namespace.slotName`; `schema` declares the slot names and validation rules.
---- The engine consumes `declaration` only when it is returned from the mod
---- manifest's `stores`; unreturned declarations disappear with the setup VM.
-function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+--- `namespace.slotName`; neither it nor a slot name may contain `:`. Luau
+--- requires the explicit-namespace form.
+--- Pass the returned handle through `defineMod({ stores = { store } })` to
+--- resolve its declaration; unreturned handles disappear with the setup VM.
+function DataScriptSdk.defineStore(...: any): StoreDefinition
+  if select("#", ...) == 1 then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local namespace, schema = ...
+  if string.find(namespace, ":", 1, true) ~= nil then
+    error("defineStore `namespace` must not contain `:`", 2)
+  end
   local tracedSchema = {}
   for slotName, input in pairs(schema) do
+    if string.find(slotName, ":", 1, true) ~= nil then
+      error("defineStore slot name " .. string.format("%q", slotName) .. " must not contain `:`", 2)
+    end
     if type(input) == "table" and type((input :: any).accumulate) == "function" then
       local tracedInput = {}
       for key, value in pairs(input :: any) do
@@ -1002,17 +1113,20 @@ function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreS
     end
   end
   local frozenSchema = cloneAndFreeze(tracedSchema)
-  local state = {}
+  local store: { [string]: StateRef<any> } = {}
   for slotName in pairs(frozenSchema) do
-    state[slotName] = table.freeze({ slot = namespace .. "." .. slotName })
+    store[slotName] = storeRef(
+      namespace .. "." .. slotName,
+      (frozenSchema[slotName] :: any).type,
+      (frozenSchema[slotName] :: any).perOwner == true
+    )
   end
-  return table.freeze({
-    declaration = table.freeze({
-      namespace = namespace,
-      schema = frozenSchema,
-    }),
-    state = table.freeze(state),
+  local handle = table.freeze(store)
+  storeDeclarations[handle] = table.freeze({
+    namespace = namespace,
+    schema = frozenSchema,
   })
+  return handle
 end
 
 return DataScriptSdk

@@ -48,6 +48,16 @@ export interface BrainInputs {
   /** `true` once the selected target's death sweep has handled it; false with
    * no target (boolean). */
   readonly targetDied: RuntimeRead;
+  /** XZ distance from this enemy's spawn-time home anchor; zero at home and
+   * meaningful even without a selected target (number). */
+  readonly distanceFromAnchor: RuntimeRead;
+  /** `true` when the selected target's faction differs from this enemy's;
+   * false with no target (boolean). */
+  readonly targetHostile: RuntimeRead;
+  /** `true` when the nav pathfinder can route this enemy to its selected
+   * target; false with no target or no navmesh. It reflects the pathfinder's
+   * current capability rather than ground-truth reachability (boolean). */
+  readonly targetReachable: RuntimeRead;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -74,6 +84,9 @@ export const brain: BrainInputs = Object.freeze({
   targetHealth: Object.freeze(runtime.read("@brain.targetHealth")),
   targetMaxHealth: Object.freeze(runtime.read("@brain.targetMaxHealth")),
   targetDied: Object.freeze(runtime.read("@brain.targetDied")),
+  distanceFromAnchor: Object.freeze(runtime.read("@brain.distanceFromAnchor")),
+  targetHostile: Object.freeze(runtime.read("@brain.targetHostile")),
+  targetReachable: Object.freeze(runtime.read("@brain.targetReachable")),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

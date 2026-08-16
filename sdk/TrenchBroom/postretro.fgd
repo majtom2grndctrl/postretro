@@ -555,6 +555,18 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
+// Invisible brush volume that preserves full SH delta-probe density in a
+// sensitive area. The compiler resolves the brush hull to an engine-space AABB;
+// it emits no world geometry, collision, or runtime entity.
+//
+// `dilation` is in world/engine meters, not map units. When this brush hugs a
+// 4×4×4 probe-brick edge, use roughly half a probe cell of dilation so the
+// brick's probe-span AABB still intersects the protection volume.
+@SolidClass = sh_protect_volume : "Keep SH delta probes dense (brush)"
+[
+    dilation(float) : "AABB expansion in world/engine meters. Use about half a probe cell when the brush hugs a probe-brick edge." : "0"
+]
+
 // Semantic fog point entities.
 //
 // Modder pattern for adding a new fog shape:

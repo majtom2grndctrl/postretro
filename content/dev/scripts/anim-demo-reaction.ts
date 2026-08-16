@@ -17,7 +17,7 @@ export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[
   const reactions: NamedReactionDescriptor[] = [];
 
   // Tag-targeted Primitive reaction: one descriptor, applied to every entity
-  // tagged `demo_grunt`. `args.state` names a state declared on the
+  // tagged `demo_grunt`. The reaction argument names an animation state declared on the
   // `anim_demo_grunt` descriptor's `components.mesh.animations`.
   reactions.push(
     defineReaction("levelLoad", {

@@ -63,12 +63,12 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModManifest")
-        .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.")
+        .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
         .field(
             "id",
             "String",
-            "Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. Declared identity is not a security mechanism.",
+            "Required stable mod identity used for connection admission. Peers must declare the same id to connect. Must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. Declared identity is not a security mechanism.",
         )
         .field(
             "version",
@@ -93,12 +93,22 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "entities?",
             "Vec<EntityTypeDescriptor>",
-            "Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.",
+            "Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.",
         )
         .field(
             "uiTrees?",
             "Vec<ModUiTree>",
             "Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.",
+        )
+        .field(
+            "presentationTemplates?",
+            "Vec<PresentationTemplate>",
+            "Passive world-presentation templates. They never participate in modal UI input or focus.",
+        )
+        .field(
+            "presentationOverlays?",
+            "PresentationOverlay",
+            "One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.",
         )
         .field(
             "theme?",
@@ -148,7 +158,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "stores?",
             "Vec<StoreDeclaration>",
-            "Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.",
+            "Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.",
         )
         .finish();
 }
@@ -158,7 +168,8 @@ mod tests {
     use super::*;
     use postretro_entities::slot_table::StoreDeclarationSet;
     use postretro_scripting_core::data_descriptors::{
-        ModFontAssets, ModThemeTokens, SwitchingDescriptor,
+        ModFontAssets, ModThemeTokens, PresentationOverlay, PresentationTemplate,
+        SwitchingDescriptor,
     };
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{
@@ -190,6 +201,8 @@ mod tests {
             switching: SwitchingDescriptor::default(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
+            presentation_templates: Vec::<PresentationTemplate>::new(),
+            presentation_overlays: Vec::<PresentationOverlay>::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
             fonts: ModFontAssets::default(),
@@ -210,6 +223,8 @@ mod tests {
             "switching",
             "entities",
             "uiTrees",
+            "presentationTemplates",
+            "presentationOverlays",
             "theme",
             "frontend",
             "fonts",

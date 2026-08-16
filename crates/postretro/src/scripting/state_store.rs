@@ -8,21 +8,23 @@ use postretro_scripting_core::primitive_adapters::{
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 #[allow(unused_imports)]
 pub(crate) use postretro_scripting_core::store_bridge::{
-    TextEdit, apply_store_slot_batch, apply_text_edit, read_store_slot, store_declaration,
-    store_declaration_from_manifest_value, store_declaration_set_from_values,
+    TextEdit, apply_store_slot_batch, apply_text_edit, read_script_store_slot, read_store_slot,
+    store_declaration, store_declaration_from_manifest_value, store_declaration_set_from_values,
     write_state_slot_json, write_store_slot,
 };
 
-const DEFINE_STORE_DOC: &str = "Build a typed state-store declaration for ModManifest.stores. \
+const DEFINE_STORE_DOC: &str = "Build a typed state-store handle for ModManifestInput.stores. \
      Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. \
-     Calling this builder does not mutate engine state. Returned declarations commit atomically after the mod manifest succeeds. \
-     Returns { declaration, state }, where state leaves are stable { slot } references. Definition context.";
+     A persisted writable or replicated slot requires a minted <mod-root>/identity.json entry; run cargo run -p xtask -- mint-identity <mod-root> and keep its durable key across renames. \
+     Calling this builder does not mutate engine state. Returns a frozen store handle whose top-level leaves carry stable slot names plus SDK-only value kinds. \
+     Pass that handle to defineMod({ stores: [store] }); defineMod resolves declaration data before the manifest crosses the FFI. Definition context.";
 
 const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \
-     Available in definition and data contexts.";
+     Per-owner slots require an owner-addressed read and are rejected. Available in definition and data contexts.";
 
 const STORE_WRITE_DOC: &str = "Write an engine-global state slot by stable dotted name. \
      The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. \
+     Per-owner slots require an owner-addressed write and are rejected. \
      Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.";
 
 pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -44,7 +46,7 @@ pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: S
         .register("storeRead", {
             let ctx = ctx.clone();
             move |name: String| -> Result<Any, ScriptError> {
-                read_store_slot(&ctx, &name).map(Any)
+                read_script_store_slot(&ctx, &name).map(Any)
             }
         })
         .scope(ContextScope::Both)
@@ -147,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn define_store_quickjs_and_luau_return_equivalent_declarations() {
+    fn define_store_returns_flat_refs_without_committing_slots() {
         let js_ctx = ScriptCtx::new();
         let js_registry = registry_for(js_ctx.clone());
         let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
@@ -162,8 +164,9 @@ mod tests {
                     mode: { type: "enum", values: ["quiet", "loud"], default: "quiet" },
                     curve: { type: "array", default: [0, 0.5, 1] },
                 });
-                if (store.declaration.namespace !== "audio") throw new Error("namespace");
-                if (store.state.master.slot !== "audio.master") throw new Error("state ref");
+                if (!Object.isFrozen(store)) throw new Error("store is not frozen");
+                if (store.master.slot !== "audio.master" || store.master.kind !== "number") throw new Error("master ref");
+                if (store.muted.slot !== "audio.muted" || store.muted.kind !== "boolean") throw new Error("muted ref");
                 "#,
                 "store.js",
             )
@@ -183,8 +186,10 @@ mod tests {
                 mode = { type = "enum", values = {"quiet", "loud"}, default = "quiet" },
                 curve = { type = "array", default = {0, 0.5, 1} },
             })
-            assert(store.declaration.namespace == "audio")
-            assert(store.state.master.slot == "audio.master")
+            assert(store.master.slot == "audio.master")
+            assert(store.master.kind == "number")
+            assert(store.muted.slot == "audio.muted")
+            assert(store.muted.kind == "boolean")
             "#,
             "store.luau",
         )
@@ -240,6 +245,52 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ScriptError::InvalidArgument { .. }));
         assert!(ctx.slot_table.borrow().get("mixed.good").is_none());
+
+        let err = commit_store_for_test(
+            &ctx,
+            "per-owner-mixed",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1, "perOwner": true },
+                "bad": {
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "accumulate": { "op": "input", "name": "@dt" }
+                },
+            }),
+        )
+        .expect_err("perOwner accumulator declaration must reject the entire store");
+        assert!(err.to_string().contains("bad"));
+        assert!(
+            ctx.slot_table
+                .borrow()
+                .get("per-owner-mixed.good")
+                .is_none(),
+            "a failed perOwner declaration cannot insert a partial mod store"
+        );
+
+        let err = commit_store_for_test(
+            &ctx,
+            "per-owner-shared",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1 },
+                "badShared": {
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "network": "shared"
+                },
+            }),
+        )
+        .expect_err("shared replication cannot serialize per-owner cardinality");
+        assert!(err.to_string().contains("badShared"));
+        assert!(
+            ctx.slot_table
+                .borrow()
+                .get("per-owner-shared.good")
+                .is_none(),
+            "a failed shared per-owner declaration cannot partially insert siblings"
+        );
     }
 
     #[test]
@@ -314,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn define_store_returns_stable_state_refs_in_both_runtimes() {
+    fn define_store_returns_stable_flat_refs_in_both_runtimes() {
         let js_ctx = ScriptCtx::new();
         let js_registry = registry_for(js_ctx);
         let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
@@ -326,8 +377,8 @@ mod tests {
                     master: { type: "number", default: 1 },
                     muted: { type: "boolean", default: false },
                 });
-                if (store.state.master.slot !== "audio.master") throw new Error("master handle");
-                if (store.state.muted.slot !== "audio.muted") throw new Error("muted handle");
+                if (store.master.slot !== "audio.master") throw new Error("master handle");
+                if (store.muted.slot !== "audio.muted") throw new Error("muted handle");
                 "#,
                 "store-handles.js",
             )
@@ -344,8 +395,8 @@ mod tests {
                 master = { type = "number", default = 1 },
                 muted = { type = "boolean", default = false },
             })
-            assert(store.state.master.slot == "audio.master")
-            assert(store.state.muted.slot == "audio.muted")
+            assert(store.master.slot == "audio.master")
+            assert(store.muted.slot == "audio.muted")
             "#,
             "store-handles.luau",
         )
@@ -915,20 +966,22 @@ mod tests {
     }
 
     #[test]
-    fn define_store_rejects_owner_private_network_for_mod_stores() {
-        // Mod-declared owner-private per-player slots are out of scope: `"ownerPrivate"`
-        // must be rejected with a clear, author-facing error.
+    fn define_store_rejects_owner_private_network_without_per_owner() {
+        // `ownerPrivate` only describes replication. A global slot has no owner
+        // cardinality, so it must opt into `perOwner` explicitly.
         let err = store_declaration(
             "netFixture",
             serde_json::json!({
                 "secret": { "type": "number", "default": 0, "network": "ownerPrivate" },
             }),
         )
-        .expect_err("ownerPrivate is rejected for mod stores");
+        .expect_err("ownerPrivate without perOwner is rejected");
         let message = err.to_string();
         assert!(
-            message.contains("ownerPrivate") && message.contains("not supported"),
-            "error names the rejected value and that it is unsupported: {message}"
+            message.contains("ownerPrivate")
+                && message.contains("perOwner")
+                && message.contains("secret"),
+            "error names the replication mode, required cardinality, and slot: {message}"
         );
     }
 
@@ -980,7 +1033,7 @@ mod tests {
                 local store = defineStore("netFixture", {
                     objectiveProgress = { type = "number", default = 0, network = "shared" },
                 })
-                return { stores = { store.declaration } }
+                return defineMod({ stores = { store } })
                 "#,
                 "net-fixture.luau",
             )

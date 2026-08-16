@@ -342,24 +342,33 @@ fn spawner_fire_descriptors_match_across_authoring_runtimes() {
 }
 
 #[test]
-fn grant_reaction_builders_match_across_root_sdk_surfaces() {
+fn resource_reaction_builders_match_across_root_sdk_surfaces() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { grantAmmo, grantHealth } from "postretro";
+        import { addSlot, defineStore, grantAmmo, grantHealth } from "postretro";
+        const currency = defineStore("currency", {
+          xp: { type: "number", default: 0, perOwner: true },
+        });
         JSON.stringify({
           health: grantHealth("players", 12.5),
           ammo: grantAmmo("players", "bullets.light", 8),
+          slot: addSlot("players", currency.xp, 3),
         });
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
+        local currency = Postretro.defineStore("currency", {
+          xp = { type = "number", default = 0, perOwner = true },
+        })
         return {
           module = {
             health = Postretro.grantHealth("players", 12.5),
             ammo = Postretro.grantAmmo("players", "bullets.light", 8),
+            slot = Postretro.addSlot("players", currency.xp, 3),
           },
           globals = {
             health = grantHealth("players", 12.5),
             ammo = grantAmmo("players", "bullets.light", 8),
+            slot = addSlot("players", currency.xp, 3),
           },
         }
     "#;
@@ -386,6 +395,11 @@ fn grant_reaction_builders_match_across_root_sdk_surfaces() {
                 "primitive": "grantAmmo",
                 "tag": "players",
                 "args": { "type": "bullets.light", "amount": 8 },
+            },
+            "slot": {
+                "primitive": "addSlot",
+                "tag": "players",
+                "args": { "slot": "currency.xp", "delta": 3 },
             },
         })
     );
@@ -457,7 +471,7 @@ fn trigger_pool_manifest_data_is_byte_identical_across_authoring_runtimes() {
 #[test]
 fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineReaction, defineStore, runtime } from "postretro";
+        import { defineMod, defineReaction, defineStore, runtime } from "postretro";
         import { onStateCrossing, updateState } from "postretro/ui";
 
         const store = defineStore("dispatch", {
@@ -470,31 +484,32 @@ fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
           active: { type: "boolean", default: false },
         });
         const toggle = defineReaction("toggle", (on) =>
-          updateState(store.state.active, runtime.select(on.rising, true, false))
+          updateState(store.active, runtime.select(on.rising, true, false))
         );
         const crossing = onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { below: 0, edge: "both" },
           [toggle],
         );
         const predicate = onStateCrossing(
-          runtime.le(store.state.countdown, 0),
+          runtime.le(store.countdown, 0),
           [toggle],
           { edge: "both" },
         );
         const unknownEdge = onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { above: 10, edge: "future-edge" },
           [toggle],
         );
+        const manifest = defineMod({ stores: [store] });
         const value = {
           reaction: toggle,
           crossing,
           predicate,
           unknownEdge,
-          schema: store.declaration.schema,
-          refRead: runtime.read(store.state.countdown),
-          bareRef: runtime.add(store.state.countdown, 1),
+          schema: manifest.stores[0].schema,
+          refRead: runtime.read(store.countdown),
+          bareRef: runtime.add(store.countdown, 1),
         };
         const roundTrip = JSON.parse(JSON.stringify(value));
         JSON.stringify({ value, roundTrip, hasFunction: typeof toggle.tracer === "function" });
@@ -514,31 +529,32 @@ fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
           active = { type = "boolean", default = false },
         })
         local toggle = Postretro.defineReaction("toggle", function(on)
-          return Ui.updateState(store.state.active, Postretro.runtime.select(on.rising, true, false))
+          return Ui.updateState(store.active, Postretro.runtime.select(on.rising, true, false))
         end)
         local crossing = Ui.onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { below = 0, edge = "both" },
           { toggle }
         )
         local predicate = Ui.onStateCrossing(
-          Postretro.runtime.le(store.state.countdown, 0),
+          Postretro.runtime.le(store.countdown, 0),
           { toggle },
           { edge = "both" }
         )
         local unknownEdge = Ui.onStateCrossing(
-          store.state.countdown,
+          store.countdown,
           { above = 10, edge = "future-edge" },
           { toggle }
         )
+        local manifest = Postretro.defineMod({ stores = { store } })
         local value = {
           reaction = toggle,
           crossing = crossing,
           predicate = predicate,
           unknownEdge = unknownEdge,
-          schema = store.declaration.schema,
-          refRead = Postretro.runtime.read(store.state.countdown),
-          bareRef = Postretro.runtime.add(store.state.countdown, 1),
+          schema = manifest.stores[1].schema,
+          refRead = Postretro.runtime.read(store.countdown),
+          bareRef = Postretro.runtime.add(store.countdown, 1),
         }
         return { value = value, roundTrip = value, hasFunction = false }
     "#;
@@ -666,16 +682,63 @@ fn every_opcode_round_trips_identically_across_runtimes() {
 }
 
 #[test]
+fn presentation_fact_builders_match_across_authoring_runtimes() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { Bar, Text, VStack, definePresentationTemplate, fact } from "postretro/ui";
+        const template = definePresentationTemplate({
+          root: VStack({}, [
+            Text({ content: "0", bind: fact.number("value", { format: "{}", tween: { durationMs: 80, easing: "easeOut" } }) }),
+            Bar({ bind: fact.number("healthFraction"), max: 1, fill: [1,1,1,1], background: [0,0,0,1], visibleWhen: fact.bool("alive") }),
+            Text({ content: "", bind: fact.text("label") }),
+          ]),
+          lifetimeMs: 750,
+          motion: { rise: 18, easing: "easeOut" },
+          fade: { startMs: 500 },
+          spawnScatter: { radius: 0.25 },
+        });
+        JSON.stringify(template.root);
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local UI = require("postretro/ui")
+        local template = UI.definePresentationTemplate("template", {
+          root = UI.VStack({}, {
+            UI.Text({ content = "0", bind = UI.fact.number("value", { format = "{}", tween = { durationMs = 80, easing = "easeOut" } }) }),
+            UI.Bar({ bind = UI.fact.number("healthFraction"), max = 1, fill = {1,1,1,1}, background = {0,0,0,1}, visibleWhen = UI.fact.bool("alive") }),
+            UI.Text({ content = "", bind = UI.fact.text("label") }),
+          }),
+          lifetimeMs = 750,
+          motion = { rise = 18, easing = "easeOut" },
+          fade = { startMs = 500 },
+          spawnScatter = { radius = 0.25 },
+        })
+        return template.root
+    "#;
+
+    assert_eq!(
+        quickjs_fixture_value(TYPESCRIPT_FIXTURE),
+        luau_fixture_value(LUAU_FIXTURE)
+    );
+}
+
+#[test]
 fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // Exercise the shipped root SDK rather than raw runtime builders. The
     // assertion pins every cross-task leaf/token spelling and proves the
     // boolean sugar introduces only `select` nodes.
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineImpactEvent, defineStore, slot } from "postretro";
+        import { defineImpactEvent, defineStore, update } from "postretro";
+        import { definePresentationTemplate, present } from "postretro/ui";
         import type { Impact, ImpactEvent } from "postretro";
 
         const counters = defineStore("impact", {
           broken: { type: "number", default: 0 },
+        });
+        const damageNumber = definePresentationTemplate({
+          root: { kind: "text", content: "0", fontSize: 24, color: [1, 0.35, 0.1, 1] },
+          lifetimeMs: 750,
+          motion: { rise: 18, easing: "easeOut" },
+          fade: { startMs: 500 },
+          spawnScatter: { radius: 0.25 },
         });
         const breakable = (impact: Impact) => {
           const hits = impact.target.state("hits");
@@ -691,21 +754,22 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source.grantHealth(impact.amount.plus(2)),
                 impact.source.grantAmmo("cells", hits.plus(3)),
                 impact.target.playAnim("shatter"),
-                slot(counters.state.broken).add(1),
+                update(counters.broken, (current) => current.plus(1)),
                 impact.target.despawn(),
+                present(damageNumber, impact.target.healthAfter),
               ],
             },
           ];
         };
-        const base = defineImpactEvent("salvage:crate-break", { tag: "crate", levels: ["campaign"] }, breakable);
+        const base = defineImpactEvent("crate-break", { tag: "crate", levels: ["campaign"] }, breakable);
         const override = base.override({ tag: "reinforced_crate" }, (impact) => [
           impact.target.despawn({ afterMs: 15 }),
         ]);
-        const independent = defineImpactEvent("salvage:vase-break", { tag: "vase" }, (impact) => [
+        const independent = defineImpactEvent("vase-break", { tag: "vase" }, (impact) => [
           { when: impact.amount.gt(0), do: [] },
           impact.target.despawn(),
         ]);
-        const empty = defineImpactEvent("salvage:empty", { tag: "empty" }, () => []);
+        const empty = defineImpactEvent("empty", { tag: "empty" }, () => []);
         const wire = (event: ImpactEvent) => {
           const descriptor = event as unknown as {
             kind: "impact";
@@ -728,9 +792,17 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
+        local UI = require("postretro/ui")
 
         local counters = Postretro.defineStore("impact", {
           broken = { type = "number", default = 0 },
+        })
+        local damageNumber = UI.definePresentationTemplate("damageNumber", {
+          root = { kind = "text", content = "0", fontSize = 24, color = {1, 0.35, 0.1, 1} },
+          lifetimeMs = 750,
+          motion = { rise = 18, easing = "easeOut" },
+          fade = { startMs = 500 },
+          spawnScatter = { radius = 0.25 },
         })
         local function breakable(impact)
           local hits = impact.target:state("hits")
@@ -748,23 +820,26 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 impact.source:grantHealth(impact.amount:plus(2)),
                 impact.source:grantAmmo("cells", hits:plus(3)),
                 impact.target:playAnim("shatter"),
-                Postretro.slot(counters.state.broken):add(1),
+                Postretro.update(counters.broken, function(current)
+                  return current:plus(1)
+                end),
                 impact.target:despawn(),
+                UI.present(damageNumber, impact.target.healthAfter),
               },
             },
           }
         end
-        local base = Postretro.defineImpactEvent("salvage:crate-break", { tag = "crate", levels = { "campaign" } }, breakable)
+        local base = Postretro.defineImpactEvent("crate-break", { tag = "crate", levels = { "campaign" } }, breakable)
         local override = base:override({ tag = "reinforced_crate" }, function(impact)
           return { impact.target:despawn({ afterMs = 15 }) }
         end)
-        local independent = Postretro.defineImpactEvent("salvage:vase-break", { tag = "vase" }, function(impact)
+        local independent = Postretro.defineImpactEvent("vase-break", { tag = "vase" }, function(impact)
           return {
             { when = impact.amount:gt(0), ["do"] = {} },
             impact.target:despawn(),
           }
         end)
-        local empty = Postretro.defineImpactEvent("salvage:empty", { tag = "empty" }, function()
+        local empty = Postretro.defineImpactEvent("empty", { tag = "empty" }, function()
           return {}
         end)
         local function wire(event)
@@ -799,13 +874,14 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             base_id, independent_id,
             "independent author ids must remain distinct"
         );
-        assert_eq!(base_id, "salvage:crate-break");
-        assert_eq!(independent_id, "salvage:vase-break");
+        assert_eq!(base_id, "crate-break");
+        assert_eq!(independent_id, "vase-break");
     }
 
     assert_eq!(
-        typescript, luau,
-        "impact ids and policy lowering must match across runtimes"
+        serde_json::to_vec(&typescript).expect("serialize TypeScript wire"),
+        serde_json::to_vec(&luau).expect("serialize Luau wire"),
+        "impact ids and policy lowering must be byte-identical across runtimes"
     );
 
     let base = &typescript["base"];
@@ -899,12 +975,28 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     assert_eq!(
         base["policy"][1]["do"][4],
         serde_json::json!({
-            "primitive": "slot.add",
+            "primitive": "slot.set",
             "args": {
                 "slot": "impact.broken",
-                "delta": { "op": "const", "value": 1 },
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.broken" },
+                    "b": { "op": "const", "value": 1 },
+                },
             },
         })
+    );
+    assert_eq!(
+        base["policy"][1]["do"][6],
+        serde_json::json!({
+            "primitive": "present",
+            "target": "@impact.target",
+            "args": {
+                "template": "damageNumber",
+                "value": { "op": "input", "name": "@impact.healthAfter" },
+            },
+        }),
+        "present must lower identically through the public UI module",
     );
     assert_eq!(
         typescript["independent"]["policy"][0]["do"],
@@ -928,28 +1020,513 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
 }
 
 #[test]
-fn impact_event_builder_id_diagnostics_match_across_runtimes() {
+fn impact_expression_algebra_update_and_when_match_across_authoring_runtimes() {
+    // The public bridges must accept raw runtime nodes as fluent operands and
+    // lift a runtime predicate into BoolRef before `when` lowers it. The first
+    // group names its condition; the second inlines the identical expression.
     const TYPESCRIPT_FIXTURE: &str = r#"
-        import { defineImpactEvent } from "postretro";
-        let message = "";
-        try { defineImpactEvent("not namespaced", {}, () => []); }
-        catch (error) { message = String((error as Error).message); }
-        JSON.stringify({ message });
+        import { defineImpactEvent, defineStore, fromRuntime, read, runtime, update, when } from "postretro";
+
+        const counters = defineStore("impact", {
+          count: { type: "number", default: 0 },
+          enabled: { type: "boolean", default: false },
+        });
+        const namedGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+          .and(read(counters.enabled));
+        const event = defineImpactEvent("runtime-bridge", { tag: "crate" }, (impact) => {
+          const rawRuntimeNumber = runtime.add(runtime.read("impact.bonus"), 1);
+          return [
+            when(namedGate, [
+              update(counters.count, (cur) => cur.plus(impact.amount.plus(rawRuntimeNumber))),
+            ]),
+            when(
+              fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+                .and(read(counters.enabled)),
+              [],
+            ),
+          ];
+        });
+        JSON.stringify({ policy: (event as unknown as { policy: unknown[] }).policy });
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
-        local ok, message = pcall(function()
-          Postretro.defineImpactEvent("not namespaced", {}, function() return {} end)
+
+        local counters = Postretro.defineStore("impact", {
+          count = { type = "number", default = 0 },
+          enabled = { type = "boolean", default = false },
+        })
+        local namedGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+        namedGate = namedGate["and"](namedGate, Postretro.read(counters.enabled))
+        local event = Postretro.defineImpactEvent("runtime-bridge", { tag = "crate" }, function(impact)
+          local rawRuntimeNumber = runtime.add(runtime.read("impact.bonus"), 1)
+          local inlineGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+          return {
+            Postretro.when(namedGate, {
+              Postretro.update(counters.count, function(cur)
+                return cur:plus(impact.amount:plus(rawRuntimeNumber))
+              end),
+            }),
+            Postretro.when(
+              inlineGate["and"](
+                inlineGate,
+                Postretro.read(counters.enabled)
+              ),
+              {}
+            ),
+          }
         end)
-        return { message = if ok then "" else tostring(message):gsub("^.-:%d+: ", "") }
+        return { policy = event.policy }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "expression-algebra lowering must match across runtimes"
+    );
+
+    let policy = &typescript["policy"];
+    assert_eq!(
+        policy[0]["when"], policy[1]["when"],
+        "named and inline `when` conditions must lower identically"
+    );
+    assert_eq!(
+        policy[0]["do"][0],
+        serde_json::json!({
+            "primitive": "slot.set",
+            "args": {
+                "slot": "impact.count",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.count" },
+                    "b": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "@impact.amount" },
+                        "b": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "impact.bonus" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                    },
+                },
+            },
+        }),
+        "update must lower directly to slot.set with its current-value input inlined"
+    );
+}
+
+#[test]
+fn state_convergence_sdk_wire_is_byte_identical_across_authoring_runtimes() {
+    // This fixture exercises the converged surface through its public runtime
+    // modules. `state` and `declaration` are deliberate slot names: flattening
+    // must not reserve either name on the store handle. The returned manifest
+    // and impact policy are the FFI wire, so SDK-only ref `kind` tags cannot
+    // appear anywhere in the serialized result.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import {
+          defineImpactEvent,
+          defineMod,
+          defineStore,
+          fromRuntime,
+          read,
+          runtime,
+          set,
+          update,
+          when,
+        } from "postretro";
+        import { bindState } from "postretro/ui";
+
+        const store = defineStore("converged", {
+          count: { type: "number", default: 0 },
+          enabled: { type: "boolean", default: true },
+          state: { type: "number", default: 0 },
+          declaration: { type: "number", default: 0 },
+        });
+        const manifest = defineMod({
+          name: "Converged",
+          id: "converged",
+          version: "1",
+          stores: [store],
+        });
+        const runtimeGate = fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0));
+        const gate = runtimeGate.and(read(store.enabled));
+        const boundCount = bindState(store.count, { format: "Count {}" });
+        const kindMutationRejected = !Reflect.set(boundCount as object, "kind", "boolean");
+        const kindPreserved = boundCount.kind === "number";
+        const event = defineImpactEvent("converged", { tag: "crate" }, () => [
+          set(store.count, read(boundCount).plus(5)),
+          update(store.count, (current) => current.plus(1)),
+          when(gate, [set(store.state, read(store.declaration).plus(1))]),
+          when(fromRuntime.bool(runtime.constant(false)), []),
+        ]);
+        JSON.stringify({
+          bind: boundCount,
+          kindMutationRejected,
+          kindPreserved,
+          slots: {
+            count: store.count.slot,
+            enabled: store.enabled.slot,
+            state: store.state.slot,
+            declaration: store.declaration.slot,
+          },
+          stores: manifest.stores,
+          policy: (event as unknown as { policy: unknown[] }).policy,
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local UI = require("postretro/ui")
+
+        local store = Postretro.defineStore("converged", {
+          count = { type = "number", default = 0 },
+          enabled = { type = "boolean", default = true },
+          state = { type = "number", default = 0 },
+          declaration = { type = "number", default = 0 },
+        })
+        local manifest = Postretro.defineMod({
+          name = "Converged",
+          id = "converged",
+          version = "1",
+          stores = { store },
+        })
+        local runtimeGate = Postretro.fromRuntime.bool(runtime.gt(runtime.read("impact.bonus"), 0))
+        local gate = runtimeGate["and"](runtimeGate, Postretro.read(store.enabled))
+        local boundCount = UI.bindState(store.count, { format = "Count {}" })
+        local kindMutationRejected = not pcall(function()
+          boundCount.kind = "boolean"
+        end)
+        local kindPreserved = boundCount.kind == "number"
+        local event = Postretro.defineImpactEvent("converged", { tag = "crate" }, function()
+          return {
+            Postretro.set(store.count, Postretro.read(boundCount):plus(5)),
+            Postretro.update(store.count, function(current)
+              return current:plus(1)
+            end),
+            Postretro.when(gate, {
+              Postretro.set(store.state, Postretro.read(store.declaration):plus(1)),
+            }),
+            Postretro.when(Postretro.fromRuntime.bool(runtime.constant(false)), {}),
+          }
+        end)
+        return {
+          bind = boundCount,
+          kindMutationRejected = kindMutationRejected,
+          kindPreserved = kindPreserved,
+          slots = {
+            count = store.count.slot,
+            enabled = store.enabled.slot,
+            state = store.state.slot,
+            declaration = store.declaration.slot,
+          },
+          stores = manifest.stores,
+          policy = event.policy,
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    let typescript_wire = serde_json::to_vec(&typescript).expect("serialize TypeScript wire");
+    let luau_wire = serde_json::to_vec(&luau).expect("serialize Luau wire");
+
+    assert_eq!(
+        typescript_wire, luau_wire,
+        "flatten/read/set/update/when/runtime bridge wire diverged across runtimes"
+    );
+    assert!(
+        !String::from_utf8(typescript_wire)
+            .expect("wire JSON is UTF-8")
+            .contains("\"kind\""),
+        "SDK-only ref kind must not cross the descriptor wire",
+    );
+    assert_eq!(
+        typescript["bind"],
+        serde_json::json!({ "slot": "converged.count", "format": "Count {}" }),
+        "bindState must retain kind for SDK composition without serializing it",
+    );
+    assert_eq!(
+        typescript["kindMutationRejected"],
+        serde_json::json!(true),
+        "bindState kind metadata must reject author mutation",
+    );
+    assert_eq!(
+        typescript["kindPreserved"],
+        serde_json::json!(true),
+        "rejected kind mutation must preserve numeric expression lowering",
+    );
+    assert_eq!(
+        typescript["policy"][0]["args"]["value"],
+        serde_json::json!({
+            "op": "add",
+            "a": { "op": "input", "name": "converged.count" },
+            "b": { "op": "const", "value": 5 },
+        }),
+        "read(bindState(numberRef)) must stay in the numeric fluent algebra",
+    );
+    assert_eq!(
+        typescript["slots"],
+        serde_json::json!({
+            "count": "converged.count",
+            "enabled": "converged.enabled",
+            "state": "converged.state",
+            "declaration": "converged.declaration",
+        }),
+        "flattened handles must expose schema fields directly, including state/declaration",
+    );
+    assert_eq!(
+        typescript["stores"],
+        serde_json::json!([{
+            "namespace": "converged",
+            "schema": {
+                "count": { "type": "number", "default": 0 },
+                "enabled": { "type": "boolean", "default": true },
+                "state": { "type": "number", "default": 0 },
+                "declaration": { "type": "number", "default": 0 },
+            },
+        }]),
+        "defineMod must resolve the handle to the unchanged store declaration wire",
+    );
+    assert_eq!(
+        typescript["policy"],
+        serde_json::json!([
+            {
+                "primitive": "slot.set",
+                "args": {
+                    "slot": "converged.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "converged.count" },
+                        "b": { "op": "const", "value": 5 },
+                    },
+                },
+            },
+            {
+                "primitive": "slot.set",
+                "args": {
+                    "slot": "converged.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "converged.count" },
+                        "b": { "op": "const", "value": 1 },
+                    },
+                },
+            },
+            {
+                "when": {
+                    "op": "select",
+                    "cond": {
+                        "op": "gt",
+                        "a": { "op": "input", "name": "impact.bonus" },
+                        "b": { "op": "const", "value": 0 },
+                    },
+                    "a": { "op": "input", "name": "converged.enabled" },
+                    "b": { "op": "const", "value": false },
+                },
+                "do": [{
+                    "primitive": "slot.set",
+                    "args": {
+                        "slot": "converged.state",
+                        "value": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "converged.declaration" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                    },
+                }],
+            },
+            {
+                "when": { "op": "const", "value": false },
+                "do": [],
+            },
+        ]),
+        "converged builders must lower only through slot.set and the shipped IR",
+    );
+}
+
+#[test]
+fn per_owner_store_refs_are_addressable_without_leaking_owner_metadata() {
+    // `byPlayer` is SDK metadata, not declaration or widget wire. Both authoring
+    // runtimes therefore expose it without changing the enumerable `{ slot,
+    // kind }` shape of a bare ref or the `{ slot }` output of bindState.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent, defineStore, read, runtime, set } from "postretro";
+        import { bindState } from "postretro/ui";
+
+        const store = defineStore("currency", {
+          credits: { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
+          shared: { type: "number", default: 0, network: "shared" },
+        });
+        let owned: ReturnType<typeof store.credits.byPlayer> | undefined;
+        let fresh = false;
+        let globalRejected = false;
+        const event = defineImpactEvent("award-credits", { tag: "pickup" }, (impact) => {
+          const first = store.credits.byPlayer(impact.source);
+          const second = store.credits.byPlayer(impact.source);
+          owned = first;
+          fresh = first !== second;
+          try {
+            store.shared.byPlayer(impact.source);
+          } catch (_error) {
+            globalRejected = true;
+          }
+          return [set(store.shared, read(first)), set(first, 5)];
+        });
+        if (owned === undefined) throw new Error("impact callback did not run");
+        JSON.stringify({
+          bareKeys: Object.keys(store.credits).sort(),
+          byPlayerEnumerable: Object.getOwnPropertyDescriptor(store.credits, "byPlayer")?.enumerable === true,
+          ownedKeys: Object.keys(owned).sort(),
+          ownedFrozen: Object.isFrozen(owned),
+          owner: owned.owner,
+          fresh,
+          globalRejected,
+          bind: bindState(owned),
+          read: (event as any).policy[0].args.value,
+          ownerWrite: (event as any).policy[1],
+          runtimeRead: runtime.read(owned),
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local UI = require("postretro/ui")
+
+        local store = Postretro.defineStore("currency", {
+          credits = { type = "number", default = 0, perOwner = true, network = "ownerPrivate" },
+          shared = { type = "number", default = 0, network = "shared" },
+        })
+        local owned: any = nil
+        local fresh = false
+        local globalRejected = false
+        local event = Postretro.defineImpactEvent("award-credits", { tag = "pickup" }, function(impact)
+          local first = store.credits:byPlayer(impact.source)
+          local second = store.credits:byPlayer(impact.source)
+          owned = first
+          fresh = first ~= second
+          globalRejected = not pcall(function()
+            store.shared:byPlayer(impact.source)
+          end)
+          return { Postretro.set(store.shared, Postretro.read(first)), Postretro.set(first, 5) }
+        end)
+        assert(owned ~= nil)
+        local bareKeys = {}
+        for key in pairs(store.credits) do
+          table.insert(bareKeys, key)
+        end
+        table.sort(bareKeys)
+        local ownedKeys = {}
+        for key in pairs(owned) do
+          table.insert(ownedKeys, key)
+        end
+        table.sort(ownedKeys)
+        local ownedFrozen = not pcall(function()
+          owned.owner = "changed"
+        end)
+        return {
+          bareKeys = bareKeys,
+          byPlayerEnumerable = false,
+          ownedKeys = ownedKeys,
+          ownedFrozen = ownedFrozen,
+          owner = owned.owner,
+          fresh = fresh,
+          globalRejected = globalRejected,
+          bind = UI.bindState(owned),
+          read = event.policy[1].args.value,
+          ownerWrite = event.policy[2],
+          runtimeRead = runtime.read(owned),
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "per-owner ref surface drifted across runtimes"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "bareKeys": ["kind", "slot"],
+            "byPlayerEnumerable": false,
+            "ownedKeys": ["kind", "owner", "slot"],
+            "ownedFrozen": true,
+            "owner": "@impact.source",
+            "fresh": true,
+            "globalRejected": true,
+            "bind": { "slot": "currency.credits" },
+            "read": { "op": "input", "name": "currency.credits", "owner": "@impact.source" },
+            "ownerWrite": {
+                "primitive": "slot.set",
+                "target": "@impact.source",
+                "args": {
+                    "slot": "currency.credits",
+                    "value": { "op": "const", "value": 5 },
+                },
+            },
+            "runtimeRead": { "op": "input", "name": "currency.credits", "owner": "@impact.source" },
+        }),
+        "byPlayer must produce fresh frozen owner refs without leaking metadata into wire consumers",
+    );
+}
+
+#[test]
+fn authored_name_validation_diagnostics_match_across_runtimes() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent, defineStore } from "postretro";
+        const message = (action: () => unknown) => {
+          try { action(); return ""; }
+          catch (error) { return String((error as Error).message); }
+        };
+        const computedStoreName = "computed-store";
+        const computedImpactId = "computed-impact";
+        JSON.stringify({
+          impactColon: message(() => defineImpactEvent("has:colon", {}, () => [])),
+          impactTooLong: message(() => defineImpactEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}, () => [])),
+          storeNamespaceColon: message(() => defineStore("has:colon", {})),
+          storeSlotColon: message(() => defineStore("store", { "has:colon": { type: "number", default: 0 } })),
+          storeBindingSugar: message(() => defineStore({ value: { type: "number", default: 0 } })),
+          impactBindingSugar: message(() => defineImpactEvent({}, () => [])),
+          computedStoreName: message(() => defineStore(computedStoreName, {})),
+          computedImpactId: message(() => defineImpactEvent(computedImpactId, {}, () => [])),
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local function message(action)
+          local ok, value = pcall(action)
+          return if ok then "" else tostring(value):gsub("^.-:%d+: ", "")
+        end
+        local computedStoreName = "computed-store"
+        local computedImpactId = "computed-impact"
+        return {
+          impactColon = message(function() Postretro.defineImpactEvent("has:colon", {}, function() return {} end) end),
+          impactTooLong = message(function() Postretro.defineImpactEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}, function() return {} end) end),
+          storeNamespaceColon = message(function() Postretro.defineStore("has:colon", {}) end),
+          storeSlotColon = message(function() Postretro.defineStore("store", { ["has:colon"] = { type = "number", default = 0 } }) end),
+          storeBindingSugar = message(function() Postretro.defineStore({ value = { type = "number", default = 0 } }) end),
+          impactBindingSugar = message(function() Postretro.defineImpactEvent({}, function() return {} end) end),
+          computedStoreName = message(function() Postretro.defineStore(computedStoreName, {}) end),
+          computedImpactId = message(function() Postretro.defineImpactEvent(computedImpactId, {}, function() return {} end) end),
+        }
     "#;
 
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
     let luau = luau_fixture_value(LUAU_FIXTURE);
     assert_eq!(typescript, luau);
-    assert!(
-        typescript["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("namespaced ASCII string"))
+    assert_eq!(
+        typescript["impactColon"],
+        "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
     );
+    assert_eq!(
+        typescript["impactColon"], typescript["impactTooLong"],
+        "colon-bearing and oversized authored ids share one diagnostic"
+    );
+    assert_eq!(
+        typescript["storeBindingSugar"],
+        "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
+    );
+    assert_eq!(
+        typescript["storeBindingSugar"], typescript["impactBindingSugar"],
+        "name-less store and impact declarations share one diagnostic"
+    );
+    assert_eq!(typescript["computedStoreName"], "");
+    assert_eq!(typescript["computedImpactId"], "");
 }

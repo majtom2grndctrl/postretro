@@ -828,6 +828,13 @@ pub(super) struct FullRenderer {
     /// env flag at construction so a headless/no-UI run can exercise it too.
     pub(super) sdf_force_visibility_one: bool,
 
+    /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
+    /// forward world-specular path. Panel checkbox; surfaces through
+    /// `FrameUniforms.spec_shadowmask_force_one`. Seeded from
+    /// `POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE` for repeatable headless A/B
+    /// captures. SDF and dynamic/mover paths remain unaffected.
+    pub(super) spec_shadowmask_force_one: bool,
+
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     pub(super) vsync_enabled: bool,
 
@@ -940,6 +947,12 @@ pub(super) struct FullRenderer {
     /// just before each render call; read when the UI pass records. Stored here so
     /// both render signatures stay stable.
     pub(super) ui_snapshot: ui::UiReadSnapshot,
+
+    /// Frame-local passive presentation instances from the app-side pool. The
+    /// renderer lowers them through its FontSystem-owned template path; they are
+    /// deliberately separate from the retained UI snapshot and carry no focus,
+    /// hit-test, or input state.
+    pub(super) presentation_inputs: Vec<PresentationDrawInput>,
 
     /// Active UI theme: the token table every descriptor tree resolves its
     /// color/spacing/font slots against at build time. Defaults to

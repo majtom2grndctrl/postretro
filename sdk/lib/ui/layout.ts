@@ -229,9 +229,12 @@ function buildPredicate(value: unknown, field: string, factory: string): Predica
   if (p.slot !== undefined) {
     requireNonemptyString(p.slot, `${field}.slot`, factory);
     out = { slot: p.slot as string } as Predicate;
-  } else {
+  } else if (p.local !== undefined) {
     requireNonemptyString(p.local, `${field}.local`, factory);
     out = { local: p.local as string } as Predicate;
+  } else {
+    requireNonemptyString(p.fact, `${field}.fact`, factory);
+    out = { fact: p.fact as string } as Predicate;
   }
   if (p.equals !== undefined) {
     const e = p.equals;

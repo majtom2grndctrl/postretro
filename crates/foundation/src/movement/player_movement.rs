@@ -442,6 +442,7 @@ mod tests {
         desc.dash = Some(DashParams {
             boost_speed: NumberOrIr::Ir(IrNode::Input {
                 name: "definitely_not_a_movement_input".into(),
+                owner: None,
             }),
             momentum_retention: NumberOrIr::Literal(0.5),
             steer_control: NumberOrIr::Literal(0.3),

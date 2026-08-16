@@ -452,6 +452,7 @@ impl SimHarness {
                         cond: Box::new(IrNode::Ge {
                             a: Box::new(IrNode::Input {
                                 name: "determinism.triggered".to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Const {
                                 value: IrValue::Number(4.0),
@@ -460,6 +461,7 @@ impl SimHarness {
                         a: Box::new(IrNode::Ge {
                             a: Box::new(IrNode::Input {
                                 name: "determinism.enabled".to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Const {
                                 value: IrValue::Number(1.0),
@@ -782,6 +784,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -795,6 +798,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -811,12 +815,15 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: Some(IrNode::Mul {
                             a: Box::new(IrNode::Input {
                                 name: "@dt".to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Input {
                                 name: "determinism.rate".to_string(),
+                                owner: None,
                             }),
                         }),
                     }),
@@ -831,6 +838,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 ),
@@ -909,9 +917,18 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         position,
         ..Transform::default()
     });
+    let mut brain = BrainComponent::from_graph(&enemy_graph(0.0, "alert"));
+    brain.home_anchor = position;
     registry
-        .set_component(id, BrainComponent::from_graph(&enemy_graph(0.0, "alert")))
+        .set_component(id, brain)
         .expect("enemy brain component should attach");
+    registry
+        .entity_state_mut(id)
+        .expect("spawned enemy carries entity state")
+        .set(
+            crate::scripting_systems::ai::FACTION_STATE_FIELD,
+            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+        );
     registry
         .set_component(
             id,
@@ -1190,6 +1207,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 7.0,
             range: 2.0,
@@ -1236,9 +1254,18 @@ fn spawn_driven_agent(
         position,
         ..Transform::default()
     });
+    let mut brain = brain_in_state(&driven_agent_graph(), state);
+    brain.home_anchor = position;
     registry
-        .set_component(enemy, brain_in_state(&driven_agent_graph(), state))
+        .set_component(enemy, brain)
         .expect("driven agent brain should attach");
+    registry
+        .entity_state_mut(enemy)
+        .expect("driven agent carries entity state")
+        .set(
+            crate::scripting_systems::ai::FACTION_STATE_FIELD,
+            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+        );
     registry
         .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
         .expect("driven agent steering component should attach");
@@ -1246,6 +1273,30 @@ fn spawn_driven_agent(
         .set_component(enemy, driven_agent_mesh(animation_state))
         .expect("driven agent mesh should attach");
     enemy
+}
+
+#[test]
+fn determinism_enemy_helpers_seed_home_anchor_from_spawn_position() {
+    let mut registry = EntityRegistry::new();
+    let enemy_position = Vec3::new(-3.0, 1.0, 2.0);
+    let driven_position = Vec3::new(4.0, 1.0, -5.0);
+    let enemy = spawn_enemy(&mut registry, enemy_position);
+    let driven = spawn_driven_agent(&mut registry, driven_position, ALERT_STATE, "locomotion");
+
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .home_anchor,
+        enemy_position
+    );
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(driven)
+            .expect("driven agent keeps its brain")
+            .home_anchor,
+        driven_position
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

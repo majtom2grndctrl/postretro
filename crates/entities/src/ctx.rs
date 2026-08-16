@@ -45,6 +45,10 @@ pub struct ScriptCtx {
     /// for buoyancy integration. The `Cell` lets the primitive closures mutate
     /// without a `&mut ScriptCtx` borrow.
     pub gravity: Rc<Cell<f32>>,
+    /// Whether this process owns authoritative per-seat state mutations.
+    /// Connected clients still compose reaction descriptors so they can render
+    /// presentation work, but owner-slot additions must remain host-only.
+    pub owner_slot_writes_enabled: Rc<Cell<bool>>,
     /// System-reaction command queue (M13 HUD dynamics). System reactions
     /// (`Primitive` descriptors with no `tag`) push typed commands here; `App`
     /// drains it once per frame after the post-tick event drains and routes
@@ -69,6 +73,7 @@ impl ScriptCtx {
             // obvious. The `worldSetGravity` primitive rejects non-finite
             // writes, so scripts cannot reintroduce this sentinel.
             gravity: Rc::new(Cell::new(f32::NAN)),
+            owner_slot_writes_enabled: Rc::new(Cell::new(true)),
             system_commands: SystemCommandQueue::new(),
         }
     }
@@ -99,6 +104,7 @@ mod tests {
             readonly: true,
             ownership: SlotOwnership::Engine,
             network: crate::slot_table::ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
     }

@@ -1,5 +1,5 @@
-// Steering-tick tests: path-following around geometry, arrived/blocked status,
-// crowd separation, the replan budget, and the replan-starvation fairness gate.
+// Steering-tick tests: geometry path-following and static far-side wraparound pursuit;
+// arrived/blocked status, crowd separation, replan budget, and replan-starvation fairness gate.
 // Also covers funnel corner-offset clearance, mandatory-clearance-vertex
 // easing/full-speed rounding, and chase-freeze (stale-path retention).
 //
@@ -223,6 +223,102 @@ impl LWall {
                 left: [0.0, 0.0, self.bz1],
                 right: [self.bx0, 0.0, self.bz1],
             }],
+        }
+    }
+
+    fn nav_graph(&self) -> NavGraph {
+        NavGraph::from_section(&self.navmesh())
+    }
+}
+
+/// Freestanding-wall pursuit fixture: the wall at `x = 3` divides the near and
+/// far lanes until its finite north end, so the navmesh and collision world both
+/// require the agent to wrap left around that end.
+struct FreestandingWall {
+    height: f32,
+}
+
+impl FreestandingWall {
+    fn fixture() -> Self {
+        Self { height: 3.0 }
+    }
+
+    fn collision_world(&self) -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+
+        let base = points.len() as u32;
+        points.push(Point::new(0.0, 0.0, 0.0));
+        points.push(Point::new(8.0, 0.0, 0.0));
+        points.push(Point::new(8.0, 0.0, 11.0));
+        points.push(Point::new(0.0, 0.0, 11.0));
+        tris.push([base, base + 1, base + 2]);
+        tris.push([base, base + 2, base + 3]);
+
+        let base = points.len() as u32;
+        points.push(Point::new(3.0, 0.0, 2.0));
+        points.push(Point::new(3.0, 0.0, 7.0));
+        points.push(Point::new(3.0, self.height, 7.0));
+        points.push(Point::new(3.0, self.height, 2.0));
+        // Both windings keep collision solid from either lane.
+        tris.push([base, base + 1, base + 2]);
+        tris.push([base, base + 2, base + 3]);
+        tris.push([base, base + 2, base + 1]);
+        tris.push([base, base + 3, base + 2]);
+
+        CollisionWorld {
+            mesh: TriMesh::new(points, tris),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn navmesh(&self) -> NavMeshSection {
+        let region = |x0, z0, x1, z1| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        };
+
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 0.1,
+            dim_x: 80,
+            dim_z: 110,
+            agent_radius: 0.35,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            regions: vec![
+                // Near lane, west-side wrap, a short end relay, and far lane.
+                region(0, 0, 80, 20),
+                region(0, 20, 30, 70),
+                region(0, 70, 25, 73),
+                region(0, 75, 80, 110),
+            ],
+            portals: vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [0.0, 0.0, 2.0],
+                    right: [3.0, 0.0, 2.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [0.0, 0.0, 7.0],
+                    right: [3.0, 0.0, 7.0],
+                },
+                NavPortal {
+                    region_a: 2,
+                    region_b: 3,
+                    left: [0.0, 0.0, 7.3],
+                    right: [3.0, 0.0, 7.3],
+                },
+            ],
         }
     }
 
@@ -2012,6 +2108,94 @@ fn agent_steers_around_l_wall_without_penetrating_it() {
     );
 }
 
+// Regression: a far-side wall-end target previously latched pursuit into blocked/no-path.
+#[test]
+fn freestanding_wall_chaser_reaches_far_side_without_blocking() {
+    let wall = FreestandingWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = graph.agent_params();
+    let start = Vec3::new(7.0, rest_y(&params), 1.0);
+    let target = Vec3::new(3.02, rest_y(&params), 7.26);
+    let wall_end_endpoint = Vec3::new(3.0, 0.0, 7.3);
+    let clearance = params.radius + SKIN_DISTANCE;
+    let arrival_band = ARRIVAL_RADIUS_FACTOR * params.radius + 0.08;
+
+    assert_eq!(graph.region_at(start), Some(0));
+    assert!(
+        graph.region_at(target).is_none() && graph.resolve_region_at(target) == Some(3),
+        "target must remain in the far-side eroded band; region={:?}, resolved={:?}",
+        graph.region_at(target),
+        graph.resolve_region_at(target)
+    );
+    assert!(
+        distance_xz(target, wall_end_endpoint) + EPS < clearance,
+        "target must exercise the wall-end endpoint disk"
+    );
+    assert!(
+        arrival_band > clearance + EPS,
+        "arrival band must include the terminal standoff offset"
+    );
+
+    let mut registry = EntityRegistry::new();
+    // Exactly one agent is eligible to consume the replan budget in this fixture.
+    let chaser = spawn_agent(&mut registry, start.x, start.z, &params);
+    set_destination(&mut registry, chaser, target);
+
+    let mut reached_far_side_arrival_band = false;
+    for tick_index in 0..2400 {
+        let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        let state = path_state(&registry, chaser).expect("chaser stays live");
+        let agent = registry.get_component::<AgentComponent>(chaser).unwrap();
+
+        assert!(
+            state.has_destination
+                && agent
+                    .destination
+                    .is_some_and(|destination| distance_xz(destination, target) <= EPS),
+            "static target must stay set on tick {tick_index}"
+        );
+        assert!(
+            !(state.blocked && !state.has_path),
+            "reachable wraparound must never latch blocked/no-path on tick {tick_index}: \
+             pos={:?}, path={:?}",
+            state.position,
+            agent.path
+        );
+        if tick_index == 0 {
+            assert_eq!(
+                result.replans, 1,
+                "the sole replan-contending chaser must plan on tick 0"
+            );
+            assert!(!state.blocked, "tick-0 path plan must not be blocked");
+            assert!(state.has_path, "tick-0 path plan must be present");
+            assert!(
+                agent.path.len() >= 3,
+                "tick-0 route must wrap around the freestanding wall: {:?}",
+                agent.path
+            );
+        }
+        if distance_xz(state.position, target) <= arrival_band {
+            reached_far_side_arrival_band = true;
+            break;
+        }
+    }
+
+    let final_state = path_state(&registry, chaser).expect("chaser stays live");
+    let final_agent = registry.get_component::<AgentComponent>(chaser).unwrap();
+    assert!(
+        reached_far_side_arrival_band,
+        "chaser did not enter the far-side target arrival band within the loose tick bound: \
+         pos={:?}, distance={}, path={:?}, cursor={}, arrived={}, blocked={}",
+        final_state.position,
+        distance_xz(final_state.position, target),
+        final_agent.path,
+        final_agent.waypoint_cursor,
+        final_agent.arrived,
+        final_agent.blocked
+    );
+}
+
 #[test]
 fn agent_reaching_destination_reports_arrived() {
     // Single open region: a flat floor, a navmesh covering it, a destination in
@@ -2170,6 +2354,63 @@ fn drifted_destination_replan_failure_keeps_agent_moving_on_stale_path() {
         agent.planned_destination,
         Some(unroutable),
         "the failed attempt is recorded; the cooldown gates the retry"
+    );
+}
+
+#[test]
+fn arrived_path_replan_failure_clears_completed_state_and_holds_position() {
+    // Regression: an agent that had already arrived retained its completed path
+    // after a newly admitted replan failed, reporting arrived/has-path instead
+    // of blocked for the live unreachable destination.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let reachable = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_destination(&mut registry, id, reachable);
+
+    for _ in 0..600 {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        if path_state(&registry, id).unwrap().arrived {
+            break;
+        }
+    }
+    assert!(
+        path_state(&registry, id).unwrap().arrived,
+        "fixture: the first destination must complete before the failed replan"
+    );
+
+    // This is beyond the navmesh's endpoint snap tolerance, so the drift-driven
+    // replan is admitted immediately and fails.
+    let unroutable = Vec3::new(7.0, rest_y(&params), 20.0);
+    set_destination(&mut registry, id, unroutable);
+    let before = agent_position(&registry, id);
+    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let state = path_state(&registry, id).unwrap();
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+
+    assert_eq!(result.replans, 1, "the drifted destination is admitted");
+    assert!(!state.has_path, "a completed stale path is not retained");
+    assert!(!state.arrived, "the old arrival state is cleared");
+    assert!(state.blocked, "the live unroutable destination is blocked");
+    assert!(agent.path.is_empty());
+    assert!(agent.mandatory_waypoints.is_empty());
+    assert_eq!(agent.waypoint_cursor, 0);
+    assert_eq!(agent.steer_velocity, Vec3::ZERO);
+    assert_eq!(agent.stuck_ticks, 0);
+    assert_eq!(agent.unstick_window_remaining, 0);
+
+    for _ in 0..10 {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    }
+    let after = agent_position(&registry, id);
+    assert!(
+        distance_xz(before, after) < STUCK_PROGRESS_EPSILON,
+        "the blocked agent holds safely instead of following the old endpoint: \
+         before={before:?}, after={after:?}"
     );
 }
 

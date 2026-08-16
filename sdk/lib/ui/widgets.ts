@@ -7,8 +7,10 @@
 //
 // Pure builders: constructing a widget has no engine side effect — the FFI
 // boundary is the eventual `return` of the authored tree. Bound props accept
-// state-reference descriptors (`{ slot }`) or presentation-local bind objects;
-// `Button.onPress` accepts a reaction handle or a bare name string.
+// state-reference descriptors (`{ slot }`) or presentation-local bind objects.
+// Fact refs are legal only when the resulting widget is rooted in a
+// presentation template; ordinary UI-tree drains reject them. `Button.onPress`
+// accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
 import type { LocalizedText } from "./text";
@@ -39,18 +41,22 @@ export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
 
 declare const stateRefValueBrand: unique symbol;
 declare const writableStateRefBrand: unique symbol;
+declare const presentationFactValueBrand: unique symbol;
 
 export type ScalarStateValue = number | boolean | string;
 export type NumericArrayStateValue = ReadonlyArray<number>;
+export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
 
-/** Readable authoritative state reference. Runtime shape is exactly `{ slot }`. */
-export type ReadonlyStateRef<T> = {
+/** Readable authoritative state reference. Descriptor consumers serialize only `slot`. */
+export type ComputedRef<T> = {
   readonly slot: string;
+  /** SDK-only value-type tag. Descriptor consumers serialize only `slot`. */
+  readonly kind: StateRefKind;
   readonly [stateRefValueBrand]: T;
 };
 
 /** Writable authoritative state reference. The writable marker is type-only. */
-export type WritableStateRef<T> = ReadonlyStateRef<T> & {
+export type Ref<T> = ComputedRef<T> & {
   readonly [writableStateRefBrand]: T;
 };
 
@@ -81,6 +87,12 @@ export type ColorTween = {
  */
 export type LocalBindRef = { local: string };
 
+/** A producer-stamped value available only while laying out a presentation template. */
+export type FactBindRef<T> = {
+  readonly fact: string;
+  readonly [presentationFactValueBrand]: T;
+};
+
 /**
  * A scalar comparand for a `Predicate` (M13 G2): a number, boolean, or string.
  * Mirrors `descriptor.rs` `PredicateValue`. An array comparand is unrepresentable.
@@ -88,14 +100,13 @@ export type LocalBindRef = { local: string };
 export type PredicateValue = number | boolean | string;
 
 /**
- * A reactive predicate (M13 G2): a `{ slot }` store source or `{ local }` cell
- * source read against an optional `equals` comparand. Mirrors `descriptor.rs`
- * `Predicate`. Constructed by `LocalStateHandle.is(v)` / `stateEquals(ref, v)`;
- * the comparand there is typed to the cell/slot value type.
+ * A reactive predicate over a store slot, retained local cell, or stamped
+ * presentation fact, with an optional `equals` comparand.
  */
 export type Predicate = (
-  | (ReadonlyStateRef<PredicateValue> & { local?: never })
+  | (ComputedRef<PredicateValue> & { local?: never })
   | LocalBindRef
+  | FactBindRef<PredicateValue>
 ) & {
   equals?: PredicateValue;
 };
@@ -118,14 +129,15 @@ export type WidgetRole =
 export type AnnouncePriority = "polite" | "assertive";
 
 /**
- * State binding for a `text` widget. The source is either a `{ slot }`
- * authoritative state reference or a `{ local }` presentation-cell binding;
+ * State binding for a `text` widget. The source is a store slot, local cell, or
+ * stamped presentation fact;
  * `format` is an optional one-`{}` template; `tween` eases the resolved numeric
  * value. Mirrors `descriptor.rs` `TextBind`.
  */
 export type TextBindProp = (
-  | (ReadonlyStateRef<ScalarStateValue> & { local?: never })
+  | (ComputedRef<ScalarStateValue> & { local?: never })
   | LocalBindRef
+  | FactBindRef<ScalarStateValue>
 ) & {
   format?: string;
   tween?: NumberTween;
@@ -137,7 +149,7 @@ export type TextBindProp = (
  * resolved color. Mirrors `descriptor.rs` `PanelBind`.
  */
 export type PanelBindProp = (
-  | (ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never })
+  | (ComputedRef<NumericArrayStateValue> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: ColorTween;
@@ -148,20 +160,21 @@ export type PanelBindProp = (
  * source + optional number-shape tween). Mirrors `descriptor.rs` `SliderBind`.
  */
 export type SliderBindProp = (
-  | (WritableStateRef<number> & { local?: never; format?: never })
+  | (Ref<number> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: NumberTween;
 };
 
 export type BarBindProp = (
-  | (ReadonlyStateRef<number> & { local?: never; format?: never })
+  | (ComputedRef<number> & { local?: never; format?: never })
   | LocalBindRef
+  | FactBindRef<number>
 ) & {
   tween?: NumberTween;
 };
 
-export type BarMaxProp = number | ReadonlyStateRef<number>;
+export type BarMaxProp = number | ComputedRef<number>;
 
 /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
 export type BarExitFade = { durationMs: number };
@@ -330,8 +343,8 @@ function validateEasing(value: unknown, field: string, factory: string): void {
 }
 
 /**
- * Resolve a bind prop to its wire `{ slot, ... }` form. `slot` comes from an
- * authoritative state reference; `{ local }` comes from a presentation cell.
+ * Resolve a bind prop to its wire source form. Values may come from an
+ * authoritative slot, retained local cell, or stamped presentation fact.
  * Validates the optional `tween`; the panel path expects a color-shape `from`,
  * the number path a numeric `from`. Returns `undefined` when no bind was authored
  * so the factory omits the `bind` key (wire identity).
@@ -340,19 +353,20 @@ function buildBind(
   bind: unknown,
   factory: string,
   kind: "text" | "panel" | "slider",
-): { slot?: string; local?: string; format?: string; tween?: unknown } | undefined {
+): { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } | undefined {
   if (bind === undefined) return undefined;
   if (bind === null || typeof bind !== "object") {
     throw new Error(`${factory}: \`bind\` must be an object`);
   }
   const b = bind as Record<string, unknown>;
-  // The bind source is either a `{ slot }` store binding or a `{ local }`
-  // presentation-cell binding. `slot` wins when present; the emitted wire object
-  // carries exactly one of the two keys.
-  const out: { slot?: string; local?: string; format?: string; tween?: unknown } =
+  // Source precedence matches the descriptor bridge. Authored SDK refs carry
+  // exactly one source key.
+  const out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } =
     b.slot !== undefined
       ? (requireNonemptyString(b.slot, "bind.slot", factory), { slot: b.slot as string })
-      : (requireNonemptyString(b.local, "bind.local", factory), { local: b.local as string });
+      : b.local !== undefined
+        ? (requireNonemptyString(b.local, "bind.local", factory), { local: b.local as string })
+        : (requireNonemptyString(b.fact, "bind.fact", factory), { fact: b.fact as string });
 
   if (kind === "text" && b.format !== undefined) {
     requireString(b.format, "bind.format", factory);
@@ -485,8 +499,8 @@ function applyRole(out: WidgetDescriptor, role: unknown, factory: string): void 
 
 /**
  * Validate + clone a `Predicate` prop (`visibleWhen`/`selected`/`checked`, or a
- * Button `bind`), or `undefined` when absent. Source is `{ slot }` or `{ local }`;
- * `equals` is an optional scalar comparand. `slot` wins when present.
+ * Button `bind`), or `undefined` when absent. `equals` is an optional scalar
+ * comparand. Source precedence is slot, local, then fact.
  */
 function buildPredicate(value: unknown, field: string, factory: string): Predicate | undefined {
   if (value === undefined) return undefined;
@@ -498,9 +512,12 @@ function buildPredicate(value: unknown, field: string, factory: string): Predica
   if (p.slot !== undefined) {
     requireNonemptyString(p.slot, `${field}.slot`, factory);
     out = { slot: p.slot as string };
-  } else {
+  } else if (p.local !== undefined) {
     requireNonemptyString(p.local, `${field}.local`, factory);
     out = { local: p.local as string } as Predicate;
+  } else {
+    requireNonemptyString(p.fact, `${field}.fact`, factory);
+    out = { fact: p.fact as string } as Predicate;
   }
   if (p.equals !== undefined) {
     const e = p.equals;

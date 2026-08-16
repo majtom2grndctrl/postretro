@@ -3781,6 +3781,7 @@ dependencies = [
  "mlua",
  "postretro-entities",
  "postretro-foundation",
+ "postretro-level-format",
  "postretro-level-loader",
  "postretro-render-data",
  "postretro-scripting-core",
@@ -3900,6 +3901,7 @@ dependencies = [
 name = "postretro-scripting-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "glam",
  "log",
  "mlua",

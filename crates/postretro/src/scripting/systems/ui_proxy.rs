@@ -1,4 +1,5 @@
-// Player HUD state publisher. Host publishes authoritative health, ammo, and reload slots;
+// Player state publisher. Host publishes authoritative health at each impact seam and
+// republishes health, ammo, and reload slots for HUD consumers after game logic;
 // every role publishes local display-only `player.weapon.*` slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
@@ -12,7 +13,7 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
-use postretro_entities::slot_table::SlotValue;
+use postretro_entities::slot_table::{SlotOwnership, SlotValue};
 
 /// Read the current and maximum HP of the player pawn resolved by the local
 /// player marker, with legacy fallback to the first entity carrying
@@ -81,7 +82,7 @@ fn weapon_state_values(
     (current, pending, inventory.switch_target.is_some())
 }
 
-/// Engine-side producer for the HUD store slots.
+/// Engine-side producer for player slots consumed by impact policies and HUD.
 pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
     invalid_max_warned_for: Option<EntityId>,
@@ -161,6 +162,14 @@ impl PlayerHudStatePublisher {
         self.tick_and_report_sampled_weapon()
     }
 
+    /// Publish the owning local pawn's health slots from a registry the fixed-tick
+    /// producer already borrows. Impact evaluation calls this after damage and
+    /// before freezing ambient engine-state reads.
+    pub(crate) fn publish_health_from_registry(&mut self, registry: &EntityRegistry) {
+        let pawn_health = pawn_health_values(registry);
+        self.publish_health_values(pawn_health);
+    }
+
     /// Republish the player HUD store slots for this frame.
     ///
     /// Publishes the live pawn HP into `player.health` and max HP into
@@ -178,6 +187,7 @@ impl PlayerHudStatePublisher {
     }
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
+        self.publish_local_per_owner_mod_slots();
         self.publish_local_weapon_state();
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
@@ -185,20 +195,7 @@ impl PlayerHudStatePublisher {
         // the `write_store_slot` calls (which borrow the slot table, a separate
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
-        if let Some((pawn, current, max)) = pawn_health {
-            // Engine-owned and always declared, so a write error is a real bug
-            // and must be surfaced rather than silently skipped.
-            self.write_hud_slot("player.health", SlotValue::Number(current));
-
-            if max.is_finite() && max >= 1.0 {
-                self.write_hud_slot("player.maxHealth", SlotValue::Number(max));
-            } else if self.invalid_max_warned_for != Some(pawn) {
-                log::warn!(
-                    "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
-                );
-                self.invalid_max_warned_for = Some(pawn);
-            }
-        }
+        self.publish_health_values(pawn_health);
 
         let (sampled_weapon, ammo, reload_progress, reload_active) =
             weapon_hud_values(&self.ctx.registry.borrow());
@@ -226,12 +223,58 @@ impl PlayerHudStatePublisher {
         }
     }
 
+    fn publish_health_values(&mut self, pawn_health: Option<(EntityId, f32, f32)>) {
+        if let Some((pawn, current, max)) = pawn_health {
+            // Engine-owned and always declared, so a write error is a real bug
+            // and must be surfaced rather than silently skipped.
+            self.write_hud_slot("player.health", SlotValue::Number(current));
+
+            if max.is_finite() && max >= 1.0 {
+                self.write_hud_slot("player.maxHealth", SlotValue::Number(max));
+            } else if self.invalid_max_warned_for != Some(pawn) {
+                log::warn!(
+                    "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
+                );
+                self.invalid_max_warned_for = Some(pawn);
+            }
+        }
+    }
+
     fn publish_local_weapon_state(&mut self) {
         let (current, pending, switching) =
             weapon_state_values(&self.ctx.registry.borrow(), self.pending_weapon_slot);
         self.write_hud_slot("player.weapon.current", SlotValue::String(current));
         self.write_hud_slot("player.weapon.pending", SlotValue::String(pending));
         self.write_hud_slot("player.weapon.switching", SlotValue::Boolean(switching));
+    }
+
+    /// Refresh unaddressed HUD reads of mod-owned per-owner slots from the
+    /// local pawn's seat. A missing local pawn, seat, or declared default leaves
+    /// the prior scalar projection intact, matching the existing publisher's
+    /// absence behavior.
+    fn publish_local_per_owner_mod_slots(&mut self) {
+        let local_seat = {
+            let registry = self.ctx.registry.borrow();
+            registry
+                .local_player_pawn()
+                .and_then(|pawn| registry.seat_for_pawn(pawn))
+        };
+        let Some(local_seat) = local_seat else {
+            return;
+        };
+
+        let mut slots = self.ctx.slot_table.borrow_mut();
+        for (_, record) in slots.iter_mut() {
+            if record.schema.ownership != SlotOwnership::Mod || !record.schema.per_owner {
+                continue;
+            }
+            let Some(value) = record.per_seat_value(local_seat).cloned() else {
+                continue;
+            };
+            if record.value.as_ref() != Some(&value) {
+                record.write_value(Some(value));
+            }
+        }
     }
 }
 
@@ -244,6 +287,10 @@ mod tests {
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
     use postretro_entities::registry::{EntityId, Transform};
+    use postretro_entities::slot_table::{
+        ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType,
+    };
+    use postretro_foundation::Seat;
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
         HealthDescriptor, PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams,
@@ -301,6 +348,20 @@ mod tests {
             )
             .unwrap();
         id
+    }
+
+    fn per_owner_number_slot(default: f32) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(default)),
+            range: None,
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
+            per_owner: true,
+            accumulate: None,
+        })
     }
 
     /// Spawn a pawn (carries `PlayerMovement`) with a `Health` component whose
@@ -368,6 +429,90 @@ mod tests {
         inventory.wieldables[0] = Some(id);
         registry.set_component(pawn, inventory).unwrap();
         id
+    }
+
+    #[test]
+    fn per_owner_mod_slot_publishes_only_the_local_seat_projection() {
+        let ctx = ScriptCtx::new();
+        let local = spawn_movement_pawn(&ctx);
+        let remote = spawn_movement_pawn(&ctx);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            registry.mark_local_player_pawn(local).unwrap();
+            registry.bind_pawn_seat(local, Seat(0));
+            registry.bind_pawn_seat(remote, Seat(1));
+        }
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert_namespace(
+                    "currency",
+                    vec![("xp".to_string(), per_owner_number_slot(5.0))],
+                )
+                .unwrap();
+            let xp = slots.get_mut("currency.xp").unwrap();
+            xp.set_per_seat_value(Seat(0), SlotValue::Number(17.0));
+            xp.set_per_seat_value(Seat(1), SlotValue::Number(31.0));
+            xp.write_value(Some(SlotValue::Number(99.0)));
+        }
+
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick(None);
+
+        assert_eq!(
+            ctx.slot_table.borrow().get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(17.0)),
+            "the HUD projection reads the local seat, never a remote owner's value"
+        );
+
+        let generation = ctx
+            .slot_table
+            .borrow()
+            .get("currency.xp")
+            .unwrap()
+            .write_generation();
+        publisher.tick(None);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.xp")
+                .unwrap()
+                .write_generation(),
+            generation,
+            "an unchanged local-seat projection must not emit a spurious write notification"
+        );
+    }
+
+    #[test]
+    fn per_owner_mod_slot_projection_skips_a_remote_seat_without_a_marked_local_pawn() {
+        let ctx = ScriptCtx::new();
+        let remote = spawn_movement_pawn(&ctx);
+        ctx.registry.borrow_mut().bind_pawn_seat(remote, Seat(1));
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert_namespace(
+                    "currency",
+                    vec![("xp".to_string(), per_owner_number_slot(5.0))],
+                )
+                .unwrap();
+            slots
+                .get_mut("currency.xp")
+                .unwrap()
+                .set_per_seat_value(Seat(1), SlotValue::Number(31.0));
+            slots
+                .get_mut("currency.xp")
+                .unwrap()
+                .write_value(Some(SlotValue::Number(77.0)));
+        }
+
+        PlayerHudStatePublisher::new(ctx.clone()).tick(None);
+
+        assert_eq!(
+            ctx.slot_table.borrow().get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(77.0)),
+            "an unmarked local pawn never falls back to a remote seat projection"
+        );
     }
 
     #[test]

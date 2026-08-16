@@ -49,6 +49,22 @@ pub const BRAIN_TARGET_MAX_HEALTH_INPUT: &str = "@brain.targetMaxHealth";
 /// Whether the selected target's death sweep latch has fired, or `false` with
 /// no target or no target health component.
 pub const BRAIN_TARGET_DIED_INPUT: &str = "@brain.targetDied";
+/// The enemy's XZ distance from its spawn-time home anchor. Unlike target-side
+/// facts, this remains meaningful while no target is selected.
+pub const BRAIN_DISTANCE_FROM_ANCHOR_INPUT: &str = "@brain.distanceFromAnchor";
+/// Whether the selected target's faction differs from the evaluating enemy's,
+/// or `false` with no selected target.
+///
+/// This is the durable authored relationship surface. The numeric faction
+/// storage is intentionally an interim `@state` implementation detail.
+pub const BRAIN_TARGET_HOSTILE_INPUT: &str = "@brain.targetHostile";
+/// Whether the nav pathfinder can currently route from this enemy to its
+/// selected target. `false` without a target or when the map has no navmesh.
+///
+/// This is the cached verdict from the same `find_path` query chase relies on,
+/// not a ground-truth reachability oracle: it inherits the pathfinder's current
+/// routing limitations.
+pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -79,7 +95,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 10] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 13] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_STATE_MS_INPUT, IrType::Number),
@@ -90,6 +106,9 @@ pub const BRAIN_INPUTS: [(&str, IrType); 10] = [
     (BRAIN_TARGET_HEALTH_INPUT, IrType::Number),
     (BRAIN_TARGET_MAX_HEALTH_INPUT, IrType::Number),
     (BRAIN_TARGET_DIED_INPUT, IrType::Bool),
+    (BRAIN_DISTANCE_FROM_ANCHOR_INPUT, IrType::Number),
+    (BRAIN_TARGET_HOSTILE_INPUT, IrType::Bool),
+    (BRAIN_TARGET_REACHABLE_INPUT, IrType::Bool),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -195,6 +214,7 @@ mod tests {
     fn input(name: &str) -> IrNode {
         IrNode::Input {
             name: name.to_string(),
+            owner: None,
         }
     }
 
@@ -210,6 +230,33 @@ mod tests {
                 "`{name}` projects its declared type"
             );
         }
+    }
+
+    #[test]
+    fn distance_from_anchor_appends_at_fixed_slot_ten() {
+        assert_eq!(
+            BRAIN_INPUTS[10],
+            (BRAIN_DISTANCE_FROM_ANCHOR_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn target_hostile_appends_at_fixed_slot_eleven() {
+        assert_eq!(
+            BRAIN_INPUTS[11],
+            (BRAIN_TARGET_HOSTILE_INPUT, IrType::Bool),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn target_reachable_appends_at_fixed_slot_twelve() {
+        assert_eq!(
+            BRAIN_INPUTS[12],
+            (BRAIN_TARGET_REACHABLE_INPUT, IrType::Bool),
+            "new brain facts append; they never repoint existing guard handles"
+        );
     }
 
     #[test]

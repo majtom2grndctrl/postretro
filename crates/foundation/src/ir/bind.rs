@@ -206,10 +206,12 @@ fn bind_node<S: BindingScope>(
     match node {
         IrNode::Const { value } => Ok((BoundNode::Const(*value), value.ir_type())),
 
-        IrNode::Input { name } => {
-            let resolved = scope
-                .resolve_input(name)
-                .ok_or_else(|| BindError::UnknownInput { name: name.clone() })?;
+        IrNode::Input { name, owner } => {
+            let resolved = match owner {
+                Some(owner) => scope.resolve_owned_input(name, owner),
+                None => scope.resolve_input(name),
+            }
+            .ok_or_else(|| BindError::UnknownInput { name: name.clone() })?;
             Ok((BoundNode::Input(resolved.handle), resolved.ir_type))
         }
 
@@ -463,6 +465,7 @@ mod tests {
         let scope = StubScope::new();
         let baked = read_only(IrNode::Input {
             name: "speed".to_string(),
+            owner: None,
         });
         let program = bind(&baked, &scope).expect("well-typed program binds");
         assert_eq!(program.root_type, IrType::Number);
@@ -483,6 +486,7 @@ mod tests {
                 a: num(1.0),
                 b: Box::new(IrNode::Input {
                     name: "speed".to_string(),
+                    owner: None,
                 }),
             },
         };
@@ -496,6 +500,7 @@ mod tests {
         let scope = StubScope::new();
         let baked = read_only(IrNode::Input {
             name: "missing".to_string(),
+            owner: None,
         });
         assert_eq!(
             bind(&baked, &scope).unwrap_err(),
@@ -513,6 +518,7 @@ mod tests {
         let scope = StubScope::new();
         let baked = read_only(IrNode::Input {
             name: "mode".to_string(),
+            owner: None,
         });
         assert_eq!(
             bind(&baked, &scope).unwrap_err(),
@@ -645,6 +651,7 @@ mod tests {
                         a: num(0.0),
                         b: Box::new(IrNode::Input {
                             name: "speed".to_string(),
+                            owner: None,
                         }),
                         t: num(0.5),
                     }),

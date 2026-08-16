@@ -8,7 +8,26 @@
 // policies build on. Reward behavior is reference content only: the engine has
 // no concept of a reward, so a mod replaces these policies wholesale.
 
-import { defineImpactEvent } from "postretro";
+import { defineImpactEvent, defineStore, present, update } from "postretro";
+import { damageNumber } from "./combat-presentation";
+
+// REFERENCE CONTENT — XP belongs to its earning player, while teamKills is one
+// session-wide counter. The two slots share a policy below so the cardinality
+// decision is visible in the authoring surface rather than hidden in engine code.
+export const progression = defineStore("progression", {
+  xp: {
+    type: "number",
+    default: 0,
+    perOwner: true,
+    persist: true,
+    network: "ownerPrivate",
+  },
+  teamKills: {
+    type: "number",
+    default: 0,
+    network: "shared",
+  },
+});
 
 const RESURRECT_DELAY_MS = 3_000;
 // This is one authored per-impact raw-overkill rule, not accumulated shell
@@ -19,7 +38,7 @@ const RESURRECT_DELAY_MS = 3_000;
 const FINISHER_OVERSHOOT = -3;
 
 export const combatDummyLifecycle = defineImpactEvent(
-  "dev:combat-dummy-lifecycle",
+  "combat-dummy-lifecycle",
   // `target_dummy` is currently exclusive to combat-demo. Do not use a
   // catalog-level filter here: direct CLI map loads intentionally have no
   // catalog tags, and the walkthrough must work through that normal dev path.
@@ -30,6 +49,7 @@ export const combatDummyLifecycle = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
+      { do: [present(damageNumber, impact.amount)] },
       // A gib is a level: a downed target may be gibbed by a later hit.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so repeated body hits cannot restart recovery.
@@ -57,7 +77,7 @@ const CORPSE_LINGER_MS = 4_000;
 // and its base's tag are present — so a specialization is always a strict subset
 // of this policy's reach, and where it applies this one does not run at all.
 export const enemyDeath = defineImpactEvent(
-  "dev:enemy-death",
+  "enemy-death",
   // Deliberately mod-global with no `levels`: a level-gated base never lands its
   // filter, and its overrides are then dropped as targeting an unknown event.
   { tag: "enemy" },
@@ -67,6 +87,7 @@ export const enemyDeath = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
+      { do: [present(damageNumber, impact.amount)] },
       // A gib skips the clip entirely — there is no body left to animate.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so further hits on a corpse cannot restart the timer.
@@ -79,20 +100,31 @@ export const enemyDeath = defineImpactEvent(
 );
 
 // REFERENCE CONTENT — this mod-global kill payout grants 8 `shells.buck` per
-// dummy kill. It is one possible economy policy, not engine behavior; a real
-// mod replaces it with its own policy.
+// dummy kill, plus per-player XP and one shared team-kill count. It is one
+// possible economy policy, not engine behavior; a real mod replaces it whole.
 export const ammoOnKill = defineImpactEvent(
-  "dev:ammo-on-kill",
+  "ammo-on-kill",
   { tag: "dummy" },
   (impact) => {
     const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
 
-    return [{ when: killed, do: [impact.source.grantAmmo("shells.buck", 8)] }];
+    return [
+      {
+        when: killed,
+        do: [
+          impact.source.grantAmmo("shells.buck", 8),
+          // Same reward and policy; only the slot and this owner address decide
+          // that XP is one per-player pot rather than one shared session pot.
+          update(progression.xp.byPlayer(impact.source), (cur) => cur.plus(10)),
+          update(progression.teamKills, (cur) => cur.plus(1)),
+        ],
+      },
+    ];
   },
 );
 
 // The combat-demo zombie keeps getting back up, which is the point of that
-// walkthrough. Authored as an override of `dev:enemy-death` rather than as its
+// walkthrough. Authored as an override of `enemy-death` rather than as its
 // own event: a separate id would not evict the base, so the zombie would be
 // despawned by the default policy AND resurrected by this one on the same hit.
 //
@@ -107,6 +139,7 @@ export const combatZombieLifecycle = enemyDeath.override(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
+      { do: [present(damageNumber, impact.amount)] },
       { when: gibbed, do: [target.despawn()] },
       {
         when: killed.and(gibbed.not()),

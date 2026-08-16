@@ -90,6 +90,13 @@ impl CrossingDetector {
                         );
                         continue;
                     }
+                    if slot_is_per_owner(slot_table, slot) {
+                        log::warn!(
+                            "[Scripting] onStateCrossing: per-owner slot `{slot}` is not supported by \
+                             threshold crossings; crossing watcher skipped",
+                        );
+                        continue;
+                    }
                     let previous = read_number(slot_table, slot).map(|raw| raw / crossing.max);
                     self.watchers.push(Watcher::Threshold {
                         source_id,
@@ -291,6 +298,12 @@ fn slot_is_number(slot_table: &SlotTable, name: &str) -> bool {
         .is_some_and(|record| record.schema.slot_type == SlotType::Number)
 }
 
+fn slot_is_per_owner(slot_table: &SlotTable, name: &str) -> bool {
+    slot_table
+        .get(name)
+        .is_some_and(|record| record.schema.per_owner)
+}
+
 /// Read the slot's current numeric value, or `None` when the slot is absent,
 /// has no value yet, or holds a non-`Number` value.
 fn read_number(slot_table: &SlotTable, name: &str) -> Option<f32> {
@@ -311,6 +324,8 @@ mod tests {
     use crate::slot_table::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
 
     /// A mod-owned writable Number slot under a fresh namespace, with an initial
     /// value. Built directly (not via `defineStore`) to keep the test minimal.
@@ -326,6 +341,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: crate::slot_table::ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         });
         record.value = value.map(SlotValue::Number);
@@ -397,6 +413,7 @@ mod tests {
     fn input(name: &str) -> Box<IrNode> {
         Box::new(IrNode::Input {
             name: name.to_string(),
+            owner: None,
         })
     }
 
@@ -583,6 +600,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: crate::slot_table::ReplicationScope::None,
+                    per_owner: false,
                     accumulate: None,
                 }),
             )
@@ -593,6 +611,32 @@ mod tests {
 
         assert_eq!(detector.watcher_count(), 0, "non-Number slot is skipped");
         assert!(detector.detect(&table).is_empty());
+    }
+
+    #[test]
+    fn threshold_crossing_rejects_per_owner_slot_at_registration() {
+        let mut table = table_with("currency.xp", Some(0.0));
+        table.get_mut("currency.xp").unwrap().schema.per_owner = true;
+        let reg = registry_with(vec![above_crossing(
+            "currency.xp",
+            100.0,
+            1.0,
+            &["levelUp"],
+        )]);
+        let capture = LogCapture::start();
+        let mut detector = CrossingDetector::new();
+
+        detector.initialize(&reg, &table, &ScriptCtx::new());
+
+        assert_eq!(
+            detector.watcher_count(),
+            0,
+            "threshold crossings have one scalar previous value and cannot watch per-owner slots"
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "[Scripting] onStateCrossing: per-owner slot `currency.xp` is not supported by threshold crossings; crossing watcher skipped",
+        );
     }
 
     #[test]

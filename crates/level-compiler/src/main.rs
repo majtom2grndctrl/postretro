@@ -43,6 +43,7 @@ pub mod script_light_membership;
 pub mod sdf_bake;
 pub mod sh_analyze;
 pub mod sh_bake;
+pub mod sh_coarsen;
 pub mod sh_group;
 pub mod shadowmask_bake;
 pub mod size_options;
@@ -564,6 +565,12 @@ struct Args {
     /// analysis's protected projection. Repeatable. Compiler-only measurement
     /// input — never stored, never affects emitted bytes.
     sh_protect_aabbs: Vec<[f32; 6]>,
+    /// When true, run the delta-SH probe-coarsening classifier before delta
+    /// compaction: each 4×4×4 brick is assigned a per-section coarsening level
+    /// (L0/L1/L2) and coarsened bricks emit fewer stored tiles. Default off,
+    /// which bakes a uniform all-L0 grid byte-identical to the non-coarsened
+    /// path. `--sh-protect-aabb` forces intersecting bricks to L0.
+    sh_coarsen: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -637,6 +644,7 @@ where
     let mut sh_analyze = false;
     let mut sh_analyze_out: Option<PathBuf> = None;
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
+    let mut sh_coarsen = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -766,6 +774,9 @@ where
             "--sh-analyze" => {
                 sh_analyze = true;
             }
+            "--sh-coarsen" => {
+                sh_coarsen = true;
+            }
             "--sh-analyze-out" => {
                 let path = args
                     .next()
@@ -818,6 +829,7 @@ where
         sh_analyze,
         sh_analyze_out,
         sh_protect_aabbs,
+        sh_coarsen,
     })
 }
 
@@ -1931,6 +1943,17 @@ mod tests {
         assert!(!parsed.sh_analyze);
         assert!(parsed.sh_analyze_out.is_none());
         assert!(parsed.sh_protect_aabbs.is_empty());
+        assert!(!parsed.sh_coarsen);
+    }
+
+    #[test]
+    fn parse_args_sh_coarsen_flag() {
+        let parsed =
+            parse_args_from(vec!["input.map".to_string(), "--sh-coarsen".to_string()].into_iter())
+                .unwrap();
+        assert!(parsed.sh_coarsen);
+        // Independent of the measurement flag.
+        assert!(!parsed.sh_analyze);
     }
 
     #[test]

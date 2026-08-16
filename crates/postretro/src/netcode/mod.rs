@@ -16,9 +16,11 @@ mod endpoint;
 pub(crate) mod frame_order;
 mod host;
 mod interpolation;
+mod join_seed;
 mod lifecycle;
 mod movement_state;
 mod prediction;
+mod presentation;
 mod reconcile;
 mod remote_materialize;
 mod replication;
@@ -78,10 +80,18 @@ pub(crate) use host::{
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, MAX_DELAY_MICROS};
+pub(crate) use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub(crate) use prediction::ClientPrediction;
+#[cfg(test)]
+pub(crate) use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
+pub(crate) use presentation::{
+    ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
+    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
+};
+pub(crate) use state_slots::ReplicatedSlotIdentity;
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
 // directly against the pinned AC thresholds); production code uses the direct submodule path.
@@ -392,6 +402,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
 
 fn discard_world_less_snapshots(client: &mut NetClient) {
     drop(client.drain_snapshots());
+    drop(client.drain_presentation());
 }
 
 fn replace_client_tuning(
@@ -803,6 +814,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
     slot_table: &mut SlotTable,
+    replication_identity: &ReplicatedSlotIdentity<'_>,
     client: &mut NetClient,
     replication: &mut ClientReplication,
     state_slots: &mut state_slots::ClientStateApply,
@@ -869,10 +881,12 @@ pub(crate) fn client_receive_and_apply(
         if outcome.ack.is_some() {
             let state_outcome = state_slots.apply_snapshot_state(
                 slot_table,
+                replication_identity,
                 snapshot.sequence,
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
+            frame_outcome.replicated_state_changed |= !state_outcome.fresh_slots.is_empty();
             if state_outcome.fresh_weapon_cooldown_slot.is_some() {
                 frame_outcome.owner_private_weapon_cooldown_slot =
                     state_outcome.fresh_weapon_cooldown_slot;
@@ -927,6 +941,7 @@ pub(crate) fn client_receive_and_apply(
         // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
         // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
         for remote in &outcome.remote_entities {
+            replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
             let descriptor = descriptors.iter().find(|descriptor| {
                 descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
             });
@@ -2756,6 +2771,7 @@ mod tests {
         let sampled = host_replicate(
             &registry,
             &slot_table,
+            &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
             &mut replication,
@@ -2788,6 +2804,7 @@ mod tests {
         let sampled = host_replicate(
             &registry,
             &slot_table,
+            &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
             &mut replication,
@@ -2831,6 +2848,7 @@ mod tests {
         let sampled = host_replicate(
             &registry,
             &slot_table,
+            &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
             &mut replication,

@@ -84,6 +84,7 @@ mod tests {
                 }),
                 b: Box::new(IrNode::Input {
                     name: "speed".to_string(),
+                    owner: None,
                 }),
             },
         }

@@ -98,6 +98,7 @@ use direct_sh_compose::{
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+pub use renderer_splash::PresentationDrawInput;
 use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};

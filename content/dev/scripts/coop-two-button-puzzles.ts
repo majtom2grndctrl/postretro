@@ -72,10 +72,10 @@ export function setupLevel() {
   // buttons we need `northHeld += 1` / `-= 1` (the state-delta-reactions draft),
   // OR per-button boolean slots plus a way to sum them (see WALL #3).
   reactions.push(
-    defineReaction("northAdown", updateState(puzzles.state.northHeld, 1)),
-    defineReaction("northAup", updateState(puzzles.state.northHeld, 0)),
-    defineReaction("northBdown", updateState(puzzles.state.northHeld, 1)),
-    defineReaction("northBup", updateState(puzzles.state.northHeld, 0)),
+    defineReaction("northAdown", updateState(puzzles.northHeld, 1)),
+    defineReaction("northAup", updateState(puzzles.northHeld, 0)),
+    defineReaction("northBdown", updateState(puzzles.northHeld, 1)),
+    defineReaction("northBup", updateState(puzzles.northHeld, 0)),
   );
 
   // --- The join: "both held → fire the payoff". -----------------------------
@@ -89,8 +89,8 @@ export function setupLevel() {
   // crossings-with-an-IR-predicate generalization we sketched. Written here in
   // its shipped-but-underpowered form, riding on the (broken) counter above:
   const crossings = [
-    onStateCrossing(puzzles.state.northHeld, { above: 1, max: 2 }, ["solveNorth"]),
-    onStateCrossing(puzzles.state.southHeld, { above: 1, max: 2 }, ["solveSouth"]),
+    onStateCrossing(puzzles.northHeld, { above: 1, max: 2 }, ["solveNorth"]),
+    onStateCrossing(puzzles.southHeld, { above: 1, max: 2 }, ["solveSouth"]),
   ];
 
   // NOTE: simultaneity across two buttons is exactly E18-B (coop-activation-

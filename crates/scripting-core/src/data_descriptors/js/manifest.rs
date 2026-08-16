@@ -78,7 +78,7 @@ fn is_resource_grant_reaction_js<'js>(value: &JsValue<'js>) -> bool {
     };
     matches!(
         primitive.to_string().ok().as_deref(),
-        Some("grantHealth" | "grantAmmo")
+        Some("grantHealth" | "grantAmmo" | "addSlot")
     )
 }
 
@@ -715,6 +715,120 @@ pub fn drain_ui_trees_js<'js>(
         }
     }
     Ok(out)
+}
+
+/// Drain passive presentation templates from a mod manifest. Templates follow
+/// the same fault-containment contract as UI-tree registrations: one malformed
+/// descriptor is diagnosed and skipped rather than preventing the rest of the
+/// mod manifest from loading.
+pub fn drain_presentation_templates_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<PresentationTemplate>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "presentationTemplates", scope)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut seen_ids = BTreeSet::new();
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let value: JsValue = arr.get(i).map_err(js_err)?;
+        match presentation_template_from_js(ctx, value) {
+            Ok(template) if !seen_ids.insert(template.id.clone()) => log::warn!(
+                "[Scripting] {scope}: `presentationTemplates[{i}]` duplicates `{}` and was skipped",
+                template.id
+            ),
+            Ok(template) => out.push(template),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: `presentationTemplates[{i}]` is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    Ok(out)
+}
+
+/// Drain the one fact-driven presentation overlay. The plural manifest key is
+/// the established section name, but its value is one descriptor, not an
+/// array. Invalid input is contained so an optional combat visual cannot reject
+/// the full manifest.
+pub fn drain_presentation_overlays_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<PresentationOverlay>, DescriptorError> {
+    if !obj.contains_key("presentationOverlays").map_err(js_err)? {
+        return Ok(Vec::new());
+    }
+    let value: JsValue = obj.get("presentationOverlays").map_err(js_err)?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(Vec::new());
+    }
+    match presentation_overlay_from_js(ctx, value) {
+        Ok(overlay) => Ok(vec![overlay]),
+        Err(error) => {
+            log::warn!(
+                "[Scripting] {scope}: `presentationOverlays` must be one overlay descriptor (not an array); the field was ignored: {error}"
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
+pub fn presentation_overlay_from_js<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<PresentationOverlay, DescriptorError> {
+    let json = conv::js_to_json(ctx, value).map_err(js_err)?;
+    let overlay = serde_json::from_value::<PresentationOverlay>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation overlay must match its descriptor shape: {error}"),
+        }
+    })?;
+    overlay
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(overlay)
+}
+
+/// Deserialize a manifest template through the normal VM-free JSON bridge.
+/// The descriptor stays renderer-data only; this conversion never creates UI
+/// input/focus state.
+pub fn presentation_template_from_js<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<PresentationTemplate, DescriptorError> {
+    let obj = Object::from_value(value.clone()).map_err(|_| DescriptorError::InvalidShape {
+        reason: "presentation template must be an object".to_string(),
+    })?;
+    if !obj.contains_key("root").map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field: "root" });
+    }
+    let root_value: JsValue = obj.get("root").map_err(js_err)?;
+    let root = widget_from_js(ctx, root_value)?;
+    validate_presentation_widget_root(&root)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    let mut json = conv::js_to_json(ctx, value).map_err(js_err)?;
+    let json_obj = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "presentation template must be an object".to_string(),
+        })?;
+    json_obj.insert(
+        "root".to_string(),
+        serde_json::to_value(root).map_err(|error| DescriptorError::InvalidShape {
+            reason: format!("presentation template root could not be lowered: {error}"),
+        })?,
+    );
+    let template = serde_json::from_value::<PresentationTemplate>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation template must match its descriptor shape: {error}"),
+        }
+    })?;
+    template
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(template)
 }
 
 /// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from JS.

@@ -271,7 +271,8 @@ impl Renderer {
         full.level_light_influences = dynamic_influences;
 
         let spec_lights_data = {
-            let packed = pack_spec_lights(geometry.lights);
+            let shadowmask_channels = shadowmask::build_spec_light_shadowmask_channels(geometry);
+            let packed = pack_spec_lights(geometry.lights, &shadowmask_channels);
             if packed.is_empty() {
                 vec![0u8; SPEC_LIGHT_SIZE]
             } else {
@@ -438,37 +439,47 @@ impl Renderer {
             device.limits().max_texture_dimension_2d,
             device.limits().max_texture_array_layers,
         );
+        let slot_to_static_layer = geometry
+            .animated_light_weight_maps
+            .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
 
-        let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(
-            device,
-            geometry.animated_light_weight_maps,
-            geometry.animated_light_chunks,
-            &bvh_leaves,
-            &full.sh_volume_resources.animation,
-            &full.uniform_bind_group_layout,
-            lightmap_atlas_dimensions,
-            animated_lm_debug,
-        );
-        match animated_lightmap_result {
-            Ok(al) => {
-                full.lightmap_resources = LightmapResources::new(
+        let animated_lightmap = animated_lightmap::with_dummy_fallback(
+            animated_lightmap::AnimatedLightmapResources::new(
+                device,
+                geometry.animated_light_weight_maps,
+                geometry.animated_light_chunks,
+                &bvh_leaves,
+                &full.sh_volume_resources.animation,
+                &full.uniform_bind_group_layout,
+                lightmap_atlas_dimensions,
+                animated_lm_debug,
+            ),
+            || {
+                animated_lightmap::AnimatedLightmapResources::dummy(
                     device,
-                    queue,
-                    geometry.lightmap,
-                    geometry.shadowmask_atlas,
-                    &lightmap_bgl,
-                    &al.forward_view,
-                    &al.direction_forward_view,
-                );
-                full.shadowmask_present = full.lightmap_resources.shadowmask_present;
-                full.animated_lightmap = al;
-            }
-            Err(msg) => {
-                log::error!(
-                    "[Renderer] animated lightmap install failed: {msg} — level may render without lightmap"
-                );
-            }
-        }
+                    &full.sh_volume_resources.animation,
+                    &full.uniform_bind_group_layout,
+                    animated_lm_debug,
+                )
+            },
+            "animated lightmap install",
+        );
+        let installed_slot_to_static_layer = animated_lightmap::installed_slot_to_static_layer(
+            animated_lightmap.is_active(),
+            slot_to_static_layer,
+        );
+        full.lightmap_resources = LightmapResources::new(
+            device,
+            queue,
+            geometry.lightmap,
+            geometry.shadowmask_atlas,
+            &lightmap_bgl,
+            &animated_lightmap.forward_view,
+            &animated_lightmap.direction_forward_view,
+            installed_slot_to_static_layer,
+        );
+        full.shadowmask_present = full.lightmap_resources.shadowmask_present;
+        full.animated_lightmap = animated_lightmap;
 
         // SDF half-res shadow pass — rebind to the freshly-loaded SH
         // depth-moment texture + static-light buffers. The pass itself is always

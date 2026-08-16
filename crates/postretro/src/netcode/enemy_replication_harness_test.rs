@@ -161,6 +161,7 @@ fn brain() -> BrainComponent {
         )]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -336,6 +337,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                         when: IrNode::Le {
                             a: Box::new(IrNode::Input {
                                 name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                                owner: None,
                             }),
                             b: Box::new(IrNode::Const {
                                 value: IrValue::Number(16.0),
@@ -358,6 +360,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
         ]),
         interrupts: Vec::new(),
         candidate_filter: None,
+        patrol: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,

@@ -338,7 +338,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
     let ts_ui = ts_module_block(&ts, "postretro/ui");
 
     assert!(
-        ts.contains("export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
+        ts.contains("export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
             && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;")
             && ts.contains("export type PredicateCrossingDescriptor = {")
             && ts.contains("predicate: RuntimeValue;")
@@ -355,7 +355,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
         "TypeScript postretro/ui declaration must import RuntimeValue before using it:\n{ts_ui}"
     );
     assert!(
-        luau.contains("updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
+        luau.contains("updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
             && luau.contains("& ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)")
             && luau.contains("export type PredicateCrossingDescriptor = {")
             && luau.contains("predicate: RuntimeValue,")
@@ -500,13 +500,66 @@ fn luau_predicate_helpers_are_typed_to_the_value_type() {
     let luau = generate_luau(&r);
 
     assert!(
-        luau.contains("stateEquals: <T>(ref: ReadonlyStateRef<T>, value: T) -> Predicate,"),
+        luau.contains("stateEquals: <T>(ref: ComputedRef<T>, value: T) -> Predicate,"),
         "luau stateEquals declaration must type the comparand to the ref value type"
     );
     assert!(
         luau.contains("is: (self: LocalStateHandle<T>, value: T) -> Predicate,"),
         "luau LocalStateHandle:is must be typed `(self, value: T) -> Predicate`"
     );
+}
+
+#[test]
+fn luau_mod_manifest_input_preserves_manifest_fields_and_only_widens_stores() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use std::collections::BTreeMap;
+
+    fn object_fields(output: &str, type_name: &str) -> BTreeMap<String, String> {
+        let header = format!("export type {type_name} = {{");
+        let mut lines = output.lines().skip_while(|line| line.trim() != header);
+        assert_eq!(
+            lines.next().map(str::trim),
+            Some(header.as_str()),
+            "missing Luau object type `{type_name}`"
+        );
+
+        lines
+            .take_while(|line| line.trim() != "}")
+            .filter_map(|line| {
+                let line = line.trim().strip_suffix(',')?;
+                let (name, value_type) = line.split_once(": ")?;
+                Some((name.to_string(), value_type.to_string()))
+            })
+            .collect()
+    }
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let luau = generate_luau(&registry);
+    let mut manifest = object_fields(&luau, "ModManifest");
+    let mut input = object_fields(&luau, "ModManifestInput");
+
+    assert_eq!(
+        manifest.remove("stores"),
+        Some("{StoreDeclaration}?".into())
+    );
+    assert_eq!(
+        input.remove("stores"),
+        Some("{StoreDeclaration | StoreDefinition}?".into()),
+        "ModManifestInput must widen only the stores element type"
+    );
+    assert_eq!(
+        input, manifest,
+        "ModManifestInput must mirror every non-store ModManifest field"
+    );
+    for required_identity in ["name", "id", "version"] {
+        assert_eq!(
+            input.get(required_identity).map(String::as_str),
+            Some("string"),
+            "ModManifestInput must require `{required_identity}` so a stores-only table is invalid"
+        );
+    }
 }
 
 #[test]
@@ -520,8 +573,12 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     let luau = generate_luau(&registry);
 
     assert!(
-        ts.contains("export function defineImpactEvent(\n    id: string,"),
-        "TypeScript defineImpactEvent must require an author id"
+        ts.contains(
+            "export function defineImpactEvent(\n    filter: ImpactEventFilter,\n    build: (impact: Impact) => readonly EffectOrGroup[],"
+        ) && ts.contains(
+            "export function defineImpactEvent(\n    id: string,\n    filter: ImpactEventFilter,\n    build: (impact: Impact) => readonly EffectOrGroup[],"
+        ),
+        "TypeScript defineImpactEvent must expose both binding-sugar and explicit-id arities"
     );
     assert!(
         luau.contains("declare function defineImpactEvent(id: string,"),
@@ -539,6 +596,15 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         ts.contains("export type ImpactEventOverrideFilter = { tag: string;")
             && luau.contains("export type ImpactEventOverrideFilter = { tag: string,"),
         "impact overrides must require an additional tag in both SDKs"
+    );
+    assert!(
+        !ts.contains("slot.add")
+            && !luau.contains("slot.add")
+            && !ts.contains("NumberSlot")
+            && !luau.contains("NumberSlot")
+            && !ts.contains("function slot(")
+            && !luau.contains("function slot("),
+        "the retired slot.add/NumberSlot authoring surface must not return in either SDK"
     );
 
     let effect_builders = [
@@ -573,9 +639,14 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,",
         ),
         (
-            "slot.add",
-            "export interface NumberSlot { add(delta: NumberValue): Effect; }",
-            "export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }",
+            "slot.set",
+            "export function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect;",
+            "declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect",
+        ),
+        (
+            "slot.update",
+            "export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;",
+            "declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect",
         ),
     ];
     for (builder, ts_signature, luau_signature) in effect_builders {
@@ -590,19 +661,20 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        7,
-        "TypeScript must expose exactly the seven closed impact-effect builders"
+        9,
+        "TypeScript must expose exactly the nine closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
         7,
-        "Luau must expose exactly the seven closed impact-effect builders"
+        "Luau must expose exactly the seven receiver-method impact-effect builders; set/update are global functions"
     );
     // TypeScript intentionally keeps the wire union private behind the opaque
     // Effect brand; the SourceHandle signatures above are its public contract.
     for wire in [
         "grantHealth\", target: \"@impact.source",
         "grantAmmo\", target: \"@impact.source",
+        "slot.set\", target: \"@impact.source",
     ] {
         assert!(luau.contains(wire), "Luau grant wire must target source");
     }
@@ -735,15 +807,15 @@ fn candidate_input_typedefs_match_the_foundation_table() {
 
 /// Drift guard for the behavior-graph verb vocabularies. The registry
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
-/// `MotionVerb` / `ActionVerb` enums, so this test derives the expected union
+/// `MotionVerb` / `ActionVerb` / `PatrolMode` enums, so this test derives the expected union
 /// members from the enums themselves — `ALL` enumerates the variants and serde
 /// supplies each wire name, exactly as the descriptor parsers see them. A
 /// variant added in foundation and forgotten in the registry fails here.
 #[test]
-fn behavior_verb_typedefs_match_the_foundation_enums() {
+fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
-    use postretro_foundation::data_descriptors::{ActionVerb, MotionVerb};
+    use postretro_foundation::data_descriptors::{ActionVerb, MotionVerb, PatrolMode};
 
     fn wire<T: serde::Serialize>(variant: &T) -> String {
         serde_json::to_value(variant)
@@ -790,6 +862,7 @@ fn behavior_verb_typedefs_match_the_foundation_enums() {
 
     let motion: Vec<String> = MotionVerb::ALL.iter().map(wire).collect();
     let action: Vec<String> = ActionVerb::ALL.iter().map(wire).collect();
+    let patrol_modes: Vec<String> = PatrolMode::ALL.iter().map(wire).collect();
     for output in [&ts, &luau] {
         assert_eq!(
             union_members(output, "MotionVerb"),
@@ -801,5 +874,19 @@ fn behavior_verb_typedefs_match_the_foundation_enums() {
             action,
             "emitted `ActionVerb` union does not match `ActionVerb::ALL`"
         );
+        assert_eq!(
+            union_members(output, "PatrolMode"),
+            patrol_modes,
+            "emitted `PatrolMode` union does not match `PatrolMode::ALL`"
+        );
+        assert!(output.contains("export type PatrolDescriptor ="));
+        assert!(output.contains("points"));
+        assert!(output.contains("patrol"));
     }
+    assert!(ts.contains("points: ReadonlyArray<readonly [number, number]>;"));
+    assert!(luau.contains("points: {{number, number}},"));
+    assert!(
+        !luau.contains("points: {{number}},"),
+        "patrol points must retain their fixed `[x, z]` arity"
+    );
 }

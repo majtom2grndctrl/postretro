@@ -569,6 +569,13 @@ pub struct MapData {
     pub kinematic_waypoints: Vec<MapKinematicWaypoint>,
     /// Invisible `trigger_volume` brush entities, emitted as PRL AABBs only.
     pub trigger_volumes: Vec<MapTriggerVolume>,
+    /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
+    /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
+    /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.
+    /// Unioned with the `--sh-protect-aabb` CLI stand-in and fed to
+    /// `sh_coarsen::classify_section_levels` so intersecting 4×4×4 bricks stay
+    /// L0 (dense). Not emitted to the PRL — consumed only during the coarsen bake.
+    pub sh_protect_aabbs: Vec<[f32; 6]>,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
     /// space (Y-up, meters). See `context/lib/build_pipeline.md`.

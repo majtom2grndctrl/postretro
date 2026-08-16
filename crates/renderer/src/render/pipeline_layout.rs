@@ -156,7 +156,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 11;
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
 //   112..116 dynamic_direct_isolation  116..120 has_direct
-//   120..124 total_light_count  124..128 _pad
+//   120..124 total_light_count  124..128 spec_shadowmask_force_one
 // `sdf_shadow_flags` gates whether the forward samples the half-res SDF
 // visibility target at all:
 //   bit 0 = a baked SDF atlas is loaded, so the four RGBA channels hold valid
@@ -169,10 +169,12 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 11;
 // The dynamic-direct tail (Task 6 of baked-static-direct-sh): repurposes the
 // old `_sdf_pad1` slot (108..112) for `dynamic_direct_scale`, then a fresh
 // 16-byte row carries `dynamic_direct_isolation` + `has_direct` +
-// `total_light_count` + padding.
+// `total_light_count`; Task 3 repurposes that row's trailing word as
+// `spec_shadowmask_force_one`.
 // Only billboard.wgsl reads these (the mesh path uses its own group-4
-// `DynamicDirectParams`); forward/wireframe declare them as inert tail so the
-// shared 3-way byte contract (Rust writer + forward.wgsl + billboard.wgsl)
+// `DynamicDirectParams`); only forward reads `spec_shadowmask_force_one`, and
+// all three shaders keep the shared 4-way byte contract (Rust writer +
+// forward.wgsl + billboard.wgsl + wireframe.wgsl).
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 

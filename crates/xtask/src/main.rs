@@ -47,6 +47,10 @@ fn try_main() -> Result<i32, String> {
         return capture_frame(args.collect());
     }
 
+    if command == "mint-identity" {
+        return mint_identity(args.collect());
+    }
+
     if command == "bake-model-textures" {
         return bake_model_textures_command(args.collect());
     }
@@ -368,6 +372,77 @@ fn parse_capture_args(args: Vec<OsString>) -> Result<PathBuf, String> {
     }
 }
 
+/// `mint-identity <mod-root>` builds the TypeScript sidecar only when the mod's
+/// entry point needs it, then runs the authoring-only ledger mint binary. The
+/// mint bin owns diagnostics; xtask only forwards stdio and status.
+fn mint_identity(args: Vec<OsString>) -> Result<i32, String> {
+    let mod_root = parse_mint_identity_args(args)?;
+    let invocation_dir = std::env::current_dir()
+        .map_err(|error| format!("resolve mint-identity invocation directory: {error}"))?;
+    let plan = plan_mint_identity(&mod_root, &invocation_dir, Path::is_file);
+    let workspace_root = workspace_root()?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+
+    if plan.build_scripts_sidecar {
+        build_scripts_sidecar(&cargo, &workspace_root, &[])?;
+    }
+
+    let mut command = Command::new(&cargo);
+    command
+        .current_dir(&workspace_root)
+        .arg("run")
+        .arg("-p")
+        .arg("postretro")
+        .arg("--bin")
+        .arg("mint-identity")
+        .arg("--")
+        .arg(plan.mod_root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    status_code(
+        command
+            .status()
+            .map_err(|error| format!("launch mint-identity: {error}")),
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MintIdentityPlan {
+    mod_root: PathBuf,
+    build_scripts_sidecar: bool,
+}
+
+fn plan_mint_identity(
+    supplied_mod_root: &Path,
+    invocation_dir: &Path,
+    is_file: impl Fn(&Path) -> bool,
+) -> MintIdentityPlan {
+    let mod_root = if supplied_mod_root.is_absolute() {
+        supplied_mod_root.to_path_buf()
+    } else {
+        invocation_dir.join(supplied_mod_root)
+    };
+    let build_scripts_sidecar = is_file(&mod_root.join("start-script.ts"));
+    MintIdentityPlan {
+        mod_root,
+        build_scripts_sidecar,
+    }
+}
+
+fn parse_mint_identity_args(args: Vec<OsString>) -> Result<PathBuf, String> {
+    match args.as_slice() {
+        [mod_root] => Ok(PathBuf::from(mod_root)),
+        [] => Err("mint-identity requires a mod root\n\n\
+             Usage: cargo run -p xtask -- mint-identity <mod-root>"
+            .to_string()),
+        _ => Err("mint-identity accepts exactly one mod root\n\n\
+             Usage: cargo run -p xtask -- mint-identity <mod-root>"
+            .to_string()),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct RunArgs {
     cargo_run_args: Vec<OsString>,
@@ -473,6 +548,7 @@ fn print_help() {
            cargo run -p xtask -- run [postretro args...]\n\
            cargo run -p xtask -- observe <runspec.json> [--pool-seed=<u64>]\n\
            cargo run -p xtask -- capture <scene.json>\n\
+           cargo run -p xtask -- mint-identity <mod-root>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
@@ -482,6 +558,8 @@ fn print_help() {
                                 the JSON document on stdout untouched\n\
            capture              Run the engine's world-only frame capture\n\
                                 (--features capture --capture <scene.json>)\n\
+           mint-identity        Mint a mod's durable state-slot identity ledger;\n\
+                                builds scripts-build only for TypeScript mods\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
@@ -491,6 +569,7 @@ fn print_help() {
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- observe runspec.json --pool-seed=17\n\
+           cargo run -p xtask -- mint-identity content/dev\n\
            cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
@@ -524,6 +603,16 @@ mod tests {
                 ]),
             }
         );
+    }
+
+    #[test]
+    fn parse_mint_identity_args_requires_exactly_one_mod_root() {
+        assert_eq!(
+            parse_mint_identity_args(os_args(&["content/dev"])).expect("one path is valid"),
+            PathBuf::from("content/dev"),
+        );
+        assert!(parse_mint_identity_args(Vec::new()).is_err());
+        assert!(parse_mint_identity_args(os_args(&["one", "two"])).is_err());
     }
 
     #[test]
@@ -689,6 +778,36 @@ mod tests {
             workspace_relative_path(Path::new("/tmp/model/scene.gltf"), workspace),
             PathBuf::from("/tmp/model/scene.gltf")
         );
+    }
+
+    #[test]
+    fn mint_identity_plans_sidecar_only_for_resolved_typescript_mod_root() {
+        let invocation_dir = Path::new("/work/project");
+        let typescript_entry = Path::new("/work/project/mods/ts/start-script.ts");
+
+        let typescript = plan_mint_identity(Path::new("mods/ts"), invocation_dir, |path| {
+            path == typescript_entry
+        });
+        assert_eq!(typescript.mod_root, Path::new("/work/project/mods/ts"));
+        assert!(typescript.build_scripts_sidecar);
+
+        for root in [Path::new("mods/luau"), Path::new("mods/js")] {
+            let plan = plan_mint_identity(root, invocation_dir, |_| false);
+            assert_eq!(plan.mod_root, invocation_dir.join(root));
+            assert!(!plan.build_scripts_sidecar);
+        }
+    }
+
+    #[test]
+    fn mint_identity_keeps_absolute_mod_root_when_planning_command() {
+        let plan = plan_mint_identity(
+            Path::new("/installed/mod"),
+            Path::new("/unrelated/invocation"),
+            |_| false,
+        );
+
+        assert_eq!(plan.mod_root, Path::new("/installed/mod"));
+        assert!(!plan.build_scripts_sidecar);
     }
 
     #[test]

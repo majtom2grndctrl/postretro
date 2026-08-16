@@ -2,7 +2,8 @@
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
-import type { ReadonlyStateRef, WritableStateRef } from "./ui/widgets";
+import type { ComputedRef, Ref } from "./ui/widgets";
+import type { PresentationTemplate } from "./ui/presentation";
 import type { RuntimeValue } from "postretro";
 
 /** Dispatch values published by a state-crossing fire. */
@@ -35,7 +36,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;
@@ -126,11 +127,13 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
-/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. */
+/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves global slots on clean exit. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` creates one value per player seat and permits only omitted `network` (host-local) or `"ownerPrivate"`; `"shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>`. Keep its durable key when renaming the store or slot. */
 export type StoreSlotSchema = (
-  | { type: "number"; readonly?: boolean; accumulate?: never }
-  | { type: "number"; readonly?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; accumulate?: never }
+  | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+  | { type: "number"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
+  | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
 ) & Record<string, unknown>;
 
 export type StoreDeclaration = {
@@ -138,10 +141,21 @@ export type StoreDeclaration = {
   schema: Record<string, StoreSlotSchema>;
 };
 
-export type StateRef<T = unknown> = ReadonlyStateRef<T> | WritableStateRef<T>;
+/** A ref with an explicit owner token, suitable for owner-addressed read/write lowering. */
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { readonly owner: "@impact.source" };
+export type OwnerAddressedRef<T> = Ref<T> & { readonly owner: "@impact.source" };
+
+type StoreComputedRef<T> = ComputedRef<T> & {
+  byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T>;
+};
+type StoreRef<T> = Ref<T> & {
+  byPlayer(owner: SourceHandle): OwnerAddressedRef<T>;
+};
+
+export type StateRef<T = unknown> = StoreComputedRef<T> | StoreRef<T>;
 
 export type StoreStateRefForSlot<Slot, T> =
-  Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+  Slot extends { readonly: true } ? StoreComputedRef<T> : StoreRef<T>;
 
 export type StateValueForSlot<Slot> =
   Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -149,9 +163,18 @@ export type StateValueForSlot<Slot> =
   Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
   StoreStateRefForSlot<Slot, string>;
 
+declare const storeHandleBrand: unique symbol;
+
+/** A frozen store handle whose enumerable keys are its schema's slot refs. */
 export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
-  readonly declaration: StoreDeclaration;
-  readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+  readonly [K in keyof S]: StateValueForSlot<S[K]>;
+} & {
+  readonly [storeHandleBrand]: S;
+};
+
+type StoreHandle = { readonly [storeHandleBrand]: unknown };
+type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
+  readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
 type ReactionBody =
@@ -175,8 +198,10 @@ declare const sourceBrand: unique symbol;
 declare const impactEventBrand: unique symbol;
 declare const effectBrand: unique symbol;
 
-export type NumberValue = number | NumberRef;
-export type BoolValue = boolean | BoolRef;
+/** A numeric literal, fluent expression, or raw `runtime.*` node. */
+export type NumberValue = number | NumberRef | RuntimeValue;
+/** A boolean literal, fluent expression, or raw `runtime.*` node. */
+export type BoolValue = boolean | BoolRef | RuntimeValue;
 
 export interface NumberRef {
   readonly [numBrand]: true;
@@ -202,16 +227,28 @@ export interface BoolRef {
   select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
 }
 
+/**
+ * Lift raw `runtime.*` output into the fluent impact-expression algebra.
+ * `number` and `bool` select the expected result kind; Rust remains the
+ * authority that validates the resulting IR at bind time.
+ */
+export type RuntimeExpressionRefs = Readonly<{
+  number(value: RuntimeValue): NumberRef;
+  bool(value: RuntimeValue): BoolRef;
+}>;
+
 type ImpactEffectWire =
   | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
   | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
+  | { primitive: "present"; target: "@impact.target"; args: { template: string; value: RuntimeValue } }
   | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
-  | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
+  | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
+  | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
 
-/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
+/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
 export interface Effect {
   readonly [effectBrand]: true;
 }
@@ -248,10 +285,6 @@ export interface SourceHandle {
   grantAmmo(type: string, amount: NumberValue): Effect;
 }
 
-export interface NumberSlot {
-  add(delta: NumberValue): Effect;
-}
-
 export type Impact = Readonly<{
   target: TargetHandle;
   source: SourceHandle;
@@ -271,17 +304,20 @@ export interface ImpactEvent {
 
 const numberNodes = new WeakMap<object, RuntimeValue>();
 const boolNodes = new WeakMap<object, RuntimeValue>();
+const storeDeclarations = new WeakMap<object, StoreDeclaration>();
 
 function constant(value: number | boolean): RuntimeValue {
   return { op: "const", value };
 }
 
 function numberNode(value: NumberValue): RuntimeValue {
-  return typeof value === "number" ? constant(value) : numberNodes.get(value)!;
+  if (typeof value === "number") return constant(value);
+  return numberNodes.get(value) ?? (value as RuntimeValue);
 }
 
 function boolNode(value: BoolValue): RuntimeValue {
-  return typeof value === "boolean" ? constant(value) : boolNodes.get(value)!;
+  if (typeof value === "boolean") return constant(value);
+  return boolNodes.get(value) ?? (value as RuntimeValue);
 }
 
 function numberRef(node: RuntimeValue): NumberRef {
@@ -317,6 +353,22 @@ function boolRef(node: RuntimeValue): BoolRef {
   } as BoolRef;
   boolNodes.set(ref, node);
   return Object.freeze(ref);
+}
+
+/** Public lifting helpers keep the raw-node adapters private to the SDK. */
+export const fromRuntime: RuntimeExpressionRefs = Object.freeze({
+  number: (value) => numberRef(value),
+  bool: (value) => boolRef(value),
+});
+
+export function read(ref: StateRef<number>): NumberRef;
+export function read(ref: StateRef<boolean>): BoolRef;
+export function read(ref: StateRef<number> | StateRef<boolean>): NumberRef | BoolRef {
+  const owner = "owner" in ref ? ref.owner : undefined;
+  const node: RuntimeValue = owner === undefined
+    ? { op: "input", name: ref.slot }
+    : { op: "input", name: ref.slot, owner };
+  return ref.kind === "number" ? numberRef(node) : boolRef(node);
 }
 
 function impactEffect(
@@ -367,19 +419,54 @@ const IMPACT: Impact = Object.freeze({
   amount: numberRef({ op: "input", name: "@impact.amount" }),
 });
 
-/** Build the closed additive store-write effect. */
-export function slot(ref: WritableStateRef<number>): NumberSlot {
-  return Object.freeze({
-    add(delta: NumberValue): Effect {
-      return {
-        primitive: "slot.add",
-        args: {
-          slot: ref.slot,
-          delta: numberNode(delta),
-        },
-      } as ImpactEffectWire as unknown as Effect;
+/**
+ * Spawn a passive presentation at the current impact target. The target token
+ * is closed over here; Rust stamps the dispatch source as its future presenter
+ * route and freezes `value` before a subsequent despawn can remove the target.
+ */
+export function present(template: PresentationTemplate, value: NumberValue): Effect {
+  if (template === null || typeof template !== "object" || typeof template.id !== "string") {
+    throw new TypeError("present: template must come from definePresentationTemplate");
+  }
+  return impactEffect("present", { template: template.id, value: numberNode(value) });
+}
+
+/** Build the closed absolute store-write effect. */
+export function set(ref: Ref<number>, value: NumberValue): Effect {
+  // Keep the ordinary global wire exactly as it was. An explicit owner is the
+  // only signal that this must become the source-addressed command path.
+  if (!("owner" in ref)) {
+    return {
+      primitive: "slot.set",
+      args: {
+        slot: ref.slot,
+        value: numberNode(value),
+      },
+    } as ImpactEffectWire as unknown as Effect;
+  }
+  const owner = (ref as OwnerAddressedRef<number>).owner;
+  return {
+    primitive: "slot.set",
+    target: owner,
+    args: {
+      slot: ref.slot,
+      value: numberNode(value),
     },
-  });
+  } as ImpactEffectWire as unknown as Effect;
+}
+
+/**
+ * Build a read-modify-write effect. `build` receives `cur` during impact plan
+ * phase, before effects apply. Owner-addressed reads resolve the live per-seat
+ * map; `cur` is not a frozen snapshot.
+ */
+export function update(ref: Ref<number>, build: (cur: NumberRef) => NumberValue): Effect {
+  return set(ref, build(read(ref)));
+}
+
+/** Build a deferred impact-effect group guarded by a Bool expression. */
+export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect {
+  return { when: cond, do: effects };
 }
 
 function impactEvent(
@@ -432,24 +519,37 @@ function assertDenseImpactArray(values: readonly unknown[], context: string): vo
   }
 }
 
-const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes";
+const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id";
+const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
 
 function validateImpactEventId(id: string): void {
   const valid = id.length > 0
-    && id.length <= 128
-    && /^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)+$/.test(id);
+    && id.length <= 64
+    && /^[A-Za-z0-9_.-]+$/.test(id);
   if (!valid) throw new TypeError(IMPACT_EVENT_ID_DIAGNOSTIC);
 }
 
-/** Define a pure impact-policy descriptor. Registration occurs only through a manifest's `events`. */
+/** Define a pure impact-policy descriptor. The engine prefixes its single-segment authored id with the mod id. Omit `id` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Registration occurs only through a manifest's `events`. */
+export function defineImpactEvent(
+  filter: ImpactEventFilter,
+  build: (impact: Impact) => readonly EffectOrGroup[],
+): ImpactEvent;
 export function defineImpactEvent(
   id: string,
   filter: ImpactEventFilter,
   build: (impact: Impact) => readonly EffectOrGroup[],
+): ImpactEvent;
+export function defineImpactEvent(
+  idOrFilter: string | ImpactEventFilter,
+  filterOrBuild: ImpactEventFilter | ((impact: Impact) => readonly EffectOrGroup[]),
+  build?: (impact: Impact) => readonly EffectOrGroup[],
 ): ImpactEvent {
+  if (arguments.length === 2) throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const id = idOrFilter as string;
+  const filter = filterOrBuild as ImpactEventFilter;
   validateImpactEventId(id);
   const eventFilter = Object.freeze({ tag: filter.tag });
-  const policy = lowerImpactPolicy(build(IMPACT));
+  const policy = lowerImpactPolicy(build!(IMPACT));
   return impactEvent(id, eventFilter, policy, filter.levels, false);
 }
 
@@ -538,6 +638,23 @@ export function grantAmmo(
     primitive: "grantAmmo",
     target: wireTarget,
     args: { type, amount },
+  } as PrimitiveReactionDescriptor;
+}
+
+/** Add a delta to a per-owner numeric slot for the current trigger activators or every pawn with a tag. */
+export function addSlot(
+  target: ActivatorsTarget | string,
+  slot: StateRef<number>,
+  delta: number,
+): PrimitiveReactionDescriptor {
+  if (typeof target === "string") {
+    return { primitive: "addSlot", tag: target, args: { slot: slot.slot, delta } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return {
+    primitive: "addSlot",
+    target: wireTarget,
+    args: { slot: slot.slot, delta },
   } as PrimitiveReactionDescriptor;
 }
 
@@ -681,14 +798,19 @@ export function defineEntity<T extends import("postretro").EntityTypeDescriptor>
  * `config.name`, `config.id`, and `config.version` are required. The id gates
  * multiplayer admission; the version is display-only and never compared. The
  * first committed id and version remain active across staged reloads. Optional
- * arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`,
- * `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine
- * side effects until the manifest is returned and validated.
+ * arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`,
+ * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
+ * `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+ * effects until the manifest is returned and validated.
  */
 export function defineMod(
-  config: import("postretro").ModManifest,
+  config: ModManifestInput,
 ): import("postretro").ModManifest {
-  return config;
+  if (config.stores === undefined) return config as import("postretro").ModManifest;
+  return {
+    ...config,
+    stores: config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry),
+  } as import("postretro").ModManifest;
 }
 
 /** Identity builder for a mod map catalog. `entries` are `ModMapEntry` objects with required `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. Pure: no engine side effects. */
@@ -757,13 +879,25 @@ function cloneAndFreeze<T>(
   return Object.freeze(clone) as T;
 }
 
-/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName`; `schema` declares the slot names and validation rules. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
+/** Pure state-store builder. `namespace` prefixes every returned slot ref as `namespace.slotName` and neither it nor a slot name may contain `:`. Omit `namespace` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Pass the returned handle through `defineMod({ stores: [store] })` to resolve its declaration; unreturned handles are discarded with the setup VM. */
+export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+  schema: S,
+): StoreDefinition<S>;
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   namespace: string,
   schema: S,
+): StoreDefinition<S>;
+export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+  namespaceOrSchema: string | S,
+  schema?: S,
 ): StoreDefinition<S> {
+  if (arguments.length === 1) throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const namespace = namespaceOrSchema as string;
+  const namedSchema = schema!;
+  if (namespace.includes(":")) throw new TypeError("defineStore `namespace` must not contain `:`");
   const tracedSchema: Record<string, StoreSlotSchema> = Object.create(null);
-  for (const [slot, input] of Object.entries(schema)) {
+  for (const [slot, input] of Object.entries(namedSchema)) {
+    if (slot.includes(":")) throw new TypeError(`defineStore slot name ${JSON.stringify(slot)} must not contain \`:\``);
     if (input !== null && typeof input === "object" && typeof input.accumulate === "function") {
       tracedSchema[slot] = { ...input, accumulate: input.accumulate(DISPATCH_PARAMS) } as StoreSlotSchema;
     } else {
@@ -771,12 +905,35 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     }
   }
   const frozenSchema = cloneAndFreeze(tracedSchema) as S;
-  const state: Record<string, StateRef> = Object.create(null);
+  const store: Record<string, StateRef> = Object.create(null);
   for (const slot of Object.keys(frozenSchema)) {
-    state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;
+    store[slot] = storeRef(
+      `${namespace}.${slot}`,
+      frozenSchema[slot].type,
+      frozenSchema[slot].perOwner === true,
+    );
   }
-  return Object.freeze({
-    declaration: Object.freeze({ namespace, schema: frozenSchema }),
-    state: Object.freeze(state) as { readonly [K in keyof S]: StateValueForSlot<S[K]> },
+  const handle = Object.freeze(store) as StoreDefinition<S>;
+  storeDeclarations.set(handle, Object.freeze({ namespace, schema: frozenSchema }));
+  return handle;
+}
+
+function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): StateRef {
+  const ref = { slot, kind };
+  Object.defineProperty(ref, "byPlayer", {
+    value: (owner: SourceHandle): OwnerAddressedRef<unknown> => {
+      if (!perOwner) {
+        throw new TypeError(`state slot \`${slot}\` is global and cannot be addressed with byPlayer`);
+      }
+      return Object.freeze({
+        slot,
+        kind,
+        owner: owner === IMPACT_SOURCE ? "@impact.source" : "@invalid",
+      }) as OwnerAddressedRef<unknown>;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
   });
+  return Object.freeze(ref) as StateRef;
 }

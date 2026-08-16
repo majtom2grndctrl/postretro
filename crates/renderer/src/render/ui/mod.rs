@@ -9,6 +9,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use postretro_scripting_core::data_descriptors::PresentationTemplate;
 use postretro_ui::UiTexture;
 use postretro_ui::text::FontSystem;
 
@@ -217,6 +218,27 @@ pub(crate) struct UiPass {
     /// The boot splash deliberately does NOT use this; it renders through
     /// `BootSplashPass`, outside gameplay UI and the retained tree stack.
     gameplay_trees: Vec<RetainedGameplayTree>,
+
+    /// Per-live-instance layout state for passive world presentations. This is
+    /// intentionally separate from `gameplay_trees`: it retains only taffy
+    /// measurement/tween state, never a modal tree, focus list, or input state.
+    presentation_layouts: std::collections::HashMap<u64, PresentationLayout>,
+    /// Reusable translated aggregate swapped into the frame's layer list and
+    /// returned after the single composition encode.
+    presentation_draw: tree::UiDrawData,
+    /// Monotonic mark used to prune layouts absent from the current input set
+    /// without allocating a second set of active instance ids each frame.
+    presentation_layout_generation: u64,
+    /// Registered manifest data keyed by its stable handle. This is intentionally
+    /// a renderer-side layout registry, not a UI tree/modal registry.
+    presentation_templates: std::collections::HashMap<
+        postretro_entities::PresentationTemplateHandle,
+        PresentationTemplate,
+    >,
+    /// Unknown handles can arrive from future producers. Warn once and leave
+    /// them invisible instead of failing a render frame.
+    warned_missing_presentation_templates:
+        std::collections::HashSet<postretro_entities::PresentationTemplateHandle>,
 }
 
 /// One retained gameplay UI tree plus the descriptor it was built from. The
@@ -236,6 +258,18 @@ struct RetainedGameplayTree {
     /// The retained taffy-backed tree, carrying its layout cache, last viewport,
     /// per-bound-node last-resolved values, and cached draw list across frames.
     tree: tree::UiTree,
+}
+
+/// Renderer-local state retained for one live passive presentation. Layout,
+/// fact cells, and tween state stay warm across frames until the app drops the
+/// instance from its bounded input set.
+struct PresentationLayout {
+    template: postretro_entities::PresentationTemplateHandle,
+    theme_generation: u64,
+    layout: tree::PresentationTemplateLayout,
+    fact_cells: tree::CellValues,
+    relative_draw: tree::UiDrawData,
+    active_generation: u64,
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -670,6 +704,11 @@ impl UiPass {
             depth_view: None,
             depth_size: [0, 0],
             gameplay_trees: Vec::new(),
+            presentation_layouts: std::collections::HashMap::new(),
+            presentation_draw: tree::UiDrawData::default(),
+            presentation_layout_generation: 0,
+            presentation_templates: std::collections::HashMap::new(),
+            warned_missing_presentation_templates: std::collections::HashSet::new(),
         }
     }
 
@@ -693,6 +732,30 @@ impl UiPass {
         ttf_bytes: Vec<u8>,
     ) -> bool {
         self.text.register_font(font_system, family, ttf_bytes)
+    }
+
+    /// Replace the whole manifest-owned passive-template snapshot. Existing
+    /// instance layouts deliberately rebuild: an author can hot-reload a
+    /// widget subtree while its current transient remains live.
+    pub fn replace_presentation_templates(&mut self, templates: Vec<PresentationTemplate>) {
+        self.presentation_templates.clear();
+        self.presentation_templates.reserve(templates.len());
+        self.warned_missing_presentation_templates.clear();
+        self.presentation_layouts.clear();
+        self.presentation_draw = tree::UiDrawData::default();
+        for template in templates {
+            let handle = postretro_entities::PresentationTemplateHandle::from(template.id.clone());
+            if self
+                .presentation_templates
+                .insert(handle.clone(), template)
+                .is_some()
+            {
+                log::warn!(
+                    "[Renderer] duplicate presentation template `{}` replaced during registry install",
+                    handle.0
+                );
+            }
+        }
     }
 
     /// Lay out ONE modal-stack layer's descriptor tree through the RETAINED
@@ -780,6 +843,109 @@ impl UiPass {
                 cell_values,
                 time_seconds,
             )
+    }
+
+    /// Lower app-projected passive presentation instances into one draw list.
+    /// Each instance owns its fact snapshot; no value is read from the gameplay
+    /// slot table, and this path has no retained-tree/focus/input interaction.
+    ///
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_presentation_inputs(
+        &mut self,
+        font_system: &mut FontSystem,
+        inputs: &[super::PresentationDrawInput],
+        viewport: [u32; 2],
+        image_sizes: &tree::ImageSizes,
+        image_sizes_generation: u64,
+        theme: &theme::UiTheme,
+        theme_generation: u64,
+        time_seconds: f64,
+    ) -> tree::UiDrawData {
+        self.presentation_layout_generation = self.presentation_layout_generation.wrapping_add(1);
+        if self.presentation_layout_generation == 0 {
+            self.presentation_layouts.clear();
+            self.presentation_layout_generation = 1;
+        }
+        let active_generation = self.presentation_layout_generation;
+        let additional_layout_capacity =
+            inputs.len().saturating_sub(self.presentation_layouts.len());
+        self.presentation_layouts
+            .reserve(additional_layout_capacity);
+        let mut draw = std::mem::take(&mut self.presentation_draw);
+        if draw.paint_order.capacity() == 0 && !inputs.is_empty() {
+            draw = tree::UiDrawData::with_estimated_presentation_capacity(inputs.len());
+        } else {
+            draw.clear_preserving_capacity();
+        }
+
+        for input in inputs {
+            let Some(template) = self.presentation_templates.get(&input.template) else {
+                if self
+                    .warned_missing_presentation_templates
+                    .insert(input.template.clone())
+                {
+                    log::warn!(
+                        "[Renderer] passive presentation template `{}` is not registered; skipping draw",
+                        input.template.0
+                    );
+                }
+                self.presentation_layouts.remove(&input.instance_id);
+                continue;
+            };
+            let rebuild = match self.presentation_layouts.get(&input.instance_id) {
+                Some(cached) => {
+                    cached.template != input.template || cached.theme_generation != theme_generation
+                }
+                None => true,
+            };
+            if rebuild {
+                self.presentation_layouts.insert(
+                    input.instance_id,
+                    PresentationLayout {
+                        template: input.template.clone(),
+                        theme_generation,
+                        layout: tree::PresentationTemplateLayout::from_widget(
+                            &template.root,
+                            theme,
+                        ),
+                        fact_cells: tree::CellValues::with_capacity(input.facts.len()),
+                        relative_draw: tree::UiDrawData::default(),
+                        active_generation,
+                    },
+                );
+            }
+
+            let cached = self
+                .presentation_layouts
+                .get_mut(&input.instance_id)
+                .expect("presentation layout inserted or retained above");
+            cached.active_generation = active_generation;
+            tree::PresentationTemplateLayout::update_fact_cell_values(
+                &input.facts,
+                &mut cached.fact_cells,
+            );
+            cached.layout.build_draw_data_into(
+                viewport,
+                font_system,
+                image_sizes,
+                image_sizes_generation,
+                &cached.fact_cells,
+                time_seconds,
+                &mut cached.relative_draw,
+            );
+            if input.visible {
+                draw.append_translated(&cached.relative_draw, input.anchor, input.opacity);
+            }
+        }
+        self.presentation_layouts
+            .retain(|_, layout| layout.active_generation == active_generation);
+        draw
+    }
+
+    /// Return the presentation aggregate after the composition has finished
+    /// borrowing it. This preserves all bounded frame-output allocations.
+    pub fn recycle_presentation_draw_data(&mut self, draw: tree::UiDrawData) {
+        self.presentation_draw = draw;
     }
 
     /// Export the flat hit-test / focus rect list for the TOP stack layer (the

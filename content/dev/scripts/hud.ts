@@ -11,6 +11,7 @@ import {
   getDesignTokens,
   stateEquals,
 } from "postretro/ui";
+import { progression } from "./combat-lifecycle";
 
 export const hudTheme = defineTheme({
   color: {
@@ -68,6 +69,14 @@ const ammoReserve = Text({
   bind: bindState(player.ammoReserve, { format: "/ {}" }),
 });
 
+const xp = Text({
+  content: "XP --",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 24.0,
+  bind: bindState(progression.xp, { format: "XP {}" }),
+});
+
 const openSeats = Text({
   content: "",
   color: color.hud.text,
@@ -109,7 +118,7 @@ export const hud = defineUiTree({
         fill: color.hud.panel,
       },
       [
-        HStack({ gap: spacing.hud.gap, align: "center" }, [status, ammo, ammoReserve]),
+        HStack({ gap: spacing.hud.gap, align: "center" }, [status, ammo, ammoReserve, xp]),
         bar,
         openSeats,
       ],

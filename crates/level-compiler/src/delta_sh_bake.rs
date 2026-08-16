@@ -202,6 +202,7 @@ pub fn bake_delta_sh_volumes_controlled(
         tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
         animation_descriptor_indices,
         valid_probe_masks: vec![u64::MAX; affinity_cell_count],
+        cell_levels: vec![0u8; affinity_cell_count],
         affinity_offsets,
         affinity_lights,
         delta_subblocks,

@@ -280,9 +280,7 @@ pub fn slider_bind_from_js<'js>(
     }))
 }
 
-/// Read a bind's `{ slot }` vs `{ local }` source. `slot` wins when present (a
-/// store binding); else `local` (a presentation-cell binding). Neither present is
-/// rejected: a bind must reference a slot or a local cell.
+/// Read a bind source in `slot`, `local`, `fact` precedence order.
 pub fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, DescriptorError> {
     if let Some(slot) = get_optional_string_js(bind_obj, "slot")? {
         return Ok(BindSource::Slot { slot });
@@ -290,8 +288,11 @@ pub fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, De
     if let Some(local) = get_optional_string_js(bind_obj, "local")? {
         return Ok(BindSource::Local { local });
     }
+    if let Some(fact) = get_optional_string_js(bind_obj, "fact")? {
+        return Ok(BindSource::Fact { fact });
+    }
     Err(DescriptorError::InvalidShape {
-        reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
+        reason: "a widget `bind` must carry `slot`, `local`, or `fact`".to_string(),
     })
 }
 

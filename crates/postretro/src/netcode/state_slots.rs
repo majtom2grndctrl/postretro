@@ -1,19 +1,24 @@
 // Authoritative state-slot replication projects each owner's component state and applies validated client slot updates.
 // See: context/lib/networking.md §Game-logic-owned apply invariant · context/lib/scripting.md §5
 
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+
 use postretro_net::state_slots::{
     NumericRange as WireNumericRange, ReplicationScope as WireReplicationScope, SlotValueType,
     StateSchema, StateSlotDescriptor, StateSlotId,
 };
 
+use postretro_entities::slot_table::SlotOwnership;
 use postretro_entities::{
     AmmoReserve, EntityRegistry, NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
 };
+use postretro_scripting_core::StoreIdentityLedger;
 
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
 /// stream's *shape* changes (a new field, a reordered tag) so an old client's
 /// fingerprint can never accidentally match a new server's.
-const FINGERPRINT_STREAM_VERSION: u8 = 2;
+const FINGERPRINT_STREAM_VERSION: u8 = 3;
 
 /// Canonical type tags written into the fingerprint stream. Distinct from the wire
 /// `VALUE_KIND_*` discriminants by design: this tags the *declared slot type*, not a
@@ -59,14 +64,69 @@ impl ReplicatedWireShape {
     }
 }
 
-/// One replicated slot in the deterministic schema: its dotted name, assigned wire
-/// id, declared type, validation shape, and replication scope. The engine keeps the
-/// dotted `name` for the apply path (mapping a `StateSlotId` back to a slot table
-/// write); the net descriptor it lowers to drops the name.
+/// The committed runtime inputs that establish mod-slot schema membership and
+/// replication identity.
+///
+/// This is deliberately a snapshot passed from `ScriptRuntime` callers, never a
+/// path that reads `identity.json` while building a network schema.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReplicatedSlotIdentity<'a> {
+    mod_id: Option<Cow<'a, str>>,
+    ledger: Option<Cow<'a, StoreIdentityLedger>>,
+    committed_store_slots: Cow<'a, BTreeSet<String>>,
+}
+
+impl<'a> ReplicatedSlotIdentity<'a> {
+    #[cfg(test)]
+    pub(crate) fn new(
+        mod_id: Option<String>,
+        ledger: Option<StoreIdentityLedger>,
+        committed_store_slots: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            mod_id: mod_id.map(Cow::Owned),
+            ledger: ledger.map(Cow::Owned),
+            committed_store_slots: Cow::Owned(committed_store_slots),
+        }
+    }
+
+    pub(crate) fn borrowed(
+        mod_id: Option<&'a str>,
+        ledger: Option<&'a StoreIdentityLedger>,
+        committed_store_slots: &'a BTreeSet<String>,
+    ) -> Self {
+        Self {
+            mod_id: mod_id.map(Cow::Borrowed),
+            ledger: ledger.map(Cow::Borrowed),
+            committed_store_slots: Cow::Borrowed(committed_store_slots),
+        }
+    }
+
+    fn mod_id(&self) -> Option<&str> {
+        self.mod_id.as_deref()
+    }
+
+    fn durable_key(&self, authored_name: &str) -> Option<&str> {
+        self.ledger
+            .as_deref()
+            .and_then(|ledger| ledger.durable_key(authored_name))
+    }
+
+    fn is_committed(&self, authored_name: &str) -> bool {
+        self.committed_store_slots.contains(authored_name)
+    }
+}
+
+/// One replicated slot in the deterministic schema: its authored dotted name,
+/// replication-identity string, assigned wire id, declared type, validation shape,
+/// and replication scope. The engine keeps the authored `name` for the apply path
+/// (mapping a `StateSlotId` back to a slot-table write); `identity` alone drives sort
+/// order and fingerprinting. The net descriptor drops both strings.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ReplicatedSlotSchemaEntry {
     pub(crate) slot_id: StateSlotId,
     pub(crate) name: String,
+    pub(crate) identity: String,
     pub(crate) slot_type: SlotType,
     pub(crate) range: Option<NumericRange>,
     pub(crate) scope: ReplicationScope,
@@ -86,32 +146,70 @@ pub(crate) struct ReplicatedSlotSchema {
 impl ReplicatedSlotSchema {
     /// Build the schema from the slot table. Includes only replicated slots
     /// (`SharedGlobal` / `OwnerPrivatePlayer`); `None`/local-only slots get no
-    /// `StateSlotId` and do not affect the fingerprint. Entries are sorted by stable
-    /// dotted name and assigned dense `StateSlotId`s starting at 0.
-    pub(crate) fn build(slot_table: &SlotTable) -> Self {
-        let mut replicated: Vec<(&str, &SlotType, Option<NumericRange>, ReplicationScope)> =
-            slot_table
-                .iter()
-                .filter_map(|(name, record)| {
-                    let scope = record.schema.network;
-                    match scope {
-                        ReplicationScope::None => None,
-                        ReplicationScope::SharedGlobal | ReplicationScope::OwnerPrivatePlayer => {
-                            Some((name, &record.schema.slot_type, record.schema.range, scope))
+    /// `StateSlotId` and do not affect the fingerprint. Engine-catalog slots retain
+    /// their dotted name as identity. Currently declared mod slots sort by
+    /// `<modId>:<durableKey>` and require an entry in the committed identity
+    /// snapshot. Retained live slots absent from current declaration membership are
+    /// excluded before the ledger is consulted.
+    pub(crate) fn build(
+        slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
+    ) -> Self {
+        let mut replicated: Vec<(
+            String,
+            &str,
+            &SlotType,
+            Option<NumericRange>,
+            ReplicationScope,
+        )> = slot_table
+            .iter()
+            .filter_map(|(name, record)| {
+                let scope = record.schema.network;
+                if scope == ReplicationScope::None {
+                    return None;
+                }
+
+                let identity = match record.schema.ownership {
+                    SlotOwnership::Engine => name.to_string(),
+                    SlotOwnership::Mod => {
+                        if !replication_identity.is_committed(name) {
+                            return None;
                         }
+                        let Some(mod_id) = replication_identity.mod_id() else {
+                            log::warn!(
+                                "[Net] excluding replicated mod state slot `{name}` from schema: committed mod identity is unavailable"
+                            );
+                            return None;
+                        };
+                        let Some(durable_key) = replication_identity.durable_key(name) else {
+                            log::warn!(
+                                "[Net] excluding replicated mod state slot `{name}` from schema: no durable identity ledger entry"
+                            );
+                            return None;
+                        };
+                        format!("{mod_id}:{durable_key}")
                     }
-                })
-                .collect();
-        // Sort by stable dotted name so both peers assign identical ids.
-        replicated.sort_by(|left, right| left.0.cmp(right.0));
+                };
+                Some((
+                    identity,
+                    name,
+                    &record.schema.slot_type,
+                    record.schema.range,
+                    scope,
+                ))
+            })
+            .collect();
+        // Sort by replication identity so both peers assign identical dense ids.
+        replicated.sort_by(|left, right| left.0.cmp(&right.0));
 
         let entries: Vec<ReplicatedSlotSchemaEntry> = replicated
             .into_iter()
             .enumerate()
             .map(
-                |(index, (name, slot_type, range, scope))| ReplicatedSlotSchemaEntry {
+                |(index, (identity, name, slot_type, range, scope))| ReplicatedSlotSchemaEntry {
                     slot_id: StateSlotId(index as u16),
                     name: name.to_string(),
+                    identity,
                     slot_type: slot_type.clone(),
                     range,
                     scope,
@@ -215,8 +313,8 @@ fn scope_to_wire(scope: ReplicationScope) -> WireReplicationScope {
 }
 
 /// Compute the 32-byte schema fingerprint over a canonical byte stream:
-/// version prefix, then for each replicated slot in id (== sorted-name) order:
-/// length-prefixed UTF-8 name, explicit type tag, enum values in declared order
+/// version prefix, then for each replicated slot in id (== sorted-identity) order:
+/// length-prefixed UTF-8 replication identity, explicit type tag, enum values in declared order
 /// (count + length-prefixed UTF-8), range finite/min/max flags with stable
 /// little-endian numeric bytes, and the scope tag. Computed in `postretro` with the
 /// workspace `blake3`; `postretro-net` stores the result as opaque bytes.
@@ -227,7 +325,7 @@ fn compute_fingerprint(entries: &[ReplicatedSlotSchemaEntry]) -> [u8; 32] {
 
     for entry in entries {
         hasher.update(&entry.slot_id.0.to_le_bytes());
-        write_len_prefixed_str(&mut hasher, &entry.name);
+        write_len_prefixed_str(&mut hasher, &entry.identity);
 
         match &entry.slot_type {
             SlotType::Number => hasher.update(&[TYPE_TAG_NUMBER]),
@@ -329,15 +427,23 @@ impl HostStateReplication {
     /// Build the schema from the live slot table after a reset, returning a reference.
     /// Idempotent within one committed staged-manifest generation. Called inside the
     /// frame send path, after mod stores commit, so it reflects that generation's slots.
-    fn schema(&mut self, slot_table: &SlotTable) -> &ReplicatedSlotSchema {
+    fn schema(
+        &mut self,
+        slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
+    ) -> &ReplicatedSlotSchema {
         self.schema
-            .get_or_insert_with(|| ReplicatedSlotSchema::build(slot_table))
+            .get_or_insert_with(|| ReplicatedSlotSchema::build(slot_table, replication_identity))
     }
 
     /// The local schema fingerprint, building the schema if needed. Stamped into every
     /// snapshot carrying state records so the client gates on a match.
-    pub(crate) fn fingerprint(&mut self, slot_table: &SlotTable) -> [u8; 32] {
-        *self.schema(slot_table).fingerprint()
+    pub(crate) fn fingerprint(
+        &mut self,
+        slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
+    ) -> [u8; 32] {
+        *self.schema(slot_table, replication_identity).fingerprint()
     }
 
     /// Register a participating client so it receives state records. This is idempotent
@@ -435,12 +541,14 @@ impl HostStateReplication {
     pub(crate) fn ingest_frame(
         &mut self,
         slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         registry: &EntityRegistry,
         owners: &MovementOwners,
         weapon_owners: &WeaponOwners,
     ) {
         let _ = self.ingest_frame_and_collect_sampled_weapons(
             slot_table,
+            replication_identity,
             registry,
             owners,
             weapon_owners,
@@ -452,6 +560,7 @@ impl HostStateReplication {
     pub(crate) fn ingest_frame_and_collect_sampled_weapons(
         &mut self,
         slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         registry: &EntityRegistry,
         owners: &MovementOwners,
         weapon_owners: &WeaponOwners,
@@ -459,7 +568,7 @@ impl HostStateReplication {
         // Snapshot the schema entries we need (id, name, scope) so the schema borrow is
         // released before the `&mut self.tracker` calls below.
         let entries: Vec<(StateSlotId, String, ReplicationScope)> = self
-            .schema(slot_table)
+            .schema(slot_table, replication_identity)
             .entries()
             .iter()
             .map(|e| (e.slot_id, e.name.clone(), e.scope))
@@ -532,9 +641,10 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
 /// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, and
 /// reload state resolve through its `Inventory` to the sibling `WeaponComponent`;
-/// ammo reserve reads the owning pawn's `AmmoReserve`. Any other owner-private
-/// slot falls back to the slot table's current value keyed to this owner (a
-/// single global value replicated privately). `None` when no source value exists.
+/// ammo reserve reads the owning pawn's `AmmoReserve`. Per-owner mod slots read
+/// the value for this pawn's seat before the global fallback. Any other
+/// owner-private slot falls back to the slot table's current global value.
+/// `None` when no source value exists.
 fn owner_private_source_value(
     slot_table: &SlotTable,
     registry: &EntityRegistry,
@@ -552,9 +662,32 @@ fn owner_private_source_value(
     if let Some(value) = ammo_projection.slot_value(name) {
         return value.as_ref().and_then(slot_value_to_wire);
     }
+    if let Some(value) = per_owner_slot_value_for_pawn(slot_table, registry, name, pawn) {
+        return value;
+    }
     let record = slot_table.get(name)?;
     let value = record.value.as_ref()?;
     slot_value_to_wire(value)
+}
+
+/// Read a per-owner slot for one pawn's durable seat. The outer option says
+/// whether this declaration is per-owner; the inner option is its source value.
+/// A per-owner slot with no pawn-seat binding deliberately returns `Some(None)`,
+/// preventing the global scalar fallback from leaking another owner's value.
+fn per_owner_slot_value_for_pawn(
+    slot_table: &SlotTable,
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+) -> Option<Option<WireSlotValue>> {
+    let record = slot_table.get(name)?;
+    if !record.schema.per_owner {
+        return None;
+    }
+    let Some(seat) = registry.seat_for_pawn(pawn) else {
+        return Some(None);
+    };
+    Some(record.per_seat_value(seat).and_then(slot_value_to_wire))
 }
 
 /// Project ammo/reload slots from one owner's pawn and sibling weapon.
@@ -748,20 +881,32 @@ impl ClientStateApply {
 
     /// Build the schema (and its lowered net form) once from the live slot table,
     /// returning a reference to the replicated-slot schema for name lookups.
-    fn schema(&mut self, slot_table: &SlotTable) -> &ReplicatedSlotSchema {
-        self.ensure_built(slot_table);
+    fn schema(
+        &mut self,
+        slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
+    ) -> &ReplicatedSlotSchema {
+        self.ensure_built(slot_table, replication_identity);
         self.schema.as_ref().expect("schema built above")
     }
 
     /// The lowered net schema, building both forms once if needed.
-    fn net_schema(&mut self, slot_table: &SlotTable) -> &StateSchema {
-        self.ensure_built(slot_table);
+    fn net_schema(
+        &mut self,
+        slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
+    ) -> &StateSchema {
+        self.ensure_built(slot_table, replication_identity);
         self.net_schema.as_ref().expect("net schema built above")
     }
 
-    fn ensure_built(&mut self, slot_table: &SlotTable) {
+    fn ensure_built(
+        &mut self,
+        slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
+    ) {
         if self.schema.is_none() {
-            let schema = ReplicatedSlotSchema::build(slot_table);
+            let schema = ReplicatedSlotSchema::build(slot_table, replication_identity);
             self.net_schema = Some(schema.to_net_schema());
             self.schema = Some(schema);
         }
@@ -787,6 +932,7 @@ impl ClientStateApply {
     pub(crate) fn apply_snapshot_state(
         &mut self,
         slot_table: &mut SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         snapshot_sequence: u32,
         snapshot_fingerprint: &[u8; 32],
         records: &[RawStateSlotRecord],
@@ -798,7 +944,7 @@ impl ClientStateApply {
         // Validate the whole batch against the local schema. The schema borrow is
         // released before the slot-table mutation below.
         let typed = {
-            let net_schema = self.net_schema(slot_table);
+            let net_schema = self.net_schema(slot_table, replication_identity);
             match validate_state_records(net_schema, snapshot_fingerprint, records) {
                 Ok(typed) => typed,
                 Err(err) => {
@@ -821,7 +967,7 @@ impl ClientStateApply {
                     baseline_id,
                     value,
                 } => {
-                    match self.write_for(slot_table, *slot_id, value) {
+                    match self.write_for(slot_table, replication_identity, *slot_id, value) {
                         Ok(Some(write)) => writes.push(write),
                         Ok(None) => {}
                         Err(reason) => {
@@ -840,7 +986,7 @@ impl ClientStateApply {
                     value,
                 } => {
                     if self.held_baselines.get(slot_id).copied() == Some(*baseline_ref) {
-                        match self.write_for(slot_table, *slot_id, value) {
+                        match self.write_for(slot_table, replication_identity, *slot_id, value) {
                             Ok(Some(write)) => writes.push(write),
                             Ok(None) => {}
                             Err(reason) => {
@@ -901,10 +1047,15 @@ impl ClientStateApply {
     fn write_for(
         &mut self,
         slot_table: &SlotTable,
+        replication_identity: &ReplicatedSlotIdentity<'_>,
         slot_id: StateSlotId,
         value: &WireSlotValue,
     ) -> Result<Option<PendingSlotWrite>, String> {
-        let Some(entry) = self.schema(slot_table).entry_for(slot_id).cloned() else {
+        let Some(entry) = self
+            .schema(slot_table, replication_identity)
+            .entry_for(slot_id)
+            .cloned()
+        else {
             return Ok(None);
         };
         match entry.wire_shape {
@@ -1013,6 +1164,7 @@ mod tests {
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::data_descriptors::ReloadStyle;
     use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
+    use postretro_foundation::Seat;
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
         let (_ns, slot) = name.split_once('.').unwrap();
@@ -1026,6 +1178,7 @@ mod tests {
                 readonly: false,
                 ownership: SlotOwnership::Mod,
                 network: scope,
+                per_owner: false,
                 accumulate: None,
             }),
         )
@@ -1047,17 +1200,88 @@ mod tests {
         table
     }
 
+    const TEST_MOD_ID: &str = "test.descriptor-identity";
+
+    fn test_replication_identity() -> ReplicatedSlotIdentity<'static> {
+        replication_identity(
+            TEST_MOD_ID,
+            &[
+                ("net.alpha", "k0000000000000000"),
+                ("net.bravo", "k0000000000000001"),
+                ("net.capped", "k0000000000000002"),
+                ("net.objective", "k0000000000000003"),
+                ("net.private", "k0000000000000004"),
+                ("netFixture.objectiveProgress", "k0000000000000005"),
+                ("extra.extra", "k0000000000000006"),
+                ("currency.xp", "k0000000000000007"),
+                ("currency.killStreak", "k0000000000000008"),
+            ],
+        )
+    }
+
+    fn replication_identity(
+        mod_id: &str,
+        entries: &[(&str, &str)],
+    ) -> ReplicatedSlotIdentity<'static> {
+        let committed_store_slots = entries
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        replication_identity_with_membership(mod_id, entries, committed_store_slots)
+    }
+
+    fn replication_identity_with_membership(
+        mod_id: &str,
+        entries: &[(&str, &str)],
+        committed_store_slots: BTreeSet<String>,
+    ) -> ReplicatedSlotIdentity<'static> {
+        let mut slots = std::collections::BTreeMap::new();
+        for (name, durable_key) in entries {
+            slots.insert((*name).to_string(), (*durable_key).to_string());
+        }
+        ReplicatedSlotIdentity::new(
+            Some(mod_id.to_string()),
+            Some(StoreIdentityLedger { version: 1, slots }),
+            committed_store_slots,
+        )
+    }
+
+    fn build_test_schema(slot_table: &SlotTable) -> ReplicatedSlotSchema {
+        let replication_identity = test_replication_identity();
+        ReplicatedSlotSchema::build(slot_table, &replication_identity)
+    }
+
+    // Regression: frame replication cloned the full committed ledger and membership
+    // map before it knew whether a snapshot would be sent or applied.
+    #[test]
+    fn borrowed_replication_identity_keeps_runtime_snapshots_borrowed() {
+        let mod_id = String::from(TEST_MOD_ID);
+        let ledger = StoreIdentityLedger {
+            version: 1,
+            slots: [("net.alpha".to_string(), "k0000000000000000".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        let committed = ["net.alpha".to_string()].into_iter().collect();
+
+        let identity =
+            ReplicatedSlotIdentity::borrowed(Some(mod_id.as_str()), Some(&ledger), &committed);
+
+        assert!(matches!(&identity.mod_id, Some(Cow::Borrowed(_))));
+        assert!(matches!(&identity.ledger, Some(Cow::Borrowed(_))));
+        assert!(matches!(&identity.committed_store_slots, Cow::Borrowed(_)));
+        assert_eq!(identity.durable_key("net.alpha"), Some("k0000000000000000"));
+    }
+
     #[test]
     fn build_includes_only_replicated_slots_sorted_by_name() {
         let table = table_with_replicated();
-        let schema = ReplicatedSlotSchema::build(&table);
+        let schema = build_test_schema(&table);
         let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
-        // Built-in owner-private player slots join the two mod slots in dotted-name order.
+        // Engine-catalog identities sort alongside mod-qualified durable identities.
         assert_eq!(
             names,
             vec![
-                "net.alpha",
-                "net.bravo",
                 "player.ammo",
                 "player.ammoReserve",
                 "player.health",
@@ -1065,6 +1289,8 @@ mod tests {
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
+                "net.alpha",
+                "net.bravo",
             ]
         );
         assert_eq!(schema.entries()[0].slot_id, StateSlotId(0));
@@ -1076,7 +1302,7 @@ mod tests {
         // The default table's schema is exactly the owner-private engine player
         // facts.
         let table = SlotTable::new();
-        let schema = ReplicatedSlotSchema::build(&table);
+        let schema = build_test_schema(&table);
         let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1097,7 +1323,8 @@ mod tests {
     fn fingerprint_is_deterministic_and_order_independent() {
         // Two tables that declare the same replicated slots in different insertion
         // order must produce the same fingerprint (the builder sorts by name).
-        let schema_a = ReplicatedSlotSchema::build(&table_with_replicated());
+        let table_a = table_with_replicated();
+        let schema_a = build_test_schema(&table_a);
 
         let mut table_b = SlotTable::new();
         table_b
@@ -1109,14 +1336,15 @@ mod tests {
                 ],
             )
             .unwrap();
-        let schema_b = ReplicatedSlotSchema::build(&table_b);
+        let schema_b = build_test_schema(&table_b);
 
         assert_eq!(schema_a.fingerprint(), schema_b.fingerprint());
     }
 
     #[test]
     fn fingerprint_changes_with_scope() {
-        let schema_a = ReplicatedSlotSchema::build(&table_with_replicated());
+        let table_a = table_with_replicated();
+        let schema_a = build_test_schema(&table_a);
 
         let mut table_b = SlotTable::new();
         table_b
@@ -1129,7 +1357,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        let schema_b = ReplicatedSlotSchema::build(&table_b);
+        let schema_b = build_test_schema(&table_b);
 
         assert_ne!(schema_a.fingerprint(), schema_b.fingerprint());
     }
@@ -1137,13 +1365,13 @@ mod tests {
     #[test]
     fn net_schema_carries_fingerprint_and_descriptors() {
         let table = table_with_replicated();
-        let schema = ReplicatedSlotSchema::build(&table);
+        let schema = build_test_schema(&table);
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
         // Two mod slots plus the owner-private engine player slots.
         assert_eq!(net.len(), 9);
         let alpha = net
-            .descriptor(StateSlotId(0))
+            .descriptor(schema.id_for("net.alpha").expect("alpha descriptor exists"))
             .expect("alpha descriptor exists");
         assert_eq!(alpha.value_type, SlotValueType::Number);
         assert_eq!(alpha.scope, WireReplicationScope::OwnerPrivatePlayer);
@@ -1168,19 +1396,237 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::SharedGlobal,
+                        per_owner: false,
                         accumulate: None,
                     }),
                 )],
             )
             .unwrap();
-        let schema = ReplicatedSlotSchema::build(&table);
+        let schema = build_test_schema(&table);
         let net = schema.to_net_schema();
         let range = net
-            .descriptor(StateSlotId(0))
+            .descriptor(
+                schema
+                    .id_for("net.capped")
+                    .expect("capped descriptor exists"),
+            )
             .and_then(|d| d.range)
             .expect("range lowered");
         assert!(range.min_finite);
         assert!(!range.max_finite, "inf max lowers as non-finite");
+    }
+
+    fn one_mod_slot_table(namespace: &str, slot: &str, scope: ReplicationScope) -> SlotTable {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace(
+                namespace,
+                vec![replicated_number(&format!("{namespace}.{slot}"), scope)],
+            )
+            .unwrap();
+        table
+    }
+
+    #[test]
+    fn fingerprint_is_stable_across_authored_rename_when_durable_key_is_preserved() {
+        let before = one_mod_slot_table("story", "oldName", ReplicationScope::SharedGlobal);
+        let after = one_mod_slot_table("story", "newName", ReplicationScope::SharedGlobal);
+        let before_identity =
+            replication_identity("test.rename", &[("story.oldName", "k0123456789abcdef")]);
+        let after_identity =
+            replication_identity("test.rename", &[("story.newName", "k0123456789abcdef")]);
+
+        let before_schema = ReplicatedSlotSchema::build(&before, &before_identity);
+        let after_schema = ReplicatedSlotSchema::build(&after, &after_identity);
+
+        assert_eq!(before_schema.fingerprint(), after_schema.fingerprint());
+        assert_eq!(
+            before_schema
+                .entries()
+                .iter()
+                .find(|entry| entry.name == "story.oldName")
+                .expect("old authored slot is present")
+                .identity,
+            "test.rename:k0123456789abcdef"
+        );
+        assert_eq!(
+            after_schema
+                .entries()
+                .iter()
+                .find(|entry| entry.name == "story.newName")
+                .expect("renamed authored slot is present")
+                .identity,
+            "test.rename:k0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_a_durable_key_changes_under_the_same_authored_name() {
+        let table = one_mod_slot_table("story", "objective", ReplicationScope::SharedGlobal);
+        let first =
+            replication_identity("test.rename", &[("story.objective", "k0123456789abcdef")]);
+        let changed =
+            replication_identity("test.rename", &[("story.objective", "kfedcba9876543210")]);
+
+        assert_ne!(
+            ReplicatedSlotSchema::build(&table, &first).fingerprint(),
+            ReplicatedSlotSchema::build(&table, &changed).fingerprint()
+        );
+    }
+
+    // Regression: a hot-reloaded host retained a removed live slot and built a
+    // different schema than a fresh client running the same current content.
+    #[test]
+    fn hot_reload_host_and_fresh_client_match_when_ledger_retains_removed_slot() {
+        let mut host_table = one_mod_slot_table("old", "objective", ReplicationScope::SharedGlobal);
+        host_table
+            .insert_namespace(
+                "current",
+                vec![replicated_number(
+                    "current.objective",
+                    ReplicationScope::SharedGlobal,
+                )],
+            )
+            .unwrap();
+        let fresh_client_table =
+            one_mod_slot_table("current", "objective", ReplicationScope::SharedGlobal);
+        let identity = replication_identity_with_membership(
+            "test.reload",
+            &[
+                ("old.objective", "k0123456789abcdef"),
+                ("current.objective", "kfedcba9876543210"),
+            ],
+            BTreeSet::from(["current.objective".to_string()]),
+        );
+
+        let host_schema = ReplicatedSlotSchema::build(&host_table, &identity);
+        let client_schema = ReplicatedSlotSchema::build(&fresh_client_table, &identity);
+
+        assert_eq!(host_schema.fingerprint(), client_schema.fingerprint());
+        assert_eq!(host_schema.entries(), client_schema.entries());
+        assert!(
+            host_schema
+                .entries()
+                .iter()
+                .all(|entry| entry.name != "old.objective")
+        );
+    }
+
+    #[test]
+    fn engine_catalog_slots_keep_dotted_schema_identity_without_a_ledger() {
+        let table = SlotTable::new();
+        let schema = ReplicatedSlotSchema::build(&table, &ReplicatedSlotIdentity::default());
+        let health = schema
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "player.health")
+            .expect("engine catalog health slot remains replicated");
+
+        assert_eq!(health.identity, "player.health");
+    }
+
+    #[test]
+    fn unkeyed_mod_slot_is_excluded_once_per_schema_build_and_changes_fingerprint() {
+        let table = one_mod_slot_table("story", "objective", ReplicationScope::SharedGlobal);
+        let keyed =
+            replication_identity("test.unkeyed", &[("story.objective", "k0123456789abcdef")]);
+        let keyed_schema = ReplicatedSlotSchema::build(&table, &keyed);
+        let unkeyed_identity = replication_identity_with_membership(
+            "test.unkeyed",
+            &[("story.other", "k0123456789abcdef")],
+            BTreeSet::from(["story.objective".to_string()]),
+        );
+
+        let logs = crate::scripting::reactions::log_capture::capture(|| {
+            let unkeyed_schema = ReplicatedSlotSchema::build(&table, &unkeyed_identity);
+            assert!(
+                unkeyed_schema
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.name != "story.objective"),
+                "a live mod slot with no snapshot key must never fall back to its authored name"
+            );
+            assert_ne!(unkeyed_schema.fingerprint(), keyed_schema.fingerprint());
+        });
+        assert_eq!(
+            logs.iter()
+                .filter(|(level, message)| {
+                    *level == log::Level::Warn
+                        && message.contains("story.objective")
+                        && message.contains("no durable identity ledger entry")
+                })
+                .count(),
+            1,
+            "one rebuild emits one stable warning for the unkeyed slot"
+        );
+    }
+
+    #[test]
+    fn wire_shape_uses_the_authored_name_not_the_replication_identity() {
+        let mut cooldown = SlotTable::new();
+        for name in [
+            "player.ammo",
+            "player.ammoReserve",
+            "player.health",
+            "player.maxHealth",
+            "player.reloadActive",
+            "player.reloadProgress",
+            WEAPON_COOLDOWN_SLOT,
+        ] {
+            cooldown.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        }
+        let cooldown_record = cooldown.get_mut(WEAPON_COOLDOWN_SLOT).unwrap();
+        cooldown_record.schema.ownership = SlotOwnership::Mod;
+        cooldown_record.schema.network = ReplicationScope::OwnerPrivatePlayer;
+
+        let mut renamed = one_mod_slot_table(
+            "story",
+            "renamedCooldown",
+            ReplicationScope::OwnerPrivatePlayer,
+        );
+        for name in [
+            "player.ammo",
+            "player.ammoReserve",
+            "player.health",
+            "player.maxHealth",
+            "player.reloadActive",
+            "player.reloadProgress",
+            WEAPON_COOLDOWN_SLOT,
+        ] {
+            renamed.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        }
+        let cooldown_identity = replication_identity(
+            "test.wire-shape",
+            &[(WEAPON_COOLDOWN_SLOT, "k0123456789abcdef")],
+        );
+        let renamed_identity = replication_identity(
+            "test.wire-shape",
+            &[("story.renamedCooldown", "k0123456789abcdef")],
+        );
+        let cooldown_schema = ReplicatedSlotSchema::build(&cooldown, &cooldown_identity);
+        let renamed_schema = ReplicatedSlotSchema::build(&renamed, &renamed_identity);
+        let cooldown_entry = cooldown_schema
+            .entries()
+            .iter()
+            .find(|entry| entry.name == WEAPON_COOLDOWN_SLOT)
+            .unwrap();
+        let renamed_entry = renamed_schema
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "story.renamedCooldown")
+            .unwrap();
+
+        assert_eq!(cooldown_entry.identity, renamed_entry.identity);
+        assert_eq!(
+            cooldown_entry.wire_shape,
+            ReplicatedWireShape::for_name(cooldown_entry.name.as_str())
+        );
+        assert_eq!(
+            renamed_entry.wire_shape,
+            ReplicatedWireShape::for_name(renamed_entry.name.as_str())
+        );
+        assert_ne!(cooldown_entry.wire_shape, renamed_entry.wire_shape);
+        assert_ne!(cooldown_schema.fingerprint(), renamed_schema.fingerprint());
     }
 
     // -----------------------------------------------------------------------
@@ -1192,6 +1638,7 @@ mod tests {
 
     const CLIENT_A: u64 = 1;
     const CLIENT_B: u64 = 2;
+    const CLIENT_C: u64 = 3;
 
     /// A host slot table with one `SharedGlobal` (`net.objective`) and one
     /// `OwnerPrivatePlayer` (`net.private`) mod number slot. Both peers build this
@@ -1220,6 +1667,74 @@ mod tests {
             )
             .unwrap();
         table
+    }
+
+    fn per_owner_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
+        let (_namespace, slot) = name.split_once('.').unwrap();
+        (
+            slot.to_string(),
+            SlotRecord::new(SlotSchema {
+                slot_type: SlotType::Number,
+                default: Some(SlotValue::Number(5.0)),
+                range: None,
+                persist: false,
+                readonly: false,
+                ownership: SlotOwnership::Mod,
+                network: scope,
+                per_owner: true,
+                accumulate: None,
+            }),
+        )
+    }
+
+    /// A per-owner currency fixture with one owner-private replicated slot and
+    /// one host-only per-owner slot. Disable built-in owner-private sources so
+    /// the behavior harness observes exactly these mod-owned records.
+    fn per_owner_currency_table() -> SlotTable {
+        let mut table = SlotTable::new();
+        for name in [
+            "player.ammo",
+            "player.ammoReserve",
+            "player.health",
+            "player.maxHealth",
+            "player.reloadActive",
+            "player.reloadProgress",
+            "player.weaponCooldownMs",
+        ] {
+            table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        }
+        table
+            .insert_namespace(
+                "currency",
+                vec![
+                    per_owner_number("currency.xp", ReplicationScope::OwnerPrivatePlayer),
+                    per_owner_number("currency.killStreak", ReplicationScope::None),
+                ],
+            )
+            .unwrap();
+        table
+    }
+
+    fn add_owned_pawn(
+        registry: &mut EntityRegistry,
+        owners: &mut MovementOwners,
+        client_id: u64,
+        seat: Seat,
+    ) -> EntityId {
+        let pawn = registry.spawn(Transform::default());
+        registry.bind_pawn_seat(pawn, seat);
+        owners.set(pawn, client_id);
+        pawn
+    }
+
+    fn record_for_slot(
+        records: &[RawStateSlotRecord],
+        slot_id: StateSlotId,
+    ) -> &RawStateSlotRecord {
+        records
+            .iter()
+            .find(|record| record.slot_id == slot_id.0)
+            .expect("owner-private slot record exists")
     }
 
     /// A slot table whose player owner-private slots are replicated. The catalog
@@ -1419,15 +1934,33 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         host.register_client(CLIENT_B);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &weapon_owners);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
         let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
         let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
 
         let mut table_a = owner_private_player_table();
         let mut table_b = owner_private_player_table();
-        ClientStateApply::new().apply_snapshot_state(&mut table_a, 0, &fingerprint, &records_a);
-        ClientStateApply::new().apply_snapshot_state(&mut table_b, 0, &fingerprint, &records_b);
+        ClientStateApply::new().apply_snapshot_state(
+            &mut table_a,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_a,
+        );
+        ClientStateApply::new().apply_snapshot_state(
+            &mut table_b,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_b,
+        );
 
         for (table, magazine, reserve, progress, active) in [
             (&table_a, 3.0, 11.0, 0.5, true),
@@ -1599,6 +2132,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         let sampled = host.ingest_frame_and_collect_sampled_weapons(
             &table,
+            &test_replication_identity(),
             &registry,
             &owners,
             &weapon_owners,
@@ -1615,6 +2149,7 @@ mod tests {
         );
         let sampled = host.ingest_frame_and_collect_sampled_weapons(
             &table,
+            &test_replication_identity(),
             &registry,
             &owners,
             &weapon_owners,
@@ -1659,8 +2194,14 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -1669,7 +2210,13 @@ mod tests {
         // Client side: a fresh table (no values) and the apply glue.
         let mut client_table = shared_and_private_table();
         let mut client = ClientStateApply::new();
-        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
         assert_eq!(
             outcome.slot_baselines.len(),
             2,
@@ -1699,12 +2246,18 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let _ = host.fingerprint(&host_table);
+        let _ = host.fingerprint(&host_table, &test_replication_identity());
         let objective_id = host
-            .schema(&host_table)
+            .schema(&host_table, &test_replication_identity())
             .id_for("net.objective")
             .expect("objective is replicated");
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let before = host
             .produce_for_client(CLIENT_A, 0)
             .expect("participant produces before the staged rebuild");
@@ -1715,8 +2268,14 @@ mod tests {
             .baseline_id;
 
         host.reset_schema_for_clients([CLIENT_A]);
-        let _ = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let _ = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
 
         // This reliable Input ack was queued before the staged manifest committed,
         // but reaches the unchanged participation epoch after the host rebuilt.
@@ -1739,6 +2298,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn schema_rebuild_after_added_slot_reactivates_prior_baselines() {
+        let mut host_table = shared_and_private_table();
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(3.0));
+        let registry = EntityRegistry::new();
+        let owners = MovementOwners::new();
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+
+        let before_fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let initial = host
+            .produce_for_client(CLIENT_A, 0)
+            .expect("initial schema produces a baseline");
+        let objective_before = initial
+            .iter()
+            .find(|record| {
+                record.slot_id
+                    == host
+                        .schema(&host_table, &test_replication_identity())
+                        .id_for("net.objective")
+                        .unwrap()
+                        .0
+            })
+            .expect("objective baseline exists")
+            .baseline_id;
+
+        host_table
+            .insert_namespace(
+                "extra",
+                vec![replicated_number(
+                    "net.extra",
+                    ReplicationScope::SharedGlobal,
+                )],
+            )
+            .expect("added declaration is non-overlapping");
+        host_table.get_mut("extra.extra").unwrap().value = Some(SlotValue::Number(7.0));
+        host.reset_schema_for_clients([CLIENT_A]);
+        let after_fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        assert_ne!(before_fingerprint, after_fingerprint);
+
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let rebuilt = host
+            .produce_for_client(CLIENT_A, 1)
+            .expect("rebuild reactivates the participant");
+        let objective_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("net.objective")
+            .unwrap()
+            .0;
+        let extra_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("extra.extra")
+            .unwrap()
+            .0;
+        let objective_after = rebuilt
+            .iter()
+            .find(|record| record.slot_id == objective_id)
+            .expect("prior objective receives a fresh baseline");
+        assert_eq!(
+            objective_after.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE
+        );
+        assert_ne!(objective_after.baseline_id, objective_before);
+        assert!(rebuilt.iter().any(|record| {
+            record.slot_id == extra_id
+                && record.kind == postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE
+        }));
+    }
+
     // A descriptor-defined source value (health) projects into a named owner-private
     // slot and replicates through the SAME wire schema/apply path as store slots.
     #[test]
@@ -1753,8 +2394,14 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -1768,7 +2415,13 @@ mod tests {
         // receive the replicated values (engine bypass honors readonly).
         let mut client_table = owner_private_player_table();
         let mut client = ClientStateApply::new();
-        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
         assert_eq!(outcome.slot_baselines.len(), 4);
         assert_eq!(
             client_table.get("player.health").unwrap().value,
@@ -1811,8 +2464,8 @@ mod tests {
         install_descriptor_player_health_range(&mut host_table, &spawn_points, &descriptors);
         install_descriptor_player_health_range(&mut client_table, &spawn_points, &descriptors);
 
-        let host_schema = ReplicatedSlotSchema::build(&host_table);
-        let client_schema = ReplicatedSlotSchema::build(&client_table);
+        let host_schema = build_test_schema(&host_table);
+        let client_schema = build_test_schema(&client_table);
         assert_eq!(host_schema.fingerprint(), client_schema.fingerprint());
         assert_eq!(
             host_table.get("player.health").unwrap().schema.range,
@@ -1825,14 +2478,21 @@ mod tests {
         let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 75.0, 137.0);
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces descriptor state");
 
         let outcome = ClientStateApply::new().apply_snapshot_state(
             &mut client_table,
+            &test_replication_identity(),
             0,
             &fingerprint,
             &records,
@@ -1853,13 +2513,19 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &weapon_owners);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
 
-        let schema = ReplicatedSlotSchema::build(&host_table);
+        let schema = build_test_schema(&host_table);
         let cooldown_id = schema
             .id_for("player.weaponCooldownMs")
             .expect("cooldown id");
@@ -1870,7 +2536,13 @@ mod tests {
 
         let mut client_table = owner_private_player_table();
         let mut client = ClientStateApply::new();
-        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
         assert!(
             outcome
                 .slot_baselines
@@ -1899,7 +2571,13 @@ mod tests {
         inventory.active_slot = 1;
         registry.set_component(pawn, inventory).unwrap();
 
-        host.ingest_frame(&host_table, &registry, &owners, &weapon_owners);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
         let switched_records = host.produce_for_client(CLIENT_A, 1).unwrap();
         let cooldown_record = switched_records
             .iter()
@@ -1909,8 +2587,13 @@ mod tests {
             cooldown_record.value,
             WireSlotValue::Array(vec![1.0, 123.0])
         );
-        let switched =
-            client.apply_snapshot_state(&mut client_table, 1, &fingerprint, &switched_records);
+        let switched = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            1,
+            &fingerprint,
+            &switched_records,
+        );
         assert_eq!(switched.fresh_weapon_cooldown_slot, Some(1));
     }
 
@@ -1924,8 +2607,14 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let _real_fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let _real_fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host.produce_for_client(CLIENT_A, 0).expect("records");
 
         // The client holds a prior value the apply must NOT overwrite.
@@ -1934,7 +2623,13 @@ mod tests {
         let mut client = ClientStateApply::new();
 
         // A WRONG fingerprint must reject the whole batch before any mutation.
-        let outcome = client.apply_snapshot_state(&mut client_table, 0, &[0xAB; 32], &records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &[0xAB; 32],
+            &records,
+        );
         assert!(
             outcome.slot_baselines.is_empty(),
             "rejected batch acks nothing"
@@ -1954,12 +2649,12 @@ mod tests {
         let host_table = shared_and_private_table();
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
 
         // Hand-build a batch: a valid number record for net.objective (slot 0, sorted by
         // name: net.objective < net.private) and a TYPE-MISMATCHED boolean for the
         // number slot net.private (slot 1). The whole batch must reject.
-        let schema = ReplicatedSlotSchema::build(&host_table);
+        let schema = build_test_schema(&host_table);
         let objective_id = schema.id_for("net.objective").unwrap().0;
         let private_id = schema.id_for("net.private").unwrap().0;
         let records = vec![
@@ -1984,7 +2679,13 @@ mod tests {
         let mut client_table = shared_and_private_table();
         // Both slots default to 0.0; assert they stay at the default after rejection.
         let mut client = ClientStateApply::new();
-        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
         assert!(
             outcome.slot_baselines.is_empty(),
             "a type mismatch rejects the whole batch (no partial apply)"
@@ -2025,9 +2726,15 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         host.register_client(CLIENT_B);
-        let fingerprint = host.fingerprint(&host_table);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
 
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
         let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
 
@@ -2036,8 +2743,20 @@ mod tests {
         let mut table_b = owner_private_player_table();
         let mut client_a = ClientStateApply::new();
         let mut client_b = ClientStateApply::new();
-        client_a.apply_snapshot_state(&mut table_a, 0, &fingerprint, &records_a);
-        client_b.apply_snapshot_state(&mut table_b, 0, &fingerprint, &records_b);
+        client_a.apply_snapshot_state(
+            &mut table_a,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_a,
+        );
+        client_b.apply_snapshot_state(
+            &mut table_b,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_b,
+        );
 
         assert_eq!(
             table_a.get("player.health").unwrap().value,
@@ -2048,6 +2767,286 @@ mod tests {
             table_b.get("player.health").unwrap().value,
             Some(SlotValue::Number(40.0)),
             "client B sees its own (different) health"
+        );
+    }
+
+    #[test]
+    fn per_owner_mod_slot_isolates_owner_private_snapshots_and_skips_unbound_pawns() {
+        let mut host_table = per_owner_currency_table();
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_B, Seat(11));
+        let unbound_pawn = registry.spawn(Transform::default());
+        owners.set(unbound_pawn, CLIENT_C);
+        {
+            let xp = host_table.get_mut("currency.xp").unwrap();
+            xp.set_per_seat_value(Seat(10), SlotValue::Number(17.0));
+            xp.set_per_seat_value(Seat(11), SlotValue::Number(31.0));
+            // A poisoned scalar catches accidental global fallback for owner slots.
+            xp.write_value(Some(SlotValue::Number(99.0)));
+        }
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        host.register_client(CLIENT_C);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        let xp_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("currency.xp")
+            .unwrap();
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
+        let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
+        let records_c = host.produce_for_client(CLIENT_C, 0).unwrap();
+
+        assert_eq!(
+            record_for_slot(&records_a, xp_id).value,
+            WireSlotValue::Number(17.0)
+        );
+        assert_eq!(
+            record_for_slot(&records_b, xp_id).value,
+            WireSlotValue::Number(31.0)
+        );
+        assert!(
+            records_c.is_empty(),
+            "a pawn with no seat skips its per-owner source instead of falling through to 99"
+        );
+
+        let mut table_a = per_owner_currency_table();
+        let mut table_b = per_owner_currency_table();
+        ClientStateApply::new().apply_snapshot_state(
+            &mut table_a,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_a,
+        );
+        ClientStateApply::new().apply_snapshot_state(
+            &mut table_b,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records_b,
+        );
+        assert_eq!(
+            table_a.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(17.0)),
+            "client A receives only its seat's value"
+        );
+        assert_eq!(
+            table_b.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(31.0)),
+            "client B receives only its seat's value"
+        );
+    }
+
+    #[test]
+    fn per_owner_late_join_baseline_uses_that_seats_default_or_current_value() {
+        let mut host_table = per_owner_currency_table();
+        host_table
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(Seat(10), SlotValue::Number(71.0));
+        host_table
+            .get_mut("currency.xp")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(99.0)));
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let _ = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+
+        // Admission mints and binds the seat before the first tracker ingest.
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_B, Seat(11));
+        host.register_client(CLIENT_B);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let xp_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("currency.xp")
+            .unwrap();
+        let default_records = host.produce_for_client(CLIENT_B, 1).unwrap();
+        let default_record = record_for_slot(&default_records, xp_id);
+        assert_eq!(
+            default_record.value,
+            WireSlotValue::Number(5.0),
+            "an unwritten late-join seat receives the declaration default, never A's 71"
+        );
+        assert_eq!(
+            default_record.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE
+        );
+
+        host_table
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(Seat(12), SlotValue::Number(43.0));
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_C, Seat(12));
+        host.register_client(CLIENT_C);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        let current_records = host.produce_for_client(CLIENT_C, 2).unwrap();
+        let current_record = record_for_slot(&current_records, xp_id);
+        assert_eq!(
+            current_record.value,
+            WireSlotValue::Number(43.0),
+            "a late joiner with a current seat value receives that value, never another owner's"
+        );
+        assert_eq!(
+            current_record.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE
+        );
+    }
+
+    #[test]
+    fn per_owner_reclaim_reseeds_a_full_baseline_from_the_seat_store() {
+        let mut host_table = per_owner_currency_table();
+        {
+            let xp = host_table.get_mut("currency.xp").unwrap();
+            xp.set_per_seat_value(Seat(10), SlotValue::Number(47.0));
+            xp.write_value(Some(SlotValue::Number(99.0)));
+        }
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let departing_pawn = add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+        assert!(
+            !host.produce_for_client(CLIENT_A, 0).unwrap().is_empty(),
+            "the original participant received a baseline before disconnect"
+        );
+
+        // Participation exit clears tracker state, but not the held seat's store value.
+        host.remove_client(CLIENT_A);
+        owners.remove_pawn(departing_pawn);
+        registry.clear_pawn_seat(departing_pawn);
+        registry.despawn(departing_pawn).unwrap();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+        host.register_client(CLIENT_A);
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+
+        let xp_id = host
+            .schema(&host_table, &test_replication_identity())
+            .id_for("currency.xp")
+            .unwrap();
+        let records = host.produce_for_client(CLIENT_A, 1).unwrap();
+        let record = record_for_slot(&records, xp_id);
+        assert_eq!(
+            record.value,
+            WireSlotValue::Number(47.0),
+            "the first post-reclaim value comes from the held seat store, not the dropped tracker"
+        );
+        assert_eq!(
+            record.kind,
+            postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+            "a re-registered connection receives a fresh baseline"
+        );
+
+        let mut client_table = per_owner_currency_table();
+        ClientStateApply::new().apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            1,
+            &fingerprint,
+            &records,
+        );
+        assert_eq!(
+            client_table.get("currency.xp").unwrap().value,
+            Some(SlotValue::Number(47.0))
+        );
+    }
+
+    #[test]
+    fn per_owner_slot_without_network_stays_host_only_and_unreplicated() {
+        let mut host_table = per_owner_currency_table();
+        {
+            let kill_streak = host_table.get_mut("currency.killStreak").unwrap();
+            kill_streak.set_per_seat_value(Seat(10), SlotValue::Number(3.0));
+            kill_streak.set_per_seat_value(Seat(11), SlotValue::Number(9.0));
+        }
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_A, Seat(10));
+        add_owned_pawn(&mut registry, &mut owners, CLIENT_B, Seat(11));
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        let schema = host
+            .schema(&host_table, &test_replication_identity())
+            .clone();
+        assert_eq!(
+            schema.id_for("currency.killStreak"),
+            None,
+            "a per-owner declaration with no network scope has no wire slot"
+        );
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
+
+        let xp_id = schema.id_for("currency.xp").unwrap();
+        for client_id in [CLIENT_A, CLIENT_B] {
+            let records = host.produce_for_client(client_id, 0).unwrap();
+            assert!(
+                records.iter().all(|record| record.slot_id == xp_id.0),
+                "host-only killStreak never enters the owner-private replication tracker"
+            );
+        }
+        let kill_streak = host_table.get("currency.killStreak").unwrap();
+        assert_eq!(
+            kill_streak.per_seat_value(Seat(10)),
+            Some(&SlotValue::Number(3.0))
+        );
+        assert_eq!(
+            kill_streak.per_seat_value(Seat(11)),
+            Some(&SlotValue::Number(9.0))
         );
     }
 
@@ -2110,11 +3109,17 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         host.register_client(CLIENT_B);
-        let fingerprint = host.fingerprint(&host_table);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
 
         // Ingest the frame's shared value once; both clients (and the late joiner) read
         // the same ingested view.
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
 
         // Both originally-accepted clients receive the shared value on the first frame.
         for client in [CLIENT_A, CLIENT_B] {
@@ -2125,7 +3130,13 @@ mod tests {
 
             let mut client_table = net_fixture_table();
             let mut apply = ClientStateApply::new();
-            let outcome = apply.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+            let outcome = apply.apply_snapshot_state(
+                &mut client_table,
+                &test_replication_identity(),
+                0,
+                &fingerprint,
+                &records,
+            );
             assert_eq!(
                 outcome.slot_baselines.len(),
                 1,
@@ -2157,8 +3168,13 @@ mod tests {
 
         let mut late_table = net_fixture_table();
         let mut late_apply = ClientStateApply::new();
-        let outcome =
-            late_apply.apply_snapshot_state(&mut late_table, 1, &fingerprint, &late_records);
+        let outcome = late_apply.apply_snapshot_state(
+            &mut late_table,
+            &test_replication_identity(),
+            1,
+            &fingerprint,
+            &late_records,
+        );
         assert_eq!(outcome.slot_baselines.len(), 1);
         assert_eq!(
             late_table
@@ -2210,8 +3226,14 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -2222,7 +3244,7 @@ mod tests {
         );
 
         // The slot ids come from the same deterministic schema as store slots.
-        let schema = ReplicatedSlotSchema::build(&host_table);
+        let schema = build_test_schema(&host_table);
         let health_id = schema.id_for("player.health").expect("health id");
         let max_id = schema.id_for("player.maxHealth").expect("maxHealth id");
         let record_ids: std::collections::BTreeSet<u16> =
@@ -2232,7 +3254,13 @@ mod tests {
 
         let mut client_table = owner_private_player_table();
         let mut client = ClientStateApply::new();
-        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
         assert_eq!(outcome.slot_baselines.len(), 4);
         assert_eq!(
             client_table.get("player.health").unwrap().value,
@@ -2265,8 +3293,14 @@ mod tests {
         let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 0.0, 0.0);
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let _real_fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let _real_fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host.produce_for_client(CLIENT_A, 0).expect("records");
 
         let mut client_table = shared_and_private_table();
@@ -2274,7 +3308,13 @@ mod tests {
 
         // Run the apply under a captured-log scope so the warn! is recorded.
         let logs = capture(|| {
-            let outcome = client.apply_snapshot_state(&mut client_table, 0, &[0xAB; 32], &records);
+            let outcome = client.apply_snapshot_state(
+                &mut client_table,
+                &test_replication_identity(),
+                0,
+                &[0xAB; 32],
+                &records,
+            );
             assert!(
                 outcome.slot_baselines.is_empty(),
                 "the mismatched batch acks nothing"
@@ -2320,8 +3360,14 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -2338,7 +3384,13 @@ mod tests {
         );
 
         let mut client = ClientStateApply::new();
-        client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
 
         let health = ui_snapshot_number(&client_table, "player.health")
             .expect("player.health present in the UI read snapshot after the first baseline");
@@ -2369,11 +3421,17 @@ mod tests {
 
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
-        let fingerprint = host.fingerprint(&host_table);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
 
         // Frame 1: the host produces the first FullBaseline — but it is LOST (the
         // client never applies it, so it holds no baseline for net.objective).
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let _lost = host
             .produce_for_client(CLIENT_A, 0)
             .expect("first frame records");
@@ -2385,7 +3443,13 @@ mod tests {
         let baseline_one = {
             // Re-produce frame 1 to learn its baseline id, ack it on the server so the
             // server will send a delta next, but the CLIENT never saw it.
-            host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+            host.ingest_frame(
+                &host_table,
+                &test_replication_identity(),
+                &registry,
+                &owners,
+                &WeaponOwners::new(),
+            );
             let records = host
                 .produce_for_client(CLIENT_A, 1)
                 .expect("frame 1 reproduced");
@@ -2399,7 +3463,13 @@ mod tests {
 
         // Now the value changes: the server emits a DELTA referencing baseline_one.
         host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(4.0));
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let delta_records = host.produce_for_client(CLIENT_A, 2).expect("delta frame");
         assert!(
             delta_records
@@ -2413,8 +3483,13 @@ mod tests {
         let mut client_table = shared_and_private_table();
         client_table.get_mut("net.objective").unwrap().value = None;
         let mut client = ClientStateApply::new();
-        let outcome =
-            client.apply_snapshot_state(&mut client_table, 2, &fingerprint, &delta_records);
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            2,
+            &fingerprint,
+            &delta_records,
+        );
         assert_eq!(
             outcome.refresh_requests.len(),
             1,
@@ -2433,7 +3508,13 @@ mod tests {
         // Server handles the refresh and schedules a FullBaseline for that slot.
         let req = &outcome.refresh_requests[0];
         host.request_refresh(CLIENT_A, req.slot_id, req.missing_baseline_ref);
-        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &WeaponOwners::new(),
+        );
         let repair_records = host.produce_for_client(CLIENT_A, 3).expect("repair frame");
         assert!(
             repair_records
@@ -2443,8 +3524,13 @@ mod tests {
         );
 
         // The client applies the repair and converges — no reconnect needed.
-        let repair_outcome =
-            client.apply_snapshot_state(&mut client_table, 3, &fingerprint, &repair_records);
+        let repair_outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            3,
+            &fingerprint,
+            &repair_records,
+        );
         assert!(repair_outcome.refresh_requests.is_empty(), "repaired");
         assert_eq!(
             client_table.get("net.objective").unwrap().value,

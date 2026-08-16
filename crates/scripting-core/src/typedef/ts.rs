@@ -43,7 +43,7 @@ pub(super) fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
             if ty.name == "StateValue" {
                 writeln!(
                     out,
-                    "{TS_INDENT}export type StateValue<{type_param}> = WritableStateRef<{type_param}>;",
+                    "{TS_INDENT}export type StateValue<{type_param}> = Ref<{type_param}>;",
                 )
                 .unwrap();
             } else {
@@ -147,9 +147,9 @@ pub fn state_ref_ts(
     value_type: EngineStateValueType<'_>,
 ) -> String {
     let ref_ty = if capability == EngineStateCapability::Writable {
-        "WritableStateRef"
+        "Ref"
     } else {
-        "ReadonlyStateRef"
+        "ComputedRef"
     };
     format!("{ref_ty}<{}>", value_type.to_ts())
 }

@@ -1,7 +1,7 @@
 // Polled, registry-blind renet transport and E15 two-stage control gate.
 // See: context/lib/networking.md
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -16,8 +16,9 @@ use renet_netcode::{
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
-    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, NETCODE_USER_DATA_BYTES,
-    ParityDeclaration, ParticipationFrame, ServerControlFrame, ServerControlMessage,
+    self, ClientControlMessage, ClientSwitchDeclaration, ConnectClaim, JoinSeedValue,
+    NETCODE_USER_DATA_BYTES, ParityDeclaration, ParticipationFrame, ServerControlFrame,
+    ServerControlMessage, ServerPresentationMessage,
 };
 
 pub use crate::handshake::*;
@@ -27,6 +28,7 @@ pub enum Channel {
     Control = 0,
     Snapshot = 1,
     Input = 2,
+    Presentation = 3,
 }
 
 impl From<Channel> for u8 {
@@ -59,6 +61,11 @@ pub fn connection_config() -> ConnectionConfig {
             send_type: SendType::ReliableOrdered {
                 resend_time: RELIABLE_RESEND,
             },
+        },
+        ChannelConfig {
+            channel_id: Channel::Presentation.into(),
+            max_memory_usage_bytes: CHANNEL_MEMORY_BYTES,
+            send_type: SendType::Unreliable,
         },
     ];
     ConnectionConfig {
@@ -103,7 +110,16 @@ pub struct ServerPoll {
     /// Registry-blind reliable controls from currently participating clients.
     /// Engine code resolves the client id into a pawn and validates its state.
     pub switch_declarations: Vec<(ClientId, ClientSwitchDeclaration)>,
+    /// Registry-blind join seeds. The engine owns buffering, validation, and
+    /// per-seat application because the transport has no slot declarations.
+    pub join_seeds: Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
 }
+
+type ControlMessages = (
+    Vec<HandshakeOutcome>,
+    Vec<(ClientId, ClientSwitchDeclaration)>,
+    Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
+);
 
 /// Synchronous server transport. It knows only opaque declarations and slot ids.
 pub struct NetServer {
@@ -236,7 +252,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations) = self.process_control_messages();
+        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -246,6 +262,7 @@ impl NetServer {
             handshakes,
             lifecycle,
             switch_declarations,
+            join_seeds,
         })
     }
 
@@ -301,16 +318,12 @@ impl NetServer {
         }
     }
 
-    fn process_control_messages(
-        &mut self,
-    ) -> (
-        Vec<HandshakeOutcome>,
-        Vec<(ClientId, ClientSwitchDeclaration)>,
-    ) {
+    fn process_control_messages(&mut self) -> ControlMessages {
         let mut outcomes = Vec::new();
         let mut switch_declarations = Vec::new();
+        let mut join_seeds = Vec::new();
         let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
-            return (outcomes, switch_declarations);
+            return (outcomes, switch_declarations, join_seeds);
         };
         let expected_protocol = protocol_version();
 
@@ -405,6 +418,13 @@ impl NetServer {
                             switch_declarations.push((client_id, declaration));
                         }
                     }
+                    ClientControlMessage::JoinSeed { slots } => {
+                        // The engine validates the durable keys against its
+                        // committed declarations and applies only eligible
+                        // per-owner values. This transport is intentionally
+                        // registry-blind, so pass the opaque map through.
+                        join_seeds.push((client_id, slots));
+                    }
                 }
                 if self.mod_digest.is_none() {
                     break;
@@ -428,7 +448,7 @@ impl NetServer {
                 }
             }
         }
-        (outcomes, switch_declarations)
+        (outcomes, switch_declarations, join_seeds)
     }
 
     fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
@@ -686,6 +706,25 @@ impl NetServer {
         self.server.send_message(client_id, Channel::Input, payload);
     }
 
+    /// Send one transient server presentation event to its exact recipient.
+    ///
+    /// Presentation is intentionally not participation-framed and has no
+    /// acknowledgement, resend, or reconciliation path. A departed/demoted
+    /// recipient silently loses the cosmetic instead of retaining it for a
+    /// later participation generation.
+    pub fn send_presentation(
+        &mut self,
+        client_id: ClientId,
+        message: ServerPresentationMessage,
+    ) -> bool {
+        if !self.is_participating(client_id) {
+            return false;
+        }
+        self.server
+            .send_message(client_id, Channel::Presentation, wire::encode(&message));
+        true
+    }
+
     pub fn packets_to_send(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
         self.server
             .get_packets_to_send(client_id)
@@ -732,7 +771,7 @@ impl NetServer {
         self.collect_server_events();
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, switch_declarations) = self.process_control_messages();
+        let (handshakes, switch_declarations, join_seeds) = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
@@ -741,6 +780,7 @@ impl NetServer {
             handshakes,
             lifecycle,
             switch_declarations,
+            join_seeds,
         }
     }
 }
@@ -794,6 +834,8 @@ pub struct NetClient {
     transport: NetcodeClientTransport,
     admission_sent: bool,
     parity_sent: bool,
+    join_seed_sent: bool,
+    join_seed: BTreeMap<String, JoinSeedValue>,
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
@@ -827,6 +869,8 @@ impl NetClient {
             transport,
             admission_sent: false,
             parity_sent: false,
+            join_seed_sent: false,
+            join_seed: BTreeMap::new(),
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
@@ -851,7 +895,16 @@ impl NetClient {
         if self.level_parity != level {
             self.level_parity = level;
             self.parity_sent = false;
+            self.join_seed_sent = false;
         }
+    }
+
+    /// Replace the values to carry with the next content-parity declaration.
+    /// An empty map is a meaningful seed: it explicitly starts a player at the
+    /// host's declared defaults when no local persistence exists.
+    pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
+        self.join_seed = slots;
+        self.join_seed_sent = false;
     }
 
     #[deprecated(note = "use set_mod_digest and set_level_parity")]
@@ -892,6 +945,15 @@ impl NetClient {
                     })),
                 );
                 self.parity_sent = true;
+                if !self.join_seed_sent {
+                    self.client.send_message(
+                        Channel::Control,
+                        wire::encode(&ClientControlMessage::JoinSeed {
+                            slots: self.join_seed.clone(),
+                        }),
+                    );
+                    self.join_seed_sent = true;
+                }
             }
         }
     }
@@ -907,6 +969,14 @@ impl NetClient {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.client.is_connected()
+    }
+
+    /// Whether the host has activated the current participation generation.
+    /// Gameplay-local work such as private persistence must pause while a
+    /// parity demotion leaves the transport connection open.
+    #[must_use]
+    pub fn is_participating(&self) -> bool {
+        self.active_participation_epoch.is_some()
     }
 
     #[must_use]
@@ -965,6 +1035,27 @@ impl NetClient {
             }
         }
         accepted
+    }
+
+    /// Drain decoded passive presentation events from the dedicated unreliable
+    /// channel. Unlike snapshots, these carry no participation epoch. The lane
+    /// is still participation-gated: held/disconnected clients exhaust and
+    /// discard it so a retired cosmetic cannot enter a later world lifecycle.
+    pub fn drain_presentation(&mut self) -> Vec<ServerPresentationMessage> {
+        let bytes = drain_client_channel(&mut self.client, Channel::Presentation);
+        if !self.client.is_connected() || self.active_participation_epoch.is_none() {
+            return Vec::new();
+        }
+        bytes
+            .into_iter()
+            .filter_map(|bytes| match wire::decode(&bytes) {
+                Ok(message) => Some(message),
+                Err(err) => {
+                    log::warn!("[Net] dropping malformed server Presentation message: {err}");
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Decode every server Control envelope currently queued by renet. Malformed
@@ -1027,6 +1118,13 @@ impl NetClient {
             .is_some_and(|active| !epoch_is_newer(active, epoch))
         {
             self.active_participation_epoch = None;
+            // Presentation is deliberately unframed and fire-and-forget. Flush
+            // anything that arrived beside this reliable hold so it cannot be
+            // mistaken for work from a later participation generation.
+            drop(drain_client_channel(
+                &mut self.client,
+                Channel::Presentation,
+            ));
         }
     }
 
@@ -1146,8 +1244,119 @@ mod tests {
                 client_id: RELAY_CLIENT_ID
             }]
         );
+        assert_eq!(
+            poll.join_seeds,
+            vec![(RELAY_CLIENT_ID, BTreeMap::new())],
+            "a client with no retained values still sends an explicit empty join seed"
+        );
         assert!(server.is_participating(RELAY_CLIENT_ID));
         (server, client)
+    }
+
+    #[test]
+    fn presentation_channel_is_the_fourth_dedicated_unreliable_channel() {
+        let config = connection_config();
+        let channel_ids: Vec<u8> = config
+            .server_channels_config
+            .iter()
+            .map(|channel| channel.channel_id)
+            .collect();
+        assert_eq!(
+            channel_ids,
+            vec![
+                Channel::Control.into(),
+                Channel::Snapshot.into(),
+                Channel::Input.into(),
+                Channel::Presentation.into(),
+            ]
+        );
+        let presentation = config
+            .server_channels_config
+            .iter()
+            .find(|channel| channel.channel_id == Channel::Presentation.into())
+            .expect("presentation channel is configured");
+        assert!(matches!(&presentation.send_type, SendType::Unreliable));
+    }
+
+    #[test]
+    fn presentation_channel_delivers_a_typed_message_only_to_its_recipient() {
+        let (mut server, mut client) = participate_relay_pair();
+        let message = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Spawn {
+                template_id: "damage-number".to_string(),
+                anchor: [1.0, 2.0, 3.0],
+                value: 25.0,
+                facts: BTreeMap::from([(
+                    "value".to_string(),
+                    crate::wire::PresentationFact::Number(25.0),
+                )]),
+            },
+        };
+
+        assert!(server.send_presentation(RELAY_CLIENT_ID, message.clone()));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        assert_eq!(client.drain_presentation(), vec![message]);
+    }
+
+    // Regression: unframed pre-demotion presentation survived a Holding drain
+    // and was ingested after the same connection re-entered participation.
+    #[test]
+    fn demotion_discards_late_spawn_and_overlay_before_rejoin() {
+        let (mut server, mut client) = participate_relay_pair();
+        let stale_spawn = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Spawn {
+                template_id: "old-number".to_string(),
+                anchor: [1.0, 2.0, 3.0],
+                value: 25.0,
+                facts: BTreeMap::new(),
+            },
+        };
+        let stale_overlay = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::OverlayFact {
+                enemy_id: crate::wire::NetworkId(3),
+                health_fraction: 0.5,
+                shield_fraction: 0.0,
+                has_shield: false,
+                alive: true,
+            },
+        };
+        assert!(server.send_presentation(RELAY_CLIENT_ID, stale_spawn));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, stale_overlay));
+
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert!(
+            client.drain_presentation().is_empty(),
+            "pre-demotion presentation must be retired even after re-promotion",
+        );
+
+        let current = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Spawn {
+                template_id: "current-number".to_string(),
+                anchor: [4.0, 5.0, 6.0],
+                value: 10.0,
+                facts: BTreeMap::new(),
+            },
+        };
+        assert!(server.send_presentation(RELAY_CLIENT_ID, current.clone()));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(client.drain_presentation(), vec![current]);
     }
 
     #[test]
@@ -1202,6 +1411,24 @@ mod tests {
                 },
             )]
         );
+    }
+
+    #[test]
+    fn join_seed_reaches_the_server_poll_without_transport_interpretation() {
+        let (mut server, mut client) = participate_relay_pair();
+        let slots =
+            BTreeMap::from([("kplayer0000000001".to_string(), JoinSeedValue::Number(42.0))]);
+        client.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::JoinSeed {
+                slots: slots.clone(),
+            }),
+        );
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+
+        assert_eq!(poll.join_seeds, vec![(RELAY_CLIENT_ID, slots)]);
     }
 
     // Regression: parity retained while Pending was never reconsidered when the

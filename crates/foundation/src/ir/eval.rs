@@ -171,6 +171,7 @@ mod tests {
     fn input(name: &str) -> Box<IrNode> {
         Box::new(IrNode::Input {
             name: name.to_string(),
+            owner: None,
         })
     }
 

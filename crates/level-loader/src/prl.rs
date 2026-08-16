@@ -1144,6 +1144,7 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             valid_probe_masks: vec![u64::MAX; cell_count],
+            cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -1167,6 +1168,7 @@ mod tests {
             // The shared fixture base volume marks every probe invalid, so
             // retained zero-length entries are the matching id-41 spelling.
             valid_probe_masks: vec![0; cell_count],
+            cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
             delta_subblocks: Vec::new(),
             affinity_lights,
@@ -1190,6 +1192,7 @@ mod tests {
             // retained zero-length id-45 entry is its matching compact form.
             animation_descriptor_indices: vec![u32::MAX],
             valid_probe_masks: vec![0; cell_count],
+            cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: Vec::new(),
@@ -5287,6 +5290,59 @@ mod tests {
         assert_eq!(loaded.layer_count, 2);
         assert_eq!(loaded.channels, shadowmask.channels);
         assert_eq!(loaded.data, shadowmask.data);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_ignores_malformed_shadowmask_without_clearing_direct_selection() {
+        // Regression: malformed optional shadowmask data must disable only
+        // baked world visibility; static-light entity promotion remains valid.
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        let mut malformed_shadowmask = shadowmask_blob(
+            postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+                width: 2,
+                height: 1,
+                layer_count: 2,
+                channels: vec![0],
+                data: vec![255; 16],
+            },
+        );
+        malformed_shadowmask
+            .data
+            .pop()
+            .expect("fixture shadowmask payload must be non-empty");
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            lightmap_blob(2, 1, 2),
+            malformed_shadowmask,
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_malformed_shadowmask_atlas.prl");
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("malformed ShadowmaskAtlas must degrade without failing load");
+
+        assert_eq!(world.entity_shadow_lights, vec![0]);
+        assert!(world.direct_sh_delta_volumes.is_some());
+        assert!(
+            world.shadowmask_atlas.is_none(),
+            "malformed optional shadowmask must degrade to absence"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }

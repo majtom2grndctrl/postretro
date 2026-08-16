@@ -7,7 +7,7 @@ use rquickjs::{Ctx, Function as JsFunction, Object as JsObject, Value as JsValue
 
 use super::engine_state_catalog::{
     EngineStateCatalog, EngineStateCatalogEntry, EngineStateCatalogError, EngineStateTreeNode,
-    engine_state_catalog,
+    EngineStateValueType, engine_state_catalog,
 };
 use super::error::ScriptError;
 
@@ -39,6 +39,18 @@ fn collision_error(name: &str) -> ScriptError {
 fn host_error(action: &str, error: impl std::fmt::Display) -> ScriptError {
     ScriptError::InvalidArgument {
         reason: format!("getGameState bridge: {action}: {error}"),
+    }
+}
+
+/// SDK-only state-ref value tag. Consumers project refs to their stable wire
+/// identity through `.slot`, so this metadata never reaches descriptors.
+fn state_ref_kind(value_type: EngineStateValueType<'_>) -> &'static str {
+    match value_type {
+        EngineStateValueType::Number => "number",
+        EngineStateValueType::Boolean => "boolean",
+        EngineStateValueType::String => "string",
+        EngineStateValueType::Enum { .. } => "enum",
+        EngineStateValueType::Array => "array",
     }
 }
 
@@ -92,6 +104,8 @@ fn build_quickjs_object<'js>(
                     .map_err(|e| host_error("failed to allocate QuickJS state leaf", e))?;
                 leaf.set("slot", entry.wire_name)
                     .map_err(|e| host_error("failed to set QuickJS state leaf slot", e))?;
+                leaf.set("kind", state_ref_kind(entry.value_type))
+                    .map_err(|e| host_error("failed to set QuickJS state leaf kind", e))?;
                 freeze_quickjs_object(ctx, &leaf)?;
                 object
                     .set(segment.as_str(), leaf)
@@ -169,6 +183,8 @@ fn build_luau_table(
                     .map_err(|e| host_error("failed to allocate Luau state leaf", e))?;
                 leaf.set("slot", entry.wire_name)
                     .map_err(|e| host_error("failed to set Luau state leaf slot", e))?;
+                leaf.set("kind", state_ref_kind(entry.value_type))
+                    .map_err(|e| host_error("failed to set Luau state leaf kind", e))?;
                 leaf.set_readonly(true);
                 table
                     .set(segment.as_str(), leaf)
@@ -227,6 +243,20 @@ mod tests {
             .collect()
     }
 
+    fn expected_catalog_path_kinds() -> BTreeMap<String, String> {
+        engine_state_catalog()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| {
+                (
+                    entry.sdk_path.join("."),
+                    state_ref_kind(entry.value_type).to_string(),
+                )
+            })
+            .collect()
+    }
+
     fn collect_luau_slots(
         table: mlua::Table,
         prefix: &mut Vec<String>,
@@ -242,6 +272,26 @@ mod tests {
             if let mlua::Value::Table(child) = value {
                 prefix.push(key);
                 collect_luau_slots(child, prefix, out);
+                prefix.pop();
+            }
+        }
+    }
+
+    fn collect_luau_kinds(
+        table: mlua::Table,
+        prefix: &mut Vec<String>,
+        out: &mut BTreeMap<String, String>,
+    ) {
+        if let Ok(kind) = table.get::<String>("kind") {
+            out.insert(prefix.join("."), kind);
+            return;
+        }
+
+        for pair in table.pairs::<String, mlua::Value>() {
+            let (key, value) = pair.unwrap();
+            if let mlua::Value::Table(child) = value {
+                prefix.push(key);
+                collect_luau_kinds(child, prefix, out);
                 prefix.pop();
             }
         }
@@ -286,6 +336,47 @@ mod tests {
         let mut got = BTreeMap::new();
         collect_luau_slots(root, &mut Vec::new(), &mut got);
         assert_eq!(got, expected_catalog_path_slots());
+    }
+
+    #[test]
+    fn quickjs_bridge_stamps_catalog_value_kinds() {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let ctx = rquickjs::Context::full(&runtime).unwrap();
+        ctx.with(|ctx| {
+            install_quickjs_bridge(&ctx).unwrap();
+            let json: String = ctx
+                .eval(
+                    r#"
+                    (() => {
+                      const out = {};
+                      function walk(node, path) {
+                        if (node && typeof node.kind === "string") {
+                          out[path] = node.kind;
+                          return;
+                        }
+                        for (const key of Object.keys(node).sort()) {
+                          walk(node[key], path ? `${path}.${key}` : key);
+                        }
+                      }
+                      walk(globalThis.__postretroGameStateRefs, "");
+                      return JSON.stringify(out);
+                    })()
+                    "#,
+                )
+                .unwrap();
+            let got: BTreeMap<String, String> = serde_json::from_str(&json).unwrap();
+            assert_eq!(got, expected_catalog_path_kinds());
+        });
+    }
+
+    #[test]
+    fn luau_bridge_stamps_catalog_value_kinds() {
+        let lua = mlua::Lua::new();
+        install_luau_bridge(&lua).unwrap();
+        let root: mlua::Table = lua.globals().get(GAME_STATE_BRIDGE_GLOBAL).unwrap();
+        let mut got = BTreeMap::new();
+        collect_luau_kinds(root, &mut Vec::new(), &mut got);
+        assert_eq!(got, expected_catalog_path_kinds());
     }
 
     #[test]

@@ -107,6 +107,7 @@ pub(crate) fn host_drive_demo_mover(
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
     slot_table: &SlotTable,
+    replication_identity: &state_slots::ReplicatedSlotIdentity<'_>,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
     replication: &mut ServerReplication,
@@ -150,13 +151,14 @@ pub(crate) fn host_replicate(
 
     // The replicated-state schema fingerprint is stamped into every snapshot carrying
     // state records so the client gates on a match. Built once from the live slot table.
-    let state_fingerprint = state_slots.fingerprint(slot_table);
+    let state_fingerprint = state_slots.fingerprint(slot_table, replication_identity);
     // Ingest this frame's authoritative source values ONCE before the per-client loop:
     // the scan is frame-wide (every replicated slot, every owned pawn), so running it
     // per client would repeat it O(clients) times. Each client's `produce_for_client`
     // below only reads the now-ingested per-client view.
     let sampled_weapons = state_slots.ingest_frame_and_collect_sampled_weapons(
         slot_table,
+        replication_identity,
         registry,
         owners,
         weapon_owners,
@@ -634,7 +636,8 @@ mod tests {
         let mut seats = SeatTable::from_test_session_id([5; 16]);
         let seat = seats
             .admit_or_reclaim(CLIENT_ID, None, false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
 
         host_handle_accept(
             &mut registry,
@@ -720,7 +723,8 @@ mod tests {
         let mut seats = SeatTable::from_test_session_id([0x71; 16]);
         let seat = seats
             .admit_or_reclaim(ORIGINAL_CLIENT, Some(claim.clone()), false)
-            .expect("seat namespace has room");
+            .expect("seat namespace has room")
+            .seat;
 
         host_handle_accept(
             &mut registry,
@@ -769,7 +773,9 @@ mod tests {
         );
 
         assert_eq!(
-            seats.admit_or_reclaim(REJOINED_CLIENT, Some(claim), false),
+            seats
+                .admit_or_reclaim(REJOINED_CLIENT, Some(claim), false)
+                .map(|admission| admission.seat),
             Some(seat)
         );
         host_handle_accept(

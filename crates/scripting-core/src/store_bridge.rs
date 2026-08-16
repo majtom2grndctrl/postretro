@@ -37,6 +37,8 @@ struct SlotSchemaInput {
     #[serde(default)]
     network: Option<String>,
     #[serde(default)]
+    per_owner: bool,
+    #[serde(default)]
     accumulate: Option<Value>,
 }
 
@@ -62,6 +64,25 @@ pub fn read_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptE
         })
 }
 
+pub fn read_script_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptError> {
+    let table = ctx.slot_table.borrow();
+    let slot = table
+        .get(name)
+        .ok_or_else(|| unknown_slot("storeRead", name))?;
+    if slot.schema.per_owner {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "storeRead: slot `{name}` is per-owner and requires an owner-addressed read"
+            ),
+        });
+    }
+    slot.value
+        .clone()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: format!("storeRead: state slot `{name}` has no current value"),
+        })
+}
+
 pub fn write_script_store_slot(
     ctx: &ScriptCtx,
     name: &str,
@@ -71,6 +92,13 @@ pub fn write_script_store_slot(
     let slot = table
         .get_mut(name)
         .ok_or_else(|| unknown_slot("storeWrite", name))?;
+    if slot.schema.per_owner {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "storeWrite: slot `{name}` is per-owner and requires an owner-addressed write"
+            ),
+        });
+    }
     if slot.schema.readonly {
         log::warn!("[Scripting] storeWrite: rejected write to readonly slot `{name}`");
         return Ok(());
@@ -112,6 +140,13 @@ pub fn write_state_slot_json(
     let slot = table
         .get_mut(name)
         .ok_or_else(|| unknown_slot("setState", name))?;
+    if slot.schema.per_owner {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "setState: slot `{name}` is per-owner and requires an owner-addressed write"
+            ),
+        });
+    }
     if slot.schema.readonly {
         log::warn!("[Scripting] setState: rejected write to readonly slot `{name}`");
         return Ok(());
@@ -326,6 +361,12 @@ fn validate_dense_lua_array(table: &LuaTable, field_name: &str) -> Result<usize,
 }
 
 pub fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
+    if namespace.contains(':') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: namespace `{namespace}` must not contain `:`"),
+        });
+    }
+
     let inputs: BTreeMap<String, SlotSchemaInput> =
         serde_json::from_value(schema).map_err(|error| invalid_schema(None, error))?;
 
@@ -368,6 +409,7 @@ fn validate_slot_schema(
         readonly,
         values,
         network,
+        per_owner,
         accumulate,
     } = input;
 
@@ -375,6 +417,18 @@ fn validate_slot_schema(
         return Err(ScriptError::InvalidArgument {
             reason: format!(
                 "defineStore: slot name `{slot_name}` must not start with reserved `@`"
+            ),
+        });
+    }
+    if slot_name.contains(':') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: slot name `{slot_name}` must not contain `:`"),
+        });
+    }
+    if per_owner && accumulate.is_some() {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` may not declare `perOwner` with `accumulate`"
             ),
         });
     }
@@ -406,7 +460,7 @@ fn validate_slot_schema(
         })
         .transpose()?;
 
-    let network = replication_scope_for(slot_name, network.as_deref())?;
+    let network = replication_scope_for(slot_name, network.as_deref(), per_owner)?;
     let default = default.ok_or_else(|| ScriptError::InvalidArgument {
         reason: format!("defineStore: slot `{slot_name}` requires `default`"),
     })?;
@@ -491,6 +545,7 @@ fn validate_slot_schema(
         readonly,
         ownership: SlotOwnership::Mod,
         network,
+        per_owner,
         accumulate,
     }))
 }
@@ -498,22 +553,27 @@ fn validate_slot_schema(
 fn replication_scope_for(
     slot_name: &str,
     network: Option<&str>,
+    per_owner: bool,
 ) -> Result<ReplicationScope, ScriptError> {
     match network {
         None => Ok(ReplicationScope::None),
-        Some("shared") => Ok(ReplicationScope::SharedGlobal),
+        Some("shared") if !per_owner => Ok(ReplicationScope::SharedGlobal),
+        Some("shared") => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` may not combine `perOwner: true` with `network: \"shared\"`; use `network: \"ownerPrivate\"` or omit `network`"
+            ),
+        }),
+        Some("ownerPrivate") if per_owner => Ok(ReplicationScope::OwnerPrivatePlayer),
         Some("ownerPrivate") => Err(ScriptError::InvalidArgument {
             reason: format!(
-                "defineStore: slot `{slot_name}` `network: \"ownerPrivate\"` is not supported for \
-                 mod stores yet (no per-player authoring namespace exists); use `network: \"shared\"` \
-                 for a server-replicated global slot, or omit `network` for a local-only slot"
+                "defineStore: slot `{slot_name}` `network: \"ownerPrivate\"` requires `perOwner: true`"
             ),
         }),
         Some(other) => Err(ScriptError::InvalidArgument {
             reason: format!(
-                "defineStore: slot `{slot_name}` has unknown `network` value `{other}`; the only \
-                 accepted value is `\"shared\"` (replicate to every connected client), or omit \
-                 `network` for a local-only slot"
+                "defineStore: slot `{slot_name}` has unknown `network` value `{other}`; accepted values \
+                 are `\"shared\"` (replicate to every connected client), `\"ownerPrivate\"` (requires \
+                 `perOwner: true`), or omit `network` for a local-only slot"
             ),
         }),
     }
@@ -797,6 +857,7 @@ mod tests {
             readonly: true,
             ownership: SlotOwnership::Engine,
             network: ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
     }
@@ -843,6 +904,71 @@ mod tests {
     }
 
     #[test]
+    fn write_state_slot_json_rejects_per_owner_slot_without_mutating_scalar_projection() {
+        let ctx = ScriptCtx::new();
+        let mut record = readonly_slot();
+        record.schema.readonly = false;
+        record.schema.per_owner = true;
+        record.value = Some(SlotValue::Number(41.0));
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), record)
+            .expect("test per-owner slot should be vacant");
+
+        let error = write_state_slot_json(&ctx, "currency.xp", &serde_json::json!(99.0))
+            .expect_err("legacy setState must not write a per-owner slot projection");
+
+        assert!(error.to_string().contains("currency.xp"));
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.xp")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(41.0)),
+            "rejected setState must leave the retained scalar projection unchanged"
+        );
+    }
+
+    // Regression: generic storeRead/storeWrite exposed a per-owner slot's scalar projection.
+    #[test]
+    fn generic_script_helpers_reject_per_owner_slot_without_mutating_any_value() {
+        let ctx = ScriptCtx::new();
+        let mut record = readonly_slot();
+        record.schema.readonly = false;
+        record.schema.per_owner = true;
+        record.value = Some(SlotValue::Number(41.0));
+        record.set_per_seat_value(postretro_foundation::Seat(7), SlotValue::Number(73.0));
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".to_string(), record)
+            .expect("test per-owner slot should be vacant");
+
+        let read_error = read_script_store_slot(&ctx, "currency.xp")
+            .expect_err("generic storeRead must require explicit owner addressing");
+        assert_eq!(
+            read_error.to_string(),
+            "invalid argument: storeRead: slot `currency.xp` is per-owner and requires an owner-addressed read"
+        );
+
+        let write_error =
+            write_script_store_slot(&ctx, "currency.xp", ScriptSlotValue::Number(99.0))
+                .expect_err("generic storeWrite must require explicit owner addressing");
+        assert_eq!(
+            write_error.to_string(),
+            "invalid argument: storeWrite: slot `currency.xp` is per-owner and requires an owner-addressed write"
+        );
+
+        let table = ctx.slot_table.borrow();
+        let record = table.get("currency.xp").expect("test slot remains present");
+        assert_eq!(record.value, Some(SlotValue::Number(41.0)));
+        assert_eq!(
+            record.per_seat_value(postretro_foundation::Seat(7)),
+            Some(&SlotValue::Number(73.0)),
+            "rejected generic access must leave authoritative owner storage unchanged"
+        );
+    }
+
+    #[test]
     fn apply_text_edit_returns_success_and_logs_readonly_refusal() {
         let ctx = context_with_readonly_slot();
         let capture = LogCapture::start();
@@ -872,7 +998,8 @@ mod tests {
         assert_eq!(
             declaration.records[0].1.schema.accumulate,
             Some(postretro_foundation::IrNode::Input {
-                name: "@dt".to_string()
+                name: "@dt".to_string(),
+                owner: None,
             })
         );
     }
@@ -904,6 +1031,85 @@ mod tests {
     }
 
     #[test]
+    fn per_owner_declaration_keeps_cardinality_and_replication_independent() {
+        let declaration = store_declaration(
+            "currency",
+            serde_json::json!({
+                "xp": {
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "persist": true,
+                    "network": "ownerPrivate"
+                },
+                "killStreak": { "type": "number", "default": 0, "perOwner": true },
+                "teamKills": { "type": "number", "default": 0, "network": "shared" }
+            }),
+        )
+        .expect("per-owner cardinality is independent from replication scope");
+
+        let schemas: BTreeMap<_, _> = declaration.records.into_iter().collect();
+        assert!(schemas["xp"].schema.per_owner);
+        assert!(schemas["xp"].schema.persist);
+        assert_eq!(
+            schemas["xp"].schema.network,
+            ReplicationScope::OwnerPrivatePlayer
+        );
+        assert!(schemas["killStreak"].schema.per_owner);
+        assert_eq!(schemas["killStreak"].schema.network, ReplicationScope::None);
+        assert!(!schemas["teamKills"].schema.per_owner);
+        assert_eq!(
+            schemas["teamKills"].schema.network,
+            ReplicationScope::SharedGlobal
+        );
+    }
+
+    #[test]
+    fn per_owner_declaration_rejects_incoherent_combinations_with_slot_names() {
+        for (slot, schema, expected) in [
+            (
+                "secret",
+                serde_json::json!({ "type": "number", "default": 0, "network": "ownerPrivate" }),
+                "requires `perOwner: true`",
+            ),
+            (
+                "xp",
+                serde_json::json!({
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "accumulate": { "op": "input", "name": "@dt" }
+                }),
+                "may not declare `perOwner` with `accumulate`",
+            ),
+            (
+                "sharedXp",
+                serde_json::json!({
+                    "type": "number",
+                    "default": 0,
+                    "perOwner": true,
+                    "network": "shared"
+                }),
+                "may not combine `perOwner: true` with `network: \"shared\"`",
+            ),
+        ] {
+            let mut store = serde_json::Map::new();
+            store.insert(slot.to_string(), schema);
+            let error = store_declaration("currency", Value::Object(store))
+                .expect_err("incoherent per-owner declaration must fail");
+            let message = error.to_string();
+            assert!(
+                message.contains(slot),
+                "diagnostic must name `{slot}`: {message}"
+            );
+            assert!(
+                message.contains(expected),
+                "diagnostic must explain the invalid declaration: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn store_declaration_rejects_reserved_slot_name() {
         let error = store_declaration(
             "test",
@@ -911,5 +1117,29 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn store_declaration_rejects_colon_in_slot_name_before_reconciliation() {
+        let error = store_declaration(
+            "test",
+            serde_json::json!({ "bad:name": { "type": "number", "default": 0.0 } }),
+        )
+        .expect_err("descriptor parsing must reject a colon-bearing slot name");
+
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+        assert!(error.to_string().contains("bad:name"));
+    }
+
+    #[test]
+    fn store_declaration_rejects_colon_in_namespace_before_reconciliation() {
+        let error = store_declaration(
+            "bad:namespace",
+            serde_json::json!({ "value": { "type": "number", "default": 0.0 } }),
+        )
+        .expect_err("descriptor parsing must reject a colon-bearing namespace");
+
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
+        assert!(error.to_string().contains("bad:namespace"));
     }
 }

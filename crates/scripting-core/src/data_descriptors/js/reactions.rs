@@ -169,7 +169,7 @@ pub fn primitive_descriptor_from_js<'js>(
         serde_json::Value::Object(Default::default())
     };
 
-    validate_grant_reaction(&primitive, tag.as_deref(), target.as_deref(), &args)?;
+    validate_consequential_reaction(&primitive, tag.as_deref(), target.as_deref(), &args)?;
 
     Ok(PrimitiveDescriptor {
         primitive,
@@ -180,17 +180,16 @@ pub fn primitive_descriptor_from_js<'js>(
     })
 }
 
-/// Grant reactions are the only primitive descriptors whose payload is a
-/// fixed author-time literal rather than free-form JSON. Keep this validation
-/// in the VM converter so a malformed setup descriptor cannot reach a
-/// reaction handler or a fixed-tick trigger binding.
-fn validate_grant_reaction(
+/// Resource grants and owner-slot additions carry fixed author-time payloads.
+/// Keep this validation in the VM converter so a malformed setup descriptor
+/// cannot reach a reaction handler or a fixed-tick trigger binding.
+fn validate_consequential_reaction(
     primitive: &str,
     tag: Option<&str>,
     target: Option<&str>,
     args: &serde_json::Value,
 ) -> Result<(), DescriptorError> {
-    if !matches!(primitive, "grantHealth" | "grantAmmo") {
+    if !matches!(primitive, "grantHealth" | "grantAmmo" | "addSlot") {
         return Ok(());
     }
 
@@ -211,6 +210,30 @@ fn validate_grant_reaction(
         .ok_or_else(|| DescriptorError::InvalidShape {
             reason: format!("primitive `{primitive}` `args` must be an object"),
         })?;
+    if primitive == "addSlot" {
+        if object
+            .get("slot")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: "primitive `addSlot` `args.slot` must be a string".to_string(),
+            });
+        }
+        let Some(delta) = object.get("delta").and_then(serde_json::Value::as_f64) else {
+            return Err(DescriptorError::InvalidShape {
+                reason: "primitive `addSlot` `args.delta` must be a finite number".to_string(),
+            });
+        };
+        if !delta.is_finite() || !(delta as f32).is_finite() {
+            return Err(DescriptorError::InvalidShape {
+                reason:
+                    "primitive `addSlot` `args.delta` must be a finite number representable as f32"
+                        .to_string(),
+            });
+        }
+        return Ok(());
+    }
     let Some(amount) = object.get("amount").and_then(serde_json::Value::as_f64) else {
         return Err(DescriptorError::InvalidShape {
             reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),

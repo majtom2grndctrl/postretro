@@ -164,6 +164,7 @@ mod tests {
                 momentum_retention: NumberOrIr::Ir(postretro_foundation::ir::IrNode::Clamp {
                     x: Box::new(postretro_foundation::ir::IrNode::Input {
                         name: "movement.speed".to_string(),
+                        owner: None,
                     }),
                     lo: Box::new(postretro_foundation::ir::IrNode::Const {
                         value: postretro_foundation::ir::IrValue::Number(0.0),

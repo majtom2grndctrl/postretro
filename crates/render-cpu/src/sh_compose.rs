@@ -3,9 +3,12 @@
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR, DeltaShVolumesSection, delta_probe_f16_stride,
+    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL, delta_probe_f16_stride,
 };
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
+use postretro_level_format::sh_reconstruct::{
+    Level, kept_mask, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles,
+};
 
 const COMPOSE_GRID_DIMS_SIZE: usize = 64;
 
@@ -80,6 +83,9 @@ pub struct DeltaComposeBuffers {
     pub animation_descriptor_indices: Vec<u32>,
     /// One id-34-cross-checked valid-probe descriptor per affinity cell.
     pub valid_probe_masks: Vec<u64>,
+    /// Per-affinity-cell delta coarsening level (0/1/2). Governs which valid
+    /// probes are kept (stored) versus reconstructed intra-brick.
+    pub cell_levels: Vec<u8>,
     /// Base f16-half offset for every post-drop CSR entry. Unlike
     /// `affinity_offsets`, this is indexed by entry rather than cell.
     pub entry_offsets: Vec<u32>,
@@ -88,17 +94,19 @@ pub struct DeltaComposeBuffers {
 
 impl DeltaComposeBuffers {
     /// Pack the id-27 descriptor and post-drop entry offset table into one
-    /// storage-buffer word stream: low/high words per cell mask, followed by
-    /// one f16-half offset per CSR entry. The compose shader derives the split
-    /// from `grid.affinity_dims`, so this contains no separately mutable length
-    /// field.
+    /// storage-buffer word stream: low/high words per cell validity mask, one
+    /// widened coarsening level per cell, then one f16-half offset per CSR
+    /// entry. The indirect and animated-direct compose shaders derive both
+    /// splits from `grid.affinity_dims`, so this contains no separately mutable
+    /// length field.
     pub fn compaction_meta_words(&self) -> Vec<u32> {
         let mut words =
-            Vec::with_capacity(self.valid_probe_masks.len() * 2 + self.entry_offsets.len());
+            Vec::with_capacity(self.valid_probe_masks.len() * 3 + self.entry_offsets.len());
         for &mask in &self.valid_probe_masks {
             words.push(mask as u32);
             words.push((mask >> 32) as u32);
         }
+        words.extend(self.cell_levels.iter().map(|&level| u32::from(level)));
         words.extend_from_slice(&self.entry_offsets);
         words
     }
@@ -111,6 +119,9 @@ pub struct DirectDeltaComposeBuffers {
     pub affinity_lights: Vec<u32>,
     /// One id-34-cross-checked valid-probe descriptor per affinity cell.
     pub valid_probe_masks: Vec<u64>,
+    /// Per-affinity-cell delta coarsening level (0/1/2). Governs which valid
+    /// probes are kept (stored) versus reconstructed intra-brick.
+    pub cell_levels: Vec<u8>,
     /// Base f16-half offset for every post-drop CSR entry. Unlike
     /// `affinity_offsets`, this is indexed by entry rather than cell.
     pub entry_offsets: Vec<u32>,
@@ -119,17 +130,19 @@ pub struct DirectDeltaComposeBuffers {
 
 impl DirectDeltaComposeBuffers {
     /// Pack the id-41 descriptor and post-drop entry offset table into one
-    /// storage-buffer word stream: low/high words per cell mask, followed by
-    /// one f16-half offset per CSR entry. The direct compose shader derives the
-    /// split from `grid.affinity_dims`, so this contains no separately mutable
-    /// length field.
+    /// storage-buffer word stream: low/high words per cell validity mask, one
+    /// widened coarsening level per cell, then one f16-half offset per CSR
+    /// entry. The direct compose shader derives both splits from
+    /// `grid.affinity_dims`, so this contains no separately mutable length
+    /// field.
     pub fn compaction_meta_words(&self) -> Vec<u32> {
         let mut words =
-            Vec::with_capacity(self.valid_probe_masks.len() * 2 + self.entry_offsets.len());
+            Vec::with_capacity(self.valid_probe_masks.len() * 3 + self.entry_offsets.len());
         for &mask in &self.valid_probe_masks {
             words.push(mask as u32);
             words.push((mask >> 32) as u32);
         }
+        words.extend(self.cell_levels.iter().map(|&level| u32::from(level)));
         words.extend_from_slice(&self.entry_offsets);
         words
     }
@@ -290,6 +303,7 @@ pub fn build_delta_buffers(
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
+            cell_levels: vec![0; affinity_cell_count(affinity_dims)],
             entry_offsets: Vec::new(),
             affinity_dims,
         };
@@ -301,10 +315,12 @@ pub fn build_delta_buffers(
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
+        cell_levels: delta.cell_levels.clone(),
         entry_offsets: delta_entry_offsets(
             delta.affinity_cell_count(),
             &delta.affinity_offsets,
             &delta.valid_probe_masks,
+            &delta.cell_levels,
             delta.delta_probe_f16_stride(),
             delta.delta_subblocks.len(),
             "indirect SH delta",
@@ -324,6 +340,7 @@ pub fn build_direct_delta_buffers(
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
+            cell_levels: vec![0; affinity_cell_count(affinity_dims)],
             entry_offsets: Vec::new(),
             affinity_dims,
         };
@@ -333,10 +350,12 @@ pub fn build_direct_delta_buffers(
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
+        cell_levels: delta.cell_levels.clone(),
         entry_offsets: delta_entry_offsets(
             delta.affinity_cell_count(),
             &delta.affinity_offsets,
             &delta.valid_probe_masks,
+            &delta.cell_levels,
             delta.delta_probe_f16_stride(),
             delta.delta_subblocks.len(),
             "direct SH delta",
@@ -349,6 +368,7 @@ fn delta_entry_offsets(
     affinity_cell_count: usize,
     affinity_offsets: &[u32],
     valid_probe_masks: &[u64],
+    cell_levels: &[u8],
     delta_probe_f16_stride: usize,
     payload_len: usize,
     label: &str,
@@ -360,8 +380,10 @@ fn delta_entry_offsets(
     let mut next_offset = 0u32;
     for cell in 0..affinity_cell_count {
         let entry_count = affinity_offsets[cell + 1] - affinity_offsets[cell];
-        let cell_f16_len = valid_probe_masks[cell]
-            .count_ones()
+        let level = Level::from_u8(cell_levels[cell])
+            .unwrap_or_else(|| panic!("{label} cell {cell} coarsening level must be 0..=2"));
+        let kept_tiles = stored_delta_tiles(level, valid_probe_masks[cell]) as u32;
+        let cell_f16_len = kept_tiles
             .checked_mul(stride)
             .unwrap_or_else(|| panic!("{label} compact cell length must fit shader u32 indexing"));
         for _ in 0..entry_count {
@@ -384,6 +406,7 @@ fn delta_entry_offsets(
 /// compose shader must skip before reading any delta words.
 pub fn resolve_direct_delta_f16_offset(
     valid_probe_masks: &[u64],
+    cell_levels: &[u8],
     entry_offsets: &[u32],
     entry: usize,
     cell: usize,
@@ -392,6 +415,7 @@ pub fn resolve_direct_delta_f16_offset(
 ) -> Option<u32> {
     resolve_delta_f16_offset(
         valid_probe_masks,
+        cell_levels,
         entry_offsets,
         entry,
         cell,
@@ -405,6 +429,7 @@ pub fn resolve_direct_delta_f16_offset(
 /// invalid local before calling its compact payload reader.
 pub fn resolve_animated_direct_delta_f16_offset(
     valid_probe_masks: &[u64],
+    cell_levels: &[u8],
     entry_offsets: &[u32],
     entry: usize,
     cell: usize,
@@ -413,6 +438,7 @@ pub fn resolve_animated_direct_delta_f16_offset(
 ) -> Option<u32> {
     resolve_delta_f16_offset(
         valid_probe_masks,
+        cell_levels,
         entry_offsets,
         entry,
         cell,
@@ -422,11 +448,15 @@ pub fn resolve_animated_direct_delta_f16_offset(
 }
 
 /// Resolve a compact delta tile's f16-half offset from its post-drop CSR entry
-/// and affinity-local probe. `None` is the invalid-local result; the direct
-/// compose shader must skip before reading, while indirect compose is already
-/// protected by the base probe-indirection invalid sentinel.
+/// and affinity-local probe. Under coarsening the payload holds one tile per
+/// KEPT probe, so this ranks the local within `kept_mask(level, mask)` rather
+/// than raw validity. `None` is returned when the probe's KEPT bit is clear —
+/// covering both invalid probes and dropped-valid ones (which are reconstructed
+/// via [`reconstruct_delta_probe_tile`], not read directly). Behavior-preserving
+/// at L0, where `kept_mask == mask`.
 pub fn resolve_delta_f16_offset(
     valid_probe_masks: &[u64],
+    cell_levels: &[u8],
     entry_offsets: &[u32],
     entry: usize,
     cell: usize,
@@ -437,13 +467,105 @@ pub fn resolve_delta_f16_offset(
         return None;
     }
     let mask = *valid_probe_masks.get(cell)?;
-    if mask & (1u64 << local_probe) == 0 {
+    let level = Level::from_u8(*cell_levels.get(cell)?)?;
+    let kept = kept_mask(level, mask);
+    if kept & (1u64 << local_probe) == 0 {
         return None;
     }
-    let rank = (mask & ((1u64 << local_probe) - 1)).count_ones();
+    let kept_rank = (kept & ((1u64 << local_probe) - 1)).count_ones();
     entry_offsets
         .get(entry)?
-        .checked_add(rank.checked_mul(tile_f16_stride)?)
+        .checked_add(kept_rank.checked_mul(tile_f16_stride)?)
+}
+
+/// Immutable section data used to reconstruct one or more delta probe tiles.
+#[derive(Clone, Copy, Debug)]
+pub struct DeltaProbeReconstructionContext<'a> {
+    pub valid_probe_masks: &'a [u64],
+    pub cell_levels: &'a [u8],
+    /// Kept-rank base offsets produced by `delta_entry_offsets`.
+    pub entry_offsets: &'a [u32],
+    /// Packed f16 RGBA payload. Reconstruction reads RGB; alpha is unused.
+    pub delta_subblocks: &'a [u16],
+    /// Interior RGB texel count per tile.
+    pub tile_texels: usize,
+    /// f16 stride per probe tile (`tile_texels * 4` for RGBA16F).
+    pub tile_f16_stride: u32,
+}
+
+/// Reconstruct the composed delta tile for one probe from a (possibly coarsened)
+/// delta section, intra-brick. Three states:
+///  - invalid       (validity bit clear)  -> None (skip)
+///  - kept          (kept_mask bit set)    -> the stored tile, read by kept rank
+///  - dropped-valid (valid but not kept)   -> reconstructed: L1 = intra-brick
+///    trilinear over the brick's kept corners; L2 = the single kept brick-mean tile
+///
+/// `valid_probe_masks` is the section's full per-cell validity, with semantics
+/// identical for id 27/41/45 — the delta-SH, direct-delta, and animated-direct
+/// sections all validate probes through this mask (id 41/45 need no separate
+/// `probe_indirection`). This CPU reference is the AC-3 golden the WGSL compose
+/// port must match.
+pub fn reconstruct_delta_probe_tile(
+    context: &DeltaProbeReconstructionContext<'_>,
+    entry: usize,
+    cell: usize,
+    local_probe: u32,
+) -> Option<Vec<glam::Vec3>> {
+    if local_probe >= PROBES_PER_CELL as u32 {
+        return None;
+    }
+    let level = Level::from_u8(*context.cell_levels.get(cell)?)?;
+    let mask = *context.valid_probe_masks.get(cell)?;
+    let local_bit = 1u64 << local_probe;
+    if mask & local_bit == 0 {
+        return None; // invalid probe
+    }
+    let kept = kept_mask(level, mask);
+    let entry_base = *context.entry_offsets.get(entry)?;
+
+    // Read `tile_texels` RGB texels from the f16 payload at the given kept rank,
+    // taking the R,G,B of each 4-f16 (RGBA) texel.
+    let decode = |kept_rank: u32| -> Vec<glam::Vec3> {
+        let base = (entry_base + kept_rank * context.tile_f16_stride) as usize;
+        (0..context.tile_texels)
+            .map(|t| {
+                let i = base + t * 4;
+                glam::Vec3::new(
+                    f16_bits_to_f32(context.delta_subblocks[i]),
+                    f16_bits_to_f32(context.delta_subblocks[i + 1]),
+                    f16_bits_to_f32(context.delta_subblocks[i + 2]),
+                )
+            })
+            .collect()
+    };
+
+    if kept & local_bit != 0 {
+        // Kept (also the whole of L0): read the stored tile by kept rank.
+        let kept_rank = (kept & (local_bit - 1)).count_ones();
+        return Some(decode(kept_rank));
+    }
+
+    // Dropped-valid: gather the brick's kept tiles into a local lattice and
+    // reconstruct intra-brick.
+    let mut kept_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+    let mut remaining = kept;
+    while remaining != 0 {
+        let k = remaining.trailing_zeros();
+        let kept_rank = (kept & ((1u64 << k) - 1)).count_ones();
+        kept_tiles[k as usize] = Some(decode(kept_rank));
+        remaining &= remaining - 1;
+    }
+
+    match level {
+        Level::L1 => reconstruct_l1_tile(&kept_tiles, local_probe as usize, context.tile_texels),
+        Level::L2 => reconstruct_l2_tile(&kept_tiles, context.tile_texels),
+        // L0 has no dropped-valid probes (kept == valid), so this is unreachable;
+        // treat defensively as the stored tile.
+        Level::L0 => {
+            let kept_rank = (kept & (local_bit - 1)).count_ones();
+            Some(decode(kept_rank))
+        }
+    }
 }
 
 pub fn build_animated_direct_delta_buffers(
@@ -459,6 +581,7 @@ pub fn build_animated_direct_delta_buffers(
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
+            cell_levels: vec![0; affinity_cell_count(affinity_dims)],
             entry_offsets: Vec::new(),
             affinity_dims,
         };
@@ -470,10 +593,12 @@ pub fn build_animated_direct_delta_buffers(
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
+        cell_levels: delta.cell_levels.clone(),
         entry_offsets: delta_entry_offsets(
             delta.affinity_cell_count(),
             &delta.affinity_offsets,
             &delta.valid_probe_masks,
+            &delta.cell_levels,
             delta.delta_probe_f16_stride(),
             delta.delta_subblocks.len(),
             "animated direct SH delta",
@@ -619,6 +744,7 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![4, u32::MAX],
             valid_probe_masks: vec![u64::MAX; 3],
+            cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks: subblocks.clone(),
@@ -646,8 +772,32 @@ mod tests {
                 u32::MAX,
                 u32::MAX,
                 0,
+                0,
+                0,
+                0,
                 (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32,
             ]
+        );
+    }
+
+    #[test]
+    fn delta_compaction_meta_places_cell_levels_before_entry_offsets() {
+        let buffers = DeltaComposeBuffers {
+            animated_light_count: 0,
+            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 1],
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
+            cell_levels: vec![1, 2],
+            entry_offsets: vec![144, 180],
+            affinity_dims: [2, 1, 1],
+        };
+
+        assert_eq!(
+            buffers.compaction_meta_words(),
+            vec![0x0000_9009, 0, 0, 0x9009_0000, 1, 2, 144, 180,],
+            "id-27/id-45 shaders derive their entry-offset base after two mask words and one level word per cell",
         );
     }
 
@@ -663,6 +813,7 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0, 1, 2],
             valid_probe_masks: vec![mixed, 0, tail],
+            cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 2, 3],
             affinity_lights: vec![0, 1, 2],
             delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -673,6 +824,7 @@ mod tests {
         assert_eq!(
             resolve_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 0,
                 0,
@@ -685,6 +837,7 @@ mod tests {
         assert_eq!(
             resolve_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 1,
                 1,
@@ -697,6 +850,7 @@ mod tests {
         assert_eq!(
             resolve_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 2,
                 2,
@@ -729,6 +883,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             valid_probe_masks: vec![u64::MAX; 3],
+            cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks: subblocks.clone(),
@@ -754,8 +909,30 @@ mod tests {
                 u32::MAX,
                 u32::MAX,
                 0,
+                0,
+                0,
+                0,
                 (PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE) as u32,
             ]
+        );
+    }
+
+    #[test]
+    fn direct_delta_compaction_meta_places_cell_levels_before_entry_offsets() {
+        let buffers = DirectDeltaComposeBuffers {
+            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 1],
+            valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
+            cell_levels: vec![1, 2],
+            entry_offsets: vec![144, 180],
+            affinity_dims: [2, 1, 1],
+        };
+
+        assert_eq!(
+            buffers.compaction_meta_words(),
+            vec![0x0000_9009, 0, 0, 0x9009_0000, 1, 2, 144, 180],
+            "id-41 derives its entry-offset base after two mask words and one level word per cell",
         );
     }
 
@@ -770,6 +947,7 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             valid_probe_masks: vec![mixed, 0, tail],
+            cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 2, 3],
             affinity_lights: vec![0, 1, 2],
             delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -780,6 +958,7 @@ mod tests {
         assert_eq!(
             resolve_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 0,
                 0,
@@ -792,6 +971,7 @@ mod tests {
         assert_eq!(
             resolve_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 1,
                 1,
@@ -804,6 +984,7 @@ mod tests {
         assert_eq!(
             resolve_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 2,
                 2,
@@ -816,6 +997,7 @@ mod tests {
         assert_eq!(
             resolve_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 0,
                 0,
@@ -837,6 +1019,7 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![7],
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: subblocks.clone(),
@@ -850,8 +1033,8 @@ mod tests {
         assert_eq!(buffers.entry_offsets, vec![0]);
         assert_eq!(
             buffers.compaction_meta_words(),
-            vec![u32::MAX, u32::MAX, 0],
-            "the animated pass receives mask words followed by post-drop f16 offsets"
+            vec![u32::MAX, u32::MAX, 0, 0],
+            "the animated pass receives mask words and a cell level before post-drop f16 offsets"
         );
     }
 
@@ -867,6 +1050,7 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0, 1, 2],
             valid_probe_masks: vec![mixed, 0, tail],
+            cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 2, 3],
             affinity_lights: vec![0, 1, 2],
             delta_subblocks: vec![0; 5 * DEFAULT_DELTA_PROBE_F16_STRIDE],
@@ -877,6 +1061,7 @@ mod tests {
         assert_eq!(
             resolve_animated_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 0,
                 0,
@@ -889,6 +1074,7 @@ mod tests {
         assert_eq!(
             resolve_animated_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 1,
                 1,
@@ -901,6 +1087,7 @@ mod tests {
         assert_eq!(
             resolve_animated_direct_delta_f16_offset(
                 &buffers.valid_probe_masks,
+                &buffers.cell_levels,
                 &buffers.entry_offsets,
                 2,
                 2,
@@ -985,6 +1172,156 @@ mod tests {
         assert_scale(animated_light_scale(Some(settled), 2.0), [1.5, 0.75, 0.375]);
         assert_scale(animated_light_scale(None, 2.0), [0.0; 3]);
         assert_scale(animated_light_scale(Some(authored), 0.0), [2.0, 1.0, 0.5]);
+    }
+
+    // The reconstruction reference below takes the section's raw arrays
+    // (`valid_probe_masks` + `cell_levels` + offsets + payload), so a single test
+    // set covers id 27/41/45: the direct (41) and animated-direct (45) sections
+    // prove probe validity through `valid_probe_masks` exactly as the indirect
+    // (27) section does — no `probe_indirection` is consulted (AC 4).
+
+    #[test]
+    fn reconstruct_l1_dropped_valid_probe_is_intra_brick_trilinear() {
+        let corners = [0usize, 3, 12, 15, 48, 51, 60, 63];
+        let interior = 21usize; // (1,1,1), a valid non-corner probe
+        let mut mask = 1u64 << interior;
+        for &c in &corners {
+            mask |= 1u64 << c;
+        }
+        let valid_probe_masks = vec![mask];
+        let cell_levels = vec![Level::L1.to_u8()];
+        let tile_texels = 1usize;
+        let stride = (tile_texels * 4) as u32;
+
+        // Kept = the 8 corners. Store one RGBA texel per kept tile in kept-rank
+        // (ascending local) order, value = 10 + lx*2 splatted across RGB.
+        let kept = kept_mask(Level::L1, mask);
+        let mut delta_subblocks = Vec::new();
+        let mut remaining = kept;
+        while remaining != 0 {
+            let k = remaining.trailing_zeros() as usize;
+            let lx = k % 4;
+            let bits = f32_to_f16_bits(10.0 + lx as f32 * 2.0);
+            delta_subblocks.extend_from_slice(&[bits, bits, bits, 0]);
+            remaining &= remaining - 1;
+        }
+        let entry_offsets = vec![0u32];
+        let context = DeltaProbeReconstructionContext {
+            valid_probe_masks: &valid_probe_masks,
+            cell_levels: &cell_levels,
+            entry_offsets: &entry_offsets,
+            delta_subblocks: &delta_subblocks,
+            tile_texels,
+            tile_f16_stride: stride,
+        };
+
+        // Dropped interior local (1,1,1): trilinear over the linear-x ramp -> 12.
+        let recon = reconstruct_delta_probe_tile(&context, 0, 0, interior as u32)
+            .expect("dropped interior local reconstructs");
+        assert!(
+            (recon[0].x - 12.0).abs() < 1e-2,
+            "trilinear ramp at (1,1,1) must be 12, got {}",
+            recon[0].x
+        );
+
+        // A kept corner reads its stored value (local 3 -> lx 3 -> 16).
+        let corner =
+            reconstruct_delta_probe_tile(&context, 0, 0, 3).expect("kept corner reads stored tile");
+        assert!(
+            (corner[0].x - 16.0).abs() < 1e-2,
+            "kept corner local 3 stores 16, got {}",
+            corner[0].x
+        );
+
+        // An invalid local (validity clear) returns None.
+        assert!(
+            reconstruct_delta_probe_tile(&context, 0, 0, 1).is_none(),
+            "an invalid local reconstructs to None"
+        );
+    }
+
+    #[test]
+    fn reconstruct_l2_dropped_valid_probe_returns_brick_mean() {
+        let valid_probe_masks = vec![0b1111u64]; // locals 0..3 valid
+        let cell_levels = vec![Level::L2.to_u8()];
+        let tile_texels = 1usize;
+        let stride = (tile_texels * 4) as u32;
+        let mean = 42.0f32;
+        let bits = f32_to_f16_bits(mean);
+        // Kept = the single lowest bit (local 0) holding the brick-mean tile.
+        let delta_subblocks = vec![bits, bits, bits, 0];
+        let entry_offsets = vec![0u32];
+        let context = DeltaProbeReconstructionContext {
+            valid_probe_masks: &valid_probe_masks,
+            cell_levels: &cell_levels,
+            entry_offsets: &entry_offsets,
+            delta_subblocks: &delta_subblocks,
+            tile_texels,
+            tile_f16_stride: stride,
+        };
+
+        // A dropped-valid local returns the brick mean.
+        let dropped = reconstruct_delta_probe_tile(&context, 0, 0, 1)
+            .expect("dropped-valid returns the brick mean");
+        assert!((dropped[0].x - mean).abs() < 1e-2);
+
+        // The kept representative (local 0) reads the stored mean directly.
+        let rep = reconstruct_delta_probe_tile(&context, 0, 0, 0)
+            .expect("kept representative reads the stored mean tile");
+        assert!((rep[0].x - mean).abs() < 1e-2);
+
+        // An invalid local returns None.
+        assert!(
+            reconstruct_delta_probe_tile(&context, 0, 0, 4).is_none(),
+            "an invalid local reconstructs to None"
+        );
+    }
+
+    #[test]
+    fn kept_rank_offsets_mix_l0_and_l1_cells() {
+        let stride = 4u32;
+        // Cell 0 (L0): locals 0 and 2 valid -> 2 kept tiles.
+        let mask0 = 0b101u64;
+        // Cell 1 (L1): all 8 corners valid plus non-corner local 1 -> 8 kept.
+        let corners = [0u64, 3, 12, 15, 48, 51, 60, 63];
+        let mut mask1 = 1u64 << 1;
+        for c in corners {
+            mask1 |= 1u64 << c;
+        }
+        let valid_probe_masks = vec![mask0, mask1];
+        let cell_levels = vec![Level::L0.to_u8(), Level::L1.to_u8()];
+        let affinity_offsets = vec![0u32, 1, 2];
+        // payload = kept(cell0)=2 + kept(cell1)=8 -> 10 tiles.
+        let payload_len = 10 * stride as usize;
+
+        let offsets = delta_entry_offsets(
+            2,
+            &affinity_offsets,
+            &valid_probe_masks,
+            &cell_levels,
+            stride as usize,
+            payload_len,
+            "mixed level test",
+        );
+        // The L1 cell's entry base advances by cell 0's KEPT-tile count (2), not
+        // its full validity popcount.
+        assert_eq!(offsets, vec![0, 2 * stride]);
+
+        // L0 rank in cell 0: local 2 is kept rank 1.
+        assert_eq!(
+            resolve_delta_f16_offset(&valid_probe_masks, &cell_levels, &offsets, 0, 0, 2, stride),
+            Some(stride),
+        );
+        // L1 kept corner local 3 is kept rank 1 within its own cell's base.
+        assert_eq!(
+            resolve_delta_f16_offset(&valid_probe_masks, &cell_levels, &offsets, 1, 1, 3, stride),
+            Some(2 * stride + stride),
+        );
+        // A dropped-valid non-corner (local 1) has its kept bit clear -> None.
+        assert_eq!(
+            resolve_delta_f16_offset(&valid_probe_masks, &cell_levels, &offsets, 1, 1, 1, stride),
+            None,
+        );
     }
 
     #[test]

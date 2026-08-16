@@ -172,7 +172,7 @@ to reach you.
   `defineImpactEvent` registered from `start-script.ts`. `target_dummy` is
   exclusive to combat-demo, so it works when the map is opened from the catalog
   or directly by CLI while still composing with the level-local progress reactions.
-  Its `dev:ammo-on-kill` policy is reference content: it pays the damager 8
+  Its `ammo-on-kill` policy is reference content: it pays the damager 8
   `shells.buck` on a dummy kill edge, but a mod replaces the policy wholesale.
 - `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
@@ -209,6 +209,12 @@ cargo run -p postretro -- content/dev/maps/combat-demo.prl
 
 The descriptor → `components.health` → model-authored hit-zone capsules → spawn → hitscan target →
 `apply_damage` chokepoint → mod-global impact policy → authored lifecycle, end to end:
+
+- **Presentation fixture.** The dev mod globally registers floating damage
+  numbers and a recently-damaged enemy health bar. Every hit on these dummies
+  exercises the same `present()` and `damagedEnemies()` declarations used by
+  any other dev map with the shared dummy/enemy impact policies. Damage
+  numbers rise from the hit target; the bar lingers above it after a hit.
 
 - The shot counts below assume a point-blank torso shot at **1 m or closer**.
   At that distance the 4° cone keeps every pellet within 7 cm of the aim ray, so
@@ -276,7 +282,7 @@ policies; they exercise two distinct recipient paths.
 
 1. **Kill payout — impact source.** At the point-blank distance above, shoot a
    `target_dummy` twice with the reference shotgun. The second full-connect shell
-   crosses from positive health to below zero, so `dev:ammo-on-kill` grants the
+   crosses from positive health to below zero, so `ammo-on-kill` grants the
    damager **8 `shells.buck`**. This is a kill edge, not a corpse-hit level gate.
    `combatDummyLifecycle` resurrects a merely downed dummy after three seconds,
    so downing it again earns another 8-ammo payout. A third full-connect shell
@@ -290,6 +296,16 @@ policies; they exercise two distinct recipient paths.
    combat. The touch volume uses `fire_mode: multiple` with a 3-second rearm and
    deliberately never self-disarms in v1, so leave it, wait three seconds, and
    enter again for another volume payout.
+
+3. **Per-player XP alongside a shared team count.** Every dummy kill also awards
+   **10 XP** to its damage source and increments the shared `teamKills` counter.
+   In a two-client session, have each player kill a different number of dummies:
+   each HUD shows only that player's XP, so the XP readouts diverge, while the
+   shared team-kill count agrees for both clients. They are the same reward policy;
+   the declaration and `.byPlayer(impact.source)` address make XP per-player,
+   while the plain `teamKills` update remains one session pot. XP persists across
+   sessions and travels with its player to a new host through the join seed;
+   `teamKills` remains session-scoped.
 
 ## Why the chain is `progress → named event → applyDamage`, not a simpler trigger
 

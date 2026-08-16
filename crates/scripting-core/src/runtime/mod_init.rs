@@ -109,10 +109,34 @@ impl ScriptRuntime {
             #[cfg(debug_assertions)]
             {
                 log::info!(
-                    "[Mod-init] no start-script at `{}` — skipping (debug)",
+                    "[Mod-init] no start-script at `{}` — committing empty snapshot (debug)",
                     mod_root.display(),
                 );
+                let empty_declarations = crate::slot_table::StoreDeclarationSet::default();
+                let validated_identity = if self.cfg.skip_identity_enforcement {
+                    None
+                } else {
+                    let validated = crate::store_identity::read_and_validate_attempt(
+                        mod_root,
+                        &empty_declarations,
+                        &self.script_ctx.slot_table.borrow(),
+                        self.store_identity.as_ref(),
+                    )
+                    .map_err(|error| ScriptError::InvalidArgument {
+                        reason: format!("mod-init: state-store identity rejected: {error}"),
+                    })?;
+                    for warning in &validated.warnings {
+                        log::warn!("[Scripting] {warning}");
+                    }
+                    Some(validated)
+                };
+
+                // A successful absent-script result is an empty declaration
+                // commit. The add-only live table stays intact, while durable
+                // consumers stop treating retained slots as current content.
                 self.mod_manifest = None;
+                self.committed_store_slots.clear();
+                self.store_identity = validated_identity.and_then(|validated| validated.ledger);
                 return Ok(());
             }
             #[cfg(not(debug_assertions))]
@@ -154,10 +178,40 @@ impl ScriptRuntime {
             .map_err(|error| ScriptError::InvalidArgument {
                 reason: format!("mod-init: state-store declarations rejected: {error}"),
             })?;
+
+        // Identity validation joins the same whole-attempt gate as schema
+        // reconciliation. Nothing below this point mutates the live table.
+        let validated_identity = if self.cfg.skip_identity_enforcement {
+            None
+        } else {
+            let validated = crate::store_identity::read_and_validate_attempt(
+                mod_root,
+                &manifest.store_declarations,
+                &self.script_ctx.slot_table.borrow(),
+                self.store_identity.as_ref(),
+            )
+            .map_err(|error| ScriptError::InvalidArgument {
+                reason: format!("mod-init: state-store identity rejected: {error}"),
+            })?;
+            for warning in &validated.warnings {
+                log::warn!("[Scripting] {warning}");
+            }
+            Some(validated)
+        };
         self.script_ctx
             .slot_table
             .borrow_mut()
             .apply_reconcile_plan(store_plan);
+        if self.cfg.skip_identity_enforcement {
+            self.store_identity = None;
+        } else if let Some(validated) = validated_identity {
+            // A successful authoring attempt with no ledger is the explicit
+            // discard state. Replace rather than merge so the old snapshot
+            // cannot keep saving a live-but-removed declaration.
+            self.store_identity = validated.ledger;
+        }
+        self.committed_store_slots =
+            crate::store_identity::declaration_slot_names(&manifest.store_declarations);
 
         log::info!("[Mod-init] mod `{}` initialized", manifest.name);
         self.mod_manifest = Some(manifest);

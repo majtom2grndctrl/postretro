@@ -1,16 +1,27 @@
 // Runtime-owned impact-policy binding and per-fire evaluation.
 // See: context/lib/scripting.md (Impact-policy composition and evaluation).
 
-use postretro_entities::ScriptCtx;
 use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
+use postretro_entities::{
+    EntityId, EntityRegistry, PresentationFact, PresentationFade, PresentationMotion,
+    PresentationPresenter, PresentationSpawn, PresentationTemplateHandle, ScriptCtx, SlotValue,
+    Transform,
+};
 use postretro_foundation::ir::{
-    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
+    BakedIr, BindingScope, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue,
+    ResolvedInput, ResolvedOutput, bind, eval_value,
 };
 use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
+use postretro_scripting_core::data_descriptors::{
+    DamagedEnemiesOverlay, PresentationOverlay, PresentationOverlaySource, PresentationTemplate,
+    PresentationWorldAnchor,
+};
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
+use postretro_scripting_core::store_bridge::validate_slot_value;
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
@@ -23,13 +34,53 @@ use crate::impact_effects::{ImpactEffect, apply_effect};
 /// impact fire observes exactly one state/store/fact snapshot.
 pub(crate) struct ImpactPolicyRuntime {
     ctx: ScriptCtx,
+    /// Process-scoped mod identity. Impact descriptors retain their authored
+    /// ids on the wire; this is only the internal composition/logging prefix.
+    mod_id: Option<String>,
     global_events: Vec<ImpactEventDescriptor>,
+    presentation_templates: HashMap<String, PresentationTemplate>,
+    presentation_overlays: Vec<BoundPresentationOverlay>,
+    /// Dispatch-driven tracking input. This is populated at the same
+    /// synchronous impact evaluation point as `present`, never by taking the
+    /// destructive registry dispatch queue a second time.
+    pending_overlay_damage: Vec<DamagedEnemyOverlayDamage>,
+    /// Reused union of host-local, remote-recipient, and just-damaged targets
+    /// sampled by the post-tick overlay pass.
+    overlay_entity_scratch: Vec<EntityId>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
     scope: EntityScope,
     policies: Vec<BoundImpactPolicy>,
     consequential: Vec<PlannedEffect>,
     presentation: Vec<PlannedEffect>,
+}
+
+/// One dispatch-driven damaged-enemy refresh. The host presentation sender
+/// resolves `source` through `MovementOwners` after Task 6 has settled the
+/// frame's overlay facts; local and unowned sources intentionally remain local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DamagedEnemyOverlayDamage {
+    pub(crate) entity: EntityId,
+    pub(crate) source: Option<EntityId>,
+}
+
+/// One authoritative fact sample from Task 6's post-tick overlay stamp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DamagedEnemyOverlayFact {
+    pub(crate) entity: EntityId,
+    pub(crate) health_fraction: f32,
+    pub(crate) shield_fraction: f32,
+    pub(crate) has_shield: bool,
+    pub(crate) alive: bool,
+}
+
+/// The post-tick handoff from the host overlay lifecycle to the remote
+/// presentation sender. It contains no wire identity: only netcode owns the
+/// `EntityId` to non-recycled `NetworkId` conversion.
+#[derive(Debug, Default)]
+pub(crate) struct DamagedEnemyOverlayFrame {
+    pub(crate) damage: Vec<DamagedEnemyOverlayDamage>,
+    pub(crate) facts: Vec<DamagedEnemyOverlayFact>,
 }
 
 struct BoundImpactPolicy {
@@ -44,8 +95,97 @@ struct BoundGroup {
     effects: Vec<BoundEffect>,
 }
 
+struct BoundPresentationOverlay {
+    template: PresentationTemplateHandle,
+    world_anchor: PresentationWorldAnchor,
+    max_visible: usize,
+    linger_seconds: f64,
+    hide_at_full: bool,
+    scope: OverlayStateScope,
+    shield: Option<BoundOverlayShield>,
+}
+
+/// The authored portion of the damaged-enemy overlay lifecycle that a
+/// connected client needs to render host-pushed facts. Values themselves stay
+/// on the presentation channel; this carries no registry-derived combat state.
+#[derive(Clone)]
+pub(crate) struct ClientOverlayConfig {
+    pub(crate) template: PresentationTemplateHandle,
+    pub(crate) world_anchor: PresentationWorldAnchor,
+    pub(crate) max_visible: usize,
+    pub(crate) linger_seconds: f64,
+    pub(crate) hide_at_full: bool,
+}
+
+struct BoundOverlayShield {
+    value: BoundProgram<OverlayStateScope>,
+    max: BoundProgram<OverlayStateScope>,
+}
+
+/// Read-only per-entity state scope used by `damagedEnemies.shield`. Keeping
+/// it local to the presentation adopter prevents overlay expressions from
+/// accidentally acquiring impact facts, store reads, or write handles.
+#[derive(Default)]
+struct OverlayStateScope {
+    names: RefCell<Vec<String>>,
+    values: RefCell<Vec<f32>>,
+}
+
+impl OverlayStateScope {
+    fn seed(&self, registry: &EntityRegistry, entity: EntityId) {
+        let state = registry
+            .get_component::<postretro_entities::EntityStateComponent>(entity)
+            .ok();
+        let names = self.names.borrow();
+        let mut values = self.values.borrow_mut();
+        for (index, name) in names.iter().enumerate() {
+            values[index] = state.map_or(0.0, |state| state.get(name));
+        }
+    }
+}
+
+impl BindingScope for OverlayStateScope {
+    type InputHandle = usize;
+    type OutputHandle = ();
+
+    fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        let state_name = name.strip_prefix("@state.")?;
+        if state_name.is_empty() {
+            return None;
+        }
+        let mut names = self.names.borrow_mut();
+        let index = names
+            .iter()
+            .position(|bound| bound == state_name)
+            .unwrap_or_else(|| {
+                let index = names.len();
+                names.push(state_name.to_owned());
+                self.values.borrow_mut().push(0.0);
+                index
+            });
+        Some(ResolvedInput {
+            handle: index,
+            ir_type: IrType::Number,
+        })
+    }
+
+    fn resolve_output(&self, _name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
+        None
+    }
+
+    fn read(&self, handle: &Self::InputHandle) -> IrValue {
+        IrValue::Number(self.values.borrow().get(*handle).copied().unwrap_or(0.0))
+    }
+
+    fn write(&mut self, _handle: &Self::OutputHandle, _value: IrValue) {}
+}
+
 enum BoundEffect {
     Write(BoundProgram<EntityScope>),
+    SetOwnerSlot {
+        slot: String,
+        value: BoundProgram<EntityScope>,
+    },
     SetHealth {
         value: BoundProgram<EntityScope>,
         after_ms: Option<f32>,
@@ -55,6 +195,10 @@ enum BoundEffect {
     },
     PlayAnimation {
         state: String,
+    },
+    Present {
+        template: String,
+        value: BoundProgram<EntityScope>,
     },
     GrantHealth {
         amount: BoundProgram<EntityScope>,
@@ -92,7 +236,12 @@ impl ImpactPolicyRuntime {
         Self {
             scope: EntityScope::impact(ctx.clone()),
             ctx,
+            mod_id: None,
             global_events: Vec::new(),
+            presentation_templates: HashMap::new(),
+            presentation_overlays: Vec::new(),
+            pending_overlay_damage: Vec::new(),
+            overlay_entity_scratch: Vec::new(),
             level_events: Vec::new(),
             active_level_tags: Vec::new(),
             policies: Vec::new(),
@@ -101,11 +250,125 @@ impl ImpactPolicyRuntime {
         }
     }
 
+    /// Capture the first committed mod id for impact-policy composition.
+    ///
+    /// The scripting runtime freezes this identity across staged reloads. An
+    /// absent manifest remains absent, which intentionally leaves level event
+    /// ids unqualified rather than producing a bare `:` prefix.
+    pub(crate) fn set_mod_id(&mut self, mod_id: Option<String>) {
+        let Some(mod_id) = mod_id else {
+            return;
+        };
+        if self.mod_id.is_none() {
+            self.mod_id = Some(mod_id);
+            self.rebuild();
+        }
+    }
+
     /// Replace the complete mod-scope descriptor snapshot. A staged mod-init
     /// commit has the same snapshot semantics as initial mod registration.
     pub(crate) fn replace_global_events(&mut self, events: Vec<ImpactEventDescriptor>) {
         self.global_events = events;
         self.rebuild();
+    }
+
+    /// Replace the renderer-consumed passive template snapshot committed by
+    /// mod init. Invalid descriptors were already contained by the manifest
+    /// drain; retaining only one template per id keeps an unexpected duplicate
+    /// harmless for runtime callers as well.
+    pub(crate) fn replace_presentation_templates(&mut self, templates: Vec<PresentationTemplate>) {
+        self.presentation_templates.clear();
+        for template in templates {
+            if let Err(error) = template.validate() {
+                log::warn!(
+                    "[Impact] presentation template `{}` was ignored: {error}",
+                    template.id
+                );
+                continue;
+            }
+            if self
+                .presentation_templates
+                .insert(template.id.clone(), template)
+                .is_some()
+            {
+                log::warn!("[Impact] duplicate presentation template was replaced");
+            }
+        }
+    }
+
+    /// Snapshot the committed definitions for the renderer-owned UI layout
+    /// cache. Template widgets are never laid out in this policy runtime.
+    pub(crate) fn presentation_templates(&self) -> Vec<PresentationTemplate> {
+        self.presentation_templates.values().cloned().collect()
+    }
+
+    /// Borrow the committed template registry for frame-local client ingest.
+    /// Renderer installation still takes an owned snapshot only at manifest
+    /// commit; ordinary net polls must not clone every widget subtree.
+    pub(crate) fn presentation_template_registry(&self) -> &HashMap<String, PresentationTemplate> {
+        &self.presentation_templates
+    }
+
+    /// Snapshot the client-relevant lifetime and anchor configuration for the
+    /// one supported damaged-enemy overlay. The host alone evaluates health and
+    /// shield state; clients only apply pushed facts through this configuration.
+    pub(crate) fn client_overlay_config(&self) -> Option<ClientOverlayConfig> {
+        self.presentation_overlays
+            .first()
+            .map(|overlay| ClientOverlayConfig {
+                template: overlay.template.clone(),
+                world_anchor: overlay.world_anchor.clone(),
+                max_visible: overlay.max_visible,
+                linger_seconds: overlay.linger_seconds,
+                hide_at_full: overlay.hide_at_full,
+            })
+    }
+
+    /// Replace the complete passive overlay declaration snapshot. Currently
+    /// one `damagedEnemies` source owns the EntityId-keyed overlay map; later
+    /// overlay source kinds can add their own disjoint key namespace instead of
+    /// making two declarations fight over one target key.
+    pub(crate) fn replace_presentation_overlays(&mut self, overlays: Vec<PresentationOverlay>) {
+        self.presentation_overlays.clear();
+        self.pending_overlay_damage.clear();
+        if overlays.len() > 1 {
+            log::warn!(
+                "[Impact] presentation overlay snapshot contained more than one descriptor; all overlays were ignored"
+            );
+            return;
+        }
+        for overlay in overlays {
+            if let Err(error) = overlay.validate() {
+                log::warn!("[Impact] presentation overlay was ignored: {error}");
+                continue;
+            }
+            let Some(template) = self.presentation_templates.get(&overlay.template) else {
+                log::warn!(
+                    "[Impact] presentation overlay template `{}` is not registered; overlay skipped",
+                    overlay.template
+                );
+                continue;
+            };
+            let Some(world_anchor) = template.world_anchor.clone() else {
+                log::warn!(
+                    "[Impact] presentation overlay template `{}` has no `worldAnchor`; overlay skipped",
+                    template.id
+                );
+                continue;
+            };
+            let PresentationOverlaySource::DamagedEnemies(source) = overlay.over;
+            match bind_damaged_enemies_overlay(
+                PresentationTemplateHandle::from(template.id.clone()),
+                world_anchor,
+                overlay.max_visible,
+                source,
+            ) {
+                Ok(binding) => self.presentation_overlays.push(binding),
+                Err(error) => {
+                    log::warn!("[Impact] presentation overlay was skipped during bind: {error}")
+                }
+            }
+        }
     }
 
     /// Replace the per-level descriptors after `setupLevel()` finishes. Global
@@ -167,29 +430,29 @@ impl ImpactPolicyRuntime {
             .filter(|descriptor| levels_match(&descriptor.levels, &self.active_level_tags))
             .chain(&self.level_events)
         {
+            let id = qualified_impact_event_id(self.mod_id.as_deref(), &descriptor.id);
             let base_filter_tag = if descriptor.is_override {
                 if descriptor.filter_tag.is_none() {
                     log::warn!(
                         "[Impact] override `{}` was skipped: override filter requires `tag`",
-                        descriptor.id
+                        id
                     );
                     continue;
                 }
-                let Some(filter) = base_filters.get(&descriptor.id).cloned() else {
-                    log::warn!("[Impact] {}", unknown_override_diagnostic(&descriptor.id));
+                let Some(filter) = base_filters.get(&id).cloned() else {
+                    log::warn!("[Impact] {}", unknown_override_diagnostic(&id));
                     continue;
                 };
                 filter
             } else {
-                base_filters.insert(descriptor.id.clone(), descriptor.filter_tag.clone());
+                base_filters.insert(id.clone(), descriptor.filter_tag.clone());
                 descriptor.filter_tag.clone()
             };
-            match bind_policy(descriptor, base_filter_tag, &scope) {
+            match bind_policy(descriptor, &id, base_filter_tag, &scope) {
                 Ok(policy) => policies.push(policy),
-                Err(error) => log::warn!(
-                    "[Impact] policy `{}` was skipped during bind: {error}",
-                    descriptor.id
-                ),
+                Err(error) => {
+                    log::warn!("[Impact] policy `{}` was skipped during bind: {error}", id)
+                }
             }
         }
         self.scope = scope;
@@ -201,6 +464,12 @@ impl ImpactPolicyRuntime {
         registry: &mut postretro_entities::EntityRegistry,
         dispatch: ImpactDispatch,
     ) {
+        if !self.presentation_overlays.is_empty() {
+            self.pending_overlay_damage.push(DamagedEnemyOverlayDamage {
+                entity: dispatch.target,
+                source: dispatch.source,
+            });
+        }
         let tags = {
             let Ok(tags) = registry.get_tags(dispatch.target) else {
                 return;
@@ -248,8 +517,11 @@ impl ImpactPolicyRuntime {
                 for effect in &group.effects {
                     let planned = plan_effect(effect, &self.scope);
                     match effect {
-                        BoundEffect::PlayAnimation { .. } => self.presentation.push(planned),
+                        BoundEffect::PlayAnimation { .. } | BoundEffect::Present { .. } => {
+                            self.presentation.push(planned)
+                        }
                         BoundEffect::Write(_)
+                        | BoundEffect::SetOwnerSlot { .. }
                         | BoundEffect::SetHealth { .. }
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
@@ -269,10 +541,14 @@ impl ImpactPolicyRuntime {
         dispatch: &ImpactDispatch,
         presentation: bool,
     ) {
-        let effects = if presentation {
-            &mut self.presentation
+        let ctx = self.ctx.clone();
+        // Drain this lane before executing it: presentation application needs
+        // an immutable template lookup while the lane itself is otherwise a
+        // mutable borrow of `self`.
+        let mut effects = if presentation {
+            std::mem::take(&mut self.presentation)
         } else {
-            &mut self.consequential
+            std::mem::take(&mut self.consequential)
         };
         effects.reverse();
         while let Some(effect) = effects.pop() {
@@ -292,6 +568,10 @@ impl ImpactPolicyRuntime {
                     );
                 }
                 PlannedEffect::Command { recipient, effect } => {
+                    if let ImpactEffect::Present { template, value } = effect {
+                        self.apply_presentation_spawn(registry, dispatch, &template, value);
+                        continue;
+                    }
                     let recipient = match recipient {
                         CommandRecipient::Target => Some(dispatch.target),
                         CommandRecipient::Source => {
@@ -299,12 +579,312 @@ impl ImpactPolicyRuntime {
                         }
                     };
                     if let Some(recipient) = recipient {
-                        apply_effect(registry, recipient, &effect);
+                        match effect {
+                            ImpactEffect::SetOwnerSlot { slot, value } => {
+                                Self::apply_owner_slot(&ctx, registry, recipient, &slot, value);
+                            }
+                            effect => apply_effect(registry, recipient, &effect),
+                        }
                     }
                 }
             }
         }
     }
+
+    fn apply_owner_slot(
+        ctx: &ScriptCtx,
+        registry: &EntityRegistry,
+        recipient: postretro_entities::EntityId,
+        slot: &str,
+        value: f32,
+    ) {
+        let Some(seat) = registry.seat_for_pawn(recipient) else {
+            log::warn!("[Impact] owner write for slot `{slot}` resolved no seat; skipping");
+            return;
+        };
+
+        let mut table = ctx.slot_table.borrow_mut();
+        let Some(record) = table.get_mut(slot) else {
+            debug_assert!(false, "bound owner slot `{slot}` disappeared before apply");
+            return;
+        };
+        let Ok(value) = validate_slot_value(slot, &record.schema, SlotValue::Number(value)) else {
+            log::warn!("[Impact] owner write for slot `{slot}` failed validation; skipping");
+            return;
+        };
+        record.set_per_seat_value(seat, value);
+    }
+
+    /// Presentation's numeric fact was frozen by `plan_effect` before any
+    /// consequences applied. Only the anchor deliberately comes from the live
+    /// target here: staged scripted despawn preserves Transform until the
+    /// app-owned frame-end removal pass.
+    fn apply_presentation_spawn(
+        &self,
+        registry: &mut EntityRegistry,
+        dispatch: &ImpactDispatch,
+        template_id: &str,
+        value: f32,
+    ) {
+        let Some(template) = self.presentation_templates.get(template_id) else {
+            log::warn!(
+                "[Impact] presentation template `{template_id}` is not registered; spawn skipped"
+            );
+            return;
+        };
+        let Ok(transform) = registry.get_component::<Transform>(dispatch.target) else {
+            log::warn!(
+                "[Impact] target has no world transform; presentation `{template_id}` was skipped"
+            );
+            return;
+        };
+
+        let mut facts = postretro_entities::PresentationFacts::new();
+        facts.insert("value".to_string(), PresentationFact::Number(value));
+        registry.push_presentation_spawn(PresentationSpawn {
+            world_anchor: transform.position,
+            template: PresentationTemplateHandle::from(template.id.clone()),
+            facts,
+            presenter: dispatch
+                .source
+                .map(|source| PresentationPresenter(source.to_raw())),
+            lifetime_seconds: template.lifetime_ms as f32 / 1_000.0,
+            motion: PresentationMotion {
+                rise_pixels: template.motion.rise,
+                easing: template.motion.easing,
+            },
+            fade: PresentationFade {
+                duration_seconds: template.lifetime_ms.saturating_sub(template.fade.start_ms)
+                    as f32
+                    / 1_000.0,
+            },
+            scatter_radius: template.spawn_scatter.radius,
+        });
+    }
+
+    /// Consume dispatch-driven refreshes, then stamp only already-tracked
+    /// overlays once after all fixed ticks. This keeps the damage event edge
+    /// separate from the bounded per-frame health/shield read.
+    pub(crate) fn update_damaged_enemy_overlays(
+        &mut self,
+        pool: &mut crate::presentation_pool::PresentationPool,
+        registry: &EntityRegistry,
+        hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
+        anim_time: f64,
+        remote_tracked_entities: impl IntoIterator<Item = EntityId>,
+        is_remote_source: impl Fn(Option<EntityId>) -> bool,
+    ) -> DamagedEnemyOverlayFrame {
+        let mut frame = DamagedEnemyOverlayFrame {
+            damage: std::mem::take(&mut self.pending_overlay_damage),
+            facts: Vec::new(),
+        };
+        let Some(binding) = self.presentation_overlays.first_mut() else {
+            return frame;
+        };
+
+        for damage in &frame.damage {
+            if !is_remote_source(damage.source) {
+                pool.refresh_overlay(
+                    damage.entity,
+                    binding.template.clone(),
+                    binding.linger_seconds,
+                    binding.max_visible,
+                    u64::from(damage.entity.to_raw()),
+                );
+            }
+        }
+
+        let mut tracked_entities = std::mem::take(&mut self.overlay_entity_scratch);
+        tracked_entities.clear();
+        tracked_entities.extend(pool.tracked_overlay_ids_iter());
+        tracked_entities.extend(remote_tracked_entities);
+        tracked_entities.extend(frame.damage.iter().map(|damage| damage.entity));
+        tracked_entities.sort_by_key(|entity| entity.to_raw());
+        tracked_entities.dedup();
+        frame.facts.reserve(tracked_entities.len());
+
+        for &entity in &tracked_entities {
+            let Ok(health) = registry
+                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
+            else {
+                frame.facts.push(DamagedEnemyOverlayFact {
+                    entity,
+                    health_fraction: 0.0,
+                    shield_fraction: 0.0,
+                    has_shield: false,
+                    alive: false,
+                });
+                pool.evict_overlay(entity);
+                continue;
+            };
+            if health.current <= 0.0 {
+                frame.facts.push(DamagedEnemyOverlayFact {
+                    entity,
+                    health_fraction: 0.0,
+                    shield_fraction: 0.0,
+                    has_shield: false,
+                    alive: false,
+                });
+                pool.evict_overlay(entity);
+                continue;
+            }
+
+            let health_fraction = fraction_or_zero(health.current, health.max);
+            let (shield_fraction, has_shield) =
+                binding.shield.as_ref().map_or((0.0, false), |shield| {
+                    binding.scope.seed(registry, entity);
+                    let value = number_from_ir(eval_value(&shield.value, &binding.scope));
+                    let max = number_from_ir(eval_value(&shield.max, &binding.scope));
+                    let has_shield = max.is_finite() && max > 0.0;
+                    (
+                        if has_shield {
+                            fraction_or_zero(value, max)
+                        } else {
+                            0.0
+                        },
+                        has_shield,
+                    )
+                });
+            if pool.has_overlay(entity) {
+                if let Some(anchor) = overlay_anchor(
+                    registry,
+                    hit_zones,
+                    entity,
+                    &binding.world_anchor,
+                    anim_time,
+                ) {
+                    pool.stamp_damaged_enemy_overlay(
+                        entity,
+                        health_fraction,
+                        shield_fraction,
+                        has_shield,
+                        anchor,
+                        binding.hide_at_full && health.current == health.max,
+                    );
+                } else {
+                    pool.evict_overlay(entity);
+                }
+            }
+            frame.facts.push(DamagedEnemyOverlayFact {
+                entity,
+                health_fraction,
+                shield_fraction,
+                has_shield,
+                alive: true,
+            });
+        }
+        self.overlay_entity_scratch = tracked_entities;
+        frame
+    }
+}
+
+fn bind_damaged_enemies_overlay(
+    template: PresentationTemplateHandle,
+    world_anchor: PresentationWorldAnchor,
+    max_visible: usize,
+    source: DamagedEnemiesOverlay,
+) -> Result<BoundPresentationOverlay, String> {
+    let scope = OverlayStateScope::default();
+    let linger_seconds = f64::from(source.linger_ms) / 1_000.0;
+    let hide_at_full = source.hide_at_full;
+    let shield = source
+        .shield
+        .map(|shield| {
+            let value = bind_overlay_number(&shield.value, &scope, "shield.value")?;
+            let max = bind_overlay_number(&shield.max, &scope, "shield.max")?;
+            Ok::<BoundOverlayShield, String>(BoundOverlayShield { value, max })
+        })
+        .transpose()?;
+    Ok(BoundPresentationOverlay {
+        template,
+        world_anchor,
+        max_visible,
+        linger_seconds,
+        hide_at_full,
+        scope,
+        shield,
+    })
+}
+
+fn bind_overlay_number(
+    root: &IrNode,
+    scope: &OverlayStateScope,
+    field: &str,
+) -> Result<BoundProgram<OverlayStateScope>, String> {
+    let program = bind(
+        &BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: None,
+            root: root.clone(),
+        },
+        scope,
+    )
+    .map_err(|error| format!("{field} is invalid: {error}"))?;
+    if program.root_type != IrType::Number {
+        return Err(format!("{field} must evaluate to a number"));
+    }
+    Ok(program)
+}
+
+fn number_from_ir(value: IrValue) -> f32 {
+    match value {
+        IrValue::Number(value) if value.is_finite() => value,
+        _ => 0.0,
+    }
+}
+
+fn fraction_or_zero(value: f32, max: f32) -> f32 {
+    if value.is_finite() && max.is_finite() && max > 0.0 {
+        let fraction = value / max;
+        if fraction.is_finite() { fraction } else { 0.0 }
+    } else {
+        0.0
+    }
+}
+
+fn overlay_anchor(
+    registry: &EntityRegistry,
+    hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
+    entity: EntityId,
+    anchor: &PresentationWorldAnchor,
+    anim_time: f64,
+) -> Option<glam::Vec3> {
+    let offset = glam::Vec3::Y * anchor.offset_y;
+    if let Some(socket) = hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time)
+    {
+        return Some(socket + offset);
+    }
+
+    let transform = registry.get_component::<Transform>(entity).ok()?;
+    if !transform.position.is_finite() {
+        return None;
+    }
+    if let Ok(health) =
+        registry.get_component::<postretro_entities::components::health::HealthComponent>(entity)
+        && let Some(hitbox) = &health.hitbox
+        && hitbox.offset.is_finite()
+        && hitbox.half_extents.is_finite()
+    {
+        let top =
+            transform.position + hitbox.offset + glam::Vec3::Y * hitbox.half_extents.y + offset;
+        if top.is_finite() {
+            return Some(top);
+        }
+    }
+
+    let mesh = registry
+        .get_component::<postretro_entities::components::mesh::MeshComponent>(entity)
+        .ok()?;
+    let bound = hit_zones.get_by_name(&mesh.model)?.derived_bound?;
+    let model_to_world =
+        crate::scripting_systems::hit_zones::model_matrix(transform, mesh.origin_offset)?;
+    let local_top = glam::Vec3::new(
+        (bound.min.x + bound.max.x) * 0.5,
+        bound.max.y,
+        (bound.min.z + bound.max.z) * 0.5,
+    );
+    let top = model_to_world.transform_point3(local_top) + offset;
+    top.is_finite().then_some(top)
 }
 
 fn policy_matches(policy: &BoundImpactPolicy, tags: &[String]) -> bool {
@@ -329,6 +909,7 @@ fn unknown_override_diagnostic(id: &str) -> String {
 
 fn bind_policy(
     descriptor: &ImpactEventDescriptor,
+    id: &str,
     base_filter_tag: Option<String>,
     scope: &EntityScope,
 ) -> Result<BoundImpactPolicy, String> {
@@ -340,11 +921,18 @@ fn bind_policy(
         groups.push(bind_group(entry, scope)?);
     }
     Ok(BoundImpactPolicy {
-        id: descriptor.id.clone(),
+        id: id.to_string(),
         base_filter_tag,
         filter_tag: descriptor.filter_tag.clone(),
         groups,
     })
+}
+
+fn qualified_impact_event_id(mod_id: Option<&str>, authored_id: &str) -> String {
+    match mod_id {
+        Some(mod_id) => format!("{mod_id}:{authored_id}"),
+        None => authored_id.to_string(),
+    }
 }
 
 fn bind_group(entry: &Value, scope: &EntityScope) -> Result<BoundGroup, String> {
@@ -403,6 +991,25 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 state: required_string(args, "clip", "playAnim args")?.to_string(),
             })
         }
+        "present" => {
+            require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
+            let template = required_string(args, "template", "present args")?;
+            if template.is_empty() {
+                return Err("present `template` must be nonempty".to_string());
+            }
+            let value = bind_read(
+                args.get("value")
+                    .ok_or_else(|| "present args is missing `value`".to_string())?,
+                scope,
+            )?;
+            if value.root_type != IrType::Number {
+                return Err("present `value` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::Present {
+                template: template.to_string(),
+                value,
+            })
+        }
         "setHealth" => {
             require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
             let value = bind_read(
@@ -454,20 +1061,42 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 .ok_or_else(|| "target setState args is missing `value`".to_string())?;
             bind_number_write(format!("@state.{name}"), value, scope).map(BoundEffect::Write)
         }
-        "slot.add" if target.is_none() => {
-            let slot = required_string(args, "slot", "slot.add args")?;
-            let delta = args
-                .get("delta")
-                .ok_or_else(|| "slot.add args is missing `delta`".to_string())?;
-            let value = serde_json::json!({
-                "op": "add",
-                "a": { "op": "input", "name": slot },
-                "b": delta,
-            });
-            bind_number_write(slot.to_string(), &value, scope).map(BoundEffect::Write)
+        "slot.set" if target.is_none() => {
+            let slot = required_string(args, "slot", "slot.set args")?;
+            let value = args
+                .get("value")
+                .ok_or_else(|| "slot.set args is missing `value`".to_string())?;
+            bind_number_write(slot.to_string(), value, scope).map(BoundEffect::Write)
+        }
+        "slot.set" => {
+            require_impact_token(target, primitive, IMPACT_SOURCE_TOKEN)?;
+            let slot = required_string(args, "slot", "slot.set args")?;
+            match scope.per_owner_store_slot(slot) {
+                Some(true) => {}
+                Some(false) => {
+                    return Err(format!(
+                        "slot.set owner-addressed write may only target per-owner slot `{slot}`"
+                    ));
+                }
+                None => return Err(format!("slot.set references unknown slot `{slot}`")),
+            }
+            if scope.store_slot_is_readonly(slot) == Some(true) {
+                return Err(format!("slot.set cannot write readonly slot `{slot}`"));
+            }
+            let value = bind_read(
+                args.get("value")
+                    .ok_or_else(|| "slot.set args is missing `value`".to_string())?,
+                scope,
+            )?;
+            if value.root_type != IrType::Number {
+                return Err("slot.set `value` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::SetOwnerSlot {
+                slot: slot.to_string(),
+                value,
+            })
         }
         "setState" => Err("setState must target @impact.target".to_string()),
-        "slot.add" => Err("slot.add must not carry a target".to_string()),
         _ => Err(format!("unsupported impact primitive `{primitive}`")),
     }
 }
@@ -527,6 +1156,13 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
                 .clone(),
             value: eval_value(program, scope),
         },
+        BoundEffect::SetOwnerSlot { slot, value } => PlannedEffect::Command {
+            recipient: CommandRecipient::Source,
+            effect: ImpactEffect::SetOwnerSlot {
+                slot: slot.clone(),
+                value: number(eval_value(value, scope)),
+            },
+        },
         BoundEffect::SetHealth { value, after_ms } => PlannedEffect::Command {
             recipient: CommandRecipient::Target,
             effect: ImpactEffect::SetHealth {
@@ -544,6 +1180,13 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
             recipient: CommandRecipient::Target,
             effect: ImpactEffect::PlayAnimation {
                 state: state.clone(),
+            },
+        },
+        BoundEffect::Present { template, value } => PlannedEffect::Command {
+            recipient: CommandRecipient::Target,
+            effect: ImpactEffect::Present {
+                template: template.clone(),
+                value: number(eval_value(value, scope)),
             },
         },
         BoundEffect::GrantHealth { amount } => PlannedEffect::Command {
@@ -616,15 +1259,28 @@ mod tests {
     use super::*;
     use postretro_entities::components::ammo_reserve::AmmoReserve;
     use postretro_entities::components::health::{
-        DamageContext, HealthComponent, apply_damage_with_context,
+        DamageContext, HealthComponent, Hitbox, apply_damage_with_context,
     };
-    use postretro_entities::data_descriptors::HealthDescriptor;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
+        PlayerMovementDescriptor, SpeedParams,
+    };
     use postretro_entities::slot_table::{
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
     use postretro_entities::{EntityId, Transform};
-    use postretro_foundation::DamagePayload;
+    use postretro_foundation::{DamagePayload, Seat};
+    use postretro_scripting_core::data_descriptors::DamagedEnemiesShield;
     use serde_json::json;
+
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
 
     fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
@@ -646,6 +1302,10 @@ mod tests {
         json!({ "op": "input", "name": name })
     }
 
+    fn owned_input(name: &str) -> Value {
+        json!({ "op": "input", "name": name, "owner": IMPACT_SOURCE_TOKEN })
+    }
+
     fn number(value: f32) -> Value {
         json!({ "op": "const", "value": value })
     }
@@ -658,10 +1318,18 @@ mod tests {
         })
     }
 
-    fn slot_add(slot: &str, delta: Value) -> Value {
+    fn slot_set(slot: &str, value: Value) -> Value {
         json!({
-            "primitive": "slot.add",
-            "args": { "slot": slot, "delta": delta },
+            "primitive": "slot.set",
+            "args": { "slot": slot, "value": value },
+        })
+    }
+
+    fn owner_slot_set(slot: &str, value: Value) -> Value {
+        json!({
+            "primitive": "slot.set",
+            "target": "@impact.source",
+            "args": { "slot": slot, "value": value },
         })
     }
 
@@ -681,6 +1349,70 @@ mod tests {
         })
     }
 
+    fn present(template: &str, value: Value) -> Value {
+        json!({
+            "primitive": "present",
+            "target": "@impact.target",
+            "args": { "template": template, "value": value },
+        })
+    }
+
+    fn presentation_template(id: &str) -> PresentationTemplate {
+        serde_json::from_value(json!({
+            "id": id,
+            "root": {
+                "kind": "text", "content": "0", "fontSize": 24.0,
+                "color": [1.0, 0.35, 0.1, 1.0]
+            },
+            "lifetimeMs": 750,
+            "motion": { "rise": 18.0, "easing": "easeOut" },
+            "fade": { "startMs": 500 },
+            "spawnScatter": { "radius": 0.25 },
+        }))
+        .expect("presentation template test fixture must deserialize")
+    }
+
+    fn overlay_template(id: &str) -> PresentationTemplate {
+        let mut template = presentation_template(id);
+        template.world_anchor = Some(PresentationWorldAnchor {
+            socket: "status".to_string(),
+            offset_y: 0.25,
+        });
+        template
+    }
+
+    fn damaged_enemies_overlay(
+        template: &str,
+        shield: Option<DamagedEnemiesShield>,
+    ) -> PresentationOverlay {
+        PresentationOverlay {
+            over: PresentationOverlaySource::DamagedEnemies(DamagedEnemiesOverlay {
+                linger_ms: 500,
+                hide_at_full: true,
+                shield,
+            }),
+            template: template.to_string(),
+            max_visible: 2,
+        }
+    }
+
+    fn give_target_hitbox(ctx: &ScriptCtx, target: EntityId) {
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target has health")
+            .clone();
+        health.hitbox = Some(Hitbox {
+            half_extents: glam::Vec3::new(0.5, 1.5, 0.5),
+            offset: glam::Vec3::new(0.0, 0.25, 0.0),
+        });
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .expect("target is live");
+    }
+
     fn number_slot(value: f32) -> SlotRecord {
         SlotRecord::new(SlotSchema {
             slot_type: SlotType::Number,
@@ -693,8 +1425,15 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        let mut record = number_slot(value);
+        record.schema.per_owner = true;
+        record
     }
 
     fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
@@ -714,6 +1453,51 @@ mod tests {
             .set_tags(target, tags.iter().map(|tag| (*tag).to_string()).collect())
             .expect("target is live");
         target
+    }
+
+    fn mark_as_local_player(ctx: &ScriptCtx, target: EntityId) {
+        let movement = PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        });
+        let mut registry = ctx.registry.borrow_mut();
+        registry
+            .set_component(target, movement)
+            .expect("target is live");
+        registry
+            .mark_local_player_pawn(target)
+            .expect("target is live");
     }
 
     fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
@@ -783,6 +1567,665 @@ mod tests {
         }
     }
 
+    fn owner_store(ctx: &ScriptCtx, name: &str, seat: Seat) -> f32 {
+        match ctx
+            .slot_table
+            .borrow()
+            .get(name)
+            .and_then(|record| record.per_seat_value(seat))
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected owner number slot value, got {other:?}"),
+        }
+    }
+
+    fn evaluate_slot_policy(base: f32, policy: Vec<Value>) -> f32 {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(base))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event("slot-policy", "crate", policy)]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        store(&ctx, "progress.xp")
+    }
+
+    #[test]
+    fn damaged_enemy_overlay_stamps_facts_uses_hitbox_fallback_and_evicts_dead_targets() {
+        use crate::presentation_pool::PresentationPool;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+
+        let ctx = ScriptCtx::new();
+        let enemy = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, enemy);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+
+        hit(&ctx, enemy, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
+        }
+
+        assert_eq!(pool.tracked_overlay_ids(), [enemy]);
+        assert_eq!(
+            pool.overlay_facts(enemy)
+                .and_then(|facts| facts.get("healthFraction")),
+            Some(&PresentationFact::Number(0.99))
+        );
+        assert_eq!(pool.overlay_is_suppressed(enemy), Some(false));
+        assert_eq!(
+            pool.overlay_anchor(enemy),
+            Some(glam::Vec3::new(0.0, 2.0, 0.0))
+        );
+
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(enemy)
+            .expect("target has health")
+            .clone();
+        health.current = health.max;
+        ctx.registry
+            .borrow_mut()
+            .set_component(enemy, health)
+            .expect("target is live");
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
+        }
+        assert_eq!(pool.overlay_is_suppressed(enemy), Some(true));
+
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(enemy)
+            .expect("target has health")
+            .clone();
+        health.current = 0.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(enemy, health)
+            .expect("target is live");
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
+        }
+        assert!(pool.tracked_overlay_ids().is_empty());
+    }
+
+    #[test]
+    fn damaged_enemy_overlay_guards_zero_shield_max_and_same_frame_kills() {
+        use crate::presentation_pool::PresentationPool;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+
+        let shield = DamagedEnemiesShield {
+            value: IrNode::Input {
+                name: "@state.shield".to_string(),
+                owner: None,
+            },
+            max: IrNode::Input {
+                name: "@state.shieldMax".to_string(),
+                owner: None,
+            },
+        };
+        let ctx = ScriptCtx::new();
+        let enemy = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, enemy);
+        let mut entity_state = ctx
+            .registry
+            .borrow()
+            .get_component::<postretro_entities::EntityStateComponent>(enemy)
+            .expect("target state exists")
+            .clone();
+        entity_state.set("shield", 25.0);
+        entity_state.set("shieldMax", 0.0);
+        ctx.registry
+            .borrow_mut()
+            .set_component(enemy, entity_state)
+            .expect("target is live");
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay(
+            "enemy-status",
+            Some(shield),
+        )]);
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+
+        hit(&ctx, enemy, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
+        }
+        let facts = pool
+            .overlay_facts(enemy)
+            .expect("damage stamps overlay facts");
+        assert_eq!(
+            facts.get("shieldFraction"),
+            Some(&PresentationFact::Number(0.0))
+        );
+        assert_eq!(facts.get("hasShield"), Some(&PresentationFact::Bool(false)));
+
+        let doomed = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, doomed);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(doomed)
+            .expect("doomed target has health")
+            .clone();
+        health.current = 1.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(doomed, health)
+            .expect("doomed target is live");
+        hit(&ctx, doomed, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
+        }
+        assert!(
+            !pool.tracked_overlay_ids().contains(&doomed),
+            "a same-frame damage refresh must not draw a target killed by that hit"
+        );
+    }
+
+    // Regression: a remote client's private damaged-enemy target was inserted
+    // into the host renderer pool and competed with host-local overlays.
+    #[test]
+    fn remote_overlay_damage_samples_facts_without_entering_local_pool() {
+        use crate::presentation_pool::PresentationPool;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+
+        let ctx = ScriptCtx::new();
+        let enemy = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, enemy);
+        let remote_pawn = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+
+        hit_from(&ctx, enemy, Some(remote_pawn), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        let frame = {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |source| source == Some(remote_pawn),
+            )
+        };
+
+        assert!(pool.tracked_overlay_ids().is_empty());
+        assert_eq!(frame.damage.len(), 1);
+        assert_eq!(frame.facts.len(), 1);
+        assert_eq!(frame.facts[0].entity, enemy);
+
+        let next = {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [enemy],
+                |_| false,
+            )
+        };
+        assert!(pool.tracked_overlay_ids().is_empty());
+        assert_eq!(next.facts.len(), 1, "remote recharge sampling stays live");
+    }
+
+    #[test]
+    fn slot_set_evaluates_an_explicit_current_value_read() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![slot_set(
+                "progress.xp",
+                json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+            )],
+        );
+
+        assert_eq!(result, 11.0);
+    }
+
+    #[test]
+    fn slot_set_aliasing_reads_the_frozen_snapshot() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                ),
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(2.0) }),
+                ),
+            ],
+        );
+
+        assert_eq!(result, 12.0);
+    }
+
+    #[test]
+    fn slot_set_input_write_clobbers_an_earlier_absolute_write() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set("progress.xp", number(5.0)),
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                ),
+            ],
+        );
+
+        assert_eq!(result, 11.0);
+    }
+
+    #[test]
+    fn slot_set_absolute_write_clobbers_an_earlier_input_write() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                ),
+                slot_set("progress.xp", number(5.0)),
+            ],
+        );
+
+        assert_eq!(result, 5.0);
+    }
+
+    #[test]
+    fn slot_set_last_absolute_write_wins() {
+        let result = evaluate_slot_policy(
+            10.0,
+            vec![
+                slot_set("progress.xp", number(5.0)),
+                slot_set("progress.xp", number(7.0)),
+            ],
+        );
+
+        assert_eq!(result, 7.0);
+    }
+
+    #[test]
+    fn p7_later_registered_distinct_event_write_wins_for_one_slot() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![
+            event(
+                "increment",
+                "crate",
+                vec![slot_set(
+                    "progress.xp",
+                    json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+                )],
+            ),
+            event(
+                "replace",
+                "crate",
+                vec![slot_set("progress.xp", number(9.0))],
+            ),
+        ]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 9.0);
+    }
+
+    #[test]
+    fn p8_matching_override_evicts_its_base_slot_write() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(0.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate", "reinforced"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "reward",
+            "crate",
+            vec![slot_set("progress.xp", number(1.0))],
+        )]);
+        runtime.replace_level_events(
+            vec![override_event(
+                "reward",
+                "reinforced",
+                vec![slot_set("progress.xp", number(2.0))],
+            )],
+            &[],
+        );
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 2.0);
+    }
+
+    #[test]
+    fn p9_empty_policy_leaves_store_unchanged() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event("empty", "crate", Vec::new())]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 10.0);
+    }
+
+    #[test]
+    fn p10_empty_when_groups_evaluate_without_writes() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "empty-guards",
+            "crate",
+            vec![
+                json!({ "when": { "op": "const", "value": false }, "do": [] }),
+                json!({ "when": { "op": "const", "value": true }, "do": [] }),
+            ],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 10.0);
+    }
+
+    #[test]
+    fn p11_unproduced_store_slot_reads_its_declared_default() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert("progress.xp".into(), number_slot(0.0))
+                .expect("new output slot");
+            slots
+                .insert("progress.fresh".into(), number_slot(1.0))
+                .expect("new defaulted slot");
+        }
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "default-read",
+            "crate",
+            vec![json!({
+                "when": { "op": "ge", "a": input("progress.fresh"), "b": number(1.0) },
+                "do": [slot_set("progress.xp", number(9.0))],
+            })],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(store(&ctx, "progress.xp"), 9.0);
+    }
+
+    // Regression: fixed-tick policies observed the prior HUD publish because
+    // `player.health` was not republished between damage and impact evaluation.
+    #[test]
+    fn p12_fixed_tick_seam_reads_post_damage_engine_health() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .insert("impact.observedHealth".into(), number_slot(0.0))
+                .expect("new output slot");
+        }
+        let target = target(&ctx, &["player"]);
+        mark_as_local_player(&ctx, target);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "capture-health",
+            "player",
+            vec![slot_set("impact.observedHealth", input("player.health"))],
+        )]);
+
+        let mut publisher =
+            crate::scripting_systems::ui_proxy::PlayerHudStatePublisher::new(ctx.clone());
+        let mut registry = ctx.registry.borrow_mut();
+        let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+        apply_damage_with_context(
+            &mut registry,
+            target,
+            &DamagePayload { amount: 1.0 },
+            context,
+        );
+        crate::session::evaluate_pending_in_tick_impacts(
+            &mut publisher,
+            &mut runtime,
+            &mut registry,
+        );
+
+        assert_eq!(store(&ctx, "impact.observedHealth"), 99.0);
+        assert_eq!(store(&ctx, "player.health"), 99.0);
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current,
+            99.0,
+            "the published engine slot matches the post-damage component value",
+        );
+    }
+
+    #[test]
+    fn presentation_value_is_captured_at_plan_time_before_kill_changes_target_state() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        let anchor = glam::Vec3::new(3.0, 4.0, 5.0);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut transform = *registry
+                .get_component::<Transform>(target)
+                .expect("target has transform");
+            transform.position = anchor;
+            registry
+                .set_component(target, transform)
+                .expect("target transform updates");
+        }
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![presentation_template("damageNumber")]);
+        runtime.replace_global_events(vec![event(
+            "kill-number",
+            "crate",
+            vec![
+                present("damageNumber", input("@impact.healthAfter")),
+                json!({
+                    "primitive": "setHealth", "target": "@impact.target",
+                    "args": { "value": number(25.0) },
+                }),
+                json!({ "primitive": "despawn", "target": "@impact.target", "args": {} }),
+            ],
+        )]);
+
+        let mut damage = DamageContext::new("kill-number", DamageProducer::InTick);
+        damage.attacker = Some(source);
+        apply_damage_with_context(
+            &mut ctx.registry.borrow_mut(),
+            target,
+            &DamagePayload { amount: 100.0 },
+            damage,
+        );
+        evaluate_pending(&ctx, &mut runtime);
+
+        let mut registry = ctx.registry.borrow_mut();
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .expect("staged removal keeps target alive")
+                .current,
+            25.0,
+            "consequence phase changed live health before the presentation apply intercept"
+        );
+        assert!(
+            registry.get_component::<Transform>(target).is_ok(),
+            "staged scripted despawn leaves the anchor readable through presentation apply"
+        );
+        let spawns = registry.take_presentation_spawns();
+        assert_eq!(spawns.len(), 1);
+        let spawn = &spawns[0];
+        assert_eq!(spawn.template.0, "damageNumber");
+        assert_eq!(spawn.world_anchor, anchor);
+        assert_eq!(
+            spawn.facts.get("value"),
+            Some(&PresentationFact::Number(0.0)),
+            "the visual retained the plan-time killing-blow scalar, not the later health write"
+        );
+        assert_eq!(
+            spawn.presenter,
+            Some(PresentationPresenter(source.to_raw())),
+            "the dispatch source is retained as the presentation presenter"
+        );
+    }
+
+    #[test]
+    fn presentation_without_transform_skips_the_spawn() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        ctx.registry
+            .borrow_mut()
+            .remove_component::<Transform>(target)
+            .expect("test target initially has a transform");
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![presentation_template("damageNumber")]);
+        runtime.replace_global_events(vec![event(
+            "missing-anchor",
+            "crate",
+            vec![present("damageNumber", input("@impact.healthAfter"))],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert!(
+            ctx.registry
+                .borrow_mut()
+                .take_presentation_spawns()
+                .is_empty(),
+            "a target without an anchor degrades to a skipped passive presentation"
+        );
+    }
+
+    #[test]
+    fn p13_consecutive_in_tick_hits_reseed_store_reads_for_each_fire() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("progress.xp".into(), number_slot(10.0))
+            .expect("new slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "counter",
+            "crate",
+            vec![slot_set(
+                "progress.xp",
+                json!({ "op": "add", "a": input("progress.xp"), "b": number(1.0) }),
+            )],
+        )]);
+
+        let mut publisher =
+            crate::scripting_systems::ui_proxy::PlayerHudStatePublisher::new(ctx.clone());
+        let mut registry = ctx.registry.borrow_mut();
+        for expected_xp in [11.0, 12.0] {
+            let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 1.0 },
+                context,
+            );
+            crate::session::evaluate_pending_in_tick_impacts(
+                &mut publisher,
+                &mut runtime,
+                &mut registry,
+            );
+            assert_eq!(store(&ctx, "progress.xp"), expected_xp);
+        }
+        drop(registry);
+
+        assert_eq!(store(&ctx, "progress.xp"), 12.0);
+    }
+
     #[test]
     fn breakable_threshold_reads_pre_effect_state_snapshot() {
         let ctx = ScriptCtx::new();
@@ -803,7 +2246,14 @@ mod tests {
                 json!({
                     "when": { "op": "eq", "a": input("@state.hits"), "b": number(2.0) },
                     "do": [
-                        slot_add("impact.broken", number(1.0)),
+                        slot_set(
+                            "impact.broken",
+                            json!({
+                                "op": "add",
+                                "a": input("impact.broken"),
+                                "b": number(1.0),
+                            }),
+                        ),
                         { "primitive": "despawn", "target": "@impact.target", "args": {} },
                     ],
                 }),
@@ -1047,6 +2497,7 @@ mod tests {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate", "reinforced"]);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("combat-demo".to_string()));
         runtime.replace_global_events(vec![event(
             "same",
             "crate",
@@ -1059,6 +2510,16 @@ mod tests {
                 vec![state_write("variant", number(3.0))],
             )],
             &[],
+        );
+
+        assert_eq!(
+            runtime
+                .policies
+                .iter()
+                .map(|policy| policy.id.as_str())
+                .collect::<Vec<_>>(),
+            ["combat-demo:same", "combat-demo:same"],
+            "base-filter inheritance and dispatch eviction must share the qualified id",
         );
 
         hit(&ctx, target, DamageProducer::InTick);
@@ -1294,6 +2755,99 @@ mod tests {
     }
 
     #[test]
+    fn source_addressed_slot_set_rewards_the_damager_seat() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        ctx.registry.borrow_mut().bind_pawn_seat(source, Seat(7));
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "source-owner-reward",
+            "crate",
+            vec![owner_slot_set("currency.xp", number(5.0))],
+        )]);
+
+        hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(7)), 5.0);
+    }
+
+    #[test]
+    fn owner_slot_write_without_a_source_seat_warns_and_keeps_siblings_running() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "owner-no-seat",
+            "crate",
+            vec![
+                owner_slot_set("currency.xp", number(5.0)),
+                state_write("sibling_runs", number(1.0)),
+            ],
+        )]);
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+        });
+
+        assert_number_approx_eq(state(&ctx, target, "sibling_runs"), 1.0);
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("[Impact] owner write for slot `currency.xp` resolved no seat")
+        }));
+    }
+
+    #[test]
+    fn owner_slot_writes_are_last_writer_per_fire_and_accrue_across_hits() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        ctx.registry.borrow_mut().bind_pawn_seat(source, Seat(3));
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "owner-last-writer",
+            "crate",
+            vec![
+                owner_slot_set("currency.xp", number(1.0)),
+                owner_slot_set("currency.xp", number(2.0)),
+            ],
+        )]);
+
+        hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(3)), 2.0);
+
+        runtime.replace_global_events(vec![event(
+            "owner-accrual",
+            "crate",
+            vec![owner_slot_set(
+                "currency.xp",
+                json!({ "op": "add", "a": owned_input("currency.xp"), "b": number(1.0) }),
+            )],
+        )]);
+        for expected in [3.0, 4.0] {
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+            assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(3)), expected);
+        }
+    }
+
+    #[test]
     fn absent_or_stale_source_skips_only_the_source_grant() {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
@@ -1392,6 +2946,7 @@ mod tests {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
         let captured = crate::scripting::reactions::log_capture::capture(|| {
             runtime.replace_global_events(vec![
                 event(
@@ -1413,8 +2968,70 @@ mod tests {
         assert_eq!(state(&ctx, target, "sibling_runs"), 1.0);
         assert!(captured.iter().any(|(level, message)| {
             *level == log::Level::Warn
-                && message.contains("policy `invalid-pool` was skipped during bind")
+                && message.contains("policy `postretro.dev:invalid-pool` was skipped during bind")
                 && message.contains("`grantAmmo.type` must match [A-Za-z0-9_.:-]")
+        }));
+    }
+
+    #[test]
+    fn invalid_store_read_skips_only_its_policy_while_siblings_still_run() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.personal".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.global".into(), number_slot(0.0))
+            .expect("new global slot");
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_global_events(vec![
+                event(
+                    "bare-per-owner-read",
+                    "crate",
+                    vec![slot_set("currency.global", input("currency.personal"))],
+                ),
+                event(
+                    "owner-addressed-global-read",
+                    "crate",
+                    vec![slot_set("currency.global", owned_input("currency.global"))],
+                ),
+                event(
+                    "valid-sibling",
+                    "crate",
+                    vec![slot_set("currency.global", number(7.0))],
+                ),
+            ]);
+        });
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("currency.global")
+                .expect("global slot")
+                .value,
+            Some(SlotValue::Number(7.0)),
+            "invalid descriptors do not prevent a sibling descriptor from binding",
+        );
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message
+                    .contains("policy `postretro.dev:bare-per-owner-read` was skipped during bind")
+                && message.contains("currency.personal")
+        }));
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains(
+                    "policy `postretro.dev:owner-addressed-global-read` was skipped during bind",
+                )
+                && message.contains("currency.global")
         }));
     }
 
@@ -1442,6 +3059,10 @@ mod tests {
             .borrow_mut()
             .insert("impact.total".into(), number_slot(0.0))
             .expect("new slot");
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.personal".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
         let scope = EntityScope::impact(ctx);
 
         let raw_assignment = json!({
@@ -1465,8 +3086,8 @@ mod tests {
                 "args": { "name": "bad", "value": { "op": "const", "value": true } },
             }),
             json!({
-                "primitive": "slot.add",
-                "args": { "slot": "impact.total", "delta": { "op": "const", "value": true } },
+                "primitive": "slot.set",
+                "args": { "slot": "impact.total", "value": { "op": "const", "value": true } },
             }),
         ] {
             assert!(
@@ -1475,17 +3096,31 @@ mod tests {
             );
         }
 
-        for invalid_target in [json!(null), json!(42), json!({}), json!("@impact.target")] {
-            let malformed = json!({
-                "primitive": "slot.add",
-                "target": invalid_target,
-                "args": { "slot": "impact.total", "delta": number(1.0) },
-            });
-            assert!(
-                bind_effect(&malformed, &scope).is_err(),
-                "slot.add accepted a present target: {malformed}"
-            );
-        }
+        let slot_set_with_target = json!({
+            "primitive": "slot.set",
+            "target": "@impact.target",
+            "args": { "slot": "impact.total", "value": number(1.0) },
+        });
+        assert_eq!(
+            bind_effect(&slot_set_with_target, &scope)
+                .err()
+                .expect("slot.set must reject a present target"),
+            "slot.set must target @impact.source"
+        );
+
+        let bare_per_owner_error = bind_effect(&slot_set("currency.personal", number(1.0)), &scope)
+            .err()
+            .expect("bare per-owner output must reject");
+        assert!(
+            bare_per_owner_error.contains("currency.personal"),
+            "the bare output diagnostic must name the per-owner slot"
+        );
+        assert_eq!(
+            bind_effect(&owner_slot_set("impact.total", number(1.0)), &scope)
+                .err()
+                .expect("owner-addressed global output must reject"),
+            "slot.set owner-addressed write may only target per-owner slot `impact.total`"
+        );
 
         for primitive in ["despawn", "playAnim", "setHealth", "setState"] {
             let malformed = json!({
@@ -1558,22 +3193,79 @@ mod tests {
     fn engine_binding_rejects_tagless_override_descriptors() {
         let ctx = ScriptCtx::new();
         let scope = EntityScope::impact(ctx);
-        let mut descriptor = override_event("salvage:base", "elite", Vec::new());
+        let mut descriptor = override_event("base", "elite", Vec::new());
         descriptor.filter_tag = None;
 
         assert_eq!(
-            bind_policy(&descriptor, Some("crate".to_string()), &scope)
-                .err()
-                .unwrap(),
+            bind_policy(
+                &descriptor,
+                "postretro.dev:salvage",
+                Some("crate".to_string()),
+                &scope,
+            )
+            .err()
+            .unwrap(),
             "impact override filter requires `tag`"
         );
     }
 
     #[test]
-    fn unknown_override_diagnostic_names_author_id_in_documented_form() {
+    fn unknown_override_diagnostic_names_composition_id() {
         assert_eq!(
-            unknown_override_diagnostic("salvage:crate-break"),
-            "override targets unknown event \"salvage:crate-break\""
+            unknown_override_diagnostic("postretro.dev:salvage"),
+            "override targets unknown event \"postretro.dev:salvage\""
+        );
+    }
+
+    #[test]
+    fn impact_policy_bind_and_override_diagnostics_use_qualified_mod_id() {
+        let ctx = ScriptCtx::new();
+        let mut runtime = ImpactPolicyRuntime::new(ctx);
+        runtime.set_mod_id(Some("postretro.dev".to_string()));
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_global_events(vec![event(
+                "bad-bind",
+                "crate",
+                vec![grant_ammo("not valid", number(1.0))],
+            )]);
+            runtime.replace_level_events(vec![override_event("unknown", "crate", Vec::new())], &[]);
+        });
+
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("policy `postretro.dev:bad-bind` was skipped during bind")
+        }));
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("override targets unknown event \"postretro.dev:unknown\"")
+        }));
+    }
+
+    #[test]
+    fn level_events_without_a_committed_mod_id_stay_unqualified() {
+        let ctx = ScriptCtx::new();
+        let mut runtime = ImpactPolicyRuntime::new(ctx);
+        runtime.replace_global_events(vec![event("base", "crate", Vec::new())]);
+        assert_eq!(runtime.policies[0].id, "base");
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_level_events(vec![override_event("unknown", "crate", Vec::new())], &[]);
+        });
+
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("override targets unknown event \"unknown\"")
+                && !message.contains(":unknown")
+        }));
+    }
+
+    #[test]
+    fn ammo_pool_identifiers_retain_colon_support() {
+        let scope = EntityScope::impact(ScriptCtx::new());
+        assert!(
+            bind_effect(&grant_ammo("mods:cells", number(1.0)), &scope).is_ok(),
+            "mod id validation must not narrow the shared ammo identifier grammar",
         );
     }
 

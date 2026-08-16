@@ -138,7 +138,7 @@ pub fn widget_a11y_state(
     let resolve = |p: &Predicate| {
         let predicate_scope = match &p.source {
             BindSource::Local { .. } => scope,
-            BindSource::Slot { .. } => None,
+            BindSource::Slot { .. } | BindSource::Fact { .. } => None,
         };
         super::predicate::resolve_predicate(
             &p.source,
@@ -236,7 +236,7 @@ pub fn harvest_visibility(
         // Switch which injects `visibleWhen` on children — neither hits this case.
         let pred_scope = match &predicate.source {
             BindSource::Local { .. } => scope.map(str::to_string),
-            BindSource::Slot { .. } => None,
+            BindSource::Slot { .. } | BindSource::Fact { .. } => None,
         };
         // Capture the authored `Display` (`Grid` for a grid, `Flex`/default
         // otherwise) so a hide→show flip restores the right one.

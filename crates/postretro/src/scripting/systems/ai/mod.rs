@@ -24,14 +24,16 @@
 // shot flinch on an authored interrupt while it has nobody to chase.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use glam::{Quat, Vec3};
 
 mod brain_programs;
 mod brain_scope;
 mod candidate_scope;
+mod combat_slots;
 mod engine_floor;
+mod facing;
 mod graph_eval;
 mod targeting;
 
@@ -41,14 +43,12 @@ mod ai_tests;
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
-use crate::combat_positioning::{
-    CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
-    select_combat_positions_batch,
-};
-use crate::nav::NavGraph;
+use crate::nav::{NavGraph, find_path};
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
-use engine_floor::SteeringIntent;
+use combat_slots::resolve_combat_slots;
+use engine_floor::{POSITION_GOAL_ARRIVAL_EPSILON, SteeringIntent};
+use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use graph_eval::{
     action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
     steering_for,
@@ -63,9 +63,9 @@ use postretro_entities::components::mesh::{
 };
 use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
-    EntityRegistry, Transform,
+    EntityRegistry, EntityStateComponent, Transform,
 };
-use postretro_foundation::{ActionVerb, DamagePayload};
+use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
 use targeting::{
     TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
     target_distance,
@@ -78,21 +78,20 @@ use targeting::{
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
+/// Interim `@state` field supplying the engine's fresh-acquisition hostility
+/// floor. Guards consume the durable `@brain.targetHostile` fact instead of
+/// binding directly to this storage detail.
+pub(crate) const FACTION_STATE_FIELD: &str = "faction";
+/// Host-owned brain-bearing enemies begin in faction one. Player pawns leave
+/// the emergent state field absent and therefore read as faction zero.
+pub(crate) const ENEMY_DEFAULT_FACTION: f32 = 1.0;
+
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
 /// above it the enemy orients to its velocity and a locomotion state plays its
 /// own travel animation; at or below it the enemy is treated as stopped, faces
 /// its target, and a locomotion state substitutes the graph's rest animation. A
 /// shared epsilon keeps facing and locomotion animation in agreement.
 const MOVE_SPEED_EPSILON: f32 = 0.05;
-
-/// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering
-/// so visual facing catches up quickly without snapping.
-pub(crate) const FACING_TURN_RATE: f32 = crate::agent_steering::MAX_TURN_RATE * 2.0;
-
-/// How many ticks a resolved combat slot is held for its incumbent before the
-/// batch solver is free to reassign it to a challenger. See
-/// `resolve_combat_slots`/`retained_combat_slot`.
-const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LocomotionIntent {
@@ -119,89 +118,100 @@ fn should_switch_animation(state_changed: bool, moving: bool, latch: bool) -> bo
     state_changed || moving != latch
 }
 
-/// The reference enemy mesh's VISUAL forward axis in model space. The skinned
-/// glTF characters (`content/dev/models/reference_enemy_kaykit_knight`) are
-/// authored facing `+Z` in model space — the KayKit/glTF/Blender convention, and
-/// confirmed by this rig: the knee/toe IK control bones sit in front of the body
-/// at `+Z` (`kneeIK` ≈ `+0.576`, `control-toe-roll` ≈ `+0.246`). The renderer
-/// applies `Transform.rotation` straight to the model matrix with no import-time
-/// axis flip (`mesh_render.rs`, `Mat4::from_scale_rotation_translation`), so a
-/// rotation that aims the model's `+Z` at the target makes its FACE meet the
-/// target.
-///
-/// Note this is the OPPOSITE of the engine's camera/view forward, which is `-Z`
-/// (`camera.rs`: `forward(yaw) = (-sin yaw, 0, -cos yaw)`). Facing code orients a
-/// rendered MESH, so it must aim the mesh's authored front (`+Z`), not the view
-/// forward — aiming the view forward at the target would leave the model's back
-/// to it (a clean 180° error).
-const MESH_FORWARD: Vec3 = Vec3::Z;
-
-/// A yaw-only rotation that aims the model's visual forward ([`MESH_FORWARD`],
-/// `+Z`) at a horizontal direction. `Quat::from_rotation_y(yaw) * (+Z)` is
-/// `(sin yaw, 0, cos yaw)`; solving `that == dir_xz` gives `yaw = atan2(dx, dz)`,
-/// so the rotation turns the model's authored FRONT to face `dir`.
-///
-/// Returns `None` for a direction that yields no usable heading — negligible XZ
-/// length, or a non-finite component — so neither a zero-length nor a corrupt
-/// steering/aim vector ever produces a NaN yaw. The caller then leaves the
-/// existing facing untouched. The Y component is ignored: facing is yaw-only,
-/// keeping the model upright.
-fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
-    // Squared XZ length guard: below this the direction is too short to derive a
-    // stable heading (and `atan2(0, 0)` would be meaningless), so report "no
-    // facing change".
-    const MIN_XZ_LEN_SQ: f32 = 1e-8;
-    // The NaN test is not redundant with the length test: NaN compares false
-    // against EVERYTHING, so `len <= MIN` alone let a NaN component fall through
-    // to `atan2(NaN, NaN)` and write a NaN quaternion into `Transform.rotation`
-    // — from which nothing recovers, because the next tick reads that rotation
-    // back as its own current yaw. `+inf` needs no such treatment
-    // (`atan2(inf, inf)` is a finite π/4) and passes as usual.
-    let len_xz_sq = dir.x * dir.x + dir.z * dir.z;
-    if len_xz_sq.is_nan() || len_xz_sq <= MIN_XZ_LEN_SQ {
-        return None;
-    }
-    // Aim MESH_FORWARD at `dir` in the XZ plane: the yaw that rotates the model's
-    // authored forward heading onto the target heading. `Quat::from_rotation_y`
-    // measures yaw from `+Z` (its heading is `atan2(x, z)`), so subtract the
-    // model-forward's own heading — for `MESH_FORWARD == +Z` this term is `0`,
-    // leaving `atan2(dir.x, dir.z)`. Keeping the term keeps `MESH_FORWARD` the
-    // single source of truth: re-authoring the mesh-forward axis updates the result
-    // without touching this math.
-    let yaw = dir.x.atan2(dir.z) - MESH_FORWARD.x.atan2(MESH_FORWARD.z);
-    Some(Quat::from_rotation_y(yaw))
+fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32 {
+    registry
+        .get_component::<EntityStateComponent>(entity)
+        .map_or(0.0, |state| state.get(FACTION_STATE_FIELD))
 }
 
-fn yaw_from_rotation(rotation: Quat) -> f32 {
-    let heading = rotation * MESH_FORWARD;
-    heading.x.atan2(heading.z)
+/// Resolve a state motion whose destination depends on per-brain state. Unlike
+/// [`steering_for`], this runs in the compute pass where the spawn anchor,
+/// patrol descriptor, and persistent patrol cursor are all available.
+fn position_goal_steering(
+    motion: MotionVerb,
+    brain: &mut BrainComponent,
+    position: Vec3,
+) -> SteeringIntent {
+    match motion {
+        MotionVerb::MoveToAnchor => {
+            if crate::nav::distance_xz(position, brain.home_anchor) <= POSITION_GOAL_ARRIVAL_EPSILON
+            {
+                SteeringIntent::Clear
+            } else {
+                SteeringIntent::MoveTo(brain.home_anchor)
+            }
+        }
+        MotionVerb::Patrol => patrol_steering(brain, position),
+        // This resolver owns only motion modes with per-brain position goals.
+        // Every other mode remains the pure graph evaluator's responsibility.
+        MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => steering_for(motion),
+    }
 }
 
-/// Advance `current` yaw toward `target` by at most `max_delta` radians along the
-/// shortest arc. Returns `target` exactly when it is within the per-tick budget,
-/// preserving exact arrival instead of orbiting around the goal.
-///
-/// Total over non-finite input: a non-finite yaw here would otherwise be
-/// ABSORBING rather than transient, because `delta.signum()` is NaN for a NaN
-/// delta, so `current + NaN * max_delta` is NaN and the corrupt value is written
-/// straight back into the rotation the next tick reads. Falling back to whichever
-/// operand is finite keeps one bad frame from wedging an entity's facing forever.
-pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
-    if !target.is_finite() {
-        return current;
+/// Resolve the next patrol point and preserve the route phase on the brain.
+/// A malformed hand-built graph degrades to standing still; descriptor
+/// validation rejects the same shape before authored data reaches this path.
+fn patrol_steering(brain: &mut BrainComponent, position: Vec3) -> SteeringIntent {
+    let Some(patrol) = brain.graph.patrol.as_ref() else {
+        return SteeringIntent::Clear;
+    };
+    let point_count = patrol.points.len();
+    if point_count == 0 {
+        return SteeringIntent::Clear;
     }
-    if !current.is_finite() {
-        // Nothing sensible to slew FROM — seat the facing at the target rather
-        // than propagating the corruption through the arithmetic below.
-        return target;
+    let mode = patrol.mode;
+
+    // A saved brain may outlive a descriptor edit that shortens the route.
+    // Preserve its phase rather than resetting it before indexing.
+    brain.patrol_cursor %= point_count;
+    let mut goal = patrol_goal(brain);
+    if crate::nav::distance_xz(position, goal) <= POSITION_GOAL_ARRIVAL_EPSILON {
+        if point_count == 1 {
+            return SteeringIntent::Clear;
+        }
+        advance_patrol_cursor(brain, point_count, mode);
+        goal = patrol_goal(brain);
     }
-    let delta = (target - current + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-        - std::f32::consts::PI;
-    let max_delta = max_delta.max(0.0);
-    if delta.abs() <= max_delta {
-        target
-    } else {
-        current + delta.signum() * max_delta
+    SteeringIntent::MoveTo(goal)
+}
+
+fn patrol_goal(brain: &BrainComponent) -> Vec3 {
+    let patrol = brain
+        .graph
+        .patrol
+        .as_ref()
+        .expect("patrol goal is only requested for a present non-empty route");
+    let [x, z] = patrol.points[brain.patrol_cursor];
+    brain.home_anchor + Vec3::new(x, 0.0, z)
+}
+
+fn advance_patrol_cursor(brain: &mut BrainComponent, point_count: usize, mode: PatrolMode) {
+    if point_count == 1 {
+        return;
+    }
+
+    match mode {
+        PatrolMode::Loop => {
+            brain.patrol_cursor = (brain.patrol_cursor + 1) % point_count;
+        }
+        PatrolMode::PingPong if brain.patrol_direction >= 0 => {
+            brain.patrol_direction = 1;
+            if brain.patrol_cursor + 1 == point_count {
+                brain.patrol_direction = -1;
+                brain.patrol_cursor -= 1;
+            } else {
+                brain.patrol_cursor += 1;
+            }
+        }
+        PatrolMode::PingPong => {
+            brain.patrol_direction = -1;
+            if brain.patrol_cursor == 0 {
+                brain.patrol_direction = 1;
+                brain.patrol_cursor = 1;
+            } else {
+                brain.patrol_cursor -= 1;
+            }
+        }
     }
 }
 
@@ -217,22 +227,22 @@ struct EnemySnapshot {
 
 /// One enemy's resolved outcome after evaluating its brain this tick, applied in
 /// a second pass under `&mut registry`.
-struct EnemyOutcome {
-    id: EntityId,
+pub(super) struct EnemyOutcome {
+    pub(super) id: EntityId,
     /// This enemy's position as snapshotted, carried forward so combat-slot
     /// resolution needs nothing but the outcomes.
-    position: Vec3,
-    target: Option<TargetPawn>,
-    brain: BrainComponent,
+    pub(super) position: Vec3,
+    pub(super) target: Option<TargetPawn>,
+    pub(super) brain: BrainComponent,
     steering: SteeringIntent,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.
-    engaged: bool,
-    combat_slot: Option<Vec3>,
+    pub(super) engaged: bool,
+    pub(super) combat_slot: Option<Vec3>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
-    prior_acquired_target: Option<EntityId>,
+    pub(super) prior_acquired_target: Option<EntityId>,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -417,6 +427,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
+        // Read the evaluating enemy's mutable faction once for the whole
+        // compute pass. Candidate comparison consumes this scalar only on a
+        // fresh scan; retained target lookup deliberately does not see it.
+        let enemy_faction = entity_faction(registry, snap.id);
+        // A home-distance guard is about the evaluating enemy alone, not its
+        // target or the acquisition stride. Compute it once from this tick's
+        // immutable position snapshot before either branch can suppress target
+        // work.
+        let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_state_index = brain.state_index;
         let prior_acquired_target = brain.acquired_target;
         let (target, evaluate_acquisition) = if brain.aggro_armed {
@@ -440,6 +459,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     select_target(
                         registry,
                         snap.position,
+                        enemy_faction,
                         Some(retained.target.entity),
                         None,
                         candidate_filter,
@@ -456,6 +476,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 let (nearest_for_stride, nearest_selection) = select_target(
                     registry,
                     snap.position,
+                    enemy_faction,
                     None,
                     None,
                     candidate_filter,
@@ -465,9 +486,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     &brain,
                     nearest_for_stride.map(|candidate| candidate.distance),
                 );
-                // The raw candidate only prices the stride. A graph-filtered
-                // selection becomes a target only on a due tick; otherwise
-                // `BrainFacts` stay untargeted rather than borrowing it.
+                // The raw nearest hostile offer prices the stride. A
+                // graph-filtered selection becomes a target only on a due
+                // tick; otherwise `BrainFacts` stay untargeted rather than
+                // borrowing it.
                 (
                     evaluate_acquisition.then_some(nearest_selection).flatten(),
                     evaluate_acquisition,
@@ -497,6 +519,30 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // so neither can disagree about which target they describe.
         let selected_target =
             target.map(|target| (target.entity, target_distance(target, snap.position)));
+        let target_hostile = selected_target
+            .is_some_and(|(target, _)| entity_faction(registry, target) != enemy_faction);
+        // Reachability is the nav floor's pathfinder verdict, cached on the
+        // existing acquisition stride. It deliberately mirrors the same
+        // `find_path` capability chase consumes, rather than claiming a
+        // stronger ground-truth answer. An absent nav graph has no route query,
+        // so it is immediately unreachable even if a restored brain retained a
+        // cached result from an earlier map or acquisition stride.
+        let target_reachable = match (target, nav_graph) {
+            (Some(_), None) => {
+                brain.target_reachable = false;
+                false
+            }
+            (Some(target), Some(graph)) if evaluate_acquisition => {
+                let reachable = find_path(graph, snap.position, target.position).is_some();
+                brain.target_reachable = reachable;
+                reachable
+            }
+            (Some(_), Some(_)) => brain.target_reachable,
+            (None, _) => {
+                brain.target_reachable = false;
+                false
+            }
+        };
         let selected_distance = selected_target.map(|(_, distance)| distance);
         let (next_index, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
@@ -544,6 +590,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     time_in_state_ms: brain.time_in_state_ms,
                     attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
                     acquisition_due: evaluate_acquisition,
+                    distance_from_anchor,
+                    target_hostile,
+                    target_reachable,
                 },
             );
             let next_index = programs
@@ -553,7 +602,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 })
                 .unwrap_or(current_index);
             let steering = state_at(&brain.graph, next_index)
-                .map(|state| steering_for(state.motion))
+                .map(|state| state.motion)
+                .map(|motion| position_goal_steering(motion, &mut brain, snap.position))
                 .unwrap_or(SteeringIntent::Clear);
             // A chase with nothing to chase degrades to a stand-down: with no
             // target there is nothing to move relative to, and leaving the intent
@@ -658,9 +708,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         };
 
         // Steering: chase sets the destination to a selected combat slot when
-        // one is available, otherwise to the raw target position. Clear stands
-        // down; hold releases the agent on the tick it takes over and leaves it
-        // untouched thereafter.
+        // one is available, otherwise to the raw target position. Fixed
+        // position goals write their resolved destination directly. Clear
+        // stands down; hold releases the agent on the tick it takes over and
+        // leaves it untouched thereafter.
         // `set_destination`/`clear_destination` no-op when the enemy carries no
         // agent component.
         match outcome.steering {
@@ -699,6 +750,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     }
                 }
             }
+            SteeringIntent::MoveTo(goal) => {
+                agent_steering::set_destination(registry, outcome.id, goal);
+            }
             SteeringIntent::Clear => {
                 agent_steering::clear_destination(registry, outcome.id);
             }
@@ -723,13 +777,16 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
         // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
         // so without this the model keeps its spawn heading and moonwalks toward
-        // its selected target. Orient it believably each tick it is engaged:
+        // its selected target. Orient it believably each tick it is engaged, or
+        // while it is travelling under a fixed position goal:
         //   - Moving (XZ speed above the epsilon): face the velocity direction, so
         //     it faces where it is going even when routing around obstacles. The
         //     velocity is read from `path_state` (last tick's resolved velocity) —
         //     a one-tick lag on facing that is imperceptible.
         //   - Stopped but engaged (near-zero XZ speed — arrived/blocked/swinging):
         //     face this enemy's selected target.
+        //   - A stopped position-goal mover leaves facing untouched, even when
+        //     the target scan happened to find a nearby pawn.
         //   - Standing down: leave facing untouched.
         // The test is ENGAGEMENT, not the chase intent: a state that stands its
         // ground and swings must turn toward what it is hitting, or it lands
@@ -741,30 +798,25 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // propagates a non-finite current yaw — between them, no NaN can reach
         // `Transform.rotation`, which the renderer feeds straight into the model
         // matrix and which nothing else re-seats.
-        if outcome.engaged {
-            if let Some(path) = path_state.as_ref() {
-                let facing =
-                    if locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON {
-                        // Moving: face the direction of travel.
-                        yaw_rotation_toward(path.velocity)
-                    } else {
-                        // Stopped but engaged: face this enemy's selected target
-                        // (if one exists).
-                        outcome
-                            .target
-                            .and_then(|target| yaw_rotation_toward(target.position - path.position))
-                    };
-                if let Some(target_rotation) = facing {
-                    if let Ok(mut transform) =
-                        registry.get_component::<Transform>(outcome.id).cloned()
-                    {
-                        let current_yaw = yaw_from_rotation(transform.rotation);
-                        let target_yaw = yaw_from_rotation(target_rotation);
-                        let slewed_yaw =
-                            slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
-                        transform.rotation = Quat::from_rotation_y(slewed_yaw);
-                        let _ = registry.set_component(outcome.id, transform);
-                    }
+        if let Some(path) = path_state.as_ref() {
+            let moving = locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON;
+            let facing = match outcome.steering {
+                SteeringIntent::MoveTo(_) if moving => yaw_rotation_toward(path.velocity),
+                SteeringIntent::MoveTo(_) => None,
+                _ if outcome.engaged && moving => yaw_rotation_toward(path.velocity),
+                _ if outcome.engaged => outcome
+                    .target
+                    .and_then(|target| yaw_rotation_toward(target.position - path.position)),
+                _ => None,
+            };
+            if let Some(target_rotation) = facing {
+                if let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
+                {
+                    let current_yaw = yaw_from_rotation(transform.rotation);
+                    let target_yaw = yaw_from_rotation(target_rotation);
+                    let slewed_yaw = slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
+                    transform.rotation = Quat::from_rotation_y(slewed_yaw);
+                    let _ = registry.set_component(outcome.id, transform);
                 }
             }
         }
@@ -868,115 +920,4 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     }
 
     events
-}
-
-fn resolve_combat_slots(
-    outcomes: &mut [EnemyOutcome],
-    nav_graph: Option<&NavGraph>,
-    collision_world: Option<&CollisionWorld>,
-) {
-    // Slots belong to the ENGAGED: a brain standing its ground and swinging is
-    // occupying a piece of ground around the target just as much as one walking
-    // into it, so it keeps its claim and its incumbency. Only the destination
-    // WRITE keys on the chase intent.
-    for outcome in outcomes.iter_mut() {
-        outcome.combat_slot = None;
-        if !outcome.engaged {
-            clear_combat_slot(outcome);
-        }
-    }
-
-    let (Some(nav_graph), Some(collision_world)) = (nav_graph, collision_world) else {
-        for outcome in outcomes.iter_mut() {
-            clear_combat_slot(outcome);
-        }
-        return;
-    };
-
-    if !outcomes.iter().any(|outcome| outcome.engaged) {
-        return;
-    }
-
-    let other_agents: Vec<CombatAgentSnapshot> = outcomes
-        .iter()
-        .map(|outcome| CombatAgentSnapshot {
-            claimant_id: outcome.id.to_raw(),
-            position: outcome.position,
-        })
-        .collect();
-
-    let mut queries = Vec::new();
-    for outcome in outcomes.iter() {
-        if !outcome.engaged {
-            continue;
-        }
-        let Some(target) = outcome.target else {
-            continue;
-        };
-        let retained_slot = retained_combat_slot(outcome);
-        queries.push(CombatQuery {
-            claimant_id: outcome.id.to_raw(),
-            agent_pos: outcome.position,
-            // `attack.range` gates DAMAGE only; this is pure combat-slot
-            // spacing. The accessor resolves explicit `engagementRadius` →
-            // `attack.range` → a default, so a graph with no `attack` block
-            // still spreads chasers onto a ring instead of every one of them
-            // steering at the raw target position and piling up.
-            engagement_radius: outcome.brain.graph.engagement_radius(),
-            target_pos: target.position,
-            combat_slot: retained_slot,
-            scan_challengers: retained_slot.is_none(),
-            other_agents: &other_agents,
-            nav_graph,
-            collision_world,
-            path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
-        });
-    }
-
-    let assignments: HashMap<u32, Option<CombatCandidate>> =
-        select_combat_positions_batch(&queries)
-            .into_iter()
-            .map(|assignment| (assignment.claimant_id, assignment.candidate))
-            .collect();
-
-    for outcome in outcomes.iter_mut() {
-        if !outcome.engaged {
-            clear_combat_slot(outcome);
-            continue;
-        }
-
-        match assignments.get(&outcome.id.to_raw()).copied().flatten() {
-            Some(candidate) => {
-                outcome.combat_slot = Some(candidate.position);
-                outcome.brain.combat_slot = Some(candidate.position);
-                outcome.brain.combat_slot_hold_ticks = if candidate.is_incumbent {
-                    outcome.brain.combat_slot_hold_ticks.saturating_sub(1)
-                } else {
-                    COMBAT_SLOT_HOLD_TICKS
-                };
-            }
-            None => {
-                clear_combat_slot(outcome);
-            }
-        }
-    }
-}
-
-fn clear_combat_slot(outcome: &mut EnemyOutcome) {
-    outcome.combat_slot = None;
-    outcome.brain.combat_slot = None;
-    outcome.brain.combat_slot_hold_ticks = 0;
-}
-
-/// The slot this enemy may re-present as an incumbent: the one it held while
-/// already engaged with this same target, and only while its hold window is
-/// open. Both slot fields are still the PRIOR tick's here — nothing but this
-/// pass writes them.
-fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
-    let target = outcome.target?;
-    (outcome.engaged
-        && outcome.prior_acquired_target == Some(target.entity)
-        && outcome.brain.combat_slot_hold_ticks > 0)
-        .then_some(outcome.brain.combat_slot)
-        .flatten()
 }

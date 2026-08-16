@@ -48,18 +48,14 @@ pub fn validate_dense_lua_array(table: &Table, field_name: &str) -> Result<usize
 /// Impact-event ids are portable author addresses, not display labels.
 pub fn validate_impact_event_id(id: String) -> Result<String, DescriptorError> {
     let valid = !id.is_empty()
-        && id.len() <= 128
+        && id.len() <= 64
         && id.is_ascii()
-        && id.split(':').count() >= 2
-        && id.split(':').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-        });
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'));
     if !valid {
         return Err(DescriptorError::InvalidShape {
-            reason: "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes".to_string(),
+            reason: "impact-event `id` must be a non-empty ASCII string using only [A-Za-z0-9_.-], at most 64 bytes".to_string(),
         });
     }
     Ok(id)

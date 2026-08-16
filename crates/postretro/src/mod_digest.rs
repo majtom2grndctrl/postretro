@@ -228,6 +228,7 @@ mod tests {
             crossing(CrossingCondition::Ir(IrNode::Gt {
                 a: Box::new(IrNode::Input {
                     name: "player.speed".to_string(),
+                    owner: None,
                 }),
                 b: Box::new(IrNode::Const {
                     value: IrValue::Number(3.5),
@@ -250,6 +251,8 @@ mod tests {
             switching: Default::default(),
             entities: vec![entity_descriptor()],
             ui_trees: Vec::new(),
+            presentation_templates: Vec::new(),
+            presentation_overlays: Vec::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
             fonts: ModFontAssets::default(),
@@ -343,6 +346,7 @@ mod tests {
             )]),
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,
@@ -453,6 +457,7 @@ mod tests {
         changed_crossings[1].crossing.condition = CrossingCondition::Ir(IrNode::Ge {
             a: Box::new(IrNode::Input {
                 name: "player.speed".to_string(),
+                owner: None,
             }),
             b: Box::new(IrNode::Const {
                 value: IrValue::Number(3.5),
@@ -531,6 +536,7 @@ mod tests {
         let first = crossing(CrossingCondition::Ir(IrNode::Add {
             a: Box::new(IrNode::Input {
                 name: "player.speed".to_string(),
+                owner: None,
             }),
             b: Box::new(IrNode::Const {
                 value: IrValue::Number(1.0),
@@ -540,6 +546,7 @@ mod tests {
         let different = crossing(CrossingCondition::Ir(IrNode::Sub {
             a: Box::new(IrNode::Input {
                 name: "player.speed".to_string(),
+                owner: None,
             }),
             b: Box::new(IrNode::Const {
                 value: IrValue::Number(1.0),
@@ -557,6 +564,7 @@ mod tests {
                 &[crossing(CrossingCondition::Ir(IrNode::Add {
                     a: Box::new(IrNode::Input {
                         name: "player.speed".to_string(),
+                        owner: None,
                     }),
                     b: Box::new(IrNode::Const {
                         value: IrValue::Number(1.0),
@@ -649,7 +657,7 @@ mod tests {
         }
         match node {
             IrNode::Const { value: _ } => {}
-            IrNode::Input { name: _ } => {}
+            IrNode::Input { name: _, owner: _ } => {}
             IrNode::Add { a: _, b: _ } => {}
             IrNode::Sub { a: _, b: _ } => {}
             IrNode::Mul { a: _, b: _ } => {}

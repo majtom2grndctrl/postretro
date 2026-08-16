@@ -100,6 +100,7 @@ fn bundle_with_dependencies(entry: &Path, prelude: bool) -> Result<BundleWithDep
             cm: cm.clone(),
             dependencies: dependencies.clone(),
             validate_sdk_imports: !prelude,
+            apply_binding_name_sugar: !prelude,
         };
         let resolver_impl = RelativeOnlyResolver;
         let mut bundler = Bundler::new(
@@ -194,6 +195,7 @@ struct TsLoader {
     cm: Lrc<SourceMap>,
     dependencies: Rc<RefCell<Vec<PathBuf>>>,
     validate_sdk_imports: bool,
+    apply_binding_name_sugar: bool,
 }
 
 impl Load for TsLoader {
@@ -275,10 +277,17 @@ impl Load for TsLoader {
         resolver(unresolved_mark, top_level_mark, true).process(&mut program);
         strip(unresolved_mark, top_level_mark).process(&mut program);
 
-        let module = match program {
+        let mut module = match program {
             Program::Module(m) => m,
             Program::Script(_) => bail!("parsed `{}` as Script, expected Module", path.display()),
         };
+
+        // This must run before bundling: the bundler's inliner can rename a
+        // top-level binding, but the binding is the authored descriptor name.
+        // Prelude sources are SDK implementation, not authored scripts.
+        if self.apply_binding_name_sugar {
+            module.visit_mut_with(&mut BindingNameSugar);
+        }
 
         Ok(ModuleData {
             fm,
@@ -472,6 +481,72 @@ impl Hook for NoopHook {
 // ---------------------------------------------------------------------------
 // AST visitors
 // ---------------------------------------------------------------------------
+
+/// Lowers the TypeScript-only omitted-name descriptor form into the explicit
+/// runtime form while the source binding name is still available. Only direct
+/// identifier declarations qualify; helpers and other expression positions
+/// deliberately remain explicit-name-only.
+struct BindingNameSugar;
+
+impl VisitMut for BindingNameSugar {
+    fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        for item in items {
+            let var = match item {
+                ModuleItem::Stmt(Stmt::Decl(Decl::Var(var))) => Some(var),
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => match &mut export.decl {
+                    Decl::Var(var) => Some(var),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(var) = var {
+                apply_binding_name_sugar(var);
+            }
+        }
+    }
+}
+
+fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
+    for declarator in &mut var.decls {
+        let Pat::Ident(BindingIdent { id, .. }) = &declarator.name else {
+            continue;
+        };
+        let Some(init) = &mut declarator.init else {
+            continue;
+        };
+        let Expr::Call(call) = &mut **init else {
+            continue;
+        };
+        let swc_ecma_ast::Callee::Expr(callee) = &call.callee else {
+            continue;
+        };
+        let Expr::Ident(callee) = &**callee else {
+            continue;
+        };
+
+        let expected_arity = match callee.sym.as_ref() {
+            "defineStore" => 1,
+            "defineImpactEvent" => 2,
+            "definePresentationTemplate" => 1,
+            _ => continue,
+        };
+        if call.args.len() != expected_arity {
+            continue;
+        }
+
+        call.args.insert(
+            0,
+            swc_ecma_ast::ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::Lit(swc_ecma_ast::Lit::Str(swc_ecma_ast::Str {
+                    span: id.span,
+                    value: id.sym.clone().into(),
+                    raw: None,
+                }))),
+            },
+        );
+    }
+}
 
 /// Rewrites every surviving named-export form into a bare statement (or
 /// statements) that:
@@ -1239,6 +1314,117 @@ mod tests {
         assert!(
             !js.contains(": number"),
             "bundled output retained TS-only type annotation: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_derives_descriptor_names_from_top_level_bindings() {
+        let dir = unique_tempdir("binding-name-sugar");
+        let entry = dir.join("entry.ts");
+        fs::write(
+            &entry,
+            r#"
+            const progression = defineStore({ xp: 0 });
+            const reward = defineImpactEvent({ tag: "enemy" }, () => []);
+            const damageNumber = definePresentationTemplate({ root: { kind: "spacer" }, lifetimeMs: 1, motion: { rise: 0, easing: "linear" }, fade: { startMs: 0 }, spawnScatter: { radius: 0 } });
+            export const exported = defineStore({ credits: 0 });
+            export default defineMod({ stores: [progression, exported], events: [reward], presentationTemplates: [damageNumber] });
+            "#,
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        for name in ["progression", "reward", "damageNumber", "exported"] {
+            assert!(
+                js.contains(&format!("\"{name}\"")),
+                "bundle should insert `{name}` as a descriptor name: {js}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binding_name_sugar_leaves_non_qualifying_calls_explicit() {
+        let dir = unique_tempdir("binding-name-sugar-negative");
+        let entry = dir.join("entry.ts");
+        fs::write(
+            &entry,
+            r#"
+            const computedName = "computed";
+            const s = defineStore(computedName, { xp: 0 });
+            const explicit = defineImpactEvent("explicit", { tag: "enemy" }, () => []);
+            function helper() {
+                const helperStore = defineStore({ xp: 0 });
+                return helperStore;
+            }
+            const descriptors = { store: defineStore({ xp: 0 }) };
+            const { store: destructured } = { store: defineStore({ xp: 0 }) };
+            defineStore({ xp: 0 });
+            "#,
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        for name in ["s", "helperStore", "descriptors", "destructured"] {
+            assert!(
+                !js.contains(&format!("\"{name}\"")),
+                "non-qualifying call must not receive `{name}`: {js}"
+            );
+        }
+        assert!(
+            js.contains("\"explicit\""),
+            "explicit descriptor name should remain unchanged: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binding_name_sugar_uses_each_imported_modules_own_binding() {
+        let dir = unique_tempdir("binding-name-sugar-import");
+        let entry = dir.join("entry.ts");
+        let declarations = dir.join("declarations.ts");
+        fs::write(
+            &declarations,
+            "export const importedStore = defineStore({ xp: 0 });\n",
+        )
+        .unwrap();
+        fs::write(
+            &entry,
+            "import { importedStore as localStore } from \"./declarations\"; void localStore;\n",
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        assert!(
+            js.contains("\"importedStore\""),
+            "imported module should use its own binding name: {js}"
+        );
+        assert!(
+            !js.contains("\"localStore\""),
+            "importer binding must not rename the imported declaration: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prelude_bundle_does_not_apply_binding_name_sugar() {
+        let dir = unique_tempdir("binding-name-sugar-prelude");
+        let entry = dir.join("prelude.ts");
+        fs::write(
+            &entry,
+            "export const preludeStore = defineStore({ xp: 0 });\n",
+        )
+        .unwrap();
+
+        let js = bundle_prelude(&dir).expect("prelude bundle should succeed");
+        assert!(
+            !js.contains("defineStore(\"preludeStore\""),
+            "prelude declarations must not receive binding-derived names: {js}"
         );
 
         let _ = fs::remove_dir_all(&dir);

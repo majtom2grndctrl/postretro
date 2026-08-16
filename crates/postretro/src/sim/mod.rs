@@ -1420,6 +1420,7 @@ mod tests {
             ]),
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: None,
             engagement_radius: None,
             move_speed,
@@ -1785,6 +1786,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: Default::default(),
+                        per_owner: false,
                         accumulate: None,
                     }),
                 )],
@@ -2174,6 +2176,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    per_owner: false,
                     accumulate: None,
                 }),
             )

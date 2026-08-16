@@ -90,6 +90,10 @@ const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../sdk/lib/ui/layout.luau")
 /// `postretro/ui`; these are no longer promoted to bare Luau globals.
 const UI_TREE_LUAU_SRC: &str = include_str!("../../../sdk/lib/ui/tree.luau");
 
+/// SDK library prelude — passive presentation-template authoring for the
+/// `postretro/ui` virtual module. These descriptors never become modal trees.
+const UI_PRESENTATION_LUAU_SRC: &str = include_str!("../../../sdk/lib/ui/presentation.luau");
+
 /// SDK library prelude — `ui/state.luau` returns state-reference helpers plus
 /// the presentation-local state namespace for `postretro/ui`. Authoritative
 /// helpers are pure descriptor composers; local cell handles remain
@@ -141,6 +145,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "damage",
     "grantHealth",
     "grantAmmo",
+    "addSlot",
     "enemies",
     "spawner",
     "armTrigger",
@@ -151,7 +156,11 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
-    "slot",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
 ];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.
@@ -203,6 +212,18 @@ const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 /// UI tree SDK fields exported through `require("postretro/ui")`.
 const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
 
+/// Passive presentation-template builder exported through `postretro/ui`.
+const UI_PRESENTATION_FIELDS: &[&str] = &[
+    "definePresentationTemplate",
+    "damagedEnemies",
+    "defineOverlay",
+    "fact",
+];
+
+/// Data-script impact builder exposed only through `postretro/ui`, not as a
+/// root/bare global alongside the ordinary data declarations.
+const UI_DATA_SCRIPT_FIELDS: &[&str] = &["present"];
+
 /// UI state-helper SDK fields exported through `require("postretro/ui")`.
 const UI_STATE_MODULE_FIELDS: &[&str] = &[
     "bindState",
@@ -238,6 +259,11 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "Grid",
     "Tree",
     "defineUiTree",
+    "definePresentationTemplate",
+    "damagedEnemies",
+    "defineOverlay",
+    "fact",
+    "present",
     "getGameState",
     "bindState",
     "stateEquals",
@@ -282,6 +308,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "damage",
     "grantHealth",
     "grantAmmo",
+    "addSlot",
     "enemies",
     "spawner",
     "armTrigger",
@@ -292,7 +319,11 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
-    "slot",
+    "read",
+    "fromRuntime",
+    "set",
+    "update",
+    "when",
     "brain",
     "candidate",
     "state",
@@ -679,6 +710,15 @@ pub fn evaluate_prelude(
             source_name: "sdk/lib/ui/tree.luau".to_string(),
         })?;
 
+    let ui_presentation_sdk: Table = lua
+        .load(UI_PRESENTATION_LUAU_SRC)
+        .set_name("postretro/sdk/ui/presentation.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/presentation.luau`: {e}"),
+            source_name: "sdk/lib/ui/presentation.luau".to_string(),
+        })?;
+
     let ui_state_sdk: Table = lua
         .load(UI_STATE_LUAU_SRC)
         .set_name("postretro/sdk/ui/state.luau")
@@ -746,6 +786,7 @@ pub fn evaluate_prelude(
                 ui_widgets_sdk,
                 ui_layout_sdk,
                 ui_tree_sdk,
+                ui_presentation_sdk,
                 ui_state_sdk,
                 ui_theme_sdk,
             },
@@ -767,6 +808,7 @@ struct LuauSdkExportInventory {
     ui_widgets_sdk: Table,
     ui_layout_sdk: Table,
     ui_tree_sdk: Table,
+    ui_presentation_sdk: Table,
     ui_state_sdk: Table,
     ui_theme_sdk: Table,
 }
@@ -798,6 +840,18 @@ fn populate_virtual_modules(
         &inventory.ui_tree_sdk,
         UI_TREE_FIELDS,
         "ui/tree.luau",
+    )?;
+    copy_fields_to_table(
+        &ui_module,
+        &inventory.ui_presentation_sdk,
+        UI_PRESENTATION_FIELDS,
+        "ui/presentation.luau",
+    )?;
+    copy_fields_to_table(
+        &ui_module,
+        &inventory.data_sdk,
+        UI_DATA_SCRIPT_FIELDS,
+        "data_script.luau",
     )?;
     copy_fields_to_table(
         &ui_module,
@@ -917,12 +971,13 @@ mod tests {
             .expect("data-script SDK fields must be string-keyed");
         let expected = DATA_SCRIPT_FIELDS
             .iter()
+            .chain(UI_DATA_SCRIPT_FIELDS.iter())
             .map(|field| (*field).to_string())
             .collect::<BTreeSet<_>>();
 
         assert_eq!(
             actual, expected,
-            "every returned data-script SDK builder must be promoted as a bare global and copied into `require(\"postretro\")`"
+            "every data-script builder must be inventoried; UI-only builders remain available only through `require(\"postretro/ui\")`"
         );
     }
 

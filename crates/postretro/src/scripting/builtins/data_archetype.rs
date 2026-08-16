@@ -17,6 +17,7 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
+use crate::scripting_systems::ai::{ENEMY_DEFAULT_FACTION, FACTION_STATE_FIELD};
 #[cfg(test)]
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
@@ -581,13 +582,22 @@ pub(crate) fn attach_descriptor_components(
     };
     if let Some(move_speed) = brain_move_speed {
         let aggro_armed = ai_aggro_armed_on_spawn(entity);
+        let home_anchor = registry
+            .get_component::<Transform>(id)
+            .expect("newly spawned descriptor entity carries a Transform")
+            .position;
         if let Ok(mut brain) = registry
             .get_component::<postretro_entities::components::brain::BrainComponent>(id)
             .cloned()
         {
             brain.aggro_armed = aggro_armed;
+            brain.home_anchor = home_anchor;
             let _ = registry.set_component(id, brain);
         }
+        registry
+            .entity_state_mut(id)
+            .expect("newly spawned descriptor entity carries entity state")
+            .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         let _ = attach_agent(registry, id, &params, move_speed);
@@ -3079,6 +3089,20 @@ mod tests {
         let brain = reg.get_component::<BrainComponent>(id).unwrap();
         assert_eq!(*brain.graph, authored, "the authored graph is retained");
         assert_eq!(brain.state_name(), Some(authored.initial.as_str()));
+        assert_eq!(
+            brain.home_anchor,
+            reg.get_component::<Transform>(id)
+                .expect("behavior enemy has a transform")
+                .position,
+            "host brain anchors to its spawn transform rather than descriptor data"
+        );
+        assert_eq!(
+            reg.entity_state_mut(id)
+                .expect("behavior enemy carries entity state")
+                .get(FACTION_STATE_FIELD),
+            ENEMY_DEFAULT_FACTION,
+            "host descriptor assembly seeds the transparent default enemy faction"
+        );
     }
 
     #[test]

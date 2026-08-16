@@ -98,6 +98,7 @@ mod tests {
         IrNode::Select {
             cond: Box::new(IrNode::Input {
                 name: BRAIN_HAS_TARGET_INPUT.to_string(),
+                owner: None,
             }),
             a: Box::new(always()),
             b: Box::new(IrNode::Const {
@@ -122,6 +123,7 @@ mod tests {
             states,
             interrupts: Vec::new(),
             candidate_filter: None,
+            patrol: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,

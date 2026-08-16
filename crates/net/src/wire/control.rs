@@ -1,6 +1,8 @@
 // Handshake, admission, and host-control wire declarations.
 // See: context/lib/networking.md
 
+use std::collections::BTreeMap;
+
 use bitcode::{Decode, Encode};
 
 /// The fixed size of renetcode's client-authentication user-data field.
@@ -16,8 +18,10 @@ pub const DISPLAY_NAME_MAX_BYTES: usize = 200;
 
 /// A player-controlled durable identity carried in a connection claim.
 ///
-/// The bytes are opaque. Consumers may retain or compare the whole value, but
-/// must not parse, slice, order, or derive from them.
+/// The bytes are semantically opaque. Consumers may retain or compare the
+/// whole value, but must not parse, slice, order, or derive meaning from it.
+/// Persistence boundaries may encode or decode the complete 16-byte value as
+/// canonical lowercase hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct PlayerClaimId(pub [u8; 16]);
 
@@ -103,8 +107,21 @@ pub struct ParityDeclaration {
     pub level: Option<(String, [u8; 32])>,
 }
 
+/// A persisted per-owner value carried from a joining client to the host.
+///
+/// This mirrors the engine persistence value vocabulary without its JSON-only
+/// `Unsupported` case so the registry-blind transport stays independent of the
+/// engine's on-disk representation.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum JoinSeedValue {
+    Boolean(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<f64>),
+}
+
 /// Tagged client -> server Control envelope. New variants must be appended.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ClientControlMessage {
     Admission {
         protocol: ProtocolVersion,
@@ -116,6 +133,13 @@ pub enum ClientControlMessage {
     /// A client-authoritative inventory switch declaration. The transport only
     /// carries its slot; engine code validates the owned pawn and its inventory.
     SwitchDeclaration(ClientSwitchDeclaration),
+    /// Persisted per-owner values keyed by the authored durable slot identity.
+    ///
+    /// New variants must be appended because bitcode encodes enum tags
+    /// positionally. The host validates these entries against its own registry.
+    JoinSeed {
+        slots: BTreeMap<String, JoinSeedValue>,
+    },
 }
 
 /// Reliable client -> host declaration of the inventory slot the client switched to.
@@ -462,6 +486,12 @@ mod tests {
                 slot: 3,
             }
         )));
+        assert!(round_trips(&ClientControlMessage::JoinSeed {
+            slots: BTreeMap::from([(
+                "kplayer0000000001".to_string(),
+                JoinSeedValue::Array(vec![0.25, 0.75]),
+            )]),
+        }));
         assert!(round_trips(&ServerControlMessage::Divergence(
             DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
         )));

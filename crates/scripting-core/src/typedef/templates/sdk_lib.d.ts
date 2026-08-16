@@ -121,7 +121,7 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `addSlot`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, `grantAmmo`, and `addSlot` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -267,8 +267,8 @@
   const sourceBrand: unique symbol;
   const impactEventBrand: unique symbol;
   const effectBrand: unique symbol;
-  export type NumberValue = number | NumberRef;
-  export type BoolValue = boolean | BoolRef;
+  export type NumberValue = number | NumberRef | RuntimeValue;
+  export type BoolValue = boolean | BoolRef | RuntimeValue;
   export interface NumberRef {
     readonly [numBrand]: true;
     plus(n: NumberValue): NumberRef;
@@ -291,7 +291,11 @@
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
+  export type RuntimeExpressionRefs = Readonly<{
+    number(value: RuntimeValue): NumberRef;
+    bool(value: RuntimeValue): BoolRef;
+  }>;
+  /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, `set`, or `update`. */
   export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
@@ -315,7 +319,6 @@
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
     grantAmmo(type: string, amount: NumberValue): Effect;
   }
-  export interface NumberSlot { add(delta: NumberValue): Effect; }
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
@@ -392,7 +395,11 @@
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
 
-  /** Define a pure impact-policy descriptor. Register it only by returning it through `events`. */
+  /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
+  export function defineImpactEvent(
+    filter: ImpactEventFilter,
+    build: (impact: Impact) => readonly EffectOrGroup[],
+  ): ImpactEvent;
   export function defineImpactEvent(
     id: string,
     filter: ImpactEventFilter,
@@ -422,6 +429,8 @@
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
   export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
   export function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor;
+  /** Add a delta to one per-owner numeric slot for each selected player pawn. */
+  export function addSlot(target: ActivatorsTarget | string, slot: StateRef<number>, delta: number): PrimitiveReactionDescriptor;
   /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
   export type EnemyGroupFilter = { tag?: string };
   /** Typed, additive partial for consequential enemy-state updates. */
@@ -458,14 +467,22 @@
   const writableStateRefBrand: unique symbol;
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
-  export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
-  export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
+  export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
+  export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: "@impact.source"; readonly [stateRefValueBrand]: T };
+  export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
+  export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
+  export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
+  export type StateRef<T> = ComputedRef<T> | Ref<T>;
+  type StoreComputedRef<T> = ComputedRef<T> & { byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T> };
+  type StoreRef<T> = Ref<T> & { byPlayer(owner: SourceHandle): OwnerAddressedRef<T> };
 
-  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. */
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves global slots on clean exit. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value and permits only omitted `network` or `network: "ownerPrivate"`; `network: "shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
-    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
-    | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
-    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
+    | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => RuntimeValue }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
   ) & Record<string, unknown>;
 
   /** Plain declaration data returned through `ModManifest.stores`. */
@@ -474,10 +491,10 @@
   /** Maps one schema slot's `type` discriminant to its handle value type:
    * `{type:"number"}` → number ref, `{type:"boolean"}` →
    * boolean ref, `array` → numeric-array ref, and `string`/`enum` →
-   * string ref. Slots with `readonly: true` produce `ReadonlyStateRef<T>`;
-   * all other slots produce `WritableStateRef<T>`. */
+   * string ref. Slots with `readonly: true` produce `ComputedRef<T>`;
+   * all other slots produce `Ref<T>`. */
   export type StoreStateRefForSlot<Slot, T> =
-    Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+    Slot extends { readonly: true } ? StoreComputedRef<T> : StoreRef<T>;
 
   export type StateValueForSlot<Slot> =
     Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
@@ -485,20 +502,38 @@
     Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
     StoreStateRefForSlot<Slot, string>;
 
-  /** Result of a pure `defineStore` call. Return `declaration` from `ModManifest.stores`; use `state` references in descriptors. */
+  declare const storeDefinitionBrand: unique symbol;
+  /** Frozen store handle whose enumerable keys are its schema's slot refs. Pass it to `defineMod({ stores: [store] })`. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
-    readonly declaration: StoreDeclaration;
-    readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+    readonly [K in keyof S]: StateValueForSlot<S[K]>;
+  } & {
+    readonly [storeDefinitionBrand]: S;
+  };
+  type StoreDefinitionHandle = { readonly [storeDefinitionBrand]: unknown };
+  export type ModManifestInput = Omit<ModManifest, "stores"> & {
+    readonly stores?: readonly (StoreDeclaration | StoreDefinitionHandle)[];
   };
 
-  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  /** Build a frozen state-store handle. Omit `namespace` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Pass the handle through `defineMod({ stores: [store] })`; `defineMod` resolves declaration data before the manifest crosses the FFI. */
+  export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+    schema: S,
+  ): StoreDefinition<S>;
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     namespace: string,
     schema: S,
   ): StoreDefinition<S>;
 
-  /** Build an additive write for a writable Number store slot. */
-  export function slot(ref: WritableStateRef<number>): NumberSlot;
+  /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
+  export function read(ref: StateRef<number>): NumberRef;
+  export function read(ref: StateRef<boolean>): BoolRef;
+  /** Lift raw `runtime.*` output into the fluent impact-expression algebra. */
+  export const fromRuntime: RuntimeExpressionRefs;
+  /** Build an absolute number-store write. An owner-addressed ref lowers to an `@impact.source` command. */
+  export function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect;
+  /** Build a read-modify-write; `cur` is read during impact plan phase before effects apply. Owner-addressed reads resolve the live per-seat map, not a frozen snapshot. */
+  export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;
+  /** Build a deferred impact-effect group guarded by a Bool expression. */
+  export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
 
   // -------------------------------------------------------------------------
   // UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -598,24 +633,27 @@
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   /** A presentation-local bind reference produced by `ui.createLocalState(...).cells.<name>.get()`. It resolves inside the nearest declaring `localState` scope, not the engine state store. */
   export type LocalBindRef = { local: string };
+  const presentationFactValueBrand: unique symbol;
+  /** Producer-stamped scalar available only while laying out a passive presentation instance. */
+  export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
-  /** A reactive condition used by `visibleWhen`, `selected`, and `checked`: read either an engine state ref or presentation-local cell and compare it to `equals` when provided. */
-  export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
   /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
   export type AnnouncePriority = "polite" | "assertive";
-  /** State binding for a `Text` widget. The source is a readable engine state ref or presentation-local cell; `format` is a one-placeholder string such as `"HP {}"`; numeric sources may also tween. */
-  export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
   /** State binding for a `Panel` fill color. The source resolves to a numeric RGBA array; `tween` eases the displayed color and never writes back to state. */
-  export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
+  export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   /** State binding for a writable numeric `Slider`. Engine refs must be writable; local cells are valid. The optional number tween controls displayed thumb movement only. */
-  export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  /** State binding for a readonly numeric `Bar`. The value is displayed against `max`; it is not interactive and never writes state. */
-  export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
   /** Bar denominator: either a literal number or a readonly numeric state ref such as `getGameState().player.maxHealth`. */
-  export type BarMaxProp = number | ReadonlyStateRef<number>;
+  export type BarMaxProp = number | ComputedRef<number>;
   /** One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold; omit it on the final entry to make that entry the default band. `color`, `pulse`, and `flash` affect the rendered style, not authoritative state. */
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   /** Continuous value-to-style map for text, panel, and bar widgets. Values are normalized by `max`; entries are evaluated in order, and bars commonly use `max: 1.0` because they style their displayed fill fraction. */
@@ -694,7 +732,7 @@
   /** Tree input behavior. `"capture"` makes this tree consume UI input and freeze lower modal layers; `"passthrough"` is the HUD/default mode and lets game input continue. */
   export type WidgetCaptureMode = "capture" | "passthrough";
   /** Placement envelope props for `Tree`. `anchor` + `offset` position the root in 1280x720 logical UI space; `captureMode`, `initialFocus`, and `textEntryTarget` control modal/input behavior. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole };
   /** The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI registries. `textEntryTarget` is serialized to its dotted state-slot name. */
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
@@ -708,15 +746,15 @@
 
   /** Options accepted by `bindState` for each state value type. Numbers may format and tween, numeric arrays may color-tween, and scalar strings/booleans may format. */
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
-    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
-    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;
   /** Compose bind-only options onto a state ref, emitting `{ slot, ...options }`. */
-  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
-  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+  export function bindState<T>(ref: ComputedRef<T>): ComputedRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build `{ slot, equals }` for scalar state refs. */
-  export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
+  export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
 
   /** A presentation-cell initial value (`CellInit` wire shapes). */
   type CellInit = number | boolean | string | [number, number, number, number];
@@ -735,8 +773,8 @@
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. Must be non-empty ASCII, at most 64 bytes, and use only `[A-Za-z0-9_.:-]`. Namespacing is recommended, not enforced. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
-  export function defineMod(config: ModManifest): ModManifest;
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. */
+  export function defineMod(config: ModManifestInput): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
   /** Pure identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
@@ -760,8 +798,8 @@
 
   /** Literal scalar leaf: `{ op: "const", value }`. `value` is a number or boolean. */
   export type RuntimeConst = { op: "const"; value: number | boolean };
-  /** Named-input leaf: `{ op: "input", name }`. Bound to live state by the Rust evaluator. */
-  export type RuntimeRead = { op: "input"; name: string };
+  /** Named-input leaf: `{ op: "input", name, owner? }`. `owner` selects a per-owner store value in an owner-aware scope. */
+  export type RuntimeRead = { op: "input"; name: string; owner?: string };
   /** Addition: `a + b` (number). */
   export type RuntimeAdd = { op: "add"; a: RuntimeValue; b: RuntimeValue };
   /** Subtraction: `a - b` (number). */
@@ -811,7 +849,7 @@
 
   /** A builder operand: an already-built node, or a bare `number`/`boolean`
    * literal that the builder auto-wraps into a `const` node. */
-  type RuntimeOperand = RuntimeValue | ReadonlyStateRef<unknown> | number | boolean;
+  type RuntimeOperand = RuntimeValue | ComputedRef<unknown> | number | boolean;
 
   /** Pure builder vocabulary for runtime values, installed as
    * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
@@ -822,7 +860,7 @@
     /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
     constant(value: number | boolean): RuntimeConst;
     /** Named-input leaf, bound to live state by name in the Rust evaluator. */
-    read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;
+    read(name: string | ComputedRef<unknown>): RuntimeRead;
     /** `a + b` (number). */
     add(a: RuntimeOperand, b: RuntimeOperand): RuntimeAdd;
     /** `a - b` (number). */
@@ -885,6 +923,12 @@
     readonly targetMaxHealth: RuntimeRead;
     /** `true` once the selected target's death sweep has handled it; false with no target (boolean). */
     readonly targetDied: RuntimeRead;
+    /** XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number). */
+    readonly distanceFromAnchor: RuntimeRead;
+    /** `true` when the selected target's faction differs from this enemy's; false with no target (boolean). */
+    readonly targetHostile: RuntimeRead;
+    /** `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean). */
+    readonly targetReachable: RuntimeRead;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

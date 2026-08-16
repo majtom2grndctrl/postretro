@@ -165,6 +165,10 @@ fn rust_to_ts_known_types() {
     assert_eq!(rust_to_ts("core::option::Option<u32>"), "number | null");
     assert_eq!(rust_to_ts("alloc::vec::Vec<u32>"), "ReadonlyArray<number>");
     assert_eq!(
+        rust_to_ts("alloc::vec::Vec<PatrolPoint>"),
+        "ReadonlyArray<readonly [number, number]>"
+    );
+    assert_eq!(
         rust_to_ts("core::result::Result<u32, postretro::scripting::error::ScriptError>"),
         "number"
     );
@@ -187,6 +191,15 @@ fn rust_to_luau_known_types() {
     assert_eq!(rust_to_luau("bool"), "boolean");
     assert_eq!(rust_to_luau("core::option::Option<u32>"), "number?");
     assert_eq!(rust_to_luau("alloc::vec::Vec<u32>"), "{number}");
+    assert_eq!(
+        rust_to_luau("alloc::vec::Vec<PatrolPoint>"),
+        "{{number, number}}"
+    );
+    assert_eq!(
+        rust_to_luau("[f32; 3]"),
+        "{number}",
+        "unrelated fixed arrays keep their existing declaration"
+    );
     // Both runtimes share `common.rs`; the guard and state-map spellings must
     // resolve on the Luau side too rather than falling through as-is.
     assert_eq!(
@@ -210,9 +223,9 @@ fn generic_brand_emits_exact_contract_without_changing_plain_brands() {
 
     let ts = generate_typescript(&registry);
     assert!(ts.contains("  export type EntityId = number & { readonly __brand: \"EntityId\" };"));
-    assert!(ts.contains("  export type StateValue<T> = WritableStateRef<T>;"));
+    assert!(ts.contains("  export type StateValue<T> = Ref<T>;"));
 
     let luau = generate_luau(&registry);
     assert!(luau.contains("export type EntityId = number"));
-    assert!(luau.contains("export type StateValue<T> = WritableStateRef<T>"));
+    assert!(luau.contains("export type StateValue<T> = Ref<T>"));
 }

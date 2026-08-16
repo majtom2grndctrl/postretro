@@ -7,6 +7,22 @@
 
 use super::*;
 
+/// One live, app-projected passive presentation instance for this render frame.
+/// The app owns its lifetime and producer-stamped facts; the renderer owns its
+/// template layout and font measurement before folding the resulting draw data
+/// into the UI composition.
+#[derive(Debug, Clone)]
+pub struct PresentationDrawInput {
+    pub instance_id: u64,
+    pub template: postretro_entities::PresentationTemplateHandle,
+    pub facts: postretro_entities::PresentationFacts,
+    pub anchor: [f32; 2],
+    pub opacity: f32,
+    /// False when the live instance is camera-culled. The renderer still
+    /// advances its retained facts/tweens, but emits no draw items this frame.
+    pub visible: bool,
+}
+
 impl Renderer {
     /// Present an acquired frame handle. Surface ownership stays inside the
     /// renderer; callers only decide whether to present a returned handle.
@@ -70,6 +86,27 @@ impl Renderer {
     /// the render signature stable. The boot splash does NOT use this.
     pub fn set_ui_snapshot(&mut self, snapshot: postretro_ui::UiReadSnapshot) {
         self.full_mut().ui_snapshot = snapshot;
+    }
+
+    /// Store this frame's app-produced passive presentation instances. The
+    /// renderer resolves their template draw data later, where it owns the
+    /// `FontSystem`, UI theme, and image registry. They never enter the retained
+    /// gameplay-tree or focus/hit-test path.
+    pub fn set_presentation_draw_inputs(
+        &mut self,
+        inputs: Vec<PresentationDrawInput>,
+    ) -> Vec<PresentationDrawInput> {
+        std::mem::replace(&mut self.full_mut().presentation_inputs, inputs)
+    }
+
+    /// Install the committed manifest snapshot used to resolve passive
+    /// presentation handles. The renderer owns all widget layout and font work;
+    /// this API transfers only VM-free descriptor data.
+    pub fn set_presentation_templates(
+        &mut self,
+        templates: Vec<postretro_scripting_core::data_descriptors::PresentationTemplate>,
+    ) {
+        self.full_mut().ui.replace_presentation_templates(templates);
     }
 
     /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack

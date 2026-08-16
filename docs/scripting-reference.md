@@ -62,6 +62,37 @@ registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
 The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
+**Durable store identity.** A mod-owned slot with writable `persist: true` or
+any `network` replication scope (`"shared"` or `"ownerPrivate"`) must have an
+entry in `<mod-root>/identity.json`:
+
+```json
+{
+  "version": 1,
+  "slots": {
+    "options.master": "k0123456789abcdef"
+  }
+}
+```
+
+After adding such a slot, run
+`cargo run -p xtask -- mint-identity <mod-root>` and ship the updated file with
+the mod. When renaming a store or slot, rename the dotted key in this file but
+keep its opaque value; that retains saved data and replication identity. Missing
+or invalid durable identity rejects mod initialization. This is stricter than an
+ordinary missing, malformed, or incompatible saved value, which warns and leaves
+the declared default active.
+
+**Per-owner stores.** `perOwner: true` gives each player seat an independent
+host-side value. Omit `network` for host-local bookkeeping or use
+`network: "ownerPrivate"` to replicate each value only to its owner.
+`network: "shared"` is valid only for global slots. `updateState`/legacy
+`setState` cannot write per-owner slots; use an owner-addressed impact `set` or
+`update`, or the `addSlot` reaction. Generic `storeRead(name)` and
+`storeWrite(name, value)` also reject per-owner slots because they carry no
+owner address. Per-owner values are session-scoped: `perOwner: true` with
+`persist: true` is rejected.
+
 **Render profile.** The optional `render.bloom` block picks the mod's bloom look
 once, for the whole mod:
 
@@ -367,14 +398,13 @@ import { updateState } from "postretro/ui";
 const puzzle = defineStore("puzzle", {
   charge: { type: "number", default: 0, range: [0, 3] },
 });
-const ref = puzzle.state.charge;
-const slot = ref.slot;
+const ref = puzzle.charge;
 
-const increment = updateState(ref, runtime.add(runtime.read(slot), 1));
-const decrement = updateState(ref, runtime.sub(runtime.read(slot), 1));
+const increment = updateState(ref, runtime.add(runtime.read(ref), 1));
+const decrement = updateState(ref, runtime.sub(runtime.read(ref), 1));
 const keepInBounds = updateState(
   ref,
-  runtime.clamp(runtime.add(runtime.read(slot), 1), 0, 3),
+  runtime.clamp(runtime.add(runtime.read(ref), 1), 0, 3),
 );
 ```
 
@@ -456,9 +486,10 @@ the brain changes state. **Currently, the offer set is player pawns.** A future
 engine-owned perception predicate will narrow that set to candidates an enemy
 can perceive. The engine makes no aliveness judgement while choosing among the
 current offer set: an unfiltered graph can select a dead pawn, though the attack
-gate still will not hit one. A graph's optional `candidateFilter` decides which
-offered candidates are worth engaging; it can only narrow the offer set and
-never ranks candidates or drops a target already retained.
+gate still will not hit one. Fresh acquisition also offers only pawns whose
+faction is hostile to the evaluating enemy. A graph's optional `candidateFilter`
+decides which offered candidates are worth engaging; it can only narrow the
+offer set and never ranks candidates or drops a target already retained.
 
 Guards are [runtime values](#runtime-values) — the same `runtime.*` builders as
 dash fields, bound against a brain-fact namespace instead of the movement one.
@@ -543,17 +574,18 @@ defineEntity({
 | `states` | `{ [name]: BehaviorState }` | The declared states, keyed by a name you choose. Must declare at least one. Duplicate names are rejected. |
 | `interrupts` | `Transition[]` (optional) | Any-state edges, evaluated in declaration order **before** the current state's own transitions. Defaults to none. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
+| `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. `points` is a non-empty list of `[x, z]` metre offsets from the spawn anchor; `mode` is `"loop"` or `"pingPong"`. Required whenever a state uses `"patrol"`. The per-enemy cursor persists when the graph leaves and re-enters patrol. |
 | `attack` | `{ damage, range, cooldownMs }` (optional) | Tuning for the `attack` action verb. **Required** whenever any state declares `action: "attack"`. Permitted even when none does, because `attack.range` is what `engagementRadius` falls back to. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `range` and `cooldownMs` must be finite and `> 0`. |
 | `engagementRadius` | `number` (optional) | Radius in metres of the ring of combat slots the engine spreads engaged agents around their target. Finite and `> 0`. See *`attack.range` vs `engagementRadius`* below. |
-| `moveSpeed` | `number` | Pursuit movement speed in metres/sec, seeding the navigation agent. Finite and `> 0`. |
+| `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
 Each entry in `states`:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `animation` | `string` | Non-empty. Names a key of `components.mesh.animations`. That link is checked at **spawn**, not at load (it is cross-component): an unknown name warns once and keeps the previous animation — it never aborts the spawn. |
-| `motion` | `"chaseTarget" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
-| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. |
+| `motion` | `"chaseTarget" \| "moveToAnchor" \| "patrol" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
+| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are always non-engaged. |
 | `transitions` | `Transition[]` (optional) | State-local edges, evaluated in declaration order after the graph's interrupts. Omit for a state with no exits. |
 | `onEnter` | `string` (optional) | A named-event address fired through the post-tick event drain when the brain **changes into** this state. It is a *change*, not an entry: the brain is seeded directly in `initial` at spawn with no transition, so an `onEnter` on `initial` does **not** fire then. It does fire when the aggro gate forces the brain back to `initial` from somewhere else. Use it for reaction cues, not spawn-time setup. |
 
@@ -571,6 +603,8 @@ index:
 | A state's `animation` is an empty string | Rejected. |
 | A **state-local** transition whose `to` is the state that declares it | Rejected — see *Evaluation rules*. |
 | A state declares `action: "attack"` with no `attack` block on the graph | Rejected. |
+| A `moveToAnchor` or `patrol` state declares any `action` | Rejected, with the state's `action` and `motion` paths. Position goals are non-engaged. |
+| A state selects `motion: "patrol"` without a `patrol` block, with no points, or with a non-finite point component | Rejected, with the `patrol` path. |
 | `moveSpeed`, `engagementRadius`, `attack.range`, `attack.cooldownMs` not finite and `> 0`; `attack.damage` not finite and `>= 0` | Rejected. |
 | A guard that names an unknown input, mismatches operand types, or whose root produces a number rather than a boolean | Rejected, with the path. |
 | An unknown key anywhere in the block, or a duplicate state name | Rejected. |
@@ -586,6 +620,8 @@ of its modes a state selects.
 | `motion` | At runtime |
 |----------|-----------|
 | `"chaseTarget"` | Steer toward the target's assigned combat slot. With no target this degrades to a stand-down (there is nothing to move relative to). |
+| `"moveToAnchor"` | Steer toward this brain's spawn-time home anchor, then stand when it arrives. The anchor is host-only brain state; placing the entity authors its home. |
+| `"patrol"` | Steer through the graph-wide anchor-relative route, advancing its persistent cursor in `"loop"` or `"pingPong"` order. |
 | `"hold"` | Stand still by **clearing** the navigation destination. |
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
 
@@ -594,36 +630,52 @@ stops the agent: it clears the destination, so the agent settles in place.
 `freeze` writes nothing, so an agent already walking somewhere keeps walking
 there.
 
+`moveToAnchor` and `patrol` are **position goals**, not engagement. They cannot
+declare an `action`; validation rejects that combination. They drop a
+retained target, take no combat slot, and face only their travel direction; an
+arrived or blocked position goal does not turn to face a nearby pawn. Arrival is
+not latched: `moveToAnchor` clears its destination while it is within the
+engine's `POSITION_GOAL_ARRIVAL_EPSILON` (currently 0.5 m), then issues the
+anchor goal again if something pushes it back out. If an authored transition
+leaves a position-goal state on arrival, its distance threshold must be **at
+least** that engine epsilon. A smaller threshold wedges: steering has already
+cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
+
 Action verbs are likewise closed; `"attack"` is the only one today. It applies
 `attack.damage` to the selected target through the engine's damage chokepoint —
 once per `attack.cooldownMs`, only while the target is inside `attack.range`, and
 only while it is still alive. A graph with no `attack` block never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is
-`motion: "chaseTarget"` **or** any `action`, not the motion verb alone. Target
-retention across ticks, combat-slot participation and incumbency, and facing all
-key on it. A `hold` + `attack` state stands its ground and swings, so it keeps
-its target, keeps its slot, and turns to face what it is hitting.
+`motion: "chaseTarget"` **or** any action on a non-position-goal state. Target
+retention across ticks, combat-slot participation and incumbency, and target
+facing all key on it. A `hold` + `attack` state stands its ground and swings, so
+it keeps its target, keeps its slot, and turns to face what it is hitting.
 
-**Animation.** A state plays its own `animation` name, with one substitution: a
-*locomotion* state (`chaseTarget` motion and **no** `action`) plays the graph's
-rest animation — the `initial` state's — while it is standing still, because its
-own animation is a travel cycle that would slide in place. Every other state,
-including a `chaseTarget` state that declares an action, always plays its own.
+**Animation.** A state plays its own `animation` name, with one substitution: an
+*locomotion* state (actionless `chaseTarget`, or the always-actionless
+`moveToAnchor` / `patrol`) plays the graph's rest animation — the `initial` state's —
+while it is standing still, because its own animation is a travel cycle that
+would slide in place. Every other state, including a `chaseTarget` state that
+declares an action, always plays its own.
+
+Set `components.mesh.defaultState` to the `initial` state's animation. A
+mismatch warns at spawn and immediately reseeds the mesh to the graph's rest
+pose. When the active untargeted state is locomotion, use a distinct `idle`
+initial state that hands off to it; this preserves a travel cycle while moving
+and a real rest pose while stopped.
 
 **v1 limitation — two or more locomotion states.** `states` is authored as an
 object, but the engine resolves it as a `BTreeMap`: states are ordered
-lexicographically by name, not by authoring order. This is invisible with a
-single locomotion state (every reference enemy shipped today has exactly one),
-but a graph's *travel* animation — the reference walk-playback rate scaling
-uses — is derived from the **first** locomotion state in that lexicographic
-order. Author two, say `patrol` (`chaseTarget`, no action, plays `"walk"`) and
-`pursue` (`chaseTarget`, no action, plays `"run"`), and the graph's travel
-animation always resolves to `patrol`'s `"walk"` — even while the brain is
-actually in `pursue` — because `"patrol" < "pursue"`. Rate scaling then scales
-the wrong clip, and renaming either state can silently flip which one wins.
-Stick to one locomotion state per graph until you need a second; if you add
-one, expect this.
+lexicographically by name, not by authoring order. A graph's *travel* animation
+— the walk-playback rate scaling uses — is derived from the **first** locomotion
+state in that lexicographic order. Author `patrol` (plays `"walk"`) and `pursue`
+(plays `"run"`), and travel animation always resolves to `patrol`'s `"walk"` —
+even while the brain is actually in `pursue` — because `"patrol" < "pursue"`.
+Rate scaling then scales the wrong clip, and renaming either state can silently
+flip which one wins. The shipped reference enemy uses the same `"walk"` clip
+for patrol, alert, and retreat, so it is unaffected; use one travel clip per
+graph until distinct locomotion clips are needed.
 
 ### Evaluation rules
 
@@ -677,6 +729,9 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetHealth` | `@brain.targetHealth` | `number` | The selected target's current hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
 | `brain.targetMaxHealth` | `@brain.targetMaxHealth` | `number` | The selected target's maximum hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
 | `brain.targetDied` | `@brain.targetDied` | `boolean` | Whether the selected target's death sweep latch has fired; `false` with no target or no health component. Meaningful only when `hasTarget` is true. |
+| `brain.distanceFromAnchor` | `@brain.distanceFromAnchor` | `number` | XZ distance in metres from this brain's spawn-time home anchor. Always meaningful, including with no selected target. Use it for an authored leash or retreat; it is not an engine leash field. |
+| `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
+| `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -690,12 +745,42 @@ does not document them.
 
 Reading any other name is a load error.
 
+### Faction and hostility
+
+Fresh target acquisition filters player pawns by hostility; the nearest hostile
+offer determines its think-stride cadence, so a nearby friendly cannot make a
+farther hostile scan more often. It never re-checks a target already retained.
+Retention is graph policy: put an ordered any-state stand-down over
+`brain.targetHostile` beside the ordinary lost-target interrupt:
+
+```typescript
+interrupts: [
+  { to: "patrol", when: runtime.select(brain.hasTarget, false, true) },
+  { to: "patrol", when: runtime.select(brain.targetHostile, false, true) },
+],
+```
+
+The order and shared destination are load-bearing. The second expression is true
+for an untargeted *or* friendly target, while `brain.targetDied` is false
+untargeted; keeping the explicit `hasTarget` row first makes the policy legible,
+and targeting the active untargeted state prevents an idle/patrol oscillation.
+
+`@state.faction` is an **interim opaque numeric identity token**, not the
+permanent author-facing allegiance model. The current floor treats differing
+identities as hostile; enemies begin at identity `1` and a player with no field
+reads as `0`. Author durable behavior through `brain.targetHostile` (and future
+candidate-hostility facts), not equality tests on the numeric field. Named
+alliances, neutrality, and diplomacy belong to the planned Faction & relationship
+model and can replace that storage beneath the fact without changing your
+retention guards.
+
 ### The no-target trap
 
 **This is the single most important thing in this section.**
 
 With no selected target, `brain.hasTarget` reads `false`, every target-health
-fact reads `0`, `brain.targetDied` reads `false`, and
+fact reads `0`, `brain.targetDied`, `brain.targetHostile`, and
+`brain.targetReachable` read `false`, and
 `brain.targetDistance` reads a `1e9` sentinel. Never infer target presence from
 the zero values: `brain.hasTarget` is the sole presence test. The sentinel is
 **one-directional**:
@@ -736,6 +821,25 @@ Do **not** spell this `runtime.le(brain.targetHealth, 0)`: that expression also
 fires when there is no target, because target health reads zero then, and it
 does not carry the engine death sweep's complete definition.
 
+On a non-engaged state such as `patrol`, target-side facts are meaningful only
+on an acquisition scan. Between strided scans they hold their no-target values,
+so a detection or re-acquisition guard using `targetDistance`, `targetHostile`,
+or `targetReachable` must conjunct `brain.acquisitionDue`:
+
+```typescript
+runtime.select(
+  brain.acquisitionDue,
+  runtime.le(brain.targetDistance, 16),
+  false,
+)
+```
+
+`targetReachable` is available for authored routing, but the shipped reference
+enemy intentionally does not show a `waiting`/barrier-hold state yet. Its result
+inherits the pathfinder's freestanding-wall wraparound false-negative until the
+pursuit repair lands; do not treat it as a ground-truth visibility or geometry
+oracle.
+
 ### `attack.range` vs `engagementRadius`
 
 Two separate knobs that are easy to conflate:
@@ -756,6 +860,15 @@ pursuers should crowd tighter or hang back, author `engagementRadius` outright.
 Author it explicitly even when it equals `attack.range`: they are separate knobs,
 and a graph that later retunes its swing reach should not silently re-space its
 pack.
+
+### Recommended future attack-map grammar
+
+The currently shipped grammar is the singular `attack` block and
+`action: "attack"` shown above. The planned multi-attack surface should replace
+that with a named map — `attacks: Record<string, AttackParams>` — and an action
+reference such as `action: { attack: "melee" }`. Treat this as coordination
+guidance for future descriptors, not syntax accepted by the current runtime:
+there should be no privileged singular fallback once the named map lands.
 
 ### The level-wide pursuer
 
@@ -1412,9 +1525,33 @@ targets continue. These reaction grants are independent of impact-policy
 producer gating, so a trigger pickup can grant resources even though
 source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
 
+### `addSlot`
+
+```typescript
+import { addSlot, defineReaction } from "postretro";
+
+// progression.xp is a writable numeric `perOwner: true` slot.
+const objectiveAward = defineReaction((on) =>
+  addSlot(on.activators, progression.xp, 100),
+);
+```
+
+`addSlot(target, slot, delta)` adds a finite `delta` to each selected player's
+current slot value on the host. `target` is either a tag string, which selects
+matching entities, or `on.activators` in a trigger-event reaction. The slot
+must be a writable numeric `perOwner: true` slot; global, readonly, and
+non-numeric slots are rejected.
+
+The addition is per selected owner, so repeated or overlapping awards compose
+additively (subject to the slot's normal range validation). A target set with no
+matches is a no-op. A matched entity without a player seat is skipped with a
+warning; other selected players still receive their additions.
+
 ### Impact policies
 
-`defineImpactEvent("namespace:id", filter, build)` declares what an in-tick hit means. IDs are portable ASCII addresses: colon-separated non-empty segments using letters, digits, `_`, `.`, or `-`, up to 128 bytes. An override must add a `tag`; it can only narrow the base target set.
+`defineImpactEvent("reward", filter, build)` declares what an in-tick hit means. The authored ID is one portable ASCII segment: 1–64 bytes using only letters, digits, `_`, `.`, or `-`. Do not include `:`: when the event is composed, the engine qualifies it as `<modId>:<authoredId>`.
+
+TypeScript also supports binding-name sugar for a direct top-level identifier declaration: `const reward = defineImpactEvent(filter, build)` uses `reward` as the authored ID. Use the explicit form inside helpers and other expression positions. Luau always requires the explicit ID argument. An override must add a `tag`; it can only narrow the base target set.
 
 Every fire evaluates gates and effect operands from one pre-effect snapshot, then applies the selected effects. `healthAfter` is the unfloored result and may be negative even though stored health floors at zero. Unset `target.state(name)` reads `0`. `playAnim(name)` requires that name in the target mesh's declared animation states. `despawn` and `setHealth` accept `{ afterMs }`; omitting it is immediate, while `{ afterMs: 0 }` still enters the deferred queue.
 
@@ -1422,7 +1559,15 @@ Every fire evaluates gates and effect operands from one pre-effect snapshot, the
 
 `impact.source.grantHealth(amount)` and `impact.source.grantAmmo(type, amount)` add a resource to the damager, not to the entity that was hit. They accept only `@impact.source`; an authored `@impact.target` grant is rejected while the policy binds. This is deliberately asymmetric: target healing remains expressible as `target.setHealth(target.healthAfter.plus(amount))`, but v1 has no target-addressed absolute-ammo write. Amount expressions still read the impact target's snapshot (`@impact.*` and `target.state(...)`); there is no source-scoped fact vocabulary. An absent or stale source skips that one effect, and a source without the required health or ammo-reserve component warns and skips it without aborting sibling effects. Ammo pool keys use the same identifier grammar as weapon resource types.
 
-`slot(ref).add(delta)` is snapshot read-modify-write, not an atomic increment. If one fire writes the same slot more than once, every operand reads the same starting value and the last applied write wins. Impact policies currently run only for in-tick weapon and AI damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+Impact policies use `Ref<T>` for writable slots and `ComputedRef<T>` for
+read-only slots. `read(ref)` lifts a numeric or boolean ref into an impact
+expression; `set(ref, value)` writes an absolute value; and
+`update(ref, current => current.plus(delta))` is snapshot read-modify-write,
+not an atomic increment. Use `when(condition, effects)` to defer a group until
+its boolean expression is true. If one fire writes the same slot more than
+once, every operand reads the same starting value and the last applied write
+wins. Impact policies currently run only for in-tick weapon and AI damage;
+`applyDamage` reactions and other app-drain producers run no policy in v1.
 
 That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
@@ -1487,7 +1632,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
-| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes at the game-logic stage. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
+| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
@@ -1756,7 +1901,8 @@ system reaction body for a **writable** state reference. It is **readonly-gated*
 at runtime: a write to a readonly slot (e.g. the
 engine-owned `player.health`, `input.mode`) logs a warning and no-ops; an
 engine-owned but writable slot, or any mod-declared writable slot, is a valid
-target. The value is coerced to the slot's declared type (number / boolean /
+target when it has global cardinality. Per-owner slots require an owner-addressed
+write and reject `updateState`. The value is coerced to the slot's declared type (number / boolean /
 string / number array) with the same range/enum validation a script store write
 applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.
@@ -1773,10 +1919,10 @@ export default defineMod({
   name: "MyMod",
   id: "example.my-mod",
   version: "1.0.0",
-  stores: [options.declaration],
+  stores: [options],
 });
 
-defineReaction("resetVolume", updateState(options.state.master, 1));
+defineReaction("resetVolume", updateState(options.master, 1));
 ```
 
 ### Text-edit reactions and the `ui.textEntry` slot
@@ -2017,7 +2163,7 @@ SDK factory takes and nests inside SDK containers exactly like a factory call:
 ```typescript
 // A modder component: a plain function returning a subtree.
 import {
-  type ReadonlyStateRef,
+  type ComputedRef,
   Button,
   HStack,
   Text,
@@ -2040,7 +2186,7 @@ const statsTheme = defineTheme({
 });
 const tokens = getDesignTokens(statsTheme);
 
-function StatRow(props: { label: string; ref: ReadonlyStateRef<number | string | boolean> }) {
+function StatRow(props: { label: string; ref: ComputedRef<number | string | boolean> }) {
   return HStack({ gap: tokens.spacing.s, align: "center" }, [
     Text({ content: props.label, fontSize: 16, color: tokens.color.text }),
     Text({ content: "", fontSize: 16, color: tokens.color.ok, bind: bindState(props.ref, { format: "{}" }) }),
@@ -2150,7 +2296,7 @@ for authoritative state refs:
 ```typescript
 const sel = ui.createLocalState({ tab: "loadout" });
 sel.cells.tab.is("loadout");        // { local: "tab", equals: "loadout" }
-stateEquals(opts.state.muted, true); // { slot: "fixtureOpts.muted", equals: true }
+stateEquals(opts.muted, true); // { slot: "fixtureOpts.muted", equals: true }
 ```
 
 A `Predicate` is a valid **`bind` source for `styleRanges`-capable widgets**
@@ -2243,7 +2389,7 @@ canonical end-to-end example is the campaign-test tabs demo
 
 ```typescript
 Button({ id: "save", label: "Save", onPress: "save", disabled: true });
-Slider({ id: "vol", labelledBy: "volumeTitle", bind: options.state.master,
+Slider({ id: "vol", labelledBy: "volumeTitle", bind: options.master,
          min: 0, max: 1, step: 0.05 });
 ```
 

@@ -182,9 +182,14 @@ fn run_headless_inner(
             suppress_boot_pawn: false,
             local_carried_loadout: None,
         };
-        install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
-            crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
-        })
+        install_world_cpu(
+            handles,
+            &mut timings,
+            |_models, _clip_tables| {
+                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+            },
+            |_spawn_points| {},
+        )
     };
 
     let mover_colliders = products.mover_colliders;
@@ -282,12 +287,7 @@ fn run_headless_inner(
             // host-authoritative trigger stage is not driven (no use/overlap
             // routing), so triggers stay inert — declared out-of-frame in the dump.
             None,
-            |registry| {
-                session
-                    .scripting
-                    .impact_policy_runtime
-                    .evaluate_pending_in_registry(registry)
-            },
+            |registry| session.scripting.evaluate_pending_in_tick_impacts(registry),
         );
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,

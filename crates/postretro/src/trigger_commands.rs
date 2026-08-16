@@ -6,7 +6,7 @@ use postretro_entities::{
 };
 use postretro_foundation::{BoundProgram, IrValue, eval_and_write};
 use postretro_scripting_core::ir_scopes::DispatchScope;
-use postretro_scripting_core::store_bridge::apply_store_slot_batch;
+use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_slot_value};
 
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_targets};
@@ -48,6 +48,11 @@ pub(crate) enum BoundTriggerCommand {
     StoreSlot {
         slot: String,
         value: BoundStoreValue,
+    },
+    AddOwnerSlot {
+        target: BoundTarget,
+        slot: String,
+        delta: f32,
     },
     AnimationState {
         target: BoundTarget,
@@ -115,6 +120,7 @@ pub(crate) enum BoundTriggerCommandKind {
     Arm,
     Disarm,
     StoreSlot,
+    AddOwnerSlot,
     AnimationState,
     UpdateEnemyState,
     Spawn,
@@ -134,12 +140,33 @@ impl BoundTriggerCommand {
                 let BoundStoreValue::Literal(value) = value else {
                     unreachable!("IR-valued trigger setState must execute with a ScriptCtx");
                 };
+                if slot_table
+                    .get(slot)
+                    .is_some_and(|record| record.schema.per_owner)
+                {
+                    log::warn!(
+                        "[Trigger] setState rejects per-owner slot `{slot}` at execution time"
+                    );
+                    return;
+                }
                 if let Err(error) =
                     apply_store_slot_batch(slot_table, &[(slot.clone(), value.clone())])
                 {
                     log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
                 }
             }
+            Self::AddOwnerSlot {
+                target,
+                slot,
+                delta,
+            } => Self::apply_owner_slot_delta(
+                registry,
+                slot_table,
+                target,
+                slot,
+                *delta,
+                fire_context,
+            ),
             _ => self.execute_non_store(registry, command_diagnostics, spawn_context, fire_context),
         }
     }
@@ -157,6 +184,15 @@ impl BoundTriggerCommand {
             Self::StoreSlot { slot, value } => match value {
                 BoundStoreValue::Literal(value) => {
                     let mut slot_table = script_ctx.slot_table.borrow_mut();
+                    if slot_table
+                        .get(slot)
+                        .is_some_and(|record| record.schema.per_owner)
+                    {
+                        log::warn!(
+                            "[Trigger] setState rejects per-owner slot `{slot}` at execution time"
+                        );
+                        return;
+                    }
                     if let Err(error) =
                         apply_store_slot_batch(&mut slot_table, &[(slot.clone(), value.clone())])
                     {
@@ -173,7 +209,59 @@ impl BoundTriggerCommand {
                     eval_and_write(program, dispatch_scope);
                 }
             },
+            Self::AddOwnerSlot {
+                target,
+                slot,
+                delta,
+            } => {
+                if !script_ctx.owner_slot_writes_enabled.get() {
+                    return;
+                }
+                let mut slot_table = script_ctx.slot_table.borrow_mut();
+                Self::apply_owner_slot_delta(
+                    registry,
+                    &mut slot_table,
+                    target,
+                    slot,
+                    *delta,
+                    fire_context,
+                );
+            }
             _ => self.execute_non_store(registry, command_diagnostics, spawn_context, fire_context),
+        }
+    }
+
+    fn apply_owner_slot_delta(
+        registry: &EntityRegistry,
+        slot_table: &mut SlotTable,
+        target: &BoundTarget,
+        slot: &str,
+        delta: f32,
+        fire_context: &TriggerFireContext,
+    ) {
+        let targets = target.resolve(registry, fire_context);
+        if targets.as_slice().is_empty() {
+            return;
+        }
+        for &pawn in targets.as_slice() {
+            let Some(seat) = registry.seat_for_pawn(pawn) else {
+                log::warn!("[Trigger] addSlot target {pawn:?} has no player seat; skipping");
+                continue;
+            };
+            let Some(record) = slot_table.get_mut(slot) else {
+                debug_assert!(false, "bound addSlot `{slot}` disappeared before execution");
+                return;
+            };
+            let Some(SlotValue::Number(current)) = record.per_seat_value(seat) else {
+                log::warn!("[Trigger] addSlot requires numeric slot `{slot}`; skipping");
+                return;
+            };
+            match validate_slot_value(slot, &record.schema, SlotValue::Number(*current + delta)) {
+                Ok(next) => record.set_per_seat_value(seat, next),
+                Err(error) => log::warn!(
+                    "[Trigger] addSlot for `{slot}` failed validation; skipping: {error}"
+                ),
+            }
         }
     }
 
@@ -272,7 +360,9 @@ impl BoundTriggerCommand {
                 };
                 spawn_from_spawner_tag(registry, tag, spawn_context);
             }
-            Self::StoreSlot { .. } => unreachable!("store slots execute through their store path"),
+            Self::StoreSlot { .. } | Self::AddOwnerSlot { .. } => {
+                unreachable!("store slots execute through their store path")
+            }
         }
     }
 
@@ -286,6 +376,7 @@ impl BoundTriggerCommand {
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
+            Self::AddOwnerSlot { .. } => BoundTriggerCommandKind::AddOwnerSlot,
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
             Self::UpdateEnemyState { .. } => BoundTriggerCommandKind::UpdateEnemyState,
             Self::Spawn { .. } => BoundTriggerCommandKind::Spawn,

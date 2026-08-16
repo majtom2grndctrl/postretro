@@ -543,6 +543,16 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
+        let join_seed = {
+            let session = self
+                .session
+                .as_ref()
+                .expect("session installed before level install");
+            crate::scripting::state_persistence::join_seed_from_persisted_state(
+                session.persisted_state.as_ref(),
+                session.player_options.player_id,
+            )
+        };
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -556,6 +566,7 @@ impl App {
                 .active_level_source
                 .as_ref()
                 .expect("active level source retained before parity installation");
+            endpoint.set_join_seed(join_seed);
             endpoint.set_level_parity(Some((
                 level_identity(source, &self.content_root),
                 level_content_digest,
@@ -814,7 +825,28 @@ impl App {
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
         };
-        let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
+        let products = install_world_cpu(
+            handles,
+            &mut self.level_timings,
+            upload_mesh_models,
+            |spawn_points| {
+                let Some(seats) = session.seat_table.as_mut() else {
+                    return;
+                };
+                let local_pawn = {
+                    let registry = script_ctx.registry.borrow();
+                    crate::capture_player_spawn_placements(&registry, spawn_points, seats);
+                    registry.local_player_pawn()
+                };
+                if let Some(pawn) = local_pawn {
+                    seats.bind_pawn(
+                        &mut script_ctx.registry.borrow_mut(),
+                        postretro_foundation::Seat(0),
+                        pawn,
+                    );
+                }
+            },
+        );
 
         // `levelLoad` may already have queued system commands during the CPU
         // install. Bind the final composed reaction set before that queue is
@@ -836,26 +868,6 @@ impl App {
         // has already built both CPU tables; resolve only this changed pawn through
         // the standard socket-binding path.
         let local_pawn = script_ctx.registry.borrow().local_player_pawn();
-        if let Some(seats) = self
-            .session
-            .as_mut()
-            .expect("session installed before local seat binding")
-            .seat_table
-            .as_mut()
-        {
-            crate::capture_player_spawn_placements(
-                &script_ctx.registry.borrow(),
-                &self.host_spawn_points,
-                seats,
-            );
-            if let Some(pawn) = local_pawn {
-                seats.bind_pawn(
-                    &mut script_ctx.registry.borrow_mut(),
-                    postretro_foundation::Seat(0),
-                    pawn,
-                );
-            }
-        }
         let descriptors = script_ctx.data_registry.borrow().entities.clone();
         if let Some(pawn) = local_pawn {
             let session = self
@@ -1591,7 +1603,12 @@ mod tests {
                 },
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
+                presentation_pool: crate::presentation_pool::PresentationPool::default(),
+                client_overlay_facts: crate::netcode::ClientOverlayFactState::default(),
+                host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker::default(),
                 state_store_lifecycle: Default::default(),
+                persisted_state: None,
+                per_owner_save_timer: Default::default(),
                 progress_tracker: ProgressTracker::new(),
                 pending_death_events: Vec::new(),
                 crossing_detector: CrossingDetector::new(),
@@ -1789,6 +1806,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: postretro_entities::ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         });
         record.value = Some(SlotValue::Number(value));
@@ -2111,9 +2129,14 @@ mod tests {
                 suppress_boot_pawn: suppress_ai_enemies,
                 local_carried_loadout: None,
             };
-            install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
-                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
-            })
+            install_world_cpu(
+                handles,
+                &mut timings,
+                |_models, _clip_tables| {
+                    crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+                },
+                |_spawn_points| {},
+            )
         };
 
         let registry = std::mem::take(&mut *ctx.registry.borrow_mut());
@@ -2260,8 +2283,10 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: postretro_entities::ReplicationScope::None,
+                        per_owner: false,
                         accumulate: Some(postretro_foundation::IrNode::Input {
                             name: "@dt".to_string(),
+                            owner: None,
                         }),
                     }),
                 )],
@@ -2313,6 +2338,64 @@ mod tests {
             "level install must bind the declared accumulator"
         );
 
+        let presentation_target = {
+            let ctx = script_ctx(&app);
+            let mut registry = ctx.registry.borrow_mut();
+            let target = registry.spawn(Transform::default());
+            registry.push_presentation_spawn(postretro_entities::PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: "old-level-number".into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: postretro_foundation::PresentationMotion::default(),
+                fade: postretro_foundation::PresentationFade::default(),
+                scatter_radius: 0.0,
+            });
+            target
+        };
+        {
+            let session = app.session.as_mut().expect("test app session installed");
+            let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+            let _ = session.presentation_pool.advance_and_collect_inputs(
+                &mut registry,
+                0.0,
+                glam::Mat4::IDENTITY,
+                [800, 600],
+            );
+            session.presentation_pool.refresh_overlay(
+                presentation_target,
+                postretro_entities::PresentationTemplateHandle::from("old-level-overlay"),
+                1.0,
+                1,
+                u64::from(presentation_target.to_raw()),
+            );
+            registry.push_presentation_spawn(postretro_entities::PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: "queued-old-level-number".into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: postretro_foundation::PresentationMotion::default(),
+                fade: postretro_foundation::PresentationFade::default(),
+                scatter_radius: 0.0,
+            });
+            crate::netcode::ingest_client_overlay_fact(
+                &mut session.client_overlay_facts,
+                &mut session.presentation_pool,
+                crate::netcode::ClientOverlayFact::new(
+                    postretro_net::wire::NetworkId(91),
+                    0.0,
+                    0.0,
+                    false,
+                    false,
+                ),
+                None,
+                None,
+                None,
+            );
+        }
+
         let slots_before = slot_snapshot(&app);
         script_ctx(&app)
             .data_registry
@@ -2358,6 +2441,19 @@ mod tests {
                 .presentation_cells
                 .snapshot()
                 .is_empty()
+        );
+        let session = app.session.as_ref().expect("test app session installed");
+        assert_eq!(session.presentation_pool.live_counts(), (0, 0));
+        assert_eq!(session.client_overlay_facts.terminal_len(), 0);
+        assert!(
+            session
+                .scripting
+                .script_ctx
+                .registry
+                .borrow_mut()
+                .take_presentation_spawns()
+                .is_empty(),
+            "level unload must discard queued world presentation intake",
         );
     }
 
@@ -2762,6 +2858,8 @@ mod tests {
                     tree: postretro_ui::demo::build_frontend_menu_descriptor(),
                     always_on: false,
                 }],
+                presentation_templates: Vec::new(),
+                presentation_overlays: Vec::new(),
                 theme: Default::default(),
                 frontend: Some(Frontend {
                     menu_tree: "newMenu".to_string(),
@@ -3668,9 +3766,14 @@ mod tests {
                 local_carried_loadout: None,
             };
             // No-op mesh hook: headless-shaped, no renderer to upload models.
-            let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
-                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
-            });
+            let _ = install_world_cpu(
+                handles,
+                &mut timings,
+                |_models, _clip_tables| {
+                    crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+                },
+                |_spawn_points| {},
+            );
         }
 
         // Fresh registry (no despawns): `to_raw()` low bits are the allocation

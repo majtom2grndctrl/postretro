@@ -5,17 +5,17 @@ use crate::wire::{ProtocolVersion, WireError};
 
 pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
-/// E15's tagged-control vocabulary.
+/// E16's presentation-event vocabulary.
 ///
-/// `SessionRoster` extends the server Control message vocabulary, so this app
-/// protocol id changes even though its appended enum tag leaves the measured
-/// bitcode layout of the five shipped variants intact.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C36; // "PRL6"
+/// The dedicated `Channel::Presentation` plus its tagged server message family
+/// changes the application vocabulary.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
-/// E17 adds `blocked` to `WireKinematicMoverState`; E16 already consumed epoch
-/// 16 for `drop_pressed` on the Input channel. The tuning-payload epoch remains
-/// independent.
-pub const WIRE_VERSION: u32 = 17;
+/// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
+/// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
+/// dedicated E16 presentation channel and payload family advance this to 19.
+/// The tuning-payload epoch remains independent.
+pub const WIRE_VERSION: u32 = 19;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -71,6 +71,20 @@ mod tests {
         SwitchAccepted(crate::wire::ServerSwitchAccepted),
     }
 
+    /// Historical client Control layout before `JoinSeed` was appended. This
+    /// measures positional bitcode tags directly, guarding the shipped
+    /// admission/parity/switch discriminants against an accidental insertion.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreJoinSeedClientControlMessage {
+        Admission {
+            protocol: ProtocolVersion,
+            mod_id: String,
+            mod_version: String,
+        },
+        Parity(crate::wire::ParityDeclaration),
+        SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
+    }
+
     #[test]
     fn validate_handshake_accepts_only_matching_protocol_constants() {
         let version = protocol_version();
@@ -78,24 +92,26 @@ mod tests {
     }
 
     #[test]
-    fn blocked_mover_phase_layout_refuses_previous_wire_version() {
-        const PRE_BLOCKED_WIRE_VERSION: u32 = 16;
+    fn presentation_transport_refuses_previous_protocol_and_wire_version() {
+        const PRE_PRESENTATION_PROTOCOL_ID: u32 = 0x_5052_4C36;
+        const PRE_PRESENTATION_WIRE_VERSION: u32 = 18;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C36,
-            "session roster requires application protocol PRL6"
+            PROTOCOL_ID, 0x_5052_4C37,
+            "presentation vocabulary requires application protocol PRL7"
         );
         assert_eq!(
-            WIRE_VERSION, 17,
-            "blocked changes the kinematic mover snapshot bitcode layout"
+            WIRE_VERSION, 19,
+            "presentation channel and payload change the wire layout"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_BLOCKED_WIRE_VERSION),
-            "gate 1 rejects the previous layout before app decode"
+            ((PRE_PRESENTATION_PROTOCOL_ID as u64) << 32)
+                | u64::from(PRE_PRESENTATION_WIRE_VERSION),
+            "gate 1 rejects the previous presentation-less peer before app decode"
         );
         let previous = ProtocolVersion {
-            app_protocol_id: PROTOCOL_ID,
-            wire_version: PRE_BLOCKED_WIRE_VERSION,
+            app_protocol_id: PRE_PRESENTATION_PROTOCOL_ID,
+            wire_version: PRE_PRESENTATION_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),
@@ -157,6 +173,54 @@ mod tests {
                 bitcode::encode(&before),
                 crate::wire::encode(&after),
                 "appending SessionRoster changed a shipped control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    #[test]
+    fn join_seed_append_preserves_shipped_client_control_encodings() {
+        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration, ParityDeclaration};
+
+        let protocol = ProtocolVersion {
+            app_protocol_id: 0x5052_4c36,
+            wire_version: 17,
+        };
+        let parity = ParityDeclaration {
+            mod_digest: [0x17; 32],
+            level: Some(("campaign-test".to_owned(), [0x18; 32])),
+        };
+        let switch = ClientSwitchDeclaration {
+            declaration_id: 17,
+            slot: 3,
+        };
+        let cases = [
+            (
+                PreJoinSeedClientControlMessage::Admission {
+                    protocol,
+                    mod_id: "postretro.test".to_owned(),
+                    mod_version: "1.0.0".to_owned(),
+                },
+                ClientControlMessage::Admission {
+                    protocol,
+                    mod_id: "postretro.test".to_owned(),
+                    mod_version: "1.0.0".to_owned(),
+                },
+            ),
+            (
+                PreJoinSeedClientControlMessage::Parity(parity.clone()),
+                ClientControlMessage::Parity(parity),
+            ),
+            (
+                PreJoinSeedClientControlMessage::SwitchDeclaration(switch),
+                ClientControlMessage::SwitchDeclaration(switch),
+            ),
+        ];
+
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending JoinSeed changed a shipped client control encoding; bump WIRE_VERSION"
             );
         }
     }

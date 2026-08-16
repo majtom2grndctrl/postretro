@@ -143,6 +143,8 @@ impl ScriptRuntime {
             quickjs,
             luau,
             mod_manifest: None,
+            store_identity: None,
+            committed_store_slots: Default::default(),
             committed_mod_identity: None,
             #[cfg(debug_assertions)]
             watcher: None,
@@ -419,6 +421,39 @@ impl ScriptRuntime {
                     };
                 }
             };
+            let next_committed_store_slots =
+                crate::store_identity::declaration_slot_names(&next_store_declarations);
+            // Keep identity in the same all-or-nothing commit gate as slot
+            // reconciliation. In particular this runs before deferred mesh
+            // snapshots, entity refresh, and every live registry mutation.
+            let next_store_identity = if self.cfg.skip_identity_enforcement {
+                None
+            } else {
+                match crate::store_identity::read_and_validate_attempt(
+                    &result.mod_root,
+                    &next_store_declarations,
+                    &ctx.slot_table.borrow(),
+                    self.store_identity.as_ref(),
+                ) {
+                    Ok(validated) => {
+                        for warning in &validated.warnings {
+                            log::warn!("[Scripting] {warning}");
+                        }
+                        Some(validated)
+                    }
+                    Err(error) => {
+                        let reason = format!("state-store identity rejected: {error}");
+                        log::error!(
+                            "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                            result.generation,
+                        );
+                        return StagedManifestCommitOutcome::Rejected {
+                            generation: result.generation,
+                            reason,
+                        };
+                    }
+                }
+            };
 
             let old_descriptors = ctx.data_registry.borrow().entities.clone();
             let incoming_descriptors = next_descriptors.clone();
@@ -472,6 +507,15 @@ impl ScriptRuntime {
             };
 
             ctx.slot_table.borrow_mut().apply_reconcile_plan(store_plan);
+            if self.cfg.skip_identity_enforcement {
+                self.store_identity = None;
+            } else if let Some(validated) = next_store_identity {
+                // A successful attempt that reads no ledger explicitly
+                // discards the previous snapshot; persistence must not retain
+                // an old durable mapping for live-but-undeclared slots.
+                self.store_identity = validated.ledger;
+            }
+            self.committed_store_slots = next_committed_store_slots;
 
             // Hot-reload range-follow: if the refresh replaced the pawn's Health
             // component (e.g. an authored `max` edit), re-attach the
@@ -589,6 +633,20 @@ impl ScriptRuntime {
         self.mod_manifest.as_ref()
     }
 
+    /// Returns the validated identity-ledger snapshot from the latest
+    /// successful declaration commit. This is intentionally the only runtime
+    /// path consumers use; `identity.json` itself is never re-read after commit.
+    pub fn store_identity(&self) -> Option<&crate::store_identity::StoreIdentityLedger> {
+        self.store_identity.as_ref()
+    }
+
+    /// Returns authored dotted slot names from the latest successful
+    /// declaration commit. Consumers use this snapshot to filter add-only live
+    /// slots that are no longer declared by the current mod content.
+    pub fn committed_store_slots(&self) -> &std::collections::BTreeSet<String> {
+        &self.committed_store_slots
+    }
+
     /// Mutable accessor for the stored manifest. Used by the boot caller to
     /// drain `entities` into `DataRegistry` after a successful
     /// [`ScriptRuntime::run_mod_init`] — the runtime parses and returns; the
@@ -598,7 +656,7 @@ impl ScriptRuntime {
     }
 
     /// Returns the id and version from the first committed manifest. Identity
-    /// is frozen across staged hot reloads because admission is terminal.
+    /// stays frozen across staged reloads and resume-time mod-init reruns.
     pub fn committed_mod_identity(&self) -> Option<(&str, &str)> {
         self.committed_mod_identity
             .as_ref()
@@ -608,7 +666,7 @@ impl ScriptRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -617,10 +675,14 @@ mod tests {
     use postretro_test_log_capture::LogCapture;
 
     use super::*;
+    use crate::components::health::HealthComponent;
     use crate::data_descriptors::{
-        EntityTypeDescriptor, FireMode, InventoryDescriptor, MeshDescriptor, ResolutionMode,
-        WeaponDescriptor,
+        EntityTypeDescriptor, FireMode, HealthDescriptor, InventoryDescriptor, MeshDescriptor,
+        ResolutionMode, WeaponDescriptor,
     };
+    use crate::provenance::{DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath};
+    use crate::registry::{ComponentKind, Transform};
+    use crate::slot_table::SlotValue;
     use crate::staged_manifest::{StagedManifestBuildConfig, build_staged_manifest};
 
     fn temp_mod_root(name: &str) -> PathBuf {
@@ -633,6 +695,448 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("temporary mod root should be created");
         path
+    }
+
+    #[test]
+    fn default_runtime_config_enforces_store_identity() {
+        assert!(
+            !ScriptRuntimeConfig::default().skip_identity_enforcement,
+            "the shipping runtime must not silently bypass durable identity enforcement"
+        );
+    }
+
+    fn write_durable_store_manifest(mod_root: &PathBuf, namespace: &str) {
+        fs::write(
+            mod_root.join("start-script.js"),
+            format!(
+                r#"
+                    const modStore = defineStore("{namespace}", {{
+                        score: {{ type: "number", default: 1, persist: true }},
+                    }});
+                    globalThis.__postretroModManifest = defineMod({{
+                        name: "Identity Gate",
+                        id: "identity-gate",
+                        version: "1",
+                        entities: [{{
+                            canonicalName: "identity_guard",
+                            components: {{ health: {{ max: 10 }} }},
+                        }}],
+                        stores: [modStore],
+                    }});
+                "#,
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_empty_mod_manifest(mod_root: &PathBuf) {
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "Identity Gate",
+                    id: "identity-gate",
+                    version: "1",
+                };
+            "#,
+        )
+        .unwrap();
+    }
+
+    // Regression: an absent start script cleared durable identity along with
+    // current declaration membership, losing changed-key protection.
+    #[test]
+    fn debug_no_start_resume_clears_membership_but_retains_valid_ledger() {
+        let mod_root = temp_mod_root("no_start_resume_identity");
+        write_durable_store_manifest(&mod_root, "story");
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"story.score":"k0123456789abcdef"}}"#,
+        )
+        .unwrap();
+        let ctx = ScriptCtx::new();
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+
+        runtime.run_mod_init(&mod_root).unwrap();
+        assert!(runtime.store_identity().is_some());
+        assert!(runtime.committed_store_slots().contains("story.score"));
+
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
+        runtime
+            .run_mod_init(&mod_root)
+            .expect("debug resume without a start script commits an empty snapshot");
+
+        assert!(runtime.mod_manifest().is_none());
+        assert!(runtime.committed_store_slots().is_empty());
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score")),
+            Some("k0123456789abcdef"),
+            "a no-start commit clears membership but retains the valid ledger snapshot"
+        );
+        assert!(
+            ctx.slot_table.borrow().get("story.score").is_some(),
+            "the empty commit must not delete add-only live slots"
+        );
+
+        fs::remove_dir_all(mod_root).unwrap();
+    }
+
+    #[test]
+    fn staged_identity_gate_rejects_before_live_mutation_and_retains_snapshot() {
+        let mod_root = temp_mod_root("identity_gate");
+        write_durable_store_manifest(&mod_root, "story");
+        let ctx = ScriptCtx::new();
+        let old_health = HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        };
+        let mut active_descriptor = descriptor("identity_guard", None, None);
+        active_descriptor.health = Some(old_health.clone());
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![active_descriptor]);
+        let guarded_entity = {
+            let mut registry = ctx.registry.borrow_mut();
+            let entity = registry.spawn(Transform::default());
+            registry
+                .set_component(entity, HealthComponent::from_descriptor(&old_health))
+                .unwrap();
+            registry
+                .set_component(
+                    entity,
+                    DescriptorProvenance {
+                        canonical_name: "identity_guard".to_string(),
+                        owned_components: BTreeSet::from([DescriptorComponentKind::Health]),
+                        map_overrides: BTreeSet::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            entity
+        };
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+        let deferred_before_rejection = vec![descriptor(
+            "deferred_identity_guard",
+            Some(mesh_descriptor("models/identity_guard.gltf")),
+            None,
+        )];
+        runtime.deferred_mesh_descriptors = Some(deferred_before_rejection.clone());
+        let slot_count_before_rejection = ctx.slot_table.borrow().len();
+
+        let missing = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        assert!(
+            matches!(missing.status, StagedManifestBuildStatus::Built(_)),
+            "identity fixture must reach the commit gate: {missing:?}"
+        );
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+        let outcome = runtime.commit_staged_manifest_result(
+            &missing,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = outcome else {
+            panic!("missing durable identity must reject the staged result");
+        };
+        assert!(reason.contains("story.score"));
+        assert!(reason.contains("add `\"story.score\": \"k"));
+        assert!(ctx.slot_table.borrow().get("story.score").is_none());
+        assert_eq!(
+            ctx.slot_table.borrow().len(),
+            slot_count_before_rejection,
+            "identity rejection must leave the slot table unchanged"
+        );
+        assert!(runtime.store_identity().is_none());
+        assert_eq!(
+            runtime.deferred_mesh_descriptors.as_ref(),
+            Some(&deferred_before_rejection),
+            "identity rejection must run before the staged path changes deferred meshes"
+        );
+        let registry = ctx.registry.borrow();
+        assert!(registry.exists(guarded_entity));
+        assert!(
+            registry
+                .has_component_kind(guarded_entity, ComponentKind::Health)
+                .unwrap()
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(guarded_entity)
+                .unwrap()
+                .max,
+            100.0,
+            "identity rejection must run before descriptor refresh mutates live entities"
+        );
+        drop(registry);
+
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"story.score":"k0123456789abcdef"}}"#,
+        )
+        .unwrap();
+        let accepted = build_staged_manifest(&mod_root, 2, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(2));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &accepted,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Committed { generation: 2, .. }
+        ));
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score")),
+            Some("k0123456789abcdef")
+        );
+        assert_eq!(
+            runtime.committed_store_slots(),
+            &BTreeSet::from(["story.score".to_string()])
+        );
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("story.score")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(41.0)));
+
+        // Regression: removing the declaration must not let a fresh ledger
+        // mapping re-key the still-live add-only slot.
+        write_empty_mod_manifest(&mod_root);
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"story.score":"kfedcba9876543210"}}"#,
+        )
+        .unwrap();
+        let removed = build_staged_manifest(&mod_root, 21, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(21));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &removed,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Rejected { generation: 21, .. }
+        ));
+
+        // Regression: NoStartScript is the same empty-attempt boundary and
+        // cannot replace the retained snapshot with a changed mapping either.
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
+        let no_start = build_staged_manifest(&mod_root, 22, &StagedManifestBuildConfig::default());
+        assert!(matches!(
+            no_start.status,
+            StagedManifestBuildStatus::NoStartScript
+        ));
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(22));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &no_start,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Rejected { generation: 22, .. }
+        ));
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score")),
+            Some("k0123456789abcdef")
+        );
+
+        write_durable_store_manifest(&mod_root, "story");
+
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"story.score":"kfedcba9876543210"}}"#,
+        )
+        .unwrap();
+        let changed = build_staged_manifest(&mod_root, 3, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(3));
+        let changed_outcome = runtime.commit_staged_manifest_result(
+            &changed,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = changed_outcome else {
+            panic!("a durable-key change for a currently live slot must reject");
+        };
+        assert!(
+            reason.contains("changes durable key for already committed state slot `story.score`")
+        );
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score")),
+            Some("k0123456789abcdef"),
+            "a rejected hand edit must not replace the retained snapshot"
+        );
+
+        write_durable_store_manifest(&mod_root, "chapter");
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"chapter.score":"k0123456789abcdef"}}"#,
+        )
+        .unwrap();
+        let renamed = build_staged_manifest(&mod_root, 4, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(4));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &renamed,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Committed { generation: 4, .. }
+        ));
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("story.score")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(41.0)),
+            "removing a declaration must keep the existing live slot value"
+        );
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("chapter.score")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(1.0)),
+            "a staged authored rename is a new namespace and starts at defaults"
+        );
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("chapter.score")),
+            Some("k0123456789abcdef")
+        );
+        assert!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("story.score"))
+                .is_none()
+        );
+        assert_eq!(
+            runtime.committed_store_slots(),
+            &BTreeSet::from(["chapter.score".to_string()])
+        );
+
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
+        fs::remove_file(mod_root.join(crate::store_identity::IDENTITY_FILE_NAME)).unwrap();
+        let discarded = build_staged_manifest(&mod_root, 5, &StagedManifestBuildConfig::default());
+        assert!(matches!(
+            discarded.status,
+            StagedManifestBuildStatus::NoStartScript
+        ));
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(5));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &discarded,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Committed { generation: 5, .. }
+        ));
+        assert!(
+            runtime.store_identity().is_none(),
+            "a successful no-ledger attempt must clear the retained snapshot"
+        );
+        assert!(runtime.committed_store_slots().is_empty());
+        assert!(
+            ctx.slot_table.borrow().get("story.score").is_some(),
+            "declaration removal intentionally keeps prior live slots"
+        );
+
+        write_durable_store_manifest(&mod_root, "chapter");
+        let redeclared = build_staged_manifest(&mod_root, 6, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(6));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &redeclared,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Rejected { generation: 6, .. }
+        ));
+        assert!(runtime.store_identity().is_none());
+
+        // The staged worker has already produced this result. Reading the
+        // appended ledger only at commit proves that each attempt re-reads the
+        // file instead of carrying a stale build-time view.
+        let appended = build_staged_manifest(&mod_root, 7, &StagedManifestBuildConfig::default());
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"chapter.score":"kfedcba9876543210"}}"#,
+        )
+        .unwrap();
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(7));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &appended,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Committed { generation: 7, .. }
+        ));
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("chapter.score")),
+            Some("kfedcba9876543210"),
+            "the ledger appended between staged attempts must be accepted by the later commit"
+        );
+
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":2,"slots":{"chapter.score":"kfedcba9876543210"}}"#,
+        )
+        .unwrap();
+        let unsupported_version =
+            build_staged_manifest(&mod_root, 8, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(8));
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = runtime
+            .commit_staged_manifest_result(
+                &unsupported_version,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            )
+        else {
+            panic!("an unsupported ledger version must reject the staged result");
+        };
+        assert!(reason.contains("identity ledger version 2 is unsupported"));
+
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{"chapter.score":"kfedcba9876543210","duplicate.score":"kfedcba9876543210"}}"#,
+        )
+        .unwrap();
+        let duplicate_key =
+            build_staged_manifest(&mod_root, 9, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(9));
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = runtime
+            .commit_staged_manifest_result(
+                &duplicate_key,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            )
+        else {
+            panic!("a duplicate durable key must reject the staged result");
+        };
+        assert!(reason.contains("is assigned to more than one authored slot"));
+        assert_eq!(
+            runtime
+                .store_identity()
+                .and_then(|identity| identity.durable_key("chapter.score")),
+            Some("kfedcba9876543210"),
+            "file-rule rejections must retain the latest successful identity snapshot"
+        );
+
+        fs::remove_dir_all(mod_root).unwrap();
     }
 
     fn mesh_descriptor(attachment_model: &str) -> MeshDescriptor {
@@ -964,7 +1468,9 @@ mod tests {
     }
 
     #[test]
-    fn run_mod_init_seeds_committed_mod_identity() {
+    fn repeated_run_mod_init_keeps_first_committed_identity() {
+        // Regression: platform resume reruns mod-init, but process-scoped
+        // persistence and replication identity must remain on the first id.
         let mod_root = temp_mod_root("initial_identity");
         fs::write(
             mod_root.join("start-script.js"),
@@ -983,6 +1489,26 @@ mod tests {
         assert_eq!(
             runtime.committed_mod_identity(),
             Some(("initial.mod", "display build"))
+        );
+
+        fs::write(
+            mod_root.join("start-script.js"),
+            "globalThis.__postretroModManifest = { name: 'Changed', id: 'changed.mod', version: '2' };",
+        )
+        .expect("changed manifest should be written");
+        runtime
+            .run_mod_init(&mod_root)
+            .expect("repeated manifest should commit");
+
+        assert_eq!(
+            runtime.mod_manifest().map(|manifest| manifest.id.as_str()),
+            Some("changed.mod"),
+            "the latest manifest remains mutable across resume-style init",
+        );
+        assert_eq!(
+            runtime.committed_mod_identity(),
+            Some(("initial.mod", "display build")),
+            "process-scoped consumers must keep using the first committed id",
         );
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }

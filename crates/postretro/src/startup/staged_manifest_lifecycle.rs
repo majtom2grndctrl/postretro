@@ -11,6 +11,16 @@ use postretro_scripting_core::staged_manifest::{
 
 use crate::App;
 
+fn clear_replaced_presentation_overlay_state(
+    pool: &mut crate::presentation_pool::PresentationPool,
+    client_facts: &mut crate::netcode::ClientOverlayFactState,
+    host_facts: &mut crate::netcode::HostOverlayFactTracker,
+) {
+    pool.clear_overlays();
+    client_facts.clear();
+    host_facts.clear();
+}
+
 /// Renderer bloom profile a staged manifest result commits, if any.
 ///
 /// `None` means "leave the active profile alone" — every non-`Committed`
@@ -107,11 +117,47 @@ impl App {
                     StagedManifestBuildStatus::NoStartScript => Vec::new(),
                     StagedManifestBuildStatus::Failed => Vec::new(),
                 };
+                let presentation_templates = match &result.status {
+                    StagedManifestBuildStatus::Built(manifest) => {
+                        manifest.presentation_templates.clone()
+                    }
+                    StagedManifestBuildStatus::NoStartScript => Vec::new(),
+                    StagedManifestBuildStatus::Failed => Vec::new(),
+                };
+                let presentation_overlays = match &result.status {
+                    StagedManifestBuildStatus::Built(manifest) => {
+                        manifest.presentation_overlays.clone()
+                    }
+                    StagedManifestBuildStatus::NoStartScript => Vec::new(),
+                    StagedManifestBuildStatus::Failed => Vec::new(),
+                };
                 if let Some(session) = self.session.as_mut() {
+                    let mod_id = session
+                        .scripting
+                        .script_runtime
+                        .committed_mod_identity()
+                        .map(|(id, _)| id.to_string());
+                    session.scripting.impact_policy_runtime.set_mod_id(mod_id);
                     session
                         .scripting
                         .impact_policy_runtime
                         .replace_global_events(events);
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .replace_presentation_templates(presentation_templates.clone());
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .replace_presentation_overlays(presentation_overlays);
+                    clear_replaced_presentation_overlay_state(
+                        &mut session.presentation_pool,
+                        &mut session.client_overlay_facts,
+                        &mut session.host_overlay_fact_tracker,
+                    );
+                }
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.set_presentation_templates(presentation_templates);
                 }
                 if let Some(endpoint) = self
                     .session
@@ -203,6 +249,8 @@ mod tests {
                 trigger_events: Vec::new(),
                 trigger_pools: Vec::new(),
                 ui_trees: Vec::new(),
+                presentation_templates: Vec::new(),
+                presentation_overlays: Vec::new(),
                 theme: Default::default(),
                 frontend: None,
                 store_declarations: Default::default(),
@@ -317,5 +365,42 @@ mod tests {
         for outcome in non_committed_outcomes() {
             assert_eq!(staged_switching(&result, &outcome), None);
         }
+    }
+
+    // Regression: replacing overlay templates cleared the pool but retained a
+    // client terminal/pending fact stream that could target the new template.
+    #[test]
+    fn overlay_authoring_replacement_clears_client_fact_lifecycle() {
+        let entity = postretro_entities::EntityId::from_raw(4);
+        let mut pool = crate::presentation_pool::PresentationPool::new(1);
+        pool.refresh_overlay(
+            entity,
+            postretro_entities::PresentationTemplateHandle::from("old-overlay"),
+            1.0,
+            1,
+            u64::from(entity.to_raw()),
+        );
+        let mut client_facts = crate::netcode::ClientOverlayFactState::default();
+        crate::netcode::ingest_client_overlay_fact(
+            &mut client_facts,
+            &mut pool,
+            crate::netcode::ClientOverlayFact::new(
+                postretro_net::wire::NetworkId(7),
+                0.0,
+                0.0,
+                false,
+                false,
+            ),
+            None,
+            None,
+            None,
+        );
+        let mut host_facts = crate::netcode::HostOverlayFactTracker::default();
+
+        clear_replaced_presentation_overlay_state(&mut pool, &mut client_facts, &mut host_facts);
+
+        assert_eq!(pool.live_counts(), (0, 0));
+        assert_eq!(client_facts.terminal_len(), 0);
+        assert_eq!(client_facts.pending_len(), 0);
     }
 }

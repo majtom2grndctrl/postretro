@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::engine_state_catalog::engine_state_catalog;
-use postretro_foundation::IrNode;
+use postretro_foundation::{IrNode, Seat};
 
 /// Runtime value stored in a state slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,6 +71,9 @@ pub struct SlotSchema {
     /// Replication scope (M15 Phase 3.5). Defaults to `None` (local-only). Only
     /// `SharedGlobal`/`OwnerPrivatePlayer` slots enter the replicated-slot schema.
     pub network: ReplicationScope,
+    /// Whether this mod slot keeps one authoritative value per durable player
+    /// seat. Replication remains an independent declaration in `network`.
+    pub per_owner: bool,
     /// Optional script-authored per-tick delta expression. The binary binds it
     /// once at level install; entities retains only the VM-free raw IR node.
     pub accumulate: Option<IrNode>,
@@ -80,7 +83,12 @@ pub struct SlotSchema {
 #[derive(Clone, Debug)]
 pub struct SlotRecord {
     pub schema: SlotSchema,
+    /// The scalar projection consumed by existing unaddressed readers. On a
+    /// host, a per-owner slot keeps each owner's authoritative value in
+    /// `per_seat_values`; the local-seat publisher refreshes this scalar
+    /// separately. Clients retain their received local projection here.
     pub value: Option<SlotValue>,
+    per_seat_values: HashMap<Seat, SlotValue>,
     write_generation: u64,
 }
 
@@ -90,8 +98,34 @@ impl SlotRecord {
         Self {
             schema,
             value,
+            per_seat_values: HashMap::new(),
             write_generation: 0,
         }
+    }
+
+    /// Read this slot's value for one durable player seat.
+    ///
+    /// An unwritten seat observes the declared default, exactly as a freshly
+    /// declared scalar slot does. Owner-addressed callers use this instead of
+    /// the scalar projection in `value`.
+    pub fn per_seat_value(&self, seat: Seat) -> Option<&SlotValue> {
+        self.per_seat_values
+            .get(&seat)
+            .or(self.schema.default.as_ref())
+    }
+
+    /// Set this slot's authoritative value for one durable player seat.
+    ///
+    /// This deliberately leaves `value` alone: it is the local projection for
+    /// unaddressed readers, not a fallback for another owner's value.
+    pub fn set_per_seat_value(&mut self, seat: Seat, value: SlotValue) {
+        self.per_seat_values.insert(seat, value);
+        self.write_generation = self.write_generation.wrapping_add(1);
+    }
+
+    /// Remove one durable player's authoritative value at seat release.
+    pub fn clear_per_seat_value(&mut self, seat: Seat) {
+        self.per_seat_values.remove(&seat);
     }
 
     /// Generation of the latest accepted authoritative write.
@@ -116,7 +150,9 @@ impl PartialEq for SlotRecord {
     fn eq(&self, other: &Self) -> bool {
         // Write generations are runtime notifications, not declaration or
         // visible-value semantics.
-        self.schema == other.schema && self.value == other.value
+        self.schema == other.schema
+            && self.value == other.value
+            && self.per_seat_values == other.per_seat_values
     }
 }
 
@@ -376,6 +412,28 @@ impl SlotTable {
             .map(|(name, record)| (name.as_str(), record))
     }
 
+    /// Iterate every slot record mutably.
+    ///
+    /// The HUD publisher uses this to refresh the scalar projection for the
+    /// local seat without exposing another owner's per-seat value to an
+    /// unaddressed reader.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&str, &mut SlotRecord)> {
+        self.slots
+            .iter_mut()
+            .map(|(name, record)| (name.as_str(), record))
+    }
+
+    /// Clear all authoritative per-seat values when a durable seat is released.
+    ///
+    /// The table contains every mod store, so the app can keep the seat-table
+    /// lifecycle and store cleanup separate while still clearing every store at
+    /// the one release seam.
+    pub fn clear_per_seat_values(&mut self, seat: Seat) {
+        for record in self.slots.values_mut() {
+            record.clear_per_seat_value(seat);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.slots.len()
     }
@@ -414,11 +472,21 @@ fn validate_namespace_records(
             namespace: namespace.to_string(),
         });
     }
+    if namespace.contains(':') {
+        return Err(NamespaceInsertError::NamespaceContainsColon {
+            namespace: namespace.to_string(),
+        });
+    }
 
     let mut pending = HashSet::with_capacity(records.len());
     for (slot_name, _) in records {
         if slot_name.is_empty() {
             return Err(NamespaceInsertError::InvalidSlotName);
+        }
+        if slot_name.contains(':') {
+            return Err(NamespaceInsertError::SlotNameContainsColon {
+                slot_name: slot_name.to_string(),
+            });
         }
         let full_name = format!("{namespace}.{slot_name}");
         if !pending.insert(full_name.clone()) {
@@ -460,8 +528,12 @@ pub enum NamespaceInsertError {
     InvalidNamespace,
     #[error("state-store namespace `{namespace}` must not start with reserved `@`")]
     ReservedNamespace { namespace: String },
+    #[error("state-store namespace `{namespace}` must not contain `:`")]
+    NamespaceContainsColon { namespace: String },
     #[error("state-store slot name must not be empty")]
     InvalidSlotName,
+    #[error("state-store slot name `{slot_name}` must not contain `:`")]
+    SlotNameContainsColon { slot_name: String },
     #[error("state-store namespace `{namespace}` collides with registered namespace `{existing}`")]
     NamespaceCollision { namespace: String, existing: String },
     #[error("state slot `{name}` is already defined")]
@@ -483,8 +555,25 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: ReplicationScope::None,
+            per_owner: false,
             accumulate: None,
         })
+    }
+
+    fn per_owner_number_slot(value: f32) -> SlotRecord {
+        let mut record = number_slot(value);
+        record.schema.per_owner = true;
+        record
+    }
+
+    fn assert_slot_number_eq(value: Option<&SlotValue>, expected: f32) {
+        let Some(SlotValue::Number(actual)) = value else {
+            panic!("expected numeric slot value");
+        };
+        assert!(
+            (*actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
     }
 
     #[test]
@@ -496,6 +585,65 @@ mod tests {
 
         assert_eq!(written.write_generation(), 1);
         assert_eq!(written, original);
+    }
+
+    #[test]
+    fn per_seat_values_are_isolated_and_unwritten_seats_use_the_declared_default() {
+        let mut record = per_owner_number_slot(5.0);
+
+        assert!(record.schema.per_owner);
+        assert_slot_number_eq(record.per_seat_value(Seat(1)), 5.0);
+
+        record.set_per_seat_value(Seat(1), SlotValue::Number(17.0));
+        record.set_per_seat_value(Seat(2), SlotValue::Number(31.0));
+
+        assert_slot_number_eq(record.per_seat_value(Seat(1)), 17.0);
+        assert_slot_number_eq(record.per_seat_value(Seat(2)), 31.0);
+        assert_slot_number_eq(record.per_seat_value(Seat(3)), 5.0);
+
+        record.clear_per_seat_value(Seat(1));
+
+        assert_slot_number_eq(record.per_seat_value(Seat(1)), 5.0);
+        assert_slot_number_eq(record.per_seat_value(Seat(2)), 31.0);
+    }
+
+    #[test]
+    fn table_clear_per_seat_values_clears_each_store_without_changing_scalars() {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace(
+                "currency",
+                vec![
+                    ("xp".to_string(), per_owner_number_slot(0.0)),
+                    ("tokens".to_string(), per_owner_number_slot(10.0)),
+                ],
+            )
+            .unwrap();
+        assert!(table.get("currency.xp").unwrap().schema.per_owner);
+        assert!(table.get("currency.tokens").unwrap().schema.per_owner);
+        table
+            .get_mut("currency.xp")
+            .unwrap()
+            .set_per_seat_value(Seat(7), SlotValue::Number(100.0));
+        table
+            .get_mut("currency.tokens")
+            .unwrap()
+            .set_per_seat_value(Seat(7), SlotValue::Number(50.0));
+
+        table.clear_per_seat_values(Seat(7));
+
+        assert_slot_number_eq(
+            table.get("currency.xp").unwrap().per_seat_value(Seat(7)),
+            0.0,
+        );
+        assert_slot_number_eq(
+            table
+                .get("currency.tokens")
+                .unwrap()
+                .per_seat_value(Seat(7)),
+            10.0,
+        );
+        assert_slot_number_eq(table.get("currency.xp").unwrap().value.as_ref(), 0.0);
     }
 
     #[test]
@@ -712,6 +860,31 @@ mod tests {
     }
 
     #[test]
+    fn namespace_insert_rejects_colons_in_authored_names() {
+        let mut table = SlotTable::new();
+
+        let namespace_error = table
+            .insert_namespace("mod:state", vec![("value".to_string(), number_slot(0.0))])
+            .expect_err("a namespace colon must be rejected");
+        assert_eq!(
+            namespace_error,
+            NamespaceInsertError::NamespaceContainsColon {
+                namespace: "mod:state".to_string(),
+            }
+        );
+
+        let slot_error = table
+            .insert_namespace("mod", vec![("state:value".to_string(), number_slot(0.0))])
+            .expect_err("a slot-name colon must be rejected");
+        assert_eq!(
+            slot_error,
+            NamespaceInsertError::SlotNameContainsColon {
+                slot_name: "state:value".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn reconcile_identical_schema_preserves_current_value() {
         let mut table = SlotTable::new();
         let declaration = StoreDeclaration {
@@ -804,6 +977,7 @@ mod tests {
                     readonly: true,
                     ownership: SlotOwnership::Engine,
                     network: ReplicationScope::None,
+                    per_owner: false,
                     accumulate: None,
                 }),
             )

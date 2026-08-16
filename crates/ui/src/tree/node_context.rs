@@ -42,7 +42,7 @@ pub enum NodeContext {
         family: String,
         bind: Option<TextBind>,
         /// The nearest declaring `localState` scope id resolved at build time, for
-        /// a `{ local }` bind. `None` for a `{ slot }` bind or a
+        /// a `{ local }` bind. `None` for a `{ slot }`/`{ fact }` bind or a
         /// local bind with no enclosing scope (the latter degrades to "absent").
         bind_scope: Option<String>,
         /// Last resolved bound string the diff observed. `None` until the first
@@ -90,7 +90,7 @@ pub enum NodeContext {
         border: Option<Border>,
         bind: Option<PanelBind>,
         /// Nearest declaring `localState` scope id for a `{ local }` bind (see
-        /// `NodeContext::Text::bind_scope`). `None` for slot binds and backdrops.
+        /// `NodeContext::Text::bind_scope`). `None` for slot/fact binds and backdrops.
         bind_scope: Option<String>,
         /// Last resolved bound fill the diff observed. `None` until the first
         /// diff; only meaningful when `bind` is `Some`.
@@ -128,7 +128,7 @@ pub enum NodeContext {
         /// lifecycle presentation behavior; it is not a generic opacity API.
         exit_fade: Option<BarExitFade>,
         /// Nearest declaring `localState` scope id for a `{ local }` bind (see
-        /// `NodeContext::Text::bind_scope`). `None` for a slot bind.
+        /// `NodeContext::Text::bind_scope`). `None` for a slot/fact bind.
         bind_scope: Option<String>,
         /// Last resolved (or eased) value the diff observed, for change detection
         /// and to feed the draw the eased display fraction. `None` until first diff.
@@ -153,12 +153,13 @@ pub enum NodeContext {
 /// `NodeContext`, since a `visibleWhen` may sit on a pure layout container (a
 /// stack/grid) that carries no draw context. Keeping it off the descriptor walk
 /// is the invariant: visibility is a layout/draw/focus concern only, so a hidden
-/// subtree never tears down its `localState` cells (see `presentation_cells.rs`).
+/// subtree never tears down its `localState` cells.
 #[derive(Debug, Clone)]
 pub struct VisibilityState {
     pub predicate: Predicate,
     /// Nearest declaring `localState` scope for a `{ local }` predicate; `None`
-    /// for a `{ slot }` predicate or a local predicate with no enclosing scope.
+    /// for a `{ slot }` or `{ fact }` predicate, or a local predicate with no
+    /// enclosing scope.
     pub scope: Option<String>,
     /// The node's authored `Display` when visible — `Flex` for a stack/leaf,
     /// `Grid` for a grid container. Restored on a hide→show flip so a grid's

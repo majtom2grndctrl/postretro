@@ -79,7 +79,7 @@ fn is_resource_grant_reaction_lua(value: &LuaValue) -> bool {
     };
     matches!(
         primitive.to_str().ok().as_deref(),
-        Some("grantHealth" | "grantAmmo")
+        Some("grantHealth" | "grantAmmo" | "addSlot")
     )
 }
 
@@ -589,6 +589,107 @@ pub fn drain_ui_trees_lua(
     }
     log_lua_array_extras(&arr, len, "uiTrees", scope)?;
     Ok(out)
+}
+
+/// Luau twin of [`drain_presentation_templates_js`]. Invalid entries are
+/// contained to the entry so a passive visual cannot make mod init fail.
+pub fn drain_presentation_templates_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<PresentationTemplate>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "presentationTemplates", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = dense_lua_prefix_len(&arr, "presentationTemplates", scope)?;
+    let mut seen_ids = BTreeSet::new();
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+        match presentation_template_from_lua(value) {
+            Ok(template) if !seen_ids.insert(template.id.clone()) => log::warn!(
+                "[Scripting] {scope}: `presentationTemplates[{i}]` duplicates `{}` and was skipped",
+                template.id
+            ),
+            Ok(template) => out.push(template),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: `presentationTemplates[{i}]` is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    log_lua_array_extras(&arr, len, "presentationTemplates", scope)?;
+    Ok(out)
+}
+
+/// Luau twin of [`drain_presentation_overlays_js`]. The field accepts one
+/// descriptor and contains malformed input instead of rejecting the manifest.
+pub fn drain_presentation_overlays_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<PresentationOverlay>, DescriptorError> {
+    let value: LuaValue = table.get("presentationOverlays").map_err(lua_err)?;
+    if matches!(value, LuaValue::Nil) {
+        return Ok(Vec::new());
+    }
+    match presentation_overlay_from_lua(value) {
+        Ok(overlay) => Ok(vec![overlay]),
+        Err(error) => {
+            log::warn!(
+                "[Scripting] {scope}: `presentationOverlays` must be one overlay descriptor (not an array); the field was ignored: {error}"
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
+pub fn presentation_overlay_from_lua(
+    value: LuaValue,
+) -> Result<PresentationOverlay, DescriptorError> {
+    let json = conv::lua_to_json(value).map_err(lua_err)?;
+    let overlay = serde_json::from_value::<PresentationOverlay>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation overlay must match its descriptor shape: {error}"),
+        }
+    })?;
+    overlay
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(overlay)
+}
+
+/// Deserialize one Luau presentation template through the standard VM-free
+/// bridge, then validate its authored timing and motion bounds.
+pub fn presentation_template_from_lua(
+    value: LuaValue,
+) -> Result<PresentationTemplate, DescriptorError> {
+    let table = lua_table(value.clone(), "presentation template")?;
+    let root_value: LuaValue = table.get("root").map_err(lua_err)?;
+    if matches!(root_value, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field: "root" });
+    }
+    let root = widget_from_lua(root_value)?;
+    validate_presentation_widget_root(&root)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    let mut json = conv::lua_to_json(value).map_err(lua_err)?;
+    let json_obj = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "presentation template must be an object".to_string(),
+        })?;
+    json_obj.insert(
+        "root".to_string(),
+        serde_json::to_value(root).map_err(|error| DescriptorError::InvalidShape {
+            reason: format!("presentation template root could not be lowered: {error}"),
+        })?,
+    );
+    let template = serde_json::from_value::<PresentationTemplate>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation template must match its descriptor shape: {error}"),
+        }
+    })?;
+    template
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(template)
 }
 
 /// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from Luau.

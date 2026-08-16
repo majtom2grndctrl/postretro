@@ -45,7 +45,9 @@ struct Uniforms {
     _dyn_pad0: u32,
     _dyn_pad1: u32,
     _total_light_count_inert: u32,
-    _dyn_pad3: u32,
+    // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), never
+    // read here; it preserves the shared group-0 Uniforms layout/stride.
+    _spec_shadowmask_force_one_inert: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

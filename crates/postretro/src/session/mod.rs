@@ -36,7 +36,7 @@ use crate::scripting::reactions::registry::{
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
 };
-use crate::scripting::state_persistence::StateStoreLifecycle;
+use crate::scripting::state_persistence::{PerOwnerSaveTimer, PersistedState, StateStoreLifecycle};
 use crate::scripting_systems;
 use crate::startup::StartupTimings;
 use crate::{audio, netcode, options};
@@ -107,8 +107,30 @@ pub(crate) struct Session {
     /// NEVER the authoritative store. See: context/lib/ui.md §3/§6.
     pub(crate) presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
+    /// App-side transient presentation lifetime owner. It drains the registry
+    /// intake during Render and emits CPU draw data; renderer state stays out of
+    /// this session-owned bridge.
+    pub(crate) presentation_pool: crate::presentation_pool::PresentationPool,
+
+    /// Client-only terminal guards for unordered enemy-overlay facts. This is
+    /// separate from the pool because a removed overlay must still remember its
+    /// terminal `NetworkId` until the reorder horizon has elapsed.
+    pub(crate) client_overlay_facts: crate::netcode::ClientOverlayFactState,
+    /// Host-only recipient and change bookkeeping for remote damaged-enemy
+    /// overlay facts. Kept outside the registry so it cannot leak EntityIds onto
+    /// the wire or affect the host-owned local overlay.
+    pub(crate) host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker,
+
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
+
+    /// Connected-client cadence for private per-owner state. It advances only
+    /// while the transport reports an active participation generation.
+    pub(crate) per_owner_save_timer: PerOwnerSaveTimer,
+
+    /// Boot-loaded state retained for per-owner saves and join-seed assembly.
+    /// The document remains main-thread-only with the rest of the session.
+    pub(crate) persisted_state: Option<PersistedState>,
 
     /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
     pub(crate) progress_tracker: ProgressTracker,
@@ -267,7 +289,8 @@ pub(crate) struct ScriptingCore {
     pub(crate) slot_accumulator_bindings:
         scripting_systems::slot_accumulators::SlotAccumulatorBindings,
 
-    /// Publishes live pawn health, ammo, and reload state into HUD slots each frame.
+    /// Publishes live pawn health before each impact snapshot, then republishes
+    /// health, ammo, and reload state for HUD consumers after game logic.
     /// See: context/lib/scripting.md §5 for the store contract.
     pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
 
@@ -287,6 +310,18 @@ pub(crate) struct ScriptingCore {
     /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
     /// See: context/lib/input.md §7.
     pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+}
+
+/// Publish owner-local health and evaluate the damage call's pending impact in
+/// one fixed-tick seam. The caller already owns the live registry, so the health
+/// producer must read that borrow rather than re-enter `ScriptCtx::registry`.
+pub(crate) fn evaluate_pending_in_tick_impacts(
+    player_hud_state: &mut scripting_systems::ui_proxy::PlayerHudStatePublisher,
+    impact_policy_runtime: &mut ImpactPolicyRuntime,
+    registry: &mut postretro_entities::EntityRegistry,
+) {
+    player_hud_state.publish_health_from_registry(registry);
+    impact_policy_runtime.evaluate_pending_in_registry(registry);
 }
 
 impl Session {
@@ -452,6 +487,13 @@ impl Session {
             &net_endpoint,
             Some(netcode::NetEndpoint::Client { .. })
         ));
+        scripting
+            .script_ctx
+            .owner_slot_writes_enabled
+            .set(!matches!(
+                &net_endpoint,
+                Some(netcode::NetEndpoint::Client { .. })
+            ));
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 
@@ -468,7 +510,12 @@ impl Session {
             font_system: postretro_ui::text::build_font_system(),
             scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
+            presentation_pool: crate::presentation_pool::PresentationPool::default(),
+            client_overlay_facts: crate::netcode::ClientOverlayFactState::default(),
+            host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker::default(),
             state_store_lifecycle: StateStoreLifecycle::default(),
+            per_owner_save_timer: PerOwnerSaveTimer::default(),
+            persisted_state: None,
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),
             crossing_detector: CrossingDetector::new(),
@@ -760,6 +807,19 @@ fn build_scripting_core(
 }
 
 impl ScriptingCore {
+    /// Evaluate one damage call's pending impacts against engine state published
+    /// from the same post-damage registry borrow.
+    pub(crate) fn evaluate_pending_in_tick_impacts(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+    ) {
+        evaluate_pending_in_tick_impacts(
+            &mut self.player_hud_state,
+            &mut self.impact_policy_runtime,
+            registry,
+        );
+    }
+
     /// Drain the validated mod manifest's engine-global registrations into the
     /// `DataRegistry`: entity-type descriptors, the map catalog, global reactions
     /// (validated against the sequence registry), global crossings, and global trigger pools. Shared by
@@ -774,7 +834,11 @@ impl ScriptingCore {
     /// that case up front via [`require_headless_mod_manifest`].
     /// See: context/lib/boot_sequence.md §3, context/lib/scripting.md §2.
     pub(crate) fn drain_manifest_registrations(&mut self) {
-        let events = {
+        let mod_id = self
+            .script_runtime
+            .committed_mod_identity()
+            .map(|(id, _)| id.to_string());
+        let (events, presentation_templates, presentation_overlays) = {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
             };
@@ -794,9 +858,36 @@ impl ScriptingCore {
             data_registry
                 .replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
             data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
-            std::mem::take(&mut manifest.events)
+            (
+                std::mem::take(&mut manifest.events),
+                std::mem::take(&mut manifest.presentation_templates),
+                std::mem::take(&mut manifest.presentation_overlays),
+            )
         };
+        self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
+        self.impact_policy_runtime
+            .replace_presentation_templates(presentation_templates);
+        self.impact_policy_runtime
+            .replace_presentation_overlays(presentation_overlays);
+    }
+
+    /// Renderer-facing copy of the committed passive template registry. The
+    /// policy runtime resolves spawn handles while the renderer independently
+    /// owns widget layout, so callers only transfer this VM-free snapshot.
+    pub(crate) fn presentation_templates(
+        &self,
+    ) -> Vec<postretro_scripting_core::data_descriptors::PresentationTemplate> {
+        self.impact_policy_runtime.presentation_templates()
+    }
+
+    pub(crate) fn presentation_template_registry(
+        &self,
+    ) -> &std::collections::HashMap<
+        String,
+        postretro_scripting_core::data_descriptors::PresentationTemplate,
+    > {
+        self.impact_policy_runtime.presentation_template_registry()
     }
 }
 

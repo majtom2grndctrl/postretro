@@ -13,7 +13,7 @@ Findings behind the spec's decisions, including why its shape changed twice.
 | The existing player identity is pawn-scoped on one arm and connection-scoped on the other, and is crate-private to the binary | `crates/postretro/src/trigger_system.rs` — `PlayerId::{Local, Remote}` |
 | Every existing per-player consumer is within-level: trigger occupancy, use edges, alive players, canonical pawns | `crates/postretro/src/sim/mod.rs`, `crates/postretro/src/trigger_system.rs` |
 | A connected client does not write the save file | `crates/postretro/src/main.rs` — `should_save_persisted_state(can_save, is_connected_client) = can_save && !is_connected_client` |
-| `slot.add` rejects any target today and lowers to a self-referential add on a global slot | `crates/postretro/src/impact_policy.rs` — `bind_effect` |
+| The impact slot-write effect (`slot.set` since `scripting-state-convergence` retired `slot.add`) rejects any target today and lowers a value expression to a `Write` on a global slot through `bind_number_write` | `crates/postretro/src/impact_policy.rs` — `bind_effect`'s `"slot.set"` arm |
 | The HUD publisher republishes player slots each frame from local state, skipping rather than resetting when a source is absent | `crates/postretro/src/scripting/systems/ui_proxy.rs` |
 | The activators-or-tag dual is shipped on a damage builder — the shape the reaction write path copies | `sdk/lib/data_script.ts` |
 

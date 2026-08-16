@@ -80,6 +80,9 @@ pub struct NavGraph {
     portals: Vec<NavPortal>,
     /// `region_portals[i]` = portal indices touching region `i`.
     region_portals: Vec<Vec<usize>>,
+    /// Connected-component id per region. Built once at load so callers can
+    /// distinguish a disconnected destination from a path-repair refusal.
+    region_components: Vec<usize>,
 }
 
 impl NavGraph {
@@ -133,12 +136,41 @@ impl NavGraph {
             }
         }
 
+        let mut region_components = vec![usize::MAX; regions.len()];
+        let mut component_count = 0;
+        for start in 0..regions.len() {
+            if region_components[start] != usize::MAX {
+                continue;
+            }
+            let mut pending = vec![start];
+            region_components[start] = component_count;
+            while let Some(region_index) = pending.pop() {
+                for &portal_index in &region_portals[region_index] {
+                    let portal = &section.portals[portal_index];
+                    let neighbor = if portal.region_a as usize == region_index {
+                        portal.region_b as usize
+                    } else {
+                        portal.region_a as usize
+                    };
+                    let Some(neighbor_component) = region_components.get_mut(neighbor) else {
+                        continue;
+                    };
+                    if *neighbor_component == usize::MAX {
+                        *neighbor_component = component_count;
+                        pending.push(neighbor);
+                    }
+                }
+            }
+            component_count += 1;
+        }
+
         Self {
             grid,
             agent,
             regions,
             portals: section.portals.clone(),
             region_portals,
+            region_components,
         }
     }
 
@@ -284,6 +316,20 @@ impl NavGraph {
             }
         }
         best.map(|(i, _, _)| i)
+    }
+
+    /// Whether two resolved endpoints belong to the same portal-connected
+    /// region component. This is deliberately weaker than [`find_path`]: it
+    /// distinguishes a genuinely disconnected destination from a transient
+    /// funnel-clearance refusal without rerunning a graph search.
+    pub(crate) fn endpoints_are_topologically_connected(&self, start: Vec3, goal: Vec3) -> bool {
+        let Some(start_region) = self.resolve_region_at(start) else {
+            return false;
+        };
+        let Some(goal_region) = self.resolve_region_at(goal) else {
+            return false;
+        };
+        self.region_components.get(start_region) == self.region_components.get(goal_region)
     }
 
     /// Iterate the portals touching `region_index` (the per-region adjacency
@@ -481,6 +527,27 @@ mod tests {
         assert_eq!(graph.resolve_region_at(Vec3::new(-0.5, 0.0, 3.5)), Some(0));
         // Mirrored just above the shared edge: region 1 is nearer.
         assert_eq!(graph.resolve_region_at(Vec3::new(-0.5, 0.5, 4.5)), Some(1));
+    }
+
+    #[test]
+    fn endpoints_topological_connectivity_distinguishes_portal_components() {
+        let connected = NavGraph::from_section(&stacked_region_section());
+        assert!(connected.endpoints_are_topologically_connected(
+            Vec3::new(2.0, 0.0, 1.0),
+            Vec3::new(2.0, 0.0, 5.0),
+        ));
+
+        let mut disconnected_section = stacked_region_section();
+        disconnected_section.portals.clear();
+        let disconnected = NavGraph::from_section(&disconnected_section);
+        assert!(!disconnected.endpoints_are_topologically_connected(
+            Vec3::new(2.0, 0.0, 1.0),
+            Vec3::new(2.0, 0.0, 5.0),
+        ));
+        assert!(!connected.endpoints_are_topologically_connected(
+            Vec3::new(100.0, 0.0, 100.0),
+            Vec3::new(2.0, 0.0, 5.0),
+        ));
     }
 
     #[test]

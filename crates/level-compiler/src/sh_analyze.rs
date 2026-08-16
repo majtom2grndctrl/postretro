@@ -6,7 +6,16 @@
 //! error**, measures seams as **actual shared-face reconstruction differences**,
 //! attributes valid-probe payload compaction / exact-zero delta dropping / density coarsening
 //! **separately**, and reports savings both with and without a protection
-//! stand-in — never touching a single emitted `.prl` byte.
+//! stand-in.
+//!
+//! **Scope note (delta-SH probe coarsening).** This module's own analysis entry
+//! point (`run_analysis`) still never touches an emitted `.prl` byte. But
+//! several of its brick-assembly / error primitives — `build_brick_tiles`,
+//! `level_errors`, `tile_magnitude`, `accumulate_delta_for_cell`,
+//! `brick_world_aabb`, `DeltaView`, `AnalyzeInputs`, `LevelKind` — are now
+//! `pub(crate)` and reused by `sh_coarsen::classify_section_levels` to compute
+//! per-cell coarsening levels, which **do** change emitted `delta_subblocks`
+//! bytes on a `--sh-coarsen` bake. Treat those primitives as producer-facing.
 //!
 //! See `context/lib/experimental_spikes.md`: a spike cuts scope and hardening,
 //! not rigor. This pass runs entirely CPU-side in the compiler, per 4×4×4 brick
@@ -50,6 +59,10 @@ use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
+use postretro_level_format::sh_reconstruct::{
+    Level, Tile, local_xyz, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles,
+    stored_tiles, zero_tile,
+};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use serde::Serialize;
 
@@ -82,8 +95,8 @@ pub struct ProtectAabb {
 
 /// A field-level view over one of the three delta sections (ids 27/41/45),
 /// which share the affinity-CSR layout.
-struct DeltaView<'a> {
-    affinity_dims: [u32; 3],
+pub(crate) struct DeltaView<'a> {
+    pub(crate) affinity_dims: [u32; 3],
     tile_dimension: usize,
     valid_probe_masks: &'a [u64],
     offsets: &'a [u32],
@@ -97,7 +110,7 @@ struct DeltaView<'a> {
 }
 
 impl<'a> DeltaView<'a> {
-    fn from_indirect(s: &'a DeltaShVolumesSection) -> Self {
+    pub(crate) fn from_indirect(s: &'a DeltaShVolumesSection) -> Self {
         Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
@@ -106,7 +119,7 @@ impl<'a> DeltaView<'a> {
             &s.delta_subblocks,
         )
     }
-    fn from_direct(s: &'a DirectShDeltaVolumesSection) -> Self {
+    pub(crate) fn from_direct(s: &'a DirectShDeltaVolumesSection) -> Self {
         let mut view = Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
@@ -124,7 +137,7 @@ impl<'a> DeltaView<'a> {
         }
         view
     }
-    fn from_anim_direct(s: &'a AnimatedDirectShDeltaVolumesSection) -> Self {
+    pub(crate) fn from_anim_direct(s: &'a AnimatedDirectShDeltaVolumesSection) -> Self {
         Self::new(
             s.affinity_dims,
             s.tile_dimension as usize,
@@ -183,7 +196,7 @@ impl<'a> DeltaView<'a> {
         self.entry_payload_range(entry)
             .map_or(0, |range| range.len())
     }
-    fn valid_probe_mask(&self, cell: usize) -> Option<u64> {
+    pub(crate) fn valid_probe_mask(&self, cell: usize) -> Option<u64> {
         self.valid_probe_masks.get(cell).copied()
     }
     fn is_exact_zero_drop_candidate(&self, entry: usize, exact_zero: bool) -> bool {
@@ -236,17 +249,6 @@ pub struct AnalyzeInputs<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Tile primitives
-// ---------------------------------------------------------------------------
-
-/// An octahedral interior tile: `interior*interior` RGB texels.
-type Tile = Vec<Vec3>;
-
-fn zero_tile(texels: usize) -> Tile {
-    vec![Vec3::ZERO; texels]
-}
-
-// ---------------------------------------------------------------------------
 // Solid-angle weights (metric 2b)
 // ---------------------------------------------------------------------------
 
@@ -284,90 +286,9 @@ fn solid_angle_weights(interior: usize) -> Vec<f32> {
     w
 }
 
-// ---------------------------------------------------------------------------
-// Reconstruction math (unit-tested)
-// ---------------------------------------------------------------------------
-
-/// The 8 corner local indices of a 4×4×4 brick: local ∈ {0,3}³, x-fastest.
-fn corner_locals() -> [usize; 8] {
-    let mut out = [0usize; 8];
-    let mut k = 0;
-    for &cz in &[0usize, AF - 1] {
-        for &cy in &[0usize, AF - 1] {
-            for &cx in &[0usize, AF - 1] {
-                out[k] = cx + cy * AF + cz * AF * AF;
-                k += 1;
-            }
-        }
-    }
-    out
-}
-
-fn local_xyz(local: usize) -> (usize, usize, usize) {
-    (local % AF, (local / AF) % AF, local / (AF * AF))
-}
-
-/// Trilinear weight of corner `(cx,cy,cz)∈{0,3}³` for a target at local
-/// `(tx,ty,tz)`, per-axis weight = position along the 0..3 span.
-fn trilinear_weight(target: (usize, usize, usize), corner: (usize, usize, usize)) -> f32 {
-    let axis = |t: usize, c: usize| -> f32 {
-        let f = t as f32 / (AF - 1) as f32; // 0..1 along the brick span
-        if c == AF - 1 { f } else { 1.0 - f }
-    };
-    axis(target.0, corner.0) * axis(target.1, corner.1) * axis(target.2, corner.2)
-}
-
-/// L1 reconstruction of the tile at `target_local` from the brick's valid corner
-/// tiles. Corners that are absent/invalid are dropped and the surviving weights
-/// renormalized. Returns `None` when no valid corner exists.
-fn reconstruct_l1_tile(
-    tiles: &[Option<Tile>; PROBES_PER_CELL],
-    target_local: usize,
-    texels: usize,
-) -> Option<Tile> {
-    let target = local_xyz(target_local);
-    let mut acc = zero_tile(texels);
-    let mut wsum = 0.0f32;
-    for corner_local in corner_locals() {
-        if let Some(tile) = &tiles[corner_local] {
-            let w = trilinear_weight(target, local_xyz(corner_local));
-            if w <= 0.0 {
-                continue;
-            }
-            for (a, t) in acc.iter_mut().zip(tile.iter()) {
-                *a += *t * w;
-            }
-            wsum += w;
-        }
-    }
-    if wsum <= 0.0 {
-        return None;
-    }
-    for a in acc.iter_mut() {
-        *a /= wsum;
-    }
-    Some(acc)
-}
-
-/// L2 brick-mean tile over valid probes. `None` when the brick has no valid
-/// probe.
-fn reconstruct_l2_tile(tiles: &[Option<Tile>; PROBES_PER_CELL], texels: usize) -> Option<Tile> {
-    let mut acc = zero_tile(texels);
-    let mut n = 0u32;
-    for tile in tiles.iter().flatten() {
-        for (a, t) in acc.iter_mut().zip(tile.iter()) {
-            *a += *t;
-        }
-        n += 1;
-    }
-    if n == 0 {
-        return None;
-    }
-    for a in acc.iter_mut() {
-        *a /= n as f32;
-    }
-    Some(acc)
-}
+// Reconstruction math (`corner_locals` / `local_xyz` / `trilinear_weight` /
+// `reconstruct_l1_tile` / `reconstruct_l2_tile`) now lives in the shared
+// `postretro_level_format::sh_reconstruct` module, imported above.
 
 fn texel_error(recon: &Vec3, truth: &Vec3) -> f32 {
     (recon.x - truth.x)
@@ -428,7 +349,10 @@ fn percentile(v: &mut [f32], p: f32) -> f32 {
     if v.is_empty() {
         return 0.0;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // NaN-tolerant: a corrupt/garbage atlas texel can decode to NaN, and under
+    // `--sh-coarsen` this stat gates a real bake — treat NaN as equal rather
+    // than panicking the sort (mirrors the classifier's own guarded sort).
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let idx = ((v.len() as f32 - 1.0) * p).round() as usize;
     v[idx.min(v.len() - 1)]
 }
@@ -442,7 +366,7 @@ fn weighted_percentile(values: &[f32], weights: &[f32], p: f32) -> f32 {
         .copied()
         .zip(weights.iter().copied())
         .collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let total: f32 = pairs.iter().map(|(_, w)| *w).sum();
     if total <= 0.0 {
         return pairs.last().map(|(v, _)| *v).unwrap_or(0.0);
@@ -478,6 +402,18 @@ pub struct LevelErrStats {
 }
 
 #[derive(Serialize, Clone, Default)]
+pub struct MagnitudeStats {
+    /// Max over interior texels of max-per-channel `|truth|` (linear irradiance).
+    pub max: f32,
+    /// Texel-count mean of max-per-channel `|truth|`.
+    pub mean: f32,
+    /// 95th percentile of per-texel max-per-channel `|truth|`.
+    pub p95: f32,
+    /// Interior texels sampled across the brick's valid probe tiles.
+    pub texel_samples: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
 pub struct BrickRecord {
     pub cell: [u32; 3],
     pub linear_cell: u32,
@@ -490,6 +426,14 @@ pub struct BrickRecord {
     /// Composed-receiver reconstruction error (metric 2, PRIMARY).
     pub composed_l1: LevelErrStats,
     pub composed_l2: LevelErrStats,
+    /// Composed-receiver irradiance magnitude over the brick's valid probe
+    /// tiles, measured with the same max-per-channel reduction `texel_error`
+    /// uses. `composed_l*.{stat}` divided by the matching magnitude is a
+    /// like-for-like relative (Weber) deviation, which the raw absolute-error
+    /// metric alone cannot express — this is what lets a metric-only threshold
+    /// be stated as a percentage of local brightness rather than an absolute
+    /// irradiance value with no perceptual anchor.
+    pub composed_magnitude: MagnitudeStats,
     pub world_min: [f32; 3],
     pub world_max: [f32; 3],
 }
@@ -608,40 +552,8 @@ pub struct AnalysisReport {
 // Byte model
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Level {
-    L0,
-    L1,
-    L2,
-}
-
-/// Stored tile count for a brick at a given level, intersected with validity.
-fn stored_tiles(level: Level, valid_mask: &[bool; PROBES_PER_CELL]) -> usize {
-    match level {
-        Level::L0 => valid_mask.iter().filter(|&&v| v).count(),
-        Level::L1 => corner_locals().iter().filter(|&&l| valid_mask[l]).count(),
-        Level::L2 => {
-            if valid_mask.iter().any(|&v| v) {
-                1
-            } else {
-                0
-            }
-        }
-    }
-}
-
-/// Stored tile count for a delta entry at a candidate level. Unlike the base
-/// model, this reads the delta section's self-describing compact probe set.
-fn stored_delta_tiles(level: Level, valid_probe_mask: u64) -> usize {
-    match level {
-        Level::L0 => valid_probe_mask.count_ones() as usize,
-        Level::L1 => corner_locals()
-            .iter()
-            .filter(|&&local| valid_probe_mask & (1u64 << local) != 0)
-            .count(),
-        Level::L2 => usize::from(valid_probe_mask != 0),
-    }
-}
+// `Level`, `stored_tiles`, and `stored_delta_tiles` now live in the shared
+// `postretro_level_format::sh_reconstruct` module, imported above.
 
 // ---------------------------------------------------------------------------
 // Tile decoding
@@ -731,7 +643,7 @@ fn decode_base_direct_tile(
 /// Accumulate one delta section's contribution for a whole brick into a
 /// per-local-probe tile array (adds onto `acc`). `cell` is the affinity-cell
 /// linear index in the SECTION's own affinity grid.
-fn accumulate_delta_for_cell(
+pub(crate) fn accumulate_delta_for_cell(
     view: &DeltaView<'_>,
     cell: usize,
     interior: usize,
@@ -770,9 +682,9 @@ fn accumulate_delta_for_cell(
 // Per-brick working set
 // ---------------------------------------------------------------------------
 
-struct BrickTiles {
+pub(crate) struct BrickTiles {
     /// Composed truth tile per local probe (Some iff in-bounds AND valid).
-    composed: [Option<Tile>; PROBES_PER_CELL],
+    pub(crate) composed: [Option<Tile>; PROBES_PER_CELL],
     /// Base-indirect truth tile per local probe.
     base: [Option<Tile>; PROBES_PER_CELL],
     valid_mask: [bool; PROBES_PER_CELL],
@@ -969,6 +881,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 let base_l2 = level_errors(&bt.base, LevelKind::L2, texels, interior, &weights);
                 let comp_l1 = level_errors(&bt.composed, LevelKind::L1, texels, interior, &weights);
                 let comp_l2 = level_errors(&bt.composed, LevelKind::L2, texels, interior, &weights);
+                let comp_magnitude = tile_magnitude(&bt.composed, texels);
 
                 base_l1_agg.push(&base_l1);
                 base_l2_agg.push(&base_l2);
@@ -1000,6 +913,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                     base_l2: base_l2.to_stats(),
                     composed_l1: comp_l1.to_stats(),
                     composed_l2: comp_l2.to_stats(),
+                    composed_magnitude: comp_magnitude,
                     world_min: [wmin.x, wmin.y, wmin.z],
                     world_max: [wmax.x, wmax.y, wmax.z],
                 });
@@ -1282,7 +1196,7 @@ fn check_delta<'a>(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-fn build_brick_tiles(
+pub(crate) fn build_brick_tiles(
     inputs: &AnalyzeInputs<'_>,
     base: &OctahedralShVolumeSection,
     tile_dim: usize,
@@ -1369,7 +1283,7 @@ fn build_brick_tiles(
     }
 }
 
-fn brick_world_aabb(
+pub(crate) fn brick_world_aabb(
     inputs: &AnalyzeInputs<'_>,
     dims: [u32; 3],
     cx: usize,
@@ -1406,18 +1320,18 @@ fn intersects_any(aabbs: &[ProtectAabb], wmin: Vec3, wmax: Vec3) -> bool {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum LevelKind {
+pub(crate) enum LevelKind {
     L1,
     L2,
 }
 
-struct LevelErr {
-    max: f32,
+pub(crate) struct LevelErr {
+    pub(crate) max: f32,
     mean: f32,
-    p95: f32,
+    pub(crate) p95: f32,
     weighted_mean: f32,
     weighted_p95: f32,
-    texel_samples: u64,
+    pub(crate) texel_samples: u64,
 }
 
 impl LevelErr {
@@ -1444,7 +1358,7 @@ impl LevelErr {
     }
 }
 
-fn level_errors(
+pub(crate) fn level_errors(
     tiles: &[Option<Tile>; PROBES_PER_CELL],
     kind: LevelKind,
     texels: usize,
@@ -1483,6 +1397,34 @@ fn level_errors(
         p95: acc.p95(),
         weighted_mean: acc.weighted_mean(),
         weighted_p95: acc.weighted_p95(),
+        texel_samples: acc.values.len() as u64,
+    }
+}
+
+/// Composed-receiver irradiance magnitude over a brick's valid probe tiles.
+/// Uses the max-per-channel reduction `texel_error` applies to differences, so
+/// `error / magnitude` compares like with like. Absent (invalid) probes are
+/// skipped, exactly as `level_errors` skips them. Returns a zeroed record when
+/// the brick has no valid probe tiles.
+pub(crate) fn tile_magnitude(
+    tiles: &[Option<Tile>; PROBES_PER_CELL],
+    texels: usize,
+) -> MagnitudeStats {
+    let mut acc = ErrAccum::default();
+    for tile in tiles.iter() {
+        let Some(truth) = tile else { continue };
+        for v in &truth[..texels] {
+            let m = v.x.abs().max(v.y.abs()).max(v.z.abs());
+            acc.push(m, 1.0);
+        }
+    }
+    if acc.is_empty() {
+        return MagnitudeStats::default();
+    }
+    MagnitudeStats {
+        max: acc.max(),
+        mean: acc.mean(),
+        p95: acc.p95(),
         texel_samples: acc.values.len() as u64,
     }
 }
@@ -1924,6 +1866,32 @@ mod tests {
         std::array::from_fn(|_| Some(vec![Vec3::splat(value); texels]))
     }
 
+    #[test]
+    fn tile_magnitude_uses_max_per_channel_and_skips_invalid() {
+        let texels = 4;
+        // A constant field: magnitude equals the per-channel value everywhere.
+        let stats = tile_magnitude(&const_tiles(2.0, texels), texels);
+        assert_eq!(stats.max, 2.0);
+        assert_eq!(stats.mean, 2.0);
+        assert_eq!(stats.p95, 2.0);
+        assert_eq!(stats.texel_samples, (PROBES_PER_CELL * texels) as u64);
+
+        // Anisotropic channels: magnitude is the max-per-channel reduction, and
+        // the same reduction `texel_error` applies to differences, so the two
+        // are directly comparable as a relative deviation.
+        let mut tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        tiles[0] = Some(vec![Vec3::new(0.1, 3.0, -0.2); texels]);
+        let stats = tile_magnitude(&tiles, texels);
+        assert_eq!(stats.max, 3.0);
+        assert_eq!(stats.texel_samples, texels as u64);
+
+        // No valid probes → zeroed record, never a spurious magnitude.
+        let empty: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        let stats = tile_magnitude(&empty, texels);
+        assert_eq!(stats.texel_samples, 0);
+        assert_eq!(stats.max, 0.0);
+    }
+
     fn all_valid_payload(entries: usize, probe_f16_stride: usize) -> Vec<u16> {
         let mut payload = vec![0; entries * PROBES_PER_CELL * probe_f16_stride];
         for entry in 0..entries {
@@ -1962,6 +1930,7 @@ mod tests {
             tile_border: 1,
             animation_descriptor_indices: vec![0],
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 2],
             affinity_lights: vec![0, 0],
             delta_subblocks: payload.clone(),
@@ -1972,6 +1941,7 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 2],
             affinity_lights: vec![0, 0],
             delta_subblocks: payload.clone(),
@@ -1983,6 +1953,7 @@ mod tests {
             tile_border: 1,
             animation_descriptor_indices: vec![0],
             valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 2],
             affinity_lights: vec![0, 0],
             delta_subblocks: payload,
@@ -2050,6 +2021,7 @@ mod tests {
             tile_dimension: 1,
             tile_border: 0,
             valid_probe_masks: vec![1],
+            cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
             delta_subblocks: vec![0; 4],
@@ -2143,24 +2115,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn l1_weight_endpoints() {
-        // Corner (0,0,0) at target (0,0,0) → weight 1.
-        assert!((trilinear_weight((0, 0, 0), (0, 0, 0)) - 1.0).abs() < 1e-6);
-        // Corner (3,3,3) at target (3,3,3) → weight 1.
-        assert!((trilinear_weight((3, 3, 3), (3, 3, 3)) - 1.0).abs() < 1e-6);
-        // Corner (3,0,0) at target (0,0,0) → weight 0.
-        assert!(trilinear_weight((0, 0, 0), (3, 0, 0)).abs() < 1e-6);
-        // Midpoint target (weights sum to 1 across corners).
-        let mut sum = 0.0;
-        for c in corner_locals() {
-            sum += trilinear_weight((1, 1, 1), local_xyz(c));
-        }
-        assert!(
-            (sum - 1.0).abs() < 1e-5,
-            "trilinear weights must partition unity"
-        );
-    }
+    // The pure trilinear-weight / corner-index tests moved with the math into
+    // `postretro_level_format::sh_reconstruct` (task G1).
 
     #[test]
     fn seam_residual_zero_when_both_bricks_l0() {

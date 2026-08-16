@@ -21,8 +21,8 @@ export type {
   WidgetEasing,
   ScalarStateValue,
   NumericArrayStateValue,
-  ReadonlyStateRef,
-  WritableStateRef,
+  ComputedRef,
+  Ref,
   NumberTween,
   ColorTween,
   TextBindProp,
@@ -31,6 +31,7 @@ export type {
   BarBindProp,
   BarMaxProp,
   LocalBindRef,
+  FactBindRef,
   PredicateValue,
   Predicate,
   WidgetRole,
@@ -70,6 +71,20 @@ export type {
   UiTreeRegistration,
 } from "./ui/tree";
 export { Tree, defineUiTree } from "./ui/tree";
+
+export type {
+  PresentationTemplateProps,
+  PresentationTemplate,
+  OverlayEntity,
+  DamagedEnemiesProps,
+  DamagedEnemiesSource,
+  PresentationOverlay,
+  PresentationFactApi,
+  NumberFactOptions,
+  ScalarFactOptions,
+} from "./ui/presentation";
+export { defineOverlay, definePresentationTemplate, damagedEnemies, fact } from "./ui/presentation";
+export { present } from "./data_script";
 
 export type {
   LocalStateHandle,

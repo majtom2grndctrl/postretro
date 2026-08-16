@@ -1,0 +1,305 @@
+// Game: Postretro
+// Format: Standard
+// Animated-lightmap array-atlas spill fixture.
+// 4 disjoint sealed rooms cloned from test_animated_weight_maps_mixed (each bakes ~512x512).
+// Total chart area forces the static lightmap atlas to >=2 layers at a 512 per-layer dim.
+// Each room carries a _bake_only style-11 pulse light; rooms that pack onto layer>=1
+// exercise the animated weight-map array atlas.
+// Measured (prl-build --no-cache, default density 0.04, deterministic across bakes):
+//   Lightmap layer_count = 2 (per-layer 512x512); section 25 has 24 chunk rects,
+//   12 of them the degenerate 1x1 skip sentinels for the two rooms that pack onto
+//   layer 1 -- i.e. on current main their pulse light is silently dropped. After the
+//   animated-lightmap-array-atlas plan lands, those 12 become real rects and all four
+//   rooms light. Re-measure and update this comment if geometry or density changes.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+// brush 0
+{
+( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 272 -16 0 ) ( 272 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 272 272 -16 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 0 ) ( 272 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 -16 ) ( -16 272 0 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 272 -16 -16 ) ( 272 272 0 ) ( 272 272 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 1
+{
+( -16 272 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 272 -16 144 ) ( 272 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 272 272 128 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 144 ) ( 272 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 128 ) ( -16 272 144 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 272 -16 128 ) ( 272 272 144 ) ( 272 272 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 2
+{
+( -16 272 0 ) ( -16 -16 128 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 272 0 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 128 ) ( 0 -16 128 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( -16 272 128 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 3
+{
+( 256 272 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 272 -16 128 ) ( 272 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 272 272 0 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 128 ) ( 272 -16 128 ) ( 256 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 272 -16 0 ) ( 272 272 128 ) ( 272 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 4
+{
+( 0 0 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 256 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 256 -16 128 ) ( 0 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 256 0 0 ) ( 0 0 128 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 256 0 128 ) ( 256 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 5
+{
+( 0 272 0 ) ( 0 256 128 ) ( 0 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 256 256 128 ) ( 256 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 256 272 0 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 128 ) ( 256 256 128 ) ( 0 256 128 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 256 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 6
+{
+( 496 272 -16 ) ( 496 -16 0 ) ( 496 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 496 -16 -16 ) ( 784 -16 0 ) ( 784 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 496 -16 -16 ) ( 784 272 -16 ) ( 496 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 496 272 0 ) ( 784 -16 0 ) ( 496 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 784 272 -16 ) ( 496 272 0 ) ( 496 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 784 -16 -16 ) ( 784 272 0 ) ( 784 272 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 7
+{
+( 496 272 128 ) ( 496 -16 144 ) ( 496 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 496 -16 128 ) ( 784 -16 144 ) ( 784 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 496 -16 128 ) ( 784 272 128 ) ( 496 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 496 272 144 ) ( 784 -16 144 ) ( 496 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( 784 272 128 ) ( 496 272 144 ) ( 496 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 784 -16 128 ) ( 784 272 144 ) ( 784 272 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 8
+{
+( 496 272 0 ) ( 496 -16 128 ) ( 496 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 496 -16 0 ) ( 512 -16 128 ) ( 512 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 496 -16 0 ) ( 512 272 0 ) ( 496 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 496 272 128 ) ( 512 -16 128 ) ( 496 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 512 272 0 ) ( 496 272 128 ) ( 496 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 512 272 128 ) ( 512 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 9
+{
+( 768 272 0 ) ( 768 -16 128 ) ( 768 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 768 -16 0 ) ( 784 -16 128 ) ( 784 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 768 -16 0 ) ( 784 272 0 ) ( 768 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 768 272 128 ) ( 784 -16 128 ) ( 768 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 784 272 0 ) ( 768 272 128 ) ( 768 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 784 -16 0 ) ( 784 272 128 ) ( 784 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 10
+{
+( 512 0 0 ) ( 512 -16 128 ) ( 512 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 768 -16 128 ) ( 768 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 768 0 0 ) ( 512 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 0 128 ) ( 768 -16 128 ) ( 512 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 768 0 0 ) ( 512 0 128 ) ( 512 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 768 -16 0 ) ( 768 0 128 ) ( 768 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 11
+{
+( 512 272 0 ) ( 512 256 128 ) ( 512 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 256 0 ) ( 768 256 128 ) ( 768 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 256 0 ) ( 768 272 0 ) ( 512 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 272 128 ) ( 768 256 128 ) ( 512 256 128 ) concrete_pavement_036 0 0 0 1 1
+( 768 272 0 ) ( 512 272 128 ) ( 512 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 768 256 0 ) ( 768 272 128 ) ( 768 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 12
+{
+( 1008 272 -16 ) ( 1008 -16 0 ) ( 1008 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1008 -16 -16 ) ( 1296 -16 0 ) ( 1296 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1008 -16 -16 ) ( 1296 272 -16 ) ( 1008 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1008 272 0 ) ( 1296 -16 0 ) ( 1008 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1296 272 -16 ) ( 1008 272 0 ) ( 1008 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1296 -16 -16 ) ( 1296 272 0 ) ( 1296 272 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 13
+{
+( 1008 272 128 ) ( 1008 -16 144 ) ( 1008 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1008 -16 128 ) ( 1296 -16 144 ) ( 1296 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1008 -16 128 ) ( 1296 272 128 ) ( 1008 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 1008 272 144 ) ( 1296 -16 144 ) ( 1008 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( 1296 272 128 ) ( 1008 272 144 ) ( 1008 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 1296 -16 128 ) ( 1296 272 144 ) ( 1296 272 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 14
+{
+( 1008 272 0 ) ( 1008 -16 128 ) ( 1008 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1008 -16 0 ) ( 1024 -16 128 ) ( 1024 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1008 -16 0 ) ( 1024 272 0 ) ( 1008 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1008 272 128 ) ( 1024 -16 128 ) ( 1008 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1024 272 0 ) ( 1008 272 128 ) ( 1008 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 0 ) ( 1024 272 128 ) ( 1024 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 15
+{
+( 1280 272 0 ) ( 1280 -16 128 ) ( 1280 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 -16 0 ) ( 1296 -16 128 ) ( 1296 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 -16 0 ) ( 1296 272 0 ) ( 1280 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 272 128 ) ( 1296 -16 128 ) ( 1280 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1296 272 0 ) ( 1280 272 128 ) ( 1280 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1296 -16 0 ) ( 1296 272 128 ) ( 1296 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 16
+{
+( 1024 0 0 ) ( 1024 -16 128 ) ( 1024 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 0 ) ( 1280 -16 128 ) ( 1280 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 0 ) ( 1280 0 0 ) ( 1024 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 0 128 ) ( 1280 -16 128 ) ( 1024 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1280 0 0 ) ( 1024 0 128 ) ( 1024 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 -16 0 ) ( 1280 0 128 ) ( 1280 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 17
+{
+( 1024 272 0 ) ( 1024 256 128 ) ( 1024 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 256 0 ) ( 1280 256 128 ) ( 1280 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 256 0 ) ( 1280 272 0 ) ( 1024 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 272 128 ) ( 1280 256 128 ) ( 1024 256 128 ) concrete_pavement_036 0 0 0 1 1
+( 1280 272 0 ) ( 1024 272 128 ) ( 1024 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 256 0 ) ( 1280 272 128 ) ( 1280 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 18
+{
+( 1520 272 -16 ) ( 1520 -16 0 ) ( 1520 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1520 -16 -16 ) ( 1808 -16 0 ) ( 1808 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1520 -16 -16 ) ( 1808 272 -16 ) ( 1520 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1520 272 0 ) ( 1808 -16 0 ) ( 1520 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1808 272 -16 ) ( 1520 272 0 ) ( 1520 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1808 -16 -16 ) ( 1808 272 0 ) ( 1808 272 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 19
+{
+( 1520 272 128 ) ( 1520 -16 144 ) ( 1520 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1520 -16 128 ) ( 1808 -16 144 ) ( 1808 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1520 -16 128 ) ( 1808 272 128 ) ( 1520 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 1520 272 144 ) ( 1808 -16 144 ) ( 1520 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( 1808 272 128 ) ( 1520 272 144 ) ( 1520 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 1808 -16 128 ) ( 1808 272 144 ) ( 1808 272 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 20
+{
+( 1520 272 0 ) ( 1520 -16 128 ) ( 1520 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1520 -16 0 ) ( 1536 -16 128 ) ( 1536 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1520 -16 0 ) ( 1536 272 0 ) ( 1520 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1520 272 128 ) ( 1536 -16 128 ) ( 1520 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1536 272 0 ) ( 1520 272 128 ) ( 1520 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 -16 0 ) ( 1536 272 128 ) ( 1536 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 21
+{
+( 1792 272 0 ) ( 1792 -16 128 ) ( 1792 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1792 -16 0 ) ( 1808 -16 128 ) ( 1808 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1792 -16 0 ) ( 1808 272 0 ) ( 1792 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1792 272 128 ) ( 1808 -16 128 ) ( 1792 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1808 272 0 ) ( 1792 272 128 ) ( 1792 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1808 -16 0 ) ( 1808 272 128 ) ( 1808 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 22
+{
+( 1536 0 0 ) ( 1536 -16 128 ) ( 1536 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 -16 0 ) ( 1792 -16 128 ) ( 1792 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 -16 0 ) ( 1792 0 0 ) ( 1536 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 0 128 ) ( 1792 -16 128 ) ( 1536 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1792 0 0 ) ( 1536 0 128 ) ( 1536 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1792 -16 0 ) ( 1792 0 128 ) ( 1792 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 23
+{
+( 1536 272 0 ) ( 1536 256 128 ) ( 1536 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 256 0 ) ( 1792 256 128 ) ( 1792 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 256 0 ) ( 1792 272 0 ) ( 1536 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1536 272 128 ) ( 1792 256 128 ) ( 1536 256 128 ) concrete_pavement_036 0 0 0 1 1
+( 1792 272 0 ) ( 1536 272 128 ) ( 1536 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1792 256 0 ) ( 1792 272 128 ) ( 1792 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "128 160 72"
+"angle" "0"
+}
+// entity 2
+{
+"classname" "light"
+"origin" "48 32 100"
+"light" "150"
+"_falloff_range" "120"
+}
+// entity 3
+{
+"classname" "light"
+"origin" "128 128 90"
+"_bake_only" "1"
+"light" "220"
+"style" "11"
+"_falloff_range" "160"
+}
+// entity 4
+{
+"classname" "light"
+"origin" "560 32 100"
+"light" "150"
+"_falloff_range" "120"
+}
+// entity 5
+{
+"classname" "light"
+"origin" "640 128 90"
+"_bake_only" "1"
+"light" "220"
+"style" "11"
+"_falloff_range" "160"
+}
+// entity 6
+{
+"classname" "light"
+"origin" "1072 32 100"
+"light" "150"
+"_falloff_range" "120"
+}
+// entity 7
+{
+"classname" "light"
+"origin" "1152 128 90"
+"_bake_only" "1"
+"light" "220"
+"style" "11"
+"_falloff_range" "160"
+}
+// entity 8
+{
+"classname" "light"
+"origin" "1584 32 100"
+"light" "150"
+"_falloff_range" "120"
+}
+// entity 9
+{
+"classname" "light"
+"origin" "1664 128 90"
+"_bake_only" "1"
+"light" "220"
+"style" "11"
+"_falloff_range" "160"
+}

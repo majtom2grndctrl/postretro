@@ -3,6 +3,25 @@
 Grounding for `index.md`. Anchors were read from source at draft time; treat line numbers as
 starting points, not addresses.
 
+**Re-anchored 2026-08-15** against `main` merged into this branch (`main` at `19d0bd3`). Every seam
+was re-read. `level-format`'s section files and `render-cpu`'s validator are byte-identical to the
+draft's base (`b1327fd`), so their behavioral claims hold unchanged. Files that moved —
+`level-compiler`'s `pipeline.rs` and `lightmap_bake.rs` (delta-SH coarsening, seam-smoothing, entity
+serialization), and `renderer`'s `lighting/lightmap.rs`, `shaders/forward.wgsl`, and
+`render/tests/shader_tests.rs` (specular-shadowmask + nav work merged from `main`) — were each
+re-verified: every animated-lightmap anchor survived, drifting in line number only. The load-bearing
+`pipeline.rs` `layer_count: _` discard survives at `:699`; the forward layer-0 guard is now at
+`:979`, `sample_lightmap_animated` at `:245`, `sample_lightmap_irradiance(uv, layer)` at `:240`, the
+`SINGLE-LAYER LIMITATION` comment at `:218`; `lightmap.rs` still exposes a 7-entry group-4 BGL with
+animated bindings 3/5 at `D2` and `bgl_entries_pin_sampler_split` still never asserts
+`view_dimension`; the shadowmask literal-string test survives at `shader_tests.rs:344`. The delta-SH
+probe coarsening touches only sections 27/41/45 and never enters section 25, so the "animated
+indirect is layer-independent, out of scope" position stands. `STAGE_VERSION` is currently `5`. The
+golden `--ignored` failure was characterized: its delta is stale-engine drift confined to
+SH/nav/BVH/cache-key sections plus the new section 45, with sections 22/24/25 byte-identical — see
+Open questions. Line-number drift elsewhere is cosmetic and left as first-approximation addresses per
+the note above.
+
 ## Layer data flow across the four seams
 
 ```mermaid
@@ -40,7 +59,7 @@ Every arrow above has a read call site in the anchors below.
 | Leaf grouping by `Chart.leaf_index`, first-seen order | `lightmap_bake.rs:873` |
 | Constants: `MIN_ATLAS_DIMENSION` 64, `MAX_ATLAS_DIMENSION` 8192, `MAX_ATLAS_LAYERS` 256 | `lightmap_bake.rs:30,35,41` |
 | Determinism keyed on chart order + `max_dim`; tie-break on chart index | `lightmap_bake.rs:944` |
-| `layer_count: _` discard, with the now-false comment | `pipeline.rs:697` |
+| `layer_count: _` discard, with the now-false comment | `pipeline.rs:699` (comment `:697-698`) |
 
 Layer counter is **monotonic** — a small leaf after a large one opens a fresh layer rather than
 backfilling. Relevant to slot density: occupied static layers can be sparse.
@@ -71,7 +90,7 @@ backfilling. Relevant to slot density: occupied static layers can be sparse.
 | Version constant — **2**, bumped for `direction_oct` | `:10-15` |
 | Encode: LE, all counts in the fixed header, no per-array prefix | `:158-192` |
 | Decode: version **exact equality**, hard error; single up-front `needed` size | `:194-278` |
-| `is_consistent` — prefix sum only, no coordinate or layer awareness | `:125-156` |
+| `is_consistent` — prefix sum + per-entry `(offset, count)` bounds into `texel_lights`; no coordinate or layer awareness | `:125-156` |
 | Layout doc block still says `version (= 1)` | `:73` |
 
 Graceful-version precedent: `level-format/src/trigger_volumes.rs` — const at `:5`, appended fields
@@ -107,7 +126,7 @@ version-dependent.
 | `filter_usable_section` — log-and-drop degradation posture to mirror | `lightmap.rs:324-358` |
 | `SINGLE-LAYER LIMITATION` comment | `shaders/forward.wgsl:216-233` |
 | The layer-0 guard | `forward.wgsl:944-954` |
-| `sample_lightmap_animated(uv)` — no layer param, unlike the static sibling | `forward.wgsl:243-245`, static at `:238-240` |
+| `sample_lightmap_animated(uv)` — no layer param, unlike `sample_lightmap_irradiance(uv, layer)` | `forward.wgsl:243-245`, `sample_lightmap_irradiance` at `:238` |
 | Adapter floors: `REQUIRED_MAX_TEXTURE_ARRAY_LAYERS = 256`, `array_layers_sufficient` | `renderer_init_resources.rs:14`, `:19-21` |
 | `max_storage_textures_per_shader_stage >= 4` required; compose uses 2 | `renderer_init_resources.rs:181-188` |
 
@@ -118,23 +137,31 @@ count, prefix sums, and `light_index` bounds. No atlas-bounds and no layer notio
 
 ## Stale-bind bug on the failure path
 
-`renderer_resources.rs:452-471`. On `Err` the install logs and returns **without reassigning**
-`full.lightmap_resources` or `full.animated_lightmap`; only the `Ok` arm rebuilds them and the
-group-4 bind group. So a level whose animated-lightmap construction fails keeps the previous
-level's atlas views bound. `renderer_full_init.rs:274` treats the same error as fatal instead.
-This plan adds failure modes to that constructor (the slot cap), so it widens the paths that reach
-this.
+`renderer_resources.rs:452-471`. On `Err` the install logs and **falls through** (no `return`)
+**without reassigning** `full.lightmap_resources` or `full.animated_lightmap`; only the `Ok` arm
+rebuilds them and the group-4 bind group. The new level's geometry (`bvh_leaves`, `cell_draw_index`,
+`compute_cull`) then swaps in unconditionally after the match, so a level whose animated-lightmap
+construction fails renders its *new* geometry lit by the *previous* level's atlas and culled against
+stale `dispatch_state`, every frame. `renderer_full_init.rs:274` treats the same error as fatal
+instead. This plan adds load-time failure modes to that constructor — the extended
+`validate_cross_section` rejection and the byte-budget load drop (which fires only on a PRL a current
+bake would have rejected, since the same budget hard-fails at bake) — so it widens the paths that
+reach this.
 
 ## Tests that must change
 
 **Break on stride or header change** — `level-format/src/animated_light_weight_maps.rs`:
 `empty_section_round_trips` (`:426`, asserts `bytes.len() == HEADER_SIZE`), `byte_layout_matches_sizes`
-(`:435`, asserts `HEADER + n·20 + m·8 + k·12`), `rejects_bad_version` (`:482` — also rejects `1`,
-so a companion asserting v2 *succeeds* is needed), plus the shared `sample_section()` fixture
+(`:435`, asserts `HEADER + n·20 + m·8 + k·12`), `rejects_bad_version` (`:482` — sets version `999`,
+so it still guards the "unsupported version rejected" AC after the bump; but nothing asserts the
+current v2 payload *succeeds*, which is exactly the graceful-decode path v3 must add a test for),
+plus the shared `sample_section()` fixture
 (`:297-389`) and every rect literal in it.
 
 **Break on rect growth** — `level-compiler/src/animated_light_weight_maps.rs`:
-`byte_size_under_8_mib_budget` (`:1149`) is where 20→24 shows up first. Direct `chunk_atlas_rect`
+`byte_size_under_8_mib_budget` (`:1148`) carries no stride literal — it only asserts
+`section.to_bytes().len() < 8 MiB`, so the 20→24 growth reaches it through the encoded length, not an
+editable constant; it is the first budget test the larger rect can push. Direct `chunk_atlas_rect`
 tests at `:1285`, `:1362`, `:1410` construct `ChartPlacement` literals and are the natural
 insertion point for layer coverage. `render-cpu`'s `mk_rect` helper (`:175`) hardcodes
 `atlas_x: 0, atlas_y: 0`.
@@ -170,9 +197,17 @@ dimension shrinks with the texel count, so coarsening never reaches one layer.
 19 109 texel lights, **zero 1×1 rects**. The other five `GATE_FIXTURES` entries cannot be
 established without a bake; `.map` size is a poor proxy. Inference: none of `GATE_FIXTURES`
 currently reaches layer ≥ 1 at production `max_dim = 8192`, so the degenerate-rect path is
-untested by any fixture. The only place layer ≥ 1 is reached is
-`lightmap_bake.rs:2421` `pack_layers_opens_second_layer_keeping_each_leaf_cohesive`, forcing
-`max_dim = 64` — the harness shape a real multi-layer weight-map test should reuse.
+untested by any *gate* fixture.
+
+`content/dev/maps/animated-layer-spill.map` (Task 5), baked `--no-cache` at default density and
+parsed directly: `LightmapSection.layer_count = 2`, per-layer 512×512; section 25 payload version 2,
+24 chunk rects of which **12 are degenerate 1×1** (the two rooms that pack onto layer 1), 213 216
+offset-count entries, 164 404 texel lights. Deterministic across two bakes (byte-identical), ~4 s
+each. This is the first map-level reproduction of the degenerate-rect path; before it, the only
+place layer ≥ 1 was reached was `lightmap_bake.rs` `pack_layers_opens_second_layer_keeping_each_leaf_cohesive`,
+forcing `max_dim = 64` — the harness shape a real multi-layer weight-map *unit* test should reuse.
+`kinematic-platform.map` at default density measures `512×512×**1**` — a single large hall does not
+spill (it is well under the 8192² ceiling); it bakes in ~20 min, unlike the spill fixture's 4 s.
 
 ## Corrections to the initial framing
 
@@ -192,7 +227,8 @@ Recorded because each was wrong in the direction of making the work look smaller
 5. **`choose_layer_dim` groups by BSP leaf, not BVH leaf**, and returns a square dimension. Its
    lower bound is `max(ceil(sqrt(leaf_area)), largest_chart_side)` maxed over leaves.
 6. **A layer cap cannot bound VRAM on its own** — cost scales with atlas dimension as hard as with
-   layer count. Hence the two-sided cap in the spec.
+   layer count. Hence the spec guards on bytes (`width × height × slots × 12`), not a slot or layer
+   count.
 7. **Compose cost was already proportional to animated coverage**, since tiles come only from
    chunks with animated receivers and are culled against visible cells. The slot indirection buys
    VRAM, not compose time. The 65535 guard is the number that grows, and it is checked pre-cull.

@@ -27,6 +27,8 @@ pub fn anchored_tree_from_js_value<'js>(
     }
     let root_val: JsValue = obj.get("root").map_err(js_err)?;
     let root = widget_from_js(ctx, root_val)?;
+    validate_retained_widget_sources(&root)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
 
     let capture_mode = match get_optional_string_js(&obj, "captureMode")? {
         Some(s) => parse_capture_mode(&s)?,

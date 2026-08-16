@@ -107,11 +107,12 @@ measurements, and corrections to earlier readings are in `research.md`.
 - [ ] Loading a level whose animated atlas construction fails leaves no previous level's atlas
       views bound. (Today the failure path logs and returns without reassigning either resource
       field, so stale views stay bound; this plan adds failure modes to that constructor.)
-- [ ] A dev fixture exists whose baked animated light has receivers on atlas layer ≥ 1, confirmed
-      by reading `layer_count` and the slot table out of its compiled PRL — not asserted from map
-      authoring alone. Running that map shows the animated light on the layer-≥1 faces, before and
-      after its curve fires. **[manual GPU]** — this is the end-to-end check that the promotion
-      works; no existing fixture reaches layer ≥ 1.
+- [ ] `content/dev/maps/animated-layer-spill.map` has baked animated receivers on atlas layer ≥ 1,
+      confirmed by reading `layer_count` (= 2) and — post-Task-1 — the v3 slot table out of its
+      compiled PRL, not asserted from map authoring alone. Running it shows the pulsing animated
+      light on the layer-≥1 rooms after the promotion. **[manual GPU]** — the end-to-end check; on
+      current `main` those rooms are dark (12 degenerate 1×1 rects), the pre-fix baseline this
+      criterion flips.
 - [ ] `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored`
       shows no regression against the pre-change baseline. The golden PRL is regenerated, and the
       regeneration is justified by a byte-delta diff confirming the change is confined to section
@@ -181,18 +182,29 @@ without reassigning, and only the success arm rebuilds the group-4 bind group.
 
 ### Task 5: Multi-layer verification fixture
 
-No existing fixture reaches atlas layer ≥ 1 at production dimensions, so the promotion has no
-end-to-end check. Author a dev map with a baked animated light whose receivers land on a layer
-above 0, and confirm the spill by reading `layer_count` and the slot table out of the compiled PRL
-rather than inferring it from the map. Spilling is driven by the *sum* of BSP-leaf footprints
-exceeding one layer while each leaf still fits alone — not by total texel count and not by `.map`
-file size — so shape the geometry for leaf count, and expect to iterate against the compiled
-output. Do not raise `_lightmap_density` expecting more layers; the per-layer dimension grows with
-the charts, so density alone does not spill. Leave `switch-demo`'s indicator on the dynamic tier:
-dynamic is the better design for a small press indicator and reverting it would weaken that fixture
-to serve this one. Record the measured layer count in the map's header comment, since nothing in the
-pipeline reports it and the next reader will otherwise re-derive it. Do not add this fixture to
-`GATE_FIXTURES` — see Open questions.
+The fixture `content/dev/maps/animated-layer-spill.map` provides the end-to-end check: four disjoint
+sealed rooms cloned from `test_animated_weight_maps_mixed`'s room, each carrying a `_bake_only`
+`style 11` pulse light. At default density it bakes to `layer_count = 2` (per-layer 512²) and already
+reproduces the bug on current `main` — section 25 carries 24 chunk rects, 12 of them the degenerate
+1×1 skip sentinels for the two rooms that pack onto layer 1, so those rooms' pulse light is silently
+dropped. Verified deterministic across bakes, ~4 s to bake, with the measured layer count recorded in
+the map header. Confirm the spill by reading `layer_count` — and, once Task 1 lands, the v3 slot
+table — out of the compiled PRL, never by inferring from the `.map`.
+
+The spill comes from total leaf *area* exceeding one layer, not from density. `choose_layer_dim`
+sizes the per-layer dimension to the densest single BSP leaf (leaf-cohesion keeps a leaf's charts on
+one layer), and raising `_lightmap_density` grows that dimension in lockstep with the charts — so
+density alone does not add layers. More layers come from more leaf area at a bounded per-leaf size:
+either one geometrically complex room with several leaves (`switch-demo`'s single room already sits at
+512×512×2 this way) or, as here, several disjoint simple boxes — each box is ~one leaf that fits well
+inside 512², so four of them are needed to overflow the first layer. Add rooms for more margin
+(6 → 3 layers).
+
+Leave `switch-demo`'s indicator on the dynamic tier: it already reaches 512×512×2, but its indicator
+is a dynamic-tier light that lands no baked-animated receiver on layer ≥ 1 — which is why a dedicated
+fixture was needed — and dynamic is the better design for a small press indicator, so reverting it
+would weaken that fixture to serve this one. Do not add `animated-layer-spill` to `GATE_FIXTURES`:
+its determinism is useful but the gates bake every fixture twice; see Open questions.
 
 ## Sequencing
 

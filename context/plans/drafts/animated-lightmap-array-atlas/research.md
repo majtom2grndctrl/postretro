@@ -193,9 +193,17 @@ dimension shrinks with the texel count, so coarsening never reaches one layer.
 19 109 texel lights, **zero 1×1 rects**. The other five `GATE_FIXTURES` entries cannot be
 established without a bake; `.map` size is a poor proxy. Inference: none of `GATE_FIXTURES`
 currently reaches layer ≥ 1 at production `max_dim = 8192`, so the degenerate-rect path is
-untested by any fixture. The only place layer ≥ 1 is reached is
-`lightmap_bake.rs:2421` `pack_layers_opens_second_layer_keeping_each_leaf_cohesive`, forcing
-`max_dim = 64` — the harness shape a real multi-layer weight-map test should reuse.
+untested by any *gate* fixture.
+
+`content/dev/maps/animated-layer-spill.map` (Task 5), baked `--no-cache` at default density and
+parsed directly: `LightmapSection.layer_count = 2`, per-layer 512×512; section 25 payload version 2,
+24 chunk rects of which **12 are degenerate 1×1** (the two rooms that pack onto layer 1), 213 216
+offset-count entries, 164 404 texel lights. Deterministic across two bakes (byte-identical), ~4 s
+each. This is the first map-level reproduction of the degenerate-rect path; before it, the only
+place layer ≥ 1 was reached was `lightmap_bake.rs` `pack_layers_opens_second_layer_keeping_each_leaf_cohesive`,
+forcing `max_dim = 64` — the harness shape a real multi-layer weight-map *unit* test should reuse.
+`kinematic-platform.map` at default density measures `512×512×**1**` — a single large hall does not
+spill (it is well under the 8192² ceiling); it bakes in ~20 min, unlike the spill fixture's 4 s.
 
 ## Corrections to the initial framing
 

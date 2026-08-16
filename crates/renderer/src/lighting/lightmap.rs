@@ -123,6 +123,10 @@ pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 impl LightmapResources {
+    /// Builds one coherent group-4 resource set. Its independently constructed
+    /// static, animated, and layout inputs are intentionally kept explicit at
+    /// this renderer boundary rather than wrapped in a one-use parameter type.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

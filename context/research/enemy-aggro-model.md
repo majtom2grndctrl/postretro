@@ -109,6 +109,15 @@ consumer.
 | Per-archetype aggression profiles | cautious / aggressive / skittish temperament as a descriptor axis | one profile |
 | Memory & persistence | search-last-known-position, forget timer, re-aggro on re-sight | leash (crude disengage) |
 
+## Enemy-on-enemy damage (friendly fire)
+
+Whether and how much one enemy's attack damages another is a per-game, per-faction-pair policy,
+owned by the **Faction & relationship model** (`roadmap.md`, Epic 10), not the engine floor.
+`E10--enemy-multi-attack`'s nearest-of enemy hitscan — an interposed entity, including another
+enemy, can take a hit meant for the selected target — makes enemy-on-enemy impacts possible
+without deciding whether they deal damage. The faction model's per-pair relation is the
+declarative surface that governs that. Design intent only; no descriptor surface here.
+
 ## Boundary discipline
 
 Richness grows on the **descriptor surface** (taste), staged demand-driven — *"breadth grows with

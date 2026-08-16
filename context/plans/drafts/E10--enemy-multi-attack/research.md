@@ -87,12 +87,13 @@ reference as a hint, not a contract.
   module, and `impact_policy.rs`'s `downed_target_ray_hit_reaches_later_impact_policy` test (inside
   its `#[cfg(test)]` module, not production code) — group that last one with the `hit_zones.rs`
   tests when enumerating callers to update.
-- The weapon-entry hitscan origin (Task 3) is the firing enemy's posed weapon-socket world
-  position via `HitZoneStore::posed_socket_world` (`hit_zones.rs`) — the same posed-palette path
-  hit-zones already sample for overlay anchors (`netcode/presentation.rs`, `impact_policy.rs`) —
-  falling back to the firer's hitbox center when no socket resolves. Neither caller today plumbs
-  `posed_socket_world` from the AI tick; `ai/mod.rs` carries no `HitZoneStore` handle or per-entity
-  animation time, so Task 3 wires both in.
+- The weapon-entry hitscan origin (Task 3) is the firing enemy's Health AABB center — Transform
+  position plus the descriptor's `hitbox.offset` (`combat.rs`'s `HitboxDescriptor`). Hitbox center
+  fully serves this spec's only origin consumers, occlusion and self-exclusion; a posed
+  weapon-socket origin and a precise muzzle-tip offset matter once a shot is visibly emitted from
+  the origin (a beam, muzzle flash, or traveling projectile), which this spec adds none of —
+  deferred together to Epic 16 › projectile. `ai/mod.rs` needs no `HitZoneStore` handle or
+  per-entity animation time for this.
 - Map-placed archetypes spawn with `attach_weapon: false`; enemies carry no `WeaponComponent`, and
   the dense per-kind columns forbid one entity carrying two — hence spawn-time stat resolution into
   brain tuning rather than companion wieldable entities.

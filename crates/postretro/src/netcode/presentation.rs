@@ -175,6 +175,7 @@ mod tests {
                     role: None,
                 },
             ),
+            world_anchor: None,
             lifetime_ms: 900,
             motion: PresentationTemplateMotion {
                 rise: 12.0,

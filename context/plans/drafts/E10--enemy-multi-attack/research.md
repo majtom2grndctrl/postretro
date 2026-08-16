@@ -61,8 +61,8 @@ reference as a hint, not a contract.
     maximum delay elapses and the remote presentation has arrived. With an empty map reading
     0-ready, an enemy would attack immediately — a regression. The seed must populate a windup
     entry for **every attack the graph declares**. Its test
-    (`the descriptor attachment must not overwrite the interpolation windup`, ~line 483) migrates
-    with it.
+    (`spawned_enemy_cannot_attack_before_interpolation_windup_expires`, asserting "the descriptor
+    attachment must not overwrite the interpolation windup", ~line 483) migrates with it.
 - `@brain.attackCooldownMs` (`BRAIN_ATTACK_COOLDOWN_MS_INPUT`, `crates/foundation/src/brain.rs`)
   is one of 13 registered `@brain.*` guard inputs (`BRAIN_INPUTS`), typed `IrType::Number`. It is a
   PUBLISHED SDK contract: present in `sdk/types/postretro.d.ts`, `sdk/types/postretro.d.luau`,
@@ -123,7 +123,8 @@ reference as a hint, not a contract.
   `1H_Melee_Attack_Slice_Horizontal`, `Death_A`. **Only one attack clip exists.** A second melee
   attack therefore reuses the single slice clip through a distinct `mesh.animations` KEY (a distinct
   animation-state name backed by the same clip): the replicated animation-state name and the overlay
-  label still differ per attack (satisfying AC11/AC12), while the on-screen swing is shared. A
+  label still differ per attack (satisfying AC10 (overlay) / AC11 (replication)), while the on-screen
+  swing is shared. A
   genuinely distinct second-attack clip is a content dependency — re-pruning the KayKit knight to
   include another melee clip — and is an open question, not this spec's work.
 - `reference_behavior_graph()` (`ai_tests.rs`) is a Rust hand-transcription oracle asserted equal to

@@ -107,14 +107,16 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
   `cooldownMs` (`<= 0`); an entry whose authored `engagementRadius > maxRange`; an `action.attack`
   naming no entry. Validation is parse-time only — there are no spawn-time attack checks.
 - [ ] **AC2 — Reference cadence preserved.** The reference enemy, migrated to an `attacks` map with
-  `action: { attack: "..." }`, holds its transition and damage cadence exactly: same distance at
-  which its swing connects, same damage per swing, same cooldown interval, same attack-clip replay —
-  asserted as concrete numeric checks, not shape-parsing alone. The reference trace fixture
-  (`trace_reference_fixture`/`BrainTrace`, `ai_tests.rs`), which runs the hand-authored reference
-  oracle — asserted equal to the shipped Luau archetype — through a scripted approach and records
-  per-tick `player_hp`/state/animation, is the vehicle: extend it to pin the connect distance,
-  per-swing damage, and cooldown interval, rather than resting on suite-green alone. The pose-fixture
-  enemy's migration holds the same parity.
+  `action: { attack: "..." }`, holds its transition and damage cadence exactly for the preserved
+  (shorter-reach) attack's contact window: same distance at which its swing connects, same damage per
+  swing, same cooldown interval, same attack-clip replay — asserted as concrete numeric checks, not
+  shape-parsing alone. The reference trace fixture (`trace_reference_fixture`/`BrainTrace`,
+  `ai_tests.rs`), which runs the hand-authored reference oracle — asserted equal to the shipped Luau
+  archetype — through a scripted approach and records per-tick `player_hp`/state/animation, is the
+  vehicle: extend it to pin the connect distance, per-swing damage, and cooldown interval, rather than
+  resting on suite-green alone. The second attack's `maxRange` stays clear of the trace's scripted
+  distances (Task 4), so it never displaces these assertions. The pose-fixture enemy's migration holds
+  the same parity.
 - [ ] **AC3 — Two-reach routing.** On the movement-feel fixture, with the two-attack reference enemy:
   at a distance within only the longer-reach attack's reach the player takes that attack's damage
   once per that attack's cooldown with the hosting state's animation active; within the shorter-reach
@@ -132,8 +134,7 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
 - [ ] **AC6 — Cooldown fact.** `@brain.attackCooldownMs` reads the current state's attack's remaining
   cooldown, and reads 0 while the current state fires no attack or has no cooldown-map entry yet. On a
   tick where the state switches, the fact reflects the pre-transition (current) state's attack, fed
-  before the transition is selected — it can differ from the attack that actually fires this tick
-  (see Ordering pins).
+  before the transition is selected — it can differ from the attack that actually fires this tick.
 - [ ] **AC7 — Deterministic selection.** When the graph's transitions could route to more than one
   attack state, declaration order wins (the first-true-wins evaluator guarantee); sim determinism
   tests stay green.
@@ -160,6 +161,12 @@ AttackParams>`. Rework `AttackParams` to `{ damage: f32, max_range: f32, cooldow
 engagement_radius: Option<f32> }` — renaming the base `range` role to `max_range` (the reach/damage
 ceiling) and adding the optional per-attack `engagement_radius`. Every field is a scalar, so
 `AttackParams` **keeps `#[derive(Copy)]`**. Do NOT touch `combat.rs` or `ResolutionMode`.
+`ActionVerb::Attack(String)` drops `#[derive(Copy)]` from `ActionVerb` itself — a `String` payload
+cannot be `Copy` — and makes the existing `const ActionVerb::ALL` array un-constructible with a
+`String`-carrying variant; rework `ALL` and the `action_verb_all_is_exhaustive` walk to carry a
+representative payload (or restructure the exhaustiveness guard so it no longer needs a `const`
+array). `graph_eval::action_for_state`'s `Option<ActionVerb>` return now borrows or clones the small
+`String` rather than copying it.
 Parameterize `ActionVerb::Attack` as the newtype variant `Attack(String)`; the wire shape becomes
 the object `action: { attack: "<name>" }` (externally-tagged serde wraps a newtype variant's payload
 directly under the variant key — a struct variant would double-nest), so `ActionVerb::ALL`, the
@@ -217,8 +224,16 @@ Enumerate and convert every reader of the old scalar:
   spawned enemy attacking before remote interpolation's maximum delay elapses. An empty map reads
   0-ready and would let the enemy attack immediately, a regression — so the seed must populate a
   windup entry for **every attack the graph declares**. Migrate its test
-  (`the descriptor attachment must not overwrite the interpolation windup`).
-- `authored_graph()` in `brain.rs` and the AI/scope fixtures (migrated in Task 4).
+  (`spawned_enemy_cannot_attack_before_interpolation_windup_expires`, asserting "the descriptor
+  attachment must not overwrite the interpolation windup"), and extend it to a two-attack fixture
+  whose spawned enemy routes into a second, non-initial attack state — proving the windup seed gates
+  every attack the graph declares, not only the initial state's fired attack.
+- `authored_graph()` in `brain.rs` (migrated in Task 1) and the AI/scope fixtures (migrated in Task
+  4).
+
+Task 2's completion bar is `-p postretro-entities` green; its `crates/postretro` edits (`spawner.rs`,
+and the decrement mechanics in `ai/mod.rs`) stay non-compiling until Task 3, which restores that crate
+to compiling.
 
 ### Task 3: Attack action verb firing, standoff, and brain-fact feed
 
@@ -245,8 +260,11 @@ pins).
 In `crates/postretro/src/scripting/systems/ai/combat_slots.rs`, resolve each engaged agent's standoff
 from the firing state's attack — its authored `engagementRadius`, else its `maxRange` — instead of
 the graph-wide `engagement_radius()`, falling back to the graph default for non-attack states and
-attackless graphs. The firing state is `outcome.brain.state_index` (already the post-transition index
-when combat slots run).
+attackless graphs. The firing state is `outcome.brain.state_index`: `resolve_combat_slots` runs after
+the AI tick writes `brain.state_index = next_index`, so by the time combat slots read it the index is
+already committed to the post-transition state — distinct from the brain-fact feed above, which reads
+`current_index` before that same tick's transition runs. The two are not in tension: one reads before
+the transition, the other after.
 
 ### Task 4: Reference archetype, overlay, fixture verification
 
@@ -256,17 +274,23 @@ enemy from the singular `attack` block + `action: "attack"` to an `attacks` map 
 not a tuning change — the preserved entry keeps `damage: 8, maxRange: 2, cooldownMs: 1200`). Give the
 reference enemy a **second melee attack**: a second `attacks` entry with distinct reach/damage/cooldown
 (a longer-reach slam), a second attack-firing state whose distance-guard routing to and from the
-existing melee state fires it, and its animation-state added to `mesh.animations`. The KayKit knight
-model is pruned to one attack clip (`1H_Melee_Attack_Slice_Horizontal`), so the second state's
-animation reuses that clip through a distinct `mesh.animations` key — a distinct animation-state name
-(distinct replicated name and overlay label) backed by the same clip. (A genuinely distinct
-second-attack clip is a content dependency — see Open questions.) Author the reach guards so the
-shorter-reach attack is declared first, winning by first-true-wins when both reaches are satisfied,
-which is what preserves the reference cadence (AC2).
+existing melee state fires it, and its animation-state added to `mesh.animations`. The second attack's
+`maxRange` must sit below the trace fixture's approach and back-off distances
+(`reference_player_x`'s ~1.5 m contact and ~6 m back-off), and the trace's scripted phases must not
+dwell within the second attack's reach band, so the preserved (shorter) attack's connect distance,
+per-swing damage, and cooldown-interval assertions (AC2) stay unchanged — the example fiend's slam
+`maxRange` 3.5 vs. the trace's ~6 m back-off is a fine illustration. The spawner windup test (Task 2,
+extended to a second attack-firing state) now exercises this real second attack rather than a
+synthetic fixture. The KayKit knight model is pruned to one attack clip
+(`1H_Melee_Attack_Slice_Horizontal`), so the second state's animation reuses that clip through a
+distinct `mesh.animations` key — a distinct animation-state name (distinct replicated name and
+overlay label) backed by the same clip. (A genuinely distinct second-attack clip is a content
+dependency — see Open questions.) Author the reach guards so the shorter-reach attack is declared
+first, winning by first-true-wins when both reaches are satisfied, which is what preserves the
+reference cadence (AC2).
 
-Migrate every AI test fixture to the new shape: `ai/mod.rs` tests, `brain_scope.rs`, `authored_graph()`
-in `brain.rs`, the `behavior.rs` descriptor tests, the `reference_behavior_graph()` oracle
-(`ai_tests.rs`), and the scripting-core TS≡Luau twin
+Migrate every AI test fixture to the new shape: `ai/mod.rs` tests, `brain_scope.rs`, the
+`reference_behavior_graph()` oracle (`ai_tests.rs`), and the scripting-core TS≡Luau twin
 (`the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`,
 `crates/scripting-core/src/data_descriptors/tests/behavior.rs`). Extend `assemble_agent_overlay_label`
 (`crates/postretro/src/agent_diagnostics.rs`) with the firing state's attack name (AC10). Extend
@@ -274,7 +298,8 @@ in `brain.rs`, the `behavior.rs` descriptor tests, the `reference_behavior_graph
 damage, and cooldown interval for AC2 — migrating its fixtures to the new shape is not enough on its
 own.
 
-Cover the remaining ACs with fixtures, referencing the Ordering-pins rows rather than restating them:
+Cover the remaining ACs with fixtures — AC4 and AC6 already state the ordering semantics these
+fixtures assert:
 
 - **AC3** — on the movement-feel fixture, verify the two-reach routing (long-reach slam vs. shorter
   slice), and confirm co-op clients show the distinct attack animation states via the replicated
@@ -306,7 +331,8 @@ in `context/plans/done/`.
 also falsifies the wire-shape and resolver assumptions the later tasks rest on. Bar:
 `-p postretro-foundation -p postretro-entities`.
 **Phase 2 (sequential):** Task 2 — consumes Task 1's descriptor shape; converts the brain cooldown
-scalar to the name-indexed map and its spawn/decrement readers.
+scalar to the name-indexed map and its spawn/decrement readers. Bar: `-p postretro-entities`; its
+`crates/postretro` edits compile-verify in Task 3.
 **Phase 3 (sequential):** Task 3 — consumes Task 2's cooldown map; wires firing, the brain fact, and
 the per-attack standoff resolver, restoring `crates/postretro` to compiling.
 **Phase 4 (sequential):** Task 4 — exercises Task 3 end to end and migrates the reference content and
@@ -345,9 +371,10 @@ rather than restating them.
 |---|---|---|
 | A tick's transition switches from one attack-firing state to another | `@brain.attackCooldownMs` is fed from the pre-transition (current) state's attack at the scope refresh, before the transition selects the next state; fire and cooldown re-arm act on the post-transition (selected) state | The fact this tick names the old attack while the new attack is what actually fires (if ready) — the two differ on a switch tick, by design |
 | An attack-firing state holds while a different attack's cooldown is still counting down from an earlier fire | Every cooldown-map entry decrements every tick, regardless of which state or attack is current | The idle attack's cooldown reaches 0 on schedule even though its firing state is never revisited in the meantime |
-| A freshly spawned or graph-reseated brain's cooldown map has no entry for the attack about to fire | A lookup miss reads 0 (ready) | The attack fires on its first eligible tick; the map gains an entry only once it re-arms |
+| A spawner-materialized enemy spawns with the player already in reach | `spawn_from_spawner` seeds a windup entry (`existing.max(MAX_DELAY_MICROS/1000)`, 250 ms) into the cooldown map for every attack the graph declares, after `attach_descriptor_components`; the per-tick decrement counts every entry down; the fire gate reads the post-transition attack's own entry | No attack lands until that attack's entry reaches 0, for whichever attack state the enemy routes into — including an attack its spawn/initial state never fires |
+| A brain is materialized via `from_graph`/`attach_brain_graph` (map-install placement, a restore with an empty map, or a reseat introducing a new attack name) — no windup seed | A lookup miss reads 0 (ready) | The attack fires on its first eligible tick; the map gains an entry only once it re-arms |
 | The post-transition state names an attack whose cooldown is ready | The fire gate evaluates exactly the post-transition state's named attack, once | At most one attack fires per enemy per tick, never two |
-| An authored cooldown resolves to 0 or otherwise not `> 0` | Validated finite and `> 0` at parse time (Task 1) | Validation fails rather than producing a same-tick or every-tick refire |
+| An authored cooldown resolves to 0 or otherwise not `> 0` | Validated finite and `> 0` at parse time (Task 1) | Validation fails rather than producing a same-tick or every-tick refire from a non-positive cooldown; a positive sub-tick cooldown (`0 < cooldownMs < dt`) is a legal author choice that fires each eligible tick |
 | The brain's aggro gate is closed (stood down) for several ticks | The cooldown-map decrement runs every tick, before the aggro-gate branch, independent of aggro state | Every attack's cooldown keeps counting down while stood down; a re-aggroing enemy may fire on its first re-armed tick |
 | A hot reload or re-seat swaps the brain's behavior graph mid-play | The cooldown map is not pruned on the swap | A same-named attack in the new graph inherits its remaining sub-second timer (self-correcting within one cooldown); a name absent from the new graph is a harmless dead entry |
 | The current tick both decrements cooldowns and fires/re-arms a ready attack | The fact is fed after this tick's decrement but before this tick's fire/re-arm | `@brain.attackCooldownMs` on the firing tick itself reports the post-decrement, pre-fire value, not the freshly re-armed cooldown |

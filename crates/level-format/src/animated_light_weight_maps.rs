@@ -268,9 +268,11 @@ impl AnimatedLightWeightMapsSection {
         let offset_counts_len = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
         let texel_lights_len =
             u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-        let slot_count = has_slot_table
-            .then(|| u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize)
-            .unwrap_or(0);
+        let slot_count = if has_slot_table {
+            u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize
+        } else {
+            0
+        };
 
         let needed = header_size
             .checked_add(chunk_count.checked_mul(chunk_rect_size).ok_or_else(|| {
@@ -307,9 +309,11 @@ impl AnimatedLightWeightMapsSection {
             let width = read_u32(data, cursor + 8);
             let height = read_u32(data, cursor + 12);
             let texel_offset = read_u32(data, cursor + 16);
-            let layer = has_slot_table
-                .then(|| read_u32(data, cursor + 20))
-                .unwrap_or(0);
+            let layer = if has_slot_table {
+                read_u32(data, cursor + 20)
+            } else {
+                0
+            };
 
             chunk_rects.push(ChunkAtlasRect {
                 atlas_x,

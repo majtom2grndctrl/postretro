@@ -38,19 +38,20 @@ measurements, and corrections to earlier readings are in `research.md`.
   the slot→static-layer table. Graceful v2 decode.
 - Compiler bakes weight maps for every layer. Dense slot assignment over the static layers that
   hold animated receivers. Remove the layer-0 gate and its degenerate-rect path.
-- A bake-time cap on animated slots with a named error, mirroring `LightmapBakeError::LayerOverflow`.
+- One animated-atlas byte budget, `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` (1 GiB): the bake hard-fails
+  when the atlas would exceed it. No separate slot count guards the bake.
 - Both compose targets become `texture_2d_array` sized to the animated slot count: texture
   creation, storage views, compose BGL entries, and `textureStore` array index.
 - Forward pass samples both animated atlases by layer through a static-layer→slot lookup,
   replacing the `in.lightmap_layer == 0u` guard.
 - The 1×1 dummy path gains array-compatible views so the no-animated-lights and empty-map paths
   keep a valid group-4 bind group.
-- Load-time graceful degradation when the animated atlas would exceed a VRAM budget, mirroring
+- Load-time graceful degradation when the animated atlas exceeds that budget, mirroring
   `filter_usable_section`'s log-and-drop posture.
 - Layer-aware cross-section validation and a layer-aware overlap assert.
-- Loud diagnostics: aggregate counts of animated layers and slots at bake, a hard bake error when
-  the slot cap is exceeded, and a load-time `[Renderer]` error when the VRAM budget drops all
-  animated contribution.
+- Loud diagnostics: the bake's `info` line reports the static atlas layer count and animated slot
+  count; the byte budget hard-fails the bake with a named error; the load-time drop logs a
+  `[Renderer]` error.
 
 ### Out of scope
 
@@ -68,6 +69,8 @@ measurements, and corrections to earlier readings are in `research.md`.
   section 25.
 - Retiring the duplicated stride constants in the compiler's byte-size log. Updated in lockstep
   here; unifying them is separate.
+- A `GATE_FIXTURES` byte comparison for section 25. The new slot-assignment determinism is gated by
+  the Task 2 bake-twice test (AC); the pre-existing static-only gate coverage is unchanged.
 
 ## Acceptance criteria
 
@@ -80,13 +83,14 @@ measurements, and corrections to earlier readings are in `research.md`.
 - [ ] `cargo test -p postretro-level-compiler --bin prl-build` passes, including a test that bakes
       weight maps from placements spanning two layers and asserts both layers produce covered
       texels with distinct slots. No test may construct this by mutating a layer field on an
-      otherwise layer-0 fixture — the placements must come from a real multi-layer pack.
+      otherwise layer-0 fixture — the placements must come from a real multi-layer pack. The test
+      bakes twice and asserts byte-identical section-25 output, gating slot-assignment determinism.
 - [ ] A test asserts no two chunk rects overlap within one `(slot, layer)`, across faces — not only
       within a face.
 - [ ] Compiling a map whose animated receivers span two atlas layers logs, at `info`, the static
-      atlas layer count and the animated slot count. Exceeding the animated slot cap fails the bake with an error
-      naming the cap and the count found — testable as a unit test that drives the slot-assignment
-      step past a low injected cap, not via a production-sized fixture.
+      atlas layer count and the animated slot count. A bake whose animated atlas exceeds the byte
+      budget fails with an error naming the budget and the size found — tested with a low injected
+      budget, not a production-sized fixture.
 - [ ] The `placement.layer != 0` skip branch that emitted a 1×1 zero-count sentinel rect is gone
       (a review/grep gate). A test on a real multi-layer pack asserts every chunk with covered texels
       — including layer-≥1 chunks — produces a real covered rect, not a 1×1 zero-count placeholder.
@@ -175,13 +179,15 @@ Remove the `placement.layer != 0` gate and the degenerate-rect return. Collect t
 layers holding animated receivers, sort that distinct-layer list (not the rects or placements — leaf
 cohesion must be preserved), and assign dense slots; emit the slot table and set each rect's layer. Thread the atlas layer count out of the lightmap bake into the weight-map stage
 — `pipeline.rs` currently destructures `layer_count: _` with a comment saying animated weight maps
-are single-layer, which is the line this plan invalidates. Add the animated-slot cap as a hard bake
-error — a named error mirroring `LightmapBakeError::LayerOverflow` that aborts the bake, never
-dropping a slot or emitting a placeholder rect (the cap is a deterministic authoring guard; silently
-dropping a slot would reintroduce the silent-darkness failure this plan exists to remove). Adding the
-error makes the weight-map stage fallible — `bake_animated_light_weight_maps_controlled` returns a
-`Result` — which ripples through its infallible wrapper and the `pipeline.rs` cache hit/miss arms;
-propagate the error there. Rework the stage's `info` line so spilled chunks are no longer folded
+are single-layer, which is the line this plan invalidates. Hard-fail the bake when the animated atlas
+would exceed `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` — a named error that aborts the bake, never dropping
+a slot or emitting a placeholder rect. Bytes (width × height × slots × 12), not a slot count, are the
+guard: a dimension-blind slot cap would reject small maps fragmented across many layers that fit
+comfortably, and the `info` line already surfaces the slot count as a soft signal. This deterministic
+bake check shares one constant and pure fits-helper with Task 4's load-time check — home both in a
+crate the compiler and renderer share, e.g. `level-format`. Making the stage fallible
+(`bake_animated_light_weight_maps_controlled` returns a `Result`) ripples through its infallible
+wrapper and the `pipeline.rs` cache hit/miss arms; propagate the error there. Rework the stage's `info` line so spilled chunks are no longer folded
 invisibly into healthy-looking stats: report the static atlas layer count (the threaded `layer_count`
 — its consumer) and the animated slot count, which differ when animated receivers occupy only some of
 the static layers. Widen the per-face overlap
@@ -226,11 +232,10 @@ The animated atlas already takes its width and height from `usable_atlas_dimensi
 sites (`renderer_full_init.rs`, `renderer_resources.rs`), which is what keeps it synced to the static
 atlas; ensure both sites feed those resolved dimensions to the animated constructor. The animated
 depth is the section-25 slot count, not the resolver's static layer count, so the resolver needs no
-new return value. Add a pure, unit-testable helper deciding whether a given width, height, and slot
-count fits the VRAM budget — a named constant `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` set to 1 GiB
-(owner-chosen; see Open questions) — and a load-time path
-that logs a `[Renderer]` error and falls back to no animated contribution when it does not — matching
-how an oversize static section degrades rather than aborting. Extend cross-section validation (`validate_cross_section`, `render-cpu`), which today
+new return value. Reuse the pure fits-helper and `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` (1 GiB) that
+Task 2's bake check introduces behind a load-time path that logs a `[Renderer]` error and falls back
+to no animated contribution when the atlas exceeds the budget — matching how an oversize static
+section degrades rather than aborting. Extend cross-section validation (`validate_cross_section`, `render-cpu`), which today
 checks prefix sums and light-index bounds but has no layer notion, to reject rects whose layer is
 absent from the slot table and whose coordinates fall outside the atlas; thread the decoded slot
 table and the static-atlas width/height into it; the caller `AnimatedLightmapResources::new` already
@@ -316,7 +321,7 @@ the payload version. Do not change it.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Every chunk with animated receivers gets a real rect and a slot — no rect is a skip sentinel | Task 2 (gate removal, slot assignment) | Exceeding the slot cap must fail the bake, never fall back to a placeholder rect | AC: cap fails the bake · AC: degenerate shape gone |
+| Every chunk with animated receivers gets a real rect and a slot — no rect is a skip sentinel | Task 2 (gate removal, slot assignment) | Exceeding the byte budget must fail the bake, never fall back to a placeholder rect | AC: byte budget fails the bake · AC: degenerate shape gone |
 | Slot table is a sorted, duplicate-free bijection onto occupied static layers; a layer absent from it yields no animated contribution | Task 1 (`is_consistent`), Task 2 (assignment) | Task 3's forward lookup must map an absent layer to no contribution, not to slot 0's contents | AC: v3 round-trip · AC: absent layer resolves to sentinel |
 | Animated atlas width and height equal the static atlas's; animated depth is the section-25 slot count, not the static layer count | Task 3, Task 4 (resolver) | Compose stores at absolute per-layer coordinates and forward samples all atlases with one normalized UV — enforced today by doc comment and one resolver test, no assert | AC: animated atlas created at resolver width/height, slot-count depth |
 | The forward pass samples an animated texel only for a cell in this frame's `VisibleCells`, which the compose pass wrote from the same `VisibleCells` | Task 3 | A texel never in any visible set reads its once-only zero-init; a texel written then culled holds stale contents, never sampled because one `VisibleCells` gates both passes. A second consumer (reflection probe, alternate camera) must share this frame's `VisibleCells` or skip animated chunks. No per-frame clear | AC: absent layer resolves to sentinel · AC: multi-layer fixture renders |
@@ -345,14 +350,6 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
 
 ## Open questions
 
-- **Animated slot cap value.** A layer costs 12 bytes per texel across both targets, so cost scales
-  with atlas dimension as hard as with slot count: 8 slots is ~24 MiB at 512² but ~6 GiB at 8192².
-  A layer cap alone cannot bound VRAM. The plan therefore carries both a bake-time slot cap and a
-  load-time byte budget (`ANIMATED_ATLAS_VRAM_BUDGET_BYTES`), neither number yet settled. Both ship
-  as tunable constants so the tasks build: the byte budget is set to 1 GiB (both animated targets
-  together, 12 bytes/texel); the slot cap value is still open — pick it from measured layer counts on
-  real content rather than from the static 256. The postures — hard bake error for the cap, load-time
-  graceful drop for the budget — are settled.
 - **The golden PRL is stale from engine evolution, not a regression — regenerate on `main` before
   Task 1.** `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` is one of two
   pre-existing `--ignored` failures on `main` (see
@@ -373,6 +370,3 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
   bury the section-25 change under section 45 + SH coarsening.
 - **Whether Task 5's fixture joins `GATE_FIXTURES`.** Recommendation: no. Those gates bake every
   fixture twice, and dropping one oversized fixture cut them 7× recently. Profile first if revisited.
-- **Animated weight maps are in no `GATE_FIXTURES` byte comparison**, despite four gate fixtures
-  being named for them — the determinism gates compare the static lightmap and SH sections only.
-  Decide whether this plan adds that coverage or leaves the gap standing.

@@ -43,12 +43,62 @@ export type PresentationOverlay = {
   template: string,
   maxVisible: number,
 }
+export type NumberFactOptions = { format: string?, tween: { durationMs: number, easing: WidgetEasing, from: number? }? }
+export type ScalarFactOptions = { format: string? }
+export type FactBindRef = { fact: string, format: string?, tween: { durationMs: number, easing: WidgetEasing, from: number? }? }
 
 local PresentationSdk = {}
+local MAX_OVERLAY_VISIBLE = 64
 
 local function finite(value: any): boolean
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
+
+local function factRef(name: string, options: any?): FactBindRef
+  if type(name) ~= "string" or #name == 0 then
+    error("fact: name must be nonempty", 3)
+  end
+  if options ~= nil and type(options) ~= "table" then
+    error("fact: options must be a table", 3)
+  end
+  local source = options or {}
+  if source.format ~= nil and type(source.format) ~= "string" then
+    error("fact: `format` must be a string", 3)
+  end
+  if source.tween ~= nil then
+    local tween = source.tween
+    if type(tween) ~= "table" or not finite(tween.durationMs) then
+      error("fact: `tween.durationMs` must be finite", 3)
+    end
+    if tween.easing ~= "linear" and tween.easing ~= "easeIn" and tween.easing ~= "easeOut" and tween.easing ~= "easeInOut" then
+      error("fact: `tween.easing` is invalid", 3)
+    end
+    if tween.from ~= nil and not finite(tween.from) then
+      error("fact: `tween.from` must be finite", 3)
+    end
+  end
+  local out: any = { fact = name }
+  if source.format ~= nil then out.format = source.format end
+  if source.tween ~= nil then
+    local tween = source.tween
+    local cloned: any = { durationMs = tween.durationMs, easing = tween.easing }
+    if tween.from ~= nil then cloned.from = tween.from end
+    out.tween = table.freeze(cloned)
+  end
+  return table.freeze(out)
+end
+
+PresentationSdk.fact = table.freeze({
+  number = function(name: string, options: NumberFactOptions?): FactBindRef
+    return factRef(name, options)
+  end,
+  text = function(name: string, options: ScalarFactOptions?): FactBindRef
+    return factRef(name, options)
+  end,
+  bool = function(name: string, options: ScalarFactOptions?): FactBindRef
+    return factRef(name, options)
+  end,
+})
 
 local function validate(props: any)
   if type(props) ~= "table" then error("definePresentationTemplate: props must be a table", 3) end
@@ -138,8 +188,8 @@ function PresentationSdk.defineOverlay(props: { over: DamagedEnemiesSource, temp
   if props.template.worldAnchor == nil then
     error("defineOverlay: `template.worldAnchor` is required for an overlay", 2)
   end
-  if not finite(props.maxVisible) or props.maxVisible < 1 or props.maxVisible % 1 ~= 0 then
-    error("defineOverlay: `maxVisible` must be a positive integer", 2)
+  if not finite(props.maxVisible) or props.maxVisible < 1 or props.maxVisible > MAX_OVERLAY_VISIBLE or props.maxVisible % 1 ~= 0 then
+    error("defineOverlay: `maxVisible` must be an integer between 1 and 64", 2)
   end
   return table.freeze({ over = props.over, template = props.template.id, maxVisible = props.maxVisible })
 end

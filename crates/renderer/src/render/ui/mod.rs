@@ -223,6 +223,9 @@ pub(crate) struct UiPass {
     /// intentionally separate from `gameplay_trees`: it retains only taffy
     /// measurement/tween state, never a modal tree, focus list, or input state.
     presentation_layouts: std::collections::HashMap<u64, PresentationLayout>,
+    /// Monotonic mark used to prune layouts absent from the current input set
+    /// without allocating a second set of active instance ids each frame.
+    presentation_layout_generation: u64,
     /// Registered manifest data keyed by its stable handle. This is intentionally
     /// a renderer-side layout registry, not a UI tree/modal registry.
     presentation_templates: std::collections::HashMap<
@@ -254,14 +257,15 @@ struct RetainedGameplayTree {
     tree: tree::UiTree,
 }
 
-/// Renderer-local cache for one app-owned transient presentation. Task 4
-/// replaces the temporary template resolver below with registered descriptors;
-/// retaining this small layout state is still necessary for fact-driven text
-/// remeasurement and tween continuity across the transient's lifetime.
+/// Renderer-local state retained for one live passive presentation. Layout,
+/// fact cells, and tween state stay warm across frames until the app drops the
+/// instance from its bounded input set.
 struct PresentationLayout {
     template: postretro_entities::PresentationTemplateHandle,
     theme_generation: u64,
     layout: tree::PresentationTemplateLayout,
+    fact_cells: tree::CellValues,
+    active_generation: u64,
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -697,6 +701,7 @@ impl UiPass {
             depth_size: [0, 0],
             gameplay_trees: Vec::new(),
             presentation_layouts: std::collections::HashMap::new(),
+            presentation_layout_generation: 0,
             presentation_templates: std::collections::HashMap::new(),
             warned_missing_presentation_templates: std::collections::HashSet::new(),
         }
@@ -729,6 +734,7 @@ impl UiPass {
     /// widget subtree while its current transient remains live.
     pub fn replace_presentation_templates(&mut self, templates: Vec<PresentationTemplate>) {
         self.presentation_templates.clear();
+        self.presentation_templates.reserve(templates.len());
         self.warned_missing_presentation_templates.clear();
         self.presentation_layouts.clear();
         for template in templates {
@@ -849,11 +855,19 @@ impl UiPass {
         theme_generation: u64,
         time_seconds: f64,
     ) -> tree::UiDrawData {
-        let mut draw = tree::UiDrawData::default();
-        let mut active = std::collections::HashSet::with_capacity(inputs.len());
+        self.presentation_layout_generation = self.presentation_layout_generation.wrapping_add(1);
+        if self.presentation_layout_generation == 0 {
+            self.presentation_layouts.clear();
+            self.presentation_layout_generation = 1;
+        }
+        let active_generation = self.presentation_layout_generation;
+        let additional_layout_capacity =
+            inputs.len().saturating_sub(self.presentation_layouts.len());
+        self.presentation_layouts
+            .reserve(additional_layout_capacity);
+        let mut draw = tree::UiDrawData::with_estimated_presentation_capacity(inputs.len());
 
         for input in inputs {
-            active.insert(input.instance_id);
             let Some(template) = self.presentation_templates.get(&input.template) else {
                 if self
                     .warned_missing_presentation_templates
@@ -883,6 +897,8 @@ impl UiPass {
                             &template.root,
                             theme,
                         ),
+                        fact_cells: tree::CellValues::with_capacity(input.facts.len()),
+                        active_generation,
                     },
                 );
             }
@@ -891,19 +907,23 @@ impl UiPass {
                 .presentation_layouts
                 .get_mut(&input.instance_id)
                 .expect("presentation layout inserted or retained above");
-            let cells = cached.layout.fact_cell_values(&input.facts);
+            cached.active_generation = active_generation;
+            tree::PresentationTemplateLayout::update_fact_cell_values(
+                &input.facts,
+                &mut cached.fact_cells,
+            );
             let relative = cached.layout.build_draw_data(
                 viewport,
                 font_system,
                 image_sizes,
                 image_sizes_generation,
-                &cells,
+                &cached.fact_cells,
                 time_seconds,
             );
             draw.append_translated(&relative, input.anchor, input.opacity);
         }
         self.presentation_layouts
-            .retain(|instance_id, _| active.contains(instance_id));
+            .retain(|_, layout| layout.active_generation == active_generation);
         draw
     }
 

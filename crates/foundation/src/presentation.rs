@@ -109,7 +109,7 @@ pub struct PresentationSpawn {
     pub lifetime_seconds: f32,
     pub motion: PresentationMotion,
     pub fade: PresentationFade,
-    /// Maximum deterministic world-space horizontal scatter applied by the
-    /// app-side pool when the instance enters its live bounded ring.
+    /// Maximum deterministic device-pixel screen-space horizontal scatter
+    /// applied by the app-side pool when the instance enters its live bounded ring.
     pub scatter_radius: f32,
 }

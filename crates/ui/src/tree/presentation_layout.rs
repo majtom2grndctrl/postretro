@@ -2,7 +2,7 @@
 // anchor-relative draw list without a modal tree, focus state, or input surface.
 // See: context/lib/ui.md §1 (presentation layer), §3 (display-value tweens)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use cosmic_text::FontSystem;
 use postretro_entities::{PresentationFact, PresentationFacts, SlotValue};
@@ -14,6 +14,7 @@ use super::bindings::{
 use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
 use super::node_context::{NodeContext, VisibilityState};
+use super::predicate::PRESENTATION_FACT_SCOPE;
 use super::predicate::resolve_predicate;
 use super::ui_tree_collect::collect_draw_data_from_layout;
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
@@ -32,9 +33,12 @@ use crate::theme::UiTheme;
 pub struct PresentationTemplateLayout {
     taffy: TaffyTree<NodeContext>,
     root: NodeId,
+    node_ids: Vec<NodeId>,
     visibility: HashMap<NodeId, VisibilityState>,
     image_nodes: Vec<NodeId>,
-    fact_scopes: Vec<String>,
+    dirty_text: Vec<NodeId>,
+    visibility_flips: Vec<(NodeId, Display)>,
+    capture_bar_exit: Vec<NodeId>,
     last_viewport: Option<[u32; 2]>,
     last_image_sizes_generation: Option<u64>,
     #[cfg(any(test, feature = "test-fixtures"))]
@@ -42,13 +46,15 @@ pub struct PresentationTemplateLayout {
 }
 
 impl PresentationTemplateLayout {
-    /// Build the temporary per-instance layout state for an authored template
-    /// subtree. Theme tokens resolve once here, exactly as they do for retained
-    /// gameplay UI; subsequent fact resolution stays renderer-local and
-    /// allocation-free apart from the bounded fact-cell snapshot.
+    /// Build renderer-local layout state for one live template instance. Theme
+    /// tokens and the fixed node traversal resolve once; subsequent fact updates
+    /// reuse bounded per-instance storage.
     pub fn from_widget(root_widget: &Widget, theme: &UiTheme) -> Self {
         let mut taffy = TaffyTree::new();
         let root = build_node(&mut taffy, root_widget, theme, None);
+
+        let mut node_ids = Vec::new();
+        collect_node_ids(&taffy, root, &mut node_ids);
 
         let mut visibility = HashMap::new();
         harvest_visibility(&taffy, root_widget, root, None, &mut visibility);
@@ -56,17 +62,15 @@ impl PresentationTemplateLayout {
         let mut image_nodes = Vec::new();
         harvest_image_nodes(&taffy, root_widget, root, &mut image_nodes);
 
-        let mut scopes = HashSet::new();
-        collect_fact_scopes(&taffy, root, &visibility, &mut scopes);
-        let mut fact_scopes: Vec<_> = scopes.into_iter().collect();
-        fact_scopes.sort();
-
         Self {
             taffy,
             root,
+            dirty_text: Vec::with_capacity(node_ids.len()),
+            visibility_flips: Vec::with_capacity(visibility.len()),
+            capture_bar_exit: Vec::with_capacity(visibility.len()),
+            node_ids,
             visibility,
             image_nodes,
-            fact_scopes,
             last_viewport: None,
             last_image_sizes_generation: None,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -74,25 +78,25 @@ impl PresentationTemplateLayout {
         }
     }
 
-    /// Convert producer-stamped facts into the same scoped cell snapshot used by
-    /// `{ local }` bind resolution. A template can contain more than one local
-    /// scope, so each fact is visible to every scope that actually consumes facts;
-    /// this is still per-instance data and never consults the global slot map.
-    pub fn fact_cell_values(&self, facts: &PresentationFacts) -> CellValues {
-        let mut cells = CellValues::with_capacity(self.fact_scopes.len() * facts.len());
-        for scope in &self.fact_scopes {
-            for (name, fact) in facts {
+    /// Update the reusable renderer-local snapshot from producer-stamped facts.
+    /// Direct `{ fact }` binds use a reserved scope, so root and nested widgets do
+    /// not need retained `localState` merely to read instance data.
+    pub fn update_fact_cell_values(facts: &PresentationFacts, cells: &mut CellValues) {
+        cells.retain(|(scope, name), _| {
+            scope != PRESENTATION_FACT_SCOPE || facts.contains_key(name)
+        });
+        for (name, fact) in facts {
+            if let Some(value) = cells.iter_mut().find_map(|((scope, cell_name), value)| {
+                (scope == PRESENTATION_FACT_SCOPE && cell_name == name).then_some(value)
+            }) {
+                update_fact_value(value, fact);
+            } else {
                 cells.insert(
-                    (scope.clone(), name.clone()),
-                    match fact {
-                        PresentationFact::Number(value) => SlotValue::Number(*value),
-                        PresentationFact::Text(value) => SlotValue::String(value.clone()),
-                        PresentationFact::Bool(value) => SlotValue::Boolean(*value),
-                    },
+                    (PRESENTATION_FACT_SCOPE.to_string(), name.clone()),
+                    fact_slot_value(fact),
                 );
             }
         }
-        cells
     }
 
     /// Resolve this frame's facts, update any local display tween, and lower the
@@ -169,23 +173,12 @@ impl PresentationTemplateLayout {
         self.recompute_count
     }
 
-    fn mark_dirty(&mut self, node: NodeId) {
-        self.taffy
-            .mark_dirty(node)
-            .expect("presentation node exists in its own layout");
-    }
-
     fn mark_image_nodes_dirty(&mut self) {
-        let image_nodes = self.image_nodes.clone();
-        for node in image_nodes {
-            self.mark_dirty(node);
+        for &node in &self.image_nodes {
+            self.taffy
+                .mark_dirty(node)
+                .expect("presentation node exists in its own layout");
         }
-    }
-
-    fn node_ids(&self) -> Vec<NodeId> {
-        let mut nodes = Vec::new();
-        collect_node_ids(&self.taffy, self.root, &mut nodes);
-        nodes
     }
 
     fn resolve_facts(
@@ -195,8 +188,8 @@ impl PresentationTemplateLayout {
         time_seconds: f64,
     ) -> BindingDiff {
         let mut diff = BindingDiff::default();
-        let mut dirty_text = Vec::new();
-        for node in self.node_ids() {
+        self.dirty_text.clear();
+        for node in self.node_ids.iter().copied() {
             match self.taffy.get_node_context_mut(node) {
                 Some(NodeContext::Text {
                     content,
@@ -217,7 +210,7 @@ impl PresentationTemplateLayout {
                         time_seconds,
                     ) {
                         diff.content_changed = true;
-                        dirty_text.push(node);
+                        self.dirty_text.push(node);
                     }
                 }
                 Some(NodeContext::Panel {
@@ -267,12 +260,14 @@ impl PresentationTemplateLayout {
                 _ => {}
             }
         }
-        for node in dirty_text {
-            self.mark_dirty(node);
+        for node in self.dirty_text.drain(..) {
+            self.taffy
+                .mark_dirty(node)
+                .expect("presentation node exists in its own layout");
         }
 
-        let mut visibility_flips = Vec::new();
-        let mut capture_bar_exit = Vec::new();
+        self.visibility_flips.clear();
+        self.capture_bar_exit.clear();
         for (node, state) in &mut self.visibility {
             let resolved = resolve_predicate(
                 &state.predicate.source,
@@ -291,24 +286,24 @@ impl PresentationTemplateLayout {
                     diff.appearance_changed = true;
                 }
                 if was_visible != Some(true) {
-                    visibility_flips.push((*node, state.visible_display));
+                    self.visibility_flips.push((*node, state.visible_display));
                 }
             } else if was_visible.is_none() {
-                visibility_flips.push((*node, Display::None));
+                self.visibility_flips.push((*node, Display::None));
             } else if was_visible == Some(true) {
                 if let Some(exit) = state.bar_exit_fade.as_mut() {
                     exit.started_at = Some(time_seconds);
-                    capture_bar_exit.push(*node);
+                    self.capture_bar_exit.push(*node);
                     diff.appearance_changed = true;
                 } else {
-                    visibility_flips.push((*node, Display::None));
+                    self.visibility_flips.push((*node, Display::None));
                 }
             } else if let Some(exit) = state.bar_exit_fade.as_mut()
                 && let Some(started_at) = exit.started_at
             {
                 if time_seconds - started_at >= exit.duration_seconds - f64::EPSILON {
                     exit.clear();
-                    visibility_flips.push((*node, Display::None));
+                    self.visibility_flips.push((*node, Display::None));
                 } else {
                     diff.appearance_changed = true;
                 }
@@ -316,7 +311,7 @@ impl PresentationTemplateLayout {
             state.prev = Some(resolved);
         }
 
-        for node in capture_bar_exit {
+        for node in self.capture_bar_exit.drain(..) {
             let (value, max) = match self.taffy.get_node_context(node) {
                 Some(NodeContext::Bar {
                     bind,
@@ -344,7 +339,7 @@ impl PresentationTemplateLayout {
             exit.captured_value = Some(value);
             exit.captured_max = Some(max);
         }
-        for (node, display) in visibility_flips {
+        for (node, display) in self.visibility_flips.drain(..) {
             let mut style = self
                 .taffy
                 .style(node)
@@ -354,10 +349,29 @@ impl PresentationTemplateLayout {
             self.taffy
                 .set_style(node, style)
                 .expect("presentation node exists in its own layout");
-            self.mark_dirty(node);
+            self.taffy
+                .mark_dirty(node)
+                .expect("presentation node exists in its own layout");
             diff.appearance_changed = true;
         }
         diff
+    }
+}
+
+fn fact_slot_value(fact: &PresentationFact) -> SlotValue {
+    match fact {
+        PresentationFact::Number(value) => SlotValue::Number(*value),
+        PresentationFact::Text(value) => SlotValue::String(value.clone()),
+        PresentationFact::Bool(value) => SlotValue::Boolean(*value),
+    }
+}
+
+fn update_fact_value(value: &mut SlotValue, fact: &PresentationFact) {
+    match (value, fact) {
+        (SlotValue::Number(current), PresentationFact::Number(next)) => *current = *next,
+        (SlotValue::String(current), PresentationFact::Text(next)) => current.clone_from(next),
+        (SlotValue::Boolean(current), PresentationFact::Bool(next)) => *current = *next,
+        (current, fact) => *current = fact_slot_value(fact),
     }
 }
 
@@ -371,50 +385,19 @@ fn collect_node_ids(taffy: &TaffyTree<NodeContext>, node: NodeId, out: &mut Vec<
     }
 }
 
-fn collect_fact_scopes(
-    taffy: &TaffyTree<NodeContext>,
-    node: NodeId,
-    visibility: &HashMap<NodeId, VisibilityState>,
-    scopes: &mut HashSet<String>,
-) {
-    match taffy.get_node_context(node) {
-        Some(NodeContext::Text {
-            bind_scope,
-            predicate_scope,
-            ..
-        }) => {
-            scopes.extend(bind_scope.iter().cloned());
-            scopes.extend(predicate_scope.iter().cloned());
-        }
-        Some(NodeContext::Panel { bind_scope, .. }) | Some(NodeContext::Bar { bind_scope, .. }) => {
-            scopes.extend(bind_scope.iter().cloned());
-        }
-        _ => {}
-    }
-    if let Some(state) = visibility.get(&node) {
-        scopes.extend(state.scope.iter().cloned());
-    }
-    for child in taffy
-        .children(node)
-        .expect("presentation node children resolve")
-    {
-        collect_fact_scopes(taffy, child, visibility, scopes);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
     use crate::descriptor::{
-        Align, BarMax, BarWidget, BindSource, ColorValue, ContainerWidget, ImageWidget, LocalState,
+        Align, BarMax, BarWidget, BindSource, ColorValue, ContainerWidget, ImageWidget, Predicate,
         SliderBind, SpacingValue, TextBind, TextWidget, Widget,
     };
 
     const EPSILON: f32 = 1.0e-3;
 
-    fn scoped_container(children: Vec<Widget>) -> ContainerWidget {
+    fn container(children: Vec<Widget>) -> ContainerWidget {
         ContainerWidget {
             gap: SpacingValue::Literal(5.0),
             padding: SpacingValue::Literal(0.0),
@@ -425,10 +408,7 @@ mod tests {
             focus_neighbors: Default::default(),
             focus: None,
             restore_on_return: false,
-            local_state: Some(LocalState {
-                scope: "presentation".to_string(),
-                cells: Default::default(),
-            }),
+            local_state: None,
             visible_when: None,
             role: None,
             children,
@@ -438,8 +418,8 @@ mod tests {
     fn bound_bar(name: &str) -> Widget {
         Widget::Bar(BarWidget {
             bind: SliderBind {
-                source: BindSource::Local {
-                    local: name.to_string(),
+                source: BindSource::Fact {
+                    fact: name.to_string(),
                 },
                 tween: None,
             },
@@ -465,8 +445,8 @@ mod tests {
             focus_neighbors: Default::default(),
             font: None,
             bind: Some(TextBind {
-                source: BindSource::Local {
-                    local: name.to_string(),
+                source: BindSource::Fact {
+                    fact: name.to_string(),
                 },
                 format: None,
                 tween: None,
@@ -489,8 +469,33 @@ mod tests {
         facts: &PresentationFacts,
         font_system: &mut FontSystem,
     ) -> UiDrawData {
-        let cells = layout.fact_cell_values(facts);
+        let mut cells = CellValues::with_capacity(facts.len());
+        PresentationTemplateLayout::update_fact_cell_values(facts, &mut cells);
         layout.build_draw_data([1280, 720], font_system, &ImageSizes::new(), 0, &cells, 0.0)
+    }
+
+    #[test]
+    fn presentation_fact_cells_update_in_place_and_remove_stale_names() {
+        let mut cells = CellValues::new();
+        PresentationTemplateLayout::update_fact_cell_values(
+            &facts(&[
+                ("value", PresentationFact::Text("100".to_string())),
+                ("stale", PresentationFact::Bool(true)),
+            ]),
+            &mut cells,
+        );
+        PresentationTemplateLayout::update_fact_cell_values(
+            &facts(&[("value", PresentationFact::Number(42.0))]),
+            &mut cells,
+        );
+
+        assert_eq!(cells.len(), 1);
+        assert_eq!(
+            cells.iter().find_map(|((scope, name), value)| {
+                (scope == PRESENTATION_FACT_SCOPE && name == "value").then_some(value)
+            }),
+            Some(&SlotValue::Number(42.0))
+        );
     }
 
     fn assert_rect_approx(actual: [f32; 4], expected: [f32; 4]) {
@@ -504,10 +509,7 @@ mod tests {
 
     #[test]
     fn presentation_vstack_bars_use_instance_facts_and_anchor_translation() {
-        let root = Widget::VStack(scoped_container(vec![
-            bound_bar("health"),
-            bound_bar("shield"),
-        ]));
+        let root = Widget::VStack(container(vec![bound_bar("health"), bound_bar("shield")]));
         let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
         let instance_facts = facts(&[
             ("health", PresentationFact::Number(0.5)),
@@ -550,10 +552,7 @@ mod tests {
 
     #[test]
     fn presentation_hstack_texts_resolve_facts_at_projected_anchor() {
-        let root = Widget::HStack(scoped_container(vec![
-            bound_text("left"),
-            bound_text("right"),
-        ]));
+        let root = Widget::HStack(container(vec![bound_text("left"), bound_text("right")]));
         let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
         let instance_facts = facts(&[
             ("left", PresentationFact::Text("42".to_string())),
@@ -577,6 +576,38 @@ mod tests {
             (anchored.texts[1].position[1] - 270.0).abs() < EPSILON,
             "both row texts keep the projected anchor's y coordinate"
         );
+    }
+
+    #[test]
+    fn presentation_bool_fact_drives_visibility_without_local_state() {
+        let Widget::Bar(mut bar) = bound_bar("health") else {
+            unreachable!();
+        };
+        bar.visible_when = Some(Predicate {
+            source: BindSource::Fact {
+                fact: "shown".to_string(),
+            },
+            equals: None,
+        });
+        let root = Widget::Bar(bar);
+        let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
+        let mut font_system = crate::text::build_font_system();
+
+        let hidden = facts(&[
+            ("health", PresentationFact::Number(0.5)),
+            ("shown", PresentationFact::Bool(false)),
+        ]);
+        assert!(
+            build(&mut layout, &hidden, &mut font_system)
+                .quads
+                .is_empty()
+        );
+
+        let shown = facts(&[
+            ("health", PresentationFact::Number(0.5)),
+            ("shown", PresentationFact::Bool(true)),
+        ]);
+        assert_eq!(build(&mut layout, &shown, &mut font_system).quads.len(), 2);
     }
 
     #[test]
@@ -615,7 +646,7 @@ mod tests {
 
     #[test]
     fn presentation_text_fact_remeasures_only_when_rendered_content_changes() {
-        let root = Widget::VStack(scoped_container(vec![bound_text("value")]));
+        let root = Widget::VStack(container(vec![bound_text("value")]));
         let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
         let mut font_system = crate::text::build_font_system();
 

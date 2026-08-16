@@ -42,7 +42,7 @@ pub enum NodeContext {
         family: String,
         bind: Option<TextBind>,
         /// The nearest declaring `localState` scope id resolved at build time, for
-        /// a `{ local }` bind. `None` for a `{ slot }` bind or a
+        /// a `{ local }` bind. `None` for a `{ slot }`/`{ fact }` bind or a
         /// local bind with no enclosing scope (the latter degrades to "absent").
         bind_scope: Option<String>,
         /// Last resolved bound string the diff observed. `None` until the first
@@ -90,7 +90,7 @@ pub enum NodeContext {
         border: Option<Border>,
         bind: Option<PanelBind>,
         /// Nearest declaring `localState` scope id for a `{ local }` bind (see
-        /// `NodeContext::Text::bind_scope`). `None` for slot binds and backdrops.
+        /// `NodeContext::Text::bind_scope`). `None` for slot/fact binds and backdrops.
         bind_scope: Option<String>,
         /// Last resolved bound fill the diff observed. `None` until the first
         /// diff; only meaningful when `bind` is `Some`.
@@ -128,7 +128,7 @@ pub enum NodeContext {
         /// lifecycle presentation behavior; it is not a generic opacity API.
         exit_fade: Option<BarExitFade>,
         /// Nearest declaring `localState` scope id for a `{ local }` bind (see
-        /// `NodeContext::Text::bind_scope`). `None` for a slot bind.
+        /// `NodeContext::Text::bind_scope`). `None` for a slot/fact bind.
         bind_scope: Option<String>,
         /// Last resolved (or eased) value the diff observed, for change detection
         /// and to feed the draw the eased display fraction. `None` until first diff.

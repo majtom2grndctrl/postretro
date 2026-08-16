@@ -87,7 +87,7 @@ pub(crate) use lifecycle::{
 pub(crate) use prediction::ClientPrediction;
 pub(crate) use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
-    route_host_presentation_spawns, send_host_overlay_facts,
+    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
 };
 pub(crate) use state_slots::ReplicatedSlotIdentity;
 // Correction-classification API + thresholds and the reconcile entry point.
@@ -939,6 +939,7 @@ pub(crate) fn client_receive_and_apply(
         // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
         // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
         for remote in &outcome.remote_entities {
+            replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
             let descriptor = descriptors.iter().find(|descriptor| {
                 descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
             });

@@ -5,7 +5,16 @@
 import type { RuntimeValue } from "postretro";
 
 import { runtime } from "../runtime";
-import type { WidgetDescriptor, WidgetEasing } from "./widgets";
+import type { FactBindRef, NumberTween, WidgetDescriptor, WidgetEasing } from "./widgets";
+
+export type NumberFactOptions = { format?: string; tween?: NumberTween };
+export type ScalarFactOptions = { format?: string };
+
+export type PresentationFactApi = Readonly<{
+  number(name: string, options?: NumberFactOptions): FactBindRef<number> & NumberFactOptions;
+  text(name: string, options?: ScalarFactOptions): FactBindRef<string> & ScalarFactOptions;
+  bool(name: string, options?: ScalarFactOptions): FactBindRef<boolean> & ScalarFactOptions;
+}>;
 
 export type PresentationTemplateProps = {
   root: WidgetDescriptor;
@@ -56,12 +65,75 @@ export type PresentationOverlay = Readonly<{
 
 const BINDING_NAME_SUGAR_DIAGNOSTIC =
   "definePresentationTemplate without an explicit id is binding-name sugar and must be used in a direct top-level binding declaration";
+const MAX_OVERLAY_VISIBLE = 64;
 
 function requireFinite(value: unknown, field: string): asserts value is number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new TypeError(`definePresentationTemplate: \`${field}\` must be finite`);
   }
 }
+
+function requireFactName(name: unknown): asserts name is string {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError("fact: name must be nonempty");
+  }
+}
+
+function requireFiniteFact(value: unknown, field: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new TypeError(`fact: \`${field}\` must be finite`);
+  }
+}
+
+function factRef(
+  name: string,
+  options: NumberFactOptions | ScalarFactOptions = {},
+): Readonly<{ fact: string; format?: string; tween?: NumberTween }> {
+  requireFactName(name);
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("fact: options must be an object");
+  }
+  if (options.format !== undefined && typeof options.format !== "string") {
+    throw new TypeError("fact: `format` must be a string");
+  }
+  const tween = (options as NumberFactOptions).tween;
+  if (tween !== undefined) {
+    if (tween === null || typeof tween !== "object") {
+      throw new TypeError("fact: `tween` must be an object");
+    }
+    requireFiniteFact(tween.durationMs, "tween.durationMs");
+    if (!["linear", "easeIn", "easeOut", "easeInOut"].includes(tween.easing)) {
+      throw new TypeError("fact: `tween.easing` is invalid");
+    }
+    if (tween.from !== undefined) requireFiniteFact(tween.from, "tween.from");
+  }
+  return Object.freeze({
+    fact: name,
+    ...(options.format === undefined ? {} : { format: options.format }),
+    ...(tween === undefined
+      ? {}
+      : {
+          tween: Object.freeze({
+            durationMs: tween.durationMs,
+            easing: tween.easing,
+            ...(tween.from === undefined ? {} : { from: tween.from }),
+          }),
+        }),
+  });
+}
+
+/** Bind producer-stamped per-instance values inside a presentation template. */
+export const fact: PresentationFactApi = Object.freeze({
+  number(name: string, options?: NumberFactOptions) {
+    return factRef(name, options) as FactBindRef<number> & NumberFactOptions;
+  },
+  text(name: string, options?: ScalarFactOptions) {
+    return factRef(name, options) as FactBindRef<string> & ScalarFactOptions;
+  },
+  bool(name: string, options?: ScalarFactOptions) {
+    return factRef(name, options) as FactBindRef<boolean> & ScalarFactOptions;
+  },
+});
 
 function validateProps(props: PresentationTemplateProps): void {
   if (props === null || typeof props !== "object" || Array.isArray(props)) {
@@ -199,8 +271,8 @@ export function defineOverlay(props: {
     throw new TypeError("defineOverlay: `template.worldAnchor` is required for an overlay");
   }
   requireFinite(props.maxVisible, "maxVisible");
-  if (props.maxVisible < 1 || !Number.isInteger(props.maxVisible)) {
-    throw new TypeError("defineOverlay: `maxVisible` must be a positive integer");
+  if (props.maxVisible < 1 || props.maxVisible > MAX_OVERLAY_VISIBLE || !Number.isInteger(props.maxVisible)) {
+    throw new TypeError(`defineOverlay: \`maxVisible\` must be an integer between 1 and ${MAX_OVERLAY_VISIBLE}`);
   }
   return Object.freeze({
     over: props.over,

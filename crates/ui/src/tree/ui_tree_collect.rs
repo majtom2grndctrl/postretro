@@ -4,6 +4,7 @@
 // See: context/lib/ui.md §1 (retained tree), §3 (display vs. authoritative value)
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use taffy::prelude::NodeId;
 
@@ -87,18 +88,17 @@ pub(super) fn collect_draw_data_from_layout(
     time_seconds: f64,
     visibility: &HashMap<NodeId, VisibilityState>,
 ) -> UiDrawData {
-    // styleRange band colors were pre-resolved to literals at build time, so
-    // the draw-time evaluator never looks a token up; this inert theme satisfies
-    // its `&UiTheme` parameter without re-introducing the theme to the per-frame
-    // walk.
-    let inert_theme = UiTheme::engine_default();
+    // Style-range colors are literal by this point. Keep the evaluator's inert
+    // theme process-static so collection never rebuilds token maps.
+    static INERT_THEME: OnceLock<UiTheme> = OnceLock::new();
+    let inert_theme = INERT_THEME.get_or_init(UiTheme::engine_default);
     let walk = DrawWalkCtx {
         canvas_origin,
         scale,
         slot_values,
         cell_values,
         time_seconds,
-        inert_theme: &inert_theme,
+        inert_theme,
     };
     let mut data = UiDrawData::default();
     collect_node(taffy, root, root_origin, &walk, visibility, &mut data);

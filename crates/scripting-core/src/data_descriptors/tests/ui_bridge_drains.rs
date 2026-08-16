@@ -50,6 +50,38 @@ fn presentation_template_wire_round_trips_for_js_and_luau() {
 }
 
 #[test]
+fn luau_presentation_fact_builder_survives_template_bridge() {
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua
+        .load(PRESENTATION_SRC)
+        .eval()
+        .expect("presentation SDK must evaluate");
+    lua.globals().set("P", presentation).unwrap();
+    let value = lua
+        .load(
+            r#"return P.definePresentationTemplate("damageNumber", {
+                root = { kind = "text", content = "0", fontSize = 24, color = {1,1,1,1},
+                  bind = P.fact.number("value", { format = "{}" }) },
+                lifetimeMs = 750, motion = { rise = 18, easing = "easeOut" },
+                fade = { startMs = 500 }, spawnScatter = { radius = 0.25 },
+            })"#,
+        )
+        .eval::<LuaValue>()
+        .expect("fact-authored template must build");
+    let template = presentation_template_from_lua(value).expect("template bridge must parse fact");
+    let Widget::Text(text) = template.root else {
+        panic!("root must be text");
+    };
+    assert_eq!(
+        text.bind.as_ref().map(|bind| &bind.source),
+        Some(&BindSource::Fact {
+            fact: "value".into()
+        })
+    );
+}
+
+#[test]
 fn malformed_presentation_template_degrades_at_manifest_drain() {
     let templates = eval_js(
         r#"({ presentationTemplates: [{ id: "bad", root: { kind: "spacer" }, lifetimeMs: 10, motion: { rise: 0, easing: "linear" }, fade: { startMs: 11 }, spawnScatter: { radius: 0 } }] })"#,

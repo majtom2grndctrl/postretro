@@ -289,9 +289,7 @@ pub fn slider_bind_from_lua(
     }))
 }
 
-/// Lua twin of [`bind_source_from_js`]: read a bind's `{ slot }` vs `{ local }`
-/// source. `slot` wins when present; else `local`; neither present is rejected: a
-/// bind must reference a slot or a local cell.
+/// Lua twin of [`bind_source_from_js`], with the same source precedence.
 pub fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError> {
     if let Some(slot) = get_optional_string_lua(bind, "slot")? {
         return Ok(BindSource::Slot { slot });
@@ -299,8 +297,11 @@ pub fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError>
     if let Some(local) = get_optional_string_lua(bind, "local")? {
         return Ok(BindSource::Local { local });
     }
+    if let Some(fact) = get_optional_string_lua(bind, "fact")? {
+        return Ok(BindSource::Fact { fact });
+    }
     Err(DescriptorError::InvalidShape {
-        reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
+        reason: "a widget `bind` must carry `slot`, `local`, or `fact`".to_string(),
     })
 }
 

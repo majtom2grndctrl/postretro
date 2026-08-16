@@ -133,7 +133,7 @@ impl PresentationPool {
         view_projection: Mat4,
         viewport_size: [u32; 2],
     ) -> Vec<PresentationDrawInput> {
-        let mut inputs = Vec::with_capacity(self.spawns.len());
+        let mut inputs = Vec::with_capacity(self.spawns.len().saturating_add(self.overlays.len()));
         for live in &self.spawns {
             let Some(anchor) =
                 project_world_to_screen(live.spawn.world_anchor, view_projection, viewport_size)
@@ -210,6 +210,10 @@ impl PresentationPool {
         if max_visible == 0 {
             return;
         }
+        if self.overlays.capacity() < max_visible {
+            self.overlays
+                .reserve(max_visible.saturating_sub(self.overlays.len()));
+        }
         if let Some(overlay) = self.overlays.get_mut(&entity) {
             overlay.template = template;
             overlay.linger_seconds = linger_seconds.max(0.0);
@@ -254,6 +258,39 @@ impl PresentationPool {
             return;
         };
         overlay.facts = facts;
+        overlay.world_anchor = world_anchor;
+        overlay.suppressed = suppressed;
+    }
+
+    /// Move one keyed overlay to a replacement local entity without changing
+    /// its facts or last-damage clock. Client baseline repair can replace the
+    /// local `EntityId` while retaining the host's stable `NetworkId`.
+    pub(crate) fn rekey_overlay(&mut self, previous: EntityId, current: EntityId) -> bool {
+        if previous == current {
+            return self.overlays.contains_key(&current);
+        }
+        let Some(overlay) = self.overlays.remove(&previous) else {
+            return false;
+        };
+        self.overlays.insert(current, overlay);
+        true
+    }
+
+    /// Update only the moving world anchor and anchor-derived suppression.
+    /// Value-only network facts must not reset the last-damage linger clock.
+    pub(crate) fn update_overlay_anchor(
+        &mut self,
+        entity: EntityId,
+        world_anchor: Option<glam::Vec3>,
+        suppressed: bool,
+    ) {
+        let Some(overlay) = self.overlays.get_mut(&entity) else {
+            return;
+        };
+        let Some(world_anchor) = world_anchor else {
+            overlay.suppressed = true;
+            return;
+        };
         overlay.world_anchor = world_anchor;
         overlay.suppressed = suppressed;
     }

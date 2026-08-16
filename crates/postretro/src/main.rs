@@ -133,8 +133,6 @@ use crate::startup::{
     SplashSource, StartupTimings,
 };
 #[cfg(test)]
-use postretro_entities::ScriptCtx;
-#[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 #[cfg(test)]
 use postretro_scripting_core::runtime::ScriptRuntime;
@@ -144,7 +142,9 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
 use postretro_entities::components::inventory::Inventory;
-use postretro_entities::{ComponentKind, ComponentValue, SystemReactionCommand, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
+};
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
@@ -2885,6 +2885,7 @@ impl ApplicationHandler for App {
                 // interpolated displayed transforms. These transient mesh fields
                 // are client presentation only and never enter replication.
                 self.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
+                self.update_client_overlay_anchors(&script_ctx, frame_anim_time);
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
                     zero_tick_fire_snapshot.as_ref(),
@@ -6117,12 +6118,14 @@ impl App {
                 netcode::ingest_client_presentation_messages(
                     &mut registry,
                     presentation_messages,
+                    &net_descriptors,
                     &presentation_templates,
                     &mut session.client_overlay_facts,
                     replication,
                     &mut session.presentation_pool,
                     client_overlay_config.as_ref(),
                     hit_zone_store,
+                    host_agent_params,
                     presentation_anim_time,
                     frame_dt,
                 );
@@ -6512,6 +6515,37 @@ impl App {
             )
         };
         self.remote_player_presentation = presentation;
+    }
+
+    /// Resolve client overlay anchors after remote interpolation and local pose
+    /// selection have written the exact transforms and animation state rendered
+    /// this frame. Fact ingestion remains in the earlier snapshot-apply seam.
+    fn update_client_overlay_anchors(&mut self, script_ctx: &ScriptCtx, anim_time: f64) {
+        let agent_params = self.nav_graph.as_ref().map(|graph| graph.agent_params());
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Client { replication, .. }) = session.net_endpoint.as_ref()
+        else {
+            return;
+        };
+        let config = session
+            .scripting
+            .impact_policy_runtime
+            .client_overlay_config();
+        let descriptors = script_ctx.data_registry.borrow();
+        let registry = script_ctx.registry.borrow();
+        netcode::update_client_overlay_anchors(
+            &registry,
+            &descriptors.entities,
+            &mut session.client_overlay_facts,
+            replication,
+            &mut session.presentation_pool,
+            config.as_ref(),
+            &session.hit_zone_store,
+            agent_params,
+            anim_time,
+        );
     }
 
     fn update_client_presentation_pose_inputs(

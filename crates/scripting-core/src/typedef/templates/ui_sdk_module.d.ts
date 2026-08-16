@@ -78,14 +78,17 @@ declare module "postretro/ui" {
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   export type LocalBindRef = { local: string };
+  const presentationFactValueBrand: unique symbol;
+  /** Producer-stamped scalar available only while laying out a passive presentation instance. */
+  export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   export type PredicateValue = number | boolean | string;
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
   export type BarMaxProp = number | ComputedRef<number>;
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
@@ -131,12 +134,21 @@ declare module "postretro/ui" {
     template: string;
     maxVisible: number;
   }>;
+  export type NumberFactOptions = { format?: string; tween?: NumberTween };
+  export type ScalarFactOptions = { format?: string };
+  export type PresentationFactApi = Readonly<{
+    number(name: string, options?: NumberFactOptions): FactBindRef<number> & NumberFactOptions;
+    text(name: string, options?: ScalarFactOptions): FactBindRef<string> & ScalarFactOptions;
+    bool(name: string, options?: ScalarFactOptions): FactBindRef<boolean> & ScalarFactOptions;
+  }>;
   /** TypeScript derives the stable id from a direct const binding. */
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
   /** Build an event-driven target source for a host/single-player status overlay. */
   export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
   /** Bind an overlay source to a world-anchored presentation template. */
   export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
+  /** Bind producer-stamped per-instance values inside a presentation template. */
+  export const fact: PresentationFactApi;
   /** Add a passive visual effect to an impact policy `do:` array. */
   export function present(template: PresentationTemplate, value: NumberValue): Effect;
 

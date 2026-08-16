@@ -95,6 +95,38 @@ fn lua_bridge_parses_local_state_scope_and_local_bind() {
 }
 
 #[test]
+fn presentation_fact_bind_parses_without_local_state_in_both_runtimes() {
+    let js = r#"({
+        anchor: "center", offset: [0, 0],
+        root: { kind: "text", content: "0", fontSize: 18, color: [1,1,1,1],
+          bind: { fact: "value", format: "{}" } }
+    })"#;
+    let js_tree = eval_js(js, |ctx, value| {
+        anchored_tree_from_js_value(ctx, value).expect("JS fact bind must convert")
+    });
+
+    let lua = r#"return {
+        anchor = "center", offset = {0, 0},
+        root = { kind = "text", content = "0", fontSize = 18, color = {1,1,1,1},
+          bind = { fact = "value", format = "{}" } }
+    }"#;
+    let lua_tree = eval_lua(lua, |value| {
+        anchored_tree_from_lua_value(value).expect("Luau fact bind must convert")
+    });
+
+    assert_eq!(js_tree, lua_tree);
+    let Widget::Text(text) = js_tree.root else {
+        panic!("root must be text");
+    };
+    assert_eq!(
+        text.bind.as_ref().map(|bind| &bind.source),
+        Some(&BindSource::Fact {
+            fact: "value".into()
+        })
+    );
+}
+
+#[test]
 fn bar_bridge_accepts_sizing_and_exit_fade_and_rejects_invalid_authored_shapes() {
     let valid_js = r#"({
         anchor: "center", offset: [0.0, 0.0],

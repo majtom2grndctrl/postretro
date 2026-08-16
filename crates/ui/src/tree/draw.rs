@@ -216,6 +216,26 @@ pub struct UiDrawData {
 }
 
 impl UiDrawData {
+    /// Pre-size the aggregate draw data for a bounded passive-presentation set.
+    /// Templates remain author-defined, so these are warm-path estimates rather
+    /// than hard limits; vectors still grow safely for a denser subtree.
+    pub fn with_estimated_presentation_capacity(instance_count: usize) -> Self {
+        let quad_count = instance_count.saturating_mul(4);
+        let image_count = instance_count;
+        let text_count = instance_count.saturating_mul(2);
+        let paint_count = quad_count
+            .saturating_add(image_count)
+            .saturating_add(text_count);
+        Self {
+            quads: UiDrawList {
+                instances: Vec::with_capacity(quad_count),
+            },
+            images: Vec::with_capacity(image_count),
+            texts: Vec::with_capacity(text_count),
+            paint_order: Vec::with_capacity(paint_count),
+        }
+    }
+
     /// `true` when this tree produced no drawable output: no panel quads, no
     /// image quads, and no text. The renderer early-outs at the composed
     /// `UiComposition` level; this per-layer predicate is test-only.
@@ -463,6 +483,7 @@ pub fn bind_target_name(source: &BindSource) -> &str {
     match source {
         BindSource::Slot { slot } => slot,
         BindSource::Local { local } => local,
+        BindSource::Fact { fact } => fact,
     }
 }
 

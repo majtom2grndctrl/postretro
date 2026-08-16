@@ -682,6 +682,45 @@ fn every_opcode_round_trips_identically_across_runtimes() {
 }
 
 #[test]
+fn presentation_fact_builders_match_across_authoring_runtimes() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { Bar, Text, VStack, definePresentationTemplate, fact } from "postretro/ui";
+        const template = definePresentationTemplate({
+          root: VStack({}, [
+            Text({ content: "0", bind: fact.number("value", { format: "{}", tween: { durationMs: 80, easing: "easeOut" } }) }),
+            Bar({ bind: fact.number("healthFraction"), max: 1, fill: [1,1,1,1], background: [0,0,0,1], visibleWhen: fact.bool("alive") }),
+            Text({ content: "", bind: fact.text("label") }),
+          ]),
+          lifetimeMs: 750,
+          motion: { rise: 18, easing: "easeOut" },
+          fade: { startMs: 500 },
+          spawnScatter: { radius: 0.25 },
+        });
+        JSON.stringify(template.root);
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local UI = require("postretro/ui")
+        local template = UI.definePresentationTemplate("template", {
+          root = UI.VStack({}, {
+            UI.Text({ content = "0", bind = UI.fact.number("value", { format = "{}", tween = { durationMs = 80, easing = "easeOut" } }) }),
+            UI.Bar({ bind = UI.fact.number("healthFraction"), max = 1, fill = {1,1,1,1}, background = {0,0,0,1}, visibleWhen = UI.fact.bool("alive") }),
+            UI.Text({ content = "", bind = UI.fact.text("label") }),
+          }),
+          lifetimeMs = 750,
+          motion = { rise = 18, easing = "easeOut" },
+          fade = { startMs = 500 },
+          spawnScatter = { radius = 0.25 },
+        })
+        return template.root
+    "#;
+
+    assert_eq!(
+        quickjs_fixture_value(TYPESCRIPT_FIXTURE),
+        luau_fixture_value(LUAU_FIXTURE)
+    );
+}
+
+#[test]
 fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // Exercise the shipped root SDK rather than raw runtime builders. The
     // assertion pins every cross-task leaf/token spelling and proves the

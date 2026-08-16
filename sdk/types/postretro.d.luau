@@ -1660,13 +1660,15 @@ export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {numb
 --- `ui.createLocalState(...).cells.<name>:get()`. It resolves inside the nearest
 --- declaring `localState` scope, not the engine state store.
 export type LocalBindRef = { ["local"]: string }
+--- A producer-stamped scalar available only during passive presentation layout.
+export type FactBindRef = { fact: string }
 --- A scalar comparand for UI visibility/selection predicates: number, boolean,
 --- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
 --- A reactive condition used by `visibleWhen`, `selected`, and `checked`: read
---- either an engine state ref or presentation-local cell and compare it to
+--- an engine state ref, presentation-local cell, or stamped fact and compare it to
 --- `equals` when provided.
-export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef) & { equals: PredicateValue? }
+export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
 --- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
@@ -1676,9 +1678,9 @@ export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" |
 --- interrupt less) and `"assertive"` (interrupt sooner).
 export type AnnouncePriority = "polite" | "assertive"
 --- State binding for a `Text` widget. The source is a readable engine state ref
---- or presentation-local cell; `format` is a one-placeholder string such as
+--- presentation-local cell, or stamped fact; `format` is a one-placeholder string such as
 --- `"HP {}"`; numeric sources may also tween.
-export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef) & { format: string?, tween: NumberTween? }
+export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef | FactBindRef) & { format: string?, tween: NumberTween? }
 --- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
 --- array; `tween` eases the displayed color and never writes back to state.
 export type PanelBindProp = (ComputedRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
@@ -1734,7 +1736,7 @@ export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: 
 
 --- State binding for a readonly numeric `Bar`. The value is displayed against
 --- `max`; it is not interactive and never writes state.
-export type BarBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
+export type BarBindProp = (ComputedRef<number> | LocalBindRef | FactBindRef) & { tween: NumberTween? }
 --- Bar denominator: either a literal number or a readonly numeric state ref such
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ComputedRef<number>
@@ -2004,6 +2006,12 @@ export type PostretroUiModule = {
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   --- Build an explicit-id passive presentation template. It is manifest data, not a modal UI tree.
   definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
+  --- Bind producer-stamped per-instance values inside a presentation template.
+  fact: {
+    number: (name: string, options: { format: string?, tween: NumberTween? }?) -> FactBindRef & { format: string?, tween: NumberTween? },
+    text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
+    bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
+  },
   --- Build a target-keyed host/single-player damaged-enemy source.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
   --- Bind an overlay source to a socket-anchored presentation template.

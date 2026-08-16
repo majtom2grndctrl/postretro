@@ -34,6 +34,12 @@ export type PostretroUiModule = {
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   --- Build an explicit-id passive presentation template. It is manifest data, not a modal UI tree.
   definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
+  --- Bind producer-stamped per-instance values inside a presentation template.
+  fact: {
+    number: (name: string, options: { format: string?, tween: NumberTween? }?) -> FactBindRef & { format: string?, tween: NumberTween? },
+    text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
+    bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
+  },
   --- Build a target-keyed host/single-player damaged-enemy source.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
   --- Bind an overlay source to a socket-anchored presentation template.

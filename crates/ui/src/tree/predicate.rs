@@ -8,11 +8,14 @@ use postretro_entities::SlotValue;
 
 use super::CellValues;
 
+pub(super) const PRESENTATION_FACT_SCOPE: &str = "\0postretro.presentation.fact";
+
 /// Resolve a bind's value against the frame's snapshot: a `{ slot }` bind reads
 /// the authoritative store slot map; a `{ local }` bind reads the presentation
 /// cell `(scope, name)` where `scope` is the nearest declaring ancestor resolved
 /// at tree-build time (`None` when the local bind had no enclosing scope, so it
-/// degrades to "absent" — the bind silently falls back to its literal). This is
+/// degrades to "absent" — the bind silently falls back to its literal). A
+/// `{ fact }` bind reads the passive instance's producer-stamped scalar. This is
 /// the single seam every bind-resolution helper routes through.
 pub fn lookup_bound<'a>(
     source: &BindSource,
@@ -24,6 +27,9 @@ pub fn lookup_bound<'a>(
         BindSource::Slot { slot } => slots.get(slot),
         BindSource::Local { local } => {
             scope.and_then(|s| cells.get(&(s.to_string(), local.to_string())))
+        }
+        BindSource::Fact { fact } => {
+            cells.get(&(PRESENTATION_FACT_SCOPE.to_string(), fact.to_string()))
         }
     }
 }
@@ -40,7 +46,7 @@ pub fn lookup_bound<'a>(
 /// - **With `equals`** → `1.0` iff the resolved `SlotValue` equals the comparand,
 ///   else `0.0`. `String`/`Enum` match the comparand by name; number/bool match
 ///   exactly. A type mismatch (e.g. a `Number` slot vs a string comparand) is `0.0`.
-/// - **Absent slot/cell** (the bind resolves to nothing) → `0.0`.
+/// - **Absent slot/cell/fact** (the bind resolves to nothing) → `0.0`.
 pub fn resolve_predicate(
     source: &BindSource,
     equals: Option<&PredicateValue>,

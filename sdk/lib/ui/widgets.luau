@@ -9,8 +9,8 @@
 -- / `reactions.luau` precedent) so a future loader installs them as globals.
 --
 -- Pure builders: constructing a widget has no engine side effect. Bound props
--- accept state-reference descriptors (`{ slot = "..." }`) or presentation-local
--- bind tables; `Button.onPress` accepts a reaction handle (a table with `.name`)
+-- accept state references, presentation-local cells, or producer-stamped facts;
+-- `Button.onPress` accepts a reaction handle (a table with `.name`)
 -- or a bare name string. Self-contained: the Luau prelude has no module loader, so the
 -- validation helpers and shared types are redeclared here (not required across).
 -- See: context/lib/ui.md · context/lib/scripting.md §7
@@ -118,10 +118,9 @@ local function validateEasing(value: any, field: string, factory: string)
   end
 end
 
--- Resolve a bind prop to its wire `{ slot, ... }` or `{ ["local"], ... }` table.
--- The bind source is either a `{ slot }` store binding or a `{ local }`
--- presentation-cell binding. `slot` wins when present; else `bind["local"]` is
--- required. `kind` selects the optional members: text accepts `format`; panel's
+-- Resolve a bind prop to its wire source table. `slot`, `local`, and `fact` are
+-- checked in descriptor precedence order. `kind` selects optional members:
+-- text accepts `format`; panel's
 -- tween `from` is a color, others a number. Returns nil when no bind was
 -- authored so the factory omits the key.
 local function buildBind(bind: any, factory: string, kind: string): any?
@@ -135,9 +134,12 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   if bind.slot ~= nil then
     requireNonemptyString(bind.slot, "bind.slot", factory)
     out = { slot = bind.slot }
-  else
+  elseif bind["local"] ~= nil then
     requireNonemptyString(bind["local"], "bind.local", factory)
     out = { ["local"] = bind["local"] }
+  else
+    requireNonemptyString(bind.fact, "bind.fact", factory)
+    out = { fact = bind.fact }
   end
 
   if kind == "text" and bind.format ~= nil then
@@ -297,9 +299,12 @@ local function buildPredicate(value: any, field: string, factory: string): any?
   if value.slot ~= nil then
     requireNonemptyString(value.slot, `{field}.slot`, factory)
     out = { slot = value.slot }
-  else
+  elseif value["local"] ~= nil then
     requireNonemptyString(value["local"], `{field}.local`, factory)
     out = { ["local"] = value["local"] }
+  else
+    requireNonemptyString(value.fact, `{field}.fact`, factory)
+    out = { fact = value.fact }
   end
   if value.equals ~= nil then
     local e = value.equals

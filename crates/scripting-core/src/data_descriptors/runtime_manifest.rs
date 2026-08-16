@@ -114,6 +114,8 @@ impl PresentationWorldAnchor {
 
 /// One fact-driven passive overlay declaration from `ModManifest.presentationOverlays`.
 /// It is host-local authoring data, never a transport payload.
+pub const MAX_PRESENTATION_OVERLAY_VISIBLE: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PresentationOverlay {
@@ -129,6 +131,11 @@ impl PresentationOverlay {
         }
         if self.max_visible == 0 {
             return Err("presentation overlay `maxVisible` must be at least 1".to_string());
+        }
+        if self.max_visible > MAX_PRESENTATION_OVERLAY_VISIBLE {
+            return Err(format!(
+                "presentation overlay `maxVisible` must be at most {MAX_PRESENTATION_OVERLAY_VISIBLE}"
+            ));
         }
         Ok(())
     }
@@ -181,4 +188,34 @@ pub struct LevelManifest {
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
     /// logged and skipped rather than aborting level load (`ui.md` §1.1).
     pub ui_trees: Vec<RegisteredUiTree>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn overlay(max_visible: usize) -> PresentationOverlay {
+        serde_json::from_value(serde_json::json!({
+            "over": {
+                "kind": "damagedEnemies",
+                "lingerMs": 2500,
+                "hideAtFull": true
+            },
+            "template": "enemyStatus",
+            "maxVisible": max_visible
+        }))
+        .expect("test overlay descriptor is valid")
+    }
+
+    #[test]
+    fn presentation_overlay_visible_budget_is_bounded() {
+        assert!(overlay(1).validate().is_ok());
+        assert!(overlay(MAX_PRESENTATION_OVERLAY_VISIBLE).validate().is_ok());
+        assert_eq!(
+            overlay(MAX_PRESENTATION_OVERLAY_VISIBLE + 1)
+                .validate()
+                .unwrap_err(),
+            "presentation overlay `maxVisible` must be at most 64"
+        );
+    }
 }

@@ -55,7 +55,9 @@ pub use ui_tree::UiTree;
 /// fixed size. The renderer builds this from the uploaded texture's pixel dims.
 pub type ImageSizes = HashMap<String, [f32; 2]>;
 
-/// Resolved presentation-cell values for a frame, keyed by `(scopeId, cellName)`.
+/// Renderer-local values keyed by `(scopeId, valueName)`. Retained trees publish
+/// presentation cells; passive templates add producer-stamped facts under an
+/// engine-reserved scope.
 /// The app-side cell store publishes this onto the read
 /// snapshot, exactly the way bound slot values flow — so the descriptor compared
 /// by the retained reuse gate (`mod.rs`) stays immutable and a cell write never

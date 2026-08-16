@@ -31,6 +31,7 @@ export type {
   BarBindProp,
   BarMaxProp,
   LocalBindRef,
+  FactBindRef,
   PredicateValue,
   Predicate,
   WidgetRole,
@@ -78,8 +79,11 @@ export type {
   DamagedEnemiesProps,
   DamagedEnemiesSource,
   PresentationOverlay,
+  PresentationFactApi,
+  NumberFactOptions,
+  ScalarFactOptions,
 } from "./ui/presentation";
-export { defineOverlay, definePresentationTemplate, damagedEnemies } from "./ui/presentation";
+export { defineOverlay, definePresentationTemplate, damagedEnemies, fact } from "./ui/presentation";
 export { present } from "./data_script";
 
 export type {

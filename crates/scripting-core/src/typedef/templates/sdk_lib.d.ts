@@ -633,22 +633,25 @@
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   /** A presentation-local bind reference produced by `ui.createLocalState(...).cells.<name>.get()`. It resolves inside the nearest declaring `localState` scope, not the engine state store. */
   export type LocalBindRef = { local: string };
+  const presentationFactValueBrand: unique symbol;
+  /** Producer-stamped scalar available only while laying out a passive presentation instance. */
+  export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
-  /** A reactive condition used by `visibleWhen`, `selected`, and `checked`: read either an engine state ref or presentation-local cell and compare it to `equals` when provided. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  /** A reactive condition used by `visibleWhen`, `selected`, and `checked`: read an engine state ref, presentation-local cell, or stamped presentation fact and compare it to `equals` when provided. */
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
   /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
   export type AnnouncePriority = "polite" | "assertive";
-  /** State binding for a `Text` widget. The source is a readable engine state ref or presentation-local cell; `format` is a one-placeholder string such as `"HP {}"`; numeric sources may also tween. */
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  /** State binding for a `Text` widget. The source is a readable engine state ref, presentation-local cell, or stamped presentation fact; `format` is a one-placeholder string such as `"HP {}"`; numeric sources may also tween. */
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
   /** State binding for a `Panel` fill color. The source resolves to a numeric RGBA array; `tween` eases the displayed color and never writes back to state. */
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   /** State binding for a writable numeric `Slider`. Engine refs must be writable; local cells are valid. The optional number tween controls displayed thumb movement only. */
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** State binding for a readonly numeric `Bar`. The value is displayed against `max`; it is not interactive and never writes state. */
-  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
   /** Bar denominator: either a literal number or a readonly numeric state ref such as `getGameState().player.maxHealth`. */
   export type BarMaxProp = number | ComputedRef<number>;
   /** One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold; omit it on the final entry to make that entry the default band. `color`, `pulse`, and `flash` affect the rendered style, not authoritative state. */

@@ -8,12 +8,15 @@ use postretro_entities::{
     EntityId, EntityRegistry, PresentationFact, PresentationFade, PresentationMotion,
     PresentationSpawn, PresentationTemplateHandle,
 };
+use postretro_foundation::NavAgentParams;
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
     NetworkId, PresentationFact as WirePresentationFact, ServerPresentationMessage,
     ServerPresentationPayload,
 };
-use postretro_scripting_core::data_descriptors::PresentationTemplate;
+use postretro_scripting_core::data_descriptors::{
+    EntityTypeDescriptor, HitboxDescriptor, PresentationTemplate,
+};
 
 #[cfg(test)]
 use crate::impact_policy::DamagedEnemyOverlayDamage;
@@ -21,6 +24,7 @@ use crate::impact_policy::{
     ClientOverlayConfig, DamagedEnemyOverlayFact, DamagedEnemyOverlayFrame,
 };
 use crate::presentation_pool::PresentationPool;
+use crate::scripting::builtins::data_archetype::ai_capsule_center_from_feet_offset;
 use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
 
 use super::{ClientReplication, MovementOwners, NetworkIdAllocator, ReplicableSet};
@@ -29,16 +33,38 @@ use super::{ClientReplication, MovementOwners, NetworkIdAllocator, ReplicableSet
 /// horizon. The id allocator never recycles, so this must remain a bounded
 /// short-lived guard rather than a session ledger.
 const CLIENT_OVERLAY_TERMINAL_TTL_SECONDS: f64 = 0.5;
+/// A presentation datagram can beat the unreliable snapshot that establishes
+/// its entity mapping. Retain that already-received fact only across the same
+/// short reorder horizon; this is not a retransmit or reliable event queue.
+const CLIENT_OVERLAY_PENDING_TTL_SECONDS: f64 = 0.5;
 
 /// A decoded overlay fact separated from the wire envelope so the adverse-order
 /// behavior is directly testable without transport or registry setup.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ClientOverlayFact {
     enemy_id: NetworkId,
     health_fraction: f32,
     shield_fraction: f32,
     has_shield: bool,
     alive: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientLiveOverlay {
+    entity: EntityId,
+    fact: ClientOverlayFact,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingClientOverlayFact {
+    fact: ClientOverlayFact,
+    queued_at: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientOverlayHitbox {
+    half_extents: Vec3,
+    offset: Vec3,
 }
 
 impl ClientOverlayFact {
@@ -87,13 +113,14 @@ impl From<DamagedEnemyOverlayFact> for OverlayFactTuple {
 #[derive(Debug, Default)]
 pub(crate) struct ClientOverlayFactState {
     terminal_ids: HashMap<NetworkId, f64>,
-    live_overlay_entities: HashMap<NetworkId, EntityId>,
+    live_overlays: HashMap<NetworkId, ClientLiveOverlay>,
+    pending_live_facts: HashMap<NetworkId, PendingClientOverlayFact>,
     elapsed_seconds: f64,
 }
 
 impl ClientOverlayFactState {
-    /// Advance the injected game-time clock and drop terminal guards that have
-    /// outlived the unordered channel's reorder horizon.
+    /// Advance the injected game-time clock and drop terminal guards or
+    /// pre-baseline facts past the unordered channel's reorder horizon.
     pub(crate) fn advance_terminal_ttl(&mut self, frame_dt_seconds: f32) {
         if frame_dt_seconds.is_finite() && frame_dt_seconds > 0.0 {
             self.elapsed_seconds += f64::from(frame_dt_seconds);
@@ -101,11 +128,40 @@ impl ClientOverlayFactState {
         let now = self.elapsed_seconds;
         self.terminal_ids
             .retain(|_, marked_at| now - *marked_at < CLIENT_OVERLAY_TERMINAL_TTL_SECONDS);
+        self.pending_live_facts
+            .retain(|_, pending| now - pending.queued_at < CLIENT_OVERLAY_PENDING_TTL_SECONDS);
     }
 
     fn discard_expired_live_overlays(&mut self, pool: &PresentationPool) {
-        self.live_overlay_entities
-            .retain(|_, entity| pool.has_overlay(*entity));
+        self.live_overlays
+            .retain(|_, live| pool.has_overlay(live.entity));
+    }
+
+    fn queue_pending_live(&mut self, fact: ClientOverlayFact, max_visible: usize) {
+        if max_visible == 0 || self.terminal_ids.contains_key(&fact.enemy_id) {
+            return;
+        }
+        if !self.pending_live_facts.contains_key(&fact.enemy_id)
+            && self.pending_live_facts.len() >= max_visible
+            && let Some(oldest) = self
+                .pending_live_facts
+                .iter()
+                .min_by(|(left_id, left), (right_id, right)| {
+                    left.queued_at
+                        .total_cmp(&right.queued_at)
+                        .then_with(|| left_id.0.cmp(&right_id.0))
+                })
+                .map(|(id, _)| *id)
+        {
+            self.pending_live_facts.remove(&oldest);
+        }
+        self.pending_live_facts.insert(
+            fact.enemy_id,
+            PendingClientOverlayFact {
+                fact,
+                queued_at: self.elapsed_seconds,
+            },
+        );
     }
 
     #[cfg(test)]
@@ -116,6 +172,11 @@ impl ClientOverlayFactState {
     #[cfg(test)]
     pub(crate) fn advance_terminal_ttl_for_test(&mut self, frame_dt_seconds: f32) {
         self.advance_terminal_ttl(frame_dt_seconds);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_len(&self) -> usize {
+        self.pending_live_facts.len()
     }
 }
 /// Clients that earned a bar for one currently tracked enemy. The stored wire
@@ -297,18 +358,20 @@ pub(crate) fn route_host_presentation_spawns(
 }
 
 /// Convert received passive presentation events into client-local state. Spawn
-/// messages enter the registry intake; overlay facts directly refresh the
-/// keyed pool from host-authored values.
+/// messages enter registry intake. Overlay facts update the keyed pool from
+/// host-authored values or wait briefly for an outrun entity baseline.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_client_presentation_messages(
     registry: &mut EntityRegistry,
     messages: Vec<ServerPresentationMessage>,
+    descriptors: &[EntityTypeDescriptor],
     templates: &[PresentationTemplate],
     overlay_state: &mut ClientOverlayFactState,
     replication: &ClientReplication,
     pool: &mut PresentationPool,
     overlay_config: Option<&ClientOverlayConfig>,
     hit_zones: &HitZoneStore,
+    agent_params: Option<NavAgentParams>,
     anim_time: f64,
     frame_dt_seconds: f32,
 ) {
@@ -371,30 +434,124 @@ pub(crate) fn ingest_client_presentation_messages(
                     has_shield,
                     alive,
                 );
-                let entity = replication.entity_for_network_id(fact.enemy_id);
-                let anchor = overlay_config.and_then(|config| {
-                    entity.and_then(|entity| {
-                        client_overlay_anchor(
-                            registry,
-                            hit_zones,
-                            entity,
-                            &config.world_anchor,
-                            anim_time,
-                        )
-                    })
-                });
-                ingest_client_overlay_fact(
+                ingest_or_queue_client_overlay_fact(
+                    registry,
+                    descriptors,
                     overlay_state,
+                    replication,
                     pool,
-                    fact,
-                    entity,
-                    anchor,
                     overlay_config,
+                    hit_zones,
+                    agent_params,
+                    anim_time,
+                    fact,
                 );
             }
         }
     }
+    retry_pending_client_overlay_facts(
+        registry,
+        descriptors,
+        overlay_state,
+        replication,
+        pool,
+        overlay_config,
+        hit_zones,
+        agent_params,
+        anim_time,
+    );
     overlay_state.discard_expired_live_overlays(pool);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ingest_or_queue_client_overlay_fact(
+    registry: &EntityRegistry,
+    descriptors: &[EntityTypeDescriptor],
+    state: &mut ClientOverlayFactState,
+    replication: &ClientReplication,
+    pool: &mut PresentationPool,
+    config: Option<&ClientOverlayConfig>,
+    hit_zones: &HitZoneStore,
+    agent_params: Option<NavAgentParams>,
+    anim_time: f64,
+    fact: ClientOverlayFact,
+) {
+    if !fact.alive {
+        ingest_client_overlay_fact(state, pool, fact, None, None, config);
+        return;
+    }
+    if state.terminal_ids.contains_key(&fact.enemy_id) {
+        return;
+    }
+    let Some(config) = config else {
+        return;
+    };
+    let entity = replication.entity_for_network_id(fact.enemy_id);
+    let anchor = entity.and_then(|entity| {
+        client_overlay_anchor(
+            registry,
+            hit_zones,
+            entity,
+            &config.world_anchor,
+            client_overlay_hitbox(replication, descriptors, fact.enemy_id, agent_params),
+            anim_time,
+        )
+    });
+    if entity.is_none() || anchor.is_none() {
+        state.queue_pending_live(fact, config.max_visible);
+        return;
+    }
+    state.pending_live_facts.remove(&fact.enemy_id);
+    ingest_client_overlay_fact(state, pool, fact, entity, anchor, Some(config));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retry_pending_client_overlay_facts(
+    registry: &EntityRegistry,
+    descriptors: &[EntityTypeDescriptor],
+    state: &mut ClientOverlayFactState,
+    replication: &ClientReplication,
+    pool: &mut PresentationPool,
+    config: Option<&ClientOverlayConfig>,
+    hit_zones: &HitZoneStore,
+    agent_params: Option<NavAgentParams>,
+    anim_time: f64,
+) {
+    let Some(config) = config else {
+        state.pending_live_facts.clear();
+        return;
+    };
+    if state.pending_live_facts.is_empty() {
+        return;
+    }
+    let mut pending: Vec<_> = state.pending_live_facts.values().copied().collect();
+    pending.sort_by(|left, right| {
+        left.queued_at
+            .total_cmp(&right.queued_at)
+            .then_with(|| left.fact.enemy_id.0.cmp(&right.fact.enemy_id.0))
+    });
+    for pending in pending {
+        let fact = pending.fact;
+        if state.terminal_ids.contains_key(&fact.enemy_id) {
+            state.pending_live_facts.remove(&fact.enemy_id);
+            continue;
+        }
+        let Some(entity) = replication.entity_for_network_id(fact.enemy_id) else {
+            continue;
+        };
+        let Some(anchor) = client_overlay_anchor(
+            registry,
+            hit_zones,
+            entity,
+            &config.world_anchor,
+            client_overlay_hitbox(replication, descriptors, fact.enemy_id, agent_params),
+            anim_time,
+        ) else {
+            continue;
+        };
+        state.pending_live_facts.remove(&fact.enemy_id);
+        ingest_client_overlay_fact(state, pool, fact, Some(entity), Some(anchor), Some(config));
+    }
 }
 
 /// Apply one decoded overlay fact. This is intentionally a plain state seam:
@@ -409,11 +566,12 @@ pub(crate) fn ingest_client_overlay_fact(
     config: Option<&ClientOverlayConfig>,
 ) {
     if !fact.alive {
+        state.pending_live_facts.remove(&fact.enemy_id);
         state
             .terminal_ids
             .insert(fact.enemy_id, state.elapsed_seconds);
-        if let Some(entity) = state.live_overlay_entities.remove(&fact.enemy_id) {
-            pool.evict_overlay(entity);
+        if let Some(live) = state.live_overlays.remove(&fact.enemy_id) {
+            pool.evict_overlay(live.entity);
         }
         return;
     }
@@ -426,18 +584,32 @@ pub(crate) fn ingest_client_overlay_fact(
         return;
     };
 
-    if let Some(previous_entity) = state.live_overlay_entities.insert(fact.enemy_id, entity)
-        && previous_entity != entity
+    let previous = state.live_overlays.get(&fact.enemy_id).copied();
+    if let Some(previous) = previous
+        && previous.entity != entity
+        && !pool.rekey_overlay(previous.entity, entity)
     {
-        pool.evict_overlay(previous_entity);
+        pool.evict_overlay(previous.entity);
     }
 
-    pool.refresh_overlay(
-        entity,
-        config.template.clone(),
-        config.linger_seconds,
-        config.max_visible,
-    );
+    // Host facts also move for recharge and regeneration. Only a newly-earned
+    // overlay or a decreasing combat fraction represents a hit that should
+    // reset the last-damage linger clock.
+    let damage_refresh = previous.is_none_or(|previous| {
+        fact.health_fraction < previous.fact.health_fraction
+            || fact.shield_fraction < previous.fact.shield_fraction
+    });
+    if damage_refresh || !pool.has_overlay(entity) {
+        pool.refresh_overlay(
+            entity,
+            config.template.clone(),
+            config.linger_seconds,
+            config.max_visible,
+        );
+    }
+    if !pool.has_overlay(entity) {
+        return;
+    }
     let mut facts = BTreeMap::new();
     facts.insert(
         "healthFraction".to_string(),
@@ -457,16 +629,65 @@ pub(crate) fn ingest_client_overlay_fact(
         anchor,
         config.hide_at_full && fact.health_fraction == 1.0,
     );
+    state
+        .live_overlays
+        .insert(fact.enemy_id, ClientLiveOverlay { entity, fact });
 }
 
-/// Resolve the visual anchor for an already-replicated entity. Unlike the host
-/// path, this deliberately has no health-hitbox fallback: connected clients do
-/// not materialize enemy health and must not synthesize overlay facts from it.
+/// Re-anchor live client overlays from the final interpolated remote pose. This
+/// never changes facts or the last-hit linger clock.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_client_overlay_anchors(
+    registry: &EntityRegistry,
+    descriptors: &[EntityTypeDescriptor],
+    state: &mut ClientOverlayFactState,
+    replication: &ClientReplication,
+    pool: &mut PresentationPool,
+    config: Option<&ClientOverlayConfig>,
+    hit_zones: &HitZoneStore,
+    agent_params: Option<NavAgentParams>,
+    anim_time: f64,
+) {
+    state.discard_expired_live_overlays(pool);
+    let Some(config) = config else {
+        return;
+    };
+    for (&network_id, live) in &mut state.live_overlays {
+        let Some(entity) = replication.entity_for_network_id(network_id) else {
+            pool.update_overlay_anchor(live.entity, None, true);
+            continue;
+        };
+        if entity != live.entity {
+            if !pool.rekey_overlay(live.entity, entity) {
+                continue;
+            }
+            live.entity = entity;
+        }
+        let anchor = client_overlay_anchor(
+            registry,
+            hit_zones,
+            entity,
+            &config.world_anchor,
+            client_overlay_hitbox(replication, descriptors, network_id, agent_params),
+            anim_time,
+        );
+        pool.update_overlay_anchor(
+            entity,
+            anchor,
+            config.hide_at_full && live.fact.health_fraction == 1.0,
+        );
+    }
+}
+
+/// Resolve the visual anchor for an already-replicated entity. Connected
+/// clients carry no `HealthComponent`, so the local descriptor supplies the
+/// same authored hitbox fallback without synthesizing combat state.
 fn client_overlay_anchor(
     registry: &EntityRegistry,
     hit_zones: &HitZoneStore,
     entity: EntityId,
     anchor: &postretro_scripting_core::data_descriptors::PresentationWorldAnchor,
+    hitbox: Option<ClientOverlayHitbox>,
     anim_time: f64,
 ) -> Option<Vec3> {
     let offset = Vec3::Y * anchor.offset_y;
@@ -481,6 +702,14 @@ fn client_overlay_anchor(
     if !transform.position.is_finite() {
         return None;
     }
+    if let Some(hitbox) = hitbox {
+        if hitbox.half_extents.is_finite() && hitbox.offset.is_finite() {
+            let top = transform.position + hitbox.offset + Vec3::Y * hitbox.half_extents.y + offset;
+            if top.is_finite() {
+                return Some(top);
+            }
+        }
+    }
     let mesh = registry
         .get_component::<postretro_entities::components::mesh::MeshComponent>(entity)
         .ok()?;
@@ -493,6 +722,24 @@ fn client_overlay_anchor(
     );
     let top = model_to_world.transform_point3(local_top) + offset;
     top.is_finite().then_some(top)
+}
+
+fn client_overlay_hitbox(
+    replication: &ClientReplication,
+    descriptors: &[EntityTypeDescriptor],
+    network_id: NetworkId,
+    agent_params: Option<NavAgentParams>,
+) -> Option<ClientOverlayHitbox> {
+    let entity_class = replication.remote_entity_class(network_id)?;
+    let descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))?;
+    let hitbox: HitboxDescriptor = descriptor.health.as_ref()?.hitbox?;
+    Some(ClientOverlayHitbox {
+        half_extents: Vec3::from_array(hitbox.half_extents),
+        offset: Vec3::from_array(hitbox.offset.unwrap_or([0.0; 3]))
+            - ai_capsule_center_from_feet_offset(descriptor, agent_params),
+    })
 }
 
 fn presentation_recipient(spawn: &PresentationSpawn, owners: &MovementOwners) -> Option<u64> {
@@ -539,11 +786,12 @@ fn presentation_fact_from_wire(fact: WirePresentationFact) -> PresentationFact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::{PresentationPresenter, PresentationTemplateHandle};
+    use postretro_entities::{PresentationPresenter, PresentationTemplateHandle, Transform};
     use postretro_foundation::PresentationEasing;
+    use postretro_net::wire::{ComponentPayload, EntityRecord, SnapshotMessage, WireTransform};
     use postretro_scripting_core::data_descriptors::{
-        PresentationTemplateFade, PresentationTemplateMotion, PresentationTemplateSpawnScatter,
-        PresentationWorldAnchor,
+        HealthDescriptor, PresentationTemplateFade, PresentationTemplateMotion,
+        PresentationTemplateSpawnScatter, PresentationWorldAnchor,
     };
 
     const FLOAT_EPSILON: f32 = 1.0e-5;
@@ -605,6 +853,50 @@ mod tests {
             max_visible: 2,
             linger_seconds: 2.5,
             hide_at_full: false,
+        }
+    }
+
+    fn descriptor_with_hitbox(class: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(class.to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            touchable: None,
+            mesh: None,
+            health: Some(HealthDescriptor {
+                max: 100.0,
+                hitbox: Some(HitboxDescriptor {
+                    half_extents: [0.5, 1.5, 0.5],
+                    offset: Some([0.0, 0.25, 0.0]),
+                }),
+                zone_multipliers: HashMap::new(),
+            }),
+            behavior: None,
+        }
+    }
+
+    fn remote_baseline(network_id: u32, entity_class: &str, position: Vec3) -> SnapshotMessage {
+        SnapshotMessage {
+            sequence: 0,
+            server_tick: 1,
+            records: vec![EntityRecord::FullBaseline {
+                network_id,
+                baseline_id: 1,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: Some(entity_class.to_string()),
+                active_weapon_archetype: None,
+                components: vec![ComponentPayload::Transform(WireTransform {
+                    position: position.to_array(),
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0; 3],
+                })],
+            }],
+            state_schema_fingerprint: [0; 32],
+            state_records: Vec::new(),
         }
     }
 
@@ -685,12 +977,14 @@ mod tests {
             vec![presentation_message_from_spawn(&spawn(Some(
                 EntityId::from_raw(7),
             )))],
+            &[],
             &[template()],
             &mut overlay_state,
             &replication,
             &mut pool,
             None,
             &hit_zones,
+            None,
             0.0,
             0.0,
         );
@@ -860,6 +1154,200 @@ mod tests {
         assert!((health - 0.35).abs() < FLOAT_EPSILON);
         assert!((shield - 0.6).abs() < FLOAT_EPSILON);
         assert_eq!(facts.get("hasShield"), Some(&PresentationFact::Bool(true)));
+    }
+
+    #[test]
+    fn client_overlay_fact_waits_for_baseline_then_tracks_interpolated_hitbox_anchor() {
+        let descriptors = vec![descriptor_with_hitbox("remote_enemy")];
+        let config = overlay_config();
+        let mut registry = EntityRegistry::new();
+        let mut replication = ClientReplication::new();
+        let mut state = ClientOverlayFactState::default();
+        let mut pool = PresentationPool::new(2);
+        let hit_zones = HitZoneStore::new();
+        let fact = overlay_fact(21, 0.65, true);
+
+        ingest_client_presentation_messages(
+            &mut registry,
+            vec![ServerPresentationMessage {
+                payload: ServerPresentationPayload::OverlayFact {
+                    enemy_id: fact.enemy_id,
+                    health_fraction: fact.health_fraction,
+                    shield_fraction: fact.shield_fraction,
+                    has_shield: fact.has_shield,
+                    alive: fact.alive,
+                },
+            }],
+            &descriptors,
+            &[],
+            &mut state,
+            &replication,
+            &mut pool,
+            Some(&config),
+            &hit_zones,
+            None,
+            0.0,
+            0.0,
+        );
+        assert_eq!(state.pending_len(), 1);
+
+        let outcome = replication.apply_snapshot(
+            &mut registry,
+            &remote_baseline(21, "remote_enemy", Vec3::new(1.0, 2.0, 3.0)),
+        );
+        let remote = outcome
+            .remote_entities
+            .first()
+            .expect("class-bearing baseline surfaces remote materialization");
+        replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
+        let entity = remote.entity_id;
+
+        ingest_client_presentation_messages(
+            &mut registry,
+            Vec::new(),
+            &descriptors,
+            &[],
+            &mut state,
+            &replication,
+            &mut pool,
+            Some(&config),
+            &hit_zones,
+            None,
+            0.0,
+            0.0,
+        );
+        assert_eq!(state.pending_len(), 0);
+        assert_eq!(overlay_health_fraction(&pool, entity), Some(0.65));
+        assert_eq!(pool.overlay_anchor(entity), Some(Vec3::new(1.0, 4.0, 3.0)));
+
+        registry
+            .set_component(
+                entity,
+                Transform {
+                    position: Vec3::new(4.0, 5.0, 6.0),
+                    ..Transform::default()
+                },
+            )
+            .expect("mapped remote transform remains live");
+        update_client_overlay_anchors(
+            &registry,
+            &descriptors,
+            &mut state,
+            &replication,
+            &mut pool,
+            Some(&config),
+            &hit_zones,
+            None,
+            0.0,
+        );
+        assert_eq!(pool.overlay_anchor(entity), Some(Vec3::new(4.0, 7.0, 6.0)));
+    }
+
+    #[test]
+    fn client_overlay_pending_facts_are_capacity_and_ttl_bounded() {
+        let mut config = overlay_config();
+        config.max_visible = 2;
+        let registry = EntityRegistry::new();
+        let descriptors = Vec::new();
+        let replication = ClientReplication::new();
+        let hit_zones = HitZoneStore::new();
+        let mut state = ClientOverlayFactState::default();
+        let mut pool = PresentationPool::new(2);
+
+        for enemy_id in 1..=3 {
+            ingest_or_queue_client_overlay_fact(
+                &registry,
+                &descriptors,
+                &mut state,
+                &replication,
+                &mut pool,
+                Some(&config),
+                &hit_zones,
+                None,
+                0.0,
+                overlay_fact(enemy_id, 0.75, true),
+            );
+        }
+        assert_eq!(state.pending_len(), 2);
+        state.advance_terminal_ttl_for_test(0.51);
+        assert_eq!(state.pending_len(), 0);
+    }
+
+    #[test]
+    fn client_overlay_recharge_updates_facts_without_extending_last_hit_linger() {
+        let entity = EntityId::from_raw(22);
+        let config = overlay_config();
+        let mut state = ClientOverlayFactState::default();
+        let mut pool = PresentationPool::new(1);
+        let mut registry = EntityRegistry::new();
+
+        ingest_client_overlay_fact(
+            &mut state,
+            &mut pool,
+            ClientOverlayFact {
+                enemy_id: NetworkId(9),
+                health_fraction: 0.5,
+                shield_fraction: 0.2,
+                has_shield: true,
+                alive: true,
+            },
+            Some(entity),
+            Some(Vec3::ZERO),
+            Some(&config),
+        );
+        pool.advance_and_collect_inputs(&mut registry, 2.0, glam::Mat4::IDENTITY, [100, 100]);
+
+        ingest_client_overlay_fact(
+            &mut state,
+            &mut pool,
+            ClientOverlayFact {
+                enemy_id: NetworkId(9),
+                health_fraction: 0.5,
+                shield_fraction: 0.8,
+                has_shield: true,
+                alive: true,
+            },
+            Some(entity),
+            Some(Vec3::ZERO),
+            Some(&config),
+        );
+        let shield = pool
+            .overlay_facts(entity)
+            .and_then(|facts| facts.get("shieldFraction"));
+        assert_eq!(shield, Some(&PresentationFact::Number(0.8)));
+
+        pool.advance_and_collect_inputs(&mut registry, 0.6, glam::Mat4::IDENTITY, [100, 100]);
+        assert!(!pool.has_overlay(entity));
+    }
+
+    #[test]
+    fn client_overlay_decreasing_fraction_resets_last_hit_linger() {
+        let entity = EntityId::from_raw(23);
+        let config = overlay_config();
+        let mut state = ClientOverlayFactState::default();
+        let mut pool = PresentationPool::new(1);
+        let mut registry = EntityRegistry::new();
+
+        ingest_client_overlay_fact(
+            &mut state,
+            &mut pool,
+            overlay_fact(10, 0.8, true),
+            Some(entity),
+            Some(Vec3::ZERO),
+            Some(&config),
+        );
+        pool.advance_and_collect_inputs(&mut registry, 2.0, glam::Mat4::IDENTITY, [100, 100]);
+        ingest_client_overlay_fact(
+            &mut state,
+            &mut pool,
+            overlay_fact(10, 0.6, true),
+            Some(entity),
+            Some(Vec3::ZERO),
+            Some(&config),
+        );
+        pool.advance_and_collect_inputs(&mut registry, 0.6, glam::Mat4::IDENTITY, [100, 100]);
+
+        assert!(pool.has_overlay(entity));
     }
 
     fn overlay_frame(

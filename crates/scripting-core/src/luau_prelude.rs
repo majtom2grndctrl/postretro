@@ -217,6 +217,7 @@ const UI_PRESENTATION_FIELDS: &[&str] = &[
     "definePresentationTemplate",
     "damagedEnemies",
     "defineOverlay",
+    "fact",
 ];
 
 /// Data-script impact builder exposed only through `postretro/ui`, not as a
@@ -261,6 +262,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "definePresentationTemplate",
     "damagedEnemies",
     "defineOverlay",
+    "fact",
     "present",
     "getGameState",
     "bindState",

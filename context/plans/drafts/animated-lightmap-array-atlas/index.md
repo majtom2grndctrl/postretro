@@ -72,8 +72,9 @@ measurements, and corrections to earlier readings are in `research.md`.
 ## Acceptance criteria
 
 - [ ] `cargo test -p postretro-level-format` passes, including: a v3 round-trip covering
-      single-slot and multi-slot sections; a test asserting a v2 payload decodes with every chunk
-      on layer 0 and one animated slot; a test asserting an unsupported version is still rejected
+      single-slot and multi-slot sections; a test asserting a v2 payload with chunks decodes with
+      every chunk on layer 0 and one animated slot, and a v2 payload with no chunks decodes to an
+      empty slot table and slot count 0; a test asserting an unsupported version is still rejected
       by a message naming the version; a test asserting `is_consistent` rejects a rect whose layer
       is absent from the slot table and rejects an unsorted or duplicated slot table.
 - [ ] `cargo test -p postretro-level-compiler --bin prl-build` passes, including a test that bakes
@@ -82,11 +83,15 @@ measurements, and corrections to earlier readings are in `research.md`.
       otherwise layer-0 fixture — the placements must come from a real multi-layer pack.
 - [ ] A test asserts no two chunk rects overlap within one `(slot, layer)`, across faces — not only
       within a face.
-- [ ] Compiling a map whose animated receivers span two atlas layers logs, at `info`, the animated
-      layer count and the slot count. Compiling a map that exceeds the animated slot cap fails the
-      bake with an error naming the cap and the count found.
-- [ ] No compile path emits a chunk rect whose width and height are both 1 as a stand-in for
-      "skipped". A test asserts the degenerate-rect shape is gone.
+- [ ] Compiling a map whose animated receivers span two atlas layers logs, at `info`, the static
+      atlas layer count and the animated slot count. Exceeding the animated slot cap fails the bake with an error
+      naming the cap and the count found — testable as a unit test that drives the slot-assignment
+      step past a low injected cap, not via a production-sized fixture.
+- [ ] The `placement.layer != 0` skip branch that emitted a 1×1 zero-count sentinel rect is gone
+      (a review/grep gate). A test on a real multi-layer pack asserts every chunk with covered texels
+      — including layer-≥1 chunks — produces a real covered rect, not a 1×1 zero-count placeholder.
+      Legitimate 1×1 rects from zero-extent charts are unaffected; the metric is the zero-count skip
+      sentinel, not the 1×1 shape.
 - [ ] `cargo test -p postretro-renderer` passes, including a test asserting the group-4 BGL entries
       for the animated atlas and animated direction bindings declare `D2Array`, and that the group-4
       entry count is 8 (up from 7, for the new slot-table uniform at binding 7). This must assert
@@ -106,19 +111,19 @@ measurements, and corrections to earlier readings are in `research.md`.
 - [ ] A test asserts that for every occupied static layer, the slot resolved during compose tile
       expansion equals the slot the forward lookup returns — both derived from the one section-25
       slot table through a single shared inversion.
-- [ ] A test asserts the animated atlas is created at the resolver's width and height
-      (`usable_atlas_dimensions`) and at a depth equal to the section-25 slot count — never the
-      static layer count — so a future change can neither desynchronise animated width/height from
-      the static atlas the compose pass shares coordinates with, nor size animated depth from the
-      static layer count.
+- [ ] A test on the pure `animated_atlas_extent(width, height, slot_count)` seam asserts it returns
+      the resolver's width and height (`usable_atlas_dimensions`) and a depth equal to the section-25
+      slot count — never the static layer count — so a future change can neither desynchronise
+      animated width/height from the static atlas the compose pass shares coordinates with, nor size
+      animated depth from the static layer count.
 - [ ] A unit-testable helper decides whether an animated atlas of a given width, height, and slot
       count fits the VRAM budget; a test exercises an over-budget case and asserts the byte estimate
       scales with the slot count (the old `width × height × 12` info log gains the slot factor).
       Over budget logs a `[Renderer]` error and the level renders with no animated contribution
       rather than failing.
-- [ ] A test asserts a section decoding to slot count 0 routes to the 1×1 dummy atlas and never
-      constructs an `Extent3d` with `depth_or_array_layers = 0`, on the normal, VRAM-fallback, and
-      failure paths.
+- [ ] A test asserts the pure slot-count guard maps slot count 0 to the dummy-atlas decision (never
+      an `Extent3d` of depth 0); that the guard precedes allocation on the normal, VRAM-fallback, and
+      failure paths is a review gate, not a single unit test.
 - [ ] A test asserts cross-section validation rejects a chunk rect whose layer is absent from the
       slot table, and one whose coordinates fall outside the atlas bounds.
 - [ ] Loading a level whose animated atlas construction fails binds the 1×1 dummy animated views
@@ -137,8 +142,10 @@ measurements, and corrections to earlier readings are in `research.md`.
       criterion flips.
 - [ ] `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored`
       shows no regression against the pre-change baseline. The golden PRL is regenerated, and the
-      regeneration is justified by a byte-delta diff confirming the change is confined to section
-      25's new fields.
+      regeneration is justified by a byte-delta diff confirming the only changes are section 25's
+      payload (every rect grows 4 bytes for `layer`; the header gains the slot count; the slot table
+      is appended) and the downstream shift of every later section's TOC offset — no other section's
+      content changes.
 
 ## Tasks
 
@@ -152,25 +159,32 @@ every rect. Bump the version constant to
 then branches where the appended data would be read — the `TriggerVolumes` v1→v2 decoder is the
 pattern to mirror, with one difference: this decoder currently rejects every non-matching version,
 so the graceful branch is new. A v2 payload decodes as every chunk on layer 0 with exactly one
-animated slot mapping to static layer 0, which is what v2 meant. This section computes its total
+animated slot mapping to static layer 0, which is what v2 meant — except a v2 section with no chunks,
+which decodes to an empty slot table and slot count 0, not to `[0]`/1. This section computes its total
 size up front from fixed strides rather than walking a self-describing stream, so the stride used
 in that computation becomes version-dependent; the appended slot table is variable-length and must
 be counted in it. Extend `is_consistent` to check that every rect's layer appears in the slot table
 and that the table is sorted and duplicate-free. Fix the layout doc block, which still says
-`version (= 1)` two bumps later.
+`version (= 1)` two bumps later. Appending `layer` breaks every `ChunkAtlasRect` struct literal in
+downstream crates (the compiler bake and the renderer/render-cpu fixtures); those compile fixes
+belong to their Phase-2/3 owners, not to this task.
 
 ### Task 2: Compiler — bake every layer, assign slots, diagnose
 
 Remove the `placement.layer != 0` gate and the degenerate-rect return. Collect the distinct static
-layers holding animated receivers, sort them, and assign dense slots; emit the slot table and set
-each rect's layer. Thread the atlas layer count out of the lightmap bake into the weight-map stage
+layers holding animated receivers, sort that distinct-layer list (not the rects or placements — leaf
+cohesion must be preserved), and assign dense slots; emit the slot table and set each rect's layer. Thread the atlas layer count out of the lightmap bake into the weight-map stage
 — `pipeline.rs` currently destructures `layer_count: _` with a comment saying animated weight maps
 are single-layer, which is the line this plan invalidates. Add the animated-slot cap as a hard bake
 error — a named error mirroring `LightmapBakeError::LayerOverflow` that aborts the bake, never
 dropping a slot or emitting a placeholder rect (the cap is a deterministic authoring guard; silently
-dropping a slot would reintroduce the silent-darkness failure this plan exists to remove). Rework the
-stage's `info` line so spilled chunks are no longer folded invisibly into healthy-looking stats:
-report animated layer and slot counts. Widen the per-face overlap
+dropping a slot would reintroduce the silent-darkness failure this plan exists to remove). Adding the
+error makes the weight-map stage fallible — `bake_animated_light_weight_maps_controlled` returns a
+`Result` — which ripples through its infallible wrapper and the `pipeline.rs` cache hit/miss arms;
+propagate the error there. Rework the stage's `info` line so spilled chunks are no longer folded
+invisibly into healthy-looking stats: report the static atlas layer count (the threaded `layer_count`
+— its consumer) and the animated slot count, which differ when animated receivers occupy only some of
+the static layers. Widen the per-face overlap
 assert to bucket by layer and to catch cross-face collisions within a layer, since a per-face-only
 assert is what let the borrowed-coordinate collision hide. Bump the stage's cache-key version. The
 byte-size log carries its own copy of the encoder's stride constants; update it in lockstep.
@@ -182,7 +196,9 @@ and pin `D2Array` on their storage and forward views — the static irradiance/d
 views already do this explicitly and are the pattern to copy. The array atlas is allocated only when
 the slot count is ≥ 1; a slot count of 0 (empty section / no animated receivers) takes the 1×1 dummy
 path via an explicit slot-count guard, never a `depth_or_array_layers = 0` allocation (a wgpu
-validation error). Flip the two compose BGL storage entries and the two group-4 sampled entries to
+validation error). Derive both atlases' extent through a pure `animated_atlas_extent(width, height,
+slot_count)` seam so the depth-equals-slot-count rule and the slot-count-0 guard are unit-testable
+off-device. Flip the two compose BGL storage entries and the two group-4 sampled entries to
 `D2Array`. Carry the target slot on `DispatchTile`,
 which has a spare `_pad` word, resolving rect layer → slot during tile expansion so the shader does
 no lookup; all three `textureStore` sites (debug heatmap, irradiance, direction) take an array
@@ -192,10 +208,13 @@ sentinel `INVALID_SLOT = 0xFFFF_FFFF`, not slot 0's contents. Realize the lookup
 uniform at binding 7 — the forward/lightmap BGL (`lightmap.rs`, `LightmapResources`) grows from 7 to
 8 entries, and the group-4 entry-count assertion moves 7 → 8 with it — built by inverting the
 section-25 slot table in `LightmapResources::new`, which today receives the animated forward views
-and must additionally receive the decoded slot table. Both this table and the compose-side
-tile-expansion resolution must invert the *same* slot table through one shared helper, so a given
-static layer maps to the identical slot on both sides. Size the table for the existing 256-layer
-static ceiling and respect uniform array-stride rules.
+and must additionally receive the decoded slot table (thread it through both call sites,
+`renderer_resources.rs` and `renderer_full_init.rs`; the geometry-`None` init path passes an empty
+table). Both this table and the compose-side tile-expansion resolution must invert the *same* slot
+table through one shared helper, so a given static layer maps to the identical slot on both sides.
+Size the table for the existing 256-layer static ceiling and pack it against WGSL uniform stride: a
+bare `array<u32, 256>` in uniform space strides each element to 16 bytes, so pack four static layers
+per `vec4<u32>` (64 `vec4`s).
 The single 1×1 `Rgba16Float` dummy texture backs both fallback views and needs array-compatible
 views, or the no-animated-lights path breaks on layout incompatibility. The VRAM `info` log
 computes `width × height × 12` with no layer factor; fix it. Keep the compose shader parsing under
@@ -208,13 +227,15 @@ sites (`renderer_full_init.rs`, `renderer_resources.rs`), which is what keeps it
 atlas; ensure both sites feed those resolved dimensions to the animated constructor. The animated
 depth is the section-25 slot count, not the resolver's static layer count, so the resolver needs no
 new return value. Add a pure, unit-testable helper deciding whether a given width, height, and slot
-count fits the VRAM budget, and a load-time path that logs a `[Renderer]` error and falls back to no
-animated contribution when it does not — matching how an oversize static section degrades rather than
-aborting. Extend cross-section validation (`validate_cross_section`, `render-cpu`), which today
+count fits the VRAM budget — a named constant `ANIMATED_ATLAS_VRAM_BUDGET_BYTES`, provisional and
+owner-tuned (see Open questions), so the task builds against a concrete number — and a load-time path
+that logs a `[Renderer]` error and falls back to no animated contribution when it does not — matching
+how an oversize static section degrades rather than aborting. Extend cross-section validation (`validate_cross_section`, `render-cpu`), which today
 checks prefix sums and light-index bounds but has no layer notion, to reject rects whose layer is
 absent from the slot table and whose coordinates fall outside the atlas; thread the decoded slot
-table and the static-atlas width/height (from the `Lightmap` section 22) into it, and name the
-caller that supplies them. This repeats the layer-in-slot-table check `is_consistent` runs at decode
+table and the static-atlas width/height into it; the caller `AnimatedLightmapResources::new` already
+holds these as its `atlas_dimensions` argument and supplies them (its `render-cpu` test `mk_rect`
+literals update alongside). This repeats the layer-in-slot-table check `is_consistent` runs at decode
 time — deliberate defense-in-depth across the decode-time and load-time boundaries, not a
 duplication to collapse. Fix the install path so a failed animated-lightmap construction never
 leaves stale views or dispatch state bound. Today the `Err` arm in `renderer_resources.rs` only logs
@@ -327,8 +348,12 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
 - **Animated slot cap value.** A layer costs 12 bytes per texel across both targets, so cost scales
   with atlas dimension as hard as with slot count: 8 slots is ~24 MiB at 512² but ~6 GiB at 8192².
   A layer cap alone cannot bound VRAM. The plan therefore carries both a bake-time slot cap and a
-  load-time byte budget, but neither number is chosen. Pick the cap from measured layer counts on
-  real content rather than from the static 256.
+  load-time byte budget (`ANIMATED_ATLAS_VRAM_BUDGET_BYTES`), neither number yet settled. Both ship
+  as tunable constants so the tasks build: pick the slot cap from measured layer counts on real
+  content rather than from the static 256, and the byte budget from measured animated-atlas sizes.
+  A conservative provisional start for the budget is 256 MiB (both animated targets together, 12
+  bytes/texel). Both values are owner-held; the postures — hard bake error for the cap, load-time
+  graceful drop for the budget — are settled.
 - **The golden PRL is stale from engine evolution, not a regression — regenerate on `main` before
   Task 1.** `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` is one of two
   pre-existing `--ignored` failures on `main` (see
@@ -343,9 +368,10 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
   (script-membership plumbing must not change an un-targeted static light's output) still holds; the
   emissive-slot hypothesis in the findings doc is superseded (`Geometry`/`TextureNames` unchanged).
   Because the delta is unrelated legitimate change, regenerate the golden on `main` as a
-  pre-requisite so that Task 1's own regen shows a delta **confined to section 25's new `layer`
-  field** — the check the acceptance criterion demands. Regenerating without this first would let
-  Task 1's diff bury the section-25 change under section 45 + SH coarsening.
+  pre-requisite so that Task 1's own regen shows a delta scoped to section 25's payload and the
+  downstream TOC-offset shift it forces (the check the `--ignored` acceptance criterion demands),
+  with no other section's content changing. Regenerating without this first would let Task 1's diff
+  bury the section-25 change under section 45 + SH coarsening.
 - **Whether Task 5's fixture joins `GATE_FIXTURES`.** Recommendation: no. Those gates bake every
   fixture twice, and dropping one oversized fixture cut them 7× recently. Profile first if revisited.
 - **Animated weight maps are in no `GATE_FIXTURES` byte comparison**, despite four gate fixtures

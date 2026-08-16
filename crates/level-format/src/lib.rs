@@ -5,6 +5,7 @@ pub mod alpha_lights;
 pub mod animated_direct_sh_delta_volumes;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub mod animated_lightmap_atlas;
 pub mod bsp;
 pub mod bvh;
 pub mod cell_draw_index;

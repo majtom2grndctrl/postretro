@@ -1,14 +1,12 @@
 //! End-to-end fixture test for the animated-light weight-maps pipeline.
 //!
-//! Compiles the bundled `test_animated_weight_maps_single.map` fixture via
-//! the `prl-build` binary, reads the resulting `.prl`, and asserts that the
-//! `AnimatedLightWeightMaps` section is present, non-empty, and round-trips
-//! through `to_bytes` / `from_bytes`.
+//! Compiles bundled animated-light fixtures via the `prl-build` binary, reads
+//! the resulting `.prl`, and asserts their `AnimatedLightWeightMaps` output.
 //!
-//! This is the only integration-level smoke test for the compile-then-load
-//! flow. Unit tests under `src/animated_light_weight_maps.rs` cover the
-//! baker in isolation; the runtime validator is unit-tested under
-//! `postretro/src/render/animated_lightmap.rs`.
+//! These are integration-level compile-then-load smoke tests. Unit tests under
+//! `src/animated_light_weight_maps.rs` cover the baker in isolation; the
+//! render-CPU cross-section validator is unit-tested under
+//! `render-cpu/src/animated_lightmap.rs`.
 //!
 //! See: context/lib/build_pipeline.md
 
@@ -18,7 +16,9 @@ use std::process::Command;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
-use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::animated_light_weight_maps::{
+    ANIMATED_LIGHT_WEIGHT_MAPS_VERSION, AnimatedLightWeightMapsSection,
+};
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::sh_volume::{ANIMATED_SLOT_NONE, OctahedralShVolumeSection};
 use postretro_level_format::{read_container, read_section_data};
@@ -116,6 +116,98 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     );
 
     // Cleanup.
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// Regression: animated receivers packed onto a second static-atlas layer
+/// were previously skipped by the 2D animated lightmap atlas. Read the baked
+/// PRL rather than inferring atlas placement from the authoring map.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
+    let ws = workspace_root();
+    let input = ws.join("content/dev/maps/animated-layer-spill.map");
+    assert!(input.exists(), "fixture map missing: {}", input.display());
+
+    let out_dir = std::env::temp_dir().join("postretro_fixture_animated_layer_spill");
+    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let output = out_dir.join("animated-layer-spill.prl");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--no-cache")
+        .current_dir(&ws)
+        .status()
+        .expect("spawn prl-build");
+    assert!(status.success(), "prl-build failed: {status}");
+
+    let bytes = std::fs::read(&output).expect("read compiled .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+
+    let lightmap_bytes = read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)
+        .expect("read Lightmap section")
+        .expect("Lightmap section present on spill fixture");
+    let lightmap = LightmapSection::from_bytes(&lightmap_bytes).expect("Lightmap decodes");
+    assert_eq!(
+        lightmap.layer_count, 2,
+        "spill fixture must use two static lightmap atlas layers",
+    );
+
+    let weight_map_bytes = read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::AnimatedLightWeightMaps as u32,
+    )
+    .expect("read AnimatedLightWeightMaps section")
+    .expect("AnimatedLightWeightMaps section present on spill fixture");
+    let version = u32::from_le_bytes(
+        weight_map_bytes[..4]
+            .try_into()
+            .expect("AnimatedLightWeightMaps version bytes"),
+    );
+    assert_eq!(
+        version, ANIMATED_LIGHT_WEIGHT_MAPS_VERSION,
+        "spill fixture must use the v3 layer-aware animated-weight-map section",
+    );
+    let weight_maps =
+        AnimatedLightWeightMapsSection::from_bytes(&weight_map_bytes).expect("weight maps decode");
+    assert!(
+        weight_maps.is_consistent(),
+        "spill fixture weight maps must be internally consistent",
+    );
+    assert!(
+        weight_maps
+            .slot_to_static_layer
+            .iter()
+            .any(|&layer| layer >= 1),
+        "v3 slot table must contain an animated receiver static layer >= 1: {:?}",
+        weight_maps.slot_to_static_layer,
+    );
+    assert!(
+        weight_maps.chunk_rects.iter().any(|rect| {
+            rect.layer >= 1
+                && weight_maps.offset_counts[rect.texel_offset as usize
+                    ..(rect.texel_offset + rect.width * rect.height) as usize]
+                    .iter()
+                    .any(|entry| entry.count > 0)
+        }),
+        "a static layer >= 1 must contain an animated receiver with covered texels",
+    );
+
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);
 }

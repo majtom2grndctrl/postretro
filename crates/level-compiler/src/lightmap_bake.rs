@@ -805,7 +805,7 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// The shared `(atlas_width, atlas_height)` is sized to host the largest single
 /// leaf in one layer (grown by doubling, capped at `max_dim`), so no leaf is
 /// ever forced to split for want of room within a layer.
-fn pack_layers(
+pub(crate) fn pack_layers(
     charts: &[Chart],
     max_dim: u32,
     density_m_per_texel: f32,

@@ -23,10 +23,37 @@ use crate::compute_cull::{MAX_VISIBLE_CELLS, VISIBLE_CELLS_WORDS};
 use postretro_render_data::geometry::BvhLeaf;
 use postretro_visibility::VisibleCells;
 
+use crate::lighting::lightmap::{
+    INVALID_SLOT, StaticLayerToAnimatedSlot, animated_slot_for_static_layer,
+    static_layer_to_animated_slot,
+};
+
 use super::sh_volume::AnimatedLightBuffers;
 
 /// wgpu default `max_compute_workgroups_per_dimension`.
 const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
+
+/// Array-atlas dimensions derived from the static lightmap dimensions and the
+/// section-25 animated slot count. `None` is the no-animated-atlas path: wgpu
+/// rejects a texture whose array depth is zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnimatedAtlasExtent {
+    width: u32,
+    height: u32,
+    depth_or_array_layers: u32,
+}
+
+fn animated_atlas_extent(width: u32, height: u32, slot_count: u32) -> Option<AnimatedAtlasExtent> {
+    (slot_count > 0).then_some(AnimatedAtlasExtent {
+        width,
+        height,
+        depth_or_array_layers: slot_count,
+    })
+}
+
+fn animated_atlas_view_dimension() -> wgpu::TextureViewDimension {
+    wgpu::TextureViewDimension::D2Array
+}
 
 /// One 8×8 atlas tile assigned to a chunk. Indexed by `workgroup_id.x` in the compose shader.
 #[repr(C)]
@@ -35,11 +62,12 @@ struct DispatchTile {
     chunk_idx: u32,
     tile_origin_x: u32,
     tile_origin_y: u32,
-    _pad: u32,
+    target_slot: u32,
 }
 
-/// GPU storage-buffer layout for `ChunkAtlasRect`. Must stay in sync with the
-/// format crate's `ChunkAtlasRect` and the WGSL struct of the same name.
+/// GPU storage-buffer layout for the compose-relevant prefix of
+/// `ChunkAtlasRect`. The v3 static layer resolves to `DispatchTile.target_slot`
+/// on the CPU, so it intentionally stays out of this buffer and WGSL struct.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuChunkRect {
@@ -150,11 +178,18 @@ impl AnimatedLightmapResources {
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
         let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
-        let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Animated LM Dummy Forward View"),
+            dimension: Some(animated_atlas_view_dimension()),
+            ..Default::default()
+        });
         // Separate 1×1 zero view for the direction atlas slot so the forward
         // bind group stays valid on the empty-map path.
-        let dummy_direction_view =
-            dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let dummy_direction_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Animated LM Dummy Direction Forward View"),
+            dimension: Some(animated_atlas_view_dimension()),
+            ..Default::default()
+        });
 
         let Some(section) = weight_maps else {
             return Ok(Self {
@@ -166,6 +201,20 @@ impl AnimatedLightmapResources {
                 dispatch_state: None,
             });
         };
+
+        // A v3 empty section has no animated slots. Guard before any atlas
+        // allocation: wgpu rejects a D2 array texture with depth zero.
+        let slot_count = section.slot_to_static_layer.len() as u32;
+        if animated_atlas_extent(1, 1, slot_count).is_none() {
+            return Ok(Self {
+                atlas_texture: None,
+                direction_atlas_texture: None,
+                dummy_texture,
+                forward_view: dummy_view,
+                direction_forward_view: dummy_direction_view,
+                dispatch_state: None,
+            });
+        }
 
         if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
             // Nothing to compose. Either no animated chunks, or every animated
@@ -207,9 +256,13 @@ impl AnimatedLightmapResources {
             });
         };
 
+        let atlas_extent = animated_atlas_extent(atlas_width, atlas_height, slot_count)
+            .expect("slot-count guard above rejects zero-depth animated atlases");
+
         validate_cross_section(section, animated_chunks, animation.animated_light_count())?;
 
-        let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects);
+        let static_layer_to_slot = static_layer_to_animated_slot(&section.slot_to_static_layer);
+        let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects, &static_layer_to_slot);
         if dispatch_tiles.len() as u32 > MAX_WORKGROUPS_PER_DIM {
             return Err(format!(
                 "[AnimatedLightmap] dispatch tile count {} exceeds wgpu \
@@ -230,9 +283,9 @@ impl AnimatedLightmapResources {
             // doc on `new`); width and height are independent — the static atlas
             // is shelf-packed and need not be square.
             size: wgpu::Extent3d {
-                width: atlas_width,
-                height: atlas_height,
-                depth_or_array_layers: 1,
+                width: atlas_extent.width,
+                height: atlas_extent.height,
+                depth_or_array_layers: atlas_extent.depth_or_array_layers,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -244,10 +297,12 @@ impl AnimatedLightmapResources {
 
         let forward_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Animated LM Forward View"),
+            dimension: Some(animated_atlas_view_dimension()),
             ..Default::default()
         });
         let storage_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Animated LM Storage View"),
+            dimension: Some(animated_atlas_view_dimension()),
             ..Default::default()
         });
 
@@ -260,9 +315,9 @@ impl AnimatedLightmapResources {
         let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Direction Atlas"),
             size: wgpu::Extent3d {
-                width: atlas_width,
-                height: atlas_height,
-                depth_or_array_layers: 1,
+                width: atlas_extent.width,
+                height: atlas_extent.height,
+                depth_or_array_layers: atlas_extent.depth_or_array_layers,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -274,20 +329,23 @@ impl AnimatedLightmapResources {
 
         // VRAM footprint of the two compose-target atlases (irradiance 8 B/texel
         // + direction 4 B/texel).
-        let atlas_bytes = (atlas_width as u64) * (atlas_height as u64) * (8 + 4);
+        let atlas_bytes =
+            (atlas_width as u64) * (atlas_height as u64) * (slot_count as u64) * (8 + 4);
         log::info!(
-            "[Renderer] Animated lightmap atlases {atlas_width}x{atlas_height}, ~{} MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)",
+            "[Renderer] Animated lightmap atlases {atlas_width}x{atlas_height}x{slot_count}, ~{} MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)",
             atlas_bytes / (1024 * 1024),
         );
 
         let direction_forward_view =
             direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("Animated LM Direction Forward View"),
+                dimension: Some(animated_atlas_view_dimension()),
                 ..Default::default()
             });
         let direction_storage_view =
             direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("Animated LM Direction Storage View"),
+                dimension: Some(animated_atlas_view_dimension()),
                 ..Default::default()
             });
 
@@ -584,7 +642,7 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
                 format: wgpu::TextureFormat::Rgba16Float,
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
             },
             count: None,
         },
@@ -606,7 +664,7 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
                 // Direction atlas: octahedral in `.rg` + coverage in `.a`, so 8-bit
                 // unorm suffices (half the irradiance atlas's footprint).
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
             },
             count: None,
         },
@@ -658,10 +716,17 @@ fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wg
 /// Tile order is y-major, x-minor; order doesn't affect correctness.
 fn expand_dispatch_tiles(
     chunk_rects: &[postretro_level_format::animated_light_weight_maps::ChunkAtlasRect],
+    static_layer_to_slot: &StaticLayerToAnimatedSlot,
 ) -> Vec<DispatchTile> {
     let mut tiles = Vec::new();
     for (chunk_idx, rect) in chunk_rects.iter().enumerate() {
         if rect.width == 0 || rect.height == 0 {
+            continue;
+        }
+        let target_slot = animated_slot_for_static_layer(static_layer_to_slot, rect.layer);
+        if target_slot == INVALID_SLOT {
+            // Section-25 validation rejects this malformed record at load, but
+            // never compose it into slot 0 if a caller bypasses that boundary.
             continue;
         }
         let tiles_x = rect.width.div_ceil(8);
@@ -672,7 +737,7 @@ fn expand_dispatch_tiles(
                     chunk_idx: chunk_idx as u32,
                     tile_origin_x: tx * 8,
                     tile_origin_y: ty * 8,
-                    _pad: 0,
+                    target_slot,
                 });
             }
         }
@@ -731,7 +796,7 @@ fn pack_dispatch_tiles_into(tiles: &[DispatchTile], bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&t.chunk_idx.to_ne_bytes());
         bytes.extend_from_slice(&t.tile_origin_x.to_ne_bytes());
         bytes.extend_from_slice(&t.tile_origin_y.to_ne_bytes());
-        bytes.extend_from_slice(&t._pad.to_ne_bytes());
+        bytes.extend_from_slice(&t.target_slot.to_ne_bytes());
     }
 }
 
@@ -747,6 +812,7 @@ mod tests {
             width: w,
             height: h,
             texel_offset: offset,
+            layer: 0,
         }
     }
 
@@ -779,17 +845,65 @@ mod tests {
     }
 
     #[test]
+    fn compose_shader_uses_array_storage_and_slot_indexed_stores() {
+        let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
+        assert!(
+            src.contains("texture_storage_2d_array<rgba16float, write>"),
+            "animated irradiance compose target must be a storage texture array",
+        );
+        assert!(
+            src.contains("texture_storage_2d_array<rgba8unorm, write>"),
+            "animated direction compose target must be a storage texture array",
+        );
+        assert_eq!(
+            src.matches("i32(tile.target_slot)").count(),
+            3,
+            "debug, irradiance, and direction textureStore calls must use the target slot",
+        );
+
+        let entries = compute_bgl_entries();
+        for binding in [6, 8] {
+            assert!(matches!(
+                entries.iter().find(|entry| entry.binding == binding),
+                Some(wgpu::BindGroupLayoutEntry {
+                    ty: wgpu::BindingType::StorageTexture {
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        ..
+                    },
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn forward_shader_samples_animated_arrays_by_slot_without_layer_zero_guard() {
+        let src = include_str!("../shaders/forward.wgsl");
+        assert!(src.contains("animated_lm_atlas: texture_2d_array<f32>"));
+        assert!(src.contains("animated_lm_direction: texture_2d_array<f32>"));
+        assert!(src.contains("sample_lightmap_animated(in.lightmap_uv, animated_slot)"));
+        assert!(src.contains("i32(animated_slot)"));
+        assert!(
+            !src.contains("in.lightmap_layer == 0u"),
+            "animated sampling must not be limited to static layer zero",
+        );
+    }
+
+    #[test]
     fn dispatch_tile_expansion_small_rect() {
-        let tiles = expand_dispatch_tiles(&[mk_rect(5, 5, 0)]);
+        let tiles =
+            expand_dispatch_tiles(&[mk_rect(5, 5, 0)], &static_layer_to_animated_slot(&[0]));
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].chunk_idx, 0);
         assert_eq!(tiles[0].tile_origin_x, 0);
         assert_eq!(tiles[0].tile_origin_y, 0);
+        assert_eq!(tiles[0].target_slot, 0);
     }
 
     #[test]
     fn dispatch_tile_expansion_exact_tile_boundary() {
-        let tiles = expand_dispatch_tiles(&[mk_rect(16, 8, 0)]);
+        let tiles =
+            expand_dispatch_tiles(&[mk_rect(16, 8, 0)], &static_layer_to_animated_slot(&[0]));
         assert_eq!(tiles.len(), 2);
         assert_eq!(tiles[0].tile_origin_x, 0);
         assert_eq!(tiles[1].tile_origin_x, 8);
@@ -797,13 +911,17 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_partial_tile() {
-        let tiles = expand_dispatch_tiles(&[mk_rect(9, 9, 0)]);
+        let tiles =
+            expand_dispatch_tiles(&[mk_rect(9, 9, 0)], &static_layer_to_animated_slot(&[0]));
         assert_eq!(tiles.len(), 4);
     }
 
     #[test]
     fn dispatch_tile_expansion_multiple_chunks_preserves_index() {
-        let tiles = expand_dispatch_tiles(&[mk_rect(8, 8, 0), mk_rect(12, 8, 64)]);
+        let tiles = expand_dispatch_tiles(
+            &[mk_rect(8, 8, 0), mk_rect(12, 8, 64)],
+            &static_layer_to_animated_slot(&[0]),
+        );
         assert_eq!(tiles.len(), 3);
         assert_eq!(tiles[0].chunk_idx, 0);
         assert_eq!(tiles[1].chunk_idx, 1);
@@ -812,9 +930,34 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_skips_zero_area() {
-        let tiles = expand_dispatch_tiles(&[mk_rect(0, 8, 0), mk_rect(8, 0, 0), mk_rect(8, 8, 0)]);
+        let tiles = expand_dispatch_tiles(
+            &[mk_rect(0, 8, 0), mk_rect(8, 0, 0), mk_rect(8, 8, 0)],
+            &static_layer_to_animated_slot(&[0]),
+        );
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].chunk_idx, 2);
+    }
+
+    #[test]
+    fn compose_and_forward_resolve_each_static_layer_to_the_same_slot() {
+        let slot_to_static_layer = [2, 9];
+        let static_layer_to_slot = static_layer_to_animated_slot(&slot_to_static_layer);
+        let mut first = mk_rect(8, 8, 0);
+        first.layer = 2;
+        let mut second = mk_rect(8, 8, 64);
+        second.layer = 9;
+
+        let tiles = expand_dispatch_tiles(&[first, second], &static_layer_to_slot);
+        assert_eq!(
+            tiles[0].target_slot,
+            animated_slot_for_static_layer(&static_layer_to_slot, first.layer),
+        );
+        assert_eq!(
+            tiles[1].target_slot,
+            animated_slot_for_static_layer(&static_layer_to_slot, second.layer),
+        );
+        assert_eq!(tiles[0].target_slot, 0);
+        assert_eq!(tiles[1].target_slot, 1);
     }
 
     fn mk_leaf(cell_id: u32, chunk_range_start: u32, chunk_range_count: u32) -> BvhLeaf {
@@ -920,5 +1063,26 @@ mod tests {
         // animated path to its dummy-atlas early-out (no valid coordinate space).
         assert_eq!(usable_atlas_dimensions(None, 8192, 256), None);
         assert_eq!(usable_atlas_dimensions(Some(&section), 1024, 256), None);
+    }
+
+    #[test]
+    fn animated_atlas_extent_uses_slot_count_for_array_depth() {
+        let extent = animated_atlas_extent(4096, 2048, 3).expect("nonzero slot count allocates");
+        assert_eq!(extent.width, 4096);
+        assert_eq!(extent.height, 2048);
+        assert_eq!(extent.depth_or_array_layers, 3);
+        assert_eq!(
+            animated_atlas_extent(4096, 2048, 0),
+            None,
+            "slot count zero must select the dummy path instead of depth zero",
+        );
+    }
+
+    #[test]
+    fn dummy_animated_views_are_array_compatible() {
+        assert_eq!(
+            animated_atlas_view_dimension(),
+            wgpu::TextureViewDimension::D2Array,
+        );
     }
 }

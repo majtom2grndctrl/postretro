@@ -36,6 +36,50 @@ pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 /// irradiance atlas. Sampled by forward union-subtraction and static
 /// world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
+/// Packed static-atlas-layer → animated-atlas-slot lookup for the forward
+/// shader. One `vec4<u32>` holds four static layers in WGSL uniform space.
+pub const BIND_ANIMATED_SLOT_TABLE: u32 = 7;
+
+/// Static lightmap atlases are capped at 256 array layers. The forward lookup
+/// mirrors that fixed ceiling instead of tracking a level's static layer count.
+pub(crate) const STATIC_LIGHTMAP_LAYER_CAP: usize = 256;
+/// A static layer absent from section 25 has no animated direct contribution.
+pub(crate) const INVALID_SLOT: u32 = 0xFFFF_FFFF;
+const STATIC_LAYERS_PER_UNIFORM_VEC4: usize = 4;
+pub(crate) const ANIMATED_SLOT_UNIFORM_VEC4_COUNT: usize =
+    STATIC_LIGHTMAP_LAYER_CAP / STATIC_LAYERS_PER_UNIFORM_VEC4;
+pub(crate) type StaticLayerToAnimatedSlot =
+    [[u32; STATIC_LAYERS_PER_UNIFORM_VEC4]; ANIMATED_SLOT_UNIFORM_VEC4_COUNT];
+
+/// Invert section 25's dense animated-slot table into the fixed static-layer
+/// lookup used by both compose dispatch expansion and forward sampling. The
+/// nested array exactly mirrors WGSL's `array<vec4<u32>, 64>` uniform layout.
+pub(crate) fn static_layer_to_animated_slot(
+    slot_to_static_layer: &[u32],
+) -> StaticLayerToAnimatedSlot {
+    let mut static_layer_to_slot =
+        [[INVALID_SLOT; STATIC_LAYERS_PER_UNIFORM_VEC4]; ANIMATED_SLOT_UNIFORM_VEC4_COUNT];
+    for (slot, &static_layer) in slot_to_static_layer.iter().enumerate() {
+        let static_layer = static_layer as usize;
+        if static_layer < STATIC_LIGHTMAP_LAYER_CAP {
+            static_layer_to_slot[static_layer / STATIC_LAYERS_PER_UNIFORM_VEC4]
+                [static_layer % STATIC_LAYERS_PER_UNIFORM_VEC4] = slot as u32;
+        }
+    }
+    static_layer_to_slot
+}
+
+pub(crate) fn animated_slot_for_static_layer(
+    static_layer_to_slot: &StaticLayerToAnimatedSlot,
+    static_layer: u32,
+) -> u32 {
+    let static_layer = static_layer as usize;
+    if static_layer >= STATIC_LIGHTMAP_LAYER_CAP {
+        return INVALID_SLOT;
+    }
+    static_layer_to_slot[static_layer / STATIC_LAYERS_PER_UNIFORM_VEC4]
+        [static_layer % STATIC_LAYERS_PER_UNIFORM_VEC4]
+}
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
 /// and the bind group that exposes them to the forward shader.
@@ -87,6 +131,7 @@ impl LightmapResources {
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
         animated_direction_view: &wgpu::TextureView,
+        slot_to_static_layer: &[u32],
     ) -> Self {
         // Nearest sampler for the octahedral direction texture (binding 1):
         // linear interpolation of octahedral-encoded unit vectors does not
@@ -171,6 +216,13 @@ impl LightmapResources {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        let animated_slot_lookup = static_layer_to_animated_slot(slot_to_static_layer);
+        let animated_slot_lookup_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Animated LM Static Layer To Slot"),
+                contents: bytemuck::cast_slice(&animated_slot_lookup),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lightmap Bind Group"),
@@ -204,6 +256,10 @@ impl LightmapResources {
                     binding: BIND_SHADOWMASK_ATLAS,
                     resource: wgpu::BindingResource::TextureView(&shadowmask_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_SLOT_TABLE,
+                    resource: animated_slot_lookup_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -216,7 +272,7 @@ impl LightmapResources {
     }
 }
 
-pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
+pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
     // Two samplers (binding 2 nearest, binding 4 linear), split by what each
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
@@ -266,7 +322,7 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -285,7 +341,7 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -297,6 +353,16 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
                 view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_ANIMATED_SLOT_TABLE,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
             },
             count: None,
         },
@@ -788,7 +854,7 @@ mod tests {
     #[test]
     fn bgl_entries_pin_sampler_split() {
         let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 7, "group-4 BGL must expose seven bindings");
+        assert_eq!(entries.len(), 8, "group-4 BGL must expose eight bindings");
 
         let tex_sample = |b: u32| {
             entries
@@ -805,6 +871,15 @@ mod tests {
                 .find(|e| e.binding == b)
                 .and_then(|e| match e.ty {
                     wgpu::BindingType::Sampler(t) => Some(t),
+                    _ => None,
+                })
+        };
+        let texture_view_dimension = |b: u32| {
+            entries
+                .iter()
+                .find(|e| e.binding == b)
+                .and_then(|e| match e.ty {
+                    wgpu::BindingType::Texture { view_dimension, .. } => Some(view_dimension),
                     _ => None,
                 })
         };
@@ -833,6 +908,28 @@ mod tests {
             tex_sample(BIND_ANIMATED_DIRECTION),
             Some(wgpu::TextureSampleType::Float { filterable: false })
         );
+        assert_eq!(
+            texture_view_dimension(BIND_ANIMATED_ATLAS),
+            Some(wgpu::TextureViewDimension::D2Array),
+            "animated irradiance must bind as texture_2d_array",
+        );
+        assert_eq!(
+            texture_view_dimension(BIND_ANIMATED_DIRECTION),
+            Some(wgpu::TextureViewDimension::D2Array),
+            "animated direction must bind as texture_2d_array",
+        );
+        let animated_slot_entry = entries
+            .iter()
+            .find(|entry| entry.binding == BIND_ANIMATED_SLOT_TABLE)
+            .expect("animated slot lookup binding must exist");
+        assert_eq!(animated_slot_entry.visibility, wgpu::ShaderStages::FRAGMENT,);
+        assert!(matches!(
+            animated_slot_entry.ty,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                ..
+            }
+        ));
         // Two samplers: nearest at binding 2, linear at binding 4.
         assert_eq!(
             sampler_ty(BIND_SAMPLER),
@@ -842,5 +939,24 @@ mod tests {
             sampler_ty(BIND_FILTERING_SAMPLER),
             Some(wgpu::SamplerBindingType::Filtering)
         );
+    }
+
+    #[test]
+    fn static_layer_without_animated_receivers_resolves_to_invalid_slot() {
+        let lookup = static_layer_to_animated_slot(&[1, 7]);
+        assert_eq!(animated_slot_for_static_layer(&lookup, 1), 0);
+        assert_eq!(animated_slot_for_static_layer(&lookup, 7), 1);
+        assert_eq!(animated_slot_for_static_layer(&lookup, 0), INVALID_SLOT);
+        assert_eq!(animated_slot_for_static_layer(&lookup, 2), INVALID_SLOT);
+    }
+
+    #[test]
+    fn static_layer_slot_uniform_layout_matches_forward_wgsl() {
+        assert_eq!(STATIC_LIGHTMAP_LAYER_CAP, 256);
+        assert_eq!(ANIMATED_SLOT_UNIFORM_VEC4_COUNT, 64);
+        assert_eq!(std::mem::size_of::<StaticLayerToAnimatedSlot>(), 256 * 4);
+
+        let forward = include_str!("../shaders/forward.wgsl");
+        assert!(forward.contains("array<vec4<u32>, 64>"));
     }
 }

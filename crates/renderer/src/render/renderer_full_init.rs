@@ -261,6 +261,9 @@ pub(crate) fn build_full_renderer(
         device.limits().max_texture_dimension_2d,
         device.limits().max_texture_array_layers,
     );
+    let slot_to_static_layer = geometry
+        .and_then(|g| g.animated_light_weight_maps)
+        .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
     let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
         device,
         geometry.and_then(|g| g.animated_light_weight_maps),
@@ -283,6 +286,7 @@ pub(crate) fn build_full_renderer(
         &lightmap_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
+        slot_to_static_layer,
     );
     let shadowmask_present = lightmap_resources.shadowmask_present;
 

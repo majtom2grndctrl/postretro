@@ -211,17 +211,9 @@ struct AnimationDescriptor {
 // Animated-light contribution atlas (Rgba16Float). Composed each frame by
 // the compute pre-pass in `animated_lightmap.rs` from per-animated-light
 // baked weight maps + runtime descriptor curves. `.rgb` carries pre-shaded
-// irradiance (Lambert already baked in); `.a` is a coverage flag reserved
-// for debug visualization. When the PRL has no animated weight maps, this
-// slot binds a 1×1 zero texture so the fragment shader reads 0.
-//
-// SINGLE-LAYER LIMITATION: this animated atlas (and `animated_lm_direction`
-// at binding 5) is a plain `texture_2d` covering atlas layer 0 only — unlike
-// the static `lightmap_irradiance`/`lightmap_direction` array textures at
-// bindings 0/1. Faces whose `lightmap_layer >= 1` therefore receive NO
-// animated lighting; the fragment shader guards both samples behind
-// `in.lightmap_layer == 0u` and falls back to the static-only path otherwise.
-@group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
+// irradiance. Array slices are dense animated slots, not static layers: the
+// binding-7 lookup maps each static lightmap layer to its animated slot.
+@group(4) @binding(3) var animated_lm_atlas: texture_2d_array<f32>;
 // Filtering (Linear) sampler — used for the irradiance + animated atlases so
 // baked penumbra ramps read as continuous gradients under magnification.
 // `Rgba16Float` linear-filterability is a hard runtime requirement, checked at
@@ -232,8 +224,16 @@ struct AnimationDescriptor {
 // coverage flag in .a). Composed each frame alongside the animated irradiance
 // atlas. Read through the nearest sampler at binding 2 — like the static
 // direction atlas, oct directions must not be linearly interpolated.
-@group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
+@group(4) @binding(5) var animated_lm_direction: texture_2d_array<f32>;
 @group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;
+
+// Four static layers per vec4 avoid uniform-space's 16-byte scalar-array
+// stride. This 64-vec4 layout must match `STATIC_LIGHTMAP_LAYER_CAP` (256) in
+// `lighting/lightmap.rs`. An absent layer holds INVALID_SLOT (0xFFFF_FFFF).
+struct AnimatedLightmapSlots {
+    static_layer_to_animated_slot: array<vec4<u32>, 64>,
+};
+@group(4) @binding(7) var<uniform> animated_lightmap_slots: AnimatedLightmapSlots;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
 // linear sampler at binding 4. `layer` selects the atlas array slice.
@@ -242,8 +242,17 @@ fn sample_lightmap_irradiance(uv: vec2<f32>, layer: u32) -> vec3<f32> {
 }
 
 // Same for the animated-light contribution atlas.
-fn sample_lightmap_animated(uv: vec2<f32>) -> vec3<f32> {
-    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv).rgb;
+fn sample_lightmap_animated(uv: vec2<f32>, slot: u32) -> vec3<f32> {
+    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv, i32(slot)).rgb;
+}
+
+fn animated_slot_for_static_layer(static_layer: u32) -> u32 {
+    const INVALID_SLOT: u32 = 0xFFFF_FFFFu;
+    if static_layer >= 256u {
+        return INVALID_SLOT;
+    }
+    let packed_slots = animated_lightmap_slots.static_layer_to_animated_slot[static_layer / 4u];
+    return packed_slots[static_layer % 4u];
 }
 
 // Group 5 — dynamic spot light shadow maps.
@@ -967,18 +976,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // sampler (octahedral lerp ≠ slerp).
         let lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
         // Pre-shaded Lambert irradiance from the animated compose pre-pass.
-        // Uncovered atlas texels are zero so this is safe to add unconditionally.
-        //
-        // Animated-layer guard: the animated atlas + direction (bindings 3, 5)
-        // are single-layer `texture_2d` covering atlas layer 0 only. Faces on
-        // layers >= 1 get NO animated lighting — `lm_anim` stays zero and
-        // `anim_dir_sample.a` stays 0.0 (the zero-coverage sentinel the
-        // `use_correction_anim` gate keys on), so they take the static-only path.
+        // A static layer absent from section 25 resolves to INVALID_SLOT, so it
+        // contributes zero rather than accidentally sampling animated slot 0.
         var lm_anim = vec3<f32>(0.0);
         var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
-        if in.lightmap_layer == 0u {
-            lm_anim = sample_lightmap_animated(in.lightmap_uv);
-            anim_dir_sample = textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv);
+        let animated_slot = animated_slot_for_static_layer(in.lightmap_layer);
+        if animated_slot != 0xFFFF_FFFFu {
+            lm_anim = sample_lightmap_animated(in.lightmap_uv, animated_slot);
+            anim_dir_sample = textureSample(
+                animated_lm_direction,
+                lightmap_sampler,
+                in.lightmap_uv,
+                i32(animated_slot),
+            );
         }
 
         // Bumped-Lambert correction: the baker pre-multiplied by mesh-normal NdotL
@@ -1010,8 +1020,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // coverage to 0.0 for uncovered/canceling texels (oct decode of those
         // yields a valid-but-meaningless direction, so a NaN sentinel no longer
         // works) — the use_correction_anim gate reads .a to skip them. The
-        // sample itself is hoisted above into the animated-layer guard so faces
-        // on atlas layers >= 1 keep the zero-coverage sentinel.
+        // sample itself is hoisted above into the static-layer-to-slot lookup;
+        // layers without animated receivers keep the zero-coverage sentinel.
         let dom_anim = decode_lightmap_direction(anim_dir_sample);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
         let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);

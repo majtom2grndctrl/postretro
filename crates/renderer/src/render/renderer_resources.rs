@@ -439,6 +439,9 @@ impl Renderer {
             device.limits().max_texture_dimension_2d,
             device.limits().max_texture_array_layers,
         );
+        let slot_to_static_layer = geometry
+            .animated_light_weight_maps
+            .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
 
         let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(
             device,
@@ -460,6 +463,7 @@ impl Renderer {
                     &lightmap_bgl,
                     &al.forward_view,
                     &al.direction_forward_view,
+                    slot_to_static_layer,
                 );
                 full.shadowmask_present = full.lightmap_resources.shadowmask_present;
                 full.animated_lightmap = al;

@@ -696,6 +696,10 @@ declare module "postretro" {
     entities?: ReadonlyArray<EntityTypeDescriptor>;
     /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
     uiTrees?: ReadonlyArray<ModUiTree>;
+    /** Passive world-presentation templates. They never participate in modal UI input or focus. */
+    presentationTemplates?: ReadonlyArray<PresentationTemplate>;
+    /** One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning. */
+    presentationOverlays?: PresentationOverlay;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
@@ -1439,11 +1443,37 @@ declare module "postretro" {
     accessibleName?: string;
     role?: WidgetRole;
   };
+  /** Motion easing used by passive world-anchored presentation templates. */
+  export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  /** VM-free passive template resolved by the impact and renderer registries. */
+  export type PresentationTemplate = {
+    id: string;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: PresentationEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+    /** Overlay-only authored socket and vertical world offset. */
+    worldAnchor?: { socket: string; offsetY: number };
+  };
+  /** Recently damaged target source. Shield values remain raw IR expressions. */
+  export type DamagedEnemiesOverlay = {
+    kind: "damagedEnemies";
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: { value: RuntimeValue; max: RuntimeValue };
+  };
+  /** Passive target-keyed overlay declaration consumed only by the host. */
+  export type PresentationOverlay = {
+    over: DamagedEnemiesOverlay;
+    template: string;
+    maxVisible: number;
+  };
   /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
@@ -1658,6 +1688,7 @@ declare module "postretro/ui" {
     CrossingParams,
     Reaction,
     CrossingDescriptor,
+    NumberValue,
     RuntimeValue,
   } from "postretro";
 
@@ -1720,14 +1751,20 @@ declare module "postretro/ui" {
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   export type LocalBindRef = { local: string };
+  const presentationFactValueBrand: unique symbol;
+  /** Producer-stamped scalar available only while laying out a passive presentation instance. */
+  export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   export type PredicateValue = number | boolean | string;
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
   export type BarMaxProp = number | ComputedRef<number>;
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
@@ -1736,6 +1773,60 @@ declare module "postretro/ui" {
   export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
   export type ReactionHandleRef = { name: string };
   export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+  export type PresentationTemplateProps = {
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: WidgetEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+    worldAnchor?: { socket: string; offsetY: number };
+  };
+  export type PresentationTemplate<Name extends string = string> = Readonly<{
+    id: Name;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: WidgetEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+    worldAnchor?: { socket: string; offsetY: number };
+  }>;
+  export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
+  export type DamagedEnemiesProps = {
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: {
+      value: (entity: OverlayEntity) => RuntimeValue;
+      max: (entity: OverlayEntity) => RuntimeValue;
+    };
+  };
+  export type DamagedEnemiesSource = Readonly<{
+    kind: "damagedEnemies";
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: { value: RuntimeValue; max: RuntimeValue };
+  }>;
+  export type PresentationOverlay = Readonly<{
+    over: DamagedEnemiesSource;
+    template: string;
+    maxVisible: number;
+  }>;
+  export type NumberFactOptions = { format?: string; tween?: NumberTween };
+  export type ScalarFactOptions = { format?: string };
+  export type PresentationFactApi = Readonly<{
+    number(name: string, options?: NumberFactOptions): FactBindRef<number> & NumberFactOptions;
+    text(name: string, options?: ScalarFactOptions): FactBindRef<string> & ScalarFactOptions;
+    bool(name: string, options?: ScalarFactOptions): FactBindRef<boolean> & ScalarFactOptions;
+  }>;
+  /** TypeScript derives the stable id from a direct const binding. */
+  export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
+  /** Build an event-driven target source for a host/single-player status overlay. */
+  export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
+  /** Bind an overlay source to a world-anchored presentation template. */
+  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
+  /** Bind producer-stamped per-instance values inside a presentation template. */
+  export const fact: PresentationFactApi;
+  /** Add a passive visual effect to an impact policy `do:` array. */
+  export function present(template: PresentationTemplate, value: NumberValue): Effect;
 
   /** Props for `Text`. `content` is the fallback/display string; `fontSize` is a finite logical-px number defaulting to 12; `color` is an RGBA tuple or color token defaulting to white. `bind` may replace rendered content from state; `styleRanges` recolors by normalized value. */
   export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };

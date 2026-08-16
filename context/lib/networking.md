@@ -28,15 +28,20 @@ renet 2.0 separates two layers, and the transport wraps both: a **connection lay
 
 ## Channel model
 
-Three channels, fixed layout, agreed by both peers (the layout is folded into the protocol gate, so it cannot drift between versions):
+Four channels, fixed layout, agreed by both peers (the layout is folded into the protocol gate, so it cannot drift between versions):
 
 | Channel | Delivery | Carries |
 |---------|----------|---------|
 | Control | reliable-ordered | join traffic both ways: compatibility declarations and join seed client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
 | Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests, time-sync probes |
+| Presentation | unreliable | host-addressed passive presentation events (damage numbers and future cosmetic facts) |
 
 Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
+Presentation is a separate event lane: it is addressed to one client, fire-and-forget,
+and never participates in ack, resend, reconciliation, or participation-epoch
+bookkeeping. A lost packet simply produces no cosmetic, and a late joiner receives no
+buffered event.
 
 ## Wire/codec invariants
 
@@ -144,7 +149,12 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 ### Presentation events vs. replicated state
 
-Combat feedback the player reads and forgets — floating damage numbers, damaged-enemy health/shield facts — is **presented, not replicated**: the host pushes it as transient events on a dedicated unreliable `Channel::Presentation` (its own tagged `ServerPresentationMessage` family, one family per channel like `ServerControlMessage`), addressed fire-and-forget to the one client that earned it, loss- and reorder-tolerant. The replicated component set is unchanged — enemy health/state stay host-only. A client *simulates against* replicated state but only *displays* a pushed presentation fact, so a cosmetic never enters a digest or blocks a join (this is the other half of "presentation is not" a replication candidate, above). Design intent; `plans/ready/E16--combat-presentation-substrate`.
+Combat feedback the player reads and forgets — floating damage numbers, damaged-enemy health/shield facts — is **presented, not replicated**: the host pushes it as transient events on a dedicated unreliable `Channel::Presentation` (its own tagged `ServerPresentationMessage` family, one family per channel like `ServerControlMessage`), addressed fire-and-forget to the one client that earned it, loss- and reorder-tolerant. The replicated component set is unchanged — enemy health/state stay host-only. A client *simulates against* replicated state but only *displays* a pushed presentation fact, so a cosmetic never enters a digest or blocks a join (this is the other half of "presentation is not" a replication candidate, above). Design intent; `plans/in-progress/E16--combat-presentation-substrate`.
+
+Damaged-enemy overlays are private per recipient. The host renderer owns only
+host-local feedback; each remote recipient has an independent cap and linger
+lifecycle. Equal-time cap decisions use the stable non-recycled `NetworkId`, so
+unordered fact arrival cannot select a different retained target set.
 
 ### Mod identity
 
@@ -412,8 +422,9 @@ phase advances it to 13. The static-kinematic handshake field uses `WIRE_VERSION
 12; mover replay provenance advances it to 13, E15's tagged Control layout advances
 it to 14, and participation-framed traffic advances it to 15. E16's `drop_pressed`
 input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
-`JoinSeed` variant on `ClientControlMessage` advances it to 18. Earlier peers are
-refused by both handshake gates.
+`JoinSeed` variant on `ClientControlMessage` advances it to 18. E16's dedicated
+unreliable Presentation channel and `ServerPresentationMessage` family advance it to
+19. Earlier peers are refused by both handshake gates.
 
 ## Phase boundaries
 

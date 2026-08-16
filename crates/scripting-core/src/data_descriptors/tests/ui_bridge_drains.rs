@@ -2,6 +2,287 @@
 
 use super::super::*;
 use super::common::*;
+use log::Level;
+use postretro_test_log_capture::LogCapture;
+
+#[test]
+fn presentation_template_wire_round_trips_for_js_and_luau() {
+    let js = r#"({
+        id: "damageNumber", lifetimeMs: 750,
+        root: { kind: "text", content: "0", fontSize: 24, color: [1, 0.35, 0.1, 1] },
+        motion: { rise: 18, easing: "easeOut" },
+        fade: { startMs: 500 }, spawnScatter: { radius: 0.25 }
+    })"#;
+    let from_js = eval_js(js, |ctx, value| {
+        presentation_template_from_js(ctx, value).expect("JS template must parse")
+    });
+
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua
+        .load(PRESENTATION_SRC)
+        .eval()
+        .expect("presentation SDK must evaluate");
+    lua.globals().set("P", presentation).unwrap();
+    let lua_value: LuaValue = lua
+        .load(
+            r#"return P.definePresentationTemplate("damageNumber", {
+                root = { kind = "text", content = "0", fontSize = 24, color = {1, 0.35, 0.1, 1} },
+                lifetimeMs = 750,
+                motion = { rise = 18, easing = "easeOut" },
+                fade = { startMs = 500 }, spawnScatter = { radius = 0.25 },
+            })"#,
+        )
+        .eval::<LuaValue>()
+        .expect("Luau template must parse");
+    let from_lua = presentation_template_from_lua(lua_value).expect("Luau template must parse");
+
+    assert_eq!(from_js, from_lua);
+    assert_eq!(
+        serde_json::to_value(&from_js).unwrap(),
+        serde_json::json!({
+            "id": "damageNumber",
+            "root": { "kind": "text", "content": "0", "fontSize": 24.0_f32, "color": [1.0_f32, 0.35_f32, 0.1_f32, 1.0_f32] },
+            "lifetimeMs": 750,
+            "motion": { "rise": 18.0, "easing": "easeOut" },
+            "fade": { "startMs": 500 },
+            "spawnScatter": { "radius": 0.25 },
+        })
+    );
+}
+
+#[test]
+fn luau_presentation_fact_builder_survives_template_bridge() {
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua
+        .load(PRESENTATION_SRC)
+        .eval()
+        .expect("presentation SDK must evaluate");
+    lua.globals().set("P", presentation).unwrap();
+    let value = lua
+        .load(
+            r#"return P.definePresentationTemplate("damageNumber", {
+                root = { kind = "text", content = "0", fontSize = 24, color = {1,1,1,1},
+                  bind = P.fact.number("value", { format = "{}" }) },
+                lifetimeMs = 750, motion = { rise = 18, easing = "easeOut" },
+                fade = { startMs = 500 }, spawnScatter = { radius = 0.25 },
+            })"#,
+        )
+        .eval::<LuaValue>()
+        .expect("fact-authored template must build");
+    let template = presentation_template_from_lua(value).expect("template bridge must parse fact");
+    let Widget::Text(text) = template.root else {
+        panic!("root must be text");
+    };
+    assert_eq!(
+        text.bind.as_ref().map(|bind| &bind.source),
+        Some(&BindSource::Fact {
+            fact: "value".into()
+        })
+    );
+}
+
+#[test]
+fn luau_presentation_template_bridge_preserves_empty_container_children() {
+    let template = eval_lua(
+        r#"return {
+            id = "emptyStack",
+            root = { kind = "vstack", gap = 0, padding = 0, align = "start", children = {} },
+            lifetimeMs = 10,
+            motion = { rise = 0, easing = "linear" },
+            fade = { startMs = 0 },
+            spawnScatter = { radius = 0 },
+        }"#,
+        |value| presentation_template_from_lua(value).expect("empty container must parse"),
+    );
+    let Widget::VStack(root) = template.root else {
+        panic!("root must be a vstack");
+    };
+    assert!(root.children.is_empty());
+}
+
+#[test]
+fn malformed_presentation_template_degrades_at_manifest_drain() {
+    let templates = eval_js(
+        r#"({ presentationTemplates: [{ id: "bad", root: { kind: "spacer" }, lifetimeMs: 10, motion: { rise: 0, easing: "linear" }, fade: { startMs: 11 }, spawnScatter: { radius: 0 } }] })"#,
+        |ctx, value| {
+            let object = Object::from_value(value).unwrap();
+            drain_presentation_templates_js(ctx, &object, "test manifest").unwrap()
+        },
+    );
+    assert!(templates.is_empty());
+}
+
+#[test]
+fn presentation_templates_reject_unsupported_or_malformed_roots() {
+    for root in [
+        r#"{ kind: "button", id: "bad", label: "Bad", onPress: "noop" }"#,
+        r#"{ kind: "text", content: "bad", fontSize: 0, color: [1, 1, 1, 1] }"#,
+        r#"{ kind: "image", asset: "bad.png" }"#,
+    ] {
+        let source = format!(
+            "({{ presentationTemplates: [{{ id: 'bad', root: {root}, lifetimeMs: 10, motion: {{ rise: 0, easing: 'linear' }}, fade: {{ startMs: 0 }}, spawnScatter: {{ radius: 0 }} }}] }})"
+        );
+        let templates = eval_js(&source, |ctx, value| {
+            let object = Object::from_value(value).unwrap();
+            drain_presentation_templates_js(ctx, &object, "test manifest").unwrap()
+        });
+        assert!(
+            templates.is_empty(),
+            "invalid passive root must be skipped: {root}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_ui_trees_reject_presentation_fact_sources_in_binds_and_predicates() {
+    let js = r#"({
+        anchor: "center", offset: [0, 0],
+        root: { kind: "text", content: "0", fontSize: 12, color: [1,1,1,1], bind: { fact: "value" } }
+    })"#;
+    let js_error = eval_js(js, |ctx, value| {
+        anchored_tree_from_js_value(ctx, value).unwrap_err()
+    });
+    assert!(
+        js_error
+            .to_string()
+            .contains("outside a presentation template")
+    );
+
+    let lua_error = eval_lua(
+        r#"return {
+            anchor = "center", offset = {0, 0},
+            root = { kind = "vstack", gap = 0, padding = 0, align = "start",
+                visibleWhen = { fact = "visible" }, children = {} }
+        }"#,
+        |value| anchored_tree_from_lua_value(value).unwrap_err(),
+    );
+    assert!(
+        lua_error
+            .to_string()
+            .contains("outside a presentation template")
+    );
+}
+
+#[test]
+fn damaged_enemy_overlay_wire_matches_luau_factory_and_malformed_entries_degrade() {
+    let from_js = eval_js(
+        r#"({ over: { kind: "damagedEnemies", lingerMs: 500, hideAtFull: true }, template: "enemyStatus", maxVisible: 2 })"#,
+        |ctx, value| presentation_overlay_from_js(ctx, value).expect("JS overlay must parse"),
+    );
+
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua
+        .load(PRESENTATION_SRC)
+        .eval()
+        .expect("presentation SDK must evaluate");
+    lua.globals().set("P", presentation).unwrap();
+    let from_lua = presentation_overlay_from_lua(
+        lua.load(
+            r#"return P.defineOverlay({
+                over = P.damagedEnemies({ lingerMs = 500, hideAtFull = true }),
+                template = P.definePresentationTemplate("enemyStatus", {
+                    root = { kind = "text", content = "enemy", fontSize = 12, color = {1,1,1,1} }, lifetimeMs = 500,
+                    motion = { rise = 0, easing = "linear" }, fade = { startMs = 0 },
+                    spawnScatter = { radius = 0 },
+                    worldAnchor = { socket = "head", offsetY = 0 },
+                }),
+                maxVisible = 2,
+            })"#,
+        )
+        .eval::<LuaValue>()
+        .expect("Luau overlay factory must produce data"),
+    )
+    .expect("Luau overlay must parse");
+    assert_eq!(from_js, from_lua);
+
+    let overlays = eval_js(
+        r#"({ presentationOverlays: { over: { kind: "damagedEnemies", lingerMs: 1, hideAtFull: false }, template: "enemyStatus", maxVisible: 2 } })"#,
+        |ctx, value| {
+            let object = Object::from_value(value).unwrap();
+            drain_presentation_overlays_js(ctx, &object, "test manifest").unwrap()
+        },
+    );
+    assert_eq!(overlays.len(), 1);
+
+    let capture = LogCapture::start();
+    let overlays = eval_js(
+        r#"({ presentationOverlays: [{ over: { kind: "damagedEnemies", lingerMs: 1, hideAtFull: false }, template: "enemyStatus", maxVisible: 2 }] })"#,
+        |ctx, value| {
+            let object = Object::from_value(value).unwrap();
+            drain_presentation_overlays_js(ctx, &object, "test manifest").unwrap()
+        },
+    );
+    assert!(overlays.is_empty());
+    capture.assert_logged_once(
+        Level::Warn,
+        "`presentationOverlays` must be one overlay descriptor (not an array)",
+    );
+    drop(capture);
+
+    let capture = LogCapture::start();
+    let overlays = eval_lua(
+        r#"return { presentationOverlays = {
+            { over = { kind = "damagedEnemies", lingerMs = 1, hideAtFull = false },
+              template = "enemyStatus", maxVisible = 2 }
+        } }"#,
+        |value| {
+            let table = lua_table(value, "test manifest").unwrap();
+            drain_presentation_overlays_lua(&table, "test manifest").unwrap()
+        },
+    );
+    assert!(overlays.is_empty());
+    capture.assert_logged_once(
+        Level::Warn,
+        "`presentationOverlays` must be one overlay descriptor (not an array)",
+    );
+}
+
+#[test]
+fn luau_presentation_factories_reject_storage_overflow_at_construction() {
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua.load(PRESENTATION_SRC).eval().unwrap();
+    lua.globals().set("P", presentation).unwrap();
+
+    let timing_error: String = lua
+        .load(
+            r#"local ok, err = pcall(function()
+                P.definePresentationTemplate("overflow", {
+                    root = { kind = "text", content = "x", fontSize = 12, color = {1,1,1,1} },
+                    lifetimeMs = 4294967296,
+                    motion = { rise = 0, easing = "linear" },
+                    fade = { startMs = 0 }, spawnScatter = { radius = 0 },
+                })
+            end)
+            assert(not ok)
+            return tostring(err)"#,
+        )
+        .eval()
+        .unwrap();
+    assert!(timing_error.contains("`lifetimeMs` must be an integer in [0, 4294967295]"));
+
+    let geometry_error: String = lua
+        .load(
+            r#"local ok, err = pcall(function()
+                P.definePresentationTemplate("overflow", {
+                    root = { kind = "text", content = "x", fontSize = 1e100, color = {1,1,1,1} },
+                    lifetimeMs = 1,
+                    motion = { rise = 0, easing = "linear" },
+                    fade = { startMs = 0 }, spawnScatter = { radius = 0 },
+                })
+            end)
+            assert(not ok)
+            return tostring(err)"#,
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        geometry_error.contains("`root.fontSize` must be a finite number representable as f32")
+    );
+}
 
 #[test]
 fn js_bridge_capture_envelope_and_interactive_widgets_round_trip() {

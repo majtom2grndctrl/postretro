@@ -28,7 +28,7 @@ use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
-use postretro_foundation::Seat;
+use postretro_foundation::{MAX_PENDING_PRESENTATION_SPAWNS, PresentationSpawn, Seat};
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -713,6 +713,11 @@ pub struct EntityRegistry {
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
     impact_dispatches: Vec<ImpactDispatch>,
+    /// App-side presentation producers enqueue transient spawn facts here. The
+    /// registry is the sole bridge between fixed-tick producers and the
+    /// frame-time presentation pool; it owns no presentation lifetime or GPU
+    /// state.
+    presentation_spawns: Vec<PresentationSpawn>,
     /// Sparse worklist for entities with non-empty deferred-effect queues.
     /// Ownership returns here after every tick so the allocation is reused.
     active_deferred_effects: Vec<EntityId>,
@@ -738,6 +743,7 @@ impl EntityRegistry {
             local_player_pawn: None,
             pawn_seats: HashMap::new(),
             impact_dispatches: Vec::new(),
+            presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -1030,6 +1036,45 @@ impl EntityRegistry {
         std::mem::take(&mut self.impact_dispatches)
     }
 
+    /// Publish one transient presentation spawn for the app-side frame pool.
+    /// Producers deliberately provide facts and an anchor, but no spawn time:
+    /// the pool stamps its own frame-time clock when it drains this queue.
+    pub fn push_presentation_spawn(&mut self, spawn: PresentationSpawn) {
+        if self.presentation_spawns.len() < MAX_PENDING_PRESENTATION_SPAWNS {
+            self.presentation_spawns.push(spawn);
+        }
+    }
+
+    /// Drain every presentation spawn published since the previous render pass.
+    pub fn take_presentation_spawns(&mut self) -> Vec<PresentationSpawn> {
+        let mut spawns = Vec::with_capacity(self.presentation_spawns.len());
+        spawns.append(&mut self.presentation_spawns);
+        spawns
+    }
+
+    /// Move queued presentation spawns into caller-owned reusable storage.
+    /// Both vectors retain their allocations after the caller drains `out`, so
+    /// the fixed-tick/frame bridge is allocation-free once its burst high-water
+    /// mark has been reached.
+    pub fn drain_presentation_spawns_into(&mut self, out: &mut Vec<PresentationSpawn>) {
+        out.clear();
+        out.append(&mut self.presentation_spawns);
+    }
+
+    /// Retain selected queued presentation spawns in place. Host routing uses
+    /// this to remove addressed remote cosmetics while leaving host-local work
+    /// for the ordinary frame-pool drain without allocating a partition Vec.
+    pub fn retain_presentation_spawns(&mut self, mut keep: impl FnMut(&PresentationSpawn) -> bool) {
+        self.presentation_spawns.retain(|spawn| keep(spawn));
+    }
+
+    /// Discard presentation work whose world anchors belong to the retiring
+    /// level. Lifecycle teardown calls this before another world can drain the
+    /// fixed-tick intake.
+    pub fn clear_presentation_spawns(&mut self) {
+        self.presentation_spawns.clear();
+    }
+
     /// Mutable access to the engine-managed deferred-effect storage.
     pub fn deferred_effect_mut(
         &mut self,
@@ -1125,6 +1170,7 @@ impl EntityRegistry {
             let _ = self.despawn(id);
         }
         self.impact_dispatches.clear();
+        self.presentation_spawns.clear();
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
@@ -1352,6 +1398,10 @@ impl Default for EntityRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use postretro_foundation::{PresentationFade, PresentationMotion};
+
     use super::*;
     use crate::components::billboard_emitter::{BillboardEmitterComponent, SpinAnimation};
     use crate::components::particle::ParticleState;
@@ -1420,6 +1470,114 @@ mod tests {
             (actual - expected).abs() <= EPSILON,
             "expected {expected} ± {EPSILON}, got {actual}"
         );
+    }
+
+    #[test]
+    fn presentation_spawn_intake_drains_once_in_fifo_order() {
+        let mut registry = EntityRegistry::new();
+        let spawn = |template: &str| PresentationSpawn {
+            world_anchor: Vec3::ZERO,
+            template: template.into(),
+            facts: BTreeMap::new(),
+            presenter: None,
+            lifetime_seconds: 1.0,
+            motion: PresentationMotion::default(),
+            fade: PresentationFade::default(),
+            scatter_radius: 0.0,
+        };
+
+        registry.push_presentation_spawn(spawn("first"));
+        registry.push_presentation_spawn(spawn("second"));
+
+        let drained = registry.take_presentation_spawns();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].template.0, "first");
+        assert_eq!(drained[1].template.0, "second");
+        assert!(registry.take_presentation_spawns().is_empty());
+    }
+
+    // Regression: moving the queue with `mem::take` discarded its fixed
+    // reserved allocation after every render-frame drain.
+    #[test]
+    fn presentation_spawn_drain_reuses_registry_and_consumer_capacity() {
+        let mut registry = EntityRegistry::new();
+        registry.push_presentation_spawn(PresentationSpawn {
+            world_anchor: Vec3::ZERO,
+            template: "first".into(),
+            facts: BTreeMap::new(),
+            presenter: None,
+            lifetime_seconds: 1.0,
+            motion: PresentationMotion::default(),
+            fade: PresentationFade::default(),
+            scatter_radius: 0.0,
+        });
+        let registry_capacity = registry.presentation_spawns.capacity();
+        let mut drained = Vec::new();
+
+        registry.drain_presentation_spawns_into(&mut drained);
+        let drained_capacity = drained.capacity();
+        drained.clear();
+        registry.push_presentation_spawn(PresentationSpawn {
+            world_anchor: Vec3::ZERO,
+            template: "second".into(),
+            facts: BTreeMap::new(),
+            presenter: None,
+            lifetime_seconds: 1.0,
+            motion: PresentationMotion::default(),
+            fade: PresentationFade::default(),
+            scatter_radius: 0.0,
+        });
+        registry.drain_presentation_spawns_into(&mut drained);
+
+        assert_eq!(registry.presentation_spawns.capacity(), registry_capacity);
+        assert_eq!(drained.capacity(), drained_capacity);
+        assert_eq!(drained[0].template.0, "second");
+    }
+
+    #[test]
+    fn presentation_spawn_intake_has_fixed_capacity() {
+        let mut registry = EntityRegistry::new();
+        for index in 0..=MAX_PENDING_PRESENTATION_SPAWNS {
+            registry.push_presentation_spawn(PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: format!("template-{index}").into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: PresentationMotion::default(),
+                fade: PresentationFade::default(),
+                scatter_radius: 0.0,
+            });
+        }
+
+        let drained = registry.take_presentation_spawns();
+        assert_eq!(drained.len(), MAX_PENDING_PRESENTATION_SPAWNS);
+        assert_eq!(drained.first().unwrap().template.0, "template-0");
+        assert_eq!(
+            drained.last().unwrap().template.0,
+            format!("template-{}", MAX_PENDING_PRESENTATION_SPAWNS - 1)
+        );
+    }
+
+    // Regression: level unload left a fixed-tick presentation spawn queued for
+    // the next map's frame-time pool.
+    #[test]
+    fn level_unload_discards_pending_presentation_spawns() {
+        let mut registry = EntityRegistry::new();
+        registry.push_presentation_spawn(PresentationSpawn {
+            world_anchor: Vec3::ZERO,
+            template: "old-level".into(),
+            facts: BTreeMap::new(),
+            presenter: None,
+            lifetime_seconds: 1.0,
+            motion: PresentationMotion::default(),
+            fade: PresentationFade::default(),
+            scatter_radius: 0.0,
+        });
+
+        registry.clear_for_level_unload();
+
+        assert!(registry.take_presentation_spawns().is_empty());
     }
 
     #[test]

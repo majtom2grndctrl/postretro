@@ -55,7 +55,6 @@ impl ReplicableSet {
 
     /// Membership test. Only the `is_replicable` predicate and lifecycle tests
     /// consult it directly; `produce_owned_snapshots` walks `iter` instead.
-    #[cfg(test)]
     pub(crate) fn contains(&self, id: EntityId) -> bool {
         self.registered.contains(&id)
     }

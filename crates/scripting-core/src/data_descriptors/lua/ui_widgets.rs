@@ -22,6 +22,8 @@ pub fn anchored_tree_from_lua_value(value: LuaValue) -> Result<AnchoredTree, Des
         return Err(DescriptorError::MissingField { field: "root" });
     }
     let root = widget_from_lua(root_val)?;
+    validate_retained_widget_sources(&root)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
 
     let capture_mode = match get_optional_string_lua(&table, "captureMode")? {
         Some(s) => parse_capture_mode(&s)?,

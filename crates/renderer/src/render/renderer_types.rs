@@ -948,6 +948,12 @@ pub(super) struct FullRenderer {
     /// both render signatures stay stable.
     pub(super) ui_snapshot: ui::UiReadSnapshot,
 
+    /// Frame-local passive presentation instances from the app-side pool. The
+    /// renderer lowers them through its FontSystem-owned template path; they are
+    /// deliberately separate from the retained UI snapshot and carry no focus,
+    /// hit-test, or input state.
+    pub(super) presentation_inputs: Vec<PresentationDrawInput>,
+
     /// Active UI theme: the token table every descriptor tree resolves its
     /// color/spacing/font slots against at build time. Defaults to
     /// `UiTheme::engine_default()` at construction; `set_ui_theme` installs an

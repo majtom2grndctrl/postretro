@@ -101,6 +101,16 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.",
         )
         .field(
+            "presentationTemplates?",
+            "Vec<PresentationTemplate>",
+            "Passive world-presentation templates. They never participate in modal UI input or focus.",
+        )
+        .field(
+            "presentationOverlays?",
+            "PresentationOverlay",
+            "One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.",
+        )
+        .field(
             "theme?",
             "ThemeTokens",
             "Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.",
@@ -158,7 +168,8 @@ mod tests {
     use super::*;
     use postretro_entities::slot_table::StoreDeclarationSet;
     use postretro_scripting_core::data_descriptors::{
-        ModFontAssets, ModThemeTokens, SwitchingDescriptor,
+        ModFontAssets, ModThemeTokens, PresentationOverlay, PresentationTemplate,
+        SwitchingDescriptor,
     };
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{
@@ -190,6 +201,8 @@ mod tests {
             switching: SwitchingDescriptor::default(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
+            presentation_templates: Vec::<PresentationTemplate>::new(),
+            presentation_overlays: Vec::<PresentationOverlay>::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
             fonts: ModFontAssets::default(),
@@ -210,6 +223,8 @@ mod tests {
             "switching",
             "entities",
             "uiTrees",
+            "presentationTemplates",
+            "presentationOverlays",
             "theme",
             "frontend",
             "fonts",

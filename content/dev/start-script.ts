@@ -22,6 +22,11 @@ import {
   progression,
 } from "./scripts/combat-lifecycle";
 import { runCounter } from "./scripts/run-counter";
+import {
+  damagedEnemyBar,
+  damagedEnemyOverlay,
+  damageNumber,
+} from "./scripts/combat-presentation";
 
 export default defineMod({
   name: "dev",
@@ -53,6 +58,10 @@ export default defineMod({
     },
   },
   uiTrees: [hud, reticle, reloadMeterTree, pauseMenu, frontendMenu],
+  // DEV FIXTURE — these remain global so any dev map using the shared combat
+  // policies exposes floating damage and recently-damaged enemy feedback.
+  presentationTemplates: [damageNumber, damagedEnemyBar],
+  presentationOverlays: damagedEnemyOverlay,
   theme: hudTheme,
   reactions: frontendReactions,
   // The combat demo's unique target tags make these mod-global policies work

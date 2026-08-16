@@ -55,6 +55,8 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
+mod presentation_pool;
+mod presentation_projection;
 mod weapon;
 
 mod render;
@@ -131,8 +133,6 @@ use crate::startup::{
     SplashSource, StartupTimings,
 };
 #[cfg(test)]
-use postretro_entities::ScriptCtx;
-#[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 #[cfg(test)]
 use postretro_scripting_core::runtime::ScriptRuntime;
@@ -142,7 +142,9 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
 use postretro_entities::components::inventory::Inventory;
-use postretro_entities::{ComponentKind, ComponentValue, SystemReactionCommand, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
+};
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
@@ -2883,6 +2885,7 @@ impl ApplicationHandler for App {
                 // interpolated displayed transforms. These transient mesh fields
                 // are client presentation only and never enter replication.
                 self.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
+                self.update_client_overlay_anchors(&script_ctx, frame_anim_time);
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
                     zero_tick_fire_snapshot.as_ref(),
@@ -2891,6 +2894,77 @@ impl ApplicationHandler for App {
                     frame_anim_time,
                     &mut pending_weapon_script_events,
                 );
+
+                // Status overlays are host/single-player presentation facts.
+                // This runs once after every fixed tick (including zero-tick
+                // frames), so a same-frame damage refresh is stamped before
+                // Render while a create-then-kill is removed before it draws.
+                if !self.is_connected_client() {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let overlay_config = session
+                        .scripting
+                        .impact_policy_runtime
+                        .client_overlay_config();
+                    if let Some(config) = overlay_config.as_ref()
+                        && let Some(netcode::NetEndpoint::Host {
+                            server,
+                            allocator,
+                            replicable,
+                            owners,
+                            ..
+                        }) = session.net_endpoint.as_mut()
+                    {
+                        session.host_overlay_fact_tracker.begin_frame(
+                            frame_dt,
+                            config.linger_seconds,
+                            owners,
+                        );
+                        let overlay_frame = {
+                            let registry = script_ctx.registry.borrow();
+                            session
+                                .scripting
+                                .impact_policy_runtime
+                                .update_damaged_enemy_overlays(
+                                    &mut session.presentation_pool,
+                                    &registry,
+                                    &session.hit_zone_store,
+                                    frame_anim_time,
+                                    session.host_overlay_fact_tracker.tracked_entities(),
+                                    |source| {
+                                        source
+                                            .is_some_and(|source| owners.owner_of(source).is_some())
+                                    },
+                                )
+                        };
+
+                        // The host renderer pool contains only host-local feedback.
+                        // Each remote recipient has an independently capped fact
+                        // stream on the unreliable presentation channel.
+                        netcode::send_host_overlay_facts(
+                            &mut session.host_overlay_fact_tracker,
+                            server,
+                            allocator,
+                            replicable,
+                            owners,
+                            &overlay_frame,
+                            config.max_visible,
+                        );
+                    } else {
+                        session.host_overlay_fact_tracker.clear();
+                        let registry = script_ctx.registry.borrow();
+                        let _ = session
+                            .scripting
+                            .impact_policy_runtime
+                            .update_damaged_enemy_overlays(
+                                &mut session.presentation_pool,
+                                &registry,
+                                &session.hit_zone_store,
+                                frame_anim_time,
+                                [],
+                                |_| false,
+                            );
+                    }
+                }
 
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
@@ -3345,11 +3419,32 @@ impl ApplicationHandler for App {
                         .collect(),
                 };
 
+                let presentation_viewport = self
+                    .window_state
+                    .as_ref()
+                    .map(|state| state.window.inner_size())
+                    .map(|size| [size.width, size.height])
+                    .unwrap_or([0, 0]);
+
                 if let Some(renderer) = self.renderer.as_mut() {
                     // The render-stage bridges + collectors live on `Session`;
                     // borrow it once here (disjoint from the `renderer` borrow of
                     // `self.renderer` and from the other `self` fields read below).
                     let session = self.session.as_mut().expect("running session installed");
+                    let presentation_inputs = {
+                        let mut registry = script_ctx.registry.borrow_mut();
+                        session.presentation_pool.advance_and_collect_inputs(
+                            &mut registry,
+                            frame_dt,
+                            view_proj,
+                            presentation_viewport,
+                        )
+                    };
+                    let recycled_inputs =
+                        renderer.set_presentation_draw_inputs(presentation_inputs);
+                    session
+                        .presentation_pool
+                        .recycle_draw_inputs(recycled_inputs);
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
@@ -4899,6 +4994,10 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
+        let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
+        session
+            .presentation_pool
+            .recycle_draw_inputs(recycled_inputs);
         let present_handle = match renderer.render_frame_indirect(
             &mut session.font_system,
             CameraCullVisibility {
@@ -5588,6 +5687,16 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
+        let presentation_templates = matches!(
+            session.net_endpoint.as_ref(),
+            Some(netcode::NetEndpoint::Client { .. })
+        )
+        .then(|| session.scripting.presentation_template_registry());
+        let client_overlay_config = session
+            .scripting
+            .impact_policy_runtime
+            .client_overlay_config();
+        let presentation_anim_time = self.anim_time;
         let script_runtime = &session.scripting.script_runtime;
         let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
             script_runtime.committed_mod_identity().map(|(id, _)| id),
@@ -5994,6 +6103,7 @@ impl App {
                 // its own monotonic clock for send/receive microseconds.
                 let client_tick = script_ctx.frame.get() as u32;
                 let shot_verdicts = netcode::client_drive_time_sync(client, time_sync, client_tick);
+                let presentation_messages = client.drain_presentation();
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
                 // baseline, apply replicated state-slot records through the store-write
@@ -6042,6 +6152,21 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                netcode::ingest_client_presentation_messages(
+                    &mut registry,
+                    presentation_messages,
+                    &net_descriptors,
+                    presentation_templates
+                        .expect("client presentation ingest has a borrowed template registry"),
+                    &mut session.client_overlay_facts,
+                    replication,
+                    &mut session.presentation_pool,
+                    client_overlay_config.as_ref(),
+                    hit_zone_store,
+                    host_agent_params,
+                    presentation_anim_time,
+                    frame_dt,
+                );
                 if apply_outcome.replicated_state_changed
                     && let Some(local_seat) = session_status.local_seat()
                 {
@@ -6334,6 +6459,7 @@ impl App {
         // no-op on an ordinary host.
         {
             let mut registry = script_ctx.registry.borrow_mut();
+            netcode::route_host_presentation_spawns(&mut registry, server, owners);
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
             if weapon_owners.has_attachment_changes() {
                 let descriptors = script_ctx.data_registry.borrow();
@@ -6427,6 +6553,37 @@ impl App {
             )
         };
         self.remote_player_presentation = presentation;
+    }
+
+    /// Resolve client overlay anchors after remote interpolation and local pose
+    /// selection have written the exact transforms and animation state rendered
+    /// this frame. Fact ingestion remains in the earlier snapshot-apply seam.
+    fn update_client_overlay_anchors(&mut self, script_ctx: &ScriptCtx, anim_time: f64) {
+        let agent_params = self.nav_graph.as_ref().map(|graph| graph.agent_params());
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Client { replication, .. }) = session.net_endpoint.as_ref()
+        else {
+            return;
+        };
+        let config = session
+            .scripting
+            .impact_policy_runtime
+            .client_overlay_config();
+        let descriptors = script_ctx.data_registry.borrow();
+        let registry = script_ctx.registry.borrow();
+        netcode::update_client_overlay_anchors(
+            &registry,
+            &descriptors.entities,
+            &mut session.client_overlay_facts,
+            replication,
+            &mut session.presentation_pool,
+            config.as_ref(),
+            &session.hit_zone_store,
+            agent_params,
+            anim_time,
+        );
     }
 
     fn update_client_presentation_pose_inputs(
@@ -9889,6 +10046,8 @@ mod tests {
                     trigger_events: Vec::new(),
                     trigger_pools: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
+                    presentation_templates: Vec::new(),
+                    presentation_overlays: Vec::new(),
                     theme: ModThemeTokens {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),
                         ..Default::default()

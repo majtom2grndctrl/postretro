@@ -10,6 +10,7 @@ pub mod foundation_pods;
 pub mod ir;
 pub mod movement;
 pub mod pose;
+pub mod presentation;
 pub mod seat;
 pub mod value_types;
 
@@ -33,5 +34,10 @@ pub use movement::{
     DashPrograms, GroundRef, MovementScope, MovementState, PlayerMovementComponent,
 };
 pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
+pub use presentation::{
+    MAX_PENDING_PRESENTATION_SPAWNS, PresentationEasing, PresentationFact, PresentationFacts,
+    PresentationFade, PresentationMotion, PresentationPresenter, PresentationSpawn,
+    PresentationTemplateHandle,
+};
 pub use seat::Seat;
 pub use value_types::{EulerDegrees, Vec3Lit};

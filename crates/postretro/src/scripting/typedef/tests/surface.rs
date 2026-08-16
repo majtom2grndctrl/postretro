@@ -661,13 +661,13 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        8,
-        "TypeScript must expose exactly the eight closed impact-effect builders"
+        9,
+        "TypeScript must expose exactly the nine closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        6,
-        "Luau must expose exactly the six receiver-method impact-effect builders; set/update are global functions"
+        7,
+        "Luau must expose exactly the seven receiver-method impact-effect builders; set/update are global functions"
     );
     // TypeScript intentionally keeps the wire union private behind the opaque
     // Effect brand; the SourceHandle signatures above are its public contract.

@@ -905,6 +905,13 @@ mod tests {
         );
         let bind: TextBind = serde_json::from_str(r#"{"slot":"a.b"}"#).unwrap();
         assert_eq!(bind.source, BindSource::Slot { slot: "a.b".into() });
+        let bind: TextBind = serde_json::from_str(r#"{"fact":"value"}"#).unwrap();
+        assert_eq!(
+            bind.source,
+            BindSource::Fact {
+                fact: "value".into()
+            }
+        );
     }
 
     #[test]

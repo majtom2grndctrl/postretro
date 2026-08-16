@@ -129,7 +129,7 @@ impl App {
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store`, seat pawn bindings | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`), carried per-seat state |
     /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
-    /// | progress tracker, death-event carryover, active wieldable, client weapon prediction state, camera pose | |
+    /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
@@ -186,6 +186,9 @@ impl App {
                     seats.clear_pawn_bindings_for_level_unload(&mut registry);
                 }
             }
+            session.presentation_pool.clear_world_instances();
+            session.client_overlay_facts.clear();
+            session.host_overlay_fact_tracker.clear();
             session.presentation_cells.clear();
             session
                 .modal_stack

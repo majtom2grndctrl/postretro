@@ -527,6 +527,7 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
         let expected_arity = match callee.sym.as_ref() {
             "defineStore" => 1,
             "defineImpactEvent" => 2,
+            "definePresentationTemplate" => 1,
             _ => continue,
         };
         if call.args.len() != expected_arity {
@@ -1327,14 +1328,15 @@ mod tests {
             r#"
             const progression = defineStore({ xp: 0 });
             const reward = defineImpactEvent({ tag: "enemy" }, () => []);
+            const damageNumber = definePresentationTemplate({ root: { kind: "spacer" }, lifetimeMs: 1, motion: { rise: 0, easing: "linear" }, fade: { startMs: 0 }, spawnScatter: { radius: 0 } });
             export const exported = defineStore({ credits: 0 });
-            export default defineMod({ stores: [progression, exported], events: [reward] });
+            export default defineMod({ stores: [progression, exported], events: [reward], presentationTemplates: [damageNumber] });
             "#,
         )
         .unwrap();
 
         let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
-        for name in ["progression", "reward", "exported"] {
+        for name in ["progression", "reward", "damageNumber", "exported"] {
             assert!(
                 js.contains(&format!("\"{name}\"")),
                 "bundle should insert `{name}` as a descriptor name: {js}"

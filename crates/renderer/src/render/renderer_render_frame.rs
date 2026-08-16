@@ -880,7 +880,21 @@ impl Renderer {
         // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
         // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
         // with all layers' glyphs concatenated in painter order, sidesteps it.
-        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
+        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len() + 1);
+        // Presentation is a passive world-facing layer, not a retained modal.
+        // Lower it first so HUD and modal trees remain visually above it, while
+        // focus export continues to inspect only the retained top tree below.
+        let presentation_draw = full.ui.layout_presentation_inputs(
+            font_system,
+            &full.presentation_inputs,
+            ui_viewport,
+            full.ui_images.image_sizes(),
+            full.ui_images.image_sizes_generation(),
+            &full.ui_theme,
+            full.ui_theme_generation,
+            full.ui_snapshot.time_seconds,
+        );
+        layer_draws.push(presentation_draw);
         for (layer, tree) in stack.iter().enumerate() {
             // Image widgets measure from the renderer-owned image registry. A
             // missing key still collapses, but the registry now warns once when
@@ -951,6 +965,12 @@ impl Renderer {
                 &composition,
             );
         }
+        // The composition's frame-scoped borrows end here. Reclaim the passive
+        // layer's translated aggregate so its Vec/String storage stays warm for
+        // the next frame instead of being dropped with `layer_draws`.
+        drop(composition);
+        let presentation_draw = layer_draws.remove(0);
+        full.ui.recycle_presentation_draw_data(presentation_draw);
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.
         full.ui.truncate_gameplay_stack(stack.len());

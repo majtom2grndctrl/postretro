@@ -210,6 +210,12 @@ cargo run -p postretro -- content/dev/maps/combat-demo.prl
 The descriptor → `components.health` → model-authored hit-zone capsules → spawn → hitscan target →
 `apply_damage` chokepoint → mod-global impact policy → authored lifecycle, end to end:
 
+- **Presentation fixture.** The dev mod globally registers floating damage
+  numbers and a recently-damaged enemy health bar. Every hit on these dummies
+  exercises the same `present()` and `damagedEnemies()` declarations used by
+  any other dev map with the shared dummy/enemy impact policies. Damage
+  numbers rise from the hit target; the bar lingers above it after a hit.
+
 - The shot counts below assume a point-blank torso shot at **1 m or closer**.
   At that distance the 4° cone keeps every pellet within 7 cm of the aim ray, so
   all eight pellets connect. Each pellet deals 3 damage, making a full shell 24

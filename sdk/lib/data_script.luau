@@ -253,6 +253,7 @@ export type RuntimeExpressionRefs = {
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "present", target: "@impact.target", args: { template: string, value: any } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
@@ -731,6 +732,15 @@ local IMPACT: Impact = table.freeze({
   amount = numberRef({ op = "input", name = "@impact.amount" }),
 })
 
+--- Spawn a passive presentation at the current impact target. The impact
+--- runtime captures `value` before any following despawn and stamps source.
+function DataScriptSdk.present(template: { id: string }, value: NumberValue): Effect
+  if type(template) ~= "table" or type(template.id) ~= "string" or #template.id == 0 then
+    error("present: template must come from definePresentationTemplate", 2)
+  end
+  return impactEffect("present", { template = template.id, value = numberNode(value) })
+end
+
 local lowerImpactPolicy: (policy: {EffectOrGroup}) -> {EffectOrGroup}
 
 local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}, levels: {string}?, isOverride: boolean): ImpactEvent
@@ -977,9 +987,10 @@ end
 --- `config.name`, `config.id`, and `config.version` are required. The id gates
 --- multiplayer admission; the version is display-only and never compared. The
 --- first committed id and version remain active across staged reloads. Optional
---- arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`,
---- `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine
---- side effects until the manifest is returned and validated.
+--- arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`,
+--- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+--- effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
   if config.stores == nil then
     return config

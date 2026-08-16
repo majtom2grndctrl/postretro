@@ -633,22 +633,25 @@
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
   /** A presentation-local bind reference produced by `ui.createLocalState(...).cells.<name>.get()`. It resolves inside the nearest declaring `localState` scope, not the engine state store. */
   export type LocalBindRef = { local: string };
+  const presentationFactValueBrand: unique symbol;
+  /** Producer-stamped scalar available only while laying out a passive presentation instance. */
+  export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
-  /** A reactive condition used by `visibleWhen`, `selected`, and `checked`: read either an engine state ref or presentation-local cell and compare it to `equals` when provided. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
   /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
   export type AnnouncePriority = "polite" | "assertive";
-  /** State binding for a `Text` widget. The source is a readable engine state ref or presentation-local cell; `format` is a one-placeholder string such as `"HP {}"`; numeric sources may also tween. */
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
   /** State binding for a `Panel` fill color. The source resolves to a numeric RGBA array; `tween` eases the displayed color and never writes back to state. */
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   /** State binding for a writable numeric `Slider`. Engine refs must be writable; local cells are valid. The optional number tween controls displayed thumb movement only. */
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  /** State binding for a readonly numeric `Bar`. The value is displayed against `max`; it is not interactive and never writes state. */
-  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
+  export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
   /** Bar denominator: either a literal number or a readonly numeric state ref such as `getGameState().player.maxHealth`. */
   export type BarMaxProp = number | ComputedRef<number>;
   /** One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold; omit it on the final entry to make that entry the default band. `color`, `pulse`, and `flash` affect the rendered style, not authoritative state. */
@@ -770,7 +773,7 @@
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T extends EntityTypeDescriptor>(descriptor: T): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

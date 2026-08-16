@@ -5,17 +5,17 @@ use crate::wire::{ProtocolVersion, WireError};
 
 pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
-/// E15's tagged-control vocabulary.
+/// E16's presentation-event vocabulary.
 ///
-/// `SessionRoster` extends the server Control message vocabulary, so this app
-/// protocol id changes even though its appended enum tag leaves the measured
-/// bitcode layout of the five shipped variants intact.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C36; // "PRL6"
+/// The dedicated `Channel::Presentation` plus its tagged server message family
+/// changes the application vocabulary.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
-/// tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 18;
+/// dedicated E16 presentation channel and payload family advance this to 19.
+/// The tuning-payload epoch remains independent.
+pub const WIRE_VERSION: u32 = 19;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -92,24 +92,26 @@ mod tests {
     }
 
     #[test]
-    fn join_seed_layout_refuses_previous_wire_version() {
-        const PRE_JOIN_SEED_WIRE_VERSION: u32 = 17;
+    fn presentation_transport_refuses_previous_protocol_and_wire_version() {
+        const PRE_PRESENTATION_PROTOCOL_ID: u32 = 0x_5052_4C36;
+        const PRE_PRESENTATION_WIRE_VERSION: u32 = 18;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C36,
-            "session roster requires application protocol PRL6"
+            PROTOCOL_ID, 0x_5052_4C37,
+            "presentation vocabulary requires application protocol PRL7"
         );
         assert_eq!(
-            WIRE_VERSION, 18,
-            "JoinSeed changes the client control bitcode layout"
+            WIRE_VERSION, 19,
+            "presentation channel and payload change the wire layout"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_JOIN_SEED_WIRE_VERSION),
-            "gate 1 rejects the previous layout before app decode"
+            ((PRE_PRESENTATION_PROTOCOL_ID as u64) << 32)
+                | u64::from(PRE_PRESENTATION_WIRE_VERSION),
+            "gate 1 rejects the previous presentation-less peer before app decode"
         );
         let previous = ProtocolVersion {
-            app_protocol_id: PROTOCOL_ID,
-            wire_version: PRE_JOIN_SEED_WIRE_VERSION,
+            app_protocol_id: PRE_PRESENTATION_PROTOCOL_ID,
+            wire_version: PRE_PRESENTATION_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),

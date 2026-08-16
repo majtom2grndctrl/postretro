@@ -45,6 +45,7 @@ const UI_REACTIONS_LUAU: &str = include_str!("../../../sdk/lib/ui/reactions.luau
 const UI_WIDGETS_LUAU: &str = include_str!("../../../sdk/lib/ui/widgets.luau");
 const UI_LAYOUT_LUAU: &str = include_str!("../../../sdk/lib/ui/layout.luau");
 const UI_TREE_LUAU: &str = include_str!("../../../sdk/lib/ui/tree.luau");
+const UI_PRESENTATION_LUAU: &str = include_str!("../../../sdk/lib/ui/presentation.luau");
 const UI_STATE_LUAU: &str = include_str!("../../../sdk/lib/ui/state.luau");
 const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 
@@ -485,6 +486,8 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let ui_layout = eval_lua_table(lua, UI_LAYOUT_LUAU, "sdk/lib/ui/layout.luau")?;
     globals.set("__postretroUnwrapThemeToken", LuaValue::Nil)?;
     let ui_tree = eval_lua_table(lua, UI_TREE_LUAU, "sdk/lib/ui/tree.luau")?;
+    let ui_presentation =
+        eval_lua_table(lua, UI_PRESENTATION_LUAU, "sdk/lib/ui/presentation.luau")?;
     let ui_state = eval_lua_table(lua, UI_STATE_LUAU, "sdk/lib/ui/state.luau")?;
 
     let runtime: LuaValue = lua
@@ -519,6 +522,17 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     )?;
     copy_lua_fields(&ui, &ui_layout, &["VStack", "HStack", "Grid"])?;
     copy_lua_fields(&ui, &ui_tree, &["Tree", "defineUiTree"])?;
+    copy_lua_fields(
+        &ui,
+        &ui_presentation,
+        &[
+            "definePresentationTemplate",
+            "fact",
+            "damagedEnemies",
+            "defineOverlay",
+        ],
+    )?;
+    copy_lua_fields(&ui, &data, &["present"])?;
     copy_lua_fields(
         &ui,
         &ui_state,
@@ -1531,6 +1545,30 @@ mod tests {
             &table(),
         )
         .expect("nested SDK module mutations fail like runtime");
+        assert_eq!(manifest.lights[0].index, 2);
+    }
+
+    // Regression: compiler-time postretro/ui omitted the presentation fact API.
+    #[test]
+    fn luau_virtual_ui_module_exports_presentation_fact_api() {
+        let source = r#"
+            local Postretro = require("postretro")
+            local Ui = require("postretro/ui")
+            local value = Ui.fact.number("damage", { format = "{}" })
+            function setupLevel(_)
+              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              return { reactions = {
+                Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
+              } }
+            end
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("compiler-time postretro/ui exposes fact");
         assert_eq!(manifest.lights[0].index, 2);
     }
 

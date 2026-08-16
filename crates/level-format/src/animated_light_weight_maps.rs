@@ -3,7 +3,7 @@
 // tuples. Baked by the animator at compile time; composed at runtime into an
 // animated lightmap contribution atlas.
 //
-// See: context/plans/in-progress/animated-lightmap-array-atlas/index.md
+// Format inventory: context/lib/build_pipeline.md §PRL section IDs.
 
 use crate::FormatError;
 
@@ -162,20 +162,25 @@ impl AnimatedLightWeightMapsSection {
             return false;
         }
 
-        let expected_offset_counts_len: u32 =
-            self.chunk_rects.iter().map(|r| r.width * r.height).sum();
-
-        if self.offset_counts.len() as u32 != expected_offset_counts_len {
-            return false;
-        }
-
-        // Verify chunk texel offsets form a valid partition.
-        let mut expected_offset = 0;
+        // Verify chunk texel offsets form a valid partition. Checked arithmetic
+        // keeps malformed wire values from panicking in debug builds before the
+        // runtime boundary can reject them.
+        let mut expected_offset = 0_u32;
         for chunk in &self.chunk_rects {
             if chunk.texel_offset != expected_offset {
                 return false;
             }
-            expected_offset += chunk.width * chunk.height;
+            let Some(area) = chunk.width.checked_mul(chunk.height) else {
+                return false;
+            };
+            let Some(next_offset) = expected_offset.checked_add(area) else {
+                return false;
+            };
+            expected_offset = next_offset;
+        }
+
+        if self.offset_counts.len() != expected_offset as usize {
+            return false;
         }
 
         // Verify every (offset, count) pair is in bounds within texel_lights.
@@ -654,6 +659,13 @@ mod tests {
     fn consistency_check_fails_when_chunk_layer_has_no_slot() {
         let mut section = sample_section();
         section.chunk_rects[1].layer = 9;
+        assert!(!section.is_consistent());
+    }
+
+    #[test]
+    fn consistency_check_fails_when_occupied_layers_have_empty_slot_table() {
+        let mut section = sample_section();
+        section.slot_to_static_layer.clear();
         assert!(!section.is_consistent());
     }
 

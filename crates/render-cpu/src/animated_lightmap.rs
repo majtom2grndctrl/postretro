@@ -75,6 +75,15 @@ pub fn validate_cross_section(
     slot_to_static_layer: &[u32],
     atlas_dimensions: (u32, u32),
 ) -> Result<(), String> {
+    if !slot_to_static_layer
+        .windows(2)
+        .all(|layers| layers[0] < layers[1])
+    {
+        return Err(
+            "animated slot table must be sorted in ascending order and duplicate-free".to_owned(),
+        );
+    }
+
     match animated_chunks {
         Some(chunks) => {
             if section.chunk_rects.len() != chunks.chunks.len() {
@@ -142,6 +151,14 @@ pub fn validate_cross_section(
                 )
             })?)
             .ok_or_else(|| format!("chunk_rects prefix sum overflow at index {i}"))?;
+    }
+    if let Some(unoccupied_layer) = slot_to_static_layer
+        .iter()
+        .find(|&&layer| !section.chunk_rects.iter().any(|rect| rect.layer == layer))
+    {
+        return Err(format!(
+            "animated slot table layer {unoccupied_layer} has no chunk rectangle",
+        ));
     }
     if section.offset_counts.len() as u32 != running {
         return Err(format!(
@@ -387,6 +404,58 @@ mod tests {
 
         let err = validate_cross_section(&section, Some(&chunks), 0, &[0], (8, 8)).unwrap_err();
         assert!(err.contains("absent from the animated slot table"));
+    }
+
+    fn two_layer_section() -> AnimatedLightWeightMapsSection {
+        let mut first = mk_rect(1, 1, 0);
+        first.layer = 2;
+        let mut second = mk_rect(1, 1, 1);
+        second.layer = 9;
+        mk_section(
+            vec![first, second],
+            vec![
+                TexelLightEntry {
+                    offset: 0,
+                    count: 0,
+                };
+                2
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_empty_slot_table_for_occupied_layers() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[], (8, 8)).unwrap_err();
+        assert!(err.contains("absent from the animated slot table"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_unsorted_slot_table() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[9, 2], (8, 8)).unwrap_err();
+        assert!(err.contains("sorted in ascending order"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_duplicate_slot_table_entry() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err =
+            validate_cross_section(&section, Some(&chunks), 0, &[2, 2, 9], (8, 8)).unwrap_err();
+        assert!(err.contains("duplicate-free"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_unoccupied_slot_table_entry() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err =
+            validate_cross_section(&section, Some(&chunks), 0, &[2, 7, 9], (8, 8)).unwrap_err();
+        assert!(err.contains("layer 7 has no chunk rectangle"));
     }
 
     #[test]

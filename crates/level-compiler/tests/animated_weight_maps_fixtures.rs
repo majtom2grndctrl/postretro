@@ -5,7 +5,8 @@
 //!
 //! These are integration-level compile-then-load smoke tests. Unit tests under
 //! `src/animated_light_weight_maps.rs` cover the baker in isolation; the
-//! runtime validator is unit-tested under `postretro/src/render/animated_lightmap.rs`.
+//! render-CPU cross-section validator is unit-tested under
+//! `render-cpu/src/animated_lightmap.rs`.
 //!
 //! See: context/lib/build_pipeline.md
 

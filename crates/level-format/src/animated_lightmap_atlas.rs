@@ -1,5 +1,5 @@
-// Shared sizing and budget rules for the runtime animated-lightmap atlas.
-// See: context/plans/in-progress/animated-lightmap-array-atlas/index.md
+// Shared sizing and budget rules for animated-lightmap atlases.
+// PRL lightmap pipeline: `context/lib/build_pipeline.md`.
 
 /// Bytes occupied by one animated-lightmap texel: `Rgba16Float` irradiance
 /// (8 bytes) plus `Rgba8Unorm` dominant direction (4 bytes).

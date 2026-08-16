@@ -285,6 +285,10 @@ pub(crate) fn build_full_renderer(
         },
         "animated lightmap initialization",
     );
+    let installed_slot_to_static_layer = animated_lightmap::installed_slot_to_static_layer(
+        animated_lightmap.is_active(),
+        slot_to_static_layer,
+    );
 
     // Group 4: lightmap atlas. Animated-contribution atlas at binding 3 (real or 1×1 zero dummy).
     let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(device);
@@ -296,7 +300,7 @@ pub(crate) fn build_full_renderer(
         &lightmap_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
-        slot_to_static_layer,
+        installed_slot_to_static_layer,
     );
     let shadowmask_present = lightmap_resources.shadowmask_present;
 

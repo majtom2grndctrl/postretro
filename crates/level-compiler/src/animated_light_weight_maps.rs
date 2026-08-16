@@ -603,11 +603,13 @@ mod tests {
     use crate::lightmap_bake::pack_layers;
     use crate::map_data::{FalloffModel, LightAnimation, LightType};
     use glam::DVec3;
+    use log::Level;
     use postretro_level_format::animated_light_chunks::{
         AnimatedLightChunk, AnimatedLightChunksSection,
     };
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use postretro_test_log_capture::LogCapture;
 
     fn xz_quad_face(y: f32, normal_y: f32, vertex_base: f32) -> Vec<Vertex> {
         let n = [0.0, normal_y, 0.0];
@@ -1086,6 +1088,20 @@ mod tests {
         let repeated = bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
             .expect("repeated fixture animated atlas must fit the production budget");
         assert_eq!(section.to_bytes(), repeated.to_bytes());
+    }
+
+    #[test]
+    fn real_multi_layer_bake_logs_static_layer_and_animated_slot_counts() {
+        let capture = LogCapture::start();
+
+        bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
+            .expect("fixture animated atlas must fit the production budget");
+
+        capture.assert_logged_once(
+            Level::Info,
+            "[AnimatedLightWeightMaps] 2 static atlas layers",
+        );
+        capture.assert_logged_once(Level::Info, "2 animated slots");
     }
 
     #[test]

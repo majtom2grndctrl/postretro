@@ -464,6 +464,10 @@ impl Renderer {
             },
             "animated lightmap install",
         );
+        let installed_slot_to_static_layer = animated_lightmap::installed_slot_to_static_layer(
+            animated_lightmap.is_active(),
+            slot_to_static_layer,
+        );
         full.lightmap_resources = LightmapResources::new(
             device,
             queue,
@@ -472,7 +476,7 @@ impl Renderer {
             &lightmap_bgl,
             &animated_lightmap.forward_view,
             &animated_lightmap.direction_forward_view,
-            slot_to_static_layer,
+            installed_slot_to_static_layer,
         );
         full.shadowmask_present = full.lightmap_resources.shadowmask_present;
         full.animated_lightmap = animated_lightmap;

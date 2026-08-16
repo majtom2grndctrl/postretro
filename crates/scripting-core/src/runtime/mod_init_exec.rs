@@ -11,6 +11,7 @@ use crate::data_descriptors::{
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
     drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
@@ -253,6 +254,21 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let presentation_overlays = match drain_presentation_overlays_js(
+            &ctx,
+            &obj,
+            "default mod manifest export",
+        ) {
+            Ok(overlays) => overlays,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `presentationOverlays` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let theme = match drain_theme_js(&obj, "default mod manifest export") {
             Ok(t) => t,
             Err(e) => {
@@ -385,6 +401,7 @@ pub(super) fn run_mod_init_quickjs(
             entities,
             ui_trees,
             presentation_templates,
+            presentation_overlays,
             theme,
             frontend,
             fonts,
@@ -542,6 +559,14 @@ pub(super) fn run_mod_init_luau(
                 ),
             }
         })?;
+    let presentation_overlays =
+        drain_presentation_overlays_lua(&table, "returned mod manifest").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `presentationOverlays` invalid: {e}"
+                ),
+            }
+        })?;
     let theme = drain_theme_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `theme` invalid: {e}"),
@@ -634,6 +659,7 @@ pub(super) fn run_mod_init_luau(
         entities,
         ui_trees,
         presentation_templates,
+        presentation_overlays,
         theme,
         frontend,
         fonts,

@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use super::super::data_descriptors::{
-    EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, PresentationTemplate,
-    RegisteredUiTree, SwitchingDescriptor, TriggerPoolDescriptor,
+    EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, PresentationOverlay,
+    PresentationTemplate, RegisteredUiTree, SwitchingDescriptor, TriggerPoolDescriptor,
 };
 use super::super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::super::runtime::{Frontend, ModMapEntry, ModMoverDefaults, ModRenderProfile};
@@ -55,6 +55,7 @@ pub struct StagedManifest {
     pub trigger_pools: Vec<TriggerPoolDescriptor>,
     pub ui_trees: Vec<RegisteredUiTree>,
     pub presentation_templates: Vec<PresentationTemplate>,
+    pub presentation_overlays: Vec<PresentationOverlay>,
     pub theme: ModThemeTokens,
     pub frontend: Option<Frontend>,
     pub store_declarations: StoreDeclarationSet,

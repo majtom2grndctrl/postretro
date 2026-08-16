@@ -698,6 +698,8 @@ declare module "postretro" {
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
     presentationTemplates?: ReadonlyArray<PresentationTemplate>;
+    /** Fact-driven host/single-player enemy-status overlays. */
+    presentationOverlays?: ReadonlyArray<PresentationOverlay>;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
@@ -1451,6 +1453,21 @@ declare module "postretro" {
     motion: { rise: number; easing: PresentationEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
+    /** Overlay-only authored socket and vertical world offset. */
+    worldAnchor?: { socket: string; offsetY: number };
+  };
+  /** Recently damaged target source. Shield values remain raw IR expressions. */
+  export type DamagedEnemiesOverlay = {
+    kind: "damagedEnemies";
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: { value: RuntimeValue; max: RuntimeValue };
+  };
+  /** Passive target-keyed overlay declaration consumed only by the host. */
+  export type PresentationOverlay = {
+    over: DamagedEnemiesOverlay;
+    template: string;
+    maxVisible: number;
   };
   /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
@@ -1756,6 +1773,7 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
+    worldAnchor?: { socket: string; offsetY: number };
   };
   export type PresentationTemplate<Name extends string = string> = Readonly<{
     id: Name;
@@ -1764,9 +1782,34 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
+    worldAnchor?: { socket: string; offsetY: number };
+  }>;
+  export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
+  export type DamagedEnemiesProps = {
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: {
+      value: (entity: OverlayEntity) => RuntimeValue;
+      max: (entity: OverlayEntity) => RuntimeValue;
+    };
+  };
+  export type DamagedEnemiesSource = Readonly<{
+    kind: "damagedEnemies";
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: { value: RuntimeValue; max: RuntimeValue };
+  }>;
+  export type PresentationOverlay = Readonly<{
+    over: DamagedEnemiesSource;
+    template: string;
+    maxVisible: number;
   }>;
   /** TypeScript derives the stable id from a direct const binding. */
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
+  /** Build an event-driven target source for a host/single-player status overlay. */
+  export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
+  /** Bind an overlay source to a world-anchored presentation template. */
+  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
   /** Add a passive visual effect to an impact policy `do:` array. */
   export function present(template: PresentationTemplate, value: NumberValue): Effect;
 

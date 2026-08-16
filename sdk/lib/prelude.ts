@@ -74,8 +74,12 @@ export { Tree, defineUiTree } from "./ui/tree";
 export type {
   PresentationTemplateProps,
   PresentationTemplate,
+  OverlayEntity,
+  DamagedEnemiesProps,
+  DamagedEnemiesSource,
+  PresentationOverlay,
 } from "./ui/presentation";
-export { definePresentationTemplate } from "./ui/presentation";
+export { defineOverlay, definePresentationTemplate, damagedEnemies } from "./ui/presentation";
 export { present } from "./data_script";
 
 export type {

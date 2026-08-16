@@ -213,7 +213,11 @@ const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
 
 /// Passive presentation-template builder exported through `postretro/ui`.
-const UI_PRESENTATION_FIELDS: &[&str] = &["definePresentationTemplate"];
+const UI_PRESENTATION_FIELDS: &[&str] = &[
+    "definePresentationTemplate",
+    "damagedEnemies",
+    "defineOverlay",
+];
 
 /// Data-script impact builder exposed only through `postretro/ui`, not as a
 /// root/bare global alongside the ordinary data declarations.
@@ -255,6 +259,8 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "Tree",
     "defineUiTree",
     "definePresentationTemplate",
+    "damagedEnemies",
+    "defineOverlay",
     "present",
     "getGameState",
     "bindState",

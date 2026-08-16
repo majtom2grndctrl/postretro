@@ -239,6 +239,49 @@ impl HitZoneStore {
         self.models.get(model)
     }
 
+    /// Resolve one authored socket (or a matching joint-zone tag) to its
+    /// current world-space position using the same CPU-only pose sampler as
+    /// hit-zone probes. This is deliberately on-demand: overlays sample only
+    /// their bounded tracked set and never introduce a per-frame pose pass.
+    pub(crate) fn posed_socket_world(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        socket: &str,
+        anim_time: f64,
+    ) -> Option<Vec3> {
+        let transform = registry.get_component::<Transform>(entity).ok()?;
+        let mesh = registry.get_component::<MeshComponent>(entity).ok()?;
+        let model = self.get_by_name(&mesh.model)?;
+        let binding = model.sockets.get(socket).cloned().or_else(|| {
+            model
+                .joint_zones
+                .iter()
+                .enumerate()
+                .find_map(|(index, zone)| {
+                    zone.as_ref()
+                        .filter(|zone| zone.tag == socket)
+                        .map(|_| SocketBinding::SkinnedJoint(index))
+                })
+        })?;
+        let model_to_world = model_matrix(transform, mesh.origin_offset)?;
+        match binding {
+            SocketBinding::SkinnedJoint(index) => {
+                let pose = sample_world_pose_for_probe(
+                    model,
+                    mesh.animation.as_ref(),
+                    anim_time,
+                    entity.to_raw(),
+                )?;
+                let joint = pose.get(index)?;
+                Some((model_to_world * *joint).transform_point3(Vec3::ZERO))
+            }
+            SocketBinding::RigidRest(rest) => {
+                Some((model_to_world * rest).transform_point3(Vec3::ZERO))
+            }
+        }
+    }
+
     /// Record a load-time attachment diagnostic if it has not already been
     /// emitted for this level. Returns `true` exactly for the first occurrence
     /// of `key`; callers own the corresponding log message.

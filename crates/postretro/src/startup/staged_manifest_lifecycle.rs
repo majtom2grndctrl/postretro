@@ -114,6 +114,13 @@ impl App {
                     StagedManifestBuildStatus::NoStartScript => Vec::new(),
                     StagedManifestBuildStatus::Failed => Vec::new(),
                 };
+                let presentation_overlays = match &result.status {
+                    StagedManifestBuildStatus::Built(manifest) => {
+                        manifest.presentation_overlays.clone()
+                    }
+                    StagedManifestBuildStatus::NoStartScript => Vec::new(),
+                    StagedManifestBuildStatus::Failed => Vec::new(),
+                };
                 if let Some(session) = self.session.as_mut() {
                     let mod_id = session
                         .scripting
@@ -129,6 +136,11 @@ impl App {
                         .scripting
                         .impact_policy_runtime
                         .replace_presentation_templates(presentation_templates.clone());
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .replace_presentation_overlays(presentation_overlays);
+                    session.presentation_pool.clear_overlays();
                 }
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.set_presentation_templates(presentation_templates);
@@ -224,6 +236,7 @@ mod tests {
                 trigger_pools: Vec::new(),
                 ui_trees: Vec::new(),
                 presentation_templates: Vec::new(),
+                presentation_overlays: Vec::new(),
                 theme: Default::default(),
                 frontend: None,
                 store_declarations: Default::default(),

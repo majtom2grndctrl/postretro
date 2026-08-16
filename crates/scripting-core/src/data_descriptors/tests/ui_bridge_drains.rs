@@ -62,6 +62,49 @@ fn malformed_presentation_template_degrades_at_manifest_drain() {
 }
 
 #[test]
+fn damaged_enemy_overlay_wire_matches_luau_factory_and_malformed_entries_degrade() {
+    let from_js = eval_js(
+        r#"({ over: { kind: "damagedEnemies", lingerMs: 500, hideAtFull: true }, template: "enemyStatus", maxVisible: 2 })"#,
+        |ctx, value| presentation_overlay_from_js(ctx, value).expect("JS overlay must parse"),
+    );
+
+    const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");
+    let lua = mlua::Lua::new();
+    let presentation: mlua::Table = lua
+        .load(PRESENTATION_SRC)
+        .eval()
+        .expect("presentation SDK must evaluate");
+    lua.globals().set("P", presentation).unwrap();
+    let from_lua = presentation_overlay_from_lua(
+        lua.load(
+            r#"return P.defineOverlay({
+                over = P.damagedEnemies({ lingerMs = 500, hideAtFull = true }),
+                template = P.definePresentationTemplate("enemyStatus", {
+                    root = { kind = "spacer" }, lifetimeMs = 500,
+                    motion = { rise = 0, easing = "linear" }, fade = { startMs = 0 },
+                    spawnScatter = { radius = 0 },
+                    worldAnchor = { socket = "head", offsetY = 0 },
+                }),
+                maxVisible = 2,
+            })"#,
+        )
+        .eval::<LuaValue>()
+        .expect("Luau overlay factory must produce data"),
+    )
+    .expect("Luau overlay must parse");
+    assert_eq!(from_js, from_lua);
+
+    let overlays = eval_js(
+        r#"({ presentationOverlays: [{ over: { kind: "damagedEnemies", lingerMs: 1, hideAtFull: false }, template: "enemyStatus", maxVisible: 0 }] })"#,
+        |ctx, value| {
+            let object = Object::from_value(value).unwrap();
+            drain_presentation_overlays_js(ctx, &object, "test manifest").unwrap()
+        },
+    );
+    assert!(overlays.is_empty());
+}
+
+#[test]
 fn js_bridge_capture_envelope_and_interactive_widgets_round_trip() {
     // A capture-mode tree with initialFocus + a grid of interactive widgets,
     // covering button/slider/bar, color tokens, binds, and styleRanges.

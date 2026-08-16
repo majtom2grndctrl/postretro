@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
-    PresentationTemplate, RegisteredUiTree, SwitchingDescriptor, TriggerEventDescriptor,
-    TriggerPoolDescriptor,
+    PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
+    TriggerEventDescriptor, TriggerPoolDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -93,6 +93,9 @@ pub struct ModManifestResult {
     /// They are resolved by the impact planner and renderer; unlike UI trees,
     /// they never enter the modal/input registry.
     pub presentation_templates: Vec<PresentationTemplate>,
+    /// Fact-driven passive overlay bindings. Their runtime state is owned by
+    /// the app-side presentation pool, never the retained UI tree registry.
+    pub presentation_overlays: Vec<PresentationOverlay>,
     /// Theme tokens from the mod manifest's `theme` field. Default (empty) when
     /// absent. Drained into the `ThemeDescriptor` merge by the boot caller.
     pub theme: ModThemeTokens,

@@ -2894,6 +2894,28 @@ impl ApplicationHandler for App {
                     &mut pending_weapon_script_events,
                 );
 
+                // Status overlays are host/single-player presentation facts.
+                // This runs once after every fixed tick (including zero-tick
+                // frames), so a same-frame damage refresh is stamped before
+                // Render while a create-then-kill is removed before it draws.
+                if !self.is_connected_client() {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let registry = script_ctx.registry.borrow();
+                    let (scripting, presentation_pool, hit_zone_store) = (
+                        &mut session.scripting,
+                        &mut session.presentation_pool,
+                        &session.hit_zone_store,
+                    );
+                    scripting
+                        .impact_policy_runtime
+                        .update_damaged_enemy_overlays(
+                            presentation_pool,
+                            &registry,
+                            hit_zone_store,
+                            frame_anim_time,
+                        );
+                }
+
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
@@ -9918,6 +9940,7 @@ mod tests {
                     trigger_pools: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
                     presentation_templates: Vec::new(),
+                    presentation_overlays: Vec::new(),
                     theme: ModThemeTokens {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),
                         ..Default::default()

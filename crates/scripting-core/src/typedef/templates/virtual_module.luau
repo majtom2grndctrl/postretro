@@ -34,6 +34,10 @@ export type PostretroUiModule = {
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   --- Build an explicit-id passive presentation template. It is manifest data, not a modal UI tree.
   definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
+  --- Build a target-keyed host/single-player damaged-enemy source.
+  damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
+  --- Bind an overlay source to a socket-anchored presentation template.
+  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
   --- Add a passive visual effect to an impact policy `do` array.
   present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),

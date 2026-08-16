@@ -620,6 +620,45 @@ pub fn drain_presentation_templates_lua(
     Ok(out)
 }
 
+/// Luau twin of [`drain_presentation_overlays_js`]. Optional combat visuals
+/// contain malformed entries instead of rejecting the mod manifest.
+pub fn drain_presentation_overlays_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<PresentationOverlay>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "presentationOverlays", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = dense_lua_prefix_len(&arr, "presentationOverlays", scope)?;
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+        match presentation_overlay_from_lua(value) {
+            Ok(overlay) => out.push(overlay),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: `presentationOverlays[{i}]` is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    log_lua_array_extras(&arr, len, "presentationOverlays", scope)?;
+    Ok(out)
+}
+
+pub fn presentation_overlay_from_lua(
+    value: LuaValue,
+) -> Result<PresentationOverlay, DescriptorError> {
+    let json = conv::lua_to_json(value).map_err(lua_err)?;
+    let overlay = serde_json::from_value::<PresentationOverlay>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation overlay must match its descriptor shape: {error}"),
+        }
+    })?;
+    overlay
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(overlay)
+}
+
 /// Deserialize one Luau presentation template through the standard VM-free
 /// bridge, then validate its authored timing and motion bounds.
 pub fn presentation_template_from_lua(

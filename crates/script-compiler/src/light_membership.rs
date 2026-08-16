@@ -522,7 +522,15 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     )?;
     copy_lua_fields(&ui, &ui_layout, &["VStack", "HStack", "Grid"])?;
     copy_lua_fields(&ui, &ui_tree, &["Tree", "defineUiTree"])?;
-    copy_lua_fields(&ui, &ui_presentation, &["definePresentationTemplate"])?;
+    copy_lua_fields(
+        &ui,
+        &ui_presentation,
+        &[
+            "definePresentationTemplate",
+            "damagedEnemies",
+            "defineOverlay",
+        ],
+    )?;
     copy_lua_fields(&ui, &data, &["present"])?;
     copy_lua_fields(
         &ui,

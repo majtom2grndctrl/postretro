@@ -1,7 +1,7 @@
 // Runtime-side manifest types that embed render::ui descriptor data.
 // See: context/lib/scripting.md §13 (Crate Architecture)
 
-use postretro_foundation::PresentationEasing;
+use postretro_foundation::{IrNode, PresentationEasing};
 use serde::{Deserialize, Serialize};
 
 use crate::ui::descriptor::{AnchoredTree, Widget};
@@ -39,6 +39,11 @@ pub struct PresentationTemplate {
     pub motion: PresentationTemplateMotion,
     pub fade: PresentationTemplateFade,
     pub spawn_scatter: PresentationTemplateSpawnScatter,
+    /// Overlay-only anchor metadata. Spawn presentation continues to use the
+    /// impact target's transform directly, so omitting this remains valid for
+    /// a number/toast template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_anchor: Option<PresentationWorldAnchor>,
 }
 
 impl PresentationTemplate {
@@ -59,6 +64,9 @@ impl PresentationTemplate {
             return Err(
                 "presentation template `fade.startMs` must not exceed `lifetimeMs`".to_string(),
             );
+        }
+        if let Some(anchor) = &self.world_anchor {
+            anchor.validate()?;
         }
         Ok(())
     }
@@ -81,6 +89,74 @@ pub struct PresentationTemplateFade {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PresentationTemplateSpawnScatter {
     pub radius: f32,
+}
+
+/// Model-local anchor selected by an overlay template. The host resolves the
+/// named socket (or a matching hit-zone tag) from CPU-side hit-zone data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresentationWorldAnchor {
+    pub socket: String,
+    pub offset_y: f32,
+}
+
+impl PresentationWorldAnchor {
+    fn validate(&self) -> Result<(), String> {
+        if self.socket.is_empty() {
+            return Err("presentation template `worldAnchor.socket` must be nonempty".to_string());
+        }
+        if !self.offset_y.is_finite() {
+            return Err("presentation template `worldAnchor.offsetY` must be finite".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// One fact-driven passive overlay declaration from `ModManifest.presentationOverlays`.
+/// It is host-local authoring data, never a transport payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresentationOverlay {
+    pub over: PresentationOverlaySource,
+    pub template: String,
+    pub max_visible: usize,
+}
+
+impl PresentationOverlay {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.template.is_empty() {
+            return Err("presentation overlay `template` must be nonempty".to_string());
+        }
+        if self.max_visible == 0 {
+            return Err("presentation overlay `maxVisible` must be at least 1".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PresentationOverlaySource {
+    DamagedEnemies(DamagedEnemiesOverlay),
+}
+
+/// Event-driven enemy status overlay configuration. `shield` carries raw IR
+/// expressions; the host binds them against one entity's `@state.*` namespace
+/// and computes the safe fraction at the post-tick sample point.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DamagedEnemiesOverlay {
+    pub linger_ms: u32,
+    pub hide_at_full: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shield: Option<DamagedEnemiesShield>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DamagedEnemiesShield {
+    pub value: IrNode,
+    pub max: IrNode,
 }
 
 /// The full bundle returned by a level's `setupLevel(ctx)` export.

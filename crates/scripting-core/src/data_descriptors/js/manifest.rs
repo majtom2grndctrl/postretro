@@ -748,6 +748,46 @@ pub fn drain_presentation_templates_js<'js>(
     Ok(out)
 }
 
+/// Drain fact-driven presentation overlays. Like templates, an invalid entry
+/// is contained so one optional combat visual cannot reject the full manifest.
+pub fn drain_presentation_overlays_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<PresentationOverlay>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "presentationOverlays", scope)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let value: JsValue = arr.get(i).map_err(js_err)?;
+        match presentation_overlay_from_js(ctx, value) {
+            Ok(overlay) => out.push(overlay),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: `presentationOverlays[{i}]` is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    Ok(out)
+}
+
+pub fn presentation_overlay_from_js<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<PresentationOverlay, DescriptorError> {
+    let json = conv::js_to_json(ctx, value).map_err(js_err)?;
+    let overlay = serde_json::from_value::<PresentationOverlay>(json).map_err(|error| {
+        DescriptorError::InvalidShape {
+            reason: format!("presentation overlay must match its descriptor shape: {error}"),
+        }
+    })?;
+    overlay
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(overlay)
+}
+
 /// Deserialize a manifest template through the normal VM-free JSON bridge.
 /// The descriptor stays renderer-data only; this conversion never creates UI
 /// input/focus state.

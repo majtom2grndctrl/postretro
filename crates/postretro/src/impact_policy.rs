@@ -5,17 +5,23 @@ use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
 use postretro_entities::{
-    EntityRegistry, PresentationFact, PresentationFade, PresentationMotion, PresentationPresenter,
-    PresentationSpawn, PresentationTemplateHandle, ScriptCtx, SlotValue, Transform,
+    EntityId, EntityRegistry, PresentationFact, PresentationFacts, PresentationFade,
+    PresentationMotion, PresentationPresenter, PresentationSpawn, PresentationTemplateHandle,
+    ScriptCtx, SlotValue, Transform,
 };
 use postretro_foundation::ir::{
-    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
+    BakedIr, BindingScope, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue,
+    ResolvedInput, ResolvedOutput, bind, eval_value,
 };
 use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
-use postretro_scripting_core::data_descriptors::PresentationTemplate;
+use postretro_scripting_core::data_descriptors::{
+    DamagedEnemiesOverlay, PresentationOverlay, PresentationOverlaySource, PresentationTemplate,
+    PresentationWorldAnchor,
+};
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use postretro_scripting_core::store_bridge::validate_slot_value;
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
@@ -33,6 +39,11 @@ pub(crate) struct ImpactPolicyRuntime {
     mod_id: Option<String>,
     global_events: Vec<ImpactEventDescriptor>,
     presentation_templates: HashMap<String, PresentationTemplate>,
+    presentation_overlays: Vec<BoundPresentationOverlay>,
+    /// Dispatch-driven tracking input. This is populated at the same
+    /// synchronous impact evaluation point as `present`, never by taking the
+    /// destructive registry dispatch queue a second time.
+    pending_overlay_damage: Vec<EntityId>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
     scope: EntityScope,
@@ -51,6 +62,79 @@ struct BoundImpactPolicy {
 struct BoundGroup {
     when: Option<BoundProgram<EntityScope>>,
     effects: Vec<BoundEffect>,
+}
+
+struct BoundPresentationOverlay {
+    template: PresentationTemplateHandle,
+    world_anchor: PresentationWorldAnchor,
+    max_visible: usize,
+    linger_seconds: f64,
+    hide_at_full: bool,
+    scope: OverlayStateScope,
+    shield: Option<BoundOverlayShield>,
+}
+
+struct BoundOverlayShield {
+    value: BoundProgram<OverlayStateScope>,
+    max: BoundProgram<OverlayStateScope>,
+}
+
+/// Read-only per-entity state scope used by `damagedEnemies.shield`. Keeping
+/// it local to the presentation adopter prevents overlay expressions from
+/// accidentally acquiring impact facts, store reads, or write handles.
+#[derive(Default)]
+struct OverlayStateScope {
+    names: RefCell<Vec<String>>,
+    values: RefCell<Vec<f32>>,
+}
+
+impl OverlayStateScope {
+    fn seed(&self, registry: &EntityRegistry, entity: EntityId) {
+        let state = registry
+            .get_component::<postretro_entities::EntityStateComponent>(entity)
+            .ok();
+        let names = self.names.borrow();
+        let mut values = self.values.borrow_mut();
+        for (index, name) in names.iter().enumerate() {
+            values[index] = state.map_or(0.0, |state| state.get(name));
+        }
+    }
+}
+
+impl BindingScope for OverlayStateScope {
+    type InputHandle = usize;
+    type OutputHandle = ();
+
+    fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        let state_name = name.strip_prefix("@state.")?;
+        if state_name.is_empty() {
+            return None;
+        }
+        let mut names = self.names.borrow_mut();
+        let index = names
+            .iter()
+            .position(|bound| bound == state_name)
+            .unwrap_or_else(|| {
+                let index = names.len();
+                names.push(state_name.to_owned());
+                self.values.borrow_mut().push(0.0);
+                index
+            });
+        Some(ResolvedInput {
+            handle: index,
+            ir_type: IrType::Number,
+        })
+    }
+
+    fn resolve_output(&self, _name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
+        None
+    }
+
+    fn read(&self, handle: &Self::InputHandle) -> IrValue {
+        IrValue::Number(self.values.borrow().get(*handle).copied().unwrap_or(0.0))
+    }
+
+    fn write(&mut self, _handle: &Self::OutputHandle, _value: IrValue) {}
 }
 
 enum BoundEffect {
@@ -112,6 +196,8 @@ impl ImpactPolicyRuntime {
             mod_id: None,
             global_events: Vec::new(),
             presentation_templates: HashMap::new(),
+            presentation_overlays: Vec::new(),
+            pending_overlay_damage: Vec::new(),
             level_events: Vec::new(),
             active_level_tags: Vec::new(),
             policies: Vec::new(),
@@ -170,6 +256,55 @@ impl ImpactPolicyRuntime {
     /// cache. Template widgets are never laid out in this policy runtime.
     pub(crate) fn presentation_templates(&self) -> Vec<PresentationTemplate> {
         self.presentation_templates.values().cloned().collect()
+    }
+
+    /// Replace the complete passive overlay declaration snapshot. Currently
+    /// one `damagedEnemies` source owns the EntityId-keyed overlay map; later
+    /// overlay source kinds can add their own disjoint key namespace instead of
+    /// making two declarations fight over one target key.
+    pub(crate) fn replace_presentation_overlays(&mut self, overlays: Vec<PresentationOverlay>) {
+        self.presentation_overlays.clear();
+        self.pending_overlay_damage.clear();
+        for overlay in overlays {
+            if !self.presentation_overlays.is_empty() {
+                log::warn!(
+                    "[Impact] additional presentation overlay was ignored: the damaged-enemy overlay key is EntityId"
+                );
+                continue;
+            }
+            if let Err(error) = overlay.validate() {
+                log::warn!("[Impact] presentation overlay was ignored: {error}");
+                continue;
+            }
+            let Some(template) = self.presentation_templates.get(&overlay.template) else {
+                log::warn!(
+                    "[Impact] presentation overlay template `{}` is not registered; overlay skipped",
+                    overlay.template
+                );
+                continue;
+            };
+            let Some(world_anchor) = template.world_anchor.clone() else {
+                log::warn!(
+                    "[Impact] presentation overlay template `{}` has no `worldAnchor`; overlay skipped",
+                    template.id
+                );
+                continue;
+            };
+            let source = match overlay.over {
+                PresentationOverlaySource::DamagedEnemies(source) => source,
+            };
+            match bind_damaged_enemies_overlay(
+                PresentationTemplateHandle::from(template.id.clone()),
+                world_anchor,
+                overlay.max_visible,
+                source,
+            ) {
+                Ok(binding) => self.presentation_overlays.push(binding),
+                Err(error) => {
+                    log::warn!("[Impact] presentation overlay was skipped during bind: {error}")
+                }
+            }
+        }
     }
 
     /// Replace the per-level descriptors after `setupLevel()` finishes. Global
@@ -265,6 +400,9 @@ impl ImpactPolicyRuntime {
         registry: &mut postretro_entities::EntityRegistry,
         dispatch: ImpactDispatch,
     ) {
+        if !self.presentation_overlays.is_empty() {
+            self.pending_overlay_damage.push(dispatch.target);
+        }
         let tags = {
             let Ok(tags) = registry.get_tags(dispatch.target) else {
                 return;
@@ -456,6 +594,195 @@ impl ImpactPolicyRuntime {
             scatter_radius: template.spawn_scatter.radius,
         });
     }
+
+    /// Consume dispatch-driven refreshes, then stamp only already-tracked
+    /// overlays once after all fixed ticks. This keeps the damage event edge
+    /// separate from the bounded per-frame health/shield read.
+    pub(crate) fn update_damaged_enemy_overlays(
+        &mut self,
+        pool: &mut crate::presentation_pool::PresentationPool,
+        registry: &EntityRegistry,
+        hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
+        anim_time: f64,
+    ) {
+        let pending_damage = std::mem::take(&mut self.pending_overlay_damage);
+        let Some(binding) = self.presentation_overlays.first_mut() else {
+            return;
+        };
+
+        for entity in pending_damage {
+            pool.refresh_overlay(
+                entity,
+                binding.template.clone(),
+                binding.linger_seconds,
+                binding.max_visible,
+            );
+        }
+
+        for entity in pool.tracked_overlay_ids() {
+            let Ok(health) = registry
+                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
+            else {
+                pool.evict_overlay(entity);
+                continue;
+            };
+            if health.current <= 0.0 {
+                pool.evict_overlay(entity);
+                continue;
+            }
+
+            let health_fraction = fraction_or_zero(health.current, health.max);
+            let (shield_fraction, has_shield) =
+                binding.shield.as_ref().map_or((0.0, false), |shield| {
+                    binding.scope.seed(registry, entity);
+                    let value = number_from_ir(eval_value(&shield.value, &binding.scope));
+                    let max = number_from_ir(eval_value(&shield.max, &binding.scope));
+                    let has_shield = max.is_finite() && max > 0.0;
+                    (
+                        has_shield
+                            .then(|| fraction_or_zero(value, max))
+                            .unwrap_or(0.0),
+                        has_shield,
+                    )
+                });
+            let Some(anchor) = overlay_anchor(
+                registry,
+                hit_zones,
+                entity,
+                &binding.world_anchor,
+                anim_time,
+            ) else {
+                pool.evict_overlay(entity);
+                continue;
+            };
+
+            let mut facts = PresentationFacts::new();
+            facts.insert(
+                "healthFraction".to_string(),
+                PresentationFact::Number(health_fraction),
+            );
+            facts.insert(
+                "shieldFraction".to_string(),
+                PresentationFact::Number(shield_fraction),
+            );
+            facts.insert("hasShield".to_string(), PresentationFact::Bool(has_shield));
+            pool.stamp_overlay(
+                entity,
+                facts,
+                anchor,
+                binding.hide_at_full && health.current == health.max,
+            );
+        }
+    }
+}
+
+fn bind_damaged_enemies_overlay(
+    template: PresentationTemplateHandle,
+    world_anchor: PresentationWorldAnchor,
+    max_visible: usize,
+    source: DamagedEnemiesOverlay,
+) -> Result<BoundPresentationOverlay, String> {
+    let scope = OverlayStateScope::default();
+    let linger_seconds = f64::from(source.linger_ms) / 1_000.0;
+    let hide_at_full = source.hide_at_full;
+    let shield = source
+        .shield
+        .map(|shield| {
+            let value = bind_overlay_number(&shield.value, &scope, "shield.value")?;
+            let max = bind_overlay_number(&shield.max, &scope, "shield.max")?;
+            Ok(BoundOverlayShield { value, max })
+        })
+        .transpose()?;
+    Ok(BoundPresentationOverlay {
+        template,
+        world_anchor,
+        max_visible,
+        linger_seconds,
+        hide_at_full,
+        scope,
+        shield,
+    })
+}
+
+fn bind_overlay_number(
+    root: &IrNode,
+    scope: &OverlayStateScope,
+    field: &str,
+) -> Result<BoundProgram<OverlayStateScope>, String> {
+    let program = bind(
+        &BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: None,
+            root: root.clone(),
+        },
+        scope,
+    )
+    .map_err(|error| format!("{field} is invalid: {error}"))?;
+    if program.root_type != IrType::Number {
+        return Err(format!("{field} must evaluate to a number"));
+    }
+    Ok(program)
+}
+
+fn number_from_ir(value: IrValue) -> f32 {
+    match value {
+        IrValue::Number(value) if value.is_finite() => value,
+        _ => 0.0,
+    }
+}
+
+fn fraction_or_zero(value: f32, max: f32) -> f32 {
+    if value.is_finite() && max.is_finite() && max > 0.0 {
+        let fraction = value / max;
+        fraction.is_finite().then_some(fraction).unwrap_or(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn overlay_anchor(
+    registry: &EntityRegistry,
+    hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
+    entity: EntityId,
+    anchor: &PresentationWorldAnchor,
+    anim_time: f64,
+) -> Option<glam::Vec3> {
+    let offset = glam::Vec3::Y * anchor.offset_y;
+    if let Some(socket) = hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time)
+    {
+        return Some(socket + offset);
+    }
+
+    let transform = registry.get_component::<Transform>(entity).ok()?;
+    if !transform.position.is_finite() {
+        return None;
+    }
+    if let Ok(health) =
+        registry.get_component::<postretro_entities::components::health::HealthComponent>(entity)
+        && let Some(hitbox) = &health.hitbox
+        && hitbox.offset.is_finite()
+        && hitbox.half_extents.is_finite()
+    {
+        let top =
+            transform.position + hitbox.offset + glam::Vec3::Y * hitbox.half_extents.y + offset;
+        if top.is_finite() {
+            return Some(top);
+        }
+    }
+
+    let mesh = registry
+        .get_component::<postretro_entities::components::mesh::MeshComponent>(entity)
+        .ok()?;
+    let bound = hit_zones.get_by_name(&mesh.model)?.derived_bound?;
+    let model_to_world =
+        crate::scripting_systems::hit_zones::model_matrix(transform, mesh.origin_offset)?;
+    let local_top = glam::Vec3::new(
+        (bound.min.x + bound.max.x) * 0.5,
+        bound.max.y,
+        (bound.min.z + bound.max.z) * 0.5,
+    );
+    let top = model_to_world.transform_point3(local_top) + offset;
+    top.is_finite().then_some(top)
 }
 
 fn policy_matches(policy: &BoundImpactPolicy, tags: &[String]) -> bool {
@@ -830,7 +1157,7 @@ mod tests {
     use super::*;
     use postretro_entities::components::ammo_reserve::AmmoReserve;
     use postretro_entities::components::health::{
-        DamageContext, HealthComponent, apply_damage_with_context,
+        DamageContext, HealthComponent, Hitbox, apply_damage_with_context,
     };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::data_descriptors::{
@@ -940,6 +1267,47 @@ mod tests {
             "spawnScatter": { "radius": 0.25 },
         }))
         .expect("presentation template test fixture must deserialize")
+    }
+
+    fn overlay_template(id: &str) -> PresentationTemplate {
+        let mut template = presentation_template(id);
+        template.world_anchor = Some(PresentationWorldAnchor {
+            socket: "status".to_string(),
+            offset_y: 0.25,
+        });
+        template
+    }
+
+    fn damaged_enemies_overlay(
+        template: &str,
+        shield: Option<DamagedEnemiesShield>,
+    ) -> PresentationOverlay {
+        PresentationOverlay {
+            over: PresentationOverlaySource::DamagedEnemies(DamagedEnemiesOverlay {
+                linger_ms: 500,
+                hide_at_full: true,
+                shield,
+            }),
+            template: template.to_string(),
+            max_visible: 2,
+        }
+    }
+
+    fn give_target_hitbox(ctx: &ScriptCtx, target: EntityId) {
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target has health")
+            .clone();
+        health.hitbox = Some(Hitbox {
+            half_extents: glam::Vec3::new(0.5, 1.5, 0.5),
+            offset: glam::Vec3::new(0.0, 0.25, 0.0),
+        });
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .expect("target is live");
     }
 
     fn number_slot(value: f32) -> SlotRecord {
@@ -1122,6 +1490,154 @@ mod tests {
         evaluate_pending(&ctx, &mut runtime);
 
         store(&ctx, "progress.xp")
+    }
+
+    #[test]
+    fn damaged_enemy_overlay_stamps_facts_uses_hitbox_fallback_and_evicts_dead_targets() {
+        use crate::presentation_pool::PresentationPool;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+
+        let ctx = ScriptCtx::new();
+        let enemy = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, enemy);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+
+        hit(&ctx, enemy, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+        }
+
+        assert_eq!(pool.tracked_overlay_ids(), [enemy]);
+        assert_eq!(
+            pool.overlay_facts(enemy)
+                .and_then(|facts| facts.get("healthFraction")),
+            Some(&PresentationFact::Number(0.99))
+        );
+        assert_eq!(pool.overlay_is_suppressed(enemy), Some(false));
+        assert_eq!(
+            pool.overlay_anchor(enemy),
+            Some(glam::Vec3::new(0.0, 2.0, 0.0))
+        );
+
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(enemy)
+            .expect("target has health")
+            .clone();
+        health.current = health.max;
+        ctx.registry
+            .borrow_mut()
+            .set_component(enemy, health)
+            .expect("target is live");
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+        }
+        assert_eq!(pool.overlay_is_suppressed(enemy), Some(true));
+
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(enemy)
+            .expect("target has health")
+            .clone();
+        health.current = 0.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(enemy, health)
+            .expect("target is live");
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+        }
+        assert!(pool.tracked_overlay_ids().is_empty());
+    }
+
+    #[test]
+    fn damaged_enemy_overlay_guards_zero_shield_max_and_same_frame_kills() {
+        use crate::presentation_pool::PresentationPool;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+
+        let shield = DamagedEnemiesShield {
+            value: IrNode::Input {
+                name: "@state.shield".to_string(),
+                owner: None,
+            },
+            max: IrNode::Input {
+                name: "@state.shieldMax".to_string(),
+                owner: None,
+            },
+        };
+        let ctx = ScriptCtx::new();
+        let enemy = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, enemy);
+        let mut entity_state = ctx
+            .registry
+            .borrow()
+            .get_component::<postretro_entities::EntityStateComponent>(enemy)
+            .expect("target state exists")
+            .clone();
+        entity_state.set("shield", 25.0);
+        entity_state.set("shieldMax", 0.0);
+        ctx.registry
+            .borrow_mut()
+            .set_component(enemy, entity_state)
+            .expect("target is live");
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay(
+            "enemy-status",
+            Some(shield),
+        )]);
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+
+        hit(&ctx, enemy, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+        }
+        let facts = pool
+            .overlay_facts(enemy)
+            .expect("damage stamps overlay facts");
+        assert_eq!(
+            facts.get("shieldFraction"),
+            Some(&PresentationFact::Number(0.0))
+        );
+        assert_eq!(facts.get("hasShield"), Some(&PresentationFact::Bool(false)));
+
+        let doomed = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, doomed);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(doomed)
+            .expect("doomed target has health")
+            .clone();
+        health.current = 1.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(doomed, health)
+            .expect("doomed target is live");
+        hit(&ctx, doomed, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+        }
+        assert!(
+            !pool.tracked_overlay_ids().contains(&doomed),
+            "a same-frame damage refresh must not draw a target killed by that hit"
+        );
     }
 
     #[test]

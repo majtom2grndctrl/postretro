@@ -2,6 +2,9 @@
 // constructing one never installs a UI tree, captures input, or performs GPU
 // work. The renderer later owns layout of `root` for each stamped spawn.
 
+import type { RuntimeValue } from "postretro";
+
+import { runtime } from "../runtime";
 import type { WidgetDescriptor, WidgetEasing } from "./widgets";
 
 export type PresentationTemplateProps = {
@@ -10,6 +13,8 @@ export type PresentationTemplateProps = {
   motion: { rise: number; easing: WidgetEasing };
   fade: { startMs: number };
   spawnScatter: { radius: number };
+  /** Required by an overlay consumer; ignored by event-spawn presentation. */
+  worldAnchor?: { socket: string; offsetY: number };
 };
 
 export type PresentationTemplate<Name extends string = string> = Readonly<{
@@ -19,6 +24,34 @@ export type PresentationTemplate<Name extends string = string> = Readonly<{
   motion: { rise: number; easing: WidgetEasing };
   fade: { startMs: number };
   spawnScatter: { radius: number };
+  worldAnchor?: { socket: string; offsetY: number };
+}>;
+
+export type OverlayEntity = Readonly<{
+  state(name: string): RuntimeValue;
+}>;
+
+export type DamagedEnemiesProps = {
+  lingerMs: number;
+  hideAtFull: boolean;
+  shield?: {
+    value: (entity: OverlayEntity) => RuntimeValue;
+    max: (entity: OverlayEntity) => RuntimeValue;
+  };
+};
+
+export type DamagedEnemiesSource = Readonly<{
+  kind: "damagedEnemies";
+  lingerMs: number;
+  hideAtFull: boolean;
+  shield?: { value: RuntimeValue; max: RuntimeValue };
+}>;
+
+export type PresentationOverlay = Readonly<{
+  over: DamagedEnemiesSource;
+  /** Stable id copied from the template; the template stays in presentationTemplates. */
+  template: string;
+  maxVisible: number;
 }>;
 
 const BINDING_NAME_SUGAR_DIAGNOSTIC =
@@ -62,6 +95,15 @@ function validateProps(props: PresentationTemplateProps): void {
   if (props.spawnScatter.radius < 0) {
     throw new TypeError("definePresentationTemplate: `spawnScatter.radius` must be non-negative");
   }
+  if (props.worldAnchor !== undefined) {
+    if (props.worldAnchor === null || typeof props.worldAnchor !== "object") {
+      throw new TypeError("definePresentationTemplate: `worldAnchor` must be an object");
+    }
+    if (typeof props.worldAnchor.socket !== "string" || props.worldAnchor.socket.length === 0) {
+      throw new TypeError("definePresentationTemplate: `worldAnchor.socket` must be nonempty");
+    }
+    requireFinite(props.worldAnchor.offsetY, "worldAnchor.offsetY");
+  }
 }
 
 /**
@@ -90,5 +132,79 @@ export function definePresentationTemplate(
     motion: Object.freeze({ rise: props.motion.rise, easing: props.motion.easing }),
     fade: Object.freeze({ startMs: props.fade.startMs }),
     spawnScatter: Object.freeze({ radius: props.spawnScatter.radius }),
+    ...(props.worldAnchor === undefined
+      ? {}
+      : { worldAnchor: Object.freeze({ socket: props.worldAnchor.socket, offsetY: props.worldAnchor.offsetY }) }),
+  });
+}
+
+const OVERLAY_ENTITY: OverlayEntity = Object.freeze({
+  state(name: string): RuntimeValue {
+    if (typeof name !== "string" || name.length === 0) {
+      throw new TypeError("damagedEnemies: state name must be nonempty");
+    }
+    return runtime.read(`@state.${name}`);
+  },
+});
+
+/** Build the event-driven recently-damaged enemy source. The shield pair stays
+ * un-divided so the host can derive presence and guard a zero denominator. */
+export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource {
+  if (props === null || typeof props !== "object" || Array.isArray(props)) {
+    throw new TypeError("damagedEnemies: props must be an object");
+  }
+  requireFinite(props.lingerMs, "lingerMs");
+  if (props.lingerMs < 0 || !Number.isInteger(props.lingerMs)) {
+    throw new TypeError("damagedEnemies: `lingerMs` must be a non-negative integer");
+  }
+  if (typeof props.hideAtFull !== "boolean") {
+    throw new TypeError("damagedEnemies: `hideAtFull` must be a boolean");
+  }
+  let shield: DamagedEnemiesSource["shield"];
+  if (props.shield !== undefined) {
+    if (props.shield === null || typeof props.shield !== "object"
+      || typeof props.shield.value !== "function" || typeof props.shield.max !== "function") {
+      throw new TypeError("damagedEnemies: `shield` must provide value and max expressions");
+    }
+    shield = Object.freeze({
+      value: props.shield.value(OVERLAY_ENTITY),
+      max: props.shield.max(OVERLAY_ENTITY),
+    });
+  }
+  return Object.freeze({
+    kind: "damagedEnemies",
+    lingerMs: props.lingerMs,
+    hideAtFull: props.hideAtFull,
+    ...(shield === undefined ? {} : { shield }),
+  });
+}
+
+/** Bind one passive template to a fact-driven source. Register the returned
+ * descriptor in `defineMod({ presentationOverlays: [...] })`. */
+export function defineOverlay(props: {
+  over: DamagedEnemiesSource;
+  template: PresentationTemplate;
+  maxVisible: number;
+}): PresentationOverlay {
+  if (props === null || typeof props !== "object" || Array.isArray(props)) {
+    throw new TypeError("defineOverlay: props must be an object");
+  }
+  if (props.over === null || typeof props.over !== "object" || props.over.kind !== "damagedEnemies") {
+    throw new TypeError("defineOverlay: `over` must come from damagedEnemies");
+  }
+  if (props.template === null || typeof props.template !== "object" || typeof props.template.id !== "string") {
+    throw new TypeError("defineOverlay: `template` must come from definePresentationTemplate");
+  }
+  if (props.template.worldAnchor === undefined) {
+    throw new TypeError("defineOverlay: `template.worldAnchor` is required for an overlay");
+  }
+  requireFinite(props.maxVisible, "maxVisible");
+  if (props.maxVisible < 1 || !Number.isInteger(props.maxVisible)) {
+    throw new TypeError("defineOverlay: `maxVisible` must be a positive integer");
+  }
+  return Object.freeze({
+    over: props.over,
+    template: props.template.id,
+    maxVisible: props.maxVisible,
   });
 }

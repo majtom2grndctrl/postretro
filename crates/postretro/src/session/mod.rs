@@ -827,7 +827,7 @@ impl ScriptingCore {
             .script_runtime
             .committed_mod_identity()
             .map(|(id, _)| id.to_string());
-        let (events, presentation_templates) = {
+        let (events, presentation_templates, presentation_overlays) = {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
             };
@@ -850,12 +850,15 @@ impl ScriptingCore {
             (
                 std::mem::take(&mut manifest.events),
                 std::mem::take(&mut manifest.presentation_templates),
+                std::mem::take(&mut manifest.presentation_overlays),
             )
         };
         self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
         self.impact_policy_runtime
             .replace_presentation_templates(presentation_templates);
+        self.impact_policy_runtime
+            .replace_presentation_overlays(presentation_overlays);
     }
 
     /// Renderer-facing copy of the committed passive template registry. The

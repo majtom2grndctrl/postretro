@@ -697,6 +697,8 @@ export type ModManifest = {
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
+  --- Fact-driven host/single-player enemy-status overlays.
+  presentationOverlays: {PresentationOverlay}?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
@@ -1308,6 +1310,7 @@ export type PresentationTemplate = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
 }
 export type PresentationTemplateProps = {
   root: { [string]: any },
@@ -1315,6 +1318,29 @@ export type PresentationTemplateProps = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
+}
+export type OverlayEntity = {
+  state: (self: OverlayEntity, name: string) -> RuntimeValue,
+}
+export type DamagedEnemiesProps = {
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: {
+    value: (entity: OverlayEntity) -> RuntimeValue,
+    max: (entity: OverlayEntity) -> RuntimeValue,
+  }?,
+}
+export type DamagedEnemiesSource = {
+  kind: "damagedEnemies",
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: { value: RuntimeValue, max: RuntimeValue }?,
+}
+export type PresentationOverlay = {
+  over: DamagedEnemiesSource,
+  template: string,
+  maxVisible: number,
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1507,6 +1533,7 @@ export type ModManifestInput = {
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
+  presentationOverlays: {PresentationOverlay}?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,
@@ -1977,6 +2004,10 @@ export type PostretroUiModule = {
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   --- Build an explicit-id passive presentation template. It is manifest data, not a modal UI tree.
   definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
+  --- Build a target-keyed host/single-player damaged-enemy source.
+  damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
+  --- Bind an overlay source to a socket-anchored presentation template.
+  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
   --- Add a passive visual effect to an impact policy `do` array.
   present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),

@@ -106,6 +106,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Passive world-presentation templates. They never participate in modal UI input or focus.",
         )
         .field(
+            "presentationOverlays?",
+            "Vec<PresentationOverlay>",
+            "Fact-driven enemy-status overlays. Host/single-player presentation only; malformed entries are skipped.",
+        )
+        .field(
             "theme?",
             "ThemeTokens",
             "Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.",
@@ -163,7 +168,8 @@ mod tests {
     use super::*;
     use postretro_entities::slot_table::StoreDeclarationSet;
     use postretro_scripting_core::data_descriptors::{
-        ModFontAssets, ModThemeTokens, PresentationTemplate, SwitchingDescriptor,
+        ModFontAssets, ModThemeTokens, PresentationOverlay, PresentationTemplate,
+        SwitchingDescriptor,
     };
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{
@@ -196,6 +202,7 @@ mod tests {
             entities: Vec::new(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::<PresentationTemplate>::new(),
+            presentation_overlays: Vec::<PresentationOverlay>::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
             fonts: ModFontAssets::default(),
@@ -217,6 +224,7 @@ mod tests {
             "entities",
             "uiTrees",
             "presentationTemplates",
+            "presentationOverlays",
             "theme",
             "frontend",
             "fonts",

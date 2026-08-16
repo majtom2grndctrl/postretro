@@ -100,6 +100,7 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
+    worldAnchor?: { socket: string; offsetY: number };
   };
   export type PresentationTemplate<Name extends string = string> = Readonly<{
     id: Name;
@@ -108,9 +109,34 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
+    worldAnchor?: { socket: string; offsetY: number };
+  }>;
+  export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
+  export type DamagedEnemiesProps = {
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: {
+      value: (entity: OverlayEntity) => RuntimeValue;
+      max: (entity: OverlayEntity) => RuntimeValue;
+    };
+  };
+  export type DamagedEnemiesSource = Readonly<{
+    kind: "damagedEnemies";
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: { value: RuntimeValue; max: RuntimeValue };
+  }>;
+  export type PresentationOverlay = Readonly<{
+    over: DamagedEnemiesSource;
+    template: string;
+    maxVisible: number;
   }>;
   /** TypeScript derives the stable id from a direct const binding. */
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
+  /** Build an event-driven target source for a host/single-player status overlay. */
+  export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
+  /** Bind an overlay source to a world-anchored presentation template. */
+  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
   /** Add a passive visual effect to an impact policy `do:` array. */
   export function present(template: PresentationTemplate, value: NumberValue): Effect;
 

@@ -433,6 +433,7 @@ export type PresentationTemplate = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
 }
 export type PresentationTemplateProps = {
   root: { [string]: any },
@@ -440,6 +441,29 @@ export type PresentationTemplateProps = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
+}
+export type OverlayEntity = {
+  state: (self: OverlayEntity, name: string) -> RuntimeValue,
+}
+export type DamagedEnemiesProps = {
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: {
+    value: (entity: OverlayEntity) -> RuntimeValue,
+    max: (entity: OverlayEntity) -> RuntimeValue,
+  }?,
+}
+export type DamagedEnemiesSource = {
+  kind: "damagedEnemies",
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: { value: RuntimeValue, max: RuntimeValue }?,
+}
+export type PresentationOverlay = {
+  over: DamagedEnemiesSource,
+  template: string,
+  maxVisible: number,
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -766,6 +790,7 @@ export type ModManifestInput = {
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
+  presentationOverlays: {PresentationOverlay}?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,

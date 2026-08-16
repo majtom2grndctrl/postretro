@@ -2786,6 +2786,7 @@ mod tests {
                     always_on: false,
                 }],
                 presentation_templates: Vec::new(),
+                presentation_overlays: Vec::new(),
                 theme: Default::default(),
                 frontend: Some(Frontend {
                     menu_tree: "newMenu".to_string(),

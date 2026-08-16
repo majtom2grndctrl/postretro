@@ -7,7 +7,11 @@ use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::{
     AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
 };
+use postretro_level_format::animated_lightmap_atlas::{
+    ANIMATED_ATLAS_VRAM_BUDGET_BYTES, animated_atlas_byte_estimate, animated_atlas_fits_budget,
+};
 use rayon::prelude::*;
+use thiserror::Error;
 
 use crate::bake_control::BakeControl;
 
@@ -44,6 +48,9 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// a strided emitter subset, shifting the soft weight for some probe geometry.
 /// Bumped for consistency with `lightmap_bake`/`sh_bake`.
 ///
+/// v6 adds the static-atlas-layer slot table and bakes animated weights for
+/// every packed static layer, replacing the former layer-0 skip sentinel.
+///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
 /// per-stage version-constant pattern every cached stage uses. Bumping this
@@ -51,7 +58,7 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 5;
+pub const STAGE_VERSION: u32 = 6;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -65,11 +72,62 @@ pub struct WeightMapInputs<'a> {
     pub face_placements: &'a [ChartPlacement],
     pub atlas_width: u32,
     pub atlas_height: u32,
+    /// Total depth of the static lightmap atlas. This may exceed the number of
+    /// animated slots because layers without animated receivers do not need an
+    /// animated compose target.
+    pub static_atlas_layer_count: u32,
     /// Area-sample count for soft-shadow penumbra visibility.
     /// `pipeline.rs` folds this value into the `animated_lm_weight_maps` cache
     /// key's input hash, so changing it produces a cache miss and full re-bake.
     /// Defaults to `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     pub area_sample_count: u32,
+}
+
+/// Failure from the animated-light weight-map bake.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AnimatedWeightMapBakeError {
+    #[error(
+        "animated lightmap atlas is over budget: budget {budget_bytes} bytes, found {found_bytes} bytes"
+    )]
+    AtlasOverBudget { budget_bytes: u64, found_bytes: u64 },
+}
+
+/// Reject an animated atlas whose combined irradiance and direction targets do
+/// not fit the production VRAM budget. The cache-hit path uses this too, so a
+/// cached section cannot bypass the same bake contract.
+pub(crate) fn validate_animated_atlas_budget(
+    atlas_width: u32,
+    atlas_height: u32,
+    animated_slot_count: u32,
+) -> Result<(), AnimatedWeightMapBakeError> {
+    validate_animated_atlas_budget_with_limit(
+        atlas_width,
+        atlas_height,
+        animated_slot_count,
+        ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
+    )
+}
+
+fn validate_animated_atlas_budget_with_limit(
+    atlas_width: u32,
+    atlas_height: u32,
+    animated_slot_count: u32,
+    atlas_budget_bytes: u64,
+) -> Result<(), AnimatedWeightMapBakeError> {
+    let found_bytes = animated_atlas_byte_estimate(atlas_width, atlas_height, animated_slot_count);
+    if animated_atlas_fits_budget(
+        atlas_width,
+        atlas_height,
+        animated_slot_count,
+        atlas_budget_bytes,
+    ) {
+        Ok(())
+    } else {
+        Err(AnimatedWeightMapBakeError::AtlasOverBudget {
+            budget_bytes: atlas_budget_bytes,
+            found_bytes,
+        })
+    }
 }
 
 struct ChunkBakeResult {
@@ -81,19 +139,44 @@ struct ChunkBakeResult {
 
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
-) -> AnimatedLightWeightMapsSection {
+) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
     bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
 }
 
 pub fn bake_animated_light_weight_maps_controlled(
     inputs: &WeightMapInputs<'_>,
     control: &BakeControl,
-) -> AnimatedLightWeightMapsSection {
+) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+    bake_animated_light_weight_maps_with_budget(inputs, control, ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
+}
+
+fn bake_animated_light_weight_maps_with_budget(
+    inputs: &WeightMapInputs<'_>,
+    control: &BakeControl,
+    atlas_budget_bytes: u64,
+) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
     if inputs.chunk_section.chunks.is_empty() {
-        return AnimatedLightWeightMapsSection::empty();
+        return Ok(AnimatedLightWeightMapsSection::empty());
     }
 
     let chunks = &inputs.chunk_section.chunks;
+    // `AnimatedLightChunk`s are the compiler's exact set of animated
+    // receivers. Keep their original order for baking/serialization; only this
+    // derived slot table is sorted so its index is a deterministic dense slot.
+    let mut slot_to_static_layer: Vec<u32> = chunks
+        .iter()
+        .map(|chunk| inputs.face_placements[chunk.face_index as usize].layer)
+        .collect();
+    slot_to_static_layer.sort_unstable();
+    slot_to_static_layer.dedup();
+    let animated_slot_count = slot_to_static_layer.len() as u32;
+    validate_animated_atlas_budget_with_limit(
+        inputs.atlas_width,
+        inputs.atlas_height,
+        animated_slot_count,
+        atlas_budget_bytes,
+    )?;
+
     control.publish_total(chunks.len());
     let light_indices_pool = &inputs.chunk_section.light_indices;
 
@@ -107,7 +190,7 @@ pub fn bake_animated_light_weight_maps_controlled(
         })
         .collect();
 
-    assert_no_overlapping_rects_per_face(chunks, &per_chunk);
+    assert_no_overlapping_rects_per_layer(chunks, &per_chunk);
 
     let mut chunk_rects: Vec<ChunkAtlasRect> = Vec::with_capacity(per_chunk.len());
     let mut offset_counts: Vec<TexelLightEntry> = Vec::new();
@@ -137,14 +220,16 @@ pub fn bake_animated_light_weight_maps_controlled(
 
     // Byte formula mirrors the section encoder. TexelLight grew to 12 bytes
     // when the per-texel direction was added (Task 2b).
-    const HEADER_SIZE: usize = 16;
-    const CHUNK_RECT_SIZE: usize = 20;
+    const HEADER_SIZE: usize = 20;
+    const CHUNK_RECT_SIZE: usize = 24;
     const OFFSET_ENTRY_SIZE: usize = 8;
     const TEXEL_LIGHT_SIZE: usize = 12;
+    const SLOT_STATIC_LAYER_SIZE: usize = 4;
     let byte_size = HEADER_SIZE
         + chunk_rects.len() * CHUNK_RECT_SIZE
         + offset_counts.len() * OFFSET_ENTRY_SIZE
-        + texel_lights.len() * TEXEL_LIGHT_SIZE;
+        + texel_lights.len() * TEXEL_LIGHT_SIZE
+        + slot_to_static_layer.len() * SLOT_STATIC_LAYER_SIZE;
 
     let covered_texels: u32 = offset_counts.iter().filter(|e| e.count > 0).count() as u32;
     let mean_lights_per_covered = if covered_texels == 0 {
@@ -159,8 +244,11 @@ pub fn bake_animated_light_weight_maps_controlled(
         .unwrap_or(0);
 
     log::info!(
-        "[AnimatedLightWeightMaps] {} chunks, {} byte section, {} covered texels, \
+        "[AnimatedLightWeightMaps] {} static atlas layers, {} animated slots, {} chunks, \
+         {} byte section, {} covered texels, \
          mean {:.2} lights / covered texel, peak {} texels / chunk",
+        inputs.static_atlas_layer_count,
+        animated_slot_count,
         chunk_rects.len(),
         byte_size,
         covered_texels,
@@ -168,11 +256,12 @@ pub fn bake_animated_light_weight_maps_controlled(
         peak_texels_per_chunk,
     );
 
-    AnimatedLightWeightMapsSection {
+    Ok(AnimatedLightWeightMapsSection {
         chunk_rects,
         offset_counts,
         texel_lights,
-    }
+        slot_to_static_layer,
+    })
 }
 
 fn bake_one_chunk(
@@ -183,28 +272,6 @@ fn bake_one_chunk(
     let face_index = chunk.face_index as usize;
     let chart = &inputs.face_charts[face_index];
     let placement = inputs.face_placements[face_index];
-
-    // Animated weight maps are single-layer: their atlas covers only layer 0.
-    // A face that the multi-bin packer spilled onto a higher layer (on overflow
-    // maps) has no animated atlas slot, so skip it — a degenerate 1×1 zero-count
-    // rect contributes nothing. NOT an assert: faces on layers >= 1 legitimately
-    // exist, and aborting the bake on them would be wrong.
-    if placement.layer != 0 {
-        return ChunkBakeResult {
-            rect: ChunkAtlasRect {
-                atlas_x: placement.x,
-                atlas_y: placement.y,
-                width: 1,
-                height: 1,
-                texel_offset: 0,
-            },
-            offset_counts: vec![TexelLightEntry {
-                offset: 0,
-                count: 0,
-            }],
-            texel_lights: Vec::new(),
-        };
-    }
 
     let (interior_w, interior_h) = chart_interior_dims(chart);
 
@@ -227,6 +294,7 @@ fn bake_one_chunk(
         width,
         height,
         texel_offset: 0, // filled by caller
+        layer: placement.layer,
     };
 
     let texel_count = (width * height) as usize;
@@ -388,7 +456,7 @@ fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -
 /// a chunk iff its center UV is in `[chunk.uv_min, chunk.uv_max)`. Siblings
 /// share UV boundaries exactly (A.uv_max == B.uv_min) and under this rule pack
 /// into adjacent atlas rects with no overlap and no gap. The
-/// `assert_no_overlapping_rects_per_face` postcondition guards the invariant.
+/// `assert_no_overlapping_rects_per_layer` postcondition guards the invariant.
 fn chunk_atlas_rect(
     chart: &Chart,
     placement: ChartPlacement,
@@ -474,18 +542,20 @@ fn chunk_atlas_rect(
     (ax_min, ay_min, width, height)
 }
 
-/// If this fires, the UV packer violated the required 1-atlas-texel gap between
-/// adjacent chunk boundaries within a face — fix the packer, not this baker.
-fn assert_no_overlapping_rects_per_face(
+/// If this fires, the UV packer assigned overlapping chart space within one
+/// static-atlas layer. Different faces on the same layer share coordinates, so
+/// this must not be limited to sibling chunks of one face.
+fn assert_no_overlapping_rects_per_layer(
     chunks: &[postretro_level_format::animated_light_chunks::AnimatedLightChunk],
     per_chunk: &[ChunkBakeResult],
 ) {
-    use std::collections::HashMap;
-    let mut by_face: HashMap<u32, Vec<usize>> = HashMap::new();
-    for (i, c) in chunks.iter().enumerate() {
-        by_face.entry(c.face_index).or_default().push(i);
+    use std::collections::BTreeMap;
+
+    let mut by_layer: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (index, result) in per_chunk.iter().enumerate() {
+        by_layer.entry(result.rect.layer).or_default().push(index);
     }
-    for (face_index, indices) in &by_face {
+    for (layer, indices) in by_layer {
         for (i_idx, &i) in indices.iter().enumerate() {
             let a = &per_chunk[i].rect;
             for &j in &indices[i_idx + 1..] {
@@ -497,12 +567,15 @@ fn assert_no_overlapping_rects_per_face(
                     let ca = &chunks[i];
                     let cb = &chunks[j];
                     panic!(
-                        "animated-light chunks {i} and {j} on face {face_index} produced \
+                        "animated-light chunks {i} (face {}) and {j} (face {}) on static \
+                         atlas layer {layer} produced \
                          overlapping atlas rects under center-based half-open ownership \
                          ({}x{}+{}+{} vs {}x{}+{}+{}); chunk UVs [{:?}..{:?}] vs \
                          [{:?}..{:?}]. Likely causes: subdivider emitted truly \
                          overlapping UV ranges, or shared-boundary float drift exceeded \
                          `chunk_atlas_rect`'s BOUNDARY_SNAP_EPS.",
+                        ca.face_index,
+                        cb.face_index,
                         a.width,
                         a.height,
                         a.atlas_x,
@@ -527,6 +600,7 @@ mod tests {
     use super::*;
     use crate::bvh_build::build_bvh;
     use crate::geometry::FaceIndexRange;
+    use crate::lightmap_bake::pack_layers;
     use crate::map_data::{FalloffModel, LightAnimation, LightType};
     use glam::DVec3;
     use postretro_level_format::animated_light_chunks::{
@@ -577,6 +651,38 @@ mod tests {
                 index_offset: 0,
                 index_count: 6,
             }],
+        }
+    }
+
+    fn two_separate_floor_geometry() -> GeometryResult {
+        let mut vertices = xz_quad_face(0.0, 1.0, 0.0);
+        vertices.extend(xz_quad_face(0.0, 1.0, 2.0));
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+                faces: vec![
+                    FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    },
+                    FaceMeta {
+                        leaf_index: 1,
+                        texture_index: 0,
+                    },
+                ],
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: vec![
+                FaceIndexRange {
+                    index_offset: 0,
+                    index_count: 6,
+                },
+                FaceIndexRange {
+                    index_offset: 6,
+                    index_count: 6,
+                },
+            ],
         }
     }
 
@@ -821,6 +927,7 @@ mod tests {
             face_placements: &lm_output.placements,
             atlas_width: lm_output.atlas_width,
             atlas_height: lm_output.atlas_height,
+            static_atlas_layer_count: lm_output.layer_count,
             area_sample_count,
         };
         let progress = crate::reporter::StageProgress::indeterminate();
@@ -828,7 +935,8 @@ mod tests {
             std::sync::Arc::new(crate::governor::Governor::new(2, false)),
             &progress,
         );
-        let section = bake_animated_light_weight_maps_controlled(&inputs, &control);
+        let section = bake_animated_light_weight_maps_controlled(&inputs, &control)
+            .expect("test fixture animated atlas must fit the production budget");
         if chunk_section.chunks.is_empty() {
             assert_eq!(progress.total(), None);
             assert_eq!(progress.completed(), 0);
@@ -864,6 +972,194 @@ mod tests {
             }],
             light_indices,
         }
+    }
+
+    fn bake_real_multi_layer_fixture(
+        atlas_budget_bytes: u64,
+    ) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+        let geometry = two_separate_floor_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH");
+        let charts = vec![
+            Chart {
+                origin: glam::Vec3::new(0.0, 0.0, 0.0),
+                u_axis: glam::Vec3::X,
+                v_axis: glam::Vec3::Z,
+                uv_min: [0.0, 0.0],
+                uv_extent: [1.0, 1.0],
+                normal: glam::Vec3::Y,
+                width_texels: 64,
+                height_texels: 64,
+                leaf_index: 0,
+            },
+            Chart {
+                origin: glam::Vec3::new(2.0, 0.0, 0.0),
+                u_axis: glam::Vec3::X,
+                v_axis: glam::Vec3::Z,
+                uv_min: [0.0, 0.0],
+                uv_extent: [1.0, 1.0],
+                normal: glam::Vec3::Y,
+                width_texels: 64,
+                height_texels: 64,
+                leaf_index: 1,
+            },
+        ];
+
+        // This is a genuine two-layer pack: each leaf fills a 64x64 layer, so
+        // `pack_layers` must open layer 1 without changing placement fields.
+        let pack = pack_layers(&charts, 64, 0.25).expect("fixture charts must pack");
+        assert_eq!(pack.layer_count, 2, "fixture must exercise both layers");
+
+        let mut second_light = animated_point_light_above();
+        second_light.origin = DVec3::new(2.5, 1.0, 0.5);
+        let lights = vec![animated_point_light_above(), second_light];
+        let chunks = charts
+            .iter()
+            .enumerate()
+            .map(|(face_index, chart)| AnimatedLightChunk {
+                aabb_min: [face_index as f32 * 2.0, 0.0, 0.0],
+                face_index: face_index as u32,
+                aabb_max: [face_index as f32 * 2.0 + 1.0, 0.0, 1.0],
+                index_offset: face_index as u32,
+                uv_min: chart.uv_min,
+                uv_max: [
+                    chart.uv_min[0] + chart.uv_extent[0],
+                    chart.uv_min[1] + chart.uv_extent[1],
+                ],
+                index_count: 1,
+                _padding: 0,
+            })
+            .collect();
+        let chunk_section = AnimatedLightChunksSection {
+            chunks,
+            light_indices: vec![0, 1],
+        };
+        let inputs = WeightMapInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            chunk_section: &chunk_section,
+            lights: &lights,
+            face_charts: &charts,
+            face_placements: &pack.placements,
+            atlas_width: pack.atlas_width,
+            atlas_height: pack.atlas_height,
+            static_atlas_layer_count: pack.layer_count,
+            area_sample_count: 1,
+        };
+
+        bake_animated_light_weight_maps_with_budget(
+            &inputs,
+            &BakeControl::unrestricted(),
+            atlas_budget_bytes,
+        )
+    }
+
+    #[test]
+    fn real_multi_layer_pack_bakes_dense_slots_for_every_covered_layer() {
+        let section = bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
+            .expect("fixture animated atlas must fit the production budget");
+
+        assert_eq!(section.slot_to_static_layer, vec![0, 1]);
+        assert_eq!(
+            section
+                .chunk_rects
+                .iter()
+                .map(|rect| rect.layer)
+                .collect::<Vec<_>>(),
+            vec![0, 1],
+            "real pack layers must survive into section-25 rects",
+        );
+        for rect in &section.chunk_rects {
+            assert!(rect.width > 1 && rect.height > 1, "no skip sentinel rect");
+            let start = rect.texel_offset as usize;
+            let end = start + (rect.width * rect.height) as usize;
+            assert!(
+                section.offset_counts[start..end]
+                    .iter()
+                    .any(|entry| entry.count > 0),
+                "static layer {} must retain covered animated texels",
+                rect.layer,
+            );
+        }
+        assert!(section.is_consistent());
+
+        let repeated = bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
+            .expect("repeated fixture animated atlas must fit the production budget");
+        assert_eq!(section.to_bytes(), repeated.to_bytes());
+    }
+
+    #[test]
+    fn animated_atlas_over_budget_names_budget_and_found_bytes() {
+        let err = bake_real_multi_layer_fixture(1)
+            .expect_err("injected low budget must abort the bake without a fallback rect");
+        let AnimatedWeightMapBakeError::AtlasOverBudget {
+            budget_bytes,
+            found_bytes,
+        } = err;
+        assert_eq!(budget_bytes, 1);
+        assert_eq!(found_bytes, 64 * 64 * 2 * 12);
+        let message = AnimatedWeightMapBakeError::AtlasOverBudget {
+            budget_bytes,
+            found_bytes,
+        }
+        .to_string();
+        assert!(message.contains("budget 1 bytes"));
+        assert!(message.contains(&format!("found {found_bytes} bytes")));
+    }
+
+    #[test]
+    #[should_panic(expected = "face 0")]
+    fn overlap_assert_rejects_cross_face_rects_on_one_layer() {
+        let chunks = vec![
+            AnimatedLightChunk {
+                aabb_min: [0.0; 3],
+                face_index: 0,
+                aabb_max: [1.0; 3],
+                index_offset: 0,
+                uv_min: [0.0; 2],
+                uv_max: [1.0; 2],
+                index_count: 1,
+                _padding: 0,
+            },
+            AnimatedLightChunk {
+                aabb_min: [0.0; 3],
+                face_index: 1,
+                aabb_max: [1.0; 3],
+                index_offset: 1,
+                uv_min: [0.0; 2],
+                uv_max: [1.0; 2],
+                index_count: 1,
+                _padding: 0,
+            },
+        ];
+        let results = vec![
+            ChunkBakeResult {
+                rect: ChunkAtlasRect {
+                    atlas_x: 3,
+                    atlas_y: 4,
+                    width: 2,
+                    height: 2,
+                    texel_offset: 0,
+                    layer: 1,
+                },
+                offset_counts: Vec::new(),
+                texel_lights: Vec::new(),
+            },
+            ChunkBakeResult {
+                rect: ChunkAtlasRect {
+                    atlas_x: 3,
+                    atlas_y: 4,
+                    width: 2,
+                    height: 2,
+                    texel_offset: 0,
+                    layer: 1,
+                },
+                offset_counts: Vec::new(),
+                texel_lights: Vec::new(),
+            },
+        ];
+
+        assert_no_overlapping_rects_per_layer(&chunks, &results);
     }
 
     #[test]
@@ -1279,7 +1575,7 @@ mod tests {
 
     /// Regression: with outward rounding (floor min, ceil max), two sibling
     /// chunks sharing a UV boundary inflated outward into the same atlas texel
-    /// column/row, tripping `assert_no_overlapping_rects_per_face`. Center-based
+    /// column/row, tripping `assert_no_overlapping_rects_per_layer`. Center-based
     /// half-open ownership packs them adjacent with no overlap.
     #[test]
     fn sibling_chunks_with_shared_uv_edge_pack_without_overlap() {

@@ -264,17 +264,27 @@ pub(crate) fn build_full_renderer(
     let slot_to_static_layer = geometry
         .and_then(|g| g.animated_light_weight_maps)
         .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
-    let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
-        device,
-        geometry.and_then(|g| g.animated_light_weight_maps),
-        geometry.and_then(|g| g.animated_light_chunks),
-        &bvh_leaves,
-        &sh_volume_resources.animation,
-        &uniform_bind_group_layout,
-        lightmap_atlas_dimensions,
-        animated_lm_debug,
-    )
-    .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
+    let animated_lightmap = animated_lightmap::with_dummy_fallback(
+        animated_lightmap::AnimatedLightmapResources::new(
+            device,
+            geometry.and_then(|g| g.animated_light_weight_maps),
+            geometry.and_then(|g| g.animated_light_chunks),
+            &bvh_leaves,
+            &sh_volume_resources.animation,
+            &uniform_bind_group_layout,
+            lightmap_atlas_dimensions,
+            animated_lm_debug,
+        ),
+        || {
+            animated_lightmap::AnimatedLightmapResources::dummy(
+                device,
+                &sh_volume_resources.animation,
+                &uniform_bind_group_layout,
+                animated_lm_debug,
+            )
+        },
+        "animated lightmap initialization",
+    );
 
     // Group 4: lightmap atlas. Animated-contribution atlas at binding 3 (real or 1×1 zero dummy).
     let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(device);

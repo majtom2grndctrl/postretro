@@ -16,6 +16,9 @@
 
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::animated_lightmap_atlas::{
+    ANIMATED_ATLAS_VRAM_BUDGET_BYTES, animated_atlas_byte_estimate, animated_atlas_fits_budget,
+};
 pub use postretro_render_cpu::animated_lightmap::AnimatedLmDebugConfig;
 use postretro_render_cpu::animated_lightmap::validate_cross_section;
 
@@ -146,6 +149,28 @@ struct DispatchState {
 }
 
 impl AnimatedLightmapResources {
+    /// Build the non-dispatching dummy path through `new`'s `weight_maps: None`
+    /// early-out. Load failures use this instead of retaining a prior level's
+    /// atlas views or compose state.
+    pub(crate) fn dummy(
+        device: &wgpu::Device,
+        animation: &AnimatedLightBuffers,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        debug_config: AnimatedLmDebugConfig,
+    ) -> Self {
+        Self::new(
+            device,
+            None,
+            None,
+            &[],
+            animation,
+            uniform_bind_group_layout,
+            None,
+            debug_config,
+        )
+        .expect("weight_maps: None is the non-failing animated-lightmap dummy path")
+    }
+
     /// Build the compose pass resources.
     ///
     /// `uniform_bind_group_layout` must include `wgpu::ShaderStages::COMPUTE` —
@@ -164,8 +189,8 @@ impl AnimatedLightmapResources {
     /// zero-area, or oversize section); the animated path takes the dummy-atlas
     /// early-out — no valid coordinate space to write into.
     ///
-    /// Returns `Err` on cross-section validation failure; caller should log and
-    /// refuse to load the map.
+    /// Returns `Err` on validation or allocation preflight failure; callers log
+    /// and bind the non-dispatching dummy resource for this level.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
@@ -216,25 +241,6 @@ impl AnimatedLightmapResources {
             });
         }
 
-        if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
-            // Nothing to compose. Either no animated chunks, or every animated
-            // light is SDF-typed so the baker emitted zero baked direct weight
-            // (the disjoint-direct split — sdf-per-light-shadows Task 1). The
-            // chunk rects still exist (they pair 1:1 with AnimatedLightChunks
-            // for the SH delta bake), but with no texel-lights there is no
-            // direct term to composite: the forward pass falls back to the
-            // static lightmap and runtime SDF resolves these lights' direct
-            // term. Takes the same no-atlas path as a map with no weight maps.
-            return Ok(Self {
-                atlas_texture: None,
-                direction_atlas_texture: None,
-                dummy_texture,
-                forward_view: dummy_view,
-                direction_forward_view: dummy_direction_view,
-                dispatch_state: None,
-            });
-        }
-
         let Some((atlas_width, atlas_height)) = atlas_dimensions else {
             // The static lightmap atlas degraded to the 1×1 placeholder (absent,
             // zero-area, or oversize section), so the absolute coordinates the
@@ -256,10 +262,49 @@ impl AnimatedLightmapResources {
             });
         };
 
+        validate_cross_section(
+            section,
+            animated_chunks,
+            animation.animated_light_count(),
+            &section.slot_to_static_layer,
+            (atlas_width, atlas_height),
+        )?;
+
+        if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
+            // Nothing to compose. Either no animated chunks, or every animated
+            // light is SDF-typed so the baker emitted zero baked direct weight
+            // (the disjoint-direct split — sdf-per-light-shadows Task 1). The
+            // chunk rects still exist (they pair 1:1 with AnimatedLightChunks
+            // for the SH delta bake), but with no texel-lights there is no
+            // direct term to composite: the forward pass falls back to the
+            // static lightmap and runtime SDF resolves these lights' direct
+            // term. Takes the same no-atlas path as a map with no weight maps.
+            return Ok(Self {
+                atlas_texture: None,
+                direction_atlas_texture: None,
+                dummy_texture,
+                forward_view: dummy_view,
+                direction_forward_view: dummy_direction_view,
+                dispatch_state: None,
+            });
+        }
+
         let atlas_extent = animated_atlas_extent(atlas_width, atlas_height, slot_count)
             .expect("slot-count guard above rejects zero-depth animated atlases");
 
-        validate_cross_section(section, animated_chunks, animation.animated_light_count())?;
+        let atlas_bytes = animated_atlas_byte_estimate(atlas_width, atlas_height, slot_count);
+        if !animated_atlas_fits_budget(
+            atlas_width,
+            atlas_height,
+            slot_count,
+            ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
+        ) {
+            return Err(format!(
+                "animated lightmap atlas {atlas_width}x{atlas_height}x{slot_count} requires \
+                 {atlas_bytes} bytes, exceeding the {}-byte VRAM budget",
+                ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
+            ));
+        }
 
         let static_layer_to_slot = static_layer_to_animated_slot(&section.slot_to_static_layer);
         let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects, &static_layer_to_slot);
@@ -329,8 +374,6 @@ impl AnimatedLightmapResources {
 
         // VRAM footprint of the two compose-target atlases (irradiance 8 B/texel
         // + direction 4 B/texel).
-        let atlas_bytes =
-            (atlas_width as u64) * (atlas_height as u64) * (slot_count as u64) * (8 + 4);
         log::info!(
             "[Renderer] Animated lightmap atlases {atlas_width}x{atlas_height}x{slot_count}, ~{} MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)",
             atlas_bytes / (1024 * 1024),
@@ -573,6 +616,26 @@ impl AnimatedLightmapResources {
 
         pass.set_pipeline(&state.compose_pipeline);
         pass.dispatch_workgroups(kept, 1, 1);
+    }
+}
+
+/// Resolve a construction attempt through the common renderer degradation
+/// policy. The caller supplies the `weight_maps: None` dummy constructor, so
+/// every failed load replaces its old views and dispatch state before rebinding
+/// the new level's lightmap group.
+pub(crate) fn with_dummy_fallback<T>(
+    resources: Result<T, String>,
+    dummy: impl FnOnce() -> T,
+    install_context: &str,
+) -> T {
+    match resources {
+        Ok(resources) => resources,
+        Err(msg) => {
+            log::error!(
+                "[Renderer] {install_context} failed: {msg}; disabling animated-light contribution for this level"
+            );
+            dummy()
+        }
     }
 }
 
@@ -1084,5 +1147,22 @@ mod tests {
             animated_atlas_view_dimension(),
             wgpu::TextureViewDimension::D2Array,
         );
+    }
+
+    #[test]
+    fn construction_failure_replaces_resources_with_the_dummy_path() {
+        let mut dummy_built = false;
+        let resource = with_dummy_fallback(
+            Err("over budget".to_owned()),
+            || {
+                dummy_built = true;
+                ("dummy forward view", None::<u32>)
+            },
+            "animated lightmap test install",
+        );
+
+        assert!(dummy_built);
+        assert_eq!(resource.0, "dummy forward view");
+        assert_eq!(resource.1, None, "dummy path has no dispatch state");
     }
 }

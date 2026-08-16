@@ -220,10 +220,15 @@ mod tests {
         offset_counts: Vec<TexelLightEntry>,
         texel_lights: Vec<TexelLight>,
     ) -> AnimatedLightWeightMapsSection {
+        let mut slot_to_static_layer: Vec<u32> =
+            chunk_rects.iter().map(|rect| rect.layer).collect();
+        slot_to_static_layer.sort_unstable();
+        slot_to_static_layer.dedup();
         AnimatedLightWeightMapsSection {
             chunk_rects,
             offset_counts,
             texel_lights,
+            slot_to_static_layer,
         }
     }
 

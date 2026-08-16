@@ -59,8 +59,10 @@ measurements, and corrections to earlier readings are in `research.md`.
   untouched; this plan consumes `ChartPlacement.layer` as given.
 - Backfilling small leaves into earlier layers. The packer's layer counter stays monotonic.
 - The `AnimatedLightChunks` section (24). Its records need no layer — the layer lives on the rect.
-- A 2D-dispatch fallback for the 65535 workgroup ceiling. The guard stays a hard error; this plan
-  only ensures it counts the newly-included tiles.
+- A 2D-dispatch fallback for the 65535 workgroup ceiling. The guard still returns `Err` (no
+  workaround added); this plan only ensures it counts the newly-included tiles, and that `Err`
+  degrades to Task 4's dummy fallback like any other construction failure rather than aborting the
+  level.
 - Animated **indirect** lighting. It rides world-space delta-SH — the animated-light SH
   compose (section 27, `DeltaShVolumes`) — not the weight-map atlas, so it is already
   layer-independent. The direct SH-delta volumes (`DirectShDeltaVolumes` 41,
@@ -180,12 +182,16 @@ layers holding animated receivers, sort that distinct-layer list (not the rects 
 cohesion must be preserved), and assign dense slots; emit the slot table and set each rect's layer. Thread the atlas layer count out of the lightmap bake into the weight-map stage
 — `pipeline.rs` currently destructures `layer_count: _` with a comment saying animated weight maps
 are single-layer, which is the line this plan invalidates. Hard-fail the bake when the animated atlas
-would exceed `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` — a named error that aborts the bake, never dropping
-a slot or emitting a placeholder rect. Bytes (width × height × slots × 12), not a slot count, are the
-guard: a dimension-blind slot cap would reject small maps fragmented across many layers that fit
-comfortably, and the `info` line already surfaces the slot count as a soft signal. This deterministic
-bake check shares one constant and pure fits-helper with Task 4's load-time check — home both in a
-crate the compiler and renderer share, e.g. `level-format`. Making the stage fallible
+would exceed `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` — a new weight-map-stage error (e.g.
+`AnimatedWeightMapBakeError::AtlasOverBudget { budget_bytes, found_bytes }`), not a reused
+`LightmapBakeError` variant whose "retry at coarser density" advice is wrong here (coarsening shrinks
+the per-layer dimension, not the slot count). It aborts the bake, never dropping a slot or emitting a
+placeholder rect. Bytes (width × height × slots × 12), not a slot count, are the guard: a
+dimension-blind slot cap would reject small maps fragmented across many layers that fit comfortably,
+and the `info` line already surfaces the slot count as a soft signal. This deterministic bake check
+shares one constant and one pure fits-helper (computing the byte figure in `u64` — `8192² × 256 × 12`
+overflows `u32`) with Task 4's load-time check; home both in a crate the compiler and renderer share,
+e.g. `level-format`. Making the stage fallible
 (`bake_animated_light_weight_maps_controlled` returns a `Result`) ripples through its infallible
 wrapper and the `pipeline.rs` cache hit/miss arms; propagate the error there. Rework the stage's `info` line so spilled chunks are no longer folded
 invisibly into healthy-looking stats: report the static atlas layer count (the threaded `layer_count`

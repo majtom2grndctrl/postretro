@@ -143,9 +143,10 @@ rebuilds them and the group-4 bind group. The new level's geometry (`bvh_leaves`
 `compute_cull`) then swaps in unconditionally after the match, so a level whose animated-lightmap
 construction fails renders its *new* geometry lit by the *previous* level's atlas and culled against
 stale `dispatch_state`, every frame. `renderer_full_init.rs:274` treats the same error as fatal
-instead. This plan adds load-time failure modes to that constructor (the extended
-`validate_cross_section` rejection and the VRAM budget — the slot cap fails earlier, at bake), so it
-widens the paths that reach this.
+instead. This plan adds load-time failure modes to that constructor — the extended
+`validate_cross_section` rejection and the byte-budget load drop (which fires only on a PRL a current
+bake would have rejected, since the same budget hard-fails at bake) — so it widens the paths that
+reach this.
 
 ## Tests that must change
 
@@ -226,7 +227,8 @@ Recorded because each was wrong in the direction of making the work look smaller
 5. **`choose_layer_dim` groups by BSP leaf, not BVH leaf**, and returns a square dimension. Its
    lower bound is `max(ceil(sqrt(leaf_area)), largest_chart_side)` maxed over leaves.
 6. **A layer cap cannot bound VRAM on its own** — cost scales with atlas dimension as hard as with
-   layer count. Hence the two-sided cap in the spec.
+   layer count. Hence the spec guards on bytes (`width × height × slots × 12`), not a slot or layer
+   count.
 7. **Compose cost was already proportional to animated coverage**, since tiles come only from
    chunks with animated receivers and are culled against visible cells. The slot indirection buys
    VRAM, not compose time. The 65535 guard is the number that grows, and it is checked pre-cull.

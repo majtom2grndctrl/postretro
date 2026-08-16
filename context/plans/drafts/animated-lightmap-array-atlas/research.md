@@ -137,12 +137,15 @@ count, prefix sums, and `light_index` bounds. No atlas-bounds and no layer notio
 
 ## Stale-bind bug on the failure path
 
-`renderer_resources.rs:452-471`. On `Err` the install logs and returns **without reassigning**
-`full.lightmap_resources` or `full.animated_lightmap`; only the `Ok` arm rebuilds them and the
-group-4 bind group. So a level whose animated-lightmap construction fails keeps the previous
-level's atlas views bound. `renderer_full_init.rs:274` treats the same error as fatal instead.
-This plan adds failure modes to that constructor (the slot cap), so it widens the paths that reach
-this.
+`renderer_resources.rs:452-471`. On `Err` the install logs and **falls through** (no `return`)
+**without reassigning** `full.lightmap_resources` or `full.animated_lightmap`; only the `Ok` arm
+rebuilds them and the group-4 bind group. The new level's geometry (`bvh_leaves`, `cell_draw_index`,
+`compute_cull`) then swaps in unconditionally after the match, so a level whose animated-lightmap
+construction fails renders its *new* geometry lit by the *previous* level's atlas and culled against
+stale `dispatch_state`, every frame. `renderer_full_init.rs:274` treats the same error as fatal
+instead. This plan adds load-time failure modes to that constructor (the extended
+`validate_cross_section` rejection and the VRAM budget — the slot cap fails earlier, at bake), so it
+widens the paths that reach this.
 
 ## Tests that must change
 

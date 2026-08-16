@@ -94,6 +94,9 @@ measurements, and corrections to earlier readings are in `research.md`.
       promotion currently passes.
 - [ ] A test asserts the compose shader parses under `naga` and stores through an array-indexed
       write on both compose targets.
+- [ ] A test asserts the two compose BGL storage entries declare `D2Array` `view_dimension`, not
+      only that the WGSL parses — so a Rust-side storage view or BGL entry left at `D2` while the
+      shader is arrayed is caught in a CPU test rather than at device pipeline creation.
 - [ ] A test asserts the forward shader samples both animated atlases with a layer argument and
       contains no `lightmap_layer == 0u` animated guard.
 - [ ] A static layer with no animated receivers resolves to zero animated contribution, not to
@@ -103,23 +106,29 @@ measurements, and corrections to earlier readings are in `research.md`.
 - [ ] A test asserts that for every occupied static layer, the slot resolved during compose tile
       expansion equals the slot the forward lookup returns — both derived from the one section-25
       slot table through a single shared inversion.
-- [ ] The resolver that reports usable atlas dimensions reports the static layer count with them; a
-      test asserts the animated atlas is created at the resolver's width and height and at a depth
-      equal to the section-25 slot count — never the static layer count — so a future change can
-      neither desynchronise animated width/height from the static atlas the compose pass shares
-      coordinates with, nor size animated depth from the static layer count.
+- [ ] A test asserts the animated atlas is created at the resolver's width and height
+      (`usable_atlas_dimensions`) and at a depth equal to the section-25 slot count — never the
+      static layer count — so a future change can neither desynchronise animated width/height from
+      the static atlas the compose pass shares coordinates with, nor size animated depth from the
+      static layer count.
 - [ ] A unit-testable helper decides whether an animated atlas of a given width, height, and slot
-      count fits the VRAM budget; a test exercises an over-budget case. Over budget logs a
-      `[Renderer]` error and the level renders with no animated contribution rather than failing.
+      count fits the VRAM budget; a test exercises an over-budget case and asserts the byte estimate
+      scales with the slot count (the old `width × height × 12` info log gains the slot factor).
+      Over budget logs a `[Renderer]` error and the level renders with no animated contribution
+      rather than failing.
+- [ ] A test asserts a section decoding to slot count 0 routes to the 1×1 dummy atlas and never
+      constructs an `Extent3d` with `depth_or_array_layers = 0`, on the normal, VRAM-fallback, and
+      failure paths.
 - [ ] A test asserts cross-section validation rejects a chunk rect whose layer is absent from the
       slot table, and one whose coordinates fall outside the atlas bounds.
 - [ ] Loading a level whose animated atlas construction fails binds the 1×1 dummy animated views
       (no animated contribution) and leaves no previous level's atlas views or dispatch state bound
-      with the new geometry; a test asserts the failure arm rebinds to dummy rather than logging and
-      returning. Both install entry points (`renderer_full_init`, `renderer_resources`) apply this
-      one policy. (Today the `renderer_resources` failure arm logs and returns without reassigning
-      either resource field while the new geometry swaps in unconditionally; `renderer_full_init`
-      treats the same error as fatal.)
+      with the new geometry; a test asserts the failure arm rebinds to a dummy
+      `AnimatedLightmapResources` (nulling `dispatch_state`) rather than logging and falling through.
+      Both install entry points (`renderer_full_init`, `renderer_resources`) apply this one policy.
+      (Today the `renderer_resources` failure arm logs and falls through without reassigning either
+      resource field while the new geometry swaps in unconditionally; `renderer_full_init` treats the
+      same error as fatal.)
 - [ ] `content/dev/maps/animated-layer-spill.map` has baked animated receivers on atlas layer ≥ 1,
       confirmed by reading `layer_count` (= 2) and — post-Task-1 — the v3 slot table out of its
       compiled PRL, not asserted from map authoring alone. Running it shows the pulsing animated
@@ -194,26 +203,34 @@ computes `width × height × 12` with no layer factor; fix it. Keep the compose 
 
 ### Task 4: Runtime validation and graceful degradation
 
-`usable_atlas_dimensions` consumes `max_texture_array_layers` only to reject, and discards the
-static `layer_count` from what it returns; expose that static layer count (it governs animated
-width/height sync and validation, not animated depth — animated depth is the section-25 slot count)
-and update both call sites. Add a
-pure, unit-testable helper deciding whether a given width, height, and slot count fits the VRAM
-budget, and a load-time path that logs a `[Renderer]` error and falls back to no animated
-contribution when it does not — matching how an oversize static section degrades rather than
-aborting. Extend cross-section validation, which today checks prefix sums and light-index bounds
-but has no layer notion, to reject rects whose layer is outside the slot table and whose
-coordinates fall outside the atlas. Fix the install path so a failed animated-lightmap
-construction never leaves stale views bound. Today the `Err` arm in `renderer_resources.rs` only
-logs and returns — reassigning neither `full.animated_lightmap` nor `full.lightmap_resources` —
-while the new level's geometry (`bvh_leaves`, `cell_draw_index`, `compute_cull`) swaps in
-unconditionally just after the match, so the new level renders lit by the previous level's atlas and
-culled against stale dispatch state, every frame. On any animated-lightmap failure at load (extended
-`validate_cross_section` rejection, the VRAM budget, or an existing construction error), rebind the
-animated atlas to the 1×1 dummy views and rebuild the group-4 bind group against them for this level
-— the same no-animated-contribution posture the VRAM fallback uses — never leaving the previous
-level's resources in place. Reconcile the two entry points: `renderer_full_init.rs` treats the same
-error as fatal; both must apply the one dummy-fallback policy.
+The animated atlas already takes its width and height from `usable_atlas_dimensions` at both call
+sites (`renderer_full_init.rs`, `renderer_resources.rs`), which is what keeps it synced to the static
+atlas; ensure both sites feed those resolved dimensions to the animated constructor. The animated
+depth is the section-25 slot count, not the resolver's static layer count, so the resolver needs no
+new return value. Add a pure, unit-testable helper deciding whether a given width, height, and slot
+count fits the VRAM budget, and a load-time path that logs a `[Renderer]` error and falls back to no
+animated contribution when it does not — matching how an oversize static section degrades rather than
+aborting. Extend cross-section validation (`validate_cross_section`, `render-cpu`), which today
+checks prefix sums and light-index bounds but has no layer notion, to reject rects whose layer is
+absent from the slot table and whose coordinates fall outside the atlas; thread the decoded slot
+table and the static-atlas width/height (from the `Lightmap` section 22) into it, and name the
+caller that supplies them. This repeats the layer-in-slot-table check `is_consistent` runs at decode
+time — deliberate defense-in-depth across the decode-time and load-time boundaries, not a
+duplication to collapse. Fix the install path so a failed animated-lightmap construction never
+leaves stale views or dispatch state bound. Today the `Err` arm in `renderer_resources.rs` only logs
+and falls through (no `return`): it reassigns neither `full.animated_lightmap` nor
+`full.lightmap_resources`, while the new level's geometry (`bvh_leaves`, `cell_draw_index`,
+`compute_cull`) swaps in unconditionally just after the match, so the new level renders lit by the
+previous level's atlas and culled against stale `dispatch_state`, every frame. On any
+animated-lightmap failure at load (extended `validate_cross_section` rejection, the VRAM budget, or
+an existing construction error), fall back the way the pre-existing `weight_maps: None` early-out in
+`AnimatedLightmapResources::new` already does: construct a dummy `AnimatedLightmapResources` via that
+non-failing path (yielding dummy `forward_view`/`direction_forward_view` and `dispatch_state: None`,
+so `is_active()` is false and the compose dispatch is skipped), assign it to `full.animated_lightmap`,
+then build `LightmapResources` from its views — the same three-step order the `Ok` arm uses.
+Reconcile the two entry points: `renderer_full_init.rs` currently treats the same error as fatal via
+`map_err(...)?`; replace that with the same dummy construction so both apply one dummy-fallback
+policy.
 
 ### Task 5: Multi-layer verification fixture
 
@@ -232,8 +249,7 @@ one layer), and raising `_lightmap_density` grows that dimension in lockstep wit
 density alone does not add layers. More layers come from more leaf area at a bounded per-leaf size:
 either one geometrically complex room with several leaves (`switch-demo`'s single room already sits at
 512×512×2 this way) or, as here, several disjoint simple boxes — each box is ~one leaf that fits well
-inside 512², so four of them are needed to overflow the first layer. Add rooms for more margin
-(6 → 3 layers).
+inside 512², so four of them are needed to overflow the first layer.
 
 Leave `switch-demo`'s indicator on the dynamic tier: it already reaches 512×512×2, but its indicator
 is a dynamic-tier light that lands no baked-animated receiver on layer ≥ 1 — which is why a dedicated
@@ -281,7 +297,7 @@ the payload version. Do not change it.
 |---|---|---|---|
 | Every chunk with animated receivers gets a real rect and a slot — no rect is a skip sentinel | Task 2 (gate removal, slot assignment) | Exceeding the slot cap must fail the bake, never fall back to a placeholder rect | AC: cap fails the bake · AC: degenerate shape gone |
 | Slot table is a sorted, duplicate-free bijection onto occupied static layers; a layer absent from it yields no animated contribution | Task 1 (`is_consistent`), Task 2 (assignment) | Task 3's forward lookup must map an absent layer to no contribution, not to slot 0's contents | AC: v3 round-trip · AC: absent layer resolves to sentinel |
-| Animated atlas width and height equal the static atlas's; animated depth is the section-25 slot count, not the static layer count | Task 3, Task 4 (resolver) | Compose stores at absolute per-layer coordinates and forward samples all atlases with one normalized UV — enforced today by doc comment and one resolver test, no assert | AC: resolver reports dimensions with layer count |
+| Animated atlas width and height equal the static atlas's; animated depth is the section-25 slot count, not the static layer count | Task 3, Task 4 (resolver) | Compose stores at absolute per-layer coordinates and forward samples all atlases with one normalized UV — enforced today by doc comment and one resolver test, no assert | AC: animated atlas created at resolver width/height, slot-count depth |
 | The forward pass samples an animated texel only for a cell in this frame's `VisibleCells`, which the compose pass wrote from the same `VisibleCells` | Task 3 | A texel never in any visible set reads its once-only zero-init; a texel written then culled holds stale contents, never sampled because one `VisibleCells` gates both passes. A second consumer (reflection probe, alternate camera) must share this frame's `VisibleCells` or skip animated chunks. No per-frame clear | AC: absent layer resolves to sentinel · AC: multi-layer fixture renders |
 | A face's animated direct term is zero only when no animated light reaches it | Task 2, Task 3 | Regressing to a layer-gated sample restores the silent-darkness bug | AC: multi-layer fixture renders |
 | Leaf cohesion: all charts of one BSP leaf share a layer | pre-existing (`pack_layers`) | Untouched here; slot assignment must not reorder or regroup placements | AC: multi-layer bake from a real pack |

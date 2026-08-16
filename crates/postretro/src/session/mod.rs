@@ -112,6 +112,11 @@ pub(crate) struct Session {
     /// this session-owned bridge.
     pub(crate) presentation_pool: crate::presentation_pool::PresentationPool,
 
+    /// Client-only terminal guards for unordered enemy-overlay facts. This is
+    /// separate from the pool because a removed overlay must still remember its
+    /// terminal `NetworkId` until the reorder horizon has elapsed.
+    pub(crate) client_overlay_facts: crate::netcode::ClientOverlayFactState,
+
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
 
@@ -502,6 +507,7 @@ impl Session {
             scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             presentation_pool: crate::presentation_pool::PresentationPool::default(),
+            client_overlay_facts: crate::netcode::ClientOverlayFactState::default(),
             state_store_lifecycle: StateStoreLifecycle::default(),
             per_owner_save_timer: PerOwnerSaveTimer::default(),
             persisted_state: None,

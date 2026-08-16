@@ -74,6 +74,18 @@ struct BoundPresentationOverlay {
     shield: Option<BoundOverlayShield>,
 }
 
+/// The authored portion of the damaged-enemy overlay lifecycle that a
+/// connected client needs to render host-pushed facts. Values themselves stay
+/// on the presentation channel; this carries no registry-derived combat state.
+#[derive(Clone)]
+pub(crate) struct ClientOverlayConfig {
+    pub(crate) template: PresentationTemplateHandle,
+    pub(crate) world_anchor: PresentationWorldAnchor,
+    pub(crate) max_visible: usize,
+    pub(crate) linger_seconds: f64,
+    pub(crate) hide_at_full: bool,
+}
+
 struct BoundOverlayShield {
     value: BoundProgram<OverlayStateScope>,
     max: BoundProgram<OverlayStateScope>,
@@ -256,6 +268,21 @@ impl ImpactPolicyRuntime {
     /// cache. Template widgets are never laid out in this policy runtime.
     pub(crate) fn presentation_templates(&self) -> Vec<PresentationTemplate> {
         self.presentation_templates.values().cloned().collect()
+    }
+
+    /// Snapshot the client-relevant lifetime and anchor configuration for the
+    /// one supported damaged-enemy overlay. The host alone evaluates health and
+    /// shield state; clients only apply pushed facts through this configuration.
+    pub(crate) fn client_overlay_config(&self) -> Option<ClientOverlayConfig> {
+        self.presentation_overlays
+            .first()
+            .map(|overlay| ClientOverlayConfig {
+                template: overlay.template.clone(),
+                world_anchor: overlay.world_anchor.clone(),
+                max_visible: overlay.max_visible,
+                linger_seconds: overlay.linger_seconds,
+                hide_at_full: overlay.hide_at_full,
+            })
     }
 
     /// Replace the complete passive overlay declaration snapshot. Currently

@@ -5631,6 +5631,11 @@ impl App {
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
         let presentation_templates = session.scripting.presentation_templates();
+        let client_overlay_config = session
+            .scripting
+            .impact_policy_runtime
+            .client_overlay_config();
+        let presentation_anim_time = self.anim_time;
         let script_runtime = &session.scripting.script_runtime;
         let replication_identity = netcode::ReplicatedSlotIdentity::borrowed(
             script_runtime.committed_mod_identity().map(|(id, _)| id),
@@ -6046,11 +6051,6 @@ impl App {
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = script_ctx.registry.borrow_mut();
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
-                netcode::ingest_client_presentation_messages(
-                    &mut registry,
-                    presentation_messages,
-                    &presentation_templates,
-                );
                 for verdict in shot_verdicts {
                     let _ = self.client_predicted_shots.apply_verdict(
                         &mut registry,
@@ -6091,6 +6091,18 @@ impl App {
                         *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                netcode::ingest_client_presentation_messages(
+                    &mut registry,
+                    presentation_messages,
+                    &presentation_templates,
+                    &mut session.client_overlay_facts,
+                    replication,
+                    &mut session.presentation_pool,
+                    client_overlay_config.as_ref(),
+                    hit_zone_store,
+                    presentation_anim_time,
+                    frame_dt,
+                );
                 if apply_outcome.replicated_state_changed
                     && let Some(local_seat) = session_status.local_seat()
                 {

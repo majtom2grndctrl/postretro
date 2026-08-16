@@ -262,6 +262,13 @@ impl PresentationPool {
         self.overlays.remove(&entity);
     }
 
+    /// Whether this entity still owns a live keyed overlay after the pool's
+    /// frame-time linger eviction. Client network-id bookkeeping uses this to
+    /// discard its otherwise separate identity entry at the same boundary.
+    pub(crate) fn has_overlay(&self, entity: EntityId) -> bool {
+        self.overlays.contains_key(&entity)
+    }
+
     /// Drop all keyed overlays after their authoring snapshot is replaced.
     /// Spawn presentation intentionally survives this separately-owned reset.
     pub(crate) fn clear_overlays(&mut self) {

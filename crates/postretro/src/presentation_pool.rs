@@ -26,9 +26,10 @@ pub(crate) struct PresentationPool {
     /// eviction policy.
     next_instance_id: u64,
     next_spawn_sequence: u64,
-    next_overlay_sequence: u64,
     spawns: Vec<LivePresentationSpawn>,
     overlays: HashMap<EntityId, LivePresentationOverlay>,
+    pending_spawns: Vec<PresentationSpawn>,
+    draw_inputs: Vec<PresentationDrawInput>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +47,10 @@ struct LivePresentationOverlay {
     facts: PresentationFacts,
     world_anchor: glam::Vec3,
     last_damaged_time_seconds: f64,
-    creation_sequence: u64,
+    /// Stable producer identity used only when damage times tie. Remote
+    /// overlays use the host-assigned, non-recycled NetworkId, so packet
+    /// arrival order cannot change which target survives the cap.
+    eviction_order: u64,
     instance_id: u64,
     linger_seconds: f64,
     suppressed: bool,
@@ -59,9 +63,10 @@ impl PresentationPool {
             frame_time_seconds: 0.0,
             next_instance_id: 0,
             next_spawn_sequence: 0,
-            next_overlay_sequence: 0,
             spawns: Vec::with_capacity(capacity),
             overlays: HashMap::new(),
+            pending_spawns: Vec::new(),
+            draw_inputs: Vec::with_capacity(capacity),
         }
     }
 
@@ -77,9 +82,12 @@ impl PresentationPool {
         view_projection: Mat4,
         viewport_size: [u32; 2],
     ) -> Vec<PresentationDrawInput> {
-        for spawn in registry.take_presentation_spawns() {
+        registry.drain_presentation_spawns_into(&mut self.pending_spawns);
+        let mut pending_spawns = std::mem::take(&mut self.pending_spawns);
+        for spawn in pending_spawns.drain(..) {
             self.intake(spawn);
         }
+        self.pending_spawns = pending_spawns;
 
         self.frame_time_seconds += valid_frame_delta(frame_dt_seconds);
         let frame_time_seconds = self.frame_time_seconds;
@@ -91,6 +99,14 @@ impl PresentationPool {
         });
 
         self.collect_draw_inputs(view_projection, viewport_size)
+    }
+
+    /// Accept the renderer's previous frame buffer after it swaps in the newly
+    /// collected inputs. Two buffers ping-pong across the app/renderer boundary,
+    /// retaining Vec, template-string, and fact-map storage at their warm
+    /// high-water marks.
+    pub(crate) fn recycle_draw_inputs(&mut self, inputs: Vec<PresentationDrawInput>) {
+        self.draw_inputs = inputs;
     }
 
     fn intake(&mut self, spawn: PresentationSpawn) {
@@ -129,17 +145,19 @@ impl PresentationPool {
     }
 
     fn collect_draw_inputs(
-        &self,
+        &mut self,
         view_projection: Mat4,
         viewport_size: [u32; 2],
     ) -> Vec<PresentationDrawInput> {
-        let mut inputs = Vec::with_capacity(self.spawns.len().saturating_add(self.overlays.len()));
+        let mut inputs = std::mem::take(&mut self.draw_inputs);
+        let required = self.spawns.len().saturating_add(self.overlays.len());
+        if required > inputs.capacity() {
+            inputs.reserve(required.saturating_sub(inputs.len()));
+        }
+        let mut input_count = 0;
         for live in &self.spawns {
-            let Some(anchor) =
-                project_world_to_screen(live.spawn.world_anchor, view_projection, viewport_size)
-            else {
-                continue;
-            };
+            let anchor =
+                project_world_to_screen(live.spawn.world_anchor, view_projection, viewport_size);
 
             let lifetime = lifetime_seconds(&live.spawn);
             let age = self.age_seconds(live);
@@ -150,31 +168,38 @@ impl PresentationPool {
             let rise = finite_or_zero(live.spawn.motion.rise_pixels) * progress;
             let alpha = fade_alpha(&live.spawn, age, lifetime);
 
-            inputs.push(PresentationDrawInput {
-                instance_id: live.instance_id,
-                template: live.spawn.template.clone(),
-                facts: live.spawn.facts.clone(),
-                anchor: [anchor.x + live.scatter.x, anchor.y + live.scatter.y - rise],
-                opacity: alpha,
+            let projected_anchor = anchor.map_or([0.0, 0.0], |anchor| {
+                [anchor.x + live.scatter.x, anchor.y + live.scatter.y - rise]
             });
+            write_draw_input(
+                &mut inputs,
+                &mut input_count,
+                live.instance_id,
+                &live.spawn.template,
+                &live.spawn.facts,
+                projected_anchor,
+                alpha,
+                anchor.is_some(),
+            );
         }
         for overlay in self.overlays.values() {
-            if overlay.suppressed {
-                continue;
-            }
-            let Some(anchor) =
-                project_world_to_screen(overlay.world_anchor, view_projection, viewport_size)
-            else {
-                continue;
-            };
-            inputs.push(PresentationDrawInput {
-                instance_id: overlay.instance_id,
-                template: overlay.template.clone(),
-                facts: overlay.facts.clone(),
-                anchor: [anchor.x, anchor.y],
-                opacity: 1.0,
-            });
+            let anchor = (!overlay.suppressed)
+                .then(|| {
+                    project_world_to_screen(overlay.world_anchor, view_projection, viewport_size)
+                })
+                .flatten();
+            write_draw_input(
+                &mut inputs,
+                &mut input_count,
+                overlay.instance_id,
+                &overlay.template,
+                &overlay.facts,
+                anchor.map_or([0.0, 0.0], |anchor| [anchor.x, anchor.y]),
+                1.0,
+                anchor.is_some(),
+            );
         }
+        inputs.truncate(input_count);
         inputs
     }
 
@@ -198,6 +223,11 @@ impl PresentationPool {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn live_counts(&self) -> (usize, usize) {
+        (self.spawns.len(), self.overlays.len())
+    }
+
     /// Create or refresh one target-keyed overlay. Its cap is separate from
     /// the spawn ring's `capacity`; neither archetype can evict the other.
     pub(crate) fn refresh_overlay(
@@ -206,6 +236,7 @@ impl PresentationPool {
         template: PresentationTemplateHandle,
         linger_seconds: f64,
         max_visible: usize,
+        eviction_order: u64,
     ) {
         if max_visible == 0 {
             return;
@@ -218,16 +249,19 @@ impl PresentationPool {
             overlay.template = template;
             overlay.linger_seconds = linger_seconds.max(0.0);
             overlay.last_damaged_time_seconds = self.frame_time_seconds;
+            overlay.eviction_order = eviction_order;
             return;
         }
-        while self.overlays.len() >= max_visible {
-            let Some(entity) = self.least_recent_overlay() else {
-                break;
+        if self.overlays.len() >= max_visible {
+            let Some((least_recent, least_recent_key)) = self.least_recent_overlay() else {
+                return;
             };
-            self.overlays.remove(&entity);
+            let incoming_key = (self.frame_time_seconds, eviction_order);
+            if incoming_key <= least_recent_key {
+                return;
+            }
+            self.overlays.remove(&least_recent);
         }
-        let creation_sequence = self.next_overlay_sequence;
-        self.next_overlay_sequence = self.next_overlay_sequence.wrapping_add(1);
         let instance_id = self.next_instance_id;
         self.next_instance_id = self.next_instance_id.wrapping_add(1);
         self.overlays.insert(
@@ -237,7 +271,7 @@ impl PresentationPool {
                 facts: PresentationFacts::new(),
                 world_anchor: glam::Vec3::ZERO,
                 last_damaged_time_seconds: self.frame_time_seconds,
-                creation_sequence,
+                eviction_order,
                 instance_id,
                 linger_seconds: linger_seconds.max(0.0),
                 suppressed: true,
@@ -245,19 +279,36 @@ impl PresentationPool {
         );
     }
 
-    /// Stamp a tracked instance. Tracking creation is dispatch-driven, so this
-    /// never creates an overlay during the frame scan.
-    pub(crate) fn stamp_overlay(
+    /// Update the shipped damaged-enemy fact tuple in place. These three names
+    /// are stable template vocabulary, so the warm per-frame stamp reuses map
+    /// nodes and key Strings instead of rebuilding a BTreeMap.
+    pub(crate) fn stamp_damaged_enemy_overlay(
         &mut self,
         entity: EntityId,
-        facts: PresentationFacts,
+        health_fraction: f32,
+        shield_fraction: f32,
+        has_shield: bool,
         world_anchor: glam::Vec3,
         suppressed: bool,
     ) {
         let Some(overlay) = self.overlays.get_mut(&entity) else {
             return;
         };
-        overlay.facts = facts;
+        update_fact(
+            &mut overlay.facts,
+            "healthFraction",
+            postretro_entities::PresentationFact::Number(health_fraction),
+        );
+        update_fact(
+            &mut overlay.facts,
+            "shieldFraction",
+            postretro_entities::PresentationFact::Number(shield_fraction),
+        );
+        update_fact(
+            &mut overlay.facts,
+            "hasShield",
+            postretro_entities::PresentationFact::Bool(has_shield),
+        );
         overlay.world_anchor = world_anchor;
         overlay.suppressed = suppressed;
     }
@@ -312,20 +363,38 @@ impl PresentationPool {
         self.overlays.clear();
     }
 
+    /// Drop every world-anchored instance at a level-lifetime boundary.
+    /// Template registrations are session-scoped, but their live anchors and
+    /// facts are not.
+    pub(crate) fn clear_world_instances(&mut self) {
+        self.spawns.clear();
+        self.overlays.clear();
+    }
+
+    #[cfg(test)]
     pub(crate) fn tracked_overlay_ids(&self) -> Vec<EntityId> {
         self.overlays.keys().copied().collect()
     }
 
-    fn least_recent_overlay(&self) -> Option<EntityId> {
+    pub(crate) fn tracked_overlay_ids_iter(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.overlays.keys().copied()
+    }
+
+    fn least_recent_overlay(&self) -> Option<(EntityId, (f64, u64))> {
         self.overlays
             .iter()
             .min_by(|(_, left), (_, right)| {
                 left.last_damaged_time_seconds
                     .partial_cmp(&right.last_damaged_time_seconds)
                     .expect("presentation frame clock stays finite")
-                    .then_with(|| left.creation_sequence.cmp(&right.creation_sequence))
+                    .then_with(|| left.eviction_order.cmp(&right.eviction_order))
             })
-            .map(|(entity, _)| *entity)
+            .map(|(entity, overlay)| {
+                (
+                    *entity,
+                    (overlay.last_damaged_time_seconds, overlay.eviction_order),
+                )
+            })
     }
 
     #[cfg(test)]
@@ -356,6 +425,68 @@ impl PresentationPool {
 impl Default for PresentationPool {
     fn default() -> Self {
         Self::new(DEFAULT_PRESENTATION_SPAWN_CAPACITY)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_draw_input(
+    inputs: &mut Vec<PresentationDrawInput>,
+    input_count: &mut usize,
+    instance_id: u64,
+    template: &PresentationTemplateHandle,
+    facts: &PresentationFacts,
+    anchor: [f32; 2],
+    opacity: f32,
+    visible: bool,
+) {
+    if let Some(input) = inputs.get_mut(*input_count) {
+        input.instance_id = instance_id;
+        input.template.clone_from(template);
+        sync_facts(&mut input.facts, facts);
+        input.anchor = anchor;
+        input.opacity = opacity;
+        input.visible = visible;
+    } else {
+        inputs.push(PresentationDrawInput {
+            instance_id,
+            template: template.clone(),
+            facts: facts.clone(),
+            anchor,
+            opacity,
+            visible,
+        });
+    }
+    *input_count += 1;
+}
+
+/// Synchronize a warm draw-input fact snapshot without rebuilding its tree or
+/// stable key/value Strings. Key-set changes remain a cold structural event.
+fn sync_facts(target: &mut PresentationFacts, source: &PresentationFacts) {
+    target.retain(|name, _| source.contains_key(name));
+    for (name, source_value) in source {
+        if let Some(target_value) = target.get_mut(name) {
+            match (target_value, source_value) {
+                (
+                    postretro_entities::PresentationFact::Text(target),
+                    postretro_entities::PresentationFact::Text(source),
+                ) => target.clone_from(source),
+                (target, source) => target.clone_from(source),
+            }
+        } else {
+            target.insert(name.clone(), source_value.clone());
+        }
+    }
+}
+
+fn update_fact(
+    facts: &mut PresentationFacts,
+    name: &'static str,
+    value: postretro_entities::PresentationFact,
+) {
+    if let Some(current) = facts.get_mut(name) {
+        *current = value;
+    } else {
+        facts.insert(name.to_owned(), value);
     }
 }
 
@@ -500,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_skips_behind_and_offscreen_spawns() {
+    fn pool_marks_behind_and_offscreen_spawns_culled_but_live() {
         let mut registry = EntityRegistry::new();
         let mut pool = PresentationPool::new(3);
         registry.push_presentation_spawn(spawn("visible", Vec3::new(0.0, 0.0, -2.0), 1.0));
@@ -514,9 +645,12 @@ mod tests {
             [800, 600],
         );
 
-        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs.len(), 3);
+        assert!(inputs[0].visible);
         assert!((inputs[0].anchor[0] - 400.0).abs() < EPSILON);
         assert!((inputs[0].anchor[1] - 300.0).abs() < EPSILON);
+        assert!(!inputs[1].visible);
+        assert!(!inputs[2].visible);
     }
 
     #[test]
@@ -527,9 +661,15 @@ mod tests {
         let third = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(1);
 
-        pool.refresh_overlay(first, PresentationTemplateHandle::from("status"), 1.0, 2);
-        pool.refresh_overlay(second, PresentationTemplateHandle::from("status"), 1.0, 2);
-        pool.refresh_overlay(third, PresentationTemplateHandle::from("status"), 1.0, 2);
+        pool.refresh_overlay(first, PresentationTemplateHandle::from("status"), 1.0, 2, 1);
+        pool.refresh_overlay(
+            second,
+            PresentationTemplateHandle::from("status"),
+            1.0,
+            2,
+            2,
+        );
+        pool.refresh_overlay(third, PresentationTemplateHandle::from("status"), 1.0, 2, 3);
 
         assert_eq!(pool.overlay_ids(), [second, third]);
         registry.push_presentation_spawn(spawn("damage-number", Vec3::ZERO, 1.0));
@@ -544,12 +684,75 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let target = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(1);
-        pool.refresh_overlay(target, PresentationTemplateHandle::from("status"), 0.1, 1);
+        pool.refresh_overlay(
+            target,
+            PresentationTemplateHandle::from("status"),
+            0.1,
+            1,
+            1,
+        );
         registry.push_presentation_spawn(spawn("damage-number", Vec3::ZERO, 1.0));
 
         let _ = pool.advance_and_collect_inputs(&mut registry, 0.11, Mat4::IDENTITY, [800, 600]);
 
         assert!(pool.overlay_ids().is_empty());
         assert_eq!(pool.live_template_names(), ["damage-number"]);
+    }
+
+    // Regression: returning to the frontend retained live world anchors from
+    // the unloaded map in both independently-budgeted pools.
+    #[test]
+    fn level_unload_clears_spawn_and_overlay_budgets() {
+        let mut registry = EntityRegistry::new();
+        let target = registry.spawn(Transform::default());
+        let mut pool = PresentationPool::new(1);
+        registry.push_presentation_spawn(spawn("old-number", Vec3::ZERO, 1.0));
+        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        pool.refresh_overlay(
+            target,
+            PresentationTemplateHandle::from("old-bar"),
+            1.0,
+            1,
+            1,
+        );
+
+        pool.clear_world_instances();
+
+        assert!(pool.live_template_names().is_empty());
+        assert!(pool.overlay_ids().is_empty());
+    }
+
+    // Regression: unordered equal-time network facts made the client's FIFO
+    // cap retain a different target set from the host.
+    #[test]
+    fn keyed_overlay_equal_time_cap_uses_stable_order_not_arrival_order() {
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+        let third = registry.spawn(Transform::default());
+        let mut forward = PresentationPool::new(0);
+        let mut reverse = PresentationPool::new(0);
+
+        for (entity, order) in [(first, 1), (second, 2), (third, 3)] {
+            forward.refresh_overlay(
+                entity,
+                PresentationTemplateHandle::from("status"),
+                1.0,
+                2,
+                order,
+            );
+        }
+        for (entity, order) in [(third, 3), (second, 2), (first, 1)] {
+            reverse.refresh_overlay(
+                entity,
+                PresentationTemplateHandle::from("status"),
+                1.0,
+                2,
+                order,
+            );
+        }
+
+        assert_eq!(forward.overlay_ids(), [second, third]);
+        assert_eq!(reverse.overlay_ids(), [second, third]);
     }
 }

@@ -7,8 +7,10 @@
 //
 // Pure builders: constructing a widget has no engine side effect — the FFI
 // boundary is the eventual `return` of the authored tree. Bound props accept
-// state-reference descriptors (`{ slot }`) or presentation-local bind objects;
-// `Button.onPress` accepts a reaction handle or a bare name string.
+// state-reference descriptors (`{ slot }`) or presentation-local bind objects.
+// Fact refs are legal only when the resulting widget is rooted in a
+// presentation template; ordinary UI-tree drains reject them. `Button.onPress`
+// accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
 import type { LocalizedText } from "./text";

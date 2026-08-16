@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// side of the bridge can grow without bound.
 pub const MAX_PENDING_PRESENTATION_SPAWNS: usize = 128;
 
-/// Stable handle for a presentation template registered by a future authoring
+/// Stable handle for a presentation template registered by the script authoring
 /// surface. The registry carries the handle but never resolves it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PresentationTemplateHandle(pub String);

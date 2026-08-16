@@ -85,6 +85,8 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub(crate) use prediction::ClientPrediction;
+#[cfg(test)]
+pub(crate) use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub(crate) use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
     route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,

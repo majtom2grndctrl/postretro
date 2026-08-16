@@ -5,9 +5,9 @@ use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
 use postretro_entities::{
-    EntityId, EntityRegistry, PresentationFact, PresentationFacts, PresentationFade,
-    PresentationMotion, PresentationPresenter, PresentationSpawn, PresentationTemplateHandle,
-    ScriptCtx, SlotValue, Transform,
+    EntityId, EntityRegistry, PresentationFact, PresentationFade, PresentationMotion,
+    PresentationPresenter, PresentationSpawn, PresentationTemplateHandle, ScriptCtx, SlotValue,
+    Transform,
 };
 use postretro_foundation::ir::{
     BakedIr, BindingScope, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue,
@@ -44,6 +44,9 @@ pub(crate) struct ImpactPolicyRuntime {
     /// synchronous impact evaluation point as `present`, never by taking the
     /// destructive registry dispatch queue a second time.
     pending_overlay_damage: Vec<DamagedEnemyOverlayDamage>,
+    /// Reused union of host-local, remote-recipient, and just-damaged targets
+    /// sampled by the post-tick overlay pass.
+    overlay_entity_scratch: Vec<EntityId>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
     scope: EntityScope,
@@ -238,6 +241,7 @@ impl ImpactPolicyRuntime {
             presentation_templates: HashMap::new(),
             presentation_overlays: Vec::new(),
             pending_overlay_damage: Vec::new(),
+            overlay_entity_scratch: Vec::new(),
             level_events: Vec::new(),
             active_level_tags: Vec::new(),
             policies: Vec::new(),
@@ -298,6 +302,13 @@ impl ImpactPolicyRuntime {
         self.presentation_templates.values().cloned().collect()
     }
 
+    /// Borrow the committed template registry for frame-local client ingest.
+    /// Renderer installation still takes an owned snapshot only at manifest
+    /// commit; ordinary net polls must not clone every widget subtree.
+    pub(crate) fn presentation_template_registry(&self) -> &HashMap<String, PresentationTemplate> {
+        &self.presentation_templates
+    }
+
     /// Snapshot the client-relevant lifetime and anchor configuration for the
     /// one supported damaged-enemy overlay. The host alone evaluates health and
     /// shield state; clients only apply pushed facts through this configuration.
@@ -320,13 +331,13 @@ impl ImpactPolicyRuntime {
     pub(crate) fn replace_presentation_overlays(&mut self, overlays: Vec<PresentationOverlay>) {
         self.presentation_overlays.clear();
         self.pending_overlay_damage.clear();
+        if overlays.len() > 1 {
+            log::warn!(
+                "[Impact] presentation overlay snapshot contained more than one descriptor; all overlays were ignored"
+            );
+            return;
+        }
         for overlay in overlays {
-            if !self.presentation_overlays.is_empty() {
-                log::warn!(
-                    "[Impact] additional presentation overlay was ignored: the damaged-enemy overlay key is EntityId"
-                );
-                continue;
-            }
             if let Err(error) = overlay.validate() {
                 log::warn!("[Impact] presentation overlay was ignored: {error}");
                 continue;
@@ -660,6 +671,8 @@ impl ImpactPolicyRuntime {
         registry: &EntityRegistry,
         hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
         anim_time: f64,
+        remote_tracked_entities: impl IntoIterator<Item = EntityId>,
+        is_remote_source: impl Fn(Option<EntityId>) -> bool,
     ) -> DamagedEnemyOverlayFrame {
         let mut frame = DamagedEnemyOverlayFrame {
             damage: std::mem::take(&mut self.pending_overlay_damage),
@@ -670,15 +683,27 @@ impl ImpactPolicyRuntime {
         };
 
         for damage in &frame.damage {
-            pool.refresh_overlay(
-                damage.entity,
-                binding.template.clone(),
-                binding.linger_seconds,
-                binding.max_visible,
-            );
+            if !is_remote_source(damage.source) {
+                pool.refresh_overlay(
+                    damage.entity,
+                    binding.template.clone(),
+                    binding.linger_seconds,
+                    binding.max_visible,
+                    u64::from(damage.entity.to_raw()),
+                );
+            }
         }
 
-        for entity in pool.tracked_overlay_ids() {
+        let mut tracked_entities = std::mem::take(&mut self.overlay_entity_scratch);
+        tracked_entities.clear();
+        tracked_entities.extend(pool.tracked_overlay_ids_iter());
+        tracked_entities.extend(remote_tracked_entities);
+        tracked_entities.extend(frame.damage.iter().map(|damage| damage.entity));
+        tracked_entities.sort_by_key(|entity| entity.to_raw());
+        tracked_entities.dedup();
+        frame.facts.reserve(tracked_entities.len());
+
+        for &entity in &tracked_entities {
             let Ok(health) = registry
                 .get_component::<postretro_entities::components::health::HealthComponent>(entity)
             else {
@@ -720,33 +745,26 @@ impl ImpactPolicyRuntime {
                         has_shield,
                     )
                 });
-            let Some(anchor) = overlay_anchor(
-                registry,
-                hit_zones,
-                entity,
-                &binding.world_anchor,
-                anim_time,
-            ) else {
-                pool.evict_overlay(entity);
-                continue;
-            };
-
-            let mut facts = PresentationFacts::new();
-            facts.insert(
-                "healthFraction".to_string(),
-                PresentationFact::Number(health_fraction),
-            );
-            facts.insert(
-                "shieldFraction".to_string(),
-                PresentationFact::Number(shield_fraction),
-            );
-            facts.insert("hasShield".to_string(), PresentationFact::Bool(has_shield));
-            pool.stamp_overlay(
-                entity,
-                facts,
-                anchor,
-                binding.hide_at_full && health.current == health.max,
-            );
+            if pool.has_overlay(entity) {
+                if let Some(anchor) = overlay_anchor(
+                    registry,
+                    hit_zones,
+                    entity,
+                    &binding.world_anchor,
+                    anim_time,
+                ) {
+                    pool.stamp_damaged_enemy_overlay(
+                        entity,
+                        health_fraction,
+                        shield_fraction,
+                        has_shield,
+                        anchor,
+                        binding.hide_at_full && health.current == health.max,
+                    );
+                } else {
+                    pool.evict_overlay(entity);
+                }
+            }
             frame.facts.push(DamagedEnemyOverlayFact {
                 entity,
                 health_fraction,
@@ -755,6 +773,7 @@ impl ImpactPolicyRuntime {
                 alive: true,
             });
         }
+        self.overlay_entity_scratch = tracked_entities;
         frame
     }
 }
@@ -1594,7 +1613,14 @@ mod tests {
         evaluate_pending(&ctx, &mut runtime);
         {
             let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
         }
 
         assert_eq!(pool.tracked_overlay_ids(), [enemy]);
@@ -1622,7 +1648,14 @@ mod tests {
             .expect("target is live");
         {
             let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
         }
         assert_eq!(pool.overlay_is_suppressed(enemy), Some(true));
 
@@ -1639,7 +1672,14 @@ mod tests {
             .expect("target is live");
         {
             let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
         }
         assert!(pool.tracked_overlay_ids().is_empty());
     }
@@ -1688,7 +1728,14 @@ mod tests {
         evaluate_pending(&ctx, &mut runtime);
         {
             let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
         }
         let facts = pool
             .overlay_facts(enemy)
@@ -1716,12 +1763,70 @@ mod tests {
         evaluate_pending(&ctx, &mut runtime);
         {
             let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(&mut pool, &registry, &hit_zones, 0.0);
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |_| false,
+            );
         }
         assert!(
             !pool.tracked_overlay_ids().contains(&doomed),
             "a same-frame damage refresh must not draw a target killed by that hit"
         );
+    }
+
+    // Regression: a remote client's private damaged-enemy target was inserted
+    // into the host renderer pool and competed with host-local overlays.
+    #[test]
+    fn remote_overlay_damage_samples_facts_without_entering_local_pool() {
+        use crate::presentation_pool::PresentationPool;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+
+        let ctx = ScriptCtx::new();
+        let enemy = target(&ctx, &["enemy"]);
+        give_target_hitbox(&ctx, enemy);
+        let remote_pawn = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+
+        hit_from(&ctx, enemy, Some(remote_pawn), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        let frame = {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [],
+                |source| source == Some(remote_pawn),
+            )
+        };
+
+        assert!(pool.tracked_overlay_ids().is_empty());
+        assert_eq!(frame.damage.len(), 1);
+        assert_eq!(frame.facts.len(), 1);
+        assert_eq!(frame.facts[0].entity, enemy);
+
+        let next = {
+            let registry = ctx.registry.borrow();
+            runtime.update_damaged_enemy_overlays(
+                &mut pool,
+                &registry,
+                &hit_zones,
+                0.0,
+                [enemy],
+                |_| false,
+            )
+        };
+        assert!(pool.tracked_overlay_ids().is_empty());
+        assert_eq!(next.facts.len(), 1, "remote recharge sampling stays live");
     }
 
     #[test]

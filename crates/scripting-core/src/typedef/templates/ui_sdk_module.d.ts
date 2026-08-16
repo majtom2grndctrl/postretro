@@ -82,12 +82,15 @@ declare module "postretro/ui" {
   /** Producer-stamped scalar available only while laying out a passive presentation instance. */
   export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   export type PredicateValue = number | boolean | string;
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
   export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
   export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
   export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
   export type BarMaxProp = number | ComputedRef<number>;
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };

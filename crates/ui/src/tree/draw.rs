@@ -213,6 +213,10 @@ pub struct UiDrawData {
     pub images: Vec<(String, UiDrawList)>,
     pub texts: Vec<UiText>,
     pub paint_order: Vec<UiPaintOp>,
+    /// Cleared text records retained for translated presentation aggregation.
+    /// Keeping their Strings alive makes repeated content/family copies reuse
+    /// capacity instead of allocating at every world-anchor translation.
+    spare_texts: Vec<UiText>,
 }
 
 impl UiDrawData {
@@ -233,7 +237,21 @@ impl UiDrawData {
             images: Vec::with_capacity(image_count),
             texts: Vec::with_capacity(text_count),
             paint_order: Vec::with_capacity(paint_count),
+            spare_texts: Vec::with_capacity(text_count),
         }
+    }
+
+    /// Clear frame-local items while retaining every backing allocation. Image
+    /// batch keys are template assets and remain as empty reusable buckets; a
+    /// presentation-template registry replacement drops the whole scratch to
+    /// bound keys across hot reloads.
+    pub fn clear_preserving_capacity(&mut self) {
+        self.quads.clear();
+        for (_, list) in &mut self.images {
+            list.clear();
+        }
+        self.spare_texts.append(&mut self.texts);
+        self.paint_order.clear();
     }
 
     /// `true` when this tree produced no drawable output: no panel quads, no
@@ -265,6 +283,24 @@ impl UiDrawData {
         self.paint_order.push(UiPaintOp::Text { index });
     }
 
+    fn push_translated_text(&mut self, source: &UiText, offset: [f32; 2], opacity: f32) {
+        let mut text = if let Some(mut text) = self.spare_texts.pop() {
+            text.content.clone_from(&source.content);
+            text.family.clone_from(&source.family);
+            text.font_size = source.font_size;
+            text.color = source.color;
+            text
+        } else {
+            source.clone()
+        };
+        text.position = [
+            source.position[0] + offset[0],
+            source.position[1] + offset[1],
+        ];
+        text.color[3] = (f32::from(source.color[3]) * opacity).round() as u8;
+        self.push_text(text);
+    }
+
     /// Append another draw list after translating it in device pixels and
     /// modulating its opacity. Presentation templates lower around `[0, 0]`;
     /// the renderer uses this to place the result at a projected world anchor
@@ -289,11 +325,7 @@ impl UiDrawData {
                     self.push_image(asset, instance);
                 }
                 UiPaintOp::Text { index } => {
-                    let mut text = source.texts[index].clone();
-                    text.position[0] += offset[0];
-                    text.position[1] += offset[1];
-                    text.color[3] = (f32::from(text.color[3]) * opacity).round() as u8;
-                    self.push_text(text);
+                    self.push_translated_text(&source.texts[index], offset, opacity);
                 }
             }
         }

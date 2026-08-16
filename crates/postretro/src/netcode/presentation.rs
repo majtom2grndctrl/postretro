@@ -1,7 +1,7 @@
 // Host-to-client routing and engine conversion for passive presentation events.
 // See: context/lib/networking.md
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use glam::Vec3;
 use postretro_entities::{
@@ -119,6 +119,16 @@ pub(crate) struct ClientOverlayFactState {
 }
 
 impl ClientOverlayFactState {
+    /// Retire all ordering and identity facts at a level, participation, or
+    /// overlay-authoring boundary. None of these ids or pending values may be
+    /// interpreted against the next lifecycle's entity/template set.
+    pub(crate) fn clear(&mut self) {
+        self.terminal_ids.clear();
+        self.live_overlays.clear();
+        self.pending_live_facts.clear();
+        self.elapsed_seconds = 0.0;
+    }
+
     /// Advance the injected game-time clock and drop terminal guards or
     /// pre-baseline facts past the unordered channel's reorder horizon.
     pub(crate) fn advance_terminal_ttl(&mut self, frame_dt_seconds: f32) {
@@ -143,17 +153,25 @@ impl ClientOverlayFactState {
         }
         if !self.pending_live_facts.contains_key(&fact.enemy_id)
             && self.pending_live_facts.len() >= max_visible
-            && let Some(oldest) = self
-                .pending_live_facts
-                .iter()
-                .min_by(|(left_id, left), (right_id, right)| {
-                    left.queued_at
-                        .total_cmp(&right.queued_at)
-                        .then_with(|| left_id.0.cmp(&right_id.0))
-                })
-                .map(|(id, _)| *id)
         {
-            self.pending_live_facts.remove(&oldest);
+            let victim =
+                self.pending_live_facts
+                    .iter()
+                    .min_by(|(left_id, left), (right_id, right)| {
+                        left.queued_at
+                            .total_cmp(&right.queued_at)
+                            .then_with(|| left_id.0.cmp(&right_id.0))
+                    });
+            let Some((victim_id, victim)) = victim else {
+                return;
+            };
+            let incoming_rank = (self.elapsed_seconds, fact.enemy_id.0);
+            let victim_rank = (victim.queued_at, victim_id.0);
+            if incoming_rank <= victim_rank {
+                return;
+            }
+            let victim_id = *victim_id;
+            self.pending_live_facts.remove(&victim_id);
         }
         self.pending_live_facts.insert(
             fact.enemy_id,
@@ -179,27 +197,57 @@ impl ClientOverlayFactState {
         self.pending_live_facts.len()
     }
 }
-/// Clients that earned a bar for one currently tracked enemy. The stored wire
-/// identity survives the entity's host-side removal long enough to send its
-/// terminal fact, while `NetworkId` itself remains non-recycled.
-#[derive(Debug)]
-struct OverlayFactRecipients {
-    network_id: NetworkId,
-    clients: HashSet<u64>,
+#[derive(Debug, Clone, Copy)]
+struct HostLiveOverlay {
+    entity: EntityId,
+    last_damaged_time_seconds: f64,
 }
 
 /// Host-only suppression and ownership bookkeeping for damaged-enemy facts.
 ///
-/// Entries are bounded to Task 6's live keyed overlays. A late joiner never
-/// enters this map, because only a source currently owned by that client records
-/// a recipient.
+/// Each recipient owns an independently capped/lingering target set. A late
+/// joiner never enters it, because only a source currently owned by that client
+/// records a target.
 #[derive(Debug, Default)]
 pub(crate) struct HostOverlayFactTracker {
-    recipients: HashMap<EntityId, OverlayFactRecipients>,
+    live_overlays: HashMap<(u64, NetworkId), HostLiveOverlay>,
     last_sent: HashMap<(u64, NetworkId), OverlayFactTuple>,
+    elapsed_seconds: f64,
 }
 
 impl HostOverlayFactTracker {
+    /// Retire all level-local recipients and delivery suppression facts.
+    pub(crate) fn clear(&mut self) {
+        self.live_overlays.clear();
+        self.last_sent.clear();
+        self.elapsed_seconds = 0.0;
+    }
+
+    /// Advance and prune each remote recipient's private overlay stream. This
+    /// lifecycle is independent of the host renderer's local overlay pool.
+    pub(crate) fn begin_frame(
+        &mut self,
+        frame_dt_seconds: f32,
+        linger_seconds: f64,
+        owners: &MovementOwners,
+    ) {
+        if frame_dt_seconds.is_finite() && frame_dt_seconds > 0.0 {
+            self.elapsed_seconds += f64::from(frame_dt_seconds);
+        }
+        let now = self.elapsed_seconds;
+        self.live_overlays.retain(|(client_id, _), live| {
+            now - live.last_damaged_time_seconds < linger_seconds
+                && owners
+                    .iter()
+                    .any(|(_, owner_client_id)| owner_client_id == *client_id)
+        });
+        self.prune_last_sent();
+    }
+
+    pub(crate) fn tracked_entities(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.live_overlays.values().map(|live| live.entity)
+    }
+
     /// Fold this frame's dispatch ownership into the tracked recipient set,
     /// then produce only fact tuples that differ for the exact client/enemy
     /// pair. The caller sends each returned event on `Channel::Presentation`.
@@ -209,6 +257,7 @@ impl HostOverlayFactTracker {
         allocator: &mut NetworkIdAllocator,
         replicable: &ReplicableSet,
         owners: &MovementOwners,
+        max_visible: usize,
     ) -> Vec<(u64, ServerPresentationMessage)> {
         for damage in &frame.damage {
             let Some(client_id) = damage.source.and_then(|source| owners.owner_of(source)) else {
@@ -222,34 +271,19 @@ impl HostOverlayFactTracker {
             // overlay fact still carries the same stable NetworkId that pass
             // will serialize this frame.
             let network_id = allocator.stamp(damage.entity);
-            if self
-                .recipients
-                .get(&damage.entity)
-                .is_some_and(|recipients| recipients.network_id != network_id)
-            {
-                self.remove_tracking(damage.entity);
-            }
-            self.recipients
-                .entry(damage.entity)
-                .or_insert_with(|| OverlayFactRecipients {
-                    network_id,
-                    clients: HashSet::new(),
-                })
-                .clients
-                .insert(client_id);
+            self.refresh_remote_overlay(client_id, network_id, damage.entity, max_visible);
         }
 
         let mut messages = Vec::new();
         for fact in &frame.facts {
-            let Some(recipients) = self.recipients.get(&fact.entity) else {
-                continue;
-            };
             let tuple = OverlayFactTuple::from(*fact);
-            let network_id = recipients.network_id;
-            let mut clients: Vec<_> = recipients.clients.iter().copied().collect();
-            clients.sort_unstable();
-            for client_id in clients {
-                let key = (client_id, network_id);
+            let mut recipients: Vec<_> = self
+                .live_overlays
+                .iter()
+                .filter_map(|(key, live)| (live.entity == fact.entity).then_some(*key))
+                .collect();
+            recipients.sort_unstable_by_key(|(client_id, network_id)| (*client_id, network_id.0));
+            for key @ (client_id, network_id) in recipients {
                 if self.last_sent.get(&key) == Some(&tuple) {
                     continue;
                 }
@@ -257,52 +291,91 @@ impl HostOverlayFactTracker {
                 messages.push((client_id, overlay_fact_message(network_id, tuple)));
             }
             if !tuple.alive {
-                self.remove_tracking(fact.entity);
+                self.remove_entity(fact.entity);
             }
         }
         messages
     }
 
-    /// Prune receipt and suppression state once Task 6 no longer tracks an
-    /// overlay, or when a recipient's pawn is no longer owned by a connected
-    /// client. This is driveable independently of the transport for bounded-map
-    /// tests and catches linger expiry on the next post-tick overlay pass.
-    pub(crate) fn advance(
+    fn refresh_remote_overlay(
         &mut self,
-        tracked_entities: impl IntoIterator<Item = EntityId>,
-        owners: &MovementOwners,
+        client_id: u64,
+        network_id: NetworkId,
+        entity: EntityId,
+        max_visible: usize,
     ) {
-        let tracked: HashSet<_> = tracked_entities.into_iter().collect();
-        self.recipients.retain(|entity, recipients| {
-            if !tracked.contains(entity) {
-                return false;
+        if max_visible == 0 {
+            return;
+        }
+        let key = (client_id, network_id);
+        if let Some(live) = self.live_overlays.get_mut(&key) {
+            live.entity = entity;
+            live.last_damaged_time_seconds = self.elapsed_seconds;
+            return;
+        }
+
+        let recipient_count = self
+            .live_overlays
+            .keys()
+            .filter(|(existing_client, _)| *existing_client == client_id)
+            .count();
+        if recipient_count >= max_visible {
+            let victim = self
+                .live_overlays
+                .iter()
+                .filter(|((existing_client, _), _)| *existing_client == client_id)
+                .min_by(|((_, left_id), left), ((_, right_id), right)| {
+                    left.last_damaged_time_seconds
+                        .total_cmp(&right.last_damaged_time_seconds)
+                        .then_with(|| left_id.0.cmp(&right_id.0))
+                })
+                .map(|(key, live)| (*key, *live));
+            let Some((victim_key, victim)) = victim else {
+                return;
+            };
+            let incoming_rank = (self.elapsed_seconds, network_id.0);
+            let victim_rank = (victim.last_damaged_time_seconds, victim_key.1.0);
+            if incoming_rank <= victim_rank {
+                return;
             }
-            recipients.clients.retain(|client_id| {
-                owners
-                    .iter()
-                    .any(|(_, owner_client_id)| owner_client_id == *client_id)
-            });
-            !recipients.clients.is_empty()
-        });
-        let recipients = &self.recipients;
-        self.last_sent.retain(|(client_id, enemy_id), _| {
-            recipients.values().any(|recipients| {
-                recipients.network_id == *enemy_id && recipients.clients.contains(client_id)
-            })
-        });
+            self.live_overlays.remove(&victim_key);
+            self.last_sent.remove(&victim_key);
+        }
+
+        self.live_overlays.insert(
+            key,
+            HostLiveOverlay {
+                entity,
+                last_damaged_time_seconds: self.elapsed_seconds,
+            },
+        );
     }
 
-    fn remove_tracking(&mut self, entity: EntityId) {
-        let Some(recipients) = self.recipients.remove(&entity) else {
-            return;
-        };
+    fn remove_entity(&mut self, entity: EntityId) {
+        self.live_overlays.retain(|_, live| live.entity != entity);
+        self.prune_last_sent();
+    }
+
+    fn prune_last_sent(&mut self) {
+        let live_overlays = &self.live_overlays;
         self.last_sent
-            .retain(|(_, enemy_id), _| *enemy_id != recipients.network_id);
+            .retain(|key, _| live_overlays.contains_key(key));
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.last_sent.len()
+    }
+
+    #[cfg(test)]
+    fn live_ids_for_client(&self, client_id: u64) -> Vec<NetworkId> {
+        let mut ids: Vec<_> = self
+            .live_overlays
+            .keys()
+            .filter_map(|(owner, network_id)| (*owner == client_id).then_some(*network_id))
+            .collect();
+        ids.sort_by_key(|id| id.0);
+        ids
     }
 }
 
@@ -328,12 +401,13 @@ pub(crate) fn send_host_overlay_facts(
     replicable: &ReplicableSet,
     owners: &MovementOwners,
     frame: &DamagedEnemyOverlayFrame,
-    tracked_entities: impl IntoIterator<Item = EntityId>,
+    max_visible: usize,
 ) {
-    for (client_id, message) in tracker.collect_changed(frame, allocator, replicable, owners) {
+    for (client_id, message) in
+        tracker.collect_changed(frame, allocator, replicable, owners, max_visible)
+    {
         let _ = server.send_presentation(client_id, message);
     }
-    tracker.advance(tracked_entities, owners);
 }
 
 /// Drain the host's presentation intake once per frame and route each transient
@@ -344,17 +418,16 @@ pub(crate) fn route_host_presentation_spawns(
     server: &mut NetServer,
     owners: &MovementOwners,
 ) {
-    let spawns = registry.take_presentation_spawns();
-    for spawn in spawns {
-        match presentation_recipient(&spawn, owners) {
+    registry.retain_presentation_spawns(|spawn| {
+        match presentation_recipient(spawn, owners) {
             Some(client_id) => {
                 // A failed addressed send is intentionally a dropped cosmetic.
-                let _ =
-                    server.send_presentation(client_id, presentation_message_from_spawn(&spawn));
+                let _ = server.send_presentation(client_id, presentation_message_from_spawn(spawn));
+                false
             }
-            None => registry.push_presentation_spawn(spawn),
+            None => true,
         }
-    }
+    });
 }
 
 /// Convert received passive presentation events into client-local state. Spawn
@@ -365,7 +438,7 @@ pub(crate) fn ingest_client_presentation_messages(
     registry: &mut EntityRegistry,
     messages: Vec<ServerPresentationMessage>,
     descriptors: &[EntityTypeDescriptor],
-    templates: &[PresentationTemplate],
+    templates: &HashMap<String, PresentationTemplate>,
     overlay_state: &mut ClientOverlayFactState,
     replication: &ClientReplication,
     pool: &mut PresentationPool,
@@ -385,8 +458,7 @@ pub(crate) fn ingest_client_presentation_messages(
                 value,
                 facts,
             } => {
-                let Some(template) = templates.iter().find(|template| template.id == template_id)
-                else {
+                let Some(template) = templates.get(&template_id) else {
                     continue;
                 };
 
@@ -605,27 +677,17 @@ pub(crate) fn ingest_client_overlay_fact(
             config.template.clone(),
             config.linger_seconds,
             config.max_visible,
+            u64::from(fact.enemy_id.0),
         );
     }
     if !pool.has_overlay(entity) {
         return;
     }
-    let mut facts = BTreeMap::new();
-    facts.insert(
-        "healthFraction".to_string(),
-        PresentationFact::Number(fact.health_fraction),
-    );
-    facts.insert(
-        "shieldFraction".to_string(),
-        PresentationFact::Number(fact.shield_fraction),
-    );
-    facts.insert(
-        "hasShield".to_string(),
-        PresentationFact::Bool(fact.has_shield),
-    );
-    pool.stamp_overlay(
+    pool.stamp_damaged_enemy_overlay(
         entity,
-        facts,
+        fact.health_fraction,
+        fact.shield_fraction,
+        fact.has_shield,
         anchor,
         config.hide_at_full && fact.health_fraction == 1.0,
     );
@@ -972,13 +1034,14 @@ mod tests {
         let replication = ClientReplication::new();
         let mut pool = PresentationPool::new(1);
         let hit_zones = HitZoneStore::new();
+        let templates = HashMap::from([("damage-number".to_string(), template())]);
         ingest_client_presentation_messages(
             &mut registry,
             vec![presentation_message_from_spawn(&spawn(Some(
                 EntityId::from_raw(7),
             )))],
             &[],
-            &[template()],
+            &templates,
             &mut overlay_state,
             &replication,
             &mut pool,
@@ -1118,6 +1181,40 @@ mod tests {
         assert_eq!(state.terminal_len(), 0);
     }
 
+    // Regression: a lifecycle reset retained terminal and pre-baseline facts,
+    // allowing the old stream to affect a replacement level/template.
+    #[test]
+    fn client_overlay_clear_retires_terminal_live_and_pending_facts() {
+        let entity = EntityId::from_raw(20);
+        let config = overlay_config();
+        let mut state = ClientOverlayFactState::default();
+        let mut pool = PresentationPool::new(1);
+        ingest_client_overlay_fact(
+            &mut state,
+            &mut pool,
+            overlay_fact(8, 0.5, true),
+            Some(entity),
+            Some(Vec3::ZERO),
+            Some(&config),
+        );
+        ingest_client_overlay_fact(
+            &mut state,
+            &mut pool,
+            overlay_fact(9, 0.0, false),
+            None,
+            None,
+            Some(&config),
+        );
+        state.queue_pending_live(overlay_fact(10, 0.75, true), config.max_visible);
+
+        state.clear();
+
+        assert!(state.live_overlays.is_empty());
+        assert_eq!(state.terminal_len(), 0);
+        assert_eq!(state.pending_len(), 0);
+        assert_eq!(state.elapsed_seconds, 0.0);
+    }
+
     #[test]
     fn client_overlay_fact_ingest_uses_pushed_values_without_health_registry() {
         let entity = EntityId::from_raw(20);
@@ -1179,7 +1276,7 @@ mod tests {
                 },
             }],
             &descriptors,
-            &[],
+            &HashMap::new(),
             &mut state,
             &replication,
             &mut pool,
@@ -1206,7 +1303,7 @@ mod tests {
             &mut registry,
             Vec::new(),
             &descriptors,
-            &[],
+            &HashMap::new(),
             &mut state,
             &replication,
             &mut pool,
@@ -1269,8 +1366,59 @@ mod tests {
             );
         }
         assert_eq!(state.pending_len(), 2);
+        let mut pending_ids: Vec<_> = state.pending_live_facts.keys().map(|id| id.0).collect();
+        pending_ids.sort_unstable();
+        assert_eq!(pending_ids, [2, 3]);
         state.advance_terminal_ttl_for_test(0.51);
         assert_eq!(state.pending_len(), 0);
+    }
+
+    // Regression: equal-time facts created FIFO by packet arrival, so two
+    // clients receiving the same datagrams in different orders kept different
+    // capped target sets.
+    #[test]
+    fn client_overlay_equal_time_eviction_is_independent_of_fact_arrival() {
+        let config = overlay_config();
+        let entities = [
+            EntityId::from_raw(31),
+            EntityId::from_raw(32),
+            EntityId::from_raw(33),
+        ];
+        let mut forward_state = ClientOverlayFactState::default();
+        let mut reverse_state = ClientOverlayFactState::default();
+        let mut forward_pool = PresentationPool::new(0);
+        let mut reverse_pool = PresentationPool::new(0);
+
+        for index in [0, 1, 2] {
+            ingest_client_overlay_fact(
+                &mut forward_state,
+                &mut forward_pool,
+                overlay_fact((index + 1) as u32, 0.75, true),
+                Some(entities[index]),
+                Some(Vec3::ZERO),
+                Some(&config),
+            );
+        }
+        for index in [2, 1, 0] {
+            ingest_client_overlay_fact(
+                &mut reverse_state,
+                &mut reverse_pool,
+                overlay_fact((index + 1) as u32, 0.75, true),
+                Some(entities[index]),
+                Some(Vec3::ZERO),
+                Some(&config),
+            );
+        }
+        forward_state.discard_expired_live_overlays(&forward_pool);
+        reverse_state.discard_expired_live_overlays(&reverse_pool);
+
+        let retained = |state: &ClientOverlayFactState| {
+            let mut ids: Vec<_> = state.live_overlays.keys().map(|id| id.0).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(retained(&forward_state), [2, 3]);
+        assert_eq!(retained(&reverse_state), [2, 3]);
     }
 
     #[test]
@@ -1397,6 +1545,7 @@ mod tests {
             &mut allocator,
             &replicable,
             &owners,
+            8,
         );
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].0, 41);
@@ -1424,6 +1573,7 @@ mod tests {
             &mut allocator,
             &replicable,
             &owners,
+            8,
         );
         assert!(unchanged.is_empty());
 
@@ -1440,6 +1590,7 @@ mod tests {
             &mut allocator,
             &replicable,
             &owners,
+            8,
         );
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].0, 73);
@@ -1455,6 +1606,7 @@ mod tests {
             &mut allocator,
             &replicable,
             &owners,
+            8,
         );
         assert_eq!(
             terminal
@@ -1483,7 +1635,7 @@ mod tests {
         let mut tracker = HostOverlayFactTracker::default();
         let fact = live_overlay_fact(enemy, 0.8);
 
-        tracker.collect_changed(
+        let _ = tracker.collect_changed(
             &overlay_frame(
                 vec![DamagedEnemyOverlayDamage {
                     entity: enemy,
@@ -1494,10 +1646,107 @@ mod tests {
             &mut allocator,
             &replicable,
             &owners,
+            8,
         );
         assert_eq!(tracker.len(), 1);
 
-        tracker.advance([], &owners);
+        tracker.begin_frame(2.6, 2.5, &owners);
+        assert_eq!(tracker.len(), 0);
+    }
+
+    // Regression: one global host overlay cap let a target earned by one
+    // client evict and prune another client's otherwise-private stream.
+    #[test]
+    fn host_overlay_caps_are_independent_per_recipient() {
+        let first = EntityId::from_raw(40);
+        let second = EntityId::from_raw(41);
+        let replacement = EntityId::from_raw(42);
+        let first_pawn = EntityId::from_raw(50);
+        let second_pawn = EntityId::from_raw(51);
+        let mut allocator = NetworkIdAllocator::new();
+        let first_id = allocator.stamp(first);
+        let second_id = allocator.stamp(second);
+        let replacement_id = allocator.stamp(replacement);
+        let mut replicable = ReplicableSet::new();
+        replicable.register(first);
+        replicable.register(second);
+        replicable.register(replacement);
+        let mut owners = MovementOwners::new();
+        owners.set(first_pawn, 41);
+        owners.set(second_pawn, 73);
+        let mut tracker = HostOverlayFactTracker::default();
+
+        let first_frame = DamagedEnemyOverlayFrame {
+            damage: vec![
+                DamagedEnemyOverlayDamage {
+                    entity: first,
+                    source: Some(first_pawn),
+                },
+                DamagedEnemyOverlayDamage {
+                    entity: second,
+                    source: Some(second_pawn),
+                },
+            ],
+            facts: vec![
+                live_overlay_fact(first, 0.8),
+                live_overlay_fact(second, 0.7),
+            ],
+        };
+        let sent = tracker.collect_changed(&first_frame, &mut allocator, &replicable, &owners, 1);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(tracker.live_ids_for_client(41), [first_id]);
+        assert_eq!(tracker.live_ids_for_client(73), [second_id]);
+
+        let replacement_frame = DamagedEnemyOverlayFrame {
+            damage: vec![DamagedEnemyOverlayDamage {
+                entity: replacement,
+                source: Some(first_pawn),
+            }],
+            facts: vec![
+                live_overlay_fact(first, 0.8),
+                live_overlay_fact(second, 0.7),
+                live_overlay_fact(replacement, 0.6),
+            ],
+        };
+        let sent =
+            tracker.collect_changed(&replacement_frame, &mut allocator, &replicable, &owners, 1);
+
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, 41);
+        assert_eq!(tracker.live_ids_for_client(41), [replacement_id]);
+        assert_eq!(tracker.live_ids_for_client(73), [second_id]);
+    }
+
+    // Regression: level teardown preserved recipient and last-sent facts keyed
+    // by entities from the retired map.
+    #[test]
+    fn host_overlay_clear_retires_recipients_and_last_sent_facts() {
+        let enemy = EntityId::from_raw(10);
+        let pawn = EntityId::from_raw(11);
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(enemy);
+        let mut replicable = ReplicableSet::new();
+        replicable.register(enemy);
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, 41);
+        let mut tracker = HostOverlayFactTracker::default();
+        let _ = tracker.collect_changed(
+            &overlay_frame(
+                vec![DamagedEnemyOverlayDamage {
+                    entity: enemy,
+                    source: Some(pawn),
+                }],
+                live_overlay_fact(enemy, 0.8),
+            ),
+            &mut allocator,
+            &replicable,
+            &owners,
+            8,
+        );
+
+        tracker.clear();
+
+        assert!(tracker.live_overlays.is_empty());
         assert_eq!(tracker.len(), 0);
     }
 }

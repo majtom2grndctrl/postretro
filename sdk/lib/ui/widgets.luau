@@ -9,7 +9,9 @@
 -- / `reactions.luau` precedent) so a future loader installs them as globals.
 --
 -- Pure builders: constructing a widget has no engine side effect. Bound props
--- accept state references, presentation-local cells, or producer-stamped facts;
+-- accept state references, presentation-local cells, or producer-stamped facts.
+-- Fact refs are legal only in presentation templates; ordinary UI-tree drains
+-- reject them.
 -- `Button.onPress` accepts a reaction handle (a table with `.name`)
 -- or a bare name string. Self-contained: the Luau prelude has no module loader, so the
 -- validation helpers and shared types are redeclared here (not required across).

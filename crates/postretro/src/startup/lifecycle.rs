@@ -2338,6 +2338,64 @@ mod tests {
             "level install must bind the declared accumulator"
         );
 
+        let presentation_target = {
+            let ctx = script_ctx(&app);
+            let mut registry = ctx.registry.borrow_mut();
+            let target = registry.spawn(Transform::default());
+            registry.push_presentation_spawn(postretro_entities::PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: "old-level-number".into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: postretro_foundation::PresentationMotion::default(),
+                fade: postretro_foundation::PresentationFade::default(),
+                scatter_radius: 0.0,
+            });
+            target
+        };
+        {
+            let session = app.session.as_mut().expect("test app session installed");
+            let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+            let _ = session.presentation_pool.advance_and_collect_inputs(
+                &mut registry,
+                0.0,
+                glam::Mat4::IDENTITY,
+                [800, 600],
+            );
+            session.presentation_pool.refresh_overlay(
+                presentation_target,
+                postretro_entities::PresentationTemplateHandle::from("old-level-overlay"),
+                1.0,
+                1,
+                u64::from(presentation_target.to_raw()),
+            );
+            registry.push_presentation_spawn(postretro_entities::PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: "queued-old-level-number".into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: postretro_foundation::PresentationMotion::default(),
+                fade: postretro_foundation::PresentationFade::default(),
+                scatter_radius: 0.0,
+            });
+            crate::netcode::ingest_client_overlay_fact(
+                &mut session.client_overlay_facts,
+                &mut session.presentation_pool,
+                crate::netcode::ClientOverlayFact::new(
+                    postretro_net::wire::NetworkId(91),
+                    0.0,
+                    0.0,
+                    false,
+                    false,
+                ),
+                None,
+                None,
+                None,
+            );
+        }
+
         let slots_before = slot_snapshot(&app);
         script_ctx(&app)
             .data_registry
@@ -2383,6 +2441,19 @@ mod tests {
                 .presentation_cells
                 .snapshot()
                 .is_empty()
+        );
+        let session = app.session.as_ref().expect("test app session installed");
+        assert_eq!(session.presentation_pool.live_counts(), (0, 0));
+        assert_eq!(session.client_overlay_facts.terminal_len(), 0);
+        assert!(
+            session
+                .scripting
+                .script_ctx
+                .registry
+                .borrow_mut()
+                .take_presentation_spawns()
+                .is_empty(),
+            "level unload must discard queued world presentation intake",
         );
     }
 

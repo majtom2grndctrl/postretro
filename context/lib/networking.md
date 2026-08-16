@@ -149,7 +149,12 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 ### Presentation events vs. replicated state
 
-Combat feedback the player reads and forgets — floating damage numbers, damaged-enemy health/shield facts — is **presented, not replicated**: the host pushes it as transient events on a dedicated unreliable `Channel::Presentation` (its own tagged `ServerPresentationMessage` family, one family per channel like `ServerControlMessage`), addressed fire-and-forget to the one client that earned it, loss- and reorder-tolerant. The replicated component set is unchanged — enemy health/state stay host-only. A client *simulates against* replicated state but only *displays* a pushed presentation fact, so a cosmetic never enters a digest or blocks a join (this is the other half of "presentation is not" a replication candidate, above). Design intent; `plans/ready/E16--combat-presentation-substrate`.
+Combat feedback the player reads and forgets — floating damage numbers, damaged-enemy health/shield facts — is **presented, not replicated**: the host pushes it as transient events on a dedicated unreliable `Channel::Presentation` (its own tagged `ServerPresentationMessage` family, one family per channel like `ServerControlMessage`), addressed fire-and-forget to the one client that earned it, loss- and reorder-tolerant. The replicated component set is unchanged — enemy health/state stay host-only. A client *simulates against* replicated state but only *displays* a pushed presentation fact, so a cosmetic never enters a digest or blocks a join (this is the other half of "presentation is not" a replication candidate, above). Design intent; `plans/in-progress/E16--combat-presentation-substrate`.
+
+Damaged-enemy overlays are private per recipient. The host renderer owns only
+host-local feedback; each remote recipient has an independent cap and linger
+lifecycle. Equal-time cap decisions use the stable non-recycled `NetworkId`, so
+unordered fact arrival cannot select a different retained target set.
 
 ### Mod identity
 

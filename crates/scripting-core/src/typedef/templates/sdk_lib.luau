@@ -585,7 +585,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
---- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
+--- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
+--- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
@@ -790,7 +791,7 @@ export type ModManifestInput = {
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
-  presentationOverlays: {PresentationOverlay}?,
+  presentationOverlays: PresentationOverlay?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,
@@ -924,9 +925,9 @@ export type FactBindRef = { fact: string }
 --- A scalar comparand for UI visibility/selection predicates: number, boolean,
 --- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
---- A reactive condition used by `visibleWhen`, `selected`, and `checked`: read
---- an engine state ref, presentation-local cell, or stamped fact and compare it to
---- `equals` when provided.
+--- A reactive condition used by `visibleWhen`, `selected`, and `checked`.
+--- Stamped facts are accepted only inside `definePresentationTemplate`; ordinary
+--- UI trees reject them during manifest validation.
 export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
@@ -936,9 +937,9 @@ export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" |
 --- Live-region announcement urgency. Valid values: `"polite"` (default,
 --- interrupt less) and `"assertive"` (interrupt sooner).
 export type AnnouncePriority = "polite" | "assertive"
---- State binding for a `Text` widget. The source is a readable engine state ref
---- presentation-local cell, or stamped fact; `format` is a one-placeholder string such as
---- `"HP {}"`; numeric sources may also tween.
+--- State binding for a `Text` widget. Stamped facts are accepted only inside
+--- `definePresentationTemplate`; ordinary UI trees reject them during manifest
+--- validation. `format` is a one-placeholder string such as `"HP {}"`.
 export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef | FactBindRef) & { format: string?, tween: NumberTween? }
 --- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
 --- array; `tween` eases the displayed color and never writes back to state.
@@ -1005,8 +1006,9 @@ export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: 
 --- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required.
 declare function Slider(props: SliderProps): WidgetDescriptor
 
---- State binding for a readonly numeric `Bar`. The value is displayed against
---- `max`; it is not interactive and never writes state.
+--- State binding for a readonly numeric `Bar`. Stamped facts are accepted only
+--- inside `definePresentationTemplate`; ordinary UI trees reject them during
+--- manifest validation.
 export type BarBindProp = (ComputedRef<number> | LocalBindRef | FactBindRef) & { tween: NumberTween? }
 --- Bar denominator: either a literal number or a readonly numeric state ref such
 --- as `getGameState().player.maxHealth`.

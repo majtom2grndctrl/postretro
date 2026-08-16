@@ -620,28 +620,25 @@ pub fn drain_presentation_templates_lua(
     Ok(out)
 }
 
-/// Luau twin of [`drain_presentation_overlays_js`]. Optional combat visuals
-/// contain malformed entries instead of rejecting the mod manifest.
+/// Luau twin of [`drain_presentation_overlays_js`]. The field accepts one
+/// descriptor and contains malformed input instead of rejecting the manifest.
 pub fn drain_presentation_overlays_lua(
     table: &Table,
     scope: &str,
 ) -> Result<Vec<PresentationOverlay>, DescriptorError> {
-    let Some(arr) = optional_manifest_array_lua(table, "presentationOverlays", scope)? else {
+    let value: LuaValue = table.get("presentationOverlays").map_err(lua_err)?;
+    if matches!(value, LuaValue::Nil) {
         return Ok(Vec::new());
-    };
-    let len = dense_lua_prefix_len(&arr, "presentationOverlays", scope)?;
-    let mut out = Vec::with_capacity(len);
-    for i in 1..=(len as i64) {
-        let value: LuaValue = arr.get(i).map_err(lua_err)?;
-        match presentation_overlay_from_lua(value) {
-            Ok(overlay) => out.push(overlay),
-            Err(error) => log::warn!(
-                "[Scripting] {scope}: `presentationOverlays[{i}]` is malformed and was skipped: {error}"
-            ),
+    }
+    match presentation_overlay_from_lua(value) {
+        Ok(overlay) => Ok(vec![overlay]),
+        Err(error) => {
+            log::warn!(
+                "[Scripting] {scope}: `presentationOverlays` must be one overlay descriptor (not an array); the field was ignored: {error}"
+            );
+            Ok(Vec::new())
         }
     }
-    log_lua_array_extras(&arr, len, "presentationOverlays", scope)?;
-    Ok(out)
 }
 
 pub fn presentation_overlay_from_lua(
@@ -664,7 +661,26 @@ pub fn presentation_overlay_from_lua(
 pub fn presentation_template_from_lua(
     value: LuaValue,
 ) -> Result<PresentationTemplate, DescriptorError> {
-    let json = conv::lua_to_json(value).map_err(lua_err)?;
+    let table = lua_table(value.clone(), "presentation template")?;
+    let root_value: LuaValue = table.get("root").map_err(lua_err)?;
+    if matches!(root_value, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field: "root" });
+    }
+    let root = widget_from_lua(root_value)?;
+    validate_presentation_widget_root(&root)
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    let mut json = conv::lua_to_json(value).map_err(lua_err)?;
+    let json_obj = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "presentation template must be an object".to_string(),
+        })?;
+    json_obj.insert(
+        "root".to_string(),
+        serde_json::to_value(root).map_err(|error| DescriptorError::InvalidShape {
+            reason: format!("presentation template root could not be lowered: {error}"),
+        })?,
+    );
     let template = serde_json::from_value::<PresentationTemplate>(json).map_err(|error| {
         DescriptorError::InvalidShape {
             reason: format!("presentation template must match its descriptor shape: {error}"),

@@ -95,27 +95,59 @@ fn lua_bridge_parses_local_state_scope_and_local_bind() {
 }
 
 #[test]
-fn presentation_fact_bind_parses_without_local_state_in_both_runtimes() {
-    let js = r#"({
+fn presentation_fact_bind_requires_template_and_parses_there_in_both_runtimes() {
+    let js_tree = r#"({
         anchor: "center", offset: [0, 0],
         root: { kind: "text", content: "0", fontSize: 18, color: [1,1,1,1],
           bind: { fact: "value", format: "{}" } }
     })"#;
-    let js_tree = eval_js(js, |ctx, value| {
-        anchored_tree_from_js_value(ctx, value).expect("JS fact bind must convert")
+    let js_error = eval_js(js_tree, |ctx, value| {
+        anchored_tree_from_js_value(ctx, value).unwrap_err()
     });
+    assert!(
+        js_error
+            .to_string()
+            .contains("outside a presentation template")
+    );
 
-    let lua = r#"return {
+    let lua_tree = r#"return {
         anchor = "center", offset = {0, 0},
         root = { kind = "text", content = "0", fontSize = 18, color = {1,1,1,1},
           bind = { fact = "value", format = "{}" } }
     }"#;
-    let lua_tree = eval_lua(lua, |value| {
-        anchored_tree_from_lua_value(value).expect("Luau fact bind must convert")
+    let lua_error = eval_lua(lua_tree, |value| {
+        anchored_tree_from_lua_value(value).unwrap_err()
+    });
+    assert!(
+        lua_error
+            .to_string()
+            .contains("outside a presentation template")
+    );
+
+    let js_template = r#"({
+        id: "damageNumber", lifetimeMs: 750,
+        root: { kind: "text", content: "0", fontSize: 18, color: [1,1,1,1],
+          bind: { fact: "value", format: "{}" } },
+        motion: { rise: 18, easing: "easeOut" },
+        fade: { startMs: 500 }, spawnScatter: { radius: 0.25 }
+    })"#;
+    let js_template = eval_js(js_template, |ctx, value| {
+        presentation_template_from_js(ctx, value).expect("JS template fact bind must convert")
     });
 
-    assert_eq!(js_tree, lua_tree);
-    let Widget::Text(text) = js_tree.root else {
+    let lua_template = r#"return {
+        id = "damageNumber", lifetimeMs = 750,
+        root = { kind = "text", content = "0", fontSize = 18, color = {1,1,1,1},
+          bind = { fact = "value", format = "{}" } },
+        motion = { rise = 18, easing = "easeOut" },
+        fade = { startMs = 500 }, spawnScatter = { radius = 0.25 }
+    }"#;
+    let lua_template = eval_lua(lua_template, |value| {
+        presentation_template_from_lua(value).expect("Luau template fact bind must convert")
+    });
+
+    assert_eq!(js_template, lua_template);
+    let Widget::Text(text) = js_template.root else {
         panic!("root must be text");
     };
     assert_eq!(

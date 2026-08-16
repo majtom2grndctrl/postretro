@@ -153,12 +153,13 @@ pub enum NodeContext {
 /// `NodeContext`, since a `visibleWhen` may sit on a pure layout container (a
 /// stack/grid) that carries no draw context. Keeping it off the descriptor walk
 /// is the invariant: visibility is a layout/draw/focus concern only, so a hidden
-/// subtree never tears down its `localState` cells (see `presentation_cells.rs`).
+/// subtree never tears down its `localState` cells.
 #[derive(Debug, Clone)]
 pub struct VisibilityState {
     pub predicate: Predicate,
     /// Nearest declaring `localState` scope for a `{ local }` predicate; `None`
-    /// for a `{ slot }` predicate or a local predicate with no enclosing scope.
+    /// for a `{ slot }` or `{ fact }` predicate, or a local predicate with no
+    /// enclosing scope.
     pub scope: Option<String>,
     /// The node's authored `Display` when visible — `Flex` for a stack/leaf,
     /// `Grid` for a grid container. Restored on a hide→show flip so a grid's

@@ -25,13 +25,20 @@ pub fn lookup_bound<'a>(
 ) -> Option<&'a SlotValue> {
     match source {
         BindSource::Slot { slot } => slots.get(slot),
-        BindSource::Local { local } => {
-            scope.and_then(|s| cells.get(&(s.to_string(), local.to_string())))
-        }
-        BindSource::Fact { fact } => {
-            cells.get(&(PRESENTATION_FACT_SCOPE.to_string(), fact.to_string()))
-        }
+        BindSource::Local { local } => scope.and_then(|scope| lookup_cell(cells, scope, local)),
+        BindSource::Fact { fact } => lookup_cell(cells, PRESENTATION_FACT_SCOPE, fact),
     }
+}
+
+/// Borrowed composite lookup for the legacy tuple-keyed cell snapshot. Tuple
+/// keys cannot borrow a `(&str, &str)` pair through `HashMap::get`; scanning the
+/// small bounded snapshot avoids allocating two temporary Strings at every bind
+/// resolution. A nested-map representation can replace this when another
+/// consumer justifies the wider API change.
+fn lookup_cell<'a>(cells: &'a CellValues, scope: &str, name: &str) -> Option<&'a SlotValue> {
+    cells.iter().find_map(|((cell_scope, cell_name), value)| {
+        (cell_scope == scope && cell_name == name).then_some(value)
+    })
 }
 
 /// Resolve a [`Predicate`] against the frame's snapshot to a deterministic

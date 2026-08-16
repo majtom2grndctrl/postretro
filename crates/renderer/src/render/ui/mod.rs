@@ -223,6 +223,9 @@ pub(crate) struct UiPass {
     /// intentionally separate from `gameplay_trees`: it retains only taffy
     /// measurement/tween state, never a modal tree, focus list, or input state.
     presentation_layouts: std::collections::HashMap<u64, PresentationLayout>,
+    /// Reusable translated aggregate swapped into the frame's layer list and
+    /// returned after the single composition encode.
+    presentation_draw: tree::UiDrawData,
     /// Monotonic mark used to prune layouts absent from the current input set
     /// without allocating a second set of active instance ids each frame.
     presentation_layout_generation: u64,
@@ -265,6 +268,7 @@ struct PresentationLayout {
     theme_generation: u64,
     layout: tree::PresentationTemplateLayout,
     fact_cells: tree::CellValues,
+    relative_draw: tree::UiDrawData,
     active_generation: u64,
 }
 
@@ -701,6 +705,7 @@ impl UiPass {
             depth_size: [0, 0],
             gameplay_trees: Vec::new(),
             presentation_layouts: std::collections::HashMap::new(),
+            presentation_draw: tree::UiDrawData::default(),
             presentation_layout_generation: 0,
             presentation_templates: std::collections::HashMap::new(),
             warned_missing_presentation_templates: std::collections::HashSet::new(),
@@ -737,6 +742,7 @@ impl UiPass {
         self.presentation_templates.reserve(templates.len());
         self.warned_missing_presentation_templates.clear();
         self.presentation_layouts.clear();
+        self.presentation_draw = tree::UiDrawData::default();
         for template in templates {
             let handle = postretro_entities::PresentationTemplateHandle::from(template.id.clone());
             if self
@@ -865,7 +871,12 @@ impl UiPass {
             inputs.len().saturating_sub(self.presentation_layouts.len());
         self.presentation_layouts
             .reserve(additional_layout_capacity);
-        let mut draw = tree::UiDrawData::with_estimated_presentation_capacity(inputs.len());
+        let mut draw = std::mem::take(&mut self.presentation_draw);
+        if draw.paint_order.capacity() == 0 && !inputs.is_empty() {
+            draw = tree::UiDrawData::with_estimated_presentation_capacity(inputs.len());
+        } else {
+            draw.clear_preserving_capacity();
+        }
 
         for input in inputs {
             let Some(template) = self.presentation_templates.get(&input.template) else {
@@ -898,6 +909,7 @@ impl UiPass {
                             theme,
                         ),
                         fact_cells: tree::CellValues::with_capacity(input.facts.len()),
+                        relative_draw: tree::UiDrawData::default(),
                         active_generation,
                     },
                 );
@@ -912,19 +924,28 @@ impl UiPass {
                 &input.facts,
                 &mut cached.fact_cells,
             );
-            let relative = cached.layout.build_draw_data(
+            cached.layout.build_draw_data_into(
                 viewport,
                 font_system,
                 image_sizes,
                 image_sizes_generation,
                 &cached.fact_cells,
                 time_seconds,
+                &mut cached.relative_draw,
             );
-            draw.append_translated(&relative, input.anchor, input.opacity);
+            if input.visible {
+                draw.append_translated(&cached.relative_draw, input.anchor, input.opacity);
+            }
         }
         self.presentation_layouts
             .retain(|_, layout| layout.active_generation == active_generation);
         draw
+    }
+
+    /// Return the presentation aggregate after the composition has finished
+    /// borrowing it. This preserves all bounded frame-output allocations.
+    pub fn recycle_presentation_draw_data(&mut self, draw: tree::UiDrawData) {
+        self.presentation_draw = draw;
     }
 
     /// Export the flat hit-test / focus rect list for the TOP stack layer (the

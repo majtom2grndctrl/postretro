@@ -965,6 +965,12 @@ impl Renderer {
                 &composition,
             );
         }
+        // The composition's frame-scoped borrows end here. Reclaim the passive
+        // layer's translated aggregate so its Vec/String storage stays warm for
+        // the next frame instead of being dropped with `layer_draws`.
+        drop(composition);
+        let presentation_draw = layer_draws.remove(0);
+        full.ui.recycle_presentation_draw_data(presentation_draw);
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.
         full.ui.truncate_gameplay_stack(stack.len());

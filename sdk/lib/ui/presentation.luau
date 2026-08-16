@@ -49,9 +49,27 @@ export type FactBindRef = { fact: string, format: string?, tween: { durationMs: 
 
 local PresentationSdk = {}
 local MAX_OVERLAY_VISIBLE = 64
+local MAX_U32 = 4294967295
+local MAX_F32 = 3.4028234663852886e38
 
 local function finite(value: any): boolean
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+local function storedF32(value: any): boolean
+  return finite(value) and math.abs(value) <= MAX_F32
+end
+
+local function requireStoredF32(value: any, field: string, factory: string)
+  if not storedF32(value) then
+    error(`{factory}: \`{field}\` must be a finite number representable as f32`, 3)
+  end
+end
+
+local function requireStoredU32(value: any, field: string, factory: string)
+  if not finite(value) or value < 0 or value > MAX_U32 or value % 1 ~= 0 then
+    error(`{factory}: \`{field}\` must be an integer in [0, {MAX_U32}]`, 3)
+  end
 end
 
 local function factRef(name: string, options: any?): FactBindRef
@@ -67,15 +85,15 @@ local function factRef(name: string, options: any?): FactBindRef
   end
   if source.tween ~= nil then
     local tween = source.tween
-    if type(tween) ~= "table" or not finite(tween.durationMs) then
-      error("fact: `tween.durationMs` must be finite", 3)
+    if type(tween) ~= "table" then
+      error("fact: `tween` must be a table", 3)
     end
+    requireStoredF32(tween.durationMs, "tween.durationMs", "fact")
+    if tween.durationMs < 0 then error("fact: `tween.durationMs` must be non-negative", 3) end
     if tween.easing ~= "linear" and tween.easing ~= "easeIn" and tween.easing ~= "easeOut" and tween.easing ~= "easeInOut" then
       error("fact: `tween.easing` is invalid", 3)
     end
-    if tween.from ~= nil and not finite(tween.from) then
-      error("fact: `tween.from` must be finite", 3)
-    end
+    if tween.from ~= nil then requireStoredF32(tween.from, "tween.from", "fact") end
   end
   local out: any = { fact = name }
   if source.format ~= nil then out.format = source.format end
@@ -100,30 +118,110 @@ PresentationSdk.fact = table.freeze({
   end,
 })
 
+local function validateWidgetF32(value: any, field: string, positive: boolean?)
+  requireStoredF32(value, field, "definePresentationTemplate")
+  if (positive and value <= 0) or (not positive and value < 0) then
+    error(`definePresentationTemplate: \`{field}\` must be {if positive then "greater than zero" else "non-negative"}`, 3)
+  end
+end
+
+local function validateColor(value: any, field: string)
+  if type(value) ~= "table" then return end
+  if #value ~= 4 then error(`definePresentationTemplate: \`{field}\` must contain four f32 components`, 3) end
+  for index = 1, 4 do requireStoredF32(value[index], `{field}[{index}]`, "definePresentationTemplate") end
+end
+
+local function validateBorder(value: any, field: string)
+  if value == nil then return end
+  if type(value) ~= "table" then error(`definePresentationTemplate: \`{field}\` must be a table`, 3) end
+  if type(value.texture) ~= "string" or #value.texture == 0 then
+    error(`definePresentationTemplate: \`{field}.texture\` must be nonempty`, 3)
+  end
+  if type(value.slice) ~= "table" or #value.slice ~= 4 then
+    error(`definePresentationTemplate: \`{field}.slice\` must contain four f32 dimensions`, 3)
+  end
+  for index = 1, 4 do validateWidgetF32(value.slice[index], `{field}.slice[{index}]`) end
+  validateColor(value.tint, `{field}.tint`)
+end
+
+local function validateTween(value: any, field: string)
+  if value == nil then return end
+  if type(value) ~= "table" then error(`definePresentationTemplate: \`{field}\` must be a table`, 3) end
+  validateWidgetF32(value.durationMs, `{field}.durationMs`)
+  if value.from ~= nil then requireStoredF32(value.from, `{field}.from`, "definePresentationTemplate") end
+end
+
+local function validateStyleRanges(value: any, field: string)
+  if value == nil then return end
+  if type(value) ~= "table" then error(`definePresentationTemplate: \`{field}\` must be a table`, 3) end
+  validateWidgetF32(value.max, `{field}.max`, true)
+  if type(value.entries) ~= "table" then error(`definePresentationTemplate: \`{field}.entries\` must be an array`, 3) end
+  for index, entry in ipairs(value.entries) do
+    if type(entry) ~= "table" then error(`definePresentationTemplate: \`{field}.entries[{index}]\` must be a table`, 3) end
+    if entry.upTo ~= nil then requireStoredF32(entry.upTo, `{field}.entries[{index}].upTo`, "definePresentationTemplate") end
+    if entry.color ~= nil then validateColor(entry.color, `{field}.entries[{index}].color`) end
+    if entry.pulse ~= nil then validateWidgetF32(entry.pulse.periodMs, `{field}.entries[{index}].pulse.periodMs`, true) end
+    if entry.flash ~= nil then validateWidgetF32(entry.flash.durationMs, `{field}.entries[{index}].flash.durationMs`) end
+  end
+end
+
+local function validatePassiveWidget(value: any, path: string)
+  if type(value) ~= "table" or type(value.kind) ~= "string" then
+    error(`definePresentationTemplate: \`{path}\` must be a kind-tagged widget descriptor`, 3)
+  end
+  local kind = value.kind
+  if kind ~= "text" and kind ~= "bar" and kind ~= "image" and kind ~= "vstack" and kind ~= "hstack" then
+    error(`definePresentationTemplate: \`{path}.kind\` "{kind}" is not supported; passive templates allow text, bar, image, vstack, and hstack`, 3)
+  end
+  if kind == "text" then
+    validateWidgetF32(value.fontSize, `{path}.fontSize`, true)
+    validateColor(value.color, `{path}.color`)
+  elseif kind == "bar" then
+    if type(value.max) == "number" then validateWidgetF32(value.max, `{path}.max`, true) end
+    if value.width ~= nil then validateWidgetF32(value.width, `{path}.width`, true) end
+    if value.height ~= nil then validateWidgetF32(value.height, `{path}.height`, true) end
+    validateColor(value.fill, `{path}.fill`)
+    validateColor(value.background, `{path}.background`)
+    if value.exitFade ~= nil then
+      if type(value.exitFade) ~= "table" then
+        error(`definePresentationTemplate: \`{path}.exitFade\` must be a table`, 3)
+      end
+      validateWidgetF32(value.exitFade.durationMs, `{path}.exitFade.durationMs`, true)
+    end
+  elseif kind == "vstack" or kind == "hstack" then
+    if type(value.gap) == "number" then validateWidgetF32(value.gap, `{path}.gap`) end
+    if type(value.padding) == "number" then validateWidgetF32(value.padding, `{path}.padding`) end
+    if value.fill ~= nil then validateColor(value.fill, `{path}.fill`) end
+    validateBorder(value.border, `{path}.border`)
+    if type(value.children) ~= "table" then error(`definePresentationTemplate: \`{path}.children\` must be an array`, 3) end
+    for index, child in ipairs(value.children) do validatePassiveWidget(child, `{path}.children[{index}]`) end
+  end
+  if value.bind ~= nil then validateTween(value.bind.tween, `{path}.bind.tween`) end
+  validateStyleRanges(value.styleRanges, `{path}.styleRanges`)
+end
+
 local function validate(props: any)
   if type(props) ~= "table" then error("definePresentationTemplate: props must be a table", 3) end
   if type(props.root) ~= "table" or type(props.root.kind) ~= "string" then
     error("definePresentationTemplate: `root` must be a kind-tagged widget descriptor", 3)
   end
-  if not finite(props.lifetimeMs) or props.lifetimeMs < 0 or props.lifetimeMs % 1 ~= 0 then
-    error("definePresentationTemplate: `lifetimeMs` must be a non-negative integer", 3)
-  end
-  if type(props.motion) ~= "table" or not finite(props.motion.rise) then
-    error("definePresentationTemplate: `motion.rise` must be finite", 3)
-  end
+  validatePassiveWidget(props.root, "root")
+  requireStoredU32(props.lifetimeMs, "lifetimeMs", "definePresentationTemplate")
+  if type(props.motion) ~= "table" then error("definePresentationTemplate: `motion` must be a table", 3) end
+  requireStoredF32(props.motion.rise, "motion.rise", "definePresentationTemplate")
   if props.motion.easing ~= "linear" and props.motion.easing ~= "easeIn" and props.motion.easing ~= "easeOut" and props.motion.easing ~= "easeInOut" then
     error("definePresentationTemplate: `motion.easing` is invalid", 3)
   end
-  if type(props.fade) ~= "table" or not finite(props.fade.startMs) or props.fade.startMs < 0 or props.fade.startMs % 1 ~= 0 or props.fade.startMs > props.lifetimeMs then
-    error("definePresentationTemplate: `fade.startMs` must be an integer within the lifetime", 3)
-  end
-  if type(props.spawnScatter) ~= "table" or not finite(props.spawnScatter.radius) or props.spawnScatter.radius < 0 then
-    error("definePresentationTemplate: `spawnScatter.radius` must be non-negative", 3)
-  end
+  if type(props.fade) ~= "table" then error("definePresentationTemplate: `fade` must be a table", 3) end
+  requireStoredU32(props.fade.startMs, "fade.startMs", "definePresentationTemplate")
+  if props.fade.startMs > props.lifetimeMs then error("definePresentationTemplate: `fade.startMs` must not exceed `lifetimeMs`", 3) end
+  if type(props.spawnScatter) ~= "table" then error("definePresentationTemplate: `spawnScatter` must be a table", 3) end
+  validateWidgetF32(props.spawnScatter.radius, "spawnScatter.radius")
   if props.worldAnchor ~= nil then
-    if type(props.worldAnchor) ~= "table" or type(props.worldAnchor.socket) ~= "string" or #props.worldAnchor.socket == 0 or not finite(props.worldAnchor.offsetY) then
-      error("definePresentationTemplate: `worldAnchor` requires nonempty socket and finite offsetY", 3)
+    if type(props.worldAnchor) ~= "table" or type(props.worldAnchor.socket) ~= "string" or #props.worldAnchor.socket == 0 then
+      error("definePresentationTemplate: `worldAnchor.socket` must be nonempty", 3)
     end
+    requireStoredF32(props.worldAnchor.offsetY, "worldAnchor.offsetY", "definePresentationTemplate")
   end
 end
 
@@ -158,9 +256,7 @@ local OverlayEntityImpl: OverlayEntity = table.freeze({
 
 function PresentationSdk.damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource
   if type(props) ~= "table" then error("damagedEnemies: props must be a table", 2) end
-  if not finite(props.lingerMs) or props.lingerMs < 0 or props.lingerMs % 1 ~= 0 then
-    error("damagedEnemies: `lingerMs` must be a non-negative integer", 2)
-  end
+  requireStoredU32(props.lingerMs, "lingerMs", "damagedEnemies")
   if type(props.hideAtFull) ~= "boolean" then
     error("damagedEnemies: `hideAtFull` must be a boolean", 2)
   end

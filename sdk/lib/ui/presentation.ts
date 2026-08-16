@@ -66,10 +66,18 @@ export type PresentationOverlay = Readonly<{
 const BINDING_NAME_SUGAR_DIAGNOSTIC =
   "definePresentationTemplate without an explicit id is binding-name sugar and must be used in a direct top-level binding declaration";
 const MAX_OVERLAY_VISIBLE = 64;
+const MAX_U32 = 4_294_967_295;
+const MAX_F32 = 3.4028234663852886e38;
 
-function requireFinite(value: unknown, field: string): asserts value is number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new TypeError(`definePresentationTemplate: \`${field}\` must be finite`);
+function requireStoredF32(value: unknown, field: string, factory: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > MAX_F32) {
+    throw new TypeError(`${factory}: \`${field}\` must be a finite number representable as f32`);
+  }
+}
+
+function requireStoredU32(value: unknown, field: string, factory: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_U32) {
+    throw new TypeError(`${factory}: \`${field}\` must be an integer in [0, ${MAX_U32}]`);
   }
 }
 
@@ -80,9 +88,7 @@ function requireFactName(name: unknown): asserts name is string {
 }
 
 function requireFiniteFact(value: unknown, field: string): asserts value is number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new TypeError(`fact: \`${field}\` must be finite`);
-  }
+  requireStoredF32(value, field, "fact");
 }
 
 function factRef(
@@ -102,6 +108,9 @@ function factRef(
       throw new TypeError("fact: `tween` must be an object");
     }
     requireFiniteFact(tween.durationMs, "tween.durationMs");
+    if (tween.durationMs < 0) {
+      throw new TypeError("fact: `tween.durationMs` must be non-negative");
+    }
     if (!["linear", "easeIn", "easeOut", "easeInOut"].includes(tween.easing)) {
       throw new TypeError("fact: `tween.easing` is invalid");
     }
@@ -135,6 +144,128 @@ export const fact: PresentationFactApi = Object.freeze({
   },
 });
 
+function validateWidgetF32(value: unknown, field: string, positive = false): void {
+  requireStoredF32(value, field, "definePresentationTemplate");
+  if ((positive && value <= 0) || (!positive && value < 0)) {
+    throw new TypeError(
+      `definePresentationTemplate: \`${field}\` must be ${positive ? "greater than zero" : "non-negative"}`,
+    );
+  }
+}
+
+function validateColor(value: unknown, field: string): void {
+  if (!Array.isArray(value)) return;
+  if (value.length !== 4) {
+    throw new TypeError(`definePresentationTemplate: \`${field}\` must contain four f32 components`);
+  }
+  value.forEach((component, index) =>
+    requireStoredF32(component, `${field}[${index}]`, "definePresentationTemplate"));
+}
+
+function validateBorder(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`definePresentationTemplate: \`${field}\` must be an object`);
+  }
+  const border = value as Record<string, unknown>;
+  if (typeof border.texture !== "string" || border.texture.length === 0) {
+    throw new TypeError(`definePresentationTemplate: \`${field}.texture\` must be nonempty`);
+  }
+  if (!Array.isArray(border.slice) || border.slice.length !== 4) {
+    throw new TypeError(`definePresentationTemplate: \`${field}.slice\` must contain four f32 dimensions`);
+  }
+  border.slice.forEach((dimension, index) =>
+    validateWidgetF32(dimension, `${field}.slice[${index}]`));
+  validateColor(border.tint, `${field}.tint`);
+}
+
+function validateTween(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`definePresentationTemplate: \`${field}\` must be an object`);
+  }
+  const tween = value as Record<string, unknown>;
+  validateWidgetF32(tween.durationMs, `${field}.durationMs`);
+  if (tween.from !== undefined) requireStoredF32(tween.from, `${field}.from`, "definePresentationTemplate");
+}
+
+function validateStyleRanges(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`definePresentationTemplate: \`${field}\` must be an object`);
+  }
+  const ranges = value as Record<string, unknown>;
+  validateWidgetF32(ranges.max, `${field}.max`, true);
+  if (!Array.isArray(ranges.entries)) {
+    throw new TypeError(`definePresentationTemplate: \`${field}.entries\` must be an array`);
+  }
+  ranges.entries.forEach((entry, index) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new TypeError(`definePresentationTemplate: \`${field}.entries[${index}]\` must be an object`);
+    }
+    const item = entry as Record<string, unknown>;
+    if (item.upTo !== undefined) requireStoredF32(item.upTo, `${field}.entries[${index}].upTo`, "definePresentationTemplate");
+    if (item.color !== undefined) validateColor(item.color, `${field}.entries[${index}].color`);
+    if (item.pulse !== undefined) {
+      const pulse = item.pulse as Record<string, unknown>;
+      validateWidgetF32(pulse?.periodMs, `${field}.entries[${index}].pulse.periodMs`, true);
+    }
+    if (item.flash !== undefined) {
+      const flash = item.flash as Record<string, unknown>;
+      validateWidgetF32(flash?.durationMs, `${field}.entries[${index}].flash.durationMs`);
+    }
+  });
+}
+
+function validatePassiveWidget(value: unknown, path: string): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`definePresentationTemplate: \`${path}\` must be a kind-tagged widget descriptor`);
+  }
+  const widget = value as Record<string, unknown>;
+  if (typeof widget.kind !== "string") {
+    throw new TypeError(`definePresentationTemplate: \`${path}.kind\` must be a string`);
+  }
+  if (!["text", "bar", "image", "vstack", "hstack"].includes(widget.kind)) {
+    throw new TypeError(
+      `definePresentationTemplate: \`${path}.kind\` "${widget.kind}" is not supported; passive templates allow text, bar, image, vstack, and hstack`,
+    );
+  }
+
+  if (widget.kind === "text") {
+    validateWidgetF32(widget.fontSize, `${path}.fontSize`, true);
+    validateColor(widget.color, `${path}.color`);
+  } else if (widget.kind === "bar") {
+    if (typeof widget.max === "number") validateWidgetF32(widget.max, `${path}.max`, true);
+    if (widget.width !== undefined) validateWidgetF32(widget.width, `${path}.width`, true);
+    if (widget.height !== undefined) validateWidgetF32(widget.height, `${path}.height`, true);
+    validateColor(widget.fill, `${path}.fill`);
+    validateColor(widget.background, `${path}.background`);
+    if (widget.exitFade !== undefined) {
+      if (widget.exitFade === null || typeof widget.exitFade !== "object" || Array.isArray(widget.exitFade)) {
+        throw new TypeError(`definePresentationTemplate: \`${path}.exitFade\` must be an object`);
+      }
+      validateWidgetF32(
+        (widget.exitFade as Record<string, unknown>).durationMs,
+        `${path}.exitFade.durationMs`,
+        true,
+      );
+    }
+  } else if (widget.kind === "vstack" || widget.kind === "hstack") {
+    if (typeof widget.gap === "number") validateWidgetF32(widget.gap, `${path}.gap`);
+    if (typeof widget.padding === "number") validateWidgetF32(widget.padding, `${path}.padding`);
+    if (widget.fill !== undefined) validateColor(widget.fill, `${path}.fill`);
+    validateBorder(widget.border, `${path}.border`);
+    if (!Array.isArray(widget.children)) {
+      throw new TypeError(`definePresentationTemplate: \`${path}.children\` must be an array`);
+    }
+    widget.children.forEach((child, index) => validatePassiveWidget(child, `${path}.children[${index}]`));
+  }
+
+  const bind = widget.bind as Record<string, unknown> | undefined;
+  if (bind !== undefined) validateTween(bind.tween, `${path}.bind.tween`);
+  validateStyleRanges(widget.styleRanges, `${path}.styleRanges`);
+}
+
 function validateProps(props: PresentationTemplateProps): void {
   if (props === null || typeof props !== "object" || Array.isArray(props)) {
     throw new TypeError("definePresentationTemplate: props must be an object");
@@ -142,31 +273,26 @@ function validateProps(props: PresentationTemplateProps): void {
   if (props.root === null || typeof props.root !== "object" || typeof props.root.kind !== "string") {
     throw new TypeError("definePresentationTemplate: `root` must be a kind-tagged widget descriptor");
   }
-  requireFinite(props.lifetimeMs, "lifetimeMs");
-  if (props.lifetimeMs < 0 || !Number.isInteger(props.lifetimeMs)) {
-    throw new TypeError("definePresentationTemplate: `lifetimeMs` must be a non-negative integer");
-  }
+  validatePassiveWidget(props.root, "root");
+  requireStoredU32(props.lifetimeMs, "lifetimeMs", "definePresentationTemplate");
   if (props.motion === null || typeof props.motion !== "object") {
     throw new TypeError("definePresentationTemplate: `motion` must be an object");
   }
-  requireFinite(props.motion.rise, "motion.rise");
+  requireStoredF32(props.motion.rise, "motion.rise", "definePresentationTemplate");
   if (!["linear", "easeIn", "easeOut", "easeInOut"].includes(props.motion.easing)) {
     throw new TypeError("definePresentationTemplate: `motion.easing` is invalid");
   }
   if (props.fade === null || typeof props.fade !== "object") {
     throw new TypeError("definePresentationTemplate: `fade` must be an object");
   }
-  requireFinite(props.fade.startMs, "fade.startMs");
-  if (props.fade.startMs < 0 || !Number.isInteger(props.fade.startMs) || props.fade.startMs > props.lifetimeMs) {
-    throw new TypeError("definePresentationTemplate: `fade.startMs` must be an integer within the lifetime");
+  requireStoredU32(props.fade.startMs, "fade.startMs", "definePresentationTemplate");
+  if (props.fade.startMs > props.lifetimeMs) {
+    throw new TypeError("definePresentationTemplate: `fade.startMs` must not exceed `lifetimeMs`");
   }
   if (props.spawnScatter === null || typeof props.spawnScatter !== "object") {
     throw new TypeError("definePresentationTemplate: `spawnScatter` must be an object");
   }
-  requireFinite(props.spawnScatter.radius, "spawnScatter.radius");
-  if (props.spawnScatter.radius < 0) {
-    throw new TypeError("definePresentationTemplate: `spawnScatter.radius` must be non-negative");
-  }
+  validateWidgetF32(props.spawnScatter.radius, "spawnScatter.radius");
   if (props.worldAnchor !== undefined) {
     if (props.worldAnchor === null || typeof props.worldAnchor !== "object") {
       throw new TypeError("definePresentationTemplate: `worldAnchor` must be an object");
@@ -174,14 +300,14 @@ function validateProps(props: PresentationTemplateProps): void {
     if (typeof props.worldAnchor.socket !== "string" || props.worldAnchor.socket.length === 0) {
       throw new TypeError("definePresentationTemplate: `worldAnchor.socket` must be nonempty");
     }
-    requireFinite(props.worldAnchor.offsetY, "worldAnchor.offsetY");
+    requireStoredF32(props.worldAnchor.offsetY, "worldAnchor.offsetY", "definePresentationTemplate");
   }
 }
 
 /**
  * Declare a passive presentation template. In TypeScript the script compiler
- * inserts `id` from a direct `const template = ...` binding; authors supply no
- * mutable name field, which keeps manifest handles stable through refactors.
+ * inserts `id` from a direct `const template = ...` binding. The binding
+ * identifier is the id, so renaming the binding changes the manifest handle.
  */
 export function definePresentationTemplate<const Props extends PresentationTemplateProps>(
   props: Props,
@@ -225,10 +351,7 @@ export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource
   if (props === null || typeof props !== "object" || Array.isArray(props)) {
     throw new TypeError("damagedEnemies: props must be an object");
   }
-  requireFinite(props.lingerMs, "lingerMs");
-  if (props.lingerMs < 0 || !Number.isInteger(props.lingerMs)) {
-    throw new TypeError("damagedEnemies: `lingerMs` must be a non-negative integer");
-  }
+  requireStoredU32(props.lingerMs, "lingerMs", "damagedEnemies");
   if (typeof props.hideAtFull !== "boolean") {
     throw new TypeError("damagedEnemies: `hideAtFull` must be a boolean");
   }
@@ -252,7 +375,7 @@ export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource
 }
 
 /** Bind one passive template to a fact-driven source. Register the returned
- * descriptor in `defineMod({ presentationOverlays: [...] })`. */
+ * descriptor directly as `defineMod({ presentationOverlays: overlay })`. */
 export function defineOverlay(props: {
   over: DamagedEnemiesSource;
   template: PresentationTemplate;
@@ -270,8 +393,7 @@ export function defineOverlay(props: {
   if (props.template.worldAnchor === undefined) {
     throw new TypeError("defineOverlay: `template.worldAnchor` is required for an overlay");
   }
-  requireFinite(props.maxVisible, "maxVisible");
-  if (props.maxVisible < 1 || props.maxVisible > MAX_OVERLAY_VISIBLE || !Number.isInteger(props.maxVisible)) {
+  if (typeof props.maxVisible !== "number" || props.maxVisible < 1 || props.maxVisible > MAX_OVERLAY_VISIBLE || !Number.isInteger(props.maxVisible)) {
     throw new TypeError(`defineOverlay: \`maxVisible\` must be an integer between 1 and ${MAX_OVERLAY_VISIBLE}`);
   }
   return Object.freeze({

@@ -107,8 +107,8 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .field(
             "presentationOverlays?",
-            "Vec<PresentationOverlay>",
-            "Fact-driven enemy-status overlays. Host/single-player presentation only; malformed entries are skipped.",
+            "PresentationOverlay",
+            "One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.",
         )
         .field(
             "theme?",

@@ -2901,33 +2901,45 @@ impl ApplicationHandler for App {
                 // Render while a create-then-kill is removed before it draws.
                 if !self.is_connected_client() {
                     let session = self.session.as_mut().expect("running session installed");
-                    let overlay_frame = {
-                        let registry = script_ctx.registry.borrow();
-                        session
-                            .scripting
-                            .impact_policy_runtime
-                            .update_damaged_enemy_overlays(
-                                &mut session.presentation_pool,
-                                &registry,
-                                &session.hit_zone_store,
-                                frame_anim_time,
-                            )
-                    };
-
-                    // The local host overlay above is still the authoritative
-                    // lifecycle owner. Remote clients receive only changed facts for
-                    // targets they personally damaged, on the dedicated unreliable
-                    // presentation channel. This is deliberately outside snapshot
-                    // replication: a missed cosmetic fact never blocks game state.
-                    let tracked_entities = session.presentation_pool.tracked_overlay_ids();
-                    if let Some(netcode::NetEndpoint::Host {
-                        server,
-                        allocator,
-                        replicable,
-                        owners,
-                        ..
-                    }) = session.net_endpoint.as_mut()
+                    let overlay_config = session
+                        .scripting
+                        .impact_policy_runtime
+                        .client_overlay_config();
+                    if let Some(config) = overlay_config.as_ref()
+                        && let Some(netcode::NetEndpoint::Host {
+                            server,
+                            allocator,
+                            replicable,
+                            owners,
+                            ..
+                        }) = session.net_endpoint.as_mut()
                     {
+                        session.host_overlay_fact_tracker.begin_frame(
+                            frame_dt,
+                            config.linger_seconds,
+                            owners,
+                        );
+                        let overlay_frame = {
+                            let registry = script_ctx.registry.borrow();
+                            session
+                                .scripting
+                                .impact_policy_runtime
+                                .update_damaged_enemy_overlays(
+                                    &mut session.presentation_pool,
+                                    &registry,
+                                    &session.hit_zone_store,
+                                    frame_anim_time,
+                                    session.host_overlay_fact_tracker.tracked_entities(),
+                                    |source| {
+                                        source
+                                            .is_some_and(|source| owners.owner_of(source).is_some())
+                                    },
+                                )
+                        };
+
+                        // The host renderer pool contains only host-local feedback.
+                        // Each remote recipient has an independently capped fact
+                        // stream on the unreliable presentation channel.
                         netcode::send_host_overlay_facts(
                             &mut session.host_overlay_fact_tracker,
                             server,
@@ -2935,8 +2947,22 @@ impl ApplicationHandler for App {
                             replicable,
                             owners,
                             &overlay_frame,
-                            tracked_entities,
+                            config.max_visible,
                         );
+                    } else {
+                        session.host_overlay_fact_tracker.clear();
+                        let registry = script_ctx.registry.borrow();
+                        let _ = session
+                            .scripting
+                            .impact_policy_runtime
+                            .update_damaged_enemy_overlays(
+                                &mut session.presentation_pool,
+                                &registry,
+                                &session.hit_zone_store,
+                                frame_anim_time,
+                                [],
+                                |_| false,
+                            );
                     }
                 }
 
@@ -3414,7 +3440,11 @@ impl ApplicationHandler for App {
                             presentation_viewport,
                         )
                     };
-                    renderer.set_presentation_draw_inputs(presentation_inputs);
+                    let recycled_inputs =
+                        renderer.set_presentation_draw_inputs(presentation_inputs);
+                    session
+                        .presentation_pool
+                        .recycle_draw_inputs(recycled_inputs);
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
@@ -4964,7 +4994,10 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
-        renderer.set_presentation_draw_inputs(Vec::new());
+        let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
+        session
+            .presentation_pool
+            .recycle_draw_inputs(recycled_inputs);
         let present_handle = match renderer.render_frame_indirect(
             &mut session.font_system,
             CameraCullVisibility {
@@ -5654,7 +5687,11 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut seat_table = session.seat_table.as_mut();
-        let presentation_templates = session.scripting.presentation_templates();
+        let presentation_templates = matches!(
+            session.net_endpoint.as_ref(),
+            Some(netcode::NetEndpoint::Client { .. })
+        )
+        .then(|| session.scripting.presentation_template_registry());
         let client_overlay_config = session
             .scripting
             .impact_policy_runtime
@@ -6119,7 +6156,8 @@ impl App {
                     &mut registry,
                     presentation_messages,
                     &net_descriptors,
-                    &presentation_templates,
+                    presentation_templates
+                        .expect("client presentation ingest has a borrowed template registry"),
                     &mut session.client_overlay_facts,
                     replication,
                     &mut session.presentation_pool,

@@ -404,8 +404,11 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                 {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
                     endpoint.demote_client_state(&mut registry);
+                    registry.clear_presentation_spawns();
                     drop(registry);
                     session.gameplay_input_latch.clear();
+                    session.presentation_pool.clear_world_instances();
+                    session.client_overlay_facts.clear();
                 }
                 app.client_fire_resolutions.clear();
                 app.client_predicted_shots.clear();

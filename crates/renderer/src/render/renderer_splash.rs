@@ -18,6 +18,9 @@ pub struct PresentationDrawInput {
     pub facts: postretro_entities::PresentationFacts,
     pub anchor: [f32; 2],
     pub opacity: f32,
+    /// False when the live instance is camera-culled. The renderer still
+    /// advances its retained facts/tweens, but emits no draw items this frame.
+    pub visible: bool,
 }
 
 impl Renderer {
@@ -89,8 +92,11 @@ impl Renderer {
     /// renderer resolves their template draw data later, where it owns the
     /// `FontSystem`, UI theme, and image registry. They never enter the retained
     /// gameplay-tree or focus/hit-test path.
-    pub fn set_presentation_draw_inputs(&mut self, inputs: Vec<PresentationDrawInput>) {
-        self.full_mut().presentation_inputs = inputs;
+    pub fn set_presentation_draw_inputs(
+        &mut self,
+        inputs: Vec<PresentationDrawInput>,
+    ) -> Vec<PresentationDrawInput> {
+        std::mem::replace(&mut self.full_mut().presentation_inputs, inputs)
     }
 
     /// Install the committed manifest snapshot used to resolve passive

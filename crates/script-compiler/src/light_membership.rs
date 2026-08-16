@@ -527,6 +527,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         &ui_presentation,
         &[
             "definePresentationTemplate",
+            "fact",
             "damagedEnemies",
             "defineOverlay",
         ],
@@ -1544,6 +1545,30 @@ mod tests {
             &table(),
         )
         .expect("nested SDK module mutations fail like runtime");
+        assert_eq!(manifest.lights[0].index, 2);
+    }
+
+    // Regression: compiler-time postretro/ui omitted the presentation fact API.
+    #[test]
+    fn luau_virtual_ui_module_exports_presentation_fact_api() {
+        let source = r#"
+            local Postretro = require("postretro")
+            local Ui = require("postretro/ui")
+            local value = Ui.fact.number("damage", { format = "{}" })
+            function setupLevel(_)
+              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              return { reactions = {
+                Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
+              } }
+            end
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("compiler-time postretro/ui exposes fact");
         assert_eq!(manifest.lights[0].index, 2);
     }
 

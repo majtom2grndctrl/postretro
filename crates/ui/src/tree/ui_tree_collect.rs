@@ -88,6 +88,38 @@ pub(super) fn collect_draw_data_from_layout(
     time_seconds: f64,
     visibility: &HashMap<NodeId, VisibilityState>,
 ) -> UiDrawData {
+    let mut data = UiDrawData::default();
+    collect_draw_data_from_layout_into(
+        taffy,
+        root,
+        root_origin,
+        scale,
+        canvas_origin,
+        slot_values,
+        cell_values,
+        time_seconds,
+        visibility,
+        &mut data,
+    );
+    data
+}
+
+/// Reusable-storage form of [`collect_draw_data_from_layout`]. Presentation
+/// layouts call this every frame so their bounded quads/text/image batches stay
+/// at a warm allocation high-water mark.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_draw_data_from_layout_into(
+    taffy: &taffy::prelude::TaffyTree<NodeContext>,
+    root: NodeId,
+    root_origin: [f32; 2],
+    scale: f32,
+    canvas_origin: [f32; 2],
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+    time_seconds: f64,
+    visibility: &HashMap<NodeId, VisibilityState>,
+    data: &mut UiDrawData,
+) {
     // Style-range colors are literal by this point. Keep the evaluator's inert
     // theme process-static so collection never rebuilds token maps.
     static INERT_THEME: OnceLock<UiTheme> = OnceLock::new();
@@ -100,9 +132,8 @@ pub(super) fn collect_draw_data_from_layout(
         time_seconds,
         inert_theme,
     };
-    let mut data = UiDrawData::default();
-    collect_node(taffy, root, root_origin, &walk, visibility, &mut data);
-    data
+    data.clear_preserving_capacity();
+    collect_node(taffy, root, root_origin, &walk, visibility, data);
 }
 
 fn collect_node(

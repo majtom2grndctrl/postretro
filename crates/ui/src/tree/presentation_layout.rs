@@ -16,7 +16,7 @@ use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
 use super::node_context::{NodeContext, VisibilityState};
 use super::predicate::PRESENTATION_FACT_SCOPE;
 use super::predicate::resolve_predicate;
-use super::ui_tree_collect::collect_draw_data_from_layout;
+use super::ui_tree_collect::collect_draw_data_from_layout_into;
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
 use super::{CellValues, ImageSizes};
 use crate::descriptor::Widget;
@@ -27,9 +27,9 @@ use crate::theme::UiTheme;
 ///
 /// This deliberately does not use [`super::UiTree`]: it has no anchor envelope,
 /// retained gameplay-tree identity, modal/input state, focus export, or hit-test
-/// data. It keeps only the taffy nodes and display-value state needed to avoid
-/// remeasuring a fixed template every frame while its producer-stamped facts
-/// change.
+/// data. It keeps only the taffy nodes plus display-value and visibility state
+/// needed to reuse a fixed template layout while producer-stamped facts change
+/// or visibility transitions occur.
 pub struct PresentationTemplateLayout {
     taffy: TaffyTree<NodeContext>,
     root: NodeId,
@@ -114,6 +114,33 @@ impl PresentationTemplateLayout {
         cell_values: &CellValues,
         time_seconds: f64,
     ) -> UiDrawData {
+        let mut draw = UiDrawData::default();
+        self.build_draw_data_into(
+            device_size,
+            font_system,
+            image_sizes,
+            image_sizes_generation,
+            cell_values,
+            time_seconds,
+            &mut draw,
+        );
+        draw
+    }
+
+    /// Reusable-storage form of [`Self::build_draw_data`]. Renderer-owned live
+    /// layouts keep this buffer beside tween state, eliminating the per-instance
+    /// temporary draw allocation on warm frames.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_draw_data_into(
+        &mut self,
+        device_size: [u32; 2],
+        font_system: &mut FontSystem,
+        image_sizes: &ImageSizes,
+        image_sizes_generation: u64,
+        cell_values: &CellValues,
+        time_seconds: f64,
+        draw: &mut UiDrawData,
+    ) {
         // Presentation templates are facts-only. Keeping the global slot map
         // physically absent from this entry point prevents a future caller from
         // accidentally making a transient re-read live game state.
@@ -155,7 +182,7 @@ impl PresentationTemplateLayout {
             }
         }
 
-        collect_draw_data_from_layout(
+        collect_draw_data_from_layout_into(
             &self.taffy,
             self.root,
             [0.0, 0.0],
@@ -165,7 +192,8 @@ impl PresentationTemplateLayout {
             cell_values,
             time_seconds,
             &self.visibility,
-        )
+            draw,
+        );
     }
 
     #[cfg(any(test, feature = "test-fixtures"))]

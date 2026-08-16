@@ -880,6 +880,15 @@ impl ScriptingCore {
     ) -> Vec<postretro_scripting_core::data_descriptors::PresentationTemplate> {
         self.impact_policy_runtime.presentation_templates()
     }
+
+    pub(crate) fn presentation_template_registry(
+        &self,
+    ) -> &std::collections::HashMap<
+        String,
+        postretro_scripting_core::data_descriptors::PresentationTemplate,
+    > {
+        self.impact_policy_runtime.presentation_template_registry()
+    }
 }
 
 // --- Headless observability session construction ---------------------------

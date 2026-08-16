@@ -1038,10 +1038,15 @@ impl NetClient {
     }
 
     /// Drain decoded passive presentation events from the dedicated unreliable
-    /// channel. Unlike snapshots, these carry no participation epoch: a lost or
-    /// late cosmetic simply has no visual effect.
+    /// channel. Unlike snapshots, these carry no participation epoch. The lane
+    /// is still participation-gated: held/disconnected clients exhaust and
+    /// discard it so a retired cosmetic cannot enter a later world lifecycle.
     pub fn drain_presentation(&mut self) -> Vec<ServerPresentationMessage> {
-        drain_client_channel(&mut self.client, Channel::Presentation)
+        let bytes = drain_client_channel(&mut self.client, Channel::Presentation);
+        if !self.client.is_connected() || self.active_participation_epoch.is_none() {
+            return Vec::new();
+        }
+        bytes
             .into_iter()
             .filter_map(|bytes| match wire::decode(&bytes) {
                 Ok(message) => Some(message),
@@ -1113,6 +1118,13 @@ impl NetClient {
             .is_some_and(|active| !epoch_is_newer(active, epoch))
         {
             self.active_participation_epoch = None;
+            // Presentation is deliberately unframed and fire-and-forget. Flush
+            // anything that arrived beside this reliable hold so it cannot be
+            // mistaken for work from a later participation generation.
+            drop(drain_client_channel(
+                &mut self.client,
+                Channel::Presentation,
+            ));
         }
     }
 
@@ -1283,7 +1295,68 @@ mod tests {
 
         assert!(server.send_presentation(RELAY_CLIENT_ID, message.clone()));
         relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
         assert_eq!(client.drain_presentation(), vec![message]);
+    }
+
+    // Regression: unframed pre-demotion presentation survived a Holding drain
+    // and was ingested after the same connection re-entered participation.
+    #[test]
+    fn demotion_discards_late_spawn_and_overlay_before_rejoin() {
+        let (mut server, mut client) = participate_relay_pair();
+        let stale_spawn = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Spawn {
+                template_id: "old-number".to_string(),
+                anchor: [1.0, 2.0, 3.0],
+                value: 25.0,
+                facts: BTreeMap::new(),
+            },
+        };
+        let stale_overlay = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::OverlayFact {
+                enemy_id: crate::wire::NetworkId(3),
+                health_fraction: 0.5,
+                shield_fraction: 0.0,
+                has_shield: false,
+                alive: true,
+            },
+        };
+        assert!(server.send_presentation(RELAY_CLIENT_ID, stale_spawn));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, stale_overlay));
+
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert!(
+            client.drain_presentation().is_empty(),
+            "pre-demotion presentation must be retired even after re-promotion",
+        );
+
+        let current = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Spawn {
+                template_id: "current-number".to_string(),
+                anchor: [4.0, 5.0, 6.0],
+                value: 10.0,
+                facts: BTreeMap::new(),
+            },
+        };
+        assert!(server.send_presentation(RELAY_CLIENT_ID, current.clone()));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(client.drain_presentation(), vec![current]);
     }
 
     #[test]

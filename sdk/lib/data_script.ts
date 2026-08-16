@@ -798,9 +798,10 @@ export function defineEntity<T extends import("postretro").EntityTypeDescriptor>
  * `config.name`, `config.id`, and `config.version` are required. The id gates
  * multiplayer admission; the version is display-only and never compared. The
  * first committed id and version remain active across staged reloads. Optional
- * arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`,
- * `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine
- * side effects until the manifest is returned and validated.
+ * arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`,
+ * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
+ * `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+ * effects until the manifest is returned and validated.
  */
 export function defineMod(
   config: ModManifestInput,

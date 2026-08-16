@@ -22,6 +22,7 @@ export type WidgetColor = { number } | ColorToken
 --- A spacing slot (gap/padding): an inline logical-px number or a spacing token.
 export type WidgetSpacing = number | SpacingToken
 
+--- `fact` is legal only when the container belongs to a presentation template.
 export type Predicate = { slot: string?, ["local"]: string?, fact: string?, equals: any? }
 export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"
 

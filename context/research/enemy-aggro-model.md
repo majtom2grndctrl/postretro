@@ -113,10 +113,12 @@ consumer.
 
 Whether and how much one enemy's attack damages another is a per-game, per-faction-pair policy,
 owned by the **Faction & relationship model** (`roadmap.md`, Epic 10), not the engine floor.
-`E10--enemy-multi-attack`'s nearest-of enemy hitscan — an interposed entity, including another
-enemy, can take a hit meant for the selected target — makes enemy-on-enemy impacts possible
-without deciding whether they deal damage. The faction model's per-pair relation is the
-declarative surface that governs that. Design intent only; no descriptor surface here.
+Enemy melee applies damage directly to the selected target, so it never strikes a bystander.
+Enemy-on-enemy impacts become possible only once enemy **ranged** attacks land: a nearest-of
+hitscan ray can put a bystanding enemy in the line of fire. That is the prerequisite tracked in
+`context/research/enemy-ranged-attacks.md`. The faction model's per-pair relation is the
+declarative surface that would then govern whether such an impact deals damage. Design intent only;
+no descriptor surface here.
 
 ## Boundary discipline
 

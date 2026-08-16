@@ -10,23 +10,24 @@ reference as a hint, not a contract.
   and rides `BehaviorGraphDescriptor` as `attack: Option<AttackParams>`. Its single `range` gates
   DAMAGE; multi-attack's `maxRange` inherits that role as the sole engine-enforced reach — there is
   no `minRange` field. An author-side floor, where wanted, is a `ge(@brain.targetDistance, …)`
-  transition guard, not a schema field.
+  transition guard, not a schema field. `AttackParams` stays `Copy`: every field the multi-attack
+  entry adds (`max_range: f32`, `engagement_radius: Option<f32>`) is a plain scalar, so no field
+  drops `Copy`.
 - `BehaviorGraphDescriptor::engagement_radius()` resolves the combat-slot ring radius as
   authored `engagement_radius` field → `attack.range` → `DEFAULT_ENGAGEMENT_RADIUS` (2.0). The
-  middle rung is `self.attack.map(|attack| attack.range)` — a by-value map that **depends on
-  `AttackParams: Copy`**. Adding `weapon: Option<String>` drops `Copy`, so that rung cannot
-  survive; the multi-attack design removes it (there is no singular `attack` to fall back to) and
-  resolves the graph-level default only. Per-state standoff resolution does NOT move to a
-  `BehaviorGraphDescriptor` method: a `weapon` entry's reach is unknown until spawn, so it resolves
-  from Task 2's spawn-time per-attack tuning table instead (Task 3 reads it in
-  `combat_slots.rs`).
+  middle rung is `self.attack.map(|attack| attack.range)`, a by-value map over the singular
+  `attack`. Multi-attack replaces the singular block with the `attacks` map, so there is no single
+  block to fall back to; the resolver drops that rung and returns the graph-level default only
+  (`self.engagement_radius`, else `DEFAULT_ENGAGEMENT_RADIUS`). Per-state standoff resolves
+  separately, from the graph's `attacks` map directly — every stat is inline, so it needs no
+  spawn-time table.
 - The **only runtime per-tick consumer** of `engagement_radius()` is
   `crates/postretro/src/scripting/systems/ai/combat_slots.rs` (`resolve_combat_slots`, feeding
   `CombatQuery::engagement_radius`). Other call sites are TESTS:
   `crates/entities/src/components/brain.rs` (in `from_graph_seeds_...`), the `behavior.rs` unit
   tests, and `crates/scripting-core/src/data_descriptors/tests/behavior.rs`. Task 3 updates the
-  runtime consumer (now reading the tuning table for attack-firing states); Task 4 migrates the
-  test call sites.
+  runtime consumer (now reading the firing state's attack for attack-firing states); Task 1/Task 4
+  migrate the test call sites.
 - `ActionVerb` is a unit-only enum (`Attack`) that deserializes from the bare string
   `"action": "attack"` — the round-trip test in `behavior.rs`
   (`the_wire_shape_round_trips_through_camel_case_json`) pins that string shape. Parameterizing to
@@ -34,85 +35,112 @@ reference as a hint, not a contract.
   `action: { attack: "<name>" }` — externally-tagged serde wraps a newtype variant's payload
   directly under the variant key. A struct variant (`Attack { attack: String }`) would double-nest
   (`{ "attack": { "attack": "<name>" } }`), so the newtype form is load-bearing, not stylistic.
+  `ActionVerb::ALL` and the `action_verb_all_is_exhaustive` walk both carry the variant; the
+  successor-chain test's arm gains the field. `graph_eval::action_for_state`
+  (`crates/postretro/src/scripting/systems/ai/graph_eval.rs`) returns `Option<ActionVerb>` — Task 3
+  reads the `Attack(name)` payload to resolve which attack a state fires.
 
 ## Brain state and the cooldown fact
 
 - `BrainComponent::attack_cooldown_remaining_ms: f32` (`crates/entities/src/components/brain.rs`)
-  is the single cooldown scalar. Multi-attack replaces it with a name-indexed
-  `BTreeMap<String, f32>`; it is transient sim state (re-armed on fire), so `#[serde(default)]`
-  loads old brains empty (every attack ready), consistent with the component's other defaulted
-  fields. A lookup miss for the current state's attack reads 0 (ready) — the same rule covers a
-  fresh spawn and a name absent from the map. The map is not pruned on a graph swap or re-seat: a
-  same-named attack in the newly-seated graph inherits its remaining sub-second timer
-  (self-correcting within one cooldown); a stale name with no counterpart is a harmless dead entry.
-  Clean-swap pruning is additive if a consumer ever needs it.
+  is the single cooldown scalar (a required field; `from_graph` seeds it `0.0`). Multi-attack
+  replaces it with a name-indexed `BTreeMap<String, f32>`. It is transient sim state (re-armed on
+  fire), so `#[serde(default)]` loads old brains empty (every attack ready), consistent with the
+  component's other defaulted fields. A lookup miss for the current state's attack reads 0 (ready) —
+  the same rule covers a fresh spawn and a name absent from the map. The map is not pruned on a
+  graph swap or re-seat: a same-named attack in the newly-seated graph inherits its remaining
+  sub-second timer (self-correcting within one cooldown); a stale name with no counterpart is a
+  harmless dead entry. Clean-swap pruning is additive if a consumer ever needs it.
+- Readers of the old scalar Task 2 must convert, beyond the AI tick:
+  - `crates/postretro/src/scripting/systems/ai/mod.rs` — the per-tick decrement (line ~506, before
+    the aggro-gate branch, so it runs every tick regardless of aggro state), the fire gate's
+    `<= 0.0` check, the re-arm on fire, and the `BrainFacts::attack_cooldown_ms` feed.
+  - `crates/postretro/src/spawner.rs` (~line 265) — a spawn-time **attack windup**:
+    `brain.attack_cooldown_remaining_ms = brain.attack_cooldown_remaining_ms.max(MAX_DELAY_MICROS
+    as f32 / 1000.0)`, so a freshly spawned enemy cannot attack before remote interpolation's
+    maximum delay elapses and the remote presentation has arrived. With an empty map reading
+    0-ready, an enemy would attack immediately — a regression. The seed must populate a windup
+    entry for **every attack the graph declares**. Its test
+    (`the descriptor attachment must not overwrite the interpolation windup`, ~line 483) migrates
+    with it.
 - `@brain.attackCooldownMs` (`BRAIN_ATTACK_COOLDOWN_MS_INPUT`, `crates/foundation/src/brain.rs`)
   is one of 13 registered `@brain.*` guard inputs (`BRAIN_INPUTS`), typed `IrType::Number`. It is a
   PUBLISHED SDK contract: present in `sdk/types/postretro.d.ts`, `sdk/types/postretro.d.luau`,
   `sdk/lib/brain.{ts,luau}`, and the committed typedef fixture
   `crates/postretro/src/scripting/typedef/tests/fixtures/expected.d.ts`. No shipped authored graph
-  reads it (the reference enemy does not), but the contract surface exists. Design decision D3:
-  the fact reports the current state's attack's remaining cooldown (0 when the current state fires
-  no attack) — shape unchanged, meaning generalized.
+  reads it (the reference enemy does not), but the contract surface exists. The fact reports the
+  current state's attack's remaining cooldown (0 when the current state fires no attack) — shape
+  unchanged, meaning generalized.
 - The fact is fed at the brain-scope refresh in `ai/mod.rs` via `BrainFacts::attack_cooldown_ms`
-  from `brain.attack_cooldown_remaining_ms`; the tick's countdown decrements that scalar. Both
-  move to the per-attack map.
+  (`brain_scope.rs`); the tick's countdown decrements the timer. Both move to the per-attack map.
+  The refresh runs inside the aggro-armed branch AFTER `current_index` is resolved and BEFORE
+  `select_transition` picks the next state — so it keys off `current_index`, the pre-transition
+  state, while the fire gate below keys off `next_index`, the post-transition state.
 
 ## Attack firing seam (`crates/postretro/src/scripting/systems/ai/mod.rs`)
 
-- Compute pass: the attack gate reads `action_for_state(&brain.graph, next_index) ==
-  Some(ActionVerb::Attack)`, `brain.graph.attack.is_some_and(|a| distance <= a.range)`, the
-  cooldown `<= 0`, and `selected_target_alive`; on firing it arms the cooldown from
-  `attack.cooldown_ms`.
+- Compute pass: the attack gate reads `brain.graph.attack.is_some_and(|a| distance <= a.range)`,
+  `action_for_state(&brain.graph, next_index) == Some(ActionVerb::Attack)`, the cooldown `<= 0.0`,
+  and `selected_target_alive`; on firing it arms the cooldown from `attack.cooldown_ms`. Multi-attack
+  resolves the `next_index` state's named attack from the `attacks` map, gates on that attack's own
+  `maxRange` and its own cooldown-map entry, and re-arms only that entry.
 - Apply pass: `apply_damage_with_context` routes the payload (`attack.damage`) with
-  `DamageContext { source_id: ENEMY_ATTACK_SOURCE_ID, producer: DamageProducer::InTick, .. }`,
-  pushes `ENEMY_ATTACK_EVENT` ("enemyAttack"), and calls `restart_animation_clip` for the in-state
-  swing replay. This is the seam Task 3 extends per-attack; it is shipped code, not a base-spec
-  task reference.
+  `DamageContext { source_id: ENEMY_ATTACK_SOURCE_ID, attacker: Some(id), weapon: None, zone: None,
+  producer: DamageProducer::InTick }`, applied **directly to the selected target**; it pushes
+  `ENEMY_ATTACK_EVENT` ("enemyAttack") and calls `restart_animation_clip` for the in-state swing
+  replay (guarded on `!state_changed`). Multi-attack reads the fired attack's `damage` from the
+  map; the `DamageContext` is unchanged. This is the shipped contact path — no ray, no
+  `nearest_entity_hit`, no shooter-exclusion, no `HitZoneStore`, no zone scaling.
 - `mod.rs` is ~923 lines — over the ~800 soft split threshold. Task 3's edits are localized to the
-  attack seam (gate + apply pass), so a split is not sequenced here; flag it if the seam grows.
-
-## Weapon ray path (`crates/postretro/src/weapon/mod.rs`)
-
-- Fire is pawn-agnostic already: `tick_resolved` / `resolve_nearest_hit` compute nearest-of world
-  (`collision::cast_ray`) vs. entity (`hit_zones::nearest_entity_hit`). Player coupling is all at
-  the call site (camera-aimed command, damage + zone scaling applied by the caller).
-  `resolve_nearest_hit` already takes no `WeaponComponent` — it is a private `fn`, so calling it
-  from the AI fire path (Task 3) is a visibility change, not a decoupling.
-- `nearest_entity_hit` (`crates/postretro/src/scripting/systems/hit_zones.rs`) has **no
-  shooter-exclusion parameter** — a ray from inside the firer's hitbox can self-hit. Zero-HP
-  targets are already skipped. Adding an ignore-shooter parameter touches its callers:
-  `weapon/mod.rs`'s player fire path is the **sole production caller** (via `resolve_nearest_hit`);
-  every other call site is a test — `weapon/mod.rs`'s own unit test, the `hit_zones.rs` test
-  module, and `impact_policy.rs`'s `downed_target_ray_hit_reaches_later_impact_policy` test (inside
-  its `#[cfg(test)]` module, not production code) — group that last one with the `hit_zones.rs`
-  tests when enumerating callers to update.
-- The weapon-entry hitscan origin (Task 3) is the firing enemy's Health AABB center — Transform
-  position plus the descriptor's `hitbox.offset` (`combat.rs`'s `HitboxDescriptor`). Hitbox center
-  fully serves this spec's only origin consumers, occlusion and self-exclusion; a posed
-  weapon-socket origin and a precise muzzle-tip offset matter once a shot is visibly emitted from
-  the origin (a beam, muzzle flash, or traveling projectile), which this spec adds none of —
-  deferred together to Epic 16 › projectile. `ai/mod.rs` needs no `HitZoneStore` handle or
-  per-entity animation time for this.
-- Map-placed archetypes spawn with `attach_weapon: false`; enemies carry no `WeaponComponent`, and
-  the dense per-kind columns forbid one entity carrying two — hence spawn-time stat resolution into
-  brain tuning rather than companion wieldable entities.
-- A `weapon` reference on an `attacks` entry resolves through `find_descriptor`
-  (`crates/postretro/src/scripting/builtins/data_archetype.rs`) — a linear scan by
-  `canonical_name` over the same `descriptors: &[EntityTypeDescriptor]` slice the `entity_class`
-  KVP and a player's default-weapon name already resolve through.
+  attack seam (gate + apply pass) and stay inline; flag a split if the seam grows.
 
 ## Descriptor conventions
 
-- Wire camelCase ↔ Rust snake_case via `#[serde(rename_all = "camelCase")]`; `FireMode` /
-  `ResolutionMode` enum values are camelCase. `ResolutionMode` is single-variant (`Hitscan`) in
-  `combat.rs`; `Contact` appends there.
+- Wire camelCase ↔ Rust snake_case via `#[serde(rename_all = "camelCase")]`. `AttackParams` and
+  `BehaviorGraphDescriptor` both carry `deny_unknown_fields`, so an unknown per-entry key is
+  rejected — the same posture the `attacks` entries inherit.
 - Both runtimes funnel `components.behavior` through one serde parse + the shared
-  `BehaviorGraphDescriptor::validate` (`js/entity.rs`, `lua/entity.rs`), so the twins cannot
-  diverge; only the SDK typing files and committed typedef fixtures need manual updates.
+  `BehaviorGraphDescriptor::validate` (`crates/scripting-core/src/data_descriptors/js/entity.rs`,
+  `lua/entity.rs`), so the twins cannot diverge; only the SDK typing files
+  (`sdk/types/postretro.d.{ts,luau}`, `sdk/lib`) and committed typedef fixtures
+  (`crates/postretro/src/scripting/typedef/tests/fixtures/`) need manual updates. The `attacks`
+  map validation is all parse-time (AC1 has no spawn checks) because every stat is inline.
+- The SDK typedef generator today renders `ActionVerb` as a unit-string union
+  (`"attack"`). The newtype variant `Attack(String)` must render as the object type
+  `{ attack: string }` in both `.d.ts` and `.d.luau`. Confirm the generator emits a newtype
+  variant, not just the unit-string union; extend it if it does not (a Task 1 sub-item).
 - `components.mesh.animations` is the name-keyed map precedent, with pathed per-entry errors — the
   model `attacks` follows, and the framing (graph-wide vocabulary referenced by name) that keeps
   the statecharts successor's per-activity grouping additive.
+
+## Reference archetype and clip availability
+
+- `sdk/behaviors/reference/entities.{ts,luau}` author `referenceEnemyEntity` and
+  `poseFixtureEnemyEntity`, each with a singular `attack: { damage: 8, range: 2, cooldownMs: 1200 }`
+  block, an `engagementRadius: 2`, and one attack-firing state (`attack`, `action: "attack"`).
+- The reference enemy's model (`content/dev/models/reference_enemy_kaykit_knight/scene.gltf`, the
+  CC0 KayKit Adventurers Knight) is pruned to exactly four clips: `Idle`, `Walking_A`,
+  `1H_Melee_Attack_Slice_Horizontal`, `Death_A`. **Only one attack clip exists.** A second melee
+  attack therefore reuses the single slice clip through a distinct `mesh.animations` KEY (a distinct
+  animation-state name backed by the same clip): the replicated animation-state name and the overlay
+  label still differ per attack (satisfying AC11/AC12), while the on-screen swing is shared. A
+  genuinely distinct second-attack clip is a content dependency — re-pruning the KayKit knight to
+  include another melee clip — and is an open question, not this spec's work.
+- `reference_behavior_graph()` (`ai_tests.rs`) is a Rust hand-transcription oracle asserted equal to
+  the shipped Luau by `the_reference_oracle_matches_the_shipped_authored_graph`
+  (`shipped_reference_behavior_graph` evals the real `entities.luau`). The TS≡Luau twin is
+  `the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`
+  (`crates/scripting-core/src/data_descriptors/tests/behavior.rs`). Together: TS ≡ Luau ≡ oracle;
+  all three migrate with the archetype.
+- `trace_reference_fixture`/`BrainTrace` (`ai_tests.rs`) runs the reference oracle through a scripted
+  approach and records per-tick `state`/`player_hp`/`animation`/`has_destination`/`acquired`.
+  `reference_player_x(tick)` steps the player through out-of-detection → detection → contact (1.5 m)
+  → back-off (6 m) → past leash (80 m). At contact both attack reaches would be satisfied; the
+  preserved shorter-reach attack wins by declaration order, so the trace's connect distance,
+  per-swing damage, and cooldown cadence stay exactly the shipped values (AC2). Task 4 adds
+  concrete numeric assertions on those three, rather than resting on suite-green.
+- `assemble_agent_overlay_label` (`crates/postretro/src/agent_diagnostics.rs`) builds the label from
+  `brain.state_name()` as `state:<name> …`. Task 4 extends it with the firing state's attack name.
 
 ## Boundary with statecharts / Epic 16
 
@@ -125,12 +153,20 @@ reference as a hint, not a contract.
 - Multi-attack keeps attacks instantaneous precisely so it needs none of the above: no commit
   means reach-based distance-guard routing on the flat graph is a complete selection mechanism.
 
+## Deferred: ranged / hitscan enemy attacks
+
+- Ranged attacks — `weapon`-referencing entries, the shared weapon-descriptor substrate, nearest-of
+  ray resolution — defer to a future Epic 16 combat-layer spec. The load-bearing reason is the
+  player is deliberately hitbox-less (`content/dev/scripts/player.ts`) and enemy damage reaches it
+  by direct `apply_damage` to the selected target, so nearest-of hitscan cannot hit it; making the
+  player a first-class hitscan target reverses that invariant and pulls in self-exclusion and co-op
+  hit-authority consequences. Design intent: `context/research/enemy-ranged-attacks.md`.
+
 ## Coordination
 
 - `E10--enemy-combat-positioning` (shipped): `CombatQuery::engagement_radius` composes onto the
-  chase-destination write. Multi-attack feeds it per-attack from Task 2's spawn-time tuning table,
-  keyed by the firing state's named attack — not a `BehaviorGraphDescriptor` method, since a
-  `weapon` entry's reach is unknown until spawn.
+  chase-destination write. Multi-attack feeds it per-attack, keyed by the firing state's named
+  attack, resolved directly from the retained graph's `attacks` map.
 - `E10--enemy-facing-slew` (shipped): `FACING_TURN_RATE` governs yaw slew; the deferred
   attack-windup facing lock stays unowned (windup is out of scope here too).
 - Replication: only `Transform` + mesh animation-state name cross the wire, so per-attack states

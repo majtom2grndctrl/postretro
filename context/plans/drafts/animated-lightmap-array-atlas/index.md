@@ -227,8 +227,8 @@ sites (`renderer_full_init.rs`, `renderer_resources.rs`), which is what keeps it
 atlas; ensure both sites feed those resolved dimensions to the animated constructor. The animated
 depth is the section-25 slot count, not the resolver's static layer count, so the resolver needs no
 new return value. Add a pure, unit-testable helper deciding whether a given width, height, and slot
-count fits the VRAM budget — a named constant `ANIMATED_ATLAS_VRAM_BUDGET_BYTES`, provisional and
-owner-tuned (see Open questions), so the task builds against a concrete number — and a load-time path
+count fits the VRAM budget — a named constant `ANIMATED_ATLAS_VRAM_BUDGET_BYTES` set to 1 GiB
+(owner-chosen; see Open questions) — and a load-time path
 that logs a `[Renderer]` error and falls back to no animated contribution when it does not — matching
 how an oversize static section degrades rather than aborting. Extend cross-section validation (`validate_cross_section`, `render-cpu`), which today
 checks prefix sums and light-index bounds but has no layer notion, to reject rects whose layer is
@@ -349,10 +349,9 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
   with atlas dimension as hard as with slot count: 8 slots is ~24 MiB at 512² but ~6 GiB at 8192².
   A layer cap alone cannot bound VRAM. The plan therefore carries both a bake-time slot cap and a
   load-time byte budget (`ANIMATED_ATLAS_VRAM_BUDGET_BYTES`), neither number yet settled. Both ship
-  as tunable constants so the tasks build: pick the slot cap from measured layer counts on real
-  content rather than from the static 256, and the byte budget from measured animated-atlas sizes.
-  A conservative provisional start for the budget is 256 MiB (both animated targets together, 12
-  bytes/texel). Both values are owner-held; the postures — hard bake error for the cap, load-time
+  as tunable constants so the tasks build: the byte budget is set to 1 GiB (both animated targets
+  together, 12 bytes/texel); the slot cap value is still open — pick it from measured layer counts on
+  real content rather than from the static 256. The postures — hard bake error for the cap, load-time
   graceful drop for the budget — are settled.
 - **The golden PRL is stale from engine evolution, not a regression — regenerate on `main` before
   Task 1.** `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` is one of two

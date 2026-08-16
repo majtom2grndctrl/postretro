@@ -1169,6 +1169,7 @@ mod tests {
     };
     use postretro_entities::{EntityId, Transform};
     use postretro_foundation::{DamagePayload, Seat};
+    use postretro_scripting_core::data_descriptors::DamagedEnemiesShield;
     use serde_json::json;
 
     fn assert_number_approx_eq(actual: f32, expected: f32) {

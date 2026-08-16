@@ -690,7 +690,7 @@ fn bind_damaged_enemies_overlay(
         .map(|shield| {
             let value = bind_overlay_number(&shield.value, &scope, "shield.value")?;
             let max = bind_overlay_number(&shield.max, &scope, "shield.max")?;
-            Ok(BoundOverlayShield { value, max })
+            Ok::<BoundOverlayShield, String>(BoundOverlayShield { value, max })
         })
         .transpose()?;
     Ok(BoundPresentationOverlay {

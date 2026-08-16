@@ -25,9 +25,9 @@ renders identically to today.
   - Baked direct SH static vs animated (entity/mover/sprite) — gated at compose
     time (`direct_sh_compose` / `animated_direct_sh_compose`).
 - Fog volumetric scatter participates in the terms it samples: dynamic spot-beam
-  and point-light scatter gated by the Dynamic-direct bit (threaded into
-  `FogParams`); ambient scatter already tracks the indirect bits via the composed
-  SH atlas (no fog change needed for those).
+  and point-light scatter gated by the Dynamic-direct bit (read from the group-0
+  `Uniforms` the fog raymarch already binds); ambient scatter already tracks the
+  indirect bits via the composed SH atlas (no fog change needed for those).
 - Debug-UI checkbox group replacing both ComboBoxes, in the existing "Lighting
   systems" header of the Lighting tab.
 - Byte-layout assertion, gating, and parity tests; `rendering_pipeline.md`
@@ -46,10 +46,11 @@ renders identically to today.
   mover only (absent on entity/sprite); demoable in `combat-demo.map` — but it
   belongs to a different category. Bit 7 stays reserved should that judgment
   change.
-- **The SDF-shadow instruments** (`sdf_shadow_mode`, `sdf_force_visibility_one`,
-  `sdf_shadow_flags`). They occupy separate uniform fields (`FrameUniforms`
-  bytes 96..108) and their own UI controls, and gate shadow *visibility*, not
-  lighting-term presence. Untouched.
+- **The shadow-visibility dev toggles** (`sdf_shadow_mode`,
+  `sdf_force_visibility_one`, `sdf_shadow_flags`, and `spec_shadowmask_force_one`).
+  They occupy separate `FrameUniforms` fields (bytes 96..108 and 124..128) and
+  their own UI controls, and gate shadow *visibility*, not lighting-term presence.
+  Untouched.
 - **Per-term scale.** The instrument is boolean per term. The existing
   `indirect_scale` and `dynamic_direct_scale` sliders stay as independent
   controls; this plan removes only the mode-coupled `indirect_scale`→1.0 forcing
@@ -204,6 +205,21 @@ Task 4.
 no re-dispatch plumbing is needed for the indirect gate — the mask is already
 live in the group-0 uniform it binds.
 
+**One per-frame mask snapshot.** `update_per_frame_uniforms` (which builds group-0)
+runs *before* the dev-tools egui UI mutates the mask field; the compute/entity
+consumers run *after* the UI, inside scene recording. So a toggle would land one
+frame ahead on any consumer that reads the live `full.light_term_mask` post-UI,
+while group-0 readers still show the pre-toggle value — a one-frame cross-consumer
+skew. Fix it structurally: capture the mask into one per-frame renderer-owned
+field at `update_per_frame_uniforms` (the CPU value group-0 is built from), and
+have **every** consumer this plan adds read that field, never the live
+`full.light_term_mask` — group-0
+(forward/billboard/`sh_compose`/fog/direct Pass B) already does by construction;
+group-2 params (Task 2) and direct-compose Pass A + its dirty trigger (Task 4)
+must read the same snapshot. A toggle then takes effect uniformly on the next
+frame (atomic N+1), no skew. This mirrors the existing group-4
+`write_dynamic_direct_params`, already written at `update_per_frame_uniforms`.
+
 Bit vocabulary (`LightTermMask`):
 
 | Bit | Term | Gate site |
@@ -224,8 +240,11 @@ Migrate `skinned_mesh.wgsl` + `kinematic_brush.wgsl` and their group-2 params
 `KinematicLightParams` in `crates/renderer/src/render/kinematic_brush.rs`) and
 the shared group-4 `DynamicDirectParams` to the mask. Replace the
 `lighting_isolation` `u32` in both group-2 structs with the mask `u32` at the
-same offset (8..12), preserving the 16 B (mesh) and 32 B (kinematic) strides.
-Gate ambient (bit 0) and dynamic direct (bit 5) in both shaders by mask bits.
+same offset (8..12), preserving the 16 B (mesh) and 32 B (kinematic) strides. The
+value written is the per-frame mask snapshot (Task 1's "one per-frame mask
+snapshot"), not the live `full.light_term_mask` — so the entity/mover in-shader
+terms land on the same frame as the world path. Gate ambient (bit 0) and dynamic
+direct (bit 5) in both shaders by mask bits.
 **Split the mover specular lobe:** `kinematic_brush.wgsl` computes `blinn_phong`
 specular *inside* `accumulate_dynamic_direct`, coupled to the dynamic term today;
 gate that specular contribution by bit 6 **independently** of bit 5 (bit 5 gates
@@ -238,10 +257,10 @@ so each shader samples the single composed indirect and composed direct atlas
 unchanged. Retire the `isolation` field from `DynamicDirectParams`
 (`render-cpu/src/sh_volume.rs`), reclaiming its 4 bytes as pad, keeping the 16 B
 stride; `scale` and `has_direct` stay. Retiring the field also changes the
-`write_dynamic_direct_params(scale, isolation, has_direct)` signature
-(`crates/renderer/src/render/sh_volume.rs`) and its per-frame caller in
-`renderer_frame.rs` (which passes `full.dynamic_direct_isolation as u32`) — drop
-the argument at both. This is one task because the group-4 struct is shared by
+`write_dynamic_direct_params(scale, isolation)` signature
+(`crates/renderer/src/render/sh_volume.rs`; `has_direct` is `self.has_direct`, not
+an argument) and its per-frame caller in `renderer_frame.rs` (which passes
+`full.dynamic_direct_isolation as u32`) — drop the `isolation` argument at both. This is one task because the group-4 struct is shared by
 both shaders — splitting it would put two agents in the same byte contract.
 
 ### Task 3: Sprite path
@@ -270,9 +289,11 @@ Pass A does **not** bind group-0 — its `@group(0)` is a private custom BGL —
 it cannot read the mask there; give Pass A a per-frame mask input co-located with
 the dispatch (extend its per-frame `debug_override` uniform write, or add a
 dedicated tiny per-frame uniform), written **before** the dispatch on every frame
-it may run. The load copy-through dispatch (fires the first frame after
-construction) must compose against the **current** `full.light_term_mask`, not a
-stale default — initialize the compose against the live mask. Passes A and B are
+it may run. The value written is the per-frame mask **snapshot** (Task 1's "one
+per-frame mask snapshot"), the same value group-0 (Pass B, world `lm_irr`) reads
+that frame — so bits 3/4 never skew from the world path. The load copy-through
+dispatch (fires the first frame after construction) must compose against that
+snapshot, not a stale default. Passes A and B are
 dispatched together in one `dispatch_if_needed` call, so bits 3 and 4 always
 apply in the same frame (pin this; never a frame where one applied and the other
 lagged).
@@ -280,8 +301,9 @@ lagged).
 **Dirty trigger.** The direct compose is not per-frame (it dispatches on load /
 nonzero promotion weight / return-to-zero). Add a mask term as an **inequality
 against the last-composed mask**: cache `last_composed_mask` in the direct-compose
-resources, dirty when `current_mask != last_composed_mask`, and assign
-`last_composed_mask = current_mask` only after a dispatch. This is a
+resources, dirty when `snapshot != last_composed_mask` (the same per-frame mask
+snapshot, not the live field), and assign `last_composed_mask = snapshot` only
+after a dispatch. This is a
 level-triggered predicate, NOT `mask != ALL` — a re-check that returns the mask to
 `ALL` must dirty like any other change, or the atlas sticks isolated forever while
 the world in-shader bit restores instantly. Because it is level-triggered by
@@ -298,19 +320,22 @@ full un-subtracted baked direct.
 ### Task 5: Fog dynamic-scatter gate
 
 Gate the fog raymarch's dynamic spot-beam and point-light scatter by the
-Dynamic-direct bit (5). The fog raymarch (`fog_volume.wgsl`) binds groups 3/5/6
-but NOT group-0, so it cannot read the mask from the group-0 uniform the other
-in-shader gates use — thread the bit through `FogParams` instead: add it to the
-`FogParams` struct (`crates/render-cpu/src/fx/fog_volume.rs`; update the
-`FOG_PARAMS_SIZE == 112` const assertion and the WGSL `FogParams` declaration in
-`fog_volume.wgsl`), and write it each frame in `FogPass::upload_params`
-(`crates/renderer/src/render/fog_pass.rs`), before the raymarch dispatch. In the
-shader, gate the spot loop (`fog.spot_count`) and point loop (`fog.point_count`)
-by the bit — force the loop bound to 0 when it is off, mirroring forward's
-`select(0u, count, use_dynamic)` — so the beams contribute nothing. Fog ambient
-scatter (indirect) is untouched: it reads the composed `sh_total_atlas` (group 3),
-so bits 1/2 already reach it at compose time. No dirty-tracking is needed — the
-fog raymarch runs per frame and reads the freshly-written `FogParams`.
+Dynamic-direct bit (5). The fog raymarch pipeline already binds the group-0
+`Uniforms` bind group (`fog_pass.rs` group-0 = `camera_bgl`;
+`renderer_render_frame.rs` binds `uniform_bind_group` to group 0 of the raymarch
+pass) — `fog_volume.wgsl` simply does not *declare* `@group(0)` today. So read
+the mask from group-0 like every other in-shader gate: declare a prefix
+`Uniforms` struct in `fog_volume.wgsl` through byte 92 (eliding the tail, as the
+fog composite already does for `FogParams`), and gate the spot loop
+(`fog.spot_count`) and point loop (`fog.point_count`) by bit 5 — force the loop
+bound to 0 when it is off, the way forward zeroes its loop counts when a term is
+disabled — so the beams contribute nothing. This needs no `FogParams` field, no
+`FOG_PARAMS_SIZE` change, and no `upload_params` or `renderer_render_frame.rs`
+edit; Task 5 owns `fog_volume.wgsl` alone. Fog ambient scatter (indirect) is
+untouched: it reads the composed `sh_total_atlas` (group 3), so bits 1/2 already
+reach it at compose time. No dirty-tracking is needed — the fog raymarch runs per
+frame and reads the group-0 mask snapshot (see Invariants: one per-frame mask
+snapshot), landing atomically with the world path.
 
 ### Task 6: Enum retirement, tests, docs
 
@@ -323,10 +348,10 @@ tail is now pad), the `shader_tests.rs` group-0 stride test (`Uniforms` span ==
 `UNIFORM_SIZE`) and its billboard loop-bound test, `mesh_pass.rs`
 (`mesh_light_params_is_sixteen_bytes`,
 `write_light_params_places_ambient_floor_at_bytes_twelve_to_sixteen`),
-`kinematic_brush.rs` (its byte-layout + WGSL-layout tests),
-`sh_volume.rs` `dynamic_direct_params_pack_layout` (`crates/render-cpu/src/sh_volume.rs`),
-and the `FOG_PARAMS_SIZE` const assertion (`crates/render-cpu/src/fx/fog_volume.rs`,
-grown by the Task 5 mask field). Add behavioral gating tests — each bit clears its
+`kinematic_brush.rs` (its byte-layout + WGSL-layout tests), and
+`sh_volume.rs` `dynamic_direct_params_pack_layout` (`crates/render-cpu/src/sh_volume.rs`).
+(Fog needs no byte-layout change — Task 5 reads the existing group-0 mask, not a
+new `FogParams` field.) Add behavioral gating tests — each bit clears its
 term's contribution on the applicable paths (including the Dynamic-direct bit
 clearing fog spot/point scatter), and all-bits-on equals the pre-change
 composition (parity) — run headless via the Epic-20 frame-capture path
@@ -339,8 +364,10 @@ than restating them. Update `rendering_pipeline.md` §4 (retire the "10 lighting
 isolation modes" sentence and the `DynamicDirectIsolation` description; describe
 the unified per-term mask and its compose-time vs in-shader gate split), §7.1
 step 5 (the compose passes honor the mask), §7.5 (fog dynamic scatter honors the
-Dynamic-direct bit via `FogParams`), and §9 (the mesh group-2/group-4 params
-carry the mask, not the two isolation enums).
+Dynamic-direct bit read from group-0; while there, correct the stale
+`FOG_PARAMS_SIZE` figure — source is 112 bytes, not the documented 176 /
+`prev_view_proj`), and §9 (the mesh group-2/group-4 params carry the mask, not
+the two isolation enums).
 
 ## Sequencing
 
@@ -350,9 +377,9 @@ flow, compose-time indirect gating, in-shader gating). Blocks everything.
 
 **Phase 2 (concurrent):** Task 2, Task 3, Task 4, Task 5 — independent consumers
 of the Phase 1 contract. Task 2 owns group-2 (mesh/kinematic) + group-4; Task 3
-owns the group-0 tail; Task 4 owns the direct-SH compose; Task 5 owns the fog
-pass (`fog_volume.wgsl` / `FogParams` / `fog_pass.rs`). No shared files across the
-four.
+owns the group-0 tail; Task 4 owns the direct-SH compose; Task 5 owns
+`fog_volume.wgsl` alone (reads the existing group-0 mask). No shared files across
+the four.
 
 **Phase 3 (sequential):** Task 6 — consumes the completed migration; removes the
 enums only once no consumer references them, and lands the test + doc sweep
@@ -367,23 +394,29 @@ against the integrated result.
 | No-double-count holds under isolation | Task 4 (promotion subtraction tracks bit 5) | Static-direct bit on + dynamic bit off must not subtract the absent runtime term | AC 4, AC 2 |
 | One term = one contribution, gated once | Task 1 (compose for SH indirect), Task 4 (compose for SH direct), Tasks 1–3 (in-shader ambient/dynamic/specular/lightmap) | A term gated in two places would double-toggle; SH terms move fully to compose, removing the in-shader SH branch | AC 2, AC 3, AC 4 |
 | Any mask change (incl. return to `ALL`) recomposes the direct-SH atlas | Task 4 (`last_composed_mask` inequality dirty; Pass A/B dispatched together) | `mask != ALL` predicate would strand the atlas isolated; skipped non-world frame must not drop the change | AC 7, Ordering T1/T4/T8 |
+| All mask consumers read one per-frame snapshot; a toggle lands atomically at N+1 | Task 1 (snapshot at `update_per_frame_uniforms`) | Any consumer reading the live `full.light_term_mask` post-UI leads group-0 by one frame (fog, group-2, direct Pass A) | AC 2, Ordering T10/T11 |
 
 ## Ordering scenarios
 
-Rows the direct-SH compose gate (Task 4) and the test task (Task 6) must satisfy.
-Test task cites these rows; do not restate them in prose.
+Rows the mask-consuming tasks (2, 4, 5) and the test task (Task 6) must satisfy.
+Test task cites these rows; do not restate them in prose. "This/same frame" below
+means one atomic upload: because every consumer reads the per-frame snapshot
+(Task 1), a UI toggle on frame N takes effect together on frame N+1, never split
+across consumers.
 
 | # | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| T1 | Isolate then restore a direct bit | mask `ALL` (atlas = base, idle) → UI clears bit 3 → later UI sets bit 3 (mask `ALL` again) | recompose isolated, then recompose **back to base**. Dirty is `current_mask != last_composed_mask`, not `mask != ALL`. World `lm_irr` and entity atlas match at every step. |
+| T1 | Isolate then restore a direct bit | mask `ALL` (atlas = base, idle) → UI clears bit 3 → later UI sets bit 3 (mask `ALL` again) | recompose isolated, then recompose **back to base**. Dirty is `snapshot != last_composed_mask`, not `mask != ALL`. World `lm_irr` and entity atlas match at every step. |
 | T2 | Indirect bit toggled at runtime, no reload | UI clears bit 2 | same frame's `sh_compose` (reads group-0) drops the animated delta; forward/mesh/billboard/fog change this frame. Mask NOT sourced from static GridDims. |
 | T3 | Direct bit; world + entity agree same frame | UI clears bit 3; order: group-0 write → direct dispatch → forward draw | world in-shader `lm_irr` (bit 3) and entity composed-direct (bit 3, Pass A) both reflect bit-3-off in the same frame. No world/entity skew. |
 | T4 | Bits 3 and 4 changed together | UI clears bit 3 and bit 4 | Pass A (private uniform) and Pass B (group-0) dirtied and dispatched in one call; never one bit applied and the other lagging. |
 | T5 | Mask changed while paused | sim halted; UI clears bit 5; redraw issued | direct atlas recomposes, frozen scene updates without reload. Compose is render-frame-driven; `freeze_time` does not suppress it. |
 | T6 | Level reload / full-init with isolation active | bit 3 off → reload (`full` rebuilt) | mask resets to `ALL`; mask and freshly-built atlas both at default, consistently. Prior isolation intentionally lost; no stale-atlas/uniform mismatch. |
-| T7 | Load copy-through vs live mask | new direct-compose resources (copy-through) with mask isolated | copy-through composes against the **current** mask (or `last_composed_mask` seeded ≠ current so frame 1 self-heals); never default-mask-while-uniform-isolated. |
+| T7 | Load copy-through vs snapshot mask | new direct-compose resources (copy-through) with mask isolated | copy-through composes against the per-frame **snapshot** (or `last_composed_mask` seeded ≠ snapshot so frame 1 self-heals); never default-mask-while-uniform-isolated. |
 | T8 | Mask changed on a non-world frame | frame N `render_world==false`, UI clears bit 4; frame N+1 `render_world==true` | honored on N+1 (dirty is level-triggered by inequality; a skipped frame cannot drop it). |
-| T9 | Same-frame load + mask change + nonzero promotion weight | one frame: reconstruction (copy-through), `active`, mask changed | single dispatch composes against live mask + live weights; no double dispatch, no default-mask compose. |
+| T9 | Same-frame load + mask change + nonzero promotion weight | one frame: reconstruction (copy-through), `active`, mask changed | single dispatch composes against the snapshot mask + live weights; no double dispatch, no default-mask compose. |
+| T10 | Fog dynamic bit vs world dynamic bit on the toggle frame | frame N: `update_per_frame_uniforms` snapshots mask + writes group-0 → UI clears bit 5 → scene recording: fog raymarch + forward | fog `spot`/`point` scatter and forward's group-0 dynamic bit reflect the **same** snapshot on frame N (fog reads the group-0 mask, not the live field). No fog-leads-world skew; change lands N+1. |
+| T11 | Direct Pass A / dirty trigger vs group-0 (Pass B, world `lm_irr`) on the toggle frame | frame N toggle; Pass A private uniform + dirty trigger read inside scene recording (post-UI) | Pass A's mask input and the dirty `snapshot` equal the group-0 snapshot Pass B / world `lm_irr` read, so bits 3/4 land together across Pass A, Pass B, and world. |
 
 ## Rough sketch
 
@@ -413,8 +446,9 @@ Test task cites these rows; do not restate them in prose.
 ## Resolved decisions
 
 - **Fog dynamic scatter is gated** (owner, 2026-08-10). Bit 5 reaches fog's
-  spot/point beam scatter via `FogParams` (Task 5) — it helps humans read what's
-  happening at runtime, and it closes the blackout gap the review found.
+  spot/point beam scatter via the group-0 mask the fog raymarch already binds
+  (Task 5) — it helps humans read what's happening at runtime, and it closes the
+  blackout gap the review found.
 - **Checkboxes only, no presets** (owner, 2026-08-10). ≤8 terms; presets overkill.
 - **Emissive stays out** (owner, 2026-08-10). Bit 7 reserved; see Out of scope.
 - **Emissive has landed.** `emissive-surfaces-bloom` code is merged (the plan

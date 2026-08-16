@@ -106,17 +106,16 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
   or `cooldownMs`; an entry with non-finite or out-of-range `damage` (`< 0`), `maxRange` (`<= 0`), or
   `cooldownMs` (`<= 0`); an entry whose authored `engagementRadius > maxRange`; an `action.attack`
   naming no entry. Validation is parse-time only — there are no spawn-time attack checks.
-- [ ] **AC2 — Reference cadence preserved.** The reference enemy, migrated to an `attacks` map with
-  `action: { attack: "..." }`, holds its transition and damage cadence exactly for the preserved
-  (shorter-reach) attack's contact window: same distance at which its swing connects, same damage per
-  swing, same cooldown interval, same attack-clip replay — asserted as concrete numeric checks, not
-  shape-parsing alone. The reference trace fixture (`trace_reference_fixture`/`BrainTrace`,
-  `ai_tests.rs`), which runs the hand-authored reference oracle — asserted equal to the shipped Luau
-  archetype — through a scripted approach and records per-tick `player_hp`/state/animation, is the
-  vehicle: extend it to pin the connect distance, per-swing damage, and cooldown interval, rather than
-  resting on suite-green alone. The second attack's `maxRange` stays clear of the trace's scripted
-  distances (Task 4), so it never displaces these assertions. The pose-fixture enemy's migration holds
-  the same parity.
+- [ ] **AC2 — Reference cadence preserved.** The reference enemy's melee tuning, expressed as a
+  single-entry `attacks` map with `action: { attack: "..." }`, behaves exactly as the shipped singular
+  `attack` block: same distance at which its swing connects, same damage per swing, same cooldown
+  interval, same attack-clip replay — asserted as concrete numeric checks, not shape-parsing alone. The
+  reference trace fixture (`trace_reference_fixture`/`BrainTrace`, `ai_tests.rs`), which runs the
+  hand-authored reference oracle — asserted equal to the shipped Luau archetype — through a scripted
+  approach and records per-tick `player_hp`/state/animation, is the vehicle: extend it to pin the
+  connect distance, per-swing damage, and cooldown interval, rather than resting on suite-green alone.
+  The trace runs the single-entry form only — the second attack never enters it. The pose-fixture
+  enemy's migration holds the same parity.
 - [ ] **AC3 — Two-reach routing.** On the movement-feel fixture, with the two-attack reference enemy:
   at a distance within only the longer-reach attack's reach the player takes that attack's damage
   once per that attack's cooldown with the hosting state's animation active; within the shorter-reach
@@ -146,10 +145,11 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
   fixtures.
 - [ ] **AC10 — Overlay label.** The agent-diagnostics overlay state label shows the firing state's
   attack name for an enemy in an attack-firing state.
-- [ ] **AC11 — Replicated attack state.** On a connected client, a host enemy's attack switch shows
-  as a change of replicated animation state name with no wire-format change, provided the switch
-  persists at least one replication snapshot interval — a switch that reverts within one interval
-  aliases away, the same sampling limitation as in-state clip restarts.
+- [ ] **AC11 — Replicated attack state.** Grep/review gate, not a runtime-asserted positive: confirm
+  no serde/snapshot struct changed (no wire-format change), and that distinct attack states produce
+  distinct replicated `current_state` names. A switch that persists at least one replication snapshot
+  interval shows up as that name change; a switch that reverts within one interval aliases away — a
+  stated sampling limit, the same one in-state clip restarts already have, not a defect to fix here.
 
 ## Tasks
 
@@ -177,7 +177,10 @@ directly under the variant key — a struct variant would double-nest), so `Acti
 is no singular block) and resolves the graph-level default only (`self.engagement_radius`, else
 `DEFAULT_ENGAGEMENT_RADIUS`). Per-state standoff resolves separately, from the graph's `attacks` map
 directly — every stat is inline, so no spawn-time table and no descriptor-slice threading are needed;
-expose it as a descriptor-level resolution the combat-slot consumer (Task 3) reads.
+expose it as a descriptor-level resolution the combat-slot consumer (Task 3) reads. Pin the shape
+both tasks share: for a firing state, standoff is
+`attacks.get(name).engagement_radius.unwrap_or(max_range)`; a non-attack state, and an attackless
+graph, take the graph-level default.
 
 Add validation in `BehaviorGraphDescriptor::validate` (all pathed, wire-cased —
 `components.behavior.attacks.claw.maxRange`): `attacks` is non-empty when any state declares the
@@ -188,11 +191,7 @@ runtimes inherit parsing through the shared `behavior` serde funnel
 (`crates/scripting-core/src/data_descriptors/js/entity.rs`, `lua/entity.rs` — verify neither needs a
 per-runtime shim).
 
-Regenerate the SDK typedefs (`sdk/types/postretro.d.ts`, `.d.luau`, and the `sdk/lib` builders) and
-update the committed fixtures under `crates/postretro/src/scripting/typedef/tests/fixtures/`. Confirm
-the typedef generator renders the `Attack(String)` newtype variant as `{ attack: string }`, not just
-the unit-string union; extend the generator if it does not. Migrate the descriptor-level unit tests
-in this task: `behavior.rs`'s own tests (`attack_numerics_*`, `the_attack_action_requires_*`,
+Migrate the descriptor-level unit tests in this task: `behavior.rs`'s own tests (`attack_numerics_*`, `the_attack_action_requires_*`,
 `the_engagement_radius_resolves_*`, `position_goal_states_reject_actions_*`, the round-trip test) and
 `crates/entities/src/components/brain.rs`'s `from_graph` test (`authored_graph()` and its callers,
 including the `engagement_radius() == 2.0` assertion). State that `crates/postretro` is left
@@ -266,37 +265,53 @@ already committed to the post-transition state — distinct from the brain-fact 
 `current_index` before that same tick's transition runs. The two are not in tension: one reads before
 the transition, the other after.
 
+This is the first phase where `crates/postretro` compiles, so it also owns the SDK typedef work:
+regenerate via `cargo run -p postretro --bin gen-script-types`, update the registrations in
+`crates/postretro/src/scripting/primitives/mod.rs`, and update the committed fixtures under
+`crates/postretro/src/scripting/typedef/tests/fixtures/` (drift-gated by `committed.rs`). That
+registry is hand-declared, decoupled from the Rust enum: register `ActionVerb` as a struct —
+`register_type("ActionVerb").field("attack", "String")` — which emits `{ attack: string }` with no
+generator change needed; the `attacks` `Record` follows the existing `"BehaviorStates"` map-alias
+registration precedent. AC9 (typedef drift) is verified here.
+
 ### Task 4: Reference archetype, overlay, fixture verification
 
-In `sdk/behaviors/reference/entities.{ts,luau}`, migrate the reference enemy and the pose-fixture
-enemy from the singular `attack` block + `action: "attack"` to an `attacks` map + `action: { attack:
-"<name>" }`, holding each one's cadence (Task 2/3 preserve the contact path; this is a shape change,
-not a tuning change — the preserved entry keeps `damage: 8, maxRange: 2, cooldownMs: 1200`). Give the
-reference enemy a **second melee attack**: a second `attacks` entry with distinct reach/damage/cooldown
-(a longer-reach slam), a second attack-firing state whose distance-guard routing to and from the
-existing melee state fires it, and its animation-state added to `mesh.animations`. The second attack's
-`maxRange` must sit below the trace fixture's approach and back-off distances
-(`reference_player_x`'s ~1.5 m contact and ~6 m back-off), and the trace's scripted phases must not
-dwell within the second attack's reach band, so the preserved (shorter) attack's connect distance,
-per-swing damage, and cooldown-interval assertions (AC2) stay unchanged — the example fiend's slam
-`maxRange` 3.5 vs. the trace's ~6 m back-off is a fine illustration. The spawner windup test (Task 2,
-extended to a second attack-firing state) now exercises this real second attack rather than a
-synthetic fixture. The KayKit knight model is pruned to one attack clip
-(`1H_Melee_Attack_Slice_Horizontal`), so the second state's animation reuses that clip through a
-distinct `mesh.animations` key — a distinct animation-state name (distinct replicated name and
-overlay label) backed by the same clip. (A genuinely distinct second-attack clip is a content
-dependency — see Open questions.) Author the reach guards so the shorter-reach attack is declared
-first, winning by first-true-wins when both reaches are satisfied, which is what preserves the
-reference cadence (AC2).
+In `sdk/behaviors/reference/entities.{ts,luau}`, this task proceeds in three separated steps, so the
+second attack never perturbs AC2's numeric trace:
+
+1. Migrate the reference enemy and the pose-fixture enemy from the singular `attack` block +
+   `action: "attack"` to a **single-entry** `attacks` map + `action: { attack: "<name>" }`, holding
+   each one's cadence (Task 2/3 preserve the contact path; this is a shape change, not a tuning
+   change — the preserved entry keeps `damage: 8, maxRange: 2, cooldownMs: 1200`). Extend
+   `trace_reference_fixture`/`BrainTrace` with concrete numeric assertions on connect distance,
+   per-swing damage, and cooldown interval, and pin AC2's equivalence on this single-entry trace —
+   migrating the fixture's shape is not enough on its own. Confirm the pose-fixture enemy's migration
+   holds the same cadence and overlay-label parity.
+2. Give the reference enemy its **second melee attack** (the deliverable): a second `attacks` entry
+   with distinct reach/damage/cooldown (a longer-reach slam), a second attack-firing state whose
+   distance-guard routing to and from the existing melee state fires it, and its animation-state
+   added to `mesh.animations`. Author the reach guards so the shorter-reach attack is declared first,
+   winning by first-true-wins when both reaches are satisfied (AC7). The spawner windup test (Task 2,
+   extended to a second attack-firing state) now exercises this real second attack rather than a
+   synthetic fixture. The KayKit knight model is pruned to one attack clip
+   (`1H_Melee_Attack_Slice_Horizontal`), so the second state's animation reuses that clip through a
+   distinct `mesh.animations` key — a distinct animation-state name (distinct replicated name and
+   overlay label) backed by the same clip. (A genuinely distinct second-attack clip is a content
+   dependency — see Open questions.)
+3. Verify AC3's two-reach routing on the movement-feel fixture with the now-two-attack reference
+   enemy — a fixture separate from step 1's trace, so the second attack never enters the AC2 trace.
 
 Migrate every AI test fixture to the new shape: `ai/mod.rs` tests, `brain_scope.rs`, the
 `reference_behavior_graph()` oracle (`ai_tests.rs`), and the scripting-core TS≡Luau twin
-(`the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`,
-`crates/scripting-core/src/data_descriptors/tests/behavior.rs`). Extend `assemble_agent_overlay_label`
-(`crates/postretro/src/agent_diagnostics.rs`) with the firing state's attack name (AC10). Extend
-`trace_reference_fixture`/`BrainTrace` with concrete numeric assertions on connect distance, per-swing
-damage, and cooldown interval for AC2 — migrating its fixtures to the new shape is not enough on its
-own.
+(`crates/scripting-core/src/data_descriptors/tests/behavior.rs`) — the shared `js_behavior`/
+`lua_behavior` fixture templates, `both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions`,
+every `range:`/`action: "attack"` occurrence, and
+`the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`. Rewrite the resolver tests
+asserting `engagement_radius() == 2` "via the `attack.range` fallback" (the resolver-comment fixture
+and the `== 2` assertions around it) to assert `DEFAULT_ENGAGEMENT_RADIUS` explicitly — once the
+fallback rung is gone, passing via the coincidental 2.0 default is not a real assertion. Extend
+`assemble_agent_overlay_label` (`crates/postretro/src/agent_diagnostics.rs`) with the firing state's
+attack name (AC10).
 
 Cover the remaining ACs with fixtures — AC4 and AC6 already state the ordering semantics these
 fixtures assert:
@@ -317,8 +332,8 @@ fixtures assert:
 - **AC8** — an enemy in an attack-firing state with the target outside every attack's `maxRange`
   ceiling and no true transition guard holds in place and faces the target.
 
-Confirm the pose-fixture enemy's migration holds the same cadence and overlay-label parity as the
-reference enemy (AC2).
+Task 4's completion bar is `-p postretro -p postretro-scripting-core` green — scripting-core is
+exercised directly via its own migrated fixtures, not transitively through `postretro`.
 
 ## Sequencing
 
@@ -334,7 +349,9 @@ also falsifies the wire-shape and resolver assumptions the later tasks rest on. 
 scalar to the name-indexed map and its spawn/decrement readers. Bar: `-p postretro-entities`; its
 `crates/postretro` edits compile-verify in Task 3.
 **Phase 3 (sequential):** Task 3 — consumes Task 2's cooldown map; wires firing, the brain fact, and
-the per-attack standoff resolver, restoring `crates/postretro` to compiling.
+the per-attack standoff resolver, restoring `crates/postretro` to compiling. As the first phase where
+that crate compiles, it also owns the SDK typedef regeneration, the `primitives/mod.rs`
+registrations, and the committed typedef fixtures (AC9).
 **Phase 4 (sequential):** Task 4 — exercises Task 3 end to end and migrates the reference content and
 fixtures.
 

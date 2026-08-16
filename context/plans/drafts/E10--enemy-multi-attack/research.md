@@ -105,10 +105,16 @@ reference as a hint, not a contract.
   (`sdk/types/postretro.d.{ts,luau}`, `sdk/lib`) and committed typedef fixtures
   (`crates/postretro/src/scripting/typedef/tests/fixtures/`) need manual updates. The `attacks`
   map validation is all parse-time (AC1 has no spawn checks) because every stat is inline.
-- The SDK typedef generator today renders `ActionVerb` as a unit-string union
-  (`"attack"`). The newtype variant `Attack(String)` must render as the object type
-  `{ attack: string }` in both `.d.ts` and `.d.luau`. Confirm the generator emits a newtype
-  variant, not just the unit-string union; extend it if it does not (a Task 1 sub-item).
+- SDK typedef rendering is a hand-declared registry in
+  `crates/postretro/src/scripting/primitives/mod.rs`, decoupled from the Rust enum — not something the
+  generator infers from `ActionVerb`'s shape. Today it registers `ActionVerb` via
+  `register_enum("ActionVerb").variant("attack", ...)`, which renders the unit-string union
+  (`"attack"`). Registering it instead as a struct — `register_type("ActionVerb").field("attack",
+  "String")` — emits the object type `{ attack: string }` in both `.d.ts` and `.d.luau`, with no
+  change needed to the generator itself
+  (`crates/scripting-core/src/typedef/{ts,luau,common}.rs`); the `attacks` `Record` follows the
+  existing `"BehaviorStates"` map-alias registration precedent there. This lands in Task 3, the first
+  task where `crates/postretro` compiles.
 - `components.mesh.animations` is the name-keyed map precedent, with pathed per-entry errors — the
   model `attacks` follows, and the framing (graph-wide vocabulary referenced by name) that keeps
   the statecharts successor's per-activity grouping additive.
@@ -136,10 +142,12 @@ reference as a hint, not a contract.
 - `trace_reference_fixture`/`BrainTrace` (`ai_tests.rs`) runs the reference oracle through a scripted
   approach and records per-tick `state`/`player_hp`/`animation`/`has_destination`/`acquired`.
   `reference_player_x(tick)` steps the player through out-of-detection → detection → contact (1.5 m)
-  → back-off (6 m) → past leash (80 m). At contact both attack reaches would be satisfied; the
-  preserved shorter-reach attack wins by declaration order, so the trace's connect distance,
-  per-swing damage, and cooldown cadence stay exactly the shipped values (AC2). Task 4 adds
-  concrete numeric assertions on those three, rather than resting on suite-green.
+  → back-off (6 m) → past leash (80 m). AC2 runs this trace on the single-entry `attacks` form only —
+  the second attack never enters it, so the trace's connect distance, per-swing damage, and cooldown
+  cadence stay exactly the shipped values with no dependence on declaration order between two
+  attacks. Task 4 adds concrete numeric assertions on those three, rather than resting on
+  suite-green. AC3's two-reach routing is verified separately, on the movement-feel fixture with the
+  two-attack reference enemy.
 - `assemble_agent_overlay_label` (`crates/postretro/src/agent_diagnostics.rs`) builds the label from
   `brain.state_name()` as `state:<name> …`. Task 4 extends it with the firing state's attack name.
 

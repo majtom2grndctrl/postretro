@@ -378,7 +378,7 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: None,
+            attacks: BTreeMap::new(),
             engagement_radius: None,
             move_speed: 3.0,
         }
@@ -485,7 +485,7 @@ mod tests {
                 }),
             }),
             patrol: None,
-            attack: None,
+            attacks: BTreeMap::new(),
             engagement_radius: None,
             move_speed: 3.0,
         }

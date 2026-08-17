@@ -23,8 +23,10 @@ M.POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy"
 
 --- Distance at which the reference enemy notices a player, in metres.
 local DETECTION_RANGE = 16
---- Distance within which its melee swing connects, in metres.
-local ATTACK_RANGE = 2
+--- Distance within which the reference enemy's short jab connects, in metres.
+local JAB_RANGE = 2
+--- Distance within which the reference enemy's long slam connects, in metres.
+local SLAM_RANGE = 3.5
 --- Authored distance from the spawn anchor that begins a retreat, in metres.
 --- Kept high so the movement-feel fixture can exercise obstacle routing before
 --- a reference enemy turns back toward its anchor.
@@ -57,8 +59,9 @@ local POSE_FIXTURE_AGGRO_RANGE = 50
 ---   idle    --(always)--> patrol
 ---   ANY     --(!hasTarget || !targetHostile)--> patrol (interrupt)
 ---   patrol  --(acquisitionDue && dist <= DETECTION_RANGE)--> alert
----   alert/attack --(distanceFromAnchor > leash)--> retreat (first)
----   alert   --(dist <= ATTACK_RANGE)--> attack
+---   alert/attack_* --(distanceFromAnchor > leash)--> retreat (first)
+---   alert   --(dist <= JAB_RANGE)--> attack_jab (first)
+---   alert   --(dist <= SLAM_RANGE)--> attack_slam
 ---   retreat --(distanceFromAnchor <= arrivalEpsilon)--> patrol
 --- ```
 ---
@@ -128,7 +131,16 @@ M.referenceEnemyEntity = defineEntity({
       animations = {
         idle = { clip = "Idle", loop = true },
         walk = { clip = "Walking_A", loop = true, crossfadeMs = 200, travelSpeed = 3 },
-        attack = {
+        attack_jab = {
+          clip = "1H_Melee_Attack_Slice_Horizontal",
+          loop = false,
+          crossfadeMs = 80,
+          interrupt = "snap",
+        },
+        -- The pruned KayKit asset supplies one permitted melee clip. The
+        -- distinct state name remains visible in replicated presentation and
+        -- diagnostics while this long-reach attack reuses that clip.
+        attack_slam = {
           clip = "1H_Melee_Attack_Slice_Horizontal",
           loop = false,
           crossfadeMs = 80,
@@ -148,16 +160,20 @@ M.referenceEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attack = { damage = 8, range = ATTACK_RANGE, cooldownMs = 1200 },
+      attacks = {
+        jab = { damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 },
+        slam = {
+          damage = 14,
+          maxRange = SLAM_RANGE,
+          cooldownMs = 1800,
+          engagementRadius = SLAM_RANGE,
+        },
+      },
       -- Where engaged chasers STAND: the radius of the ring of combat slots the
       -- engine spreads them around the target. Pure spacing, and distinct from
-      -- `attack.range` above, which gates DAMAGE and nothing else. Omitting it
-      -- falls back to `attack.range`, which is the value used here -- it is
-      -- authored explicitly anyway, because the two are separate knobs and a
-      -- graph that later retunes its swing reach should not silently re-space
-      -- its pack. A pure-pursuit graph (`chaseTarget`, no `action`) has no
-      -- `attack.range` to fall back on and wants this field outright.
-      engagementRadius = ATTACK_RANGE,
+      -- Pure-pursuit and non-attack states stand at this graph default. Each
+      -- firing state instead resolves its own attack's reach/standoff.
+      engagementRadius = JAB_RANGE,
       patrol = {
         mode = "pingPong",
         points = { { 0, 0 }, { 6, 0 }, { 6, 6 } },
@@ -201,18 +217,31 @@ M.referenceEnemyEntity = defineEntity({
           motion = "chaseTarget",
           transitions = {
             { to = "retreat", when = runtime.gt(brain.distanceFromAnchor, LEASH_RANGE) },
-            { to = "attack", when = runtime.le(brain.targetDistance, ATTACK_RANGE) },
+            -- Short jab is first: at close distance both rows are true and
+            -- first-true-wins keeps the faster contact attack deterministic.
+            { to = "attack_jab", when = runtime.le(brain.targetDistance, JAB_RANGE) },
+            { to = "attack_slam", when = runtime.le(brain.targetDistance, SLAM_RANGE) },
           },
         },
-        -- Contact damage on the graph's `attack` cooldown while closing the
-        -- last metre.
-        attack = {
-          animation = "attack",
+        -- Contact damage uses the named jab cooldown while closing the last
+        -- metre.
+        attack_jab = {
+          animation = "attack_jab",
           motion = "chaseTarget",
-          action = "attack",
+          action = { attack = "jab" },
           transitions = {
             { to = "retreat", when = runtime.gt(brain.distanceFromAnchor, LEASH_RANGE) },
-            { to = "alert", when = runtime.gt(brain.targetDistance, ATTACK_RANGE) },
+            { to = "alert", when = runtime.gt(brain.targetDistance, JAB_RANGE) },
+          },
+        },
+        attack_slam = {
+          animation = "attack_slam",
+          motion = "chaseTarget",
+          action = { attack = "slam" },
+          transitions = {
+            { to = "retreat", when = runtime.gt(brain.distanceFromAnchor, LEASH_RANGE) },
+            { to = "attack_jab", when = runtime.le(brain.targetDistance, JAB_RANGE) },
+            { to = "alert", when = runtime.gt(brain.targetDistance, SLAM_RANGE) },
           },
         },
         -- Retreat never relies on target facts: this position-goal state is
@@ -267,8 +296,10 @@ M.poseFixtureEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attack = { damage = 8, range = ATTACK_RANGE, cooldownMs = 1200 },
-      engagementRadius = ATTACK_RANGE,
+      attacks = {
+        jab = { damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 },
+      },
+      engagementRadius = JAB_RANGE,
       candidateFilter = runtime.select(
         candidate.died,
         false,
@@ -288,7 +319,7 @@ M.poseFixtureEnemyEntity = defineEntity({
               to = "attack",
               when = runtime.select(
                 brain.acquisitionDue,
-                runtime.le(brain.targetDistance, ATTACK_RANGE),
+                runtime.le(brain.targetDistance, JAB_RANGE),
                 false
               ),
             },
@@ -306,16 +337,16 @@ M.poseFixtureEnemyEntity = defineEntity({
           animation = "walk",
           motion = "chaseTarget",
           transitions = {
-            { to = "attack", when = runtime.le(brain.targetDistance, ATTACK_RANGE) },
+            { to = "attack", when = runtime.le(brain.targetDistance, JAB_RANGE) },
             { to = "idle", when = runtime.gt(brain.targetDistance, POSE_FIXTURE_AGGRO_RANGE) },
           },
         },
         attack = {
           animation = "attack",
           motion = "chaseTarget",
-          action = "attack",
+          action = { attack = "jab" },
           transitions = {
-            { to = "alert", when = runtime.gt(brain.targetDistance, ATTACK_RANGE) },
+            { to = "alert", when = runtime.gt(brain.targetDistance, JAB_RANGE) },
           },
         },
       },

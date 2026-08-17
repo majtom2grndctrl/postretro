@@ -1598,7 +1598,7 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: None,
+            attacks: Default::default(),
             engagement_radius: None,
             move_speed: 3.0,
         };

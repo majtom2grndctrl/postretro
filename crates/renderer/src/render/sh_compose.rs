@@ -567,6 +567,45 @@ mod tests {
     }
 
     #[test]
+    fn compose_reads_group_zero_mask_and_gates_static_and_every_animated_path() {
+        let source = include_str!("../shaders/sh_compose.wgsl");
+
+        assert!(
+            source.contains("let use_indirect_static = (uniforms.light_term_mask & 0x02u) != 0u;")
+                && source.contains("if (output_is_valid && use_indirect_static)"),
+            "the static base must be selected from the live group-0 mask"
+        );
+        assert!(
+            source
+                .contains("let use_indirect_animated = (uniforms.light_term_mask & 0x04u) != 0u;"),
+            "the animated delta must read the same live group-0 mask"
+        );
+        assert_eq!(
+            source
+                .matches("if (output_is_valid && use_indirect_animated)")
+                .count(),
+            2,
+            "both dense L0 and coarsened L1/L2 delta accumulations must be gated",
+        );
+        let coarsened_delta_path = source
+            .split("    } else {\n        // Coarsened L1/L2 cells")
+            .nth(1)
+            .and_then(|path| path.split("\n    if (in_grid) {").next())
+            .expect("shader must retain its coarsened L1/L2 compose path");
+        assert!(
+            coarsened_delta_path.contains(
+                "if (use_indirect_animated) {\n            for (var entry = start; entry < end; entry = entry + 1u) {"
+            ) && coarsened_delta_path.contains("read_delta_texel(")
+                && coarsened_delta_path.contains("reconstruct_l1_shared_texel("),
+            "the animated-term guard must wrap the coarsened per-entry delta loads and reconstruction loop",
+        );
+        assert!(
+            !source.contains("grid.light_term_mask"),
+            "construction-time GridDims must not freeze the per-frame mask",
+        );
+    }
+
+    #[test]
     fn probe_indirection_uses_valid_probe_rank_and_invalid_sentinel() {
         let mut section = OctahedralShVolumeSection::placeholder();
         section.grid_dimensions = [5, 1, 1];

@@ -9,8 +9,7 @@ use super::BvhOverlayColorMode;
 use super::BvhOverlayDepthMode;
 use super::CameraCullPath;
 use super::CellOverlayState;
-use super::DynamicDirectIsolation;
-use super::LightingIsolation;
+use super::LightTermMask;
 use super::LocatorDiagnostics;
 use super::PortalOverlayState;
 use super::Renderer;
@@ -338,8 +337,6 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
             }
 
             // Dynamic baked-static-direct SH controls (entities + billboards).
-            // Separate from the forward Indirect Scale / Lighting Isolation
-            // above so the dynamic-vs-static parity comparison stays valid.
             ui.label("Dynamic Direct Scale");
             if ui
                 .add(egui::Slider::new(
@@ -351,17 +348,18 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
                 renderer.set_dynamic_direct_scale(state.dynamic_direct_scale);
             }
 
-            let mut dyn_iso = renderer.dynamic_direct_isolation();
-            let prev_dyn_iso = dyn_iso;
-            egui::ComboBox::from_label("Dynamic Direct Isolation")
-                .selected_text(dyn_iso.label())
-                .show_ui(ui, |ui| {
-                    for variant in DynamicDirectIsolation::ALL_VARIANTS {
-                        ui.selectable_value(&mut dyn_iso, variant, variant.label());
-                    }
-                });
-            if dyn_iso != prev_dyn_iso {
-                renderer.set_dynamic_direct_isolation(dyn_iso);
+            ui.label("Light terms");
+            let mut light_term_mask = renderer.light_term_mask();
+            let mut light_term_mask_changed = false;
+            for term in LightTermMask::ALL_TERMS {
+                let mut enabled = light_term_mask.contains(term);
+                if ui.checkbox(&mut enabled, term.label()).changed() {
+                    light_term_mask.set_enabled(term, enabled);
+                    light_term_mask_changed = true;
+                }
+            }
+            if light_term_mask_changed {
+                renderer.set_light_term_mask(light_term_mask);
             }
 
             ui.separator();
@@ -455,21 +453,7 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
                 renderer.set_probe_occlusion_enabled(probe_occlusion);
             }
 
-            let mut mode = renderer.lighting_isolation();
-            let prev_mode = mode;
-            egui::ComboBox::from_label("Lighting Isolation")
-                .selected_text(mode.label())
-                .show_ui(ui, |ui| {
-                    for variant in LightingIsolation::ALL_VARIANTS {
-                        ui.selectable_value(&mut mode, variant, variant.label());
-                    }
-                });
-            if mode != prev_mode {
-                renderer.set_lighting_isolation(mode);
-            }
-
-            // Panel-only, no keyboard chord; mirrors the LightingIsolation
-            // dropdown shape directly above. `Off` disables the SDF factor
+            // Panel-only, no keyboard chord. `Off` disables the SDF factor
             // multiply (shadow-map / enemy shadows are unaffected);
             // `Visualize` swaps the shaded color for a grayscale view of
             // the static-aggregate (R) shadow factor.

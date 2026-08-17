@@ -23,7 +23,7 @@ struct Uniforms {
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     indirect_scale: f32,
     // See forward.wgsl — same bitset gating the SDF shadow multiplies; the
     // wireframe pass shares the same uniform buffer so the struct strides
@@ -42,8 +42,10 @@ struct Uniforms {
     // stride in lockstep with forward.wgsl (128 bytes). See forward.wgsl for
     // semantics.
     _dynamic_direct_scale_inert: u32,
-    _dyn_pad0: u32,
-    _dyn_pad1: u32,
+    // Reserved group-0 padding at 112..116 after retirement of billboard's
+    // dynamic-direct isolation selector.
+    _dynamic_direct_pad: u32,
+    _has_direct_inert: u32,
     _total_light_count_inert: u32,
     // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), never
     // read here; it preserves the shared group-0 Uniforms layout/stride.

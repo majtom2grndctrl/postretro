@@ -25,7 +25,7 @@ struct Uniforms {
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     _pad: u32,
 };
 

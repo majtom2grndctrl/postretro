@@ -567,6 +567,10 @@ pub(super) struct FullRenderer {
     /// forward pass uses that frame. The scripted-light animated curves the mesh
     /// dynamic loop evaluates depend on this phase coherence.
     pub(super) mesh_dynamic_time: f32,
+    /// Captured alongside the group-0 uniform at the start of the render
+    /// frame. Consumers must use this, never the UI-mutated live mask, so a
+    /// toggle takes effect atomically on the following frame.
+    pub(super) frame_light_term_mask: LightTermMask,
     /// Camera-PVS-visible kinematic mover instances for the beauty pass.
     pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
     /// Every present kinematic mover transform, including camera-PVS-culled
@@ -809,15 +813,12 @@ pub(super) struct FullRenderer {
     #[cfg(feature = "dev-tools")]
     pub(super) show_navmesh: bool,
 
-    pub(super) lighting_isolation: LightingIsolation,
+    /// Live dev-tools value. `update_per_frame_uniforms` snapshots it into
+    /// `frame_light_term_mask` before scene recording begins.
+    pub(super) light_term_mask: LightTermMask,
 
-    /// DYNAMIC baked-static-direct SH isolation (combined / direct-only /
-    /// indirect-only). Separate from `lighting_isolation` (the forward/static
-    /// control), so the dynamic-vs-static parity comparison stays valid.
-    pub(super) dynamic_direct_isolation: DynamicDirectIsolation,
-
-    /// Debug selector for the SDF static-occluder shadow path. Mirrors
-    /// `lighting_isolation` — panel-only dropdown, surfaces through
+    /// Debug selector for the SDF static-occluder shadow path. Panel-only
+    /// dropdown, surfaces through
     /// `FrameUniforms.sdf_shadow_mode`.
     pub(super) sdf_shadow_mode: SdfShadowMode,
 

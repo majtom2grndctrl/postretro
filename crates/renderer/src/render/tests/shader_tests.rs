@@ -159,6 +159,42 @@ fn forward_wgsl_struct_strides_match_cpu_layout() {
 }
 
 #[test]
+fn forward_light_term_mask_gates_each_world_term_without_overriding_scale() {
+    let src = include_str!("../../shaders/forward.wgsl");
+
+    for constant in [
+        "const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;",
+        "const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;",
+        "const LIGHT_TERM_INDIRECT_ANIMATED: u32 = 0x04u;",
+        "const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;",
+        "const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;",
+        "const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;",
+        "const LIGHT_TERM_SPECULAR: u32 = 0x40u;",
+    ] {
+        assert!(src.contains(constant), "missing {constant}");
+    }
+    assert!(
+        src.contains("let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;")
+            && src.contains("let use_baked_direct_static = (light_terms & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;")
+            && src.contains("let use_baked_direct_animated = (light_terms & LIGHT_TERM_BAKED_DIRECT_ANIMATED) != 0u;")
+            && src.contains("let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;")
+            && src.contains("let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;"),
+        "the world shader must independently derive each direct gate from the mask",
+    );
+    assert!(
+        src.contains(
+            "if use_baked_direct_static {\n            lm_irr = sample_lightmap_irradiance"
+        ) && src.contains("if use_baked_direct_animated && animated_slot != 0xffffffffu"),
+        "static and animated world lightmap contributions must be independently sampled",
+    );
+    assert!(
+        src.contains("* uniforms.indirect_scale;")
+            && !src.contains("select(uniforms.indirect_scale, 1.0"),
+        "term isolation must not force indirect_scale to 1.0",
+    );
+}
+
+#[test]
 fn count_split_shader_consumers_use_expected_loop_bounds() {
     let forward_src = include_str!("../../shaders/forward.wgsl");
     assert!(
@@ -172,14 +208,74 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 
     let billboard_src = include_str!("../../shaders/billboard.wgsl");
     assert!(
-        billboard_src.contains("let light_count = uniforms.total_light_count;"),
-        "billboards must evaluate dynamic plus promoted static records",
+        billboard_src.contains(
+            "let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);"
+        ),
+        "billboards must zero their dynamic-plus-promoted loop when the dynamic-direct bit is off",
     );
 
     let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
     assert!(
         mesh_src.contains("select(0u, mesh_light_params.light_count, use_dynamic)"),
         "mesh lighting must use the renderer-provided total light count",
+    );
+}
+
+#[test]
+fn billboard_light_term_mask_gates_per_vertex_terms() {
+    let src = include_str!("../../shaders/billboard.wgsl");
+
+    for constant in [
+        "const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;",
+        "const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;",
+        "const LIGHT_TERM_SPECULAR: u32 = 0x40u;",
+    ] {
+        assert!(src.contains(constant), "missing {constant}");
+    }
+    assert!(
+        src.contains("let light_terms = uniforms.light_term_mask;")
+            && src.contains(
+                "let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;"
+            )
+            && src.contains(
+                "let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"
+            )
+            && src.contains("let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;"),
+        "billboard vertex lighting must derive every local term gate from group-0's mask",
+    );
+    assert!(
+        src.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
+            && src.contains(
+                "let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);"
+            )
+            && src.contains(
+                "let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);"
+            ),
+        "billboard static specular, dynamic diffuse, and ambient floor must be independently gated in vs_main",
+    );
+    assert!(
+        !src.contains("uniforms.dynamic_direct_isolation"),
+        "billboard SH terms must rely only on the compose atlases",
+    );
+}
+
+#[test]
+fn fog_dynamic_scatter_uses_group_zero_snapshot_loop_bounds() {
+    // Ordering T10: fog reads the shared group-0 snapshot, never the live UI
+    // mask, so its dynamic term cannot lead or lag the world path.
+    let src = include_str!("../../shaders/fog_volume.wgsl");
+
+    assert!(
+        src.contains("@group(0) @binding(0) var<uniform> uniforms: Uniforms;")
+            && src.contains("light_term_mask: u32,"),
+        "fog must read the group-0 Uniforms prefix through the mask field",
+    );
+    assert!(
+        src.contains("let spot_count = select(0u, fog.spot_count, use_dynamic_direct);")
+            && src.contains("let point_count = select(0u, fog.point_count, use_dynamic_direct);")
+            && src.contains("for (var li: u32 = 0u; li < spot_count; li = li + 1u)")
+            && src.contains("for (var pi: u32 = 0u; pi < point_count; pi = pi + 1u)"),
+        "fog must use the group-0 dynamic bit to bound both dynamic scatter loops",
     );
 }
 
@@ -363,9 +459,9 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
         src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE")
             && src.contains("return vec4<f32>(g, g, g, base_color.a);")
             && src.contains(
-                "if use_lightmap || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
+                "if use_baked_direct_static || use_specular || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
             ),
-        "raw pool visibility must be a grayscale early-return diagnostic independent of lighting isolation"
+        "raw pool visibility must be a grayscale early-return diagnostic independent of term isolation"
     );
 }
 

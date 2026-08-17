@@ -1,4 +1,4 @@
-// Renderer state accessors and toggles: lighting/SDF isolation modes, freeze,
+// Renderer state accessors and toggles: lighting/SDF diagnostics, freeze,
 // vsync, occluder counters, and the diagnostics slider getters/setters.
 // See: context/lib/rendering_pipeline.md
 
@@ -40,21 +40,6 @@ impl Renderer {
             self.full_mut().bloom.set_enabled(enabled);
             log::info!("[Renderer] Bloom: {enabled}");
         }
-    }
-
-    /// Direct setter used by the debug-panel dropdown. Logs only on actual
-    /// transition so spam-clicks on the current mode stay quiet.
-    #[cfg(feature = "dev-tools")]
-    pub fn set_lighting_isolation(&mut self, mode: LightingIsolation) {
-        if self.full().lighting_isolation != mode {
-            self.full_mut().lighting_isolation = mode;
-            log::info!("[Renderer] Lighting isolation: {}", mode.label());
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    pub fn lighting_isolation(&self) -> LightingIsolation {
-        self.full().lighting_isolation
     }
 
     /// Direct setter for the `SdfShadowMode`; used by the debug-panel dropdown.
@@ -230,17 +215,6 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_dynamic_direct_scale(&mut self, value: f32) {
         self.full_mut().dynamic_direct_scale = value.clamp(0.0, 1.0);
-    }
-
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn dynamic_direct_isolation(&self) -> DynamicDirectIsolation {
-        self.full().dynamic_direct_isolation
-    }
-
-    /// Takes effect on the next `update_per_frame_uniforms` upload.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn set_dynamic_direct_isolation(&mut self, mode: DynamicDirectIsolation) {
-        self.full_mut().dynamic_direct_isolation = mode;
     }
 
     #[cfg(feature = "dev-tools")]

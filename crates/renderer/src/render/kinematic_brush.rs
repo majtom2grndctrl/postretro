@@ -23,7 +23,7 @@ pub struct KinematicMoverInstance {
 struct KinematicLightParams {
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
     _pad: [u32; 3],
@@ -122,7 +122,7 @@ fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGH
     let mut bytes = [0u8; KINEMATIC_LIGHT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&params.light_count.to_ne_bytes());
     bytes[4..8].copy_from_slice(&params.time.to_ne_bytes());
-    bytes[8..12].copy_from_slice(&params.lighting_isolation.to_ne_bytes());
+    bytes[8..12].copy_from_slice(&params.light_term_mask.to_ne_bytes());
     bytes[12..16].copy_from_slice(&params.ambient_floor.to_ne_bytes());
     bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
     bytes
@@ -723,7 +723,7 @@ impl KinematicBrushPass {
         light_count: u32,
         dynamic_light_count: u32,
         time: f32,
-        lighting_isolation: u32,
+        light_term_mask: u32,
         ambient_floor: f32,
     ) {
         queue.write_buffer(
@@ -733,7 +733,7 @@ impl KinematicBrushPass {
                 light_count,
                 dynamic_light_count,
                 time,
-                lighting_isolation,
+                light_term_mask,
                 ambient_floor,
                 _pad: [0; 3],
             }),
@@ -1122,7 +1122,7 @@ mod tests {
         let bytes = build_light_params_bytes(KinematicLightParams {
             light_count: 11,
             time: 1.5,
-            lighting_isolation: 8,
+            light_term_mask: 0x7F,
             ambient_floor: 0.375,
             dynamic_light_count: 7,
             _pad: [0; 3],
@@ -1131,7 +1131,7 @@ mod tests {
         assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
         assert_eq!(bytes[0..4], 11u32.to_ne_bytes());
         assert_eq!(bytes[4..8], 1.5f32.to_ne_bytes());
-        assert_eq!(bytes[8..12], 8u32.to_ne_bytes());
+        assert_eq!(bytes[8..12], 0x7Fu32.to_ne_bytes());
         assert_eq!(bytes[12..16], 0.375f32.to_ne_bytes());
         assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
         assert_eq!(bytes[20..], [0; 12]);
@@ -1170,7 +1170,7 @@ mod tests {
             vec![
                 Some("light_count"),
                 Some("time"),
-                Some("lighting_isolation"),
+                Some("light_term_mask"),
                 Some("ambient_floor"),
                 Some("dynamic_light_count"),
                 Some("_pad0"),
@@ -1201,9 +1201,16 @@ mod tests {
             "accumulate_dynamic_direct",
         );
         assert!(
-            dynamic_loop
-                .contains("if i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"),
-            "only front-lit promoted records may add mover specular",
+            dynamic_loop.contains(
+                "if use_specular && i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"
+            ),
+            "only front-lit promoted records with LightTermMask specular enabled may add mover specular",
+        );
+        let mover_src = include_str!("../shaders/kinematic_brush.wgsl");
+        assert!(
+            mover_src.contains("let use_dynamic = (light_terms & 0x20u) != 0u;")
+                && mover_src.contains("let use_specular = (light_terms & 0x40u) != 0u;"),
+            "mover dynamic and specular gates must derive independently from LightTermMask bits 5 and 6",
         );
         assert!(
             dynamic_loop.contains(

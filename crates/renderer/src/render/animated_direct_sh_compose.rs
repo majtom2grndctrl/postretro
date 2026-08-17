@@ -326,6 +326,18 @@ mod tests {
     }
 
     #[test]
+    fn animated_shader_reads_group_zero_mask_before_adding_delta() {
+        let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
+        assert!(source.contains("light_term_mask: u32,"));
+        assert!(source.contains("const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;"));
+        assert!(
+            source.contains(
+                "if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u)"
+            )
+        );
+    }
+
+    #[test]
     fn animated_coarsened_compose_uses_one_brick_workgroup_and_kept_shared_tiles() {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
 

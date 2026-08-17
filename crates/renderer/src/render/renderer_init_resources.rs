@@ -591,7 +591,7 @@ pub(crate) fn build_initial_uniform_data(
         light_count,
         total_light_count: light_count,
         time: 0.0,
-        lighting_isolation: LightingIsolation::Normal,
+        light_term_mask: LightTermMask::ALL,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         // No level loaded yet — per-frame uniform upload in
         // `update_per_frame_uniforms` reflects `has_sdf_atlas()` +
@@ -600,7 +600,6 @@ pub(crate) fn build_initial_uniform_data(
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: false,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
-        dynamic_direct_isolation: DynamicDirectIsolation::Combined,
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,

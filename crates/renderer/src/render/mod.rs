@@ -46,6 +46,7 @@ mod renderer_init;
 mod renderer_init_pipelines;
 mod renderer_init_resources;
 mod renderer_light_slots;
+mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_models;
 mod renderer_render_frame;
@@ -92,8 +93,8 @@ use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use bloom::BloomPass;
 pub use bloom_profile::{BloomRenderProfile, BloomResolution};
 use direct_sh_compose::{
-    DirectShComposeDebugOverrides, DirectShComposeResources, DirectShComposeTimestampWrites,
-    DirectShDebugOverride,
+    DirectShComposeDebugOverrides, DirectShComposeFrameInputs, DirectShComposeResources,
+    DirectShComposeTimestampWrites, DirectShDebugOverride,
 };
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
@@ -111,12 +112,10 @@ use postretro_render_cpu::smoke::SpriteFrame;
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
 // reachable here at their original `render::*` paths.
 pub(crate) use postretro_render_cpu::fog_mask::*;
-pub use postretro_render_cpu::frame_uniforms::{
-    DynamicDirectIsolation, LightingIsolation, SdfShadowMode,
-};
 pub(crate) use postretro_render_cpu::frame_uniforms::{
     FrameUniforms, SDF_SHADOW_FLAG_ATLAS_PRESENT, UNIFORM_SIZE, build_uniform_data,
 };
+pub use postretro_render_cpu::frame_uniforms::{LightTermMask, SdfShadowMode};
 pub(crate) use postretro_render_cpu::material_plan::{
     parse_blake3_key, plan_submesh_materials, resolve_model_open_path_and_handle,
 };

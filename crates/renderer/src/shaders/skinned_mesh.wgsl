@@ -107,19 +107,16 @@ struct AnimationDescriptor {
 // Mesh-side group-2 params uniform: runtime/direct light count (dynamic tier plus
 // promoted static records), the frame's render-clock
 // `time` (the SAME value the renderer writes to forward `Uniforms.time` that
-// frame, so the scripted curves stay phase-coherent), and `lighting_isolation` —
-// the SAME `LightingIsolation` value the renderer uploads to forward
-// `Uniforms.lighting_isolation` that frame. The mesh dynamic-direct term
-// participates in the forward lighting-isolation debug modes exactly as the world
-// dynamic term does: the loop is gated by `use_dynamic` derived from the SAME mode
-// set forward uses (see `fs_main`). `ambient_floor` is the SAME constant ambient
+// frame, so the scripted curves stay phase-coherent), and `light_term_mask` —
+// the renderer's per-frame mask snapshot, matching forward's group-0 mask that
+// frame. `ambient_floor` is the SAME constant ambient
 // fill the renderer uploads to forward `Uniforms.ambient_floor` that frame; added
 // once in `fs_main` so shadowed mesh faces lift with the diagnostics slider.
 // Mirrors `MeshLightParams` in render/mesh_pass.rs. std140-padded to 16 B.
 struct MeshLightParams {
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     ambient_floor: f32,
 };
 @group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
@@ -221,20 +218,18 @@ struct ShGridInfo {
 // samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
 @group(4) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
-// Mesh-only dynamic-direct debug params (binding 16). The mesh path reads a
-// trimmed group-0 camera uniform (only `view_proj`), so the scale / isolation /
-// has_direct knobs reach it through this dedicated uniform instead of the
-// group-0 `Uniforms` tail that billboard.wgsl uses. std140: padded to 16 bytes.
+// Mesh-only dynamic-direct params (binding 16). The mesh path reads a trimmed
+// group-0 camera uniform (only `view_proj`), so direct scale and `has_direct`
+// reach it through this dedicated uniform instead of the group-0 `Uniforms` tail
+// that billboard.wgsl uses. std140: padded to 16 bytes.
 //   scale      — multiplies the baked direct term (0..1).
-//   isolation  — 0 = combined (indirect + scale·direct),
-//                1 = direct-only (scale·direct), 2 = indirect-only.
 //   has_direct — 0 when the baked DIRECT SH section is absent; the direct term
 //                is forced to 0 (fall back to indirect-only) with no error.
 struct DynamicDirectParams {
     scale: f32,
-    isolation: u32,
+    _pad0: u32,
     has_direct: u32,
-    _pad: u32,
+    _pad1: u32,
 };
 @group(4) @binding(16) var<uniform> dynamic_direct: DynamicDirectParams;
 
@@ -415,10 +410,9 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 // either ⇒ unshadowed (×1.0). Slot logic is identical to forward.wgsl's dynamic
 // loop; the shadow factor folds into the per-light attenuation.
 //
-// `use_dynamic` is the forward lighting-isolation gate (computed in `fs_main`
-// from `mesh_light_params.lighting_isolation`, mirroring forward.wgsl). When the
-// active mode excludes the dynamic term, the loop bound is forced to 0 — the SAME
-// `select(0u, light_count, use_dynamic)` clamp forward applies — so the term
+// `use_dynamic` is the dynamic-direct bit gate computed in `fs_main` from the
+// frame's light-term mask. When the bit is clear, the loop bound is forced to 0
+// — the SAME `select(0u, light_count, use_dynamic)` clamp forward applies — so the term
 // contributes nothing. With `light_count == 0` (or the gate off) the loop returns
 // zero and the composition reduces to indirect + baked direct; the accumulator
 // starts at zero, so a zero-trip loop adds nothing.
@@ -593,24 +587,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if dynamic_direct.has_direct != 0u {
         direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n);
     }
-    // Lighting-isolation gate for the runtime dynamic-direct term — the SAME
-    // `LightingIsolation` mode set forward.wgsl uses to gate its world dynamic
-    // term (`use_dynamic = iso 0|1|2|8`: Normal, NoLightmap, DirectOnly,
-    // DynamicOnly). NOT a new boolean: `mesh_light_params.lighting_isolation`
-    // carries the identical value the renderer writes to forward
-    // `Uniforms.lighting_isolation` that frame, so the mesh dynamic term appears
-    // in exactly the debug modes the world dynamic term does. This is ORTHOGONAL
-    // to the group-4 `dynamic_direct.isolation` gate below (baked direct-vs-
-    // indirect isolation) — the two compose multiplicatively: the dynamic term
-    // renders only when its `use_dynamic` gate passes, and the baked SH terms are
-    // selected independently by `dynamic_direct.isolation`.
-    let iso = mesh_light_params.lighting_isolation;
-    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+    // SH indirect and baked-direct isolation happens in their respective atlas
+    // compose passes. The mesh only gates its in-shader ambient and runtime-direct
+    // terms with the per-frame snapshot it receives at group 2.
+    let light_terms = mesh_light_params.light_term_mask;
+    let use_ambient_floor = (light_terms & 0x01u) != 0u;
+    let use_dynamic = (light_terms & 0x20u) != 0u;
 
     // Runtime dynamic-direct term, summed alongside the baked indirect + direct
     // terms (forward adds dynamic into the composition; it does not re-weight).
-    // Diffuse-only against the interpolated skinned normal `n`. Gated by
-    // `use_dynamic` (forced to zero outside the dynamic-visible modes).
+    // Diffuse-only against the interpolated skinned normal `n`.
     let dynamic = accumulate_dynamic_direct(
         in.world_position,
         n,
@@ -618,22 +604,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         use_dynamic,
     );
 
-    // Baked-SH dynamic-direct isolation (debug instrument) gates only the baked SH
-    // terms — UNTOUCHED by the runtime gate above; the two multiply.
-    //   0 = combined    → indirect + scale·direct
-    //   1 = direct-only  → scale·direct
-    //   2 = indirect-only → indirect
     var lighting = indirect + direct;
-    if dynamic_direct.isolation == 1u {
-        lighting = direct;
-    } else if dynamic_direct.isolation == 2u {
-        lighting = indirect;
-    }
     // Add the ambient floor once as a constant additive fill — disjoint from the
     // indirect/baked-direct/dynamic terms, so it lifts shadowed faces without
     // double-counting any light. Mirrors forward.wgsl's ambient-floor term
     // (`total_light = vec3(ambient_floor) + indirect + static_direct`,
     // rendering_pipeline.md §4 composition); summed before the albedo multiply.
-    lighting = vec3<f32>(mesh_light_params.ambient_floor) + lighting + dynamic;
+    if use_ambient_floor {
+        lighting = vec3<f32>(mesh_light_params.ambient_floor) + lighting;
+    }
+    lighting = lighting + dynamic;
     return vec4<f32>(base_color.rgb * lighting, base_color.a);
 }

@@ -156,27 +156,25 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
 }
 
 /// Mesh-side group-2 params uniform (binding 4): runtime-light count, the frame's
-/// render-clock time, and `lighting_isolation`. `time` is the SAME render-clock
+/// render-clock time, and `light_term_mask`. `time` is the SAME render-clock
 /// value the renderer uploads to forward `Uniforms.time` that frame (the renderer
 /// caches it and threads it in), so the scripted-light animated curves the mesh
 /// loop evaluates stay phase-coherent with the forward pass and the CPU light
-/// bridge. `lighting_isolation` is the SAME `LightingIsolation` value the renderer
-/// writes to forward `Uniforms.lighting_isolation` that frame, so the mesh
-/// runtime-direct term participates in the lighting-isolation debug modes exactly
-/// as the world dynamic term does (the shader derives `use_dynamic` from it,
-/// mirroring forward.wgsl). `ambient_floor` is the SAME constant ambient fill the
+/// bridge. `light_term_mask` is the per-frame snapshot that the renderer writes
+/// to forward `Uniforms.light_term_mask`, so mesh ambient and runtime-direct
+/// gates agree with the world path. `ambient_floor` is the SAME constant ambient fill the
 /// renderer uploads to forward `Uniforms.ambient_floor` that frame; the mesh
 /// fragment shader adds it once as an additive fill so shadowed mesh faces lift
 /// with the diagnostics slider exactly as world surfaces do (see forward.wgsl's
 /// ambient-floor term). std140-padded to 16 bytes (the WGSL `MeshLightParams`
 /// struct mirrors this layout: `light_count: u32`, `time: f32`,
-/// `lighting_isolation: u32`, `ambient_floor: f32`).
+/// `light_term_mask: u32`, `ambient_floor: f32`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     ambient_floor: f32,
 }
 
@@ -185,13 +183,13 @@ const MESH_LIGHT_PARAMS_SIZE: u64 = std::mem::size_of::<MeshLightParams>() as u6
 
 /// Serialize `MeshLightParams` to its 16-byte std140 upload, field order matching
 /// the struct (and the WGSL mirror): `light_count` (0..4), `time` (4..8),
-/// `lighting_isolation` (8..12), `ambient_floor` (12..16). Split out from
+/// `light_term_mask` (8..12), `ambient_floor` (12..16). Split out from
 /// `write_light_params` so the byte layout can be asserted GPU-free in tests.
 fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
     [
         params.light_count.to_ne_bytes(),
         params.time.to_ne_bytes(),
-        params.lighting_isolation.to_ne_bytes(),
+        params.light_term_mask.to_ne_bytes(),
         params.ambient_floor.to_ne_bytes(),
     ]
     .concat()
@@ -255,7 +253,7 @@ fn mesh_light_bind_group_layout_entries(
         storage_entry(2),
         // b3: scripted-animation curve samples (forward group-3 b12).
         storage_entry(3),
-        // b4: mesh-side params uniform (light count, time, lighting_isolation).
+        // b4: mesh-side params uniform (light count, time, light-term mask).
         wgpu::BindGroupLayoutEntry {
             binding: 4,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -904,7 +902,7 @@ pub struct MeshPass {
     light_bind_group: Option<wgpu::BindGroup>,
 
     /// Group 2 binding 4 params uniform (`MeshLightParams`): light count, the
-    /// frame's forward `time`, and the forward `lighting_isolation` mode.
+    /// frame's forward `time`, and the captured forward `light_term_mask`.
     /// Fixed-size, owned here, written per frame by
     /// [`MeshPass::write_light_params`]; rebound by reference into every rebuilt
     /// group-2 bind group.
@@ -1444,14 +1442,13 @@ impl MeshPass {
     }
 
     /// Write this frame's group-2 params uniform (binding 4): the dynamic-light
-    /// `light_count`, the frame's render-clock `time`, and `lighting_isolation`.
+    /// `light_count`, the frame's render-clock `time`, and `light_term_mask`.
     /// `time` MUST be the SAME value the renderer wrote to forward `Uniforms.time`
     /// this frame (the renderer caches it in `update_per_frame_uniforms` and
     /// threads it here), so the scripted-light curves the mesh loop evaluates stay
-    /// phase-coherent with the forward pass. `lighting_isolation` MUST be the SAME
-    /// `LightingIsolation as u32` the renderer writes to forward
-    /// `Uniforms.lighting_isolation`, so the mesh dynamic-direct term is gated by
-    /// the lighting-isolation debug modes exactly as the world dynamic term is.
+    /// phase-coherent with the forward pass. `light_term_mask` MUST be the SAME
+    /// captured snapshot the renderer writes to forward `Uniforms.light_term_mask`,
+    /// so the mesh ambient and dynamic-direct gates land with the world path.
     /// `ambient_floor` MUST be the SAME value the renderer writes to forward
     /// `Uniforms.ambient_floor` this frame, so shadowed mesh faces lift with the
     /// diagnostics ambient-floor slider exactly as world surfaces do.
@@ -1460,13 +1457,13 @@ impl MeshPass {
         queue: &wgpu::Queue,
         light_count: u32,
         time: f32,
-        lighting_isolation: u32,
+        light_term_mask: u32,
         ambient_floor: f32,
     ) {
         let bytes = build_light_params_bytes(MeshLightParams {
             light_count,
             time,
-            lighting_isolation,
+            light_term_mask,
             ambient_floor,
         });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
@@ -2084,10 +2081,10 @@ mod tests {
     }
 
     // Guard the group-2 params uniform layout contract: `MeshLightParams`
-    // { light_count: u32, time: f32, lighting_isolation: u32, ambient_floor: f32 }
+    // { light_count: u32, time: f32, light_term_mask: u32, ambient_floor: f32 }
     // — 16 B std140, mirrored by the WGSL `MeshLightParams` struct at group 2
     // binding 4. The mesh dynamic-light loop reads `time` for scripted-curve phase,
-    // `lighting_isolation` for the forward-matching debug gate, and `ambient_floor`
+    // `light_term_mask` for the forward-matching per-term gates, and `ambient_floor`
     // for the constant additive fill, so a silent layout edit on either side must
     // fail here.
     #[test]
@@ -2109,7 +2106,7 @@ mod tests {
         let bytes = build_light_params_bytes(MeshLightParams {
             light_count: 3,
             time: 1.5,
-            lighting_isolation: 8,
+            light_term_mask: 0x7F,
             ambient_floor,
         });
         assert_eq!(bytes.len(), 16, "serialized MeshLightParams must be 16 B");
@@ -2123,8 +2120,8 @@ mod tests {
         assert_eq!(&bytes[4..8], &1.5f32.to_le_bytes(), "time at 4..8");
         assert_eq!(
             &bytes[8..12],
-            &8u32.to_le_bytes(),
-            "lighting_isolation at 8..12",
+            &0x7Fu32.to_le_bytes(),
+            "light_term_mask at 8..12",
         );
     }
 
@@ -2260,23 +2257,22 @@ mod tests {
         );
     }
 
-    // The mesh dynamic-direct term participates in the lighting-isolation debug
-    // modes via the SAME mode set forward.wgsl uses to gate its world dynamic term.
-    // Pin the exact `use_dynamic` derivation in both shaders so a forward-side edit
-    // that desyncs the mesh gate fails here. (Forward and mesh both compute
-    // `use_dynamic = iso 0|1|2|8`.)
+    // The mesh dynamic-direct loop must use the same LightTermMask bit as the
+    // world path. The mesh's group-2 params carry the raw mask, while forward
+    // declares the shared bit as a named WGSL constant.
     #[test]
-    fn mesh_use_dynamic_gate_matches_forward() {
-        const GATE: &str = "(iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u)";
+    fn mesh_dynamic_gate_uses_light_term_mask_bit_five_like_forward() {
         let mesh_src = include_str!("../shaders/skinned_mesh.wgsl");
         let forward_src = include_str!("../shaders/forward.wgsl");
         assert!(
-            mesh_src.contains(&format!("let use_dynamic = {GATE};")),
-            "skinned_mesh.wgsl must derive use_dynamic from the forward isolation mode set",
+            mesh_src.contains("let use_dynamic = (light_terms & 0x20u) != 0u;"),
+            "skinned_mesh.wgsl must gate its dynamic loop with LightTermMask bit 5",
         );
         assert!(
-            forward_src.contains(&format!("let use_dynamic = {GATE};")),
-            "forward.wgsl's use_dynamic gate changed — update the mesh gate in lock-step",
+            forward_src.contains("const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;")
+                && forward_src
+                    .contains("let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"),
+            "forward.wgsl must keep LightTermMask bit 5 as its dynamic-direct gate",
         );
     }
 

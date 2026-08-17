@@ -247,6 +247,7 @@ impl Renderer {
                     .animated_direct_has_active_descriptor()
                 || direct_sh_debug_override.active()
                 || animated_direct_sh_debug_override.active();
+            let frame_light_term_mask = self.frame_light_term_mask();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -263,15 +264,18 @@ impl Renderer {
                 full.direct_sh_compose.dispatch_if_needed(
                     queue,
                     encoder,
-                    &full.uniform_bind_group,
-                    direct_sh_active,
-                    DirectShComposeDebugOverrides {
-                        promotion: direct_sh_debug_override,
-                        animated: animated_direct_sh_debug_override,
-                    },
-                    DirectShComposeTimestampWrites {
-                        promotion: direct_sh_ts,
-                        animated: animated_direct_sh_ts,
+                    DirectShComposeFrameInputs {
+                        uniform_bind_group: &full.uniform_bind_group,
+                        active: direct_sh_active,
+                        light_term_mask: frame_light_term_mask,
+                        debug_overrides: DirectShComposeDebugOverrides {
+                            promotion: direct_sh_debug_override,
+                            animated: animated_direct_sh_debug_override,
+                        },
+                        timestamp_writes: DirectShComposeTimestampWrites {
+                            promotion: direct_sh_ts,
+                            animated: animated_direct_sh_ts,
+                        },
                     },
                 );
             }
@@ -478,6 +482,7 @@ impl Renderer {
         // They write depth and use the mesh dynamic-object lighting bindings
         // (baked SH indirect/static direct + runtime dynamic direct).
         if render_world && self.full().kinematic_brush.has_draws() {
+            let frame_light_term_mask = self.frame_light_term_mask();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -489,7 +494,7 @@ impl Renderer {
                     full.total_light_count,
                     full.light_count,
                     full.mesh_dynamic_time,
-                    full.lighting_isolation as u32,
+                    frame_light_term_mask.bits(),
                     full.ambient_floor,
                 );
             }
@@ -538,12 +543,10 @@ impl Renderer {
                 // frame's render-clock time (the SAME value written to forward
                 // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
                 // so the scripted-light curves the mesh loop evaluates stay
-                // phase-coherent), and the SAME `lighting_isolation` value written to
-                // forward `Uniforms.lighting_isolation` this frame, so the mesh
-                // runtime-direct term participates in the lighting-isolation debug
-                // modes exactly as the world dynamic term does (the shader derives
-                // `use_dynamic` from it, mirroring forward.wgsl).
+                // phase-coherent), and the captured light-term mask. The UI's
+                // live value must never be read during recording.
                 {
+                    let frame_light_term_mask = self.frame_light_term_mask();
                     let Self { queue, full, .. } = self;
                     let full = full
                         .as_mut()
@@ -552,7 +555,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.mesh_dynamic_time,
-                        full.lighting_isolation as u32,
+                        frame_light_term_mask.bits(),
                         full.ambient_floor,
                     );
                 }
@@ -779,6 +782,7 @@ impl Renderer {
         if render_world {
             if let Some(plan) = viewmodel_mesh_frame_plan {
                 {
+                    let frame_light_term_mask = self.frame_light_term_mask();
                     let Self { queue, full, .. } = self;
                     let full = full
                         .as_mut()
@@ -787,7 +791,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.mesh_dynamic_time,
-                        full.lighting_isolation as u32,
+                        frame_light_term_mask.bits(),
                         full.ambient_floor,
                     );
                 }

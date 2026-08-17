@@ -13,13 +13,31 @@
 // Writes accumulated in-scattering radiance to an RGBA16F storage texture.
 //
 // Bind groups:
-//   group 0  Camera uniforms (reserved; fog shader uses its own fog_params)
+//   group 0  Frame uniforms (shared with forward; reads the light-term snapshot)
 //   group 1  Vacant (None in pipeline layout)
 //   group 2  Vacant (None in pipeline layout)
 //   group 3  SH volume (shared with forward)
 //   group 4  Vacant (None in pipeline layout)
 //   group 5  Spot shadow maps (shared with forward)
 //   group 6  Fog resources: depth, AABB buffer, scatter output, fog params, spot lights, point lights, fog planes
+
+// --- Group 0: Frame uniforms (prefix of forward.wgsl::Uniforms) ---
+
+// This prefix ends immediately after `light_term_mask` at bytes 88..92. The
+// group-0 buffer is uploaded before dev-tools UI can mutate its live state, so
+// fog observes the same per-frame light-term snapshot as the forward pass.
+struct Uniforms {
+    view_proj: mat4x4<f32>,
+    camera_position: vec3<f32>,
+    ambient_floor: f32,
+    light_count: u32,
+    time: f32,
+    light_term_mask: u32,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
 
 // --- Group 3: SH volume (subset of forward bindings) ---
 
@@ -474,7 +492,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // `arrayLength(&fog_spots)` so a frame that uploads fewer spots than the
     // previous frame doesn't re-iterate stale records left in the buffer
     // (the buffer is sized for SHADOW_POOL_SIZE and never shrinks).
-    let spot_count = fog.spot_count;
+    // Dynamic direct is one term across all receivers, so its frame-uniform
+    // gate disables both spot-beam and point-light scatter together.
+    let use_dynamic_direct =
+        (uniforms.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
+    let spot_count = select(0u, fog.spot_count, use_dynamic_direct);
+    let point_count = select(0u, fog.point_count, use_dynamic_direct);
 
     // --- Slab-clip prologue ---------------------------------------------------
     // Compute the union of [t_enter, t_exit] intervals over all active fog
@@ -854,7 +877,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // `arrayLength(&fog_points)` so a frame that uploads zero point
                 // lights doesn't re-iterate stale records left in the buffer from
                 // a previous frame.
-                for (var pi: u32 = 0u; pi < fog.point_count; pi = pi + 1u) {
+                for (var pi: u32 = 0u; pi < point_count; pi = pi + 1u) {
                     let pt = fog_points[pi];
                     let to_light = pt.position - pos;
                     let dist = length(to_light);

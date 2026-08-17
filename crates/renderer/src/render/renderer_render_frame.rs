@@ -247,6 +247,7 @@ impl Renderer {
                     .animated_direct_has_active_descriptor()
                 || direct_sh_debug_override.active()
                 || animated_direct_sh_debug_override.active();
+            let frame_light_term_mask = self.frame_light_term_mask();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -265,6 +266,7 @@ impl Renderer {
                     encoder,
                     &full.uniform_bind_group,
                     direct_sh_active,
+                    frame_light_term_mask,
                     DirectShComposeDebugOverrides {
                         promotion: direct_sh_debug_override,
                         animated: animated_direct_sh_debug_override,

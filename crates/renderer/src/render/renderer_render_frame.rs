@@ -490,14 +490,7 @@ impl Renderer {
                     full.total_light_count,
                     full.light_count,
                     full.mesh_dynamic_time,
-                    // Task 1 keeps the group-2 ABI for the next phase, but
-                    // maps the captured bitmask to its legacy dynamic gate.
-                    // The UI's live value must never be read during recording.
-                    if frame_light_term_mask.contains(LightTermMask::DYNAMIC_DIRECT) {
-                        0
-                    } else {
-                        9
-                    },
+                    frame_light_term_mask.bits(),
                     full.ambient_floor,
                 );
             }
@@ -546,9 +539,8 @@ impl Renderer {
                 // frame's render-clock time (the SAME value written to forward
                 // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
                 // so the scripted-light curves the mesh loop evaluates stay
-                // phase-coherent), and the captured light-term mask's dynamic
-                // bit. Task 2 replaces this temporary legacy group-2 gate with
-                // the mask itself while preserving the 16-byte ABI.
+                // phase-coherent), and the captured light-term mask. The UI's
+                // live value must never be read during recording.
                 {
                     let frame_light_term_mask = self.frame_light_term_mask();
                     let Self { queue, full, .. } = self;
@@ -559,11 +551,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.mesh_dynamic_time,
-                        if frame_light_term_mask.contains(LightTermMask::DYNAMIC_DIRECT) {
-                            0
-                        } else {
-                            9
-                        },
+                        frame_light_term_mask.bits(),
                         full.ambient_floor,
                     );
                 }
@@ -799,11 +787,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.mesh_dynamic_time,
-                        if frame_light_term_mask.contains(LightTermMask::DYNAMIC_DIRECT) {
-                            0
-                        } else {
-                            9
-                        },
+                        frame_light_term_mask.bits(),
                         full.ambient_floor,
                     );
                 }

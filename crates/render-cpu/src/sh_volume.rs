@@ -45,12 +45,10 @@ pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED
 
 pub fn build_dynamic_direct_params_bytes(
     scale: f32,
-    isolation: u32,
     has_direct: bool,
 ) -> [u8; DYNAMIC_DIRECT_PARAMS_SIZE] {
     let mut bytes = [0u8; DYNAMIC_DIRECT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&scale.to_ne_bytes());
-    bytes[4..8].copy_from_slice(&isolation.to_ne_bytes());
     bytes[8..12].copy_from_slice(&(has_direct as u32).to_ne_bytes());
     bytes
 }
@@ -391,14 +389,14 @@ mod tests {
 
     #[test]
     fn dynamic_direct_params_pack_layout() {
-        let bytes = build_dynamic_direct_params_bytes(0.5, 2, true);
+        let bytes = build_dynamic_direct_params_bytes(0.5, true);
         assert_eq!(bytes.len(), DYNAMIC_DIRECT_PARAMS_SIZE);
         assert_eq!(f32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 0.5);
-        assert_eq!(u32::from_ne_bytes(bytes[4..8].try_into().unwrap()), 2);
+        assert!(bytes[4..8].iter().all(|&b| b == 0));
         assert_eq!(u32::from_ne_bytes(bytes[8..12].try_into().unwrap()), 1);
         assert!(bytes[12..16].iter().all(|&b| b == 0));
 
-        let absent = build_dynamic_direct_params_bytes(1.0, 0, false);
+        let absent = build_dynamic_direct_params_bytes(1.0, false);
         assert_eq!(u32::from_ne_bytes(absent[8..12].try_into().unwrap()), 0);
     }
 

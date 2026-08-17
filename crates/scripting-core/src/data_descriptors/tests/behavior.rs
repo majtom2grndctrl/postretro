@@ -212,6 +212,113 @@ fn both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions() {
 }
 
 #[test]
+fn both_parsers_reject_invalid_attack_vocabulary_with_wire_cased_paths() {
+    let action_js = r#"motion: "chaseTarget", action: { attack: "attack" }"#;
+    let action_lua = r#"motion = "chaseTarget", action = { attack = "attack" }"#;
+    let unknown_action_js = r#"motion: "chaseTarget", action: { attack: "missing" }"#;
+    let unknown_action_lua = r#"motion = "chaseTarget", action = { attack = "missing" }"#;
+
+    let cases = [
+        (
+            js_behavior(JS_NEAR_GUARD, "")
+                .replace(
+                    "attacks: { attack: { damage: 8, maxRange: 2, cooldownMs: 1200 } }",
+                    "attacks: {}",
+                )
+                .replace(r#"motion: "chaseTarget""#, action_js),
+            lua_behavior(LUA_NEAR_GUARD, "")
+                .replace(
+                    "attacks = { attack = { damage = 8, maxRange = 2, cooldownMs = 1200 } }",
+                    "attacks = {}",
+                )
+                .replace(r#"motion = "chaseTarget""#, action_lua),
+            "components.behavior.attacks",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace(r#"motion: "chaseTarget""#, unknown_action_js),
+            lua_behavior(LUA_NEAR_GUARD, "")
+                .replace(r#"motion = "chaseTarget""#, unknown_action_lua),
+            "components.behavior.states.chase.action.attack",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("damage: 8", "damage: -1"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("damage = 8", "damage = -1"),
+            "components.behavior.attacks.attack.damage",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("damage: 8", "damage: Infinity"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("damage = 8", "damage = math.huge"),
+            "non-finite number at `attacks.attack.damage`",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("maxRange: 2", "maxRange: 0"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("maxRange = 2", "maxRange = 0"),
+            "components.behavior.attacks.attack.maxRange",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("maxRange: 2", "maxRange: Infinity"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("maxRange = 2", "maxRange = math.huge"),
+            "non-finite number at `attacks.attack.maxRange`",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("cooldownMs: 1200", "cooldownMs: 0"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("cooldownMs = 1200", "cooldownMs = 0"),
+            "components.behavior.attacks.attack.cooldownMs",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("cooldownMs: 1200", "cooldownMs: Infinity"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("cooldownMs = 1200", "cooldownMs = math.huge"),
+            "non-finite number at `attacks.attack.cooldownMs`",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace(
+                "cooldownMs: 1200 }",
+                "cooldownMs: 1200, engagementRadius: 3 }",
+            ),
+            lua_behavior(LUA_NEAR_GUARD, "").replace(
+                "cooldownMs = 1200 }",
+                "cooldownMs = 1200, engagementRadius = 3 }",
+            ),
+            "components.behavior.attacks.attack.engagementRadius",
+        ),
+    ];
+
+    for (js_source, lua_source, expected_path) in cases {
+        let js = js_error(&js_source);
+        let lua = lua_error(&lua_source);
+        for error in [&js, &lua] {
+            assert!(error.contains(expected_path), "{error}");
+            assert!(
+                !error.contains("max_range") && !error.contains("cooldown_ms"),
+                "attack errors retain their wire-cased paths: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_parsers_surface_missing_attack_fields_as_serde_errors_before_validation() {
+    let js = js_error(&js_behavior(JS_NEAR_GUARD, "").replace(
+        "damage: 8, maxRange: 2, cooldownMs: 1200",
+        "damage: 8, cooldownMs: 1200",
+    ));
+    let lua = lua_error(&lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "damage = 8, maxRange = 2, cooldownMs = 1200",
+        "damage = 8, cooldownMs = 1200",
+    ));
+
+    let expected =
+        "manifest deserialization failed: `components.behavior` invalid: missing field `maxRange`";
+    for error in [&js, &lua] {
+        assert_eq!(error, expected);
+        assert!(
+            !error.contains("components.behavior.attacks.attack.maxRange"),
+            "serde rejects the missing field before descriptor validation can add an authored field path: {error}"
+        );
+    }
+}
+
+#[test]
 fn both_runtimes_name_nested_non_finite_patrol_points() {
     let js = js_error(
         &js_behavior(JS_NEAR_GUARD, "")

@@ -108,12 +108,35 @@ fn clear_combat_slot(outcome: &mut EnemyOutcome) {
 
 /// The slot this enemy may re-present as an incumbent: the one it held while
 /// already engaged with this same target, and only while its hold window is
-/// open. Both slot fields are still the prior tick's here.
+/// open. A state transition also has to preserve the effective standoff;
+/// otherwise an old long-reach slot can strand a newly committed short-reach
+/// attack outside its reach for the rest of the hold window. Both slot fields
+/// are still the prior tick's here.
 fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
     let target = outcome.target?;
     (outcome.engaged
         && outcome.prior_acquired_target == Some(target.entity)
+        && retained_standoff_matches_committed_state(outcome)
         && outcome.brain.combat_slot_hold_ticks > 0)
         .then_some(outcome.brain.combat_slot)
         .flatten()
+}
+
+fn retained_standoff_matches_committed_state(outcome: &EnemyOutcome) -> bool {
+    if !outcome.state_changed {
+        return true;
+    }
+
+    let graph = &outcome.brain.graph;
+    let Some(prior) = state_at(graph, outcome.prior_state_index)
+        .map(|state| graph.engagement_radius_for_state(state).to_bits())
+    else {
+        return false;
+    };
+    let Some(committed) = state_at(graph, outcome.brain.state_index)
+        .map(|state| graph.engagement_radius_for_state(state).to_bits())
+    else {
+        return false;
+    };
+    prior == committed
 }

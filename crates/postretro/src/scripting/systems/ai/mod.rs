@@ -243,6 +243,10 @@ pub(super) struct EnemyOutcome {
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
     pub(super) prior_acquired_target: Option<EntityId>,
+    /// State occupied before this tick's transition. Combat-slot retention
+    /// compares its effective standoff with the committed state's standoff so
+    /// a state change cannot preserve a slot on the wrong engagement ring.
+    pub(super) prior_state_index: usize,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -680,6 +684,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             position: snap.position,
             target,
             prior_acquired_target,
+            prior_state_index,
             state_changed,
             attacked,
             on_enter,

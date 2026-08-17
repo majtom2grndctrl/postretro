@@ -2955,7 +2955,7 @@ fn combat_slots_use_the_committed_attack_standoff_or_the_nonattack_default() {
     let slam_enemy = spawn_enemy(
         &mut attack_registry,
         Vec3::new(17.0, chaser_rest_y(), 20.0),
-        authored_brain(&reference_behavior_graph(), "attack_slam"),
+        authored_brain(&reference_behavior_graph(), "alert"),
         50.0,
     );
     run_ai_tick_with_navigation(
@@ -2973,7 +2973,7 @@ fn combat_slots_use_the_committed_attack_standoff_or_the_nonattack_default() {
     assert_approx_distance(
         distance_xz(slam_slot, player_pos),
         3.5,
-        "the committed long-reach firing state parks at its own standoff",
+        "a tick that enters the long-reach firing state parks at its committed standoff",
     );
 
     let mut nonattack_graph = position_goal_graph(MotionVerb::ChaseTarget, None);
@@ -3000,6 +3000,46 @@ fn combat_slots_use_the_committed_attack_standoff_or_the_nonattack_default() {
         distance_xz(nonattack_slot, player_pos),
         2.25,
         "a non-attack state uses the graph-level default standoff",
+    );
+}
+
+// Regression: retaining a long-attack incumbent after the graph committed a
+// short attack parked the enemy outside the short attack's reach for the hold.
+#[test]
+fn combat_slot_state_switch_reassigns_when_attack_standoff_changes() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    let enemy_pos = player_pos - Vec3::new(1.5, 0.0, 0.0);
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut reg, player_pos);
+    let stale_slam_slot = player_pos + Vec3::new(3.5, 0.0, 0.0);
+    let mut brain = authored_brain(&reference_behavior_graph(), "attack_slam");
+    brain.acquired_target = Some(player);
+    brain.combat_slot = Some(stale_slam_slot);
+    brain.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
+    let enemy = spawn_enemy(&mut reg, enemy_pos, brain, 50.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&nav), Some(&world));
+
+    assert_eq!(enemy_state_name(&reg, enemy), "attack_jab");
+    let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+    let slot = brain.combat_slot.expect("short-attack combat slot");
+    assert!(
+        distance_xz(slot, stale_slam_slot) > 1.0e-4,
+        "the old long-reach incumbent must not survive the standoff change"
+    );
+    assert_approx_distance(
+        distance_xz(slot, player_pos),
+        2.0,
+        "the replacement slot uses the committed short attack's standoff",
+    );
+    assert_eq!(
+        brain.combat_slot_hold_ticks, COMBAT_SLOT_HOLD_TICKS,
+        "the reassigned slot starts a fresh stability window"
     );
 }
 
@@ -5683,6 +5723,82 @@ fn named_attack_cooldowns_decrement_independently_across_a_state_switch() {
 }
 
 #[test]
+fn named_attack_cooldowns_keep_decrementing_while_aggro_is_closed() {
+    let graph = reference_behavior_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut brain = authored_brain(&graph, "attack_jab");
+    brain.aggro_armed = false;
+    brain
+        .attack_cooldown_remaining_ms
+        .insert("jab".to_string(), 400.0);
+    brain
+        .attack_cooldown_remaining_ms
+        .insert("slam".to_string(), 725.0);
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.1);
+
+    let cooldowns = &reg
+        .get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .attack_cooldown_remaining_ms;
+    assert_approx_distance(
+        cooldowns["jab"],
+        300.0,
+        "the closed aggro gate does not freeze the current attack's timer",
+    );
+    assert_approx_distance(
+        cooldowns["slam"],
+        625.0,
+        "the closed aggro gate does not freeze an inactive attack's timer",
+    );
+}
+
+#[test]
+fn graph_reseat_preserves_same_name_and_dead_cooldown_entries() {
+    let original = reference_behavior_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        authored_brain(&original, "alert"),
+        50.0,
+    );
+    run_ai_tick(&mut reg, &mut runtime, 0.0);
+
+    let replacement = reference_single_attack_graph();
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    brain.graph = BrainComponent::from_graph(&replacement).graph;
+    brain.state_index = graph_state_index(&replacement, "alert").unwrap();
+    brain
+        .attack_cooldown_remaining_ms
+        .insert("jab".to_string(), 400.0);
+    brain
+        .attack_cooldown_remaining_ms
+        .insert("slam".to_string(), 725.0);
+    reg.set_component(enemy, brain).unwrap();
+
+    run_ai_tick(&mut reg, &mut runtime, 0.1);
+
+    let cooldowns = &reg
+        .get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .attack_cooldown_remaining_ms;
+    assert_approx_distance(
+        cooldowns["jab"],
+        300.0,
+        "a same-named attack inherits its timer through a graph reseat",
+    );
+    assert_approx_distance(
+        cooldowns["slam"],
+        625.0,
+        "an attack removed by the reseat remains as a harmless counting-down entry",
+    );
+}
+
+#[test]
 fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_states() {
     let graph = BehaviorGraphDescriptor {
         initial: "jab".to_string(),
@@ -5733,6 +5849,23 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "observed_zero".to_string(),
                 authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+            ),
+            (
+                "unseeded_slam".to_string(),
+                authored_state(
+                    "attack_slam",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("slam".to_string())),
+                    vec![edge(
+                        "observed_zero",
+                        IrNode::Le {
+                            a: Box::new(brain_input("@brain.attackCooldownMs")),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(0.0),
+                            }),
+                        },
+                    )],
+                ),
             ),
         ]),
         interrupts: Vec::new(),
@@ -5802,6 +5935,32 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             .state_name(),
         Some("observed_zero"),
         "a non-attack state feeds zero regardless of another named timer"
+    );
+
+    let mut missing_entry_brain = authored_brain(&graph, "unseeded_slam");
+    missing_entry_brain
+        .attack_cooldown_remaining_ms
+        .insert("jab".to_string(), 400.0);
+    let missing_entry_enemy = spawn_enemy(
+        &mut reg,
+        Vec3::new(12.0, 0.0, 0.0),
+        missing_entry_brain,
+        50.0,
+    );
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    let missing_entry_brain = reg
+        .get_component::<BrainComponent>(missing_entry_enemy)
+        .unwrap();
+    assert_eq!(
+        missing_entry_brain.state_name(),
+        Some("observed_zero"),
+        "the current attack state reads zero when its named timer has no map entry"
+    );
+    assert!(
+        !missing_entry_brain
+            .attack_cooldown_remaining_ms
+            .contains_key("slam"),
+        "reading the missing cooldown fact does not materialize an entry"
     );
 }
 

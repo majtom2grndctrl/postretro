@@ -45,9 +45,11 @@ Eleven habits from a real review where three independent reviewers plus a later 
 
 **10. Newest acceptance criteria have the fewest tests.** Criteria added after the task list was written are delivered by nothing — no task was revised to cover them. Check coverage for the ACs added last, first.
 
+**11. Ammend our commit rather than persist iterative commits.** We need to persist iterative steps to git and origin, but iterative commits make the git history noisy. Commit the first change, then amend commits as we iterate.
+
 ### Before handoff
 
-**11. Self-review does not catch what you reasoned your way into.** It finds typos and contradictions you remember making. It does not find defects you argued yourself into believing — the argument still seems sound. Independent lenses that cannot see each other are the only thing that catches those. A clean self-review is necessary, not sufficient.
+**12. Self-review does not catch what you reasoned your way into.** It finds typos and contradictions you remember making. It does not find defects you argued yourself into believing — the argument still seems sound. Independent lenses that cannot see each other are the only thing that catches those. A clean self-review is necessary, not sufficient.
 
 ## Pre-handoff checklist
 

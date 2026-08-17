@@ -329,10 +329,10 @@ impl Default for AiRuntime {
 ///    an engine rule. A CLOSED aggro gate is the sole exception — it stands the
 ///    brain down to its `initial` state and skips evaluation entirely.
 /// 3. On entering a state, reset the time-in-state and raise its `on_enter`.
-/// 4. When the selected state declares the `attack` action, the cooldown has
-///    elapsed, and the selected target is inside `attack.range`, apply the
-///    graph's damage to that pawn through the chokepoint and raise the attack
-///    event.
+/// 4. When the selected state names an attack, that attack's cooldown has
+///    elapsed, and the selected target is inside its `maxRange`, apply that
+///    entry's damage to the selected pawn through the chokepoint and raise the
+///    attack event.
 /// 5. On a state CHANGE or locomotion stop/resume, request the selected
 ///    animation state.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -584,13 +584,19 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // armed brain evaluates its whole guard set whether or not it has a
             // pawn: that is how an interrupt reaches an enemy nobody is standing
             // in front of.
+            let attack_cooldown_ms = action_for_state(&brain.graph, current_index)
+                .and_then(|action| match action {
+                    ActionVerb::Attack(name) => brain.attack_cooldown_remaining_ms.get(name),
+                })
+                .copied()
+                .unwrap_or(0.0);
             programs.scope_mut().refresh(
                 registry,
                 snap.id,
                 BrainFacts {
                     target: selected_target,
                     time_in_state_ms: brain.time_in_state_ms,
-                    attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
+                    attack_cooldown_ms,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
@@ -627,30 +633,35 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             _ => None,
         };
 
-        // (4) Attack: the selected state declares the `attack` action, the
-        // cooldown has elapsed, the SELECTED target is inside the graph's
-        // `attack.range`, and it is still alive — apply the configured damage
-        // once and arm the cooldown. Checked every tick.
+        // (4) Attack: the selected state names one graph-wide contact attack.
+        // Its own cooldown must have elapsed, the SELECTED target must be
+        // inside its `maxRange`, and it must still be alive. Apply its
+        // configured damage once and re-arm only that named timer. Checked
+        // every tick.
         // The range gate lets a graph declare the action without making it
         // connect from across the room.
-        // A graph with no `attack` block configures no range and no damage, so
-        // it never attacks.
+        // An unresolved action name configures no range and no damage, so it
+        // never attacks.
         // Gating on the selected target's Health stops attack/event spam against
         // an already-dead but still-present pawn and prevents damaging a
         // different co-op pawn than the one this enemy chose.
         if let (Some(target), Some(distance)) = (target, selected_distance) {
-            let in_attack_range = brain
-                .graph
-                .attack
-                .is_some_and(|attack| distance <= attack.range);
-            if in_attack_range
-                && action_for_state(&brain.graph, next_index) == Some(ActionVerb::Attack)
-                && brain.attack_cooldown_remaining_ms <= 0.0
+            if let Some(ActionVerb::Attack(attack_name)) =
+                action_for_state(&brain.graph, next_index)
+                && let Some(attack) = brain.graph.attacks.get(attack_name).copied()
+                && distance <= attack.max_range
+                && brain
+                    .attack_cooldown_remaining_ms
+                    .get(attack_name)
+                    .copied()
+                    .unwrap_or(0.0)
+                    <= 0.0
                 && selected_target_alive(registry, target.entity)
             {
                 attacked = true;
-                brain.attack_cooldown_remaining_ms =
-                    brain.graph.attack.map_or(0.0, |attack| attack.cooldown_ms);
+                brain
+                    .attack_cooldown_remaining_ms
+                    .insert(attack_name.clone(), attack.cooldown_ms);
             }
         }
 
@@ -833,10 +844,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     registry,
                     target.entity,
                     &DamagePayload {
-                        amount: outcome
-                            .brain
-                            .graph
-                            .attack
+                        amount: action_for_state(&outcome.brain.graph, outcome.brain.state_index)
+                            .and_then(|action| match action {
+                                ActionVerb::Attack(name) => outcome.brain.graph.attacks.get(name),
+                            })
                             .map_or(0.0, |attack| attack.damage),
                     },
                     DamageContext {

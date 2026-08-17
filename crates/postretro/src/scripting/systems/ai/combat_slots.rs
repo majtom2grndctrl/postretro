@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 
-use super::EnemyOutcome;
+use super::{EnemyOutcome, graph_eval::state_at};
 use crate::collision::CollisionWorld;
 use crate::combat_positioning::{
     CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
@@ -60,7 +60,9 @@ pub(super) fn resolve_combat_slots(
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
             agent_pos: outcome.position,
-            engagement_radius: outcome.brain.graph.engagement_radius(),
+            engagement_radius: state_at(&outcome.brain.graph, outcome.brain.state_index)
+                .map(|state| outcome.brain.graph.engagement_radius_for_state(state))
+                .unwrap_or_else(|| outcome.brain.graph.engagement_radius()),
             target_pos: target.position,
             combat_slot: retained_slot,
             scan_challengers: retained_slot.is_none(),

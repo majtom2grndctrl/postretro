@@ -348,19 +348,22 @@ export type MotionVerb =
   --- Touch neither destination nor steering — terminal presentation.
   | "freeze"
 
---- What a behavior-graph state does besides moving. Omit the key for a state that takes no action. Valid values: `attack`.
-export type ActionVerb =
-  --- Cooldown-gated contact damage using the graph's `attack` block, which becomes required.
-  "attack"
+--- What a behavior-graph state does besides moving. Omit the key for a state that takes no action.
+export type ActionVerb = {
+  --- Name of the graph-wide contact attack this state fires.
+  attack: string,
+}
 
---- Attack tuning consumed by the `attack` action verb. Required exactly when some state declares that action.
+--- Tuning for one named contact attack in `BehaviorGraphDescriptor.attacks`.
 export type AttackParams = {
   --- Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).
   damage: number,
-  --- Distance within which the attack lands, in metres. Must be finite and > 0.
-  range: number,
+  --- Maximum distance within which the attack lands, in metres. Must be finite and > 0.
+  maxRange: number,
   --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
   cooldownMs: number,
+  --- Optional combat-slot standoff for a state firing this attack. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.
+  engagementRadius: number?,
 }
 
 --- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.
@@ -392,7 +395,7 @@ export type BehaviorStateDescriptor = {
   animation: string,
   --- What this state does with steering.
   motion: MotionVerb,
-  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
+  --- Optional action performed while this state is current. `{ attack: "name" }` must name an entry in the graph's `attacks` map. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
   action: ActionVerb?,
   --- State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.
   transitions: {TransitionDescriptor}?,
@@ -412,11 +415,11 @@ export type BehaviorGraphDescriptor = {
   candidateFilter: RuntimeValue?,
   --- Optional anchor-relative patrol route. Required with at least one point when any state uses `"patrol"` motion.
   patrol: PatrolDescriptor?,
-  --- Attack tuning for the `attack` action verb. Required exactly when some state declares that action.
-  attack: AttackParams?,
+  --- Named contact-attack vocabulary. A state action `{ attack: "name" }` must name one of these entries; omit for an attackless graph.
+  attacks: { [string]: AttackParams }?,
   --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,
-  --- Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.
+  --- Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default.
   engagementRadius: number?,
 }
 

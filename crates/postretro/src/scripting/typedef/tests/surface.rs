@@ -807,10 +807,10 @@ fn candidate_input_typedefs_match_the_foundation_table() {
 
 /// Drift guard for the behavior-graph verb vocabularies. The registry
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
-/// `MotionVerb` / `ActionVerb` / `PatrolMode` enums, so this test derives the expected union
-/// members from the enums themselves — `ALL` enumerates the variants and serde
-/// supplies each wire name, exactly as the descriptor parsers see them. A
-/// variant added in foundation and forgotten in the registry fails here.
+/// closed vocabularies, so this test derives the expected motion/patrol unions
+/// from the enums themselves. `ActionVerb` carries its required attack name as
+/// an object, which the registry must preserve as a struct rather than flatten
+/// into the old string union.
 #[test]
 fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     use crate::scripting::typedef::register_all;
@@ -861,7 +861,6 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     let luau = generate_luau(&r);
 
     let motion: Vec<String> = MotionVerb::ALL.iter().map(wire).collect();
-    let action: Vec<String> = ActionVerb::ALL.iter().map(wire).collect();
     let patrol_modes: Vec<String> = PatrolMode::ALL.iter().map(wire).collect();
     for output in [&ts, &luau] {
         assert_eq!(
@@ -869,10 +868,9 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
             motion,
             "emitted `MotionVerb` union does not match `MotionVerb::ALL`"
         );
-        assert_eq!(
-            union_members(output, "ActionVerb"),
-            action,
-            "emitted `ActionVerb` union does not match `ActionVerb::ALL`"
+        assert!(
+            output.contains("export type ActionVerb = {") && output.contains("attack: string"),
+            "emitted `ActionVerb` must preserve its named attack payload"
         );
         assert_eq!(
             union_members(output, "PatrolMode"),
@@ -888,5 +886,10 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     assert!(
         !luau.contains("points: {{number}},"),
         "patrol points must retain their fixed `[x, z]` arity"
+    );
+    assert_eq!(
+        ActionVerb::all(),
+        [ActionVerb::Attack("attack".to_string())],
+        "`ActionVerb::all()` must retain its representative named payload"
     );
 }

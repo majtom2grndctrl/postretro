@@ -156,5 +156,4 @@ Ring({
 ## Open questions
 
 - **Angle zero/winding convention** is decided (`0° = up, clockwise`) but is the first radial convention in the UI layer; a future in-world or minimap radial widget would inherit or re-litigate it. Recorded, not blocking.
-- **`{local}` on a passive ring** — `ScalarValue` carries a `local` source (shared, future-proof, per the recorded design), and this spec exposes it on `RingProps` too (mirroring `SliderBindProp`) so the SDK type matches the round-tripped wire (AC 1). A decorative shape rarely binds to widget-local state; confirm the ring factory should offer `{local}`, or restrict it to slot+literal while the shared `ScalarValue` stays local-capable. Decided (expose it) but low-conviction — flagged for owner sign-off.
 - **Successor spec ownership** — "UI computed bindings via Behavior IR" is named here (Out of scope) but unwritten. It is the thing that makes the dynamic consumers real; whoever picks up bullet spread will need it first. Flag for roadmap sequencing, not this spec.

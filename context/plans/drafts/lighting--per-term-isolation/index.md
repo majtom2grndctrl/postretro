@@ -165,8 +165,9 @@ material else.
   and a checkbox toggle issues a redraw that produces the recomposing frame;
   `freeze_time` does not suppress the compose dispatch).
 - [ ] Only one lighting-term control is present in the Lighting tab; both former
-  ComboBoxes are gone. No `LightingIsolation` or `DynamicDirectIsolation` symbol
-  remains in the crate.
+  ComboBoxes are gone (dev-tools UI check). No `LightingIsolation` or
+  `DynamicDirectIsolation` symbol remains in the crate (grep/review gate, not a
+  runnable test).
 - [ ] The group-0 (128 B), group-2 mesh (16 B) and kinematic (32 B), and group-4
   `DynamicDirectParams` (16 B) strides are unchanged; their byte-layout
   assertion tests pass against the bitmask field.
@@ -185,8 +186,12 @@ renderer state (replacing the `lighting_isolation` field); write it into group-0
 each frame; have `forward.wgsl` gate its in-shader terms (ambient, world lightmap
 static via `lm_irr`, world lightmap animated via `lm_anim`, dynamic, specular) by
 mask bits instead of the `use_*` mode derivations; have `sh_compose` gate the
-static base vs the animated delta accumulation (bit 1 vs bit 2) so
-`sh_total_atlas` carries only the selected indirect terms. The indirect compose
+indirect terms — bit 1 selects whether the accumulator starts at the static base
+or zero, and bit 2 gates the animated-delta accumulation. The delta accumulates
+at **more than one site** (the dense L0 path and the coarsened L1/L2
+reconstruction), so gate bit 2 at **every** delta-accumulation site, not one
+loop — a partial gate leaks animated indirect from the ungated path. `sh_total_atlas`
+then carries only the selected indirect terms. The indirect compose
 already binds the per-frame group-0 `FrameUniforms` bind group, so it reads the
 mask from the **same group-0 field (bytes 88..92)** that forward reads — NOT from
 `sh_compose`'s GridDims params, which are built once at construction and never
@@ -217,8 +222,11 @@ have **every** consumer this plan adds read that field, never the live
 (forward/billboard/`sh_compose`/fog/direct Pass B) already does by construction;
 group-2 params (Task 2) and direct-compose Pass A + its dirty trigger (Task 4)
 must read the same snapshot. A toggle then takes effect uniformly on the next
-frame (atomic N+1), no skew. This mirrors the existing group-4
-`write_dynamic_direct_params`, already written at `update_per_frame_uniforms`.
+frame (atomic N+1), no skew. This mirrors the existing per-frame `full`-cached
+values (e.g. `mesh_dynamic_time`, already read beside `lighting_isolation` at the
+group-2 write sites). Task 1 exposes the snapshot through a **read-only accessor**
+on the renderer so Phase-2 consumers read it without adding a method to a shared
+`impl` block (avoiding concurrent-worktree edits to one impl).
 
 Bit vocabulary (`LightTermMask`):
 
@@ -265,9 +273,10 @@ both shaders — splitting it would put two agents in the same byte contract.
 
 ### Task 3: Sprite path
 
-Wire `billboard.wgsl` to the mask for its in-shader terms — ambient (bit 0),
-dynamic direct / dynamic diffuse (bit 5), and static specular (bit 6) — which it
-currently gates by nothing. Remove its `dynamic_direct_isolation` branch
+Wire `billboard.wgsl` to the mask for its terms — ambient (bit 0), dynamic direct
+/ dynamic diffuse (bit 5), and static specular (bit 6) — which it currently gates
+by nothing. Note these four lighting terms are computed **per-vertex in
+`vs_main`** (not the fragment stage), so the gates land there. Remove its `dynamic_direct_isolation` branch
 (`billboard.wgsl:278-282`); its SH indirect + baked direct now arrive
 pre-isolated from the compose atlases. Retire the `dynamic_direct_isolation`
 `u32` from the group-0 tail (`FrameUniforms` bytes 112..116), reclaiming it as
@@ -351,16 +360,28 @@ tail is now pad), the `shader_tests.rs` group-0 stride test (`Uniforms` span ==
 `kinematic_brush.rs` (its byte-layout + WGSL-layout tests), and
 `sh_volume.rs` `dynamic_direct_params_pack_layout` (`crates/render-cpu/src/sh_volume.rs`).
 (Fog needs no byte-layout change — Task 5 reads the existing group-0 mask, not a
-new `FogParams` field.) Add behavioral gating tests — each bit clears its
-term's contribution on the applicable paths (including the Dynamic-direct bit
-clearing fog spot/point scatter), and all-bits-on equals the pre-change
-composition (parity) — run headless via the Epic-20 frame-capture path
-(`rendering_pipeline.md` §7.8): one capture-A/B per bit. Add a compose-gate test
-that a mask change dirties the direct-SH re-dispatch, and one that a
-return-to-`ALL` recomposes the direct atlas back to base (the
-`last_composed_mask` inequality, per Task 4). The test task covers the
-ordering-scenario rows T1–T9 (see Ordering scenarios); reference the rows rather
-than restating them. Update `rendering_pipeline.md` §4 (retire the "10 lighting
+new `FogParams` field.)
+
+**Test method — headless vs manual-GPU.** Per-bit *visual* gating is verified
+**manually on GPU**, matching this renderer's convention (visual behavior is
+checked by running the engine, not in CI — `rendering_pipeline.md` §4/§12) and
+the manual-GPU ACs (1, 5, 6). The Epic-20 frame-capture path (§7.8) cannot stand
+in for these: it renders world geometry only (no mesh/mover/billboard draws),
+installs static lights only (no dynamic tier), runs no animation, and its
+`CaptureScene` has no mask input — so it reaches none of the entity/mover/sprite
+paths, fog dynamic scatter, the dynamic bit, or the animated bits. Extending the
+capture harness (a `CaptureScene` mask field + driver setter + entity/dynamic/anim
+population) is **out of scope** here; it overlaps the unshipped
+`capture-animated-direct-receiver-goldens` draft, which owns that work — depend on
+it if headless per-bit visual goldens are wanted later. What IS automated headless
+in this plan: the CPU byte-layout assertions (above); a unit test on the extended
+`direct_compose_should_dispatch` predicate that a mask change dirties the
+re-dispatch AND that a return-to-`ALL` re-dirties (the `last_composed_mask`
+inequality, per Task 4 — precedent tests already exist for this pure fn); and the
+`LightingIsolation`/`DynamicDirectIsolation` symbol-removal grep gate (AC 8). The
+manual-GPU per-bit checklist runs on `combat-demo.map` (emissive + dynamic) plus
+a map carrying animated and specular lights; it covers ordering-scenario rows
+T1–T11 (see Ordering scenarios) — reference the rows rather than restating them. Update `rendering_pipeline.md` §4 (retire the "10 lighting
 isolation modes" sentence and the `DynamicDirectIsolation` description; describe
 the unified per-term mask and its compose-time vs in-shader gate split), §7.1
 step 5 (the compose passes honor the mask), §7.5 (fog dynamic scatter honors the
@@ -375,11 +396,18 @@ the two isolation enums).
 assumptions (bit vocabulary, `u32` stride preservation, UI→state→group-0+compose
 flow, compose-time indirect gating, in-shader gating). Blocks everything.
 
-**Phase 2 (concurrent):** Task 2, Task 3, Task 4, Task 5 — independent consumers
-of the Phase 1 contract. Task 2 owns group-2 (mesh/kinematic) + group-4; Task 3
-owns the group-0 tail; Task 4 owns the direct-SH compose; Task 5 owns
-`fog_volume.wgsl` alone (reads the existing group-0 mask). No shared files across
-the four.
+**Phase 2 (concurrent):** Task 2, Task 3, Task 4, Task 5 — consumers of the
+Phase 1 contract. Task 2 owns group-2 (mesh/kinematic) + group-4; Task 3 owns the
+group-0 tail; Task 4 owns the direct-SH compose; Task 5 owns `fog_volume.wgsl`
+alone (reads the existing group-0 mask; genuinely no overlap). The per-frame
+writer files `renderer_render_frame.rs` (Task 2 mesh/kinematic `write_light_params`
+sites; Task 4 direct-compose dispatch site) and `renderer_frame.rs` (Task 2 drops
+the `write_dynamic_direct_params` `isolation` arg; Task 3 billboard tail write)
+are touched by more than one task, but only in **disjoint, line-distant regions**
+— different statements, no shared `impl` method (Task 1's read-only snapshot
+accessor keeps consumers from adding one). A 3-way merge at integration resolves
+cleanly; the coordinator verifies the touched files after the phase merges rather
+than assuming zero overlap.
 
 **Phase 3 (sequential):** Task 6 — consumes the completed migration; removes the
 enums only once no consumer references them, and lands the test + doc sweep
@@ -430,9 +458,10 @@ across consumers.
   (`lm_anim`, bit 4). Drop the mode-coupled `indirect_scale`→1.0 forcing
   (`forward.wgsl:910`): with independent bits and a separate `indirect_scale`
   slider the user controls presence and scale independently.
-- Compose gate (indirect): in `sh_compose.wgsl:260-283`, start `accum` at the
-  base only when bit 1 is set, and run the delta accumulation loop only when bit
-  2 is set. Mask read from the per-frame group-0 `FrameUniforms` bind group
+- Compose gate (indirect): in `sh_compose.wgsl`, start `accum` at the base only
+  when bit 1 is set, and skip the animated-delta accumulation when bit 2 is off —
+  at every delta site (the dense L0 path and the coarsened L1/L2 reconstruction),
+  not one loop. Mask read from the per-frame group-0 `FrameUniforms` bind group
   `sh_compose` already binds (bytes 88..92) — not the static GridDims params.
 - Compose gate (direct): mirror in `direct_sh_compose.wgsl` (bit 3) and the
   `animated_direct_sh_compose` add pass (bit 4), per Task 4.
@@ -440,8 +469,9 @@ across consumers.
   the "Lighting systems" header (`debug_ui/mod.rs:320-323`). Checkboxes only, no
   presets (owner decision: with ≤8 terms, independent checkboxes make each term's
   contribution directly visible; presets would be overkill).
-- The `POSTRETRO_*` env seeding pattern the old modes used (if any) maps to a
-  default-`ALL` mask; a headless run keeps every term on.
+- The mask defaults to `ALL` at renderer init (no env seed exists today; the old
+  modes defaulted to `Normal` and were changed only via the dev-tools panel), so
+  a headless run with no dev-tools keeps every term on.
 
 ## Resolved decisions
 

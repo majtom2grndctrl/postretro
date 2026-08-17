@@ -21,8 +21,6 @@ The first combat-capable enemy, and the per-entity 3D mesh render path it rides 
 
 **Behavior stays shallow.** The animation state machine, navigation, and AI are named here but detailed on open (the E13-UI / detail-on-open pattern). Navigation is the highest-uncertainty system on the roadmap — isolated so it can't quietly balloon, front-loaded to surface any foundation problem early.
 
-**Lean rule:** smallest primitive surface that reads as game-y. Defer richness (projectile variety, line-of-sight queries, patrol graphs, multiple archetypes) to later passes. Each plan ships a foundation to grow, not a throwaway stub and not a finished feature.
-
 **Prerequisite:** Epic 6 (entity model + scripting + damage events) ✓ and Epic 7 (grounded movement + collision world) ✓.
 
 Plans ship in this sequence. The render foundation and combat tracks converge twice: skeletal hit zones need the posed bone palette, and the AI behavior plan needs both navigation and the animation runtime. Logical combat work — enemy HP/death, navigation — runs in parallel with the render track; the integrated outcome needs both.
@@ -295,9 +293,9 @@ The feel layer on top of working combat — tuning axes the SDK exposes, not new
 
 ## Epic 17: Kinematic Geometry and Moving Platforms
 
-Build the moving-world substrate as deterministic kinematic geometry, not rigid-body simulation: moving brush payloads compile as runtime-transformable render and collider data, waypoint or script-declared drivers move them, players ride them through the existing custom-kinematic movement substrate, and replicated mover phase drives client-side prediction and reconciliation. The first plan should prove one platform or elevator before rotating carry, doors-as-occluders, dynamic portals, kinematic clusters, or destruction.
+Build the moving-world substrate as deterministic kinematic geometry, not rigid-body simulation: moving brush payloads compile as runtime-transformable render and collider data, waypoint or script-declared drivers move them, players ride them through the existing custom-kinematic movement substrate, and replicated mover phase drives client-side prediction and reconciliation.
 
-This epic owns the engine substrate for moving world geometry. It deliberately does **not** start with a general physics engine, dynamic BSP, or author-scripted per-tick motion. The first path is a server-authoritative kinematic mover: compile a brush entity into local-space render/collider payloads, drive it along a linear waypoint path, render and collide it at runtime, and make a player ride it through the existing custom-kinematic movement substrate. Later specs can add author-facing triggers, script commands, rotation, doors, and visibility-bearing moving geometry only after the basic moving payload is proven.
+This epic owns the engine substrate for moving world geometry. It is deliberately **not** a general physics engine, dynamic BSP, or author-scripted per-tick motion. The substrate is a server-authoritative kinematic mover: compile a brush entity into local-space render/collider payloads, drive it along a linear waypoint path, render and collide it at runtime, and make a player ride it through the existing custom-kinematic movement substrate.
 
 Plans ship in this sequence:
 

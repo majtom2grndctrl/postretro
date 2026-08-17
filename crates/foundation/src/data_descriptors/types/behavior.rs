@@ -50,21 +50,27 @@ impl MotionVerb {
 
 /// What a state does besides moving. Closed vocabulary; `None` on a state means
 /// it takes no action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionVerb {
-    /// Cooldown-gated contact damage using the graph's [`AttackParams`].
-    Attack,
+    /// Cooldown-gated contact damage using the named graph-wide
+    /// [`AttackParams`] entry.
+    Attack(String),
 }
 
 impl ActionVerb {
-    /// Every action verb. See [`MotionVerb::ALL`]; `action_verb_all_is_exhaustive`
-    /// below is its exhaustiveness guard.
-    pub const ALL: [ActionVerb; 1] = [ActionVerb::Attack];
+    /// Every action verb, each with a representative wire payload. See
+    /// [`MotionVerb::ALL`]; `action_verb_all_is_exhaustive` below is its
+    /// exhaustiveness guard.
+    ///
+    /// This cannot be a `const` array because an attack action carries its
+    /// author-chosen entry name as a [`String`].
+    pub fn all() -> [ActionVerb; 1] {
+        [ActionVerb::Attack("attack".to_string())]
+    }
 }
 
-/// Tuning consumed by [`ActionVerb::Attack`]. Required whenever any state
-/// declares that action; the graph has nothing to attack with otherwise.
+/// Tuning consumed by a named [`ActionVerb::Attack`] entry.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttackParams {
@@ -72,13 +78,14 @@ pub struct AttackParams {
     /// HEAL the target through the damage chokepoint's subtraction.
     pub damage: f32,
     /// Distance within which the attack lands damage, in metres. Finite and
-    /// `> 0`. This is a DAMAGE gate and nothing else. Where engaged agents
-    /// stand is [`BehaviorGraphDescriptor::engagement_radius`], which merely
-    /// defaults to this value when the graph authors no `engagementRadius` of
-    /// its own.
-    pub range: f32,
+    /// `> 0`. This is a DAMAGE gate and nothing else.
+    pub max_range: f32,
     /// Minimum interval between attacks, in milliseconds. Finite and `> 0`.
     pub cooldown_ms: f32,
+    /// Optional combat-slot standoff for a state firing this attack. When
+    /// omitted, the firing state stands at [`Self::max_range`].
+    #[serde(default)]
+    pub engagement_radius: Option<f32>,
 }
 
 /// How an authored patrol route moves when it reaches an endpoint.
@@ -216,7 +223,7 @@ pub struct BehaviorStateDescriptor {
 /// the ordered guards between them, and optional candidate eligibility.
 ///
 /// Wire keys are camelCase: `initial`, `states`, `interrupts`,
-/// `candidateFilter`, `patrol`, `attack`, `engagementRadius`, `moveSpeed`.
+/// `candidateFilter`, `patrol`, `attacks`, `engagementRadius`, `moveSpeed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorGraphDescriptor {
@@ -255,32 +262,20 @@ pub struct BehaviorGraphDescriptor {
     /// [`MotionVerb::Patrol`] requires this block to contain at least one point.
     #[serde(default)]
     pub patrol: Option<PatrolDescriptor>,
-    /// Tuning for the `attack` action verb. REQUIRED when some state declares
-    /// that action; permitted (and meaningful) even when none does, because
-    /// `attack.range` is what [`BehaviorGraphDescriptor::engagement_radius`]
-    /// falls back to. A present-but-unreferenced block is therefore accepted,
-    /// not a validation error.
-    ///
-    /// `attack.range` gates DAMAGE only — it is the distance within which the
-    /// action verb lands a hit. It does not decide where chasers stand; that is
-    /// `engagementRadius`.
+    /// Named contact-attack vocabulary. A state with `action: { attack:
+    /// "name" }` must name one of these entries. A present but unreferenced
+    /// entry is accepted so graphs can retain a vocabulary across state edits.
     #[serde(default)]
-    pub attack: Option<AttackParams>,
+    pub attacks: BTreeMap<String, AttackParams>,
     /// Radius of the ring of combat slots the engine spreads engaged agents
     /// around their target, in metres. Finite and `> 0` when present.
     ///
-    /// Distinct from `attack.range`, which gates damage. This one is pure
-    /// spacing: it sets both where candidate slots are generated and the band
-    /// distance each candidate is scored against, for EVERY engaged state —
-    /// attacking or not. A pure-pursuit graph (`chaseTarget`, no `action`)
-    /// needs it just as much as an attacker, or its chasers all steer at the
-    /// raw target position and pile up.
-    ///
-    /// Resolution order is [`BehaviorGraphDescriptor::engagement_radius`]: this
-    /// field, else `attack.range`, else
-    /// [`BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS`]. The `attack.range`
-    /// fallback keeps combat-slot spacing useful when an attack graph omits an
-    /// explicit engagement radius.
+    /// This is the graph-level default for non-attack states. A firing attack
+    /// state resolves its own standoff through
+    /// [`BehaviorGraphDescriptor::engagement_radius_for_state`]. A pure-pursuit
+    /// graph (`chaseTarget`, no `action`) needs this default just as much as an
+    /// attacker, or its chasers all steer at the raw target position and pile
+    /// up.
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     /// Pursuit movement speed in metres/sec, seeding the navigation agent.
@@ -333,8 +328,8 @@ where
 }
 
 impl BehaviorGraphDescriptor {
-    /// Combat-slot ring radius for a graph that authors neither
-    /// `engagementRadius` nor an `attack` block — a pure-pursuit graph, which
+    /// Combat-slot ring radius for a graph that authors no graph-level
+    /// `engagementRadius` — including a pure-pursuit graph, which
     /// would otherwise get a radius of zero and thus NO slots at all.
     ///
     /// 2 m, chosen from what combat-slot resolution does with the number: slots
@@ -344,20 +339,33 @@ impl BehaviorGraphDescriptor {
     /// clear of an agent capsule (0.3 m radius), so eight melee-scale chasers
     /// occupy distinct slots instead of stacking — while staying close enough
     /// that the ring still reads as "crowding the player". It also matches the
-    /// melee `attack.range` shipped enemies author, so adding an attack action
-    /// to a pursuit graph does not visibly re-space it.
+    /// melee-scale contact attacks shipped enemies author.
     pub const DEFAULT_ENGAGEMENT_RADIUS: f32 = 2.0;
 
-    /// The effective combat-slot ring radius: the authored `engagementRadius`,
-    /// else the `attack` block's `range`, else
-    /// [`Self::DEFAULT_ENGAGEMENT_RADIUS`].
-    ///
-    /// When `engagement_radius` is absent, `attack.range` supplies the combat-slot
-    /// spacing radius before the graph's default applies.
+    /// The graph-level combat-slot ring radius: the authored
+    /// `engagementRadius`, else [`Self::DEFAULT_ENGAGEMENT_RADIUS`]. Attack
+    /// states resolve their attack-specific standoff with
+    /// [`Self::engagement_radius_for_state`].
     pub fn engagement_radius(&self) -> f32 {
         self.engagement_radius
-            .or_else(|| self.attack.map(|attack| attack.range))
             .unwrap_or(Self::DEFAULT_ENGAGEMENT_RADIUS)
+    }
+
+    /// Effective combat-slot standoff for one current state. A named attack
+    /// uses its authored `engagementRadius`, falling back to its `maxRange`;
+    /// non-attack states use the graph-level default. An unresolved attack name
+    /// also falls back to that default so this helper remains total for
+    /// hand-written, unvalidated descriptors; [`Self::validate`] rejects that
+    /// shape before parsed graphs reach runtime.
+    pub fn engagement_radius_for_state(&self, state: &BehaviorStateDescriptor) -> f32 {
+        match state.action.as_ref() {
+            Some(ActionVerb::Attack(name)) => self
+                .attacks
+                .get(name)
+                .map(|attack| attack.engagement_radius.unwrap_or(attack.max_range))
+                .unwrap_or_else(|| self.engagement_radius()),
+            None => self.engagement_radius(),
+        }
     }
 
     /// The shared parse-time validator both runtimes funnel through, so QuickJS
@@ -371,8 +379,10 @@ impl BehaviorGraphDescriptor {
     /// - every state's `animation` is non-empty;
     /// - no state-local transition targets its own declaring state;
     /// - `moveSpeed` is finite `> 0`; a present `engagementRadius` is finite `> 0`;
-    /// - `attack` numerics are finite (`damage >= 0`, `range`/`cooldownMs > 0`),
-    ///   and the block is present whenever a state declares the attack action;
+    /// - each named `attacks` entry has finite `damage >= 0`, `maxRange` and
+    ///   `cooldownMs > 0`, and an authored `engagementRadius` no greater than
+    ///   `maxRange`; every attack action names an entry and the map is non-empty
+    ///   when an attack action exists;
     /// - every patrol point component is finite, and a `patrol` state has a
     ///   non-empty patrol block;
     /// - position-goal states (`moveToAnchor` / `patrol`) declare no action;
@@ -401,17 +411,31 @@ impl BehaviorGraphDescriptor {
         if let Some(engagement_radius) = self.engagement_radius {
             validate_positive("engagementRadius", engagement_radius)?;
         }
-        if let Some(attack) = self.attack.as_ref() {
+        for (name, attack) in &self.attacks {
             if !attack.damage.is_finite() || attack.damage < 0.0 {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
-                        "`components.behavior.attack.damage` must be a finite value >= 0.0, got {}",
+                        "`components.behavior.attacks.{name}.damage` must be a finite value >= 0.0, got {}",
                         attack.damage
                     ),
                 });
             }
-            validate_positive("attack.range", attack.range)?;
-            validate_positive("attack.cooldownMs", attack.cooldown_ms)?;
+            validate_positive(&format!("attacks.{name}.maxRange"), attack.max_range)?;
+            validate_positive(&format!("attacks.{name}.cooldownMs"), attack.cooldown_ms)?;
+            if let Some(engagement_radius) = attack.engagement_radius {
+                validate_positive(
+                    &format!("attacks.{name}.engagementRadius"),
+                    engagement_radius,
+                )?;
+                if engagement_radius > attack.max_range {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.behavior.attacks.{name}.engagementRadius` must be <= `components.behavior.attacks.{name}.maxRange` ({max_range}), got {engagement_radius}",
+                            max_range = attack.max_range,
+                        ),
+                    });
+                }
+            }
         }
         if let Some(patrol) = self.patrol.as_ref() {
             for (index, point) in patrol.points.iter().enumerate() {
@@ -445,19 +469,28 @@ impl BehaviorGraphDescriptor {
                 MotionVerb::Patrol => Some("patrol"),
                 MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => None,
             };
-            if let (Some(motion), Some(_)) = (position_goal_motion, state.action) {
+            if let (Some(motion), true) = (position_goal_motion, state.action.is_some()) {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
                         "`components.behavior.states.{name}.action` must be omitted when `components.behavior.states.{name}.motion` is \"{motion}\"; position-goal states are non-engaged"
                     ),
                 });
             }
-            if state.action == Some(ActionVerb::Attack) && self.attack.is_none() {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`components.behavior.states.{name}.action` is \"attack\", so `components.behavior.attack` is required"
-                    ),
-                });
+            if let Some(ActionVerb::Attack(attack_name)) = state.action.as_ref() {
+                if self.attacks.is_empty() {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.behavior.states.{name}.action.attack` names \"{attack_name}\", so `components.behavior.attacks` must declare at least one entry"
+                        ),
+                    });
+                }
+                if !self.attacks.contains_key(attack_name) {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.behavior.states.{name}.action.attack` names \"{attack_name}\", which is not declared in `components.behavior.attacks`"
+                        ),
+                    });
+                }
             }
             if state.motion == MotionVerb::Patrol {
                 match self.patrol.as_ref() {
@@ -626,17 +659,17 @@ mod tests {
     fn action_verb_all_is_exhaustive() {
         fn next(verb: ActionVerb) -> Option<ActionVerb> {
             match verb {
-                ActionVerb::Attack => None,
+                ActionVerb::Attack(_) => None,
             }
         }
-        let mut walked = vec![ActionVerb::Attack];
-        while let Some(verb) = next(*walked.last().expect("the walk is seeded")) {
+        let mut walked = vec![ActionVerb::Attack("attack".to_string())];
+        while let Some(verb) = next(walked.last().expect("the walk is seeded").clone()) {
             walked.push(verb);
         }
         assert_eq!(
             walked,
-            ActionVerb::ALL,
-            "`ActionVerb::ALL` must hold every variant, in successor order"
+            ActionVerb::all(),
+            "`ActionVerb::all()` must hold every variant, in successor order"
         );
     }
 
@@ -700,7 +733,7 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: None,
+            attacks: BTreeMap::new(),
             engagement_radius: None,
             move_speed: 3.0,
         }
@@ -749,12 +782,16 @@ mod tests {
             let mut invalid = graph();
             let state = invalid.states.get_mut("chase").unwrap();
             state.motion = motion;
-            state.action = Some(ActionVerb::Attack);
-            invalid.attack = Some(AttackParams {
-                damage: 8.0,
-                range: 2.0,
-                cooldown_ms: 1200.0,
-            });
+            state.action = Some(ActionVerb::Attack("claw".to_string()));
+            invalid.attacks.insert(
+                "claw".to_string(),
+                AttackParams {
+                    damage: 8.0,
+                    max_range: 2.0,
+                    cooldown_ms: 1200.0,
+                    engagement_radius: None,
+                },
+            );
             if motion == MotionVerb::Patrol {
                 invalid.patrol = Some(PatrolDescriptor {
                     points: vec![[0.0, 0.0]],
@@ -822,42 +859,53 @@ mod tests {
     }
 
     #[test]
-    fn the_engagement_radius_resolves_field_then_attack_range_then_default() {
-        // A pure-pursuit graph: no `engagementRadius`, no `attack` block. This
-        // is the case that must NOT resolve to zero, since zero yields no
-        // combat slots at all and every chaser piles onto the target.
+    fn the_engagement_radius_resolves_graph_default_and_per_attack_standoff() {
+        // A pure-pursuit graph: no `engagementRadius`, no attacks. This is the
+        // case that must NOT resolve to zero, since zero yields no combat slots
+        // at all and every chaser piles onto the target.
         assert_eq!(
             graph().engagement_radius(),
             BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
         );
 
-        // An `attack` block supplies the fallback for an authored attack graph.
+        // An attack map does not alter the graph-level default. The firing
+        // state alone resolves the named entry's standoff.
         let with_attack = BehaviorGraphDescriptor {
-            patrol: None,
-            attack: Some(AttackParams {
-                damage: 8.0,
-                range: 2.2,
-                cooldown_ms: 1200.0,
-            }),
+            attacks: BTreeMap::from([(
+                "claw".to_string(),
+                AttackParams {
+                    damage: 8.0,
+                    max_range: 2.2,
+                    cooldown_ms: 1200.0,
+                    engagement_radius: None,
+                },
+            )]),
             ..graph()
         };
-        assert_eq!(with_attack.engagement_radius(), 2.2);
-
-        // The explicit field outranks both.
+        let mut firing = state("claw", Vec::new());
+        firing.action = Some(ActionVerb::Attack("claw".to_string()));
         assert_eq!(
-            BehaviorGraphDescriptor {
-                engagement_radius: Some(5.0),
-                ..with_attack
-            }
-            .engagement_radius(),
-            5.0
+            with_attack.engagement_radius(),
+            BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
         );
+        assert_eq!(with_attack.engagement_radius_for_state(&firing), 2.2);
+
+        let with_entry_radius = BehaviorGraphDescriptor {
+            attacks: BTreeMap::from([(
+                "claw".to_string(),
+                AttackParams {
+                    damage: 8.0,
+                    max_range: 2.2,
+                    cooldown_ms: 1200.0,
+                    engagement_radius: Some(1.8),
+                },
+            )]),
+            engagement_radius: Some(5.0),
+            ..graph()
+        };
+        assert_eq!(with_entry_radius.engagement_radius_for_state(&firing), 1.8);
         assert_eq!(
-            BehaviorGraphDescriptor {
-                engagement_radius: Some(5.0),
-                ..graph()
-            }
-            .engagement_radius(),
+            with_entry_radius.engagement_radius_for_state(&state("walk", Vec::new())),
             5.0
         );
     }
@@ -971,18 +1019,35 @@ mod tests {
     }
 
     #[test]
-    fn the_attack_action_requires_the_attack_block() {
+    fn the_attack_action_requires_a_named_attack_entry() {
         let mut g = graph();
-        g.states.get_mut("chase").unwrap().action = Some(ActionVerb::Attack);
+        g.states.get_mut("chase").unwrap().action = Some(ActionVerb::Attack("claw".to_string()));
         let err = g.clone().validate().unwrap_err().to_string();
-        assert!(err.contains("states.chase.action"), "{err}");
+        assert!(
+            err.contains("components.behavior.states.chase.action.attack")
+                && err.contains("components.behavior.attacks"),
+            "{err}"
+        );
 
-        g.attack = Some(AttackParams {
-            damage: 8.0,
-            range: 2.0,
-            cooldown_ms: 1200.0,
-        });
-        assert!(g.validate().is_ok());
+        g.attacks.insert(
+            "claw".to_string(),
+            AttackParams {
+                damage: 8.0,
+                max_range: 2.0,
+                cooldown_ms: 1200.0,
+                engagement_radius: None,
+            },
+        );
+        assert!(g.clone().validate().is_ok());
+
+        g.states.get_mut("chase").unwrap().action = Some(ActionVerb::Attack("bite".to_string()));
+        let err = g.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("components.behavior.states.chase.action.attack")
+                && err.contains("bite")
+                && err.contains("components.behavior.attacks"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -991,33 +1056,72 @@ mod tests {
             (
                 AttackParams {
                     damage: -1.0,
-                    range: 2.0,
+                    max_range: 2.0,
                     cooldown_ms: 1200.0,
+                    engagement_radius: None,
                 },
-                "attack.damage",
+                "attacks.claw.damage",
             ),
             (
                 AttackParams {
                     damage: 8.0,
-                    range: 0.0,
+                    max_range: 0.0,
                     cooldown_ms: 1200.0,
+                    engagement_radius: None,
                 },
-                "attack.range",
+                "attacks.claw.maxRange",
             ),
             (
                 AttackParams {
                     damage: 8.0,
-                    range: 2.0,
+                    max_range: 2.0,
                     cooldown_ms: f32::INFINITY,
+                    engagement_radius: None,
                 },
-                "attack.cooldownMs",
+                "attacks.claw.cooldownMs",
             ),
         ] {
             let mut g = graph();
-            g.attack = Some(attack);
+            g.attacks.insert("claw".to_string(), attack);
             let err = g.validate().unwrap_err().to_string();
             assert!(err.contains(needle), "{err}");
         }
+    }
+
+    #[test]
+    fn attack_engagement_radius_must_be_positive_and_not_exceed_max_range() {
+        let mut g = graph();
+        g.attacks.insert(
+            "claw".to_string(),
+            AttackParams {
+                damage: 8.0,
+                max_range: 2.0,
+                cooldown_ms: 1200.0,
+                engagement_radius: Some(2.1),
+            },
+        );
+        let error = g.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("components.behavior.attacks.claw.engagementRadius")
+                && error.contains("components.behavior.attacks.claw.maxRange"),
+            "{error}"
+        );
+
+        let mut g = graph();
+        g.attacks.insert(
+            "claw".to_string(),
+            AttackParams {
+                damage: 8.0,
+                max_range: 2.0,
+                cooldown_ms: 1200.0,
+                engagement_radius: Some(0.0),
+            },
+        );
+        let error = g.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("components.behavior.attacks.claw.engagementRadius"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1044,7 +1148,10 @@ mod tests {
             "initial": "idle",
             "moveSpeed": 3.0,
             "engagementRadius": 3.5,
-            "attack": { "damage": 8.0, "range": 2.0, "cooldownMs": 1200.0 },
+            "attacks": {
+                "claw": { "damage": 8.0, "maxRange": 2.0, "cooldownMs": 1200.0 },
+                "slam": { "damage": 14.0, "maxRange": 3.5, "cooldownMs": 1800.0, "engagementRadius": 3.0 }
+            },
             "interrupts": [
                 { "to": "idle", "when": { "op": "ge", "a": { "op": "input", "name": "@state.staggered" }, "b": { "op": "const", "value": 1.0 } } }
             ],
@@ -1059,7 +1166,7 @@ mod tests {
                 "attack": {
                     "animation": "attack",
                     "motion": "chaseTarget",
-                    "action": "attack",
+                    "action": { "attack": "claw" },
                     "onEnter": "gruntSwings"
                 }
             }
@@ -1067,7 +1174,12 @@ mod tests {
         let parsed: BehaviorGraphDescriptor = serde_json::from_value(json).unwrap();
         let validated = parsed.validate().expect("authored graph validates");
         assert_eq!(validated.states["attack"].motion, MotionVerb::ChaseTarget);
-        assert_eq!(validated.states["attack"].action, Some(ActionVerb::Attack));
+        assert_eq!(
+            validated.states["attack"].action.as_ref(),
+            Some(&ActionVerb::Attack("claw".to_string()))
+        );
+        assert_eq!(validated.attacks.len(), 2);
+        assert_eq!(validated.attacks["slam"].engagement_radius, Some(3.0));
         assert_eq!(
             validated.states["attack"].on_enter.as_deref(),
             Some("gruntSwings")
@@ -1075,7 +1187,7 @@ mod tests {
         assert_eq!(
             validated.engagement_radius(),
             3.5,
-            "the explicit field outranks the `attack.range` fallback"
+            "the graph-level authored field outranks the default"
         );
         // Serialize emits the defaulted keys explicitly (no
         // `skip_serializing_if`), so identity is asserted by
@@ -1083,6 +1195,27 @@ mod tests {
         let reparsed: BehaviorGraphDescriptor =
             serde_json::from_value(serde_json::to_value(&validated).unwrap()).unwrap();
         assert_eq!(reparsed, validated);
+    }
+
+    #[test]
+    fn attack_entry_required_fields_are_serde_errors_before_validation() {
+        let json = serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "attacks": {
+                "claw": { "damage": 8.0, "cooldownMs": 1200.0 }
+            },
+            "states": { "idle": { "animation": "idle", "motion": "hold" } }
+        });
+
+        let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+            .expect_err("maxRange is required by the wire shape")
+            .to_string();
+        assert!(error.contains("missing field `maxRange`"), "{error}");
+        assert!(
+            !error.contains("components.behavior"),
+            "serde failures occur before validation and are not path-prefixed: {error}"
+        );
     }
 
     #[test]

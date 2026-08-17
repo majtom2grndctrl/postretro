@@ -353,11 +353,15 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: Some(AttackParams {
-                damage: 5.0,
-                range: 2.0,
-                cooldown_ms: 900.0,
-            }),
+            attacks: std::collections::BTreeMap::from([(
+                "claw".to_string(),
+                AttackParams {
+                    damage: 5.0,
+                    max_range: 2.0,
+                    cooldown_ms: 900.0,
+                    engagement_radius: None,
+                },
+            )]),
             engagement_radius: None,
             move_speed: 4.0,
         }
@@ -399,8 +403,8 @@ mod tests {
         assert_eq!(*brain.graph, graph, "the graph is retained verbatim");
         assert_eq!(
             brain.graph.engagement_radius(),
-            2.0,
-            "with no `engagementRadius` the graph falls back to its `attack.range`"
+            BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS,
+            "an attacks-only graph without `engagementRadius` uses the graph-level default"
         );
     }
 

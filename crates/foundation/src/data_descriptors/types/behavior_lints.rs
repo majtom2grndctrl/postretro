@@ -124,7 +124,7 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: None,
+            attacks: BTreeMap::new(),
             engagement_radius: None,
             move_speed: 3.0,
         }
@@ -136,7 +136,10 @@ mod tests {
             ("zeta".to_string(), state(MotionVerb::Hold, None)),
             (
                 "attack".to_string(),
-                state(MotionVerb::Hold, Some(ActionVerb::Attack)),
+                state(
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("claw".to_string())),
+                ),
             ),
             ("chase".to_string(), state(MotionVerb::ChaseTarget, None)),
         ]));

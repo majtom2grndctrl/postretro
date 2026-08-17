@@ -53,21 +53,29 @@ sequenceDiagram
 
 Every arrow here has a read/write call site in `encode`; the diagram drives the code-grounding for Task 1's composition/encode changes.
 
-## Geometry model decision
+## Geometry model decision (revised — pure shape primitive)
 
-One `Ring` widget, one bound numeric `value`/`max` → `fraction = clamp(value/max, 0, 1)`. `fillMode` selects what `fraction` drives:
+**Superseded model (recorded so the reversal is legible in the diff, not the spec body):** an earlier draft modeled the Ring on `Bar` — one privileged bound `value`/`max` → `fraction`, a `fillMode` selecting whether the fraction drove sweep or radius, `styleRanges` recoloring the fill, reusing `drive_bar_binding`/`drive_bar_max`. The owner rejected the framing: `bind` presumes the widget *exists to visualize one number*, which is true of a Bar but wrong for a ring — a ring is a **shape** with several independently-authorable properties (radius, thickness, sweep, start angle, fill), any of which may be static or track state, and often none is privileged. A static reticle ring has no value at all, which the Bar-style model cannot even express (Bar requires a bind).
 
-- `sweep` (default): fill arc spans `startAngle … startAngle + fraction*sweep`; track (if present) spans the full `sweep`. Radius fixed at `radius`. Consumers: cooldown arc (`player.weaponCooldownMs`), charge/reload ring (`player.reloadProgress`) — **live today**.
-- `radius`: fill ring spans the full `sweep` at radius `lerp(minRadius, radius, fraction)`; track (if present) at `radius`. Consumer: bullet-spread crosshair — **data source is future Weapon-Feel work**.
+**Chosen model.** The Ring is an annulus-arc shape. Its layout box is authored statically (`diameter`, reserving a fixed square leaf — so bound draw values never relayout). Each geometric draw property — `radius`, `thickness`, `startAngle`, `sweep` — is uniformly `literal | bound`, passed straight into its own named prop (the `max: number | ComputedRef<number>` precedent generalized to every property). A bound property reads its slot **1:1** in the property's own units (px for radius/thickness, degrees for angles), with an optional presentation `tween` riding the bound ref. `fill` and optional `track` (a full-360 background annulus) are colors. There is **no `bind`, no `max`, no `fillMode`, no `styleRanges`** — the ambiguity `fillMode` resolved is gone once you bind the property you mean.
 
-`styleRanges` evaluate `fraction` in both modes (a bloomed crosshair can turn red at max spread), matching the Bar contract. The Ring reuses `drive_bar_binding`/`drive_bar_max` verbatim — it is numeric-and-fixed-size exactly like a Bar, so the retained diff is appearance-only with no new tween code.
+**Why 1:1 and not a baked `from→to` range.** The UI layer cannot compute per-frame (the VM drops; bindings are name→value with no script math). So a bound geometric prop needs either a slot already in the property's units or a widget-side mapping. A per-prop `from→to` range would work, but the owner correctly placed value mapping (spread → px, cooldown-ms → degrees) on the **Behavior IR** (Epic 14, `scripting.md` §11): authored `f(state)` evaluated Rust-side each tick. That is the general "UI reads a computed value from game state" substrate; baking a bespoke range into every widget prop is exactly the pre-IR special case Epic 14's "primitive consolidation" exists to retire. So this spec keeps the ring a dumb 1:1 shape and defers all value transforms to a **successor spec** (see below).
 
-v1 is **clockwise-only** and **no exit-fade** (exit-fade is documented Bar-only). Counter-clockwise winding (`clockwise: false`) and a per-instance label/`fontSize` are trivial additive follow-ups if a consumer needs them.
+**Consequence for consumers.** No live slot is in UI-property units today (`reloadProgress` is 0..1, `weaponCooldownMs` is ms), so the compelling *dynamic* consumers — cooldown arc, bullet-spread crosshair — are unblocked by the successor IR-mapping spec (and, for spread, the gameplay producer), not by this one. v1 ships the shape + 1:1 binding hooks + a static reticle-ring demo. This is honest and lean: the shape and its render pipeline land now; the computed bindings land on the IR.
+
+v1 is **clockwise-only**. Counter-clockwise winding (`clockwise: false`), a per-instance label, and bindable `fill`/`track` colors are trivial additive follow-ups.
+
+## Successor spec (owner's call, recorded — not drafted here)
+
+**UI computed bindings via Behavior IR.** Let a UI bind resolve a value the IR computes from game state (`radius = map(player.spread, [0,1] → [12,60])`, `sweep = map(cooldownFrac, [0,1] → [0,270])`) instead of only a raw slot. This is the general home for value transforms and likely subsumes `styleRanges` (value → color) and `Bar::max` normalization too — an Epic-14 "primitive consolidation" item, its own `/draft-plan`. The Ring is its first real consumer. Out of scope for the ring primitive itself.
 
 ## Angle convention decision
 
 Author `startAngle`/`sweep` in **degrees**; `0° = 12 o'clock (straight up)`, **positive = clockwise**; convert with `.to_radians()` in the collector before building the ring instance. This matches the degrees-authored house style and is the intuitive HUD/gauge convention. The collector accounts for UI Y-down device space when mapping angle → screen direction.
 
-## Scope alternative considered (recorded for /validate-plan)
+## Alternatives considered
 
-Building only `sweep` mode (the radial Bar) and deferring `radius`/spread was the closest rival. Rejected as the primary because the user's motivating consumer (bullet spread) needs radius drive, and radius mode rides ~all of the shared machinery (descriptor variant, NodeContext, SDF shader, pipeline) — the marginal cost is a `fillMode` enum, a `minRadius` field, and one collector branch. The thin slice still proves the boundary against `sweep` mode (live data), so the speculative radius mode ships on validated, tested machinery — the same static-proxy decoupling pattern Epic 13 used against Epic 10.
+- **Bar-style value-visualizer (privileged `bind` + `max` + `fillMode`).** Rejected by the owner — see "Geometry model decision." Wrong frame for a shape whose properties vary independently and are often all static.
+- **Per-prop `from→to` range baked into the widget.** Solves the no-compute mapping, but multiplies the pre-IR special case Epic 14 exists to consolidate. Deferred to the successor IR-bindings spec.
+- **Defer the whole primitive, ship co-located with the Weapon-Feel producer.** Rejected by the roadmap's own framing — the Epic 13 deferred entry names this "cross-cutting UI-layer work, reusable across features," i.e. UI-owned infrastructure built ahead of any single consumer.
+- **Ship only a static shape, no binding at all.** Rejected — the 1:1 binding hooks are cheap (reuse `drive_tween_f32`), and a shape with zero dynamic capability would force a second breaking pass the moment the IR spec lands. The hooks are the seam the successor consumes.

@@ -109,6 +109,17 @@ consumer.
 | Per-archetype aggression profiles | cautious / aggressive / skittish temperament as a descriptor axis | one profile |
 | Memory & persistence | search-last-known-position, forget timer, re-aggro on re-sight | leash (crude disengage) |
 
+## Enemy-on-enemy damage (friendly fire)
+
+Whether and how much one enemy's attack damages another is a per-game, per-faction-pair policy,
+owned by the **Faction & relationship model** (`roadmap.md`, Epic 10), not the engine floor.
+Enemy melee applies damage directly to the selected target, so it never strikes a bystander.
+Enemy-on-enemy impacts become possible only once enemy **ranged** attacks land: a nearest-of
+hitscan ray can put a bystanding enemy in the line of fire. That is the prerequisite tracked in
+`context/research/enemy-ranged-attacks.md`. The faction model's per-pair relation is the
+declarative surface that would then govern whether such an impact deals damage. Design intent only;
+no descriptor surface here.
+
 ## Boundary discipline
 
 Richness grows on the **descriptor surface** (taste), staged demand-driven — *"breadth grows with

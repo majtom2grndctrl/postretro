@@ -63,6 +63,8 @@ Every arrow here has a read/write call site in `encode`; the diagram drives the 
 
 **Consequence for consumers.** No live slot is in UI-property units today (`reloadProgress` is 0..1, `weaponCooldownMs` is ms), so the compelling *dynamic* consumers — cooldown arc, bullet-spread crosshair — are unblocked by the successor IR-mapping spec (and, for spread, the gameplay producer), not by this one. v1 ships the shape + 1:1 binding hooks + a static reticle-ring demo. This is honest and lean: the shape and its render pipeline land now; the computed bindings land on the IR.
 
+**Binding sources — why both `{slot}` and `{local}`.** `BoundScalar` flattens the shared `BindSource` (`{slot}`/`{local}`), the same source set `SliderBind` carries — not a new decision to make per-widget. Once the wire type accepts `{local}`, the Rust bridge deserializes it and AC-1 round-trips it, so Task 2 must resolve local sources regardless of the SDK surface. Given that, exposing `{local}` on `RingProps` (mirroring `SliderBindProp`) is the only choice that keeps the SDK type and the wire symmetric; withholding it would let raw-asset authors write a source the typed factory can't. A passive ring binding its radius 1:1 to a container's local cell is a legitimate no-transform use, so there is no reason to special-case the ring narrower than the shared type. Not an open question.
+
 v1 is **clockwise-only**. Counter-clockwise winding (`clockwise: false`), a per-instance label, and bindable `fill`/`track` colors are trivial additive follow-ups.
 
 ## Successor spec (owner's call, recorded — not drafted here)

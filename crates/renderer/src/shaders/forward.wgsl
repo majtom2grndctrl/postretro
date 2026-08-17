@@ -51,7 +51,9 @@ struct Uniforms {
     // 16-byte row so the struct stride is exactly 128 — wgpu rejects the
     // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
     dynamic_direct_scale: f32,
-    dynamic_direct_isolation: u32,
+    // Retired billboard-only isolation selector; reserved padding keeps the
+    // following tail offsets stable.
+    _dynamic_direct_pad: u32,
     has_direct: u32,
     total_light_count: u32,
     // Dev toggle: force static-light shadowmask visibility to 1.0 for the

@@ -285,7 +285,6 @@ impl Renderer {
             sdf_shadow_mode: full.sdf_shadow_mode,
             sdf_force_visibility_one: full.sdf_force_visibility_one,
             dynamic_direct_scale: full.dynamic_direct_scale,
-            dynamic_direct_isolation: full.dynamic_direct_isolation,
             has_direct: full.sh_volume_resources.has_direct,
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
         });

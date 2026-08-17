@@ -73,6 +73,7 @@ struct DebugOverride {
 
 const AFFINITY_FACTOR: u32 = 4u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
+const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
 // PRL validation pins the runtime tile dimension to 6. Keeping the shared
 // lattice fixed-size makes one brick workgroup fit well below the 16 KiB
 // WebGPU workgroup-storage floor.
@@ -244,6 +245,9 @@ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32>
 }
 
 fn animated_light_scale(light_index: u32) -> vec3<f32> {
+    if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u) {
+        return vec3<f32>(0.0);
+    }
     if (debug_override.enabled != 0u && light_index != debug_override.light_index) {
         return vec3<f32>(0.0);
     }

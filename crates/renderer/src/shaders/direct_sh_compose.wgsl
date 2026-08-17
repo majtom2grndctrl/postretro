@@ -29,6 +29,15 @@ struct DebugOverride {
     _pad4: f32,
 };
 
+// Private Pass-A input. Its mask mirrors group-0's FrameUniforms snapshot
+// because this compose pipeline has an independent bind-group layout.
+struct DirectComposeParams {
+    light_term_mask: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
 @group(0) @binding(0) var direct_base_atlas: texture_2d_array<f32>;
 // Non-filtering (nearest) sampler. The base atlas is BC6H block-compressed at
 // rest; Metal disallows textureLoad (lowered to `.read()`) on compressed formats,
@@ -46,8 +55,11 @@ struct DebugOverride {
 // post-drop CSR entry. This direct pass has no base probe-indirection binding,
 // so the descriptor is also its required invalid-local read guard.
 @group(0) @binding(28) var<storage, read> delta_compaction_meta: array<u32>;
+@group(0) @binding(29) var<uniform> direct_compose_params: DirectComposeParams;
 
 const AFFINITY_FACTOR: u32 = 4u;
+const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
+const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
 // PRL validation pins the runtime tile dimension to 6. Keeping the shared
 // lattice fixed-size makes one brick workgroup fit well below the 16 KiB
 // WebGPU workgroup-storage floor.
@@ -213,6 +225,12 @@ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32>
 }
 
 fn selection_weight(selection_index: u32) -> f32 {
+    // Promoted static transport is removed only while its runtime direct
+    // counterpart is present. Otherwise the static-direct view retains the
+    // full baked base instead of compensating for an absent dynamic term.
+    if ((direct_compose_params.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) == 0u) {
+        return 0.0;
+    }
     if (debug_override.enabled != 0u) {
         if (selection_index == debug_override.selection_index) {
             return clamp(debug_override.weight, 0.0, 1.0);
@@ -241,13 +259,14 @@ fn compose_main(
     let in_grid = !any(probe >= grid.grid_dimensions);
     let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);
     let tile_origin = atlas_tile_origin(probe);
+    let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
 
     // Keeping the accumulator private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
     // geometry is fixed at 6×6 by PRL validation.
     var accum: array<vec4<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
-        if (in_grid) {
+        if (in_grid && use_baked_direct_static) {
             let tile_texel = vec2<u32>(
                 texel_index % RUNTIME_TILE_DIMENSION,
                 texel_index / RUNTIME_TILE_DIMENSION,

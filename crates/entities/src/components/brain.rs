@@ -17,10 +17,10 @@
 //      component, no script surface)
 //      context/lib/scripting.md §1 (scripts declare, Rust executes)
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use glam::Vec3;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::data_descriptors::BehaviorGraphDescriptor;
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
@@ -47,9 +47,12 @@ pub struct BrainComponent {
     /// zero, which would leave ping-pong routes stationary.
     #[serde(default = "default_patrol_direction")]
     pub patrol_direction: i8,
-    /// Milliseconds remaining before the brain may attack again. Counts down each
-    /// tick; `0.0` means an attack is available. Seeded to `0.0` (ready) at spawn.
-    pub attack_cooldown_remaining_ms: f32,
+    /// Milliseconds remaining before each named attack may fire again. Every
+    /// entry counts down each tick; a missing name is ready (`0.0`). This
+    /// transient simulation state is intentionally retained across graph reseats
+    /// so a same-named attack inherits its remaining cooldown.
+    #[serde(default, deserialize_with = "deserialize_attack_cooldowns")]
+    pub attack_cooldown_remaining_ms: BTreeMap<String, f32>,
     /// Think-stride counter: incremented each tick by the FSM and compared
     /// against a distance-derived stride to time-slice target acquisition for
     /// distant enemies. Seeded to `0` at spawn.
@@ -130,7 +133,7 @@ impl BrainComponent {
             home_anchor: Vec3::ZERO,
             patrol_cursor: 0,
             patrol_direction: 1,
-            attack_cooldown_remaining_ms: 0.0,
+            attack_cooldown_remaining_ms: BTreeMap::new(),
             think_stride_counter: 0,
             locomotion_moving: false,
             aggro_armed: true,
@@ -165,6 +168,25 @@ impl BrainComponent {
 /// definition of the index every `state_index` is measured against.
 pub fn graph_state_index(graph: &BehaviorGraphDescriptor, name: &str) -> Option<usize> {
     graph.states.keys().position(|state| state == name)
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SerializedAttackCooldowns {
+    Named(BTreeMap<String, f32>),
+    LegacyScalar(f32),
+}
+
+fn deserialize_attack_cooldowns<'de, D>(deserializer: D) -> Result<BTreeMap<String, f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match SerializedAttackCooldowns::deserialize(deserializer)? {
+        SerializedAttackCooldowns::Named(cooldowns) => Ok(cooldowns),
+        // The old scalar was transient state for the retired single attack.
+        // No attack name exists to carry it forward without guessing.
+        SerializedAttackCooldowns::LegacyScalar(_remaining_ms) => Ok(BTreeMap::new()),
+    }
 }
 
 const fn default_aggro_armed() -> bool {
@@ -353,11 +375,15 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: Some(AttackParams {
-                damage: 5.0,
-                range: 2.0,
-                cooldown_ms: 900.0,
-            }),
+            attacks: std::collections::BTreeMap::from([(
+                "claw".to_string(),
+                AttackParams {
+                    damage: 5.0,
+                    max_range: 2.0,
+                    cooldown_ms: 900.0,
+                    engagement_radius: None,
+                },
+            )]),
             engagement_radius: None,
             move_speed: 4.0,
         }
@@ -396,11 +422,15 @@ mod tests {
         );
         assert_eq!(brain.time_in_state_ms, 0.0);
         assert_eq!(brain.home_anchor, Vec3::ZERO);
+        assert!(
+            brain.attack_cooldown_remaining_ms.is_empty(),
+            "a fresh brain starts with every named attack ready"
+        );
         assert_eq!(*brain.graph, graph, "the graph is retained verbatim");
         assert_eq!(
             brain.graph.engagement_radius(),
-            2.0,
-            "with no `engagementRadius` the graph falls back to its `attack.range`"
+            BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS,
+            "an attacks-only graph without `engagementRadius` uses the graph-level default"
         );
     }
 
@@ -416,6 +446,28 @@ mod tests {
         let restored: BrainComponent =
             serde_json::from_value(serialized).expect("pre-anchor brain deserializes");
         assert_eq!(restored.home_anchor, Vec3::ZERO);
+    }
+
+    // Regression: pre-multi-attack brains stored one numeric cooldown, which
+    // failed deserialization after the field became a named map.
+    #[test]
+    fn deserializing_a_pre_multi_attack_scalar_defaults_named_cooldowns_to_ready() {
+        let brain = BrainComponent::from_graph(&authored_graph());
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .insert(
+                "attack_cooldown_remaining_ms".to_string(),
+                serde_json::json!(375.0),
+            );
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-multi-attack brain deserializes");
+        assert!(
+            restored.attack_cooldown_remaining_ms.is_empty(),
+            "the legacy unnamed transient cooldown cannot be assigned to a named attack"
+        );
     }
 
     #[test]

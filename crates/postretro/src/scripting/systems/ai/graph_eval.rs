@@ -201,10 +201,10 @@ pub(super) fn animation_for_state(
 pub(super) fn action_for_state(
     graph: &BehaviorGraphDescriptor,
     index: usize,
-) -> Option<ActionVerb> {
+) -> Option<&ActionVerb> {
     let state = state_at(graph, index)?;
     match state.motion {
         MotionVerb::MoveToAnchor | MotionVerb::Patrol => None,
-        MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => state.action,
+        MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => state.action.as_ref(),
     }
 }

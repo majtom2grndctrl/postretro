@@ -243,6 +243,13 @@ pub(super) struct EnemyOutcome {
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
     pub(super) prior_acquired_target: Option<EntityId>,
+    /// State occupied before this tick's transition. Combat-slot retention
+    /// compares its effective standoff with the committed state's standoff so
+    /// a state change cannot preserve a slot on the wrong engagement ring.
+    pub(super) prior_state_index: usize,
+    /// A replacement graph was reconciled this tick. Its state identity was
+    /// resolved by name even when the resulting numeric index stayed equal.
+    pub(super) graph_reseated: bool,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -329,10 +336,10 @@ impl Default for AiRuntime {
 ///    an engine rule. A CLOSED aggro gate is the sole exception — it stands the
 ///    brain down to its `initial` state and skips evaluation entirely.
 /// 3. On entering a state, reset the time-in-state and raise its `on_enter`.
-/// 4. When the selected state declares the `attack` action, the cooldown has
-///    elapsed, and the selected target is inside `attack.range`, apply the
-///    graph's damage to that pawn through the chokepoint and raise the attack
-///    event.
+/// 4. When the selected state names an attack, that attack's cooldown has
+///    elapsed, and the selected target is inside its `maxRange`, apply that
+///    entry's damage to the selected pawn through the chokepoint and raise the
+///    attack event.
 /// 5. On a state CHANGE or locomotion stop/resume, request the selected
 ///    animation state.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -427,6 +434,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
+        let graph_reseat_index = programs.take_reseat(snap.id);
+        let graph_reseated = graph_reseat_index.is_some();
+        let persisted_state_index = brain.state_index;
+        let prior_state_index = graph_reseat_index.unwrap_or(persisted_state_index);
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -436,13 +447,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // immutable position snapshot before either branch can suppress target
         // work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
-        let prior_state_index = brain.state_index;
         let prior_acquired_target = brain.acquired_target;
         let (target, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
             // — chasing one, or acting on one. A resting brain re-ranks
             // candidates instead of honoring a stale acquired id.
-            let retained_target = engages(&brain.graph, brain.state_index)
+            let retained_target = engages(&brain.graph, prior_state_index)
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
@@ -500,10 +510,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             (None, false)
         };
 
-        // (1) Cooldown ticks down and time-in-state accrues every tick, before
-        // any guard reads them: a `@brain.timeInStateMs` commitment window then
-        // elapses on the first tick its budget is spent, and never earlier.
-        brain.attack_cooldown_remaining_ms = (brain.attack_cooldown_remaining_ms - dt_ms).max(0.0);
+        // (1) Every named cooldown ticks down before the aggro gate and before
+        // any guard reads its selected attack's value. Entries do not freeze
+        // while another attack is current, nor disappear on a graph reseat.
+        for remaining_ms in brain.attack_cooldown_remaining_ms.values_mut() {
+            *remaining_ms = (*remaining_ms - dt_ms).max(0.0);
+        }
         brain.time_in_state_ms += dt_ms;
 
         // Stride bookkeeping advances every tick so the gate is deterministic.
@@ -559,15 +571,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // current state, so an unaddressable one would answer "stay put"
             // forever. The graph's `initial` is the same state the gate stands
             // brains down to.
-            let current_index = if state_at(&brain.graph, brain.state_index).is_some() {
-                brain.state_index
+            let current_index = if state_at(&brain.graph, prior_state_index).is_some() {
+                prior_state_index
             } else {
                 if reseat_warned.insert(snap.id) {
                     log::warn!(
                         "[AI] enemy {} sat in behavior state index {} which its graph does not \
                          declare; re-seating it to `{}`. Warned once per enemy.",
                         snap.id,
-                        brain.state_index,
+                        persisted_state_index,
                         brain.graph.initial,
                     );
                 }
@@ -582,13 +594,19 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // armed brain evaluates its whole guard set whether or not it has a
             // pawn: that is how an interrupt reaches an enemy nobody is standing
             // in front of.
+            let attack_cooldown_ms = action_for_state(&brain.graph, current_index)
+                .and_then(|action| match action {
+                    ActionVerb::Attack(name) => brain.attack_cooldown_remaining_ms.get(name),
+                })
+                .copied()
+                .unwrap_or(0.0);
             programs.scope_mut().refresh(
                 registry,
                 snap.id,
                 BrainFacts {
                     target: selected_target,
                     time_in_state_ms: brain.time_in_state_ms,
-                    attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
+                    attack_cooldown_ms,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
@@ -625,34 +643,39 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             _ => None,
         };
 
-        // (4) Attack: the selected state declares the `attack` action, the
-        // cooldown has elapsed, the SELECTED target is inside the graph's
-        // `attack.range`, and it is still alive — apply the configured damage
-        // once and arm the cooldown. Checked every tick.
+        // (4) Attack: the selected state names one graph-wide contact attack.
+        // Its own cooldown must have elapsed, the SELECTED target must be
+        // inside its `maxRange`, and it must still be alive. Apply its
+        // configured damage once and re-arm only that named timer. Checked
+        // every tick.
         // The range gate lets a graph declare the action without making it
         // connect from across the room.
-        // A graph with no `attack` block configures no range and no damage, so
-        // it never attacks.
+        // An unresolved action name configures no range and no damage, so it
+        // never attacks.
         // Gating on the selected target's Health stops attack/event spam against
         // an already-dead but still-present pawn and prevents damaging a
         // different co-op pawn than the one this enemy chose.
         if let (Some(target), Some(distance)) = (target, selected_distance) {
-            let in_attack_range = brain
-                .graph
-                .attack
-                .is_some_and(|attack| distance <= attack.range);
-            if in_attack_range
-                && action_for_state(&brain.graph, next_index) == Some(ActionVerb::Attack)
-                && brain.attack_cooldown_remaining_ms <= 0.0
+            if let Some(ActionVerb::Attack(attack_name)) =
+                action_for_state(&brain.graph, next_index)
+                && let Some(attack) = brain.graph.attacks.get(attack_name).copied()
+                && distance <= attack.max_range
+                && brain
+                    .attack_cooldown_remaining_ms
+                    .get(attack_name)
+                    .copied()
+                    .unwrap_or(0.0)
+                    <= 0.0
                 && selected_target_alive(registry, target.entity)
             {
                 attacked = true;
-                brain.attack_cooldown_remaining_ms =
-                    brain.graph.attack.map_or(0.0, |attack| attack.cooldown_ms);
+                brain
+                    .attack_cooldown_remaining_ms
+                    .insert(attack_name.clone(), attack.cooldown_ms);
             }
         }
 
-        let state_changed = next_index != prior_state_index;
+        let state_changed = graph_reseated || next_index != prior_state_index;
         let engaged = target.is_some() && engages(&brain.graph, next_index);
         brain.state_index = next_index;
         let on_enter = if state_changed {
@@ -667,6 +690,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             position: snap.position,
             target,
             prior_acquired_target,
+            prior_state_index,
+            graph_reseated,
             state_changed,
             attacked,
             on_enter,
@@ -831,10 +856,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     registry,
                     target.entity,
                     &DamagePayload {
-                        amount: outcome
-                            .brain
-                            .graph
-                            .attack
+                        amount: action_for_state(&outcome.brain.graph, outcome.brain.state_index)
+                            .and_then(|action| match action {
+                                ActionVerb::Attack(name) => outcome.brain.graph.attacks.get(name),
+                            })
                             .map_or(0.0, |attack| attack.damage),
                     },
                     DamageContext {

@@ -39,6 +39,7 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
     use postretro_entities::Transform;
     use postretro_entities::components::brain::BrainComponent;
     use postretro_entities::registry::{ComponentKind, ComponentValue};
+    use postretro_foundation::ActionVerb;
 
     let mut geometry = Vec::new();
     let mut labels = Vec::new();
@@ -64,10 +65,18 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
         if !include_labels {
             continue;
         }
-        let state_label = registry
+        let (state_label, firing_attack_label) = registry
             .get_component::<BrainComponent>(id)
             .ok()
-            .and_then(|brain| brain.state_name().map(str::to_string));
+            .and_then(|brain| {
+                let state_name = brain.state_name()?;
+                let firing_attack = brain.graph.states.get(state_name).and_then(|state| {
+                    let ActionVerb::Attack(name) = state.action.as_ref()?;
+                    Some(name.clone())
+                });
+                Some((state_name.to_string(), firing_attack))
+            })
+            .map_or((None, None), |(state, attack)| (Some(state), attack));
         let xz_speed = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
         let flags = AgentOverlayLabelFlags {
             arrived: agent.arrived,
@@ -81,7 +90,12 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
         labels.push(AgentOverlayLabel {
             id,
             screen_position,
-            text: assemble_agent_overlay_label(state_label.as_deref(), xz_speed, flags),
+            text: assemble_agent_overlay_label(
+                state_label.as_deref(),
+                firing_attack_label.as_deref(),
+                xz_speed,
+                flags,
+            ),
             state: state_label,
             speed: xz_speed,
             flags,
@@ -124,12 +138,14 @@ fn agent_overlay_world_to_screen(
 
 fn assemble_agent_overlay_label(
     fsm_state_label: Option<&str>,
+    firing_attack_label: Option<&str>,
     xz_speed: f32,
     flags: AgentOverlayLabelFlags,
 ) -> String {
     format!(
-        "state:{} speed:{:.2} arrived:{} blocked:{} has_path:{}",
+        "state:{} attack:{} speed:{:.2} arrived:{} blocked:{} has_path:{}",
         fsm_state_label.unwrap_or("-"),
+        firing_attack_label.unwrap_or("-"),
         xz_speed,
         flags.arrived,
         flags.blocked,
@@ -341,7 +357,7 @@ mod tests {
         assert_eq!(label.state, None);
         assert_eq!(
             label.text,
-            "state:- speed:0.56 arrived:false blocked:false has_path:true"
+            "state:- attack:- speed:0.56 arrived:false blocked:false has_path:true"
         );
         assert!(label.flags.has_path);
     }
@@ -453,6 +469,7 @@ mod tests {
     fn agent_overlay_label_includes_state_speed_and_flags() {
         let label = assemble_agent_overlay_label(
             Some("alert"),
+            None,
             3.456,
             AgentOverlayLabelFlags {
                 arrived: true,
@@ -463,7 +480,27 @@ mod tests {
 
         assert_eq!(
             label,
-            "state:alert speed:3.46 arrived:true blocked:false has_path:true"
+            "state:alert attack:- speed:3.46 arrived:true blocked:false has_path:true"
+        );
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn agent_overlay_label_names_the_current_firing_attack() {
+        let label = assemble_agent_overlay_label(
+            Some("attack_slam"),
+            Some("slam"),
+            0.0,
+            AgentOverlayLabelFlags {
+                arrived: false,
+                blocked: false,
+                has_path: false,
+            },
+        );
+
+        assert_eq!(
+            label,
+            "state:attack_slam attack:slam speed:0.00 arrived:false blocked:false has_path:false"
         );
     }
 
@@ -471,6 +508,7 @@ mod tests {
     #[test]
     fn agent_overlay_label_uses_placeholder_for_brainless_agent() {
         let label = assemble_agent_overlay_label(
+            None,
             None,
             0.0,
             AgentOverlayLabelFlags {
@@ -482,7 +520,7 @@ mod tests {
 
         assert_eq!(
             label,
-            "state:- speed:0.00 arrived:false blocked:true has_path:false"
+            "state:- attack:- speed:0.00 arrived:false blocked:true has_path:false"
         );
     }
 

@@ -257,14 +257,19 @@ fn spawn_resolved_spawners(
                 // the fixed-tick path.
                 context.queue_mesh_clip_resolve(enemy);
             }
-            // Behavior-graph attachment initializes this timer to zero. Seed
-            // only after the descriptor has attached its components so a newly
-            // spawned enemy cannot attack before remote interpolation's maximum
-            // delay has elapsed and the remote presentation has had time to arrive.
+            // Behavior-graph attachment initializes cooldowns empty. Seed every
+            // declared attack only after descriptor attachment so a newly spawned
+            // enemy cannot attack before remote interpolation's maximum delay
+            // has elapsed and the remote presentation has had time to arrive.
             if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
-                brain.attack_cooldown_remaining_ms = brain
-                    .attack_cooldown_remaining_ms
-                    .max(MAX_DELAY_MICROS as f32 / 1000.0);
+                let windup_ms = MAX_DELAY_MICROS as f32 / 1000.0;
+                for attack_name in brain.graph.attacks.keys() {
+                    brain
+                        .attack_cooldown_remaining_ms
+                        .entry(attack_name.clone())
+                        .and_modify(|remaining_ms| *remaining_ms = remaining_ms.max(windup_ms))
+                        .or_insert(windup_ms);
+                }
                 let _ = registry.set_component(enemy, brain);
             }
         }
@@ -308,9 +313,9 @@ mod tests {
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, GroundParams, LightDescriptor,
-        NamedReaction, PlayerMovementDescriptor, ProgressDescriptor, ReactionDescriptor,
-        SpeedParams,
+        ActionVerb, AirParams, AttackParams, BehaviorStateDescriptor, CapsuleParams,
+        EntityTypeDescriptor, FallParams, GroundParams, LightDescriptor, MotionVerb, NamedReaction,
+        PlayerMovementDescriptor, ProgressDescriptor, ReactionDescriptor, SpeedParams,
     };
     use postretro_scripting_core::data_registry::DataRegistry;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -470,29 +475,82 @@ mod tests {
     fn spawned_enemy_cannot_attack_before_interpolation_windup_expires() {
         let mut registry = EntityRegistry::new();
         add_spawner(&mut registry, TAG, 1, true, Transform::default());
-        let context = context();
+        let mut descriptor = behavior_enemy_descriptor("cultist");
+        let behavior = descriptor
+            .behavior
+            .as_mut()
+            .expect("behavior enemy fixture declares a graph");
+        behavior.attacks.insert(
+            "slam".to_string(),
+            AttackParams {
+                damage: 12.0,
+                max_range: 2.0,
+                cooldown_ms: 1800.0,
+                engagement_radius: None,
+            },
+        );
+        behavior
+            .states
+            .get_mut("idle")
+            .expect("fixture declares its initial state")
+            .transitions[0]
+            .to = "slam".to_string();
+        behavior.states.insert(
+            "slam".to_string(),
+            BehaviorStateDescriptor {
+                animation: "attack".to_string(),
+                motion: MotionVerb::ChaseTarget,
+                action: Some(ActionVerb::Attack("slam".to_string())),
+                transitions: Vec::new(),
+                on_enter: None,
+            },
+        );
+        let declared_attack_names: Vec<_> = behavior.attacks.keys().cloned().collect();
+        assert_eq!(
+            declared_attack_names.len(),
+            2,
+            "the fixture exercises a two-attack graph"
+        );
+        let context = context_with_descriptor(descriptor);
         let player = spawn_attackable_player(&mut registry);
 
         spawn_from_spawner_tag(&mut registry, TAG, &context);
         let enemy = spawned(&registry).pop().expect("one spawned enemy");
         let seed = MAX_DELAY_MICROS as f32 / 1000.0;
-        assert!(
-            registry
-                .get_component::<BrainComponent>(enemy)
-                .unwrap()
-                .attack_cooldown_remaining_ms
-                >= seed,
-            "the descriptor attachment must not overwrite the interpolation windup"
+        let cooldowns = &registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("spawned enemy retains its brain")
+            .attack_cooldown_remaining_ms;
+        assert_eq!(
+            cooldowns.len(),
+            declared_attack_names.len(),
+            "the spawn windup creates one cooldown entry for every declared attack"
         );
+        for attack_name in &declared_attack_names {
+            assert!(
+                cooldowns.get(attack_name).copied().unwrap_or_default() >= seed,
+                "the descriptor attachment must seed `{attack_name}` with the interpolation windup"
+            );
+        }
 
         let mut warned = crate::scripting_systems::ai::AiRuntime::new();
         let dt_secs = 0.05;
-        for _ in 0..4 {
+        for tick in 0..4 {
             assert!(
                 run_ai_tick(&mut registry, &mut warned, dt_secs).is_empty(),
                 "no attack may land before the {} ms windup floor",
                 seed
             );
+            if tick == 0 {
+                assert_eq!(
+                    registry
+                        .get_component::<BrainComponent>(enemy)
+                        .expect("spawned enemy retains its brain")
+                        .state_name(),
+                    Some("slam"),
+                    "the spawned enemy routes into the second, non-initial firing state"
+                );
+            }
         }
         assert_eq!(
             registry
@@ -506,7 +564,7 @@ mod tests {
         assert_eq!(
             run_ai_tick(&mut registry, &mut warned, dt_secs),
             vec![std::borrow::Cow::Borrowed(ENEMY_ATTACK_EVENT)],
-            "the enemy attacks once exactly when the seeded windup reaches zero"
+            "the non-initial attack fires once exactly when its seeded windup reaches zero"
         );
         assert!(
             registry

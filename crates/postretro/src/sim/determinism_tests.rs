@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -1189,7 +1190,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 BehaviorStateDescriptor {
                     animation: "attack".to_string(),
                     motion: MotionVerb::ChaseTarget,
-                    action: Some(ActionVerb::Attack),
+                    action: Some(ActionVerb::Attack("attack".to_string())),
                     transitions: Vec::new(),
                     on_enter: None,
                 },
@@ -1208,11 +1209,15 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
         interrupts: Vec::new(),
         candidate_filter: None,
         patrol: None,
-        attack: Some(AttackParams {
-            damage: 7.0,
-            range: 2.0,
-            cooldown_ms: 1000.0,
-        }),
+        attacks: BTreeMap::from([(
+            "attack".to_string(),
+            AttackParams {
+                damage: 7.0,
+                max_range: 2.0,
+                cooldown_ms: 1000.0,
+                engagement_radius: None,
+            },
+        )]),
         engagement_radius: None,
         move_speed,
     }

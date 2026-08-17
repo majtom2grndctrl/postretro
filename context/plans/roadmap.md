@@ -21,8 +21,6 @@ The first combat-capable enemy, and the per-entity 3D mesh render path it rides 
 
 **Behavior stays shallow.** The animation state machine, navigation, and AI are named here but detailed on open (the E13-UI / detail-on-open pattern). Navigation is the highest-uncertainty system on the roadmap — isolated so it can't quietly balloon, front-loaded to surface any foundation problem early.
 
-**Lean rule:** smallest primitive surface that reads as game-y. Defer richness (projectile variety, line-of-sight queries, patrol graphs, multiple archetypes) to later passes. Each plan ships a foundation to grow, not a throwaway stub and not a finished feature.
-
 **Prerequisite:** Epic 6 (entity model + scripting + damage events) ✓ and Epic 7 (grounded movement + collision world) ✓.
 
 Plans ship in this sequence. The render foundation and combat tracks converge twice: skeletal hit zones need the posed bone palette, and the AI behavior plan needs both navigation and the animation runtime. Logical combat work — enemy HP/death, navigation — runs in parallel with the render track; the integrated outcome needs both.

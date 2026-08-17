@@ -225,10 +225,11 @@ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32>
 }
 
 fn selection_weight(selection_index: u32) -> f32 {
-    // Promoted static transport is removed only while its runtime direct
-    // counterpart is present. Otherwise the static-direct view retains the
-    // full baked base instead of compensating for an absent dynamic term.
-    if ((direct_compose_params.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) == 0u) {
+    // Promoted static transport is removed only while both the baked-static
+    // source and its runtime direct counterpart are present. Otherwise the
+    // static-direct view either retains the full base or stays exactly zero.
+    let required_terms = LIGHT_TERM_BAKED_DIRECT_STATIC | LIGHT_TERM_DYNAMIC_DIRECT;
+    if ((direct_compose_params.light_term_mask & required_terms) != required_terms) {
         return 0.0;
     }
     if (debug_override.enabled != 0u) {
@@ -260,6 +261,8 @@ fn compose_main(
     let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);
     let tile_origin = atlas_tile_origin(probe);
     let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
+    let use_dynamic_direct = (direct_compose_params.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
+    let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;
 
     // Keeping the accumulator private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
@@ -293,7 +296,7 @@ fn compose_main(
     if (level == 0u) {
         // Dense L0 has no dropped probes, so keep its direct compact-payload
         // reads and do not spend shared memory loading 64 tiles.
-        if (output_is_valid) {
+        if (output_is_valid && use_promotion_subtraction) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let w = selection_weight(affinity_lights[entry]);
@@ -316,7 +319,7 @@ fn compose_main(
                 }
             }
         }
-    } else {
+    } else if (use_promotion_subtraction) {
         // Coarsened L1/L2 cells load only their kept lattice into workgroup
         // memory. A load happens once per (brick, CSR entry, tile texel), then
         // every dropped-valid output probe reconstructs from those values.

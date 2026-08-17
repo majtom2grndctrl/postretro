@@ -984,8 +984,66 @@ mod tests {
         ));
         assert!(source.contains("if (in_grid && use_baked_direct_static)"));
         assert!(source.contains(
-            "if ((direct_compose_params.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) == 0u)"
+            "let required_terms = LIGHT_TERM_BAKED_DIRECT_STATIC | LIGHT_TERM_DYNAMIC_DIRECT;"
         ));
+        assert!(source.contains(
+            "if ((direct_compose_params.light_term_mask & required_terms) != required_terms)"
+        ));
+        assert!(source.contains(
+            "let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;"
+        ));
+    }
+
+    #[test]
+    fn static_direct_off_with_dynamic_on_skips_dense_and_coarsened_promotion() {
+        // A negative SH delta exposes the original failure: subtracting it
+        // from an already-zero accumulator produces a positive coefficient
+        // that survives the final clamp. Keep a nonzero promotion weight in
+        // this reference case so both compose paths must be blocked by bit 3.
+        let mut static_off_dynamic_on = LightTermMask::ALL;
+        static_off_dynamic_on.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+        assert!(static_off_dynamic_on.contains(LightTermMask::DYNAMIC_DIRECT));
+        let use_baked_direct_static =
+            static_off_dynamic_on.contains(LightTermMask::BAKED_DIRECT_STATIC);
+        let use_dynamic_direct = static_off_dynamic_on.contains(LightTermMask::DYNAMIC_DIRECT);
+        let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;
+        let promotion_weight = 0.75_f32;
+
+        for coarsened in [false, true] {
+            let mut accum = if use_baked_direct_static { 1.0 } else { 0.0 };
+            if use_promotion_subtraction && promotion_weight > 0.0 {
+                let delta = if coarsened { -0.5 } else { -0.25 };
+                accum -= delta * promotion_weight;
+            }
+            assert_eq!(accum.max(0.0), 0.0);
+        }
+
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+        let dense_start = source
+            .find("    if (level == 0u) {")
+            .expect("shader must retain the dense L0 path");
+        let coarsened_start = source[dense_start..]
+            .find("    } else if (use_promotion_subtraction) {")
+            .map(|offset| dense_start + offset)
+            .expect("bit 3 and bit 5 must uniformly guard the coarsened path");
+        let output_start = source[coarsened_start..]
+            .find("\n    if (in_grid) {")
+            .map(|offset| coarsened_start + offset)
+            .expect("shader must retain its output-store path");
+        let dense_path = &source[dense_start..coarsened_start];
+        let coarsened_path = &source[coarsened_start..output_start];
+
+        assert!(
+            dense_path.contains("if (output_is_valid && use_promotion_subtraction)")
+                && dense_path.contains("read_delta_texel("),
+            "the combined bit-3/bit-5 guard must wrap dense L0 delta reads",
+        );
+        assert!(
+            coarsened_path.starts_with("    } else if (use_promotion_subtraction) {")
+                && coarsened_path.contains("read_delta_texel(")
+                && coarsened_path.contains("reconstruct_l1_shared_texel("),
+            "the uniform combined guard must wrap coarsened reads and reconstruction",
+        );
     }
 
     #[test]

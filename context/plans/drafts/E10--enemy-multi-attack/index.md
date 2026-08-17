@@ -101,11 +101,14 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
 ## Acceptance criteria
 
 - [ ] **AC1 — Parse validation.** A `components.behavior.attacks` map with two entries parses and
-  validates identically in QuickJS and Luau. Rejections carry pathed, wire-cased errors in both: an
-  empty `attacks` map when any state's action references it; an entry missing `damage`, `maxRange`,
-  or `cooldownMs`; an entry with non-finite or out-of-range `damage` (`< 0`), `maxRange` (`<= 0`), or
-  `cooldownMs` (`<= 0`); an entry whose authored `engagementRadius > maxRange`; an `action.attack`
-  naming no entry. Validation is parse-time only — there are no spawn-time attack checks.
+  validates identically in QuickJS and Luau. The `validate()`-checked rejections carry pathed,
+  wire-cased errors in both: an empty `attacks` map when any state's action references it; an entry
+  with non-finite or out-of-range `damage` (`< 0`), `maxRange` (`<= 0`), or `cooldownMs` (`<= 0`); an
+  entry whose authored `engagementRadius > maxRange`; an `action.attack` naming no entry. An entry
+  missing a required field (`damage`, `maxRange`, or `cooldownMs`) instead surfaces as a wire-cased
+  serde error ("missing field `maxRange`") before `validate()` runs, not path-prefixed — the same
+  posture today's singular `attack` block already has. Validation is parse-time only — there are no
+  spawn-time attack checks.
 - [ ] **AC2 — Reference cadence preserved.** The reference enemy's melee tuning, expressed as a
   single-entry `attacks` map with `action: { attack: "..." }`, behaves exactly as the shipped singular
   `attack` block: same distance at which its swing connects, same damage per swing, same cooldown
@@ -116,11 +119,14 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
   connect distance, per-swing damage, and cooldown interval, rather than resting on suite-green alone.
   The trace runs the single-entry form only — the second attack never enters it. The pose-fixture
   enemy's migration holds the same parity.
-- [ ] **AC3 — Two-reach routing.** On the movement-feel fixture, with the two-attack reference enemy:
-  at a distance within only the longer-reach attack's reach the player takes that attack's damage
-  once per that attack's cooldown with the hosting state's animation active; within the shorter-reach
-  attack's reach the shorter attack's damage and animation apply instead — routing driven entirely by
-  the authored per-state distance guards.
+- [ ] **AC3 — Two-reach routing.** A registry-built two-reach trace fixture, analogous to
+  `trace_reference_fixture` — the two-attack reference enemy stationary at the origin, the target
+  stepped through the longer-reach (slam-only) distance and then the shorter-reach (jab) distance —
+  asserts per tick: at the slam-only distance the player takes the slam's damage once per its
+  cooldown with the slam state's animation active; at the jab distance the jab's damage and animation
+  apply instead, and the routing is driven entirely by the authored per-state distance guards. The
+  movement-feel dev-tools arena is a separate manual overlay/feel check, not this AC's automated
+  vehicle.
 - [ ] **AC4 — Independent cooldowns.** Per-attack cooldowns are independent: firing one attack
   neither resets nor delays another's cooldown, and switching between two attack-firing states
   mid-cooldown leaves each attack's remaining cooldown untouched. Every attack's cooldown decrements
@@ -138,8 +144,11 @@ long-reach slam with a short-reach jab, because one standoff cannot suit both.
   attack state, declaration order wins (the first-true-wins evaluator guarantee); sim determinism
   tests stay green.
 - [ ] **AC8 — Hold when no reach satisfied.** With no attack's reach currently satisfied (every
-  attack's `maxRange` ceiling exceeded) but an attack-firing state still current, the enemy holds in
-  that state facing the target (no authored transition guard is true yet).
+  attack's `maxRange` ceiling exceeded) but an attack-firing state still current, no authored
+  transition guard is true and the enemy holds in that state. Facing holds when the enemy is at rest:
+  the fixture stops the enemy at standoff before asserting it faces the target — a `chaseTarget`
+  attack state still moving faces its direction of travel, not the target, so the facing assertion
+  does not hold mid-chase.
 - [ ] **AC9 — SDK typedef drift.** SDK typedef drift tests pass with `attacks`, the per-entry fields,
   and `action: { attack }` present in both `postretro.d.ts` and `postretro.d.luau` committed
   fixtures.
@@ -166,7 +175,8 @@ cannot be `Copy` — and makes the existing `const ActionVerb::ALL` array un-con
 `String`-carrying variant; rework `ALL` and the `action_verb_all_is_exhaustive` walk to carry a
 representative payload (or restructure the exhaustiveness guard so it no longer needs a `const`
 array). `graph_eval::action_for_state`'s `Option<ActionVerb>` return now borrows or clones the small
-`String` rather than copying it.
+`String` rather than copying it — flagging the consequence here; the actual edit lands in Task 3,
+where `crates/postretro` (the crate `action_for_state` lives in) compiles.
 Parameterize `ActionVerb::Attack` as the newtype variant `Attack(String)`; the wire shape becomes
 the object `action: { attack: "<name>" }` (externally-tagged serde wraps a newtype variant's payload
 directly under the variant key — a struct variant would double-nest), so `ActionVerb::ALL`, the
@@ -194,7 +204,13 @@ per-runtime shim).
 Migrate the descriptor-level unit tests in this task: `behavior.rs`'s own tests (`attack_numerics_*`, `the_attack_action_requires_*`,
 `the_engagement_radius_resolves_*`, `position_goal_states_reject_actions_*`, the round-trip test) and
 `crates/entities/src/components/brain.rs`'s `from_graph` test (`authored_graph()` and its callers,
-including the `engagement_radius() == 2.0` assertion). State that `crates/postretro` is left
+including the `engagement_radius() == 2.0` assertion). In `behavior.rs`'s
+`the_engagement_radius_resolves_field_then_attack_range_then_default`, DELETE the `attack.range`-fallback
+case (the `== 2.2` assertion) outright — the resolver rung it exercised is gone, not renamed. In
+`brain.rs`'s `from_graph`, the `engagement_radius() == 2.0`-via-fallback assertion is rewritten to
+assert the graph-level default explicitly (an `attacks`-only graph with no authored
+`engagementRadius` resolves to `DEFAULT_ENGAGEMENT_RADIUS`), not mechanically renamed
+`range`→`max_range`. State that `crates/postretro` is left
 non-compiling — production `ai/mod.rs` reads `graph.attack` — until Task 3/4, so Task 1's completion
 bar is `-p postretro-foundation -p postretro-entities` green.
 
@@ -231,8 +247,8 @@ Enumerate and convert every reader of the old scalar:
   4).
 
 Task 2's completion bar is `-p postretro-entities` green; its `crates/postretro` edits (`spawner.rs`,
-and the decrement mechanics in `ai/mod.rs`) stay non-compiling until Task 3, which restores that crate
-to compiling.
+and the decrement mechanics in `ai/mod.rs`) stay non-compiling until Task 3, which restores that
+crate's lib to compiling (the test binary follows in Task 4).
 
 ### Task 3: Attack action verb firing, standoff, and brain-fact feed
 
@@ -265,14 +281,23 @@ already committed to the post-transition state — distinct from the brain-fact 
 `current_index` before that same tick's transition runs. The two are not in tension: one reads before
 the transition, the other after.
 
-This is the first phase where `crates/postretro` compiles, so it also owns the SDK typedef work:
-regenerate via `cargo run -p postretro --bin gen-script-types`, update the registrations in
-`crates/postretro/src/scripting/primitives/mod.rs`, and update the committed fixtures under
-`crates/postretro/src/scripting/typedef/tests/fixtures/` (drift-gated by `committed.rs`). That
-registry is hand-declared, decoupled from the Rust enum: register `ActionVerb` as a struct —
+This is the first phase where `crates/postretro`'s lib compiles, so it also owns the SDK typedef
+work: regenerate via `cargo run -p postretro --bin gen-script-types`, update the registrations in
+`crates/postretro/src/scripting/primitives/mod.rs`, regenerate the committed `sdk/types/postretro.d.ts`
+and `sdk/types/postretro.d.luau` (drift-gated by `committed.rs`'s
+`committed_sdk_types_match_current_registry`), and update the snapshot fixtures under
+`crates/postretro/src/scripting/typedef/tests/fixtures/expected*.d.{ts,luau}`. That registry is
+hand-declared, decoupled from the Rust enum: register `ActionVerb` as a struct —
 `register_type("ActionVerb").field("attack", "String")` — which emits `{ attack: string }` with no
 generator change needed; the `attacks` `Record` follows the existing `"BehaviorStates"` map-alias
-registration precedent. AC9 (typedef drift) is verified here.
+registration precedent. AC9 is implemented here and verified in Task 4, when the postretro test
+binary first compiles.
+
+Task 3's completion bar is `cargo build -p postretro` succeeds (lib compiles) — the postretro
+*test* binary still doesn't compile: `ai_tests.rs`, `#[path]`-included into `ai/mod.rs`'s test
+module, still constructs the old `attack: Some(AttackParams { range })` / `ActionVerb::Attack`
+shape until Task 4 migrates it. No postretro test, including the AC9 drift gate and the spawner
+windup test, runs before Task 4.
 
 ### Task 4: Reference archetype, overlay, fixture verification
 
@@ -298,27 +323,36 @@ second attack never perturbs AC2's numeric trace:
    distinct `mesh.animations` key — a distinct animation-state name (distinct replicated name and
    overlay label) backed by the same clip. (A genuinely distinct second-attack clip is a content
    dependency — see Open questions.)
-3. Verify AC3's two-reach routing on the movement-feel fixture with the now-two-attack reference
-   enemy — a fixture separate from step 1's trace, so the second attack never enters the AC2 trace.
+3. Verify AC3's two-reach routing with a registry-built two-reach trace fixture — the now-two-attack
+   reference enemy stationary at the origin, the target stepped through the slam-only reach then the
+   jab reach, asserting per-tick damage/animation-state/routing — separate from step 1's trace, so the
+   second attack never enters the AC2 trace. The movement-feel dev-tools arena stays the manual
+   overlay/feel check and the co-op distinct-animation-name confirmation, kept separate from this
+   automated assertion.
 
 Migrate every AI test fixture to the new shape: `ai/mod.rs` tests, `brain_scope.rs`, the
 `reference_behavior_graph()` oracle (`ai_tests.rs`), and the scripting-core TS≡Luau twin
 (`crates/scripting-core/src/data_descriptors/tests/behavior.rs`) — the shared `js_behavior`/
 `lua_behavior` fixture templates, `both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions`,
 every `range:`/`action: "attack"` occurrence, and
-`the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`. Rewrite the resolver tests
-asserting `engagement_radius() == 2` "via the `attack.range` fallback" (the resolver-comment fixture
-and the `== 2` assertions around it) to assert `DEFAULT_ENGAGEMENT_RADIUS` explicitly — once the
-fallback rung is gone, passing via the coincidental 2.0 default is not a real assertion. Extend
+`the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings`. Scoped to
+`crates/scripting-core`'s own `behavior.rs` parse tests (the entities/foundation resolver sites are
+Task 1's), rewrite the resolver tests asserting `engagement_radius() == 2` "via the `attack.range`
+fallback" (the resolver-comment fixture and the `== 2` assertions around it) to assert
+`DEFAULT_ENGAGEMENT_RADIUS` explicitly — once the fallback rung is gone, passing via the coincidental
+2.0 default is not a real assertion. `both_parsers_carry_an_explicit_engagement_radius_over_the_attack_range`
+(same file) has a now-moot premise — there is no `attack.range` fallback to carry an explicit radius
+over — and is rewritten and renamed as part of this migration, not merely field-migrated. Extend
 `assemble_agent_overlay_label` (`crates/postretro/src/agent_diagnostics.rs`) with the firing state's
 attack name (AC10).
 
 Cover the remaining ACs with fixtures — AC4 and AC6 already state the ordering semantics these
 fixtures assert:
 
-- **AC3** — on the movement-feel fixture, verify the two-reach routing (long-reach slam vs. shorter
-  slice), and confirm co-op clients show the distinct attack animation states via the replicated
-  state name (no wire change expected — AC11).
+- **AC3** — the two-reach trace fixture (step 3 above) verifies the automated routing assertion
+  (long-reach slam vs. shorter jab); the movement-feel dev-tools arena separately confirms co-op
+  clients show the distinct attack animation states via the replicated state name (no wire change
+  expected — AC11).
 - **AC4** — two attack-firing states: firing one leaves the other's remaining cooldown untouched
   (decrement-only, not reset or re-armed), and a mid-cooldown state switch leaves each entry
   untouched too (independent-cooldown and decrement-every-tick pins).
@@ -330,10 +364,12 @@ fixtures assert:
 - **AC7** — two attack-firing states whose transition guards are simultaneously true; resolution
   lands on the first-declared state (rides the shipped first-true-wins evaluator).
 - **AC8** — an enemy in an attack-firing state with the target outside every attack's `maxRange`
-  ceiling and no true transition guard holds in place and faces the target.
+  ceiling and no true transition guard holds in place; stopped at standoff, it faces the target.
 
-Task 4's completion bar is `-p postretro -p postretro-scripting-core` green — scripting-core is
-exercised directly via its own migrated fixtures, not transitively through `postretro`.
+Task 4's completion bar is `cargo test -p postretro -p postretro-scripting-core` green —
+scripting-core is exercised directly via its own migrated fixtures, not transitively through
+`postretro`. This is where the postretro test binary first compiles and runs, gating AC9 (typedef
+drift) and the spawner windup test alongside every other postretro test.
 
 ## Sequencing
 
@@ -347,13 +383,18 @@ also falsifies the wire-shape and resolver assumptions the later tasks rest on. 
 `-p postretro-foundation -p postretro-entities`.
 **Phase 2 (sequential):** Task 2 — consumes Task 1's descriptor shape; converts the brain cooldown
 scalar to the name-indexed map and its spawn/decrement readers. Bar: `-p postretro-entities`; its
-`crates/postretro` edits compile-verify in Task 3.
-**Phase 3 (sequential):** Task 3 — consumes Task 2's cooldown map; wires firing, the brain fact, and
-the per-attack standoff resolver, restoring `crates/postretro` to compiling. As the first phase where
-that crate compiles, it also owns the SDK typedef regeneration, the `primitives/mod.rs`
-registrations, and the committed typedef fixtures (AC9).
-**Phase 4 (sequential):** Task 4 — exercises Task 3 end to end and migrates the reference content and
-fixtures.
+`crates/postretro` edits compile-verify in Phase 3, test-verify in Phase 4.
+**Phase 3 (sequential, build-only):** Task 3 — consumes Task 2's cooldown map; wires firing, the
+brain fact, and the per-attack standoff resolver, restoring `crates/postretro`'s lib to compiling.
+As the first phase where the lib compiles, it also owns the SDK typedef regeneration, the
+`primitives/mod.rs` registrations, and the committed `sdk/types/postretro.d.{ts,luau}` and snapshot
+fixtures — AC9 implemented here, verified in Phase 4. The postretro test binary still doesn't
+compile (`ai_tests.rs` carries the old shape), so no postretro test runs yet. Bar: `cargo build -p
+postretro`.
+**Phase 4 (sequential, test-green):** Task 4 — migrates `ai_tests.rs` and the rest of the postretro
+test fixtures, so the postretro test binary compiles and runs for the first time. Exercises Task 3
+end to end, verifying AC9 (typedef drift) and the spawner windup test alongside the reference
+archetype and fixture work. Bar: `cargo test -p postretro -p postretro-scripting-core`.
 
 ## Boundary inventory
 

@@ -111,10 +111,11 @@ reference as a hint, not a contract.
   `register_enum("ActionVerb").variant("attack", ...)`, which renders the unit-string union
   (`"attack"`). Registering it instead as a struct — `register_type("ActionVerb").field("attack",
   "String")` — emits the object type `{ attack: string }` in both `.d.ts` and `.d.luau`, with no
-  change needed to the generator itself
-  (`crates/scripting-core/src/typedef/{ts,luau,common}.rs`); the `attacks` `Record` follows the
-  existing `"BehaviorStates"` map-alias registration precedent there. This lands in Task 3, the first
-  task where `crates/postretro` compiles.
+  generator change needed for `ActionVerb` itself. The `attacks` `Record` is a separate registration:
+  it DOES need its own map-alias arm in `common.rs`
+  (`crates/scripting-core/src/typedef/{ts,luau,common}.rs`), following the existing
+  `"BehaviorStates"` map-alias precedent there — "no generator change" scopes only to `ActionVerb`.
+  This lands in Task 3, the first task where `crates/postretro`'s lib compiles.
 - `components.mesh.animations` is the name-keyed map precedent, with pathed per-entry errors — the
   model `attacks` follows, and the framing (graph-wide vocabulary referenced by name) that keeps
   the statecharts successor's per-activity grouping additive.

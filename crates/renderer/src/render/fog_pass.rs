@@ -1132,6 +1132,44 @@ mod tests {
         assert!(has_cs, "fog_volume.wgsl must export @compute cs_main");
     }
 
+    #[test]
+    fn fog_volume_frame_uniform_prefix_gates_dynamic_direct_scatter() {
+        let module = naga::front::wgsl::parse_str(FOG_SHADER_SOURCE)
+            .expect("fog shader should parse as WGSL");
+        let uniforms = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| (ty.name.as_deref() == Some("Uniforms")).then_some(&ty.inner))
+            .expect("fog shader should declare the group-0 Uniforms prefix");
+        let naga::TypeInner::Struct { members, span } = uniforms else {
+            panic!("fog Uniforms must be a struct");
+        };
+        assert_eq!(*span, 96, "fog Uniforms prefix must end after byte 92");
+        assert_eq!(members.len(), 6, "fog Uniforms must remain prefix-only");
+        assert_eq!(members[5].name.as_deref(), Some("light_term_mask"));
+        assert_eq!(
+            members[5].offset, 88,
+            "light_term_mask must start at byte 88"
+        );
+
+        assert!(
+            FOG_SHADER_SOURCE.contains("@group(0) @binding(0) var<uniform> uniforms: Uniforms;"),
+            "fog must bind the shared frame-uniform buffer at group 0"
+        );
+        assert!(
+            FOG_SHADER_SOURCE.contains("const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;")
+                && FOG_SHADER_SOURCE.contains(
+                "let use_dynamic_direct =\n        (uniforms.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"
+            ) && FOG_SHADER_SOURCE
+                .contains("let spot_count = select(0u, fog.spot_count, use_dynamic_direct);")
+                && FOG_SHADER_SOURCE
+                    .contains("let point_count = select(0u, fog.point_count, use_dynamic_direct);")
+                && FOG_SHADER_SOURCE
+                    .contains("for (var pi: u32 = 0u; pi < point_count; pi = pi + 1u)"),
+            "dynamic-direct off must force both fog light-loop bounds to zero"
+        );
+    }
+
     /// The full fog pipeline source (fog_volume + `sh_sample.wgsl`) must pass
     /// naga's validation, including control-flow uniformity. `parse_str` alone
     /// does not enforce this; a future edit that breaks the shared helper's

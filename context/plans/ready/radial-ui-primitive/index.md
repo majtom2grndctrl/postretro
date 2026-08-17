@@ -35,7 +35,7 @@ Add a `Ring` widget to the UI vocabulary: an anti-aliased annulus/arc **shape** 
 
 **Alternatives rejected.** (1) The Bar-style privileged `bind`+`max`+`fillMode` value-visualizer — wrong frame for a shape with independently-varying, often-static properties (an earlier draft; see `research.md`). (2) A baked per-prop range — defers to IR (above). (3) Compose rings from many quads in mod code — no AA, no smooth arcs, dozens of quads; the roadmap calls for an engine primitive. (4) A pre-baked ring texture + `image` widget — fixed-resolution (against the AA-crisp-at-any-resolution model), no continuous arc/radius. (5) Extend the locked 64-byte `UiInstance` + `ui_quad.wgsl` — couples two primitives on one test-asserted ABI and the 9-slice path. (6) Ship a static-only shape with no binding — rejected: the hooks are cheap (reuse `drive_tween_f32`) and are the seam the IR spec lands on; omitting them forces a second breaking pass. (7) Defer the whole primitive and co-locate with the Weapon-Feel producer — foreclosed by the roadmap's "cross-cutting UI-layer work, reusable across features" framing.
 
-**Foreclosures.** The durable commitments are the wire shape (`kind:"ring"`, its field names, the `literal|bound` scalar form) and the `UiRingInstance` ABI; removal later is content-breaking (pre-stable, acceptable). The first-in-codebase angle convention (0° = up, clockwise) is inherited by any future radial widget — named in Open Questions. The shader/pipeline are internal and cheap to change.
+**Foreclosures.** The durable commitments are the wire shape (`kind:"ring"`, its field names, the `literal|bound` scalar form) and the `UiRingInstance` ABI; removal later is content-breaking (pre-stable, acceptable). The first-in-codebase angle convention (0° = up, clockwise) is a foreclosure inherited by any future radial widget, not a re-litigable choice. The shader/pipeline are internal and cheap to change.
 
 ## Acceptance criteria
 
@@ -152,8 +152,3 @@ Ring({
   fill: [1, 0.2, 0.2, 1],
 })
 ```
-
-## Open questions
-
-- **Angle zero/winding convention** is decided (`0° = up, clockwise`) but is the first radial convention in the UI layer; a future in-world or minimap radial widget would inherit or re-litigate it. Recorded, not blocking.
-- **Successor spec ownership** — "UI computed bindings via Behavior IR" is named here (Out of scope) but unwritten. It is the thing that makes the dynamic consumers real; whoever picks up bullet spread will need it first. Flag for roadmap sequencing, not this spec.

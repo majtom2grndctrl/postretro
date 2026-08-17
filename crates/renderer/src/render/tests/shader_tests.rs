@@ -208,14 +208,54 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 
     let billboard_src = include_str!("../../shaders/billboard.wgsl");
     assert!(
-        billboard_src.contains("let light_count = uniforms.total_light_count;"),
-        "billboards must evaluate dynamic plus promoted static records",
+        billboard_src.contains(
+            "let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);"
+        ),
+        "billboards must zero their dynamic-plus-promoted loop when the dynamic-direct bit is off",
     );
 
     let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
     assert!(
         mesh_src.contains("select(0u, mesh_light_params.light_count, use_dynamic)"),
         "mesh lighting must use the renderer-provided total light count",
+    );
+}
+
+#[test]
+fn billboard_light_term_mask_gates_per_vertex_terms() {
+    let src = include_str!("../../shaders/billboard.wgsl");
+
+    for constant in [
+        "const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;",
+        "const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;",
+        "const LIGHT_TERM_SPECULAR: u32 = 0x40u;",
+    ] {
+        assert!(src.contains(constant), "missing {constant}");
+    }
+    assert!(
+        src.contains("let light_terms = uniforms.light_term_mask;")
+            && src.contains(
+                "let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;"
+            )
+            && src.contains(
+                "let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"
+            )
+            && src.contains("let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;"),
+        "billboard vertex lighting must derive every local term gate from group-0's mask",
+    );
+    assert!(
+        src.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
+            && src.contains(
+                "let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);"
+            )
+            && src.contains(
+                "let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);"
+            ),
+        "billboard static specular, dynamic diffuse, and ambient floor must be independently gated in vs_main",
+    );
+    assert!(
+        !src.contains("uniforms.dynamic_direct_isolation"),
+        "billboard SH terms must rely only on the compose atlases",
     );
 }
 

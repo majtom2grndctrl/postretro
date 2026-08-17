@@ -70,6 +70,17 @@ pub(super) struct DirectShComposeTimestampWrites<'a> {
     pub(super) animated: Option<wgpu::ComputePassTimestampWrites<'a>>,
 }
 
+/// Inputs captured once for both direct-compose passes during scene recording.
+/// Keeping them together prevents Pass A's private mask from drifting from
+/// Pass B's shared group-0 snapshot.
+pub(super) struct DirectShComposeFrameInputs<'a> {
+    pub(super) uniform_bind_group: &'a wgpu::BindGroup,
+    pub(super) active: bool,
+    pub(super) light_term_mask: LightTermMask,
+    pub(super) debug_overrides: DirectShComposeDebugOverrides,
+    pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
+}
+
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
@@ -175,8 +186,8 @@ impl DirectShComposeResources {
                 weights_buffer,
                 uniform_bind_group_layout,
             ),
-            // Preserve the promotion-only construction path, binding set, and
-            // single output target exactly when section 45 is absent.
+            // Section 45 absent: Pass A still performs base copy-through so
+            // the static-direct mask works even without promotion deltas.
             None => Self::new_case1(device, sh, direct_section, delta, weights_buffer),
         }
     }
@@ -191,9 +202,7 @@ impl DirectShComposeResources {
         let Some(section) = direct_section else {
             return Self::disabled();
         };
-        let Some(delta) = delta.filter(|delta| !delta.affinity_lights.is_empty()) else {
-            return Self::disabled();
-        };
+        let delta = delta.filter(|delta| !delta.affinity_lights.is_empty());
         let Some(composed_storage_view) = sh.direct_composed_storage_view.as_ref() else {
             return Self::disabled();
         };
@@ -211,14 +220,14 @@ impl DirectShComposeResources {
             device,
             sh,
             layout,
-            Some(delta),
+            delta,
             weights_buffer,
             composed_storage_view,
         );
 
         log::info!(
             "[Renderer] Direct SH compose: {} selected-light CSR entr(y/ies), atlas {}×{}",
-            delta.affinity_lights.len(),
+            delta.map_or(0, |delta| delta.affinity_lights.len()),
             section.atlas_dimensions[0],
             section.atlas_dimensions[1],
         );
@@ -288,12 +297,15 @@ impl DirectShComposeResources {
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        uniform_bind_group: &wgpu::BindGroup,
-        active: bool,
-        frame_light_term_mask: LightTermMask,
-        debug_overrides: DirectShComposeDebugOverrides,
-        timestamp_writes: DirectShComposeTimestampWrites<'_>,
+        frame: DirectShComposeFrameInputs<'_>,
     ) {
+        let DirectShComposeFrameInputs {
+            uniform_bind_group,
+            active,
+            light_term_mask: frame_light_term_mask,
+            debug_overrides,
+            timestamp_writes,
+        } = frame;
         let Some(pipeline) = self.pipeline.as_mut() else {
             return;
         };
@@ -741,6 +753,8 @@ mod tests {
 
     #[test]
     fn direct_compose_mask_change_and_return_to_all_re_dirty() {
+        // Ordering T1: the predicate compares against the last composed mask,
+        // including when the newly selected value is the all-on default.
         let mut static_direct_off = LightTermMask::ALL;
         static_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
 
@@ -762,6 +776,7 @@ mod tests {
 
     #[test]
     fn direct_compose_mask_change_stays_dirty_until_a_world_dispatch_records_it() {
+        // Ordering T8: a skipped non-world frame cannot consume this dirty state.
         let mut animated_direct_off = LightTermMask::ALL;
         animated_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_ANIMATED, false);
         let last_composed_mask = LightTermMask::ALL;
@@ -859,6 +874,29 @@ mod tests {
     }
 
     #[test]
+    fn base_only_direct_compose_uses_empty_csr_and_static_mask_copy_through() {
+        // Regression: without id 41 or id 45, Pass A must remain available so
+        // clearing bit 3 writes zero instead of exposing the immutable base.
+        let storage = DirectPromotionStorage::new(None, [1, 1, 1]);
+        assert!(storage.buffers.delta_subblocks.is_empty());
+        assert_eq!(storage.buffers.affinity_offsets, vec![0, 0]);
+        assert!(storage.buffers.affinity_lights.is_empty());
+
+        let mut static_direct_off = LightTermMask::ALL;
+        static_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+        let params = direct_compose_params_bytes(static_direct_off);
+        assert_eq!(
+            u32::from_ne_bytes(params[0..4].try_into().unwrap())
+                & LightTermMask::BAKED_DIRECT_STATIC.bits(),
+            0
+        );
+
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+        assert!(source.contains("if (in_grid && use_baked_direct_static)"));
+        assert!(source.contains("accum[texel_index] = vec4<f32>(0.0);"));
+    }
+
+    #[test]
     fn direct_sh_compose_shader_parses_and_exports_compose_main() {
         let module =
             naga::front::wgsl::parse_str(include_str!("../shaders/direct_sh_compose.wgsl"))
@@ -895,6 +933,8 @@ mod tests {
 
     #[test]
     fn direct_compose_appends_a_sixteen_byte_private_frame_mask_uniform() {
+        // Ordering T4/T11: Pass A receives the same captured frame mask as the
+        // group-0 reader used by Pass B and the world path.
         let entries = promotion_compose_bgl_entries();
         let entry = entries
             .iter()

@@ -1201,9 +1201,16 @@ mod tests {
             "accumulate_dynamic_direct",
         );
         assert!(
-            dynamic_loop
-                .contains("if i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"),
-            "only front-lit promoted records may add mover specular",
+            dynamic_loop.contains(
+                "if use_specular && i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"
+            ),
+            "only front-lit promoted records with LightTermMask specular enabled may add mover specular",
+        );
+        let mover_src = include_str!("../shaders/kinematic_brush.wgsl");
+        assert!(
+            mover_src.contains("let use_dynamic = (light_terms & 0x20u) != 0u;")
+                && mover_src.contains("let use_specular = (light_terms & 0x40u) != 0u;"),
+            "mover dynamic and specular gates must derive independently from LightTermMask bits 5 and 6",
         );
         assert!(
             dynamic_loop.contains(

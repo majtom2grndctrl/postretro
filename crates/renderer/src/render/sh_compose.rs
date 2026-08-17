@@ -587,6 +587,18 @@ mod tests {
             2,
             "both dense L0 and coarsened L1/L2 delta accumulations must be gated",
         );
+        let coarsened_delta_path = source
+            .split("    } else {\n        // Coarsened L1/L2 cells")
+            .nth(1)
+            .and_then(|path| path.split("\n    if (in_grid) {").next())
+            .expect("shader must retain its coarsened L1/L2 compose path");
+        assert!(
+            coarsened_delta_path.contains(
+                "if (use_indirect_animated) {\n            for (var entry = start; entry < end; entry = entry + 1u) {"
+            ) && coarsened_delta_path.contains("read_delta_texel(")
+                && coarsened_delta_path.contains("reconstruct_l1_shared_texel("),
+            "the animated-term guard must wrap the coarsened per-entry delta loads and reconstruction loop",
+        );
         assert!(
             !source.contains("grid.light_term_mask"),
             "construction-time GridDims must not freeze the per-frame mask",

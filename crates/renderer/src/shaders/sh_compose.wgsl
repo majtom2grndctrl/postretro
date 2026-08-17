@@ -373,64 +373,68 @@ fn compose_main(
         // Coarsened L1/L2 cells load only their kept lattice into workgroup
         // memory. A load happens once per (brick, CSR entry, tile texel), then
         // every dropped-valid output probe reconstructs from those values.
-        for (var entry = start; entry < end; entry = entry + 1u) {
-            if (local_probe < MAX_KEPT_TILES) {
-                shared_kept_present[local_probe] = 0u;
-            }
-            workgroupBarrier();
-
-            if (level == 1u && local_probe_is_kept(cell_index, local_probe)) {
-                let slot = l1_shared_slot(local_probe);
-                let probe_rank = within_cell_rank(cell_index, local_probe);
-                shared_kept_present[slot] = 1u;
-                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
-                    let tile_texel = vec2<u32>(
-                        texel_index % RUNTIME_TILE_DIMENSION,
-                        texel_index / RUNTIME_TILE_DIMENSION,
-                    );
-                    shared_kept_tiles[slot * TILE_TEXEL_COUNT + texel_index] = read_delta_texel(
-                        entry,
-                        probe_rank,
-                        tile_texel,
-                    );
+        // The term flag is uniform for the dispatch, so all invocations either
+        // execute this barrier sequence together or skip the delta workload.
+        if (use_indirect_animated) {
+            for (var entry = start; entry < end; entry = entry + 1u) {
+                if (local_probe < MAX_KEPT_TILES) {
+                    shared_kept_present[local_probe] = 0u;
                 }
-            }
-            if (level == 2u) {
-                let representative = l2_representative_local(cell_index);
-                if (local_probe == representative && local_probe_is_kept(cell_index, local_probe)) {
+                workgroupBarrier();
+
+                if (level == 1u && local_probe_is_kept(cell_index, local_probe)) {
+                    let slot = l1_shared_slot(local_probe);
                     let probe_rank = within_cell_rank(cell_index, local_probe);
-                    shared_kept_present[0] = 1u;
+                    shared_kept_present[slot] = 1u;
                     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                         let tile_texel = vec2<u32>(
                             texel_index % RUNTIME_TILE_DIMENSION,
                             texel_index / RUNTIME_TILE_DIMENSION,
                         );
-                        shared_kept_tiles[texel_index] = read_delta_texel(
+                        shared_kept_tiles[slot * TILE_TEXEL_COUNT + texel_index] = read_delta_texel(
                             entry,
                             probe_rank,
                             tile_texel,
                         );
                     }
                 }
-            }
-            workgroupBarrier();
-
-            if (output_is_valid && use_indirect_animated) {
-                let scale = animated_light_scale(affinity_lights[entry]);
-                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
-                    var delta = vec3<f32>(0.0);
-                    if (level == 2u) {
-                        delta = shared_kept_tiles[texel_index].rgb
-                            * f32(shared_kept_present[0]);
-                    } else {
-                        delta = reconstruct_l1_shared_texel(local_probe, texel_index);
+                if (level == 2u) {
+                    let representative = l2_representative_local(cell_index);
+                    if (local_probe == representative && local_probe_is_kept(cell_index, local_probe)) {
+                        let probe_rank = within_cell_rank(cell_index, local_probe);
+                        shared_kept_present[0] = 1u;
+                        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                            let tile_texel = vec2<u32>(
+                                texel_index % RUNTIME_TILE_DIMENSION,
+                                texel_index / RUNTIME_TILE_DIMENSION,
+                            );
+                            shared_kept_tiles[texel_index] = read_delta_texel(
+                                entry,
+                                probe_rank,
+                                tile_texel,
+                            );
+                        }
                     }
-                    accum[texel_index] = accum[texel_index] + delta * scale;
                 }
+                workgroupBarrier();
+
+                if (output_is_valid) {
+                    let scale = animated_light_scale(affinity_lights[entry]);
+                    for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                        var delta = vec3<f32>(0.0);
+                        if (level == 2u) {
+                            delta = shared_kept_tiles[texel_index].rgb
+                                * f32(shared_kept_present[0]);
+                        } else {
+                            delta = reconstruct_l1_shared_texel(local_probe, texel_index);
+                        }
+                        accum[texel_index] = accum[texel_index] + delta * scale;
+                    }
+                }
+                // No invocation may start loading the next entry until every
+                // invocation has consumed this entry's shared lattice.
+                workgroupBarrier();
             }
-            // No invocation may start loading the next entry until every
-            // invocation has consumed this entry's shared lattice.
-            workgroupBarrier();
         }
     }
 

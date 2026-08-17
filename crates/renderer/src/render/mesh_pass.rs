@@ -2257,23 +2257,22 @@ mod tests {
         );
     }
 
-    // The mesh dynamic-direct term participates in the lighting-isolation debug
-    // modes via the SAME mode set forward.wgsl uses to gate its world dynamic term.
-    // Pin the exact `use_dynamic` derivation in both shaders so a forward-side edit
-    // that desyncs the mesh gate fails here. (Forward and mesh both compute
-    // `use_dynamic = iso 0|1|2|8`.)
+    // The mesh dynamic-direct loop must use the same LightTermMask bit as the
+    // world path. The mesh's group-2 params carry the raw mask, while forward
+    // declares the shared bit as a named WGSL constant.
     #[test]
-    fn mesh_use_dynamic_gate_matches_forward() {
-        const GATE: &str = "(iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u)";
+    fn mesh_dynamic_gate_uses_light_term_mask_bit_five_like_forward() {
         let mesh_src = include_str!("../shaders/skinned_mesh.wgsl");
         let forward_src = include_str!("../shaders/forward.wgsl");
         assert!(
-            mesh_src.contains(&format!("let use_dynamic = {GATE};")),
-            "skinned_mesh.wgsl must derive use_dynamic from the forward isolation mode set",
+            mesh_src.contains("let use_dynamic = (light_terms & 0x20u) != 0u;"),
+            "skinned_mesh.wgsl must gate its dynamic loop with LightTermMask bit 5",
         );
         assert!(
-            forward_src.contains(&format!("let use_dynamic = {GATE};")),
-            "forward.wgsl's use_dynamic gate changed — update the mesh gate in lock-step",
+            forward_src.contains("const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;")
+                && forward_src
+                    .contains("let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"),
+            "forward.wgsl must keep LightTermMask bit 5 as its dynamic-direct gate",
         );
     }
 

@@ -150,51 +150,6 @@ impl Default for LightTermMask {
     }
 }
 
-/// Isolation mode for the DYNAMIC entity baked-static-direct SH path. This
-/// temporary 3-state control stays separate from the group-0 `LightTermMask`
-/// until the dynamic receiver compose paths are migrated. Encoded as the
-/// enum's `u32` repr into the mesh `DynamicDirectParams` uniform (binding 16).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Selected via the Diagnostics panel; dev-tools only.
-#[allow(dead_code)]
-#[repr(u32)]
-pub enum DynamicDirectIsolation {
-    /// indirect + scale * direct.
-    Combined = 0,
-    /// scale * direct only.
-    DirectOnly = 1,
-    /// indirect only (direct suppressed).
-    IndirectOnly = 2,
-}
-
-impl DynamicDirectIsolation {
-    /// All variants in display order. Used by the debug UI dropdown.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [DynamicDirectIsolation; 3] = [
-        DynamicDirectIsolation::Combined,
-        DynamicDirectIsolation::DirectOnly,
-        DynamicDirectIsolation::IndirectOnly,
-    ];
-
-    #[allow(dead_code)]
-    pub fn cycle(self) -> Self {
-        match self {
-            DynamicDirectIsolation::Combined => DynamicDirectIsolation::DirectOnly,
-            DynamicDirectIsolation::DirectOnly => DynamicDirectIsolation::IndirectOnly,
-            DynamicDirectIsolation::IndirectOnly => DynamicDirectIsolation::Combined,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            DynamicDirectIsolation::Combined => "Combined (indirect + scale·direct)",
-            DynamicDirectIsolation::DirectOnly => "DirectOnly (scale·direct)",
-            DynamicDirectIsolation::IndirectOnly => "IndirectOnly (indirect)",
-        }
-    }
-}
-
 pub struct FrameUniforms {
     pub view_proj: Mat4,
     pub camera_position: Vec3,
@@ -444,14 +399,16 @@ mod tests {
     }
 
     #[test]
-    fn uniform_data_preserves_dynamic_direct_tail_offsets_with_retired_pad() {
+    fn uniform_data_keeps_mask_and_retired_tail_pad_at_fixed_group_zero_offsets() {
+        let mut light_term_mask = LightTermMask::ALL;
+        light_term_mask.set_enabled(LightTermMask::DYNAMIC_DIRECT, false);
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
             camera_position: Vec3::ZERO,
             ambient_floor: 0.0,
             light_count: 0,
             time: 0.0,
-            light_term_mask: LightTermMask::ALL,
+            light_term_mask,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -463,6 +420,11 @@ mod tests {
         });
         let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
         assert!((scale - 0.25).abs() < 1e-6);
+        assert_eq!(
+            u32::from_ne_bytes(data[88..92].try_into().unwrap()),
+            light_term_mask.bits(),
+            "LightTermMask must remain at the fixed group-0 88..92 ABI slot",
+        );
         assert_eq!(u32::from_ne_bytes(data[112..116].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(data[116..120].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(data[120..124].try_into().unwrap()), 11);

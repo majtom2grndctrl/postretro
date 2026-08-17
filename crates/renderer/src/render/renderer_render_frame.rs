@@ -264,16 +264,18 @@ impl Renderer {
                 full.direct_sh_compose.dispatch_if_needed(
                     queue,
                     encoder,
-                    &full.uniform_bind_group,
-                    direct_sh_active,
-                    frame_light_term_mask,
-                    DirectShComposeDebugOverrides {
-                        promotion: direct_sh_debug_override,
-                        animated: animated_direct_sh_debug_override,
-                    },
-                    DirectShComposeTimestampWrites {
-                        promotion: direct_sh_ts,
-                        animated: animated_direct_sh_ts,
+                    DirectShComposeFrameInputs {
+                        uniform_bind_group: &full.uniform_bind_group,
+                        active: direct_sh_active,
+                        light_term_mask: frame_light_term_mask,
+                        debug_overrides: DirectShComposeDebugOverrides {
+                            promotion: direct_sh_debug_override,
+                            animated: animated_direct_sh_debug_override,
+                        },
+                        timestamp_writes: DirectShComposeTimestampWrites {
+                            promotion: direct_sh_ts,
+                            animated: animated_direct_sh_ts,
+                        },
                     },
                 );
             }

@@ -672,7 +672,6 @@ pub(crate) fn build_full_renderer(
         #[cfg(feature = "dev-tools")]
         show_navmesh: false,
         light_term_mask: LightTermMask::ALL,
-        dynamic_direct_isolation: DynamicDirectIsolation::Combined,
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: std::env::var("POSTRETRO_SDF_FORCE_VISIBILITY_ONE")
             .ok()

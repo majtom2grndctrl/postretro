@@ -1,4 +1,4 @@
-// Renderer state accessors and toggles: lighting/SDF isolation modes, freeze,
+// Renderer state accessors and toggles: lighting/SDF diagnostics, freeze,
 // vsync, occluder counters, and the diagnostics slider getters/setters.
 // See: context/lib/rendering_pipeline.md
 
@@ -215,17 +215,6 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_dynamic_direct_scale(&mut self, value: f32) {
         self.full_mut().dynamic_direct_scale = value.clamp(0.0, 1.0);
-    }
-
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn dynamic_direct_isolation(&self) -> DynamicDirectIsolation {
-        self.full().dynamic_direct_isolation
-    }
-
-    /// Takes effect on the next `update_per_frame_uniforms` upload.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn set_dynamic_direct_isolation(&mut self, mode: DynamicDirectIsolation) {
-        self.full_mut().dynamic_direct_isolation = mode;
     }
 
     #[cfg(feature = "dev-tools")]

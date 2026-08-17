@@ -98,9 +98,9 @@ pub struct ShVolumeResources {
     /// pass samples this even when entity/billboard consumers are rebound to
     /// the composed `Rgba16Float` atlas.
     pub direct_base_atlas_view: wgpu::TextureView,
-    /// Storage-write view over the optional composed direct atlas. `None` when
-    /// neither selected static-light direct deltas nor animated-direct deltas
-    /// are present, so maps without compose inputs keep sampling the base atlas.
+    /// Storage-write view over the optional composed direct atlas. Every usable
+    /// direct base gets one so the static-direct mask can replace it with zero;
+    /// animated-direct-only maps also use it as their final compose target.
     pub direct_composed_storage_view: Option<wgpu::TextureView>,
     /// Pass-A storage target for section-45 maps. This exists only in Case 2;
     /// Case 1 continues writing the final sampled direct atlas directly.
@@ -1250,17 +1250,15 @@ struct DirectAtlasUsage {
 
 fn resolve_direct_atlas_usage(
     direct_section: Option<&DirectShVolumeSection>,
-    direct_delta_section: Option<
+    _direct_delta_section: Option<
         &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
     >,
     animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
     sh_section: Option<&OctahedralShVolumeSection>,
 ) -> DirectAtlasUsage {
-    let has_deltas = direct_delta_section
-        .map(|section| !section.affinity_lights.is_empty())
-        .unwrap_or(false);
+    let has_direct_base = direct_section.is_some();
     let has_animated_direct = animated_direct_delta_section.is_some();
-    if !has_deltas && !has_animated_direct {
+    if !has_direct_base && !has_animated_direct {
         return DirectAtlasUsage::default();
     }
     let layout = direct_section
@@ -1646,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_atlas_usage_allocates_composed_texture_only_for_nonempty_deltas() {
+    fn direct_atlas_usage_allocates_composed_texture_for_every_direct_base() {
         let direct = DirectShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -1684,11 +1682,18 @@ mod tests {
                 ..empty_delta.clone()
             };
 
-        assert!(!resolve_direct_atlas_usage(Some(&direct), None, None, None).needs_composed_atlas);
-        assert!(
-            !resolve_direct_atlas_usage(Some(&direct), Some(&empty_delta), None, None)
-                .needs_composed_atlas
-        );
+        // Regression: base-only maps must compose so bit 3 can replace the
+        // immutable base with zero for mesh, mover, and billboard receivers.
+        let base_only = resolve_direct_atlas_usage(Some(&direct), None, None, None);
+        assert!(base_only.needs_composed_atlas);
+        assert!(!base_only.needs_intermediate_atlas);
+        assert_eq!(base_only.atlas_dimensions, [6, 6]);
+        assert_eq!(base_only.layer_count, 1);
+
+        let empty_delta_usage =
+            resolve_direct_atlas_usage(Some(&direct), Some(&empty_delta), None, None);
+        assert!(empty_delta_usage.needs_composed_atlas);
+        assert!(!empty_delta_usage.needs_intermediate_atlas);
         let usage = resolve_direct_atlas_usage(Some(&direct), Some(&nonempty_delta), None, None);
         assert!(usage.needs_composed_atlas);
         assert!(!usage.needs_intermediate_atlas);

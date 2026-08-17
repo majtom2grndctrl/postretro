@@ -260,6 +260,26 @@ fn billboard_light_term_mask_gates_per_vertex_terms() {
 }
 
 #[test]
+fn fog_dynamic_scatter_uses_group_zero_snapshot_loop_bounds() {
+    // Ordering T10: fog reads the shared group-0 snapshot, never the live UI
+    // mask, so its dynamic term cannot lead or lag the world path.
+    let src = include_str!("../../shaders/fog_volume.wgsl");
+
+    assert!(
+        src.contains("@group(0) @binding(0) var<uniform> uniforms: Uniforms;")
+            && src.contains("light_term_mask: u32,"),
+        "fog must read the group-0 Uniforms prefix through the mask field",
+    );
+    assert!(
+        src.contains("let spot_count = select(0u, fog.spot_count, use_dynamic_direct);")
+            && src.contains("let point_count = select(0u, fog.point_count, use_dynamic_direct);")
+            && src.contains("for (var li: u32 = 0u; li < spot_count; li = li + 1u)")
+            && src.contains("for (var pi: u32 = 0u; pi < point_count; pi = pi + 1u)"),
+        "fog must use the group-0 dynamic bit to bound both dynamic scatter loops",
+    );
+}
+
+#[test]
 fn skinned_shader_projects_and_shades_the_same_world_position() {
     // Regression: the viewmodel used to provide a camera-space model transform
     // to this shared shader while binding projection-only at group 0. Clip

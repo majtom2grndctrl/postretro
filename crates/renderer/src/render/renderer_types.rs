@@ -817,11 +817,6 @@ pub(super) struct FullRenderer {
     /// `frame_light_term_mask` before scene recording begins.
     pub(super) light_term_mask: LightTermMask,
 
-    /// DYNAMIC entity baked-static-direct SH isolation (combined / direct-only
-    /// / indirect-only). This temporary control remains separate from the
-    /// group-0 light-term mask until the receiver compose paths migrate.
-    pub(super) dynamic_direct_isolation: DynamicDirectIsolation,
-
     /// Debug selector for the SDF static-occluder shadow path. Panel-only
     /// dropdown, surfaces through
     /// `FrameUniforms.sdf_shadow_mode`.

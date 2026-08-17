@@ -606,12 +606,12 @@ impl ShVolumeResources {
         };
 
         // Mesh-only dynamic-direct params uniform (binding 16). Seeded to the
-        // production default (full scale, Combined, has_direct from the section);
-        // the renderer overwrites scale/isolation each frame and re-derives
-        // has_direct from this same resource.
+        // production default (full scale, has_direct from the section); the
+        // renderer overwrites scale each frame and re-derives has_direct from
+        // this same resource.
         let dynamic_direct_params_buffer = device.create_buffer_init_helper(
             "Dynamic Direct Params Uniform",
-            &build_dynamic_direct_params_bytes(1.0, 0, has_direct),
+            &build_dynamic_direct_params_bytes(1.0, has_direct),
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
 
@@ -757,10 +757,10 @@ impl ShVolumeResources {
     }
 
     /// Upload this frame's mesh dynamic-direct params (binding 16). `has_direct`
-    /// is the level-fixed flag held here; only `scale` / `isolation` change per
-    /// frame from the renderer's debug knobs.
-    pub fn write_dynamic_direct_params(&self, queue: &wgpu::Queue, scale: f32, isolation: u32) {
-        let bytes = build_dynamic_direct_params_bytes(scale, isolation, self.has_direct);
+    /// is the level-fixed flag held here; only `scale` changes per frame from
+    /// the renderer's debug knobs.
+    pub fn write_dynamic_direct_params(&self, queue: &wgpu::Queue, scale: f32) {
+        let bytes = build_dynamic_direct_params_bytes(scale, self.has_direct);
         queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
     }
 

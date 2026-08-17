@@ -49,7 +49,7 @@ struct AnimationDescriptor {
 struct KinematicLightParams {
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
     // Keep the second 16-byte row scalar-packed. A vec3 here would align to
@@ -101,9 +101,9 @@ struct ShGridInfo {
 
 struct DynamicDirectParams {
     scale: f32,
-    isolation: u32,
+    _pad0: u32,
     has_direct: u32,
-    _pad: u32,
+    _pad1: u32,
 };
 @group(4) @binding(16) var<uniform> dynamic_direct: DynamicDirectParams;
 
@@ -205,6 +205,7 @@ fn accumulate_dynamic_direct(
     spec_exp: f32,
     spec_int: f32,
     use_dynamic: bool,
+    use_specular: bool,
 ) -> vec3<f32> {
     var total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
@@ -298,7 +299,7 @@ fn accumulate_dynamic_direct(
         // The runtime buffer lists dynamic-tier lights first, then promoted
         // static records. Dynamic lights remain diffuse-only; a promoted
         // record's effective color already carries its de-promotion weight.
-        if i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0 {
+        if use_specular && i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0 {
             total = total + blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation;
         }
     }
@@ -340,8 +341,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, mesh_n);
     }
 
-    let iso = kinematic_light_params.lighting_isolation;
-    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+    // SH indirect and baked-direct isolation happens in their respective atlas
+    // compose passes. The mover only gates its in-shader ambient, runtime diffuse,
+    // and promoted-static specular terms with the group-2 frame snapshot.
+    let light_terms = kinematic_light_params.light_term_mask;
+    let use_ambient_floor = (light_terms & 0x01u) != 0u;
+    let use_dynamic = (light_terms & 0x20u) != 0u;
+    let use_specular = (light_terms & 0x40u) != 0u;
     let V = normalize(camera.camera_position - in.world_position);
     let spec_exp = max(material.shininess, 1.0);
     let spec_int = sample_post_retro(spec_texture, aniso_sampler, in.uv, ddx, ddy).r;
@@ -353,15 +359,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         spec_exp,
         spec_int,
         use_dynamic,
+        use_specular,
     );
 
     var lighting = indirect + direct;
-    if dynamic_direct.isolation == 1u {
-        lighting = direct;
-    } else if dynamic_direct.isolation == 2u {
-        lighting = indirect;
+    if use_ambient_floor {
+        lighting = vec3<f32>(kinematic_light_params.ambient_floor) + lighting;
     }
-    lighting = vec3<f32>(kinematic_light_params.ambient_floor) + lighting + dynamic;
+    lighting = lighting + dynamic;
     var emissive = vec3<f32>(0.0);
     if material.emissive_strength > 0.0 {
         emissive = sample_post_retro(emissive_texture, aniso_sampler, in.uv, ddx, ddy).rgb;

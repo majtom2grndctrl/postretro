@@ -301,13 +301,10 @@ impl Renderer {
         full.mesh_dynamic_time = time;
 
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
-        // a trimmed camera uniform (no group-0 tail), so the scale/isolation/
-        // has_direct knobs reach it through this dedicated uniform instead.
-        full.sh_volume_resources.write_dynamic_direct_params(
-            queue,
-            full.dynamic_direct_scale,
-            full.dynamic_direct_isolation as u32,
-        );
+        // a trimmed camera uniform (no group-0 tail), so its direct scale and
+        // level-fixed `has_direct` flag reach it through this dedicated uniform.
+        full.sh_volume_resources
+            .write_dynamic_direct_params(queue, full.dynamic_direct_scale);
 
         // Must precede the compose and SH fragment passes (both read the descriptor buffer).
         full.sh_volume_resources

@@ -10,17 +10,13 @@ struct Uniforms {
     // Elapsed seconds since renderer start. Consumed by SH animated-layer
     // evaluation; wrapping is handled per-light via fract().
     time: f32,
-    // Lighting-term isolation for leak/bleed debugging. Set via the
-    // Diagnostics panel dropdown (dev-tools). Values 0..=9 — see fs_main for the full
-    // table; in summary 0 = Normal, 1 = NoLightmap, 2 = DirectOnly,
-    // 3 = IndirectOnly, 4 = AmbientOnly, 5 = LightmapOnly,
-    // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,
-    // 9 = SpecularOnly.
-    lighting_isolation: u32,
+    // `LightTermMask` from the dev-tools diagnostics checkboxes. Bits 0..=6
+    // independently gate the lighting terms; bit 7 is reserved/emissive and
+    // intentionally unwired.
+    light_term_mask: u32,
     // Per-frame multiplier on the SH indirect term. 1.0 preserves baked
     // intensity; lower values suppress SH fill on static surfaces to keep
-    // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
-    // modes so debug views aren't affected by runtime suppression.
+    // lightmap shadow contrast.
     indirect_scale: f32,
     // Gates whether the half-res SDF visibility target is sampled at all. See
     // `SDF_SHADOW_FLAG_*` in render/mod.rs:
@@ -913,41 +909,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Tangent-space normal map + TBN construction. The neutral placeholder
     // (127, 127, 255, 255) decodes to ~(0, 0, 1), which TBN transforms back
     // to the mesh normal — surfaces without `_n.png` are identical to the
-    // pre-bump path. Skipped in AmbientOnly (iso == 4u): ambient is
-    // view-independent and no N_bump consumer is active in that mode.
-    let iso = uniforms.lighting_isolation;
-    var N_bump: vec3<f32> = mesh_n;
-    if iso != 4u {
-        let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
-        N_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
-    }
+    // pre-bump path.
+    let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
+    let N_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
 
-    // Lighting isolation mode — enables each contributing term independently
-    // for leak/bleed debugging. Values:
-    //   0 = Normal             — all terms
-    //   1 = NoLightmap         — all terms except static lightmap
-    //   2 = DirectOnly         — lightmap + dynamic + specular
-    //   3 = IndirectOnly       — SH indirect + specular
-    //   4 = AmbientOnly        — ambient floor only
-    //   5 = LightmapOnly       — static lightmap (incl. animated atlas)
-    //   6 = StaticSHOnly       — static SH indirect only
-    //   7 = AnimatedDeltaOnly  — animated SH delta (no separate term yet)
-    //   8 = DynamicOnly        — dynamic direct lights only
-    //   9 = SpecularOnly       — specular only
-    // See `LightingIsolation` in crates/renderer/src/render/mod.rs.
-    let use_lightmap = (iso == 0u) || (iso == 2u) || (iso == 5u);
-    // Modes 6 and 7 both route through `use_indirect` until Task E adds a
-    // separate animated-delta term; mode 7 shows nothing useful intentionally.
-    let use_indirect = (iso == 0u) || (iso == 1u) || (iso == 3u) || (iso == 6u);
-    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 3u) || (iso == 9u);
-    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+    const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
+    const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;
+    const LIGHT_TERM_INDIRECT_ANIMATED: u32 = 0x04u;
+    const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
+    const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
+    const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
+    const LIGHT_TERM_SPECULAR: u32 = 0x40u;
+    let light_terms = uniforms.light_term_mask;
+    let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;
+    let use_indirect = (light_terms & (LIGHT_TERM_INDIRECT_STATIC | LIGHT_TERM_INDIRECT_ANIMATED)) != 0u;
+    let use_baked_direct_static = (light_terms & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
+    let use_baked_direct_animated = (light_terms & LIGHT_TERM_BAKED_DIRECT_ANIMATED) != 0u;
+    let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;
+    let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
 
-    // Force scale to 1.0 in modes that exist to view the indirect term directly
-    // (IndirectOnly = 3, StaticSHOnly = 6) so runtime suppression doesn't distort them.
-    let indirect_scale = select(uniforms.indirect_scale, 1.0, iso == 3u || iso == 6u);
     var indirect = vec3<f32>(0.0);
     if use_indirect {
-        indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * indirect_scale;
+        indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * uniforms.indirect_scale;
     }
 
     // SDF static-occluder shadow factor. The four RGBA channels are the K = 4
@@ -969,19 +952,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var static_direct = vec3<f32>(0.0);
     var shadowmask_union = vec3<f32>(0.0);
     var shadowmask_raw_pool_visibility = 1.0;
-    if use_lightmap {
+    if use_baked_direct_static || use_baked_direct_animated {
         // Irradiance + animated atlas filter bilinear (HW linear sampler at
         // binding 4) so baked penumbra ramps read as continuous gradients under
         // magnification. The direction channel below stays on the nearest
         // sampler (octahedral lerp ≠ slerp).
-        let lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
+        var lm_irr = vec3<f32>(0.0);
+        if use_baked_direct_static {
+            lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
+        }
         // Pre-shaded Lambert irradiance from the animated compose pre-pass.
         // A static layer absent from section 25 resolves to INVALID_SLOT, so it
         // contributes zero rather than accidentally sampling animated slot 0.
         var lm_anim = vec3<f32>(0.0);
         var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
         let animated_slot = animated_slot_for_static_layer(in.lightmap_layer);
-        if animated_slot != 0xffffffffu {
+        if use_baked_direct_animated && animated_slot != 0xffffffffu {
             lm_anim = sample_lightmap_animated(in.lightmap_uv, animated_slot);
             anim_dir_sample = textureSample(
                 animated_lm_direction,
@@ -1062,9 +1048,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // /`lm_anim` by construction (the compiler excludes sdf lights from both
     // bake sets), so this is purely additive — no re-weighting. Multiplies each
     // selected light's Lambert diffuse by its upsampled visibility slice (slot i
-    // → R/G/B/A via `slice_for_visibility`). Gated by `use_lightmap` so it shows
-    // in exactly the direct-static-light isolation modes the baked term does.
-    if use_lightmap {
+    // → R/G/B/A via `slice_for_visibility`). It shares the baked-direct static
+    // gate because it is that term's runtime shadow implementation.
+    if use_baked_direct_static {
         for (var s: u32 = 0u; s < sdf_sel.count; s = s + 1u) {
             let sl = spec_lights[sdf_sel.indices[s]];
             let to_light = sl.position_and_range.xyz - in.world_position;
@@ -1085,7 +1071,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if use_lightmap || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
+    if use_baked_direct_static || use_specular || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
         let shadowmask = shadowmask_union_subtraction(
             in.world_position,
             in.lightmap_uv,
@@ -1095,12 +1081,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
         shadowmask_union = shadowmask.subtraction;
         shadowmask_raw_pool_visibility = shadowmask.raw_pool_visibility;
-        if use_lightmap {
+        if use_baked_direct_static {
             static_direct = max(static_direct - shadowmask_union, vec3<f32>(0.0));
         }
     }
 
-    var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;
+    var total_light = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), use_ambient_floor)
+        + indirect
+        + static_direct;
 
     var specular_sum = vec3<f32>(0.0);
     if use_specular {
@@ -1162,7 +1150,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 if sdf_force_lit {
                     visibility = 1.0;
                 }
-            } else if use_lightmap {
+            } else if use_specular {
                 visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask);
             }
             let contribution = blinn_phong(

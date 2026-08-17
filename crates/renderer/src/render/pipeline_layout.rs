@@ -152,7 +152,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 11;
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
 //   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
-//   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
+//   80..84   light_count  84..88  time  88..92   light_term_mask  92..96  indirect_scale
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
 //   112..116 dynamic_direct_isolation  116..120 has_direct

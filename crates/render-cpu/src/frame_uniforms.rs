@@ -14,8 +14,8 @@ pub const TOTAL_LIGHT_COUNT_OFFSET: u64 = 120;
 /// `slice_for_visibility`; they are not individually flag-gated.
 pub const SDF_SHADOW_FLAG_ATLAS_PRESENT: u32 = 1 << 0;
 
-/// Debug selector for the SDF shadow path. Mirrors the `LightingIsolation`
-/// pattern: panel-only dropdown, encoded into the per-frame uniform.
+/// Debug selector for the SDF shadow path: panel-only dropdown, encoded into
+/// the per-frame uniform.
 ///
 /// - `On` applies the per-light SDF visibility multiply normally (gated on the
 ///   atlas-present flag, `SDF_SHADOW_FLAG_ATLAS_PRESENT`).
@@ -83,81 +83,78 @@ impl SdfShadowMode {
     }
 }
 
-/// Lighting-term isolation mode for leak/bleed debugging.
-/// The ambient floor always contributes so interior geometry is never pitch black.
+/// Dev-tools-only gates for independently viewing the terms that light a
+/// surface. Bit 7 remains reserved: emissive lights only their own material
+/// and is intentionally outside this instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Variants beyond Normal are selected via the Diagnostics panel dropdown (dev-tools feature).
-// The keyboard cycle chord was removed; the panel is the only trigger.
-#[allow(dead_code)]
-#[repr(u32)]
-pub enum LightingIsolation {
-    Normal = 0,
-    NoLightmap = 1,
-    DirectOnly = 2,
-    IndirectOnly = 3,
-    AmbientOnly = 4,
-    LightmapOnly = 5,
-    StaticSHOnly = 6,
-    AnimatedDeltaOnly = 7,
-    DynamicOnly = 8,
-    SpecularOnly = 9,
-}
+#[repr(transparent)]
+pub struct LightTermMask(u32);
 
-impl LightingIsolation {
-    /// All variants in display order. Used by the debug UI dropdown.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [LightingIsolation; 10] = [
-        LightingIsolation::Normal,
-        LightingIsolation::NoLightmap,
-        LightingIsolation::DirectOnly,
-        LightingIsolation::IndirectOnly,
-        LightingIsolation::AmbientOnly,
-        LightingIsolation::LightmapOnly,
-        LightingIsolation::StaticSHOnly,
-        LightingIsolation::AnimatedDeltaOnly,
-        LightingIsolation::DynamicOnly,
-        LightingIsolation::SpecularOnly,
+impl LightTermMask {
+    pub const AMBIENT_FLOOR: Self = Self(1 << 0);
+    pub const INDIRECT_STATIC: Self = Self(1 << 1);
+    pub const INDIRECT_ANIMATED: Self = Self(1 << 2);
+    pub const BAKED_DIRECT_STATIC: Self = Self(1 << 3);
+    pub const BAKED_DIRECT_ANIMATED: Self = Self(1 << 4);
+    pub const DYNAMIC_DIRECT: Self = Self(1 << 5);
+    pub const SPECULAR: Self = Self(1 << 6);
+
+    /// Every wired term. Bit 7 is reserved for the intentionally unwired
+    /// emissive category and must not be included here.
+    pub const ALL: Self = Self(0x7F);
+
+    /// Terms in diagnostics display order.
+    pub const ALL_TERMS: [Self; 7] = [
+        Self::AMBIENT_FLOOR,
+        Self::INDIRECT_STATIC,
+        Self::INDIRECT_ANIMATED,
+        Self::BAKED_DIRECT_STATIC,
+        Self::BAKED_DIRECT_ANIMATED,
+        Self::DYNAMIC_DIRECT,
+        Self::SPECULAR,
     ];
 
-    #[allow(dead_code)]
-    pub fn cycle(self) -> Self {
-        match self {
-            LightingIsolation::Normal => LightingIsolation::NoLightmap,
-            LightingIsolation::NoLightmap => LightingIsolation::DirectOnly,
-            LightingIsolation::DirectOnly => LightingIsolation::IndirectOnly,
-            LightingIsolation::IndirectOnly => LightingIsolation::AmbientOnly,
-            LightingIsolation::AmbientOnly => LightingIsolation::LightmapOnly,
-            LightingIsolation::LightmapOnly => LightingIsolation::StaticSHOnly,
-            LightingIsolation::StaticSHOnly => LightingIsolation::AnimatedDeltaOnly,
-            LightingIsolation::AnimatedDeltaOnly => LightingIsolation::DynamicOnly,
-            LightingIsolation::DynamicOnly => LightingIsolation::SpecularOnly,
-            LightingIsolation::SpecularOnly => LightingIsolation::Normal,
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    pub const fn contains(self, term: Self) -> bool {
+        self.0 & term.0 != 0
+    }
+
+    pub fn set_enabled(&mut self, term: Self, enabled: bool) {
+        if enabled {
+            self.0 |= term.0;
+        } else {
+            self.0 &= !term.0;
         }
     }
 
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            LightingIsolation::Normal => "Normal (all terms)",
-            LightingIsolation::NoLightmap => "NoLightmap (all terms except static lightmap)",
-            LightingIsolation::DirectOnly => "DirectOnly (lightmap + dynamic + specular)",
-            LightingIsolation::IndirectOnly => "IndirectOnly (SH + specular)",
-            LightingIsolation::AmbientOnly => "AmbientOnly (ambient floor only)",
-            LightingIsolation::LightmapOnly => "LightmapOnly (static lightmap)",
-            LightingIsolation::StaticSHOnly => "StaticSHOnly (static SH indirect)",
-            LightingIsolation::AnimatedDeltaOnly => "AnimatedDeltaOnly (animated SH delta)",
-            LightingIsolation::DynamicOnly => "DynamicOnly (dynamic direct lights)",
-            LightingIsolation::SpecularOnly => "SpecularOnly (specular only)",
+    pub const fn label(self) -> &'static str {
+        match self.0 {
+            0x01 => "Ambient floor",
+            0x02 => "Indirect — static",
+            0x04 => "Indirect — animated",
+            0x08 => "Baked direct — static",
+            0x10 => "Baked direct — animated",
+            0x20 => "Dynamic direct",
+            0x40 => "Specular",
+            _ => "Unknown lighting term",
         }
+    }
+}
+
+impl Default for LightTermMask {
+    fn default() -> Self {
+        Self::ALL
     }
 }
 
 /// Isolation mode for the DYNAMIC (entity / billboard) baked-static-direct SH
-/// path. Separate, 3-state instrument — NOT the 10-variant `LightingIsolation`
-/// (which controls the forward/static pass and stays independent so the
-/// dynamic-vs-static parity comparison still works). Encoded as the enum's
-/// `u32` repr into the mesh `DynamicDirectParams` uniform (binding 16) and the
-/// tail of the group-0 `Uniforms` (billboard).
+/// path. This temporary 3-state control stays separate from the group-0
+/// `LightTermMask` until the dynamic receiver compose paths are migrated.
+/// Encoded as the enum's `u32` repr into the mesh `DynamicDirectParams`
+/// uniform (binding 16) and the tail of the group-0 `Uniforms` (billboard).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Selected via the Diagnostics panel; dev-tools only.
 #[allow(dead_code)]
@@ -205,7 +202,9 @@ pub struct FrameUniforms {
     pub ambient_floor: f32,
     pub light_count: u32,
     pub time: f32,
-    pub lighting_isolation: LightingIsolation,
+    /// Bits 0..=6 are `LightTermMask`; byte 88..92 is a fixed group-0 ABI
+    /// slot shared by the renderer and every shader mirror.
+    pub light_term_mask: LightTermMask,
     pub indirect_scale: f32,
     /// Bitset of `SDF_SHADOW_FLAG_*` controlling the forward shader's SDF
     /// shadow path. Bit 0 (`SDF_SHADOW_FLAG_ATLAS_PRESENT`) marks a loaded
@@ -228,8 +227,8 @@ pub struct FrameUniforms {
     /// for the billboard path (the mesh path reads its own copy from the
     /// group-4 `DynamicDirectParams`). Repurposes the former `_sdf_pad1` slot.
     pub dynamic_direct_scale: f32,
-    /// DYNAMIC-direct isolation mode (billboard path). Separate from
-    /// `lighting_isolation`. Lands in a fresh trailing 16-byte row.
+    /// DYNAMIC-direct isolation mode (billboard path). Separate from the
+    /// group-0 light-term mask. Lands in a fresh trailing 16-byte row.
     pub dynamic_direct_isolation: DynamicDirectIsolation,
     /// Whether a baked DIRECT SH section is present. When false the dynamic
     /// shaders skip the direct sample (direct = 0), falling back to
@@ -260,8 +259,7 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[76..80].copy_from_slice(&u.ambient_floor.to_ne_bytes());
     bytes[80..84].copy_from_slice(&u.light_count.to_ne_bytes());
     bytes[84..88].copy_from_slice(&u.time.to_ne_bytes());
-    let isolation: u32 = u.lighting_isolation as u32;
-    bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
+    bytes[88..92].copy_from_slice(&u.light_term_mask.bits().to_ne_bytes());
     bytes[92..96].copy_from_slice(&u.indirect_scale.to_ne_bytes());
     bytes[96..100].copy_from_slice(&u.sdf_shadow_flags.to_ne_bytes());
     let mode: u32 = u.sdf_shadow_mode as u32;
@@ -293,7 +291,7 @@ mod tests {
             ambient_floor: 0.05,
             light_count: 0,
             time: 0.0,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -308,6 +306,23 @@ mod tests {
     }
 
     #[test]
+    fn light_term_mask_uses_only_the_seven_wired_bits() {
+        assert_eq!(LightTermMask::ALL.bits(), 0x7F);
+        assert_eq!(LightTermMask::ALL_TERMS.len(), 7);
+        assert!(LightTermMask::ALL.contains(LightTermMask::AMBIENT_FLOOR));
+        assert!(LightTermMask::ALL.contains(LightTermMask::SPECULAR));
+
+        let mut mask = LightTermMask::ALL;
+        mask.set_enabled(LightTermMask::DYNAMIC_DIRECT, false);
+        assert_eq!(mask.bits(), 0x5F);
+        assert!(!mask.contains(LightTermMask::DYNAMIC_DIRECT));
+        assert_eq!(
+            LightTermMask::BAKED_DIRECT_ANIMATED.label(),
+            "Baked direct — animated"
+        );
+    }
+
+    #[test]
     fn uniform_data_encodes_sdf_shadow_flags_at_correct_offset() {
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
@@ -315,7 +330,7 @@ mod tests {
             ambient_floor: 0.0,
             light_count: 0,
             time: 0.0,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale: 1.0,
             sdf_shadow_flags: SDF_SHADOW_FLAG_ATLAS_PRESENT,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -344,7 +359,7 @@ mod tests {
                 ambient_floor: 0.0,
                 light_count: 0,
                 time: 0.0,
-                lighting_isolation: LightingIsolation::Normal,
+                light_term_mask: LightTermMask::ALL,
                 indirect_scale: 1.0,
                 sdf_shadow_flags: 0,
                 sdf_shadow_mode: SdfShadowMode::On,
@@ -371,7 +386,7 @@ mod tests {
             ambient_floor: 0.0,
             light_count: 0,
             time: 0.0,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -395,7 +410,7 @@ mod tests {
                 ambient_floor: 0.0,
                 light_count: 0,
                 time: 0.0,
-                lighting_isolation: LightingIsolation::Normal,
+                light_term_mask: LightTermMask::ALL,
                 indirect_scale: 1.0,
                 sdf_shadow_flags: 0,
                 sdf_shadow_mode: mode,
@@ -420,7 +435,7 @@ mod tests {
             ambient_floor: 0.0,
             light_count: 0,
             time: 0.0,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::ShadowmaskRawPoolVisibility,
@@ -444,7 +459,7 @@ mod tests {
             ambient_floor: 0.0,
             light_count: 0,
             time: 0.0,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -478,7 +493,7 @@ mod tests {
             ambient_floor,
             light_count,
             time: 0.0,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -510,7 +525,11 @@ mod tests {
             light_count,
         );
         assert_eq!(f32::from_ne_bytes(data[84..88].try_into().unwrap()), 0.0);
-        assert_eq!(u32::from_ne_bytes(data[88..92].try_into().unwrap()), 0);
+        assert_eq!(
+            u32::from_ne_bytes(data[88..92].try_into().unwrap()),
+            LightTermMask::ALL.bits(),
+            "light-term mask must retain the group-0 88..92 ABI slot",
+        );
         assert!(
             (f32::from_ne_bytes(data[92..96].try_into().unwrap()) - indirect_scale).abs() < 1e-6
         );
@@ -525,7 +544,7 @@ mod tests {
             ambient_floor: 0.0,
             light_count: 0,
             time: script_time,
-            lighting_isolation: LightingIsolation::Normal,
+            light_term_mask: LightTermMask::ALL,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,

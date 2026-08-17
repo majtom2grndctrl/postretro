@@ -20,7 +20,7 @@ pub use postretro_renderer::{
     BloomRenderProfile, BloomResolution, BvhOverlayBudget, BvhOverlayColorMode,
     BvhOverlayDepthMode, BvhOverlayState, CameraCullDiagnostics, CameraCullPath, CellOverlayState,
     ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE,
-    DynamicDirectIsolation, KinematicMoverInstance, LevelGeometry, LightingIsolation,
+    DynamicDirectIsolation, KinematicMoverInstance, LevelGeometry, LightTermMask,
     LocatorDiagnostics, MoverOccluderAabb, PortalOverlayState, PresentHandle, Renderer,
     SdfShadowMode, SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
     level_world_to_geometry,

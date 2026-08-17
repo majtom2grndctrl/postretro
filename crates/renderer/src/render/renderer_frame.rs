@@ -267,6 +267,11 @@ impl Renderer {
         if full.sdf_atlas_resources.present {
             sdf_shadow_flags |= SDF_SHADOW_FLAG_ATLAS_PRESENT;
         }
+        // The diagnostics UI runs after this upload. Snapshot once so every
+        // consumer of the mask observes a checkbox change together on the
+        // following frame rather than mixing group-0's old value with live
+        // post-UI state.
+        full.frame_light_term_mask = full.light_term_mask;
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,
@@ -274,7 +279,7 @@ impl Renderer {
             light_count: full.light_count,
             total_light_count: full.total_light_count,
             time,
-            lighting_isolation: full.lighting_isolation,
+            light_term_mask: full.frame_light_term_mask,
             indirect_scale: full.indirect_scale,
             sdf_shadow_flags,
             sdf_shadow_mode: full.sdf_shadow_mode,

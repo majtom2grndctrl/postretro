@@ -159,6 +159,42 @@ fn forward_wgsl_struct_strides_match_cpu_layout() {
 }
 
 #[test]
+fn forward_light_term_mask_gates_each_world_term_without_overriding_scale() {
+    let src = include_str!("../../shaders/forward.wgsl");
+
+    for constant in [
+        "const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;",
+        "const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;",
+        "const LIGHT_TERM_INDIRECT_ANIMATED: u32 = 0x04u;",
+        "const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;",
+        "const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;",
+        "const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;",
+        "const LIGHT_TERM_SPECULAR: u32 = 0x40u;",
+    ] {
+        assert!(src.contains(constant), "missing {constant}");
+    }
+    assert!(
+        src.contains("let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;")
+            && src.contains("let use_baked_direct_static = (light_terms & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;")
+            && src.contains("let use_baked_direct_animated = (light_terms & LIGHT_TERM_BAKED_DIRECT_ANIMATED) != 0u;")
+            && src.contains("let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;")
+            && src.contains("let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;"),
+        "the world shader must independently derive each direct gate from the mask",
+    );
+    assert!(
+        src.contains(
+            "if use_baked_direct_static {\n            lm_irr = sample_lightmap_irradiance"
+        ) && src.contains("if use_baked_direct_animated && animated_slot != 0xffffffffu"),
+        "static and animated world lightmap contributions must be independently sampled",
+    );
+    assert!(
+        src.contains("* uniforms.indirect_scale;")
+            && !src.contains("select(uniforms.indirect_scale, 1.0"),
+        "term isolation must not force indirect_scale to 1.0",
+    );
+}
+
+#[test]
 fn count_split_shader_consumers_use_expected_loop_bounds() {
     let forward_src = include_str!("../../shaders/forward.wgsl");
     assert!(
@@ -363,9 +399,9 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
         src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE")
             && src.contains("return vec4<f32>(g, g, g, base_color.a);")
             && src.contains(
-                "if use_lightmap || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
+                "if use_baked_direct_static || use_specular || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
             ),
-        "raw pool visibility must be a grayscale early-return diagnostic independent of lighting isolation"
+        "raw pool visibility must be a grayscale early-return diagnostic independent of term isolation"
     );
 }
 

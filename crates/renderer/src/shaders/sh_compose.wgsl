@@ -10,7 +10,7 @@ struct Uniforms {
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     _pad: u32,
 };
 
@@ -327,13 +327,17 @@ fn compose_main(
     }
     let output_is_valid = in_grid && compact_slot != INVALID_PROBE_INDIRECTION;
     let tile_origin = atlas_tile_origin(probe);
+    // This pass reads the current group-0 uniform, not construction-time
+    // `GridDims`, so diagnostics changes compose on the next frame snapshot.
+    let use_indirect_static = (uniforms.light_term_mask & 0x02u) != 0u;
+    let use_indirect_animated = (uniforms.light_term_mask & 0x04u) != 0u;
 
     // Keeping the accumulator private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
     // geometry is fixed at 6×6 by PRL validation.
     var accum: array<vec3<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
-        if (output_is_valid) {
+        if (output_is_valid && use_indirect_static) {
             let tile_texel = vec2<u32>(
                 texel_index % RUNTIME_TILE_DIMENSION,
                 texel_index / RUNTIME_TILE_DIMENSION,
@@ -351,7 +355,7 @@ fn compose_main(
     if (level == 0u) {
         // Dense L0 has no dropped probes, so keep its direct compact-payload
         // reads and do not spend shared memory loading 64 tiles.
-        if (output_is_valid) {
+        if (output_is_valid && use_indirect_animated) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let scale = animated_light_scale(affinity_lights[entry]);
@@ -411,7 +415,7 @@ fn compose_main(
             }
             workgroupBarrier();
 
-            if (output_is_valid) {
+            if (output_is_valid && use_indirect_animated) {
                 let scale = animated_light_scale(affinity_lights[entry]);
                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                     var delta = vec3<f32>(0.0);

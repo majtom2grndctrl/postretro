@@ -42,21 +42,6 @@ impl Renderer {
         }
     }
 
-    /// Direct setter used by the debug-panel dropdown. Logs only on actual
-    /// transition so spam-clicks on the current mode stay quiet.
-    #[cfg(feature = "dev-tools")]
-    pub fn set_lighting_isolation(&mut self, mode: LightingIsolation) {
-        if self.full().lighting_isolation != mode {
-            self.full_mut().lighting_isolation = mode;
-            log::info!("[Renderer] Lighting isolation: {}", mode.label());
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    pub fn lighting_isolation(&self) -> LightingIsolation {
-        self.full().lighting_isolation
-    }
-
     /// Direct setter for the `SdfShadowMode`; used by the debug-panel dropdown.
     /// Logs only on transition so spam clicks on the current mode stay quiet.
     #[cfg(feature = "dev-tools")]

@@ -11,15 +11,15 @@
 // (`direct_scale` / `dynamic_direct_isolation` / `has_direct`); the rest are
 // declared so the field offsets line up with the Rust `Uniforms` writer (a
 // 4-way byte contract: Rust writer + forward.wgsl + billboard.wgsl +
-// wireframe.wgsl). The existing `lighting_isolation` stays the forward/static
-// control and is NOT reused here.
+// wireframe.wgsl). `light_term_mask` is the shared forward/static control;
+// later term wiring also consumes it here.
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     indirect_scale: f32,
     sdf_shadow_flags: u32,
     sdf_shadow_mode: u32,
@@ -28,7 +28,7 @@ struct Uniforms {
     // Multiplies the baked DIRECT SH term (0..1).
     direct_scale: f32,
     // 0 = combined (sh_ambient + scale·direct), 1 = direct-only (scale·direct),
-    // 2 = indirect-only (sh_ambient). Separate from `lighting_isolation`.
+    // 2 = indirect-only (sh_ambient). Separate from `light_term_mask`.
     dynamic_direct_isolation: u32,
     // 0 when the baked DIRECT SH section is absent → skip the direct sample.
     has_direct: u32,

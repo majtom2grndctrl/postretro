@@ -478,6 +478,7 @@ impl Renderer {
         // They write depth and use the mesh dynamic-object lighting bindings
         // (baked SH indirect/static direct + runtime dynamic direct).
         if render_world && self.full().kinematic_brush.has_draws() {
+            let frame_light_term_mask = self.frame_light_term_mask();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -489,7 +490,14 @@ impl Renderer {
                     full.total_light_count,
                     full.light_count,
                     full.mesh_dynamic_time,
-                    full.lighting_isolation as u32,
+                    // Task 1 keeps the group-2 ABI for the next phase, but
+                    // maps the captured bitmask to its legacy dynamic gate.
+                    // The UI's live value must never be read during recording.
+                    if frame_light_term_mask.contains(LightTermMask::DYNAMIC_DIRECT) {
+                        0
+                    } else {
+                        9
+                    },
                     full.ambient_floor,
                 );
             }
@@ -538,12 +546,11 @@ impl Renderer {
                 // frame's render-clock time (the SAME value written to forward
                 // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
                 // so the scripted-light curves the mesh loop evaluates stay
-                // phase-coherent), and the SAME `lighting_isolation` value written to
-                // forward `Uniforms.lighting_isolation` this frame, so the mesh
-                // runtime-direct term participates in the lighting-isolation debug
-                // modes exactly as the world dynamic term does (the shader derives
-                // `use_dynamic` from it, mirroring forward.wgsl).
+                // phase-coherent), and the captured light-term mask's dynamic
+                // bit. Task 2 replaces this temporary legacy group-2 gate with
+                // the mask itself while preserving the 16-byte ABI.
                 {
+                    let frame_light_term_mask = self.frame_light_term_mask();
                     let Self { queue, full, .. } = self;
                     let full = full
                         .as_mut()
@@ -552,7 +559,11 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.mesh_dynamic_time,
-                        full.lighting_isolation as u32,
+                        if frame_light_term_mask.contains(LightTermMask::DYNAMIC_DIRECT) {
+                            0
+                        } else {
+                            9
+                        },
                         full.ambient_floor,
                     );
                 }
@@ -779,6 +790,7 @@ impl Renderer {
         if render_world {
             if let Some(plan) = viewmodel_mesh_frame_plan {
                 {
+                    let frame_light_term_mask = self.frame_light_term_mask();
                     let Self { queue, full, .. } = self;
                     let full = full
                         .as_mut()
@@ -787,7 +799,11 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.mesh_dynamic_time,
-                        full.lighting_isolation as u32,
+                        if frame_light_term_mask.contains(LightTermMask::DYNAMIC_DIRECT) {
+                            0
+                        } else {
+                            9
+                        },
                         full.ambient_floor,
                     );
                 }

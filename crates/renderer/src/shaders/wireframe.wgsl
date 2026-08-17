@@ -23,7 +23,7 @@ struct Uniforms {
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     indirect_scale: f32,
     // See forward.wgsl — same bitset gating the SDF shadow multiplies; the
     // wireframe pass shares the same uniform buffer so the struct strides

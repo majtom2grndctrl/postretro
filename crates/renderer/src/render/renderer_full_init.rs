@@ -561,6 +561,7 @@ pub(crate) fn build_full_renderer(
         light_count,
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
+        frame_light_term_mask: LightTermMask::ALL,
         kinematic_mover_draws: Vec::new(),
         kinematic_mover_shadow_draws: Vec::new(),
         mover_occluder_aabbs: Vec::new(),
@@ -670,7 +671,7 @@ pub(crate) fn build_full_renderer(
         agent_overlay: AgentOverlayState::default(),
         #[cfg(feature = "dev-tools")]
         show_navmesh: false,
-        lighting_isolation: LightingIsolation::Normal,
+        light_term_mask: LightTermMask::ALL,
         dynamic_direct_isolation: DynamicDirectIsolation::Combined,
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: std::env::var("POSTRETRO_SDF_FORCE_VISIBILITY_ONE")

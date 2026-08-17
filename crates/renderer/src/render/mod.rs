@@ -46,6 +46,7 @@ mod renderer_init;
 mod renderer_init_pipelines;
 mod renderer_init_resources;
 mod renderer_light_slots;
+mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_models;
 mod renderer_render_frame;
@@ -112,7 +113,7 @@ use postretro_render_cpu::smoke::SpriteFrame;
 // reachable here at their original `render::*` paths.
 pub(crate) use postretro_render_cpu::fog_mask::*;
 pub use postretro_render_cpu::frame_uniforms::{
-    DynamicDirectIsolation, LightingIsolation, SdfShadowMode,
+    DynamicDirectIsolation, LightTermMask, SdfShadowMode,
 };
 pub(crate) use postretro_render_cpu::frame_uniforms::{
     FrameUniforms, SDF_SHADOW_FLAG_ATLAS_PRESENT, UNIFORM_SIZE, build_uniform_data,

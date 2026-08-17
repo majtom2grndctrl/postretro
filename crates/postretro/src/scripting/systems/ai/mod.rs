@@ -500,10 +500,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             (None, false)
         };
 
-        // (1) Cooldown ticks down and time-in-state accrues every tick, before
-        // any guard reads them: a `@brain.timeInStateMs` commitment window then
-        // elapses on the first tick its budget is spent, and never earlier.
-        brain.attack_cooldown_remaining_ms = (brain.attack_cooldown_remaining_ms - dt_ms).max(0.0);
+        // (1) Every named cooldown ticks down before the aggro gate and before
+        // any guard reads its selected attack's value. Entries do not freeze
+        // while another attack is current, nor disappear on a graph reseat.
+        for remaining_ms in brain.attack_cooldown_remaining_ms.values_mut() {
+            *remaining_ms = (*remaining_ms - dt_ms).max(0.0);
+        }
         brain.time_in_state_ms += dt_ms;
 
         // Stride bookkeeping advances every tick so the gate is deterministic.

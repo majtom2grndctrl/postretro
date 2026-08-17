@@ -25,6 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use postretro_entities::components::brain::graph_state_index;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BoundProgram, CURRENT_IR_VERSION, IrType,
@@ -84,6 +85,11 @@ pub(crate) struct BrainPrograms {
     scope: BrainScope,
     candidate_scope: CandidateScope,
     entries: HashMap<EntityId, BrainEntityPrograms>,
+    /// Replacement graphs must resolve the prior state by name, never by the
+    /// persisted numeric index. Entries remain pending until the enemy is
+    /// evaluated, so a temporarily inert or downed enemy cannot miss its
+    /// reseat tick.
+    pending_reseats: HashMap<EntityId, usize>,
     /// The entities `sync` saw on its current pass. A field rather than a local
     /// purely so its capacity survives: `sync` runs every AI tick, and a local
     /// set would allocate on every one of them to detect a condition that only
@@ -97,6 +103,7 @@ impl BrainPrograms {
             scope: BrainScope::for_validation(),
             candidate_scope: CandidateScope::for_validation(),
             entries: HashMap::new(),
+            pending_reseats: HashMap::new(),
             live: HashSet::new(),
         }
     }
@@ -115,6 +122,11 @@ impl BrainPrograms {
     /// This entity's bound guards, or `None` when it carries no brain.
     pub(crate) fn get(&self, entity: EntityId) -> Option<&BrainEntityPrograms> {
         self.entries.get(&entity)
+    }
+
+    /// Consume the state index resolved for this entity's replacement graph.
+    pub(crate) fn take_reseat(&mut self, entity: EntityId) -> Option<usize> {
+        self.pending_reseats.remove(&entity)
     }
 
     /// Borrow the optional filter and reusable refresh scope independently.
@@ -165,6 +177,26 @@ impl BrainPrograms {
                 .get(&entity)
                 .is_some_and(|entry| Arc::ptr_eq(&entry.graph, &brain.graph));
             if !bound {
+                if let Some(previous) = self
+                    .entries
+                    .get(&entity)
+                    .filter(|previous| previous.graph.as_ref() != brain.graph.as_ref())
+                {
+                    // A second replacement may arrive before an inert enemy is
+                    // evaluated. In that case the pending index, not the still-
+                    // uncommitted component index, identifies its prior state.
+                    let previous_index = self
+                        .pending_reseats
+                        .get(&entity)
+                        .copied()
+                        .unwrap_or(brain.state_index);
+                    let previous_name = previous.graph.states.keys().nth(previous_index);
+                    let reseat_index = previous_name
+                        .and_then(|name| graph_state_index(&brain.graph, name))
+                        .or_else(|| graph_state_index(&brain.graph, &brain.graph.initial))
+                        .unwrap_or(0);
+                    self.pending_reseats.insert(entity, reseat_index);
+                }
                 let entry = bind_graph(
                     &self.scope,
                     &self.candidate_scope,
@@ -177,6 +209,8 @@ impl BrainPrograms {
 
         let live = &self.live;
         self.entries.retain(|entity, _| live.contains(entity));
+        self.pending_reseats
+            .retain(|entity, _| live.contains(entity));
     }
 }
 

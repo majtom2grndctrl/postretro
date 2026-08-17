@@ -3043,6 +3043,96 @@ fn combat_slot_state_switch_reassigns_when_attack_standoff_changes() {
     );
 }
 
+// Regression: replacing a graph could reinterpret the retained numeric state
+// index as a differently named attack and keep the old graph's combat slot.
+#[test]
+fn graph_reseat_by_name_reassigns_a_same_index_short_attack_slot() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    let enemy_pos = player_pos - Vec3::new(3.0, 0.0, 0.0);
+
+    let original = reference_behavior_graph();
+    let old_index = graph_state_index(&original, "attack_slam").unwrap();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut reg, player_pos);
+    let enemy = spawn_enemy(
+        &mut reg,
+        enemy_pos,
+        authored_brain(&original, "attack_slam"),
+        50.0,
+    );
+
+    // Bind the original graph and establish its long-range incumbent.
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&nav), Some(&world));
+    assert_eq!(enemy_state_name(&reg, enemy), "attack_slam");
+
+    let stale_slam_slot = player_pos + Vec3::new(3.5, 0.0, 0.0);
+    let mut replacement = reference_behavior_graph();
+    let mut short_attack = replacement.states.get("attack_jab").unwrap().clone();
+    short_attack.transitions.clear();
+    replacement.states.remove("attack_slam");
+    replacement
+        .states
+        .insert("attack_stab".to_string(), short_attack);
+    for state in replacement.states.values_mut() {
+        for transition in &mut state.transitions {
+            if transition.to == "attack_slam" {
+                transition.to = "attack_stab".to_string();
+            }
+        }
+    }
+    replacement.initial = "attack_stab".to_string();
+    replacement
+        .clone()
+        .validate()
+        .expect("the replacement graph is valid");
+    let new_index = graph_state_index(&replacement, "attack_stab").unwrap();
+    assert_eq!(
+        old_index, new_index,
+        "the fixture must expose the numeric-index alias"
+    );
+
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    assert_eq!(brain.acquired_target, Some(player));
+    brain.combat_slot = Some(stale_slam_slot);
+    brain.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
+    brain.time_in_state_ms = 900.0;
+    brain.graph = BrainComponent::from_graph(&replacement).graph;
+    // Preserve the old graph's raw index, as a deserialize/reload reseat does.
+    assert_eq!(brain.state_index, old_index);
+    reg.set_component(enemy, brain).unwrap();
+
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&nav), Some(&world));
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "attack_stab",
+        "the missing old state falls back to the replacement graph's initial state"
+    );
+    let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.time_in_state_ms, 0.0,
+        "a replacement is a state entry even when its resolved index is unchanged"
+    );
+    let slot = brain.combat_slot.expect("short-attack combat slot");
+    assert!(
+        distance_xz(slot, stale_slam_slot) > 1.0e-4,
+        "a graph replacement cannot retain the prior graph's incumbent"
+    );
+    assert_approx_distance(
+        distance_xz(slot, player_pos),
+        2.0,
+        "the replacement slot uses the reseated short attack's standoff",
+    );
+    assert_eq!(
+        brain.combat_slot_hold_ticks, COMBAT_SLOT_HOLD_TICKS,
+        "the replacement assignment starts a fresh hold window"
+    );
+}
+
 // Regression: a player can jump into a collision-bounded corral that has no
 // navigation entrance for an enemy. Combat positioning must not keep a
 // reachable exterior-side ring point while steering falsely reports arrival on

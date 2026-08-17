@@ -185,7 +185,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         },
       },
       // Where engaged chasers STAND: the radius of the ring of combat slots the
-      // engine spreads them around the target. Pure spacing, and distinct from
+      // engine spreads them around the target. Pure spacing, distinct from an
+      // attack's damage reach (`maxRange`).
       // Pure-pursuit and non-attack states stand at this graph default. Each
       // firing state instead resolves its own attack's reach/standoff.
       engagementRadius: REFERENCE_JAB_RANGE,

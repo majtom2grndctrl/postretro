@@ -247,6 +247,9 @@ pub(super) struct EnemyOutcome {
     /// compares its effective standoff with the committed state's standoff so
     /// a state change cannot preserve a slot on the wrong engagement ring.
     pub(super) prior_state_index: usize,
+    /// A replacement graph was reconciled this tick. Its state identity was
+    /// resolved by name even when the resulting numeric index stayed equal.
+    pub(super) graph_reseated: bool,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -431,6 +434,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
+        let graph_reseat_index = programs.take_reseat(snap.id);
+        let graph_reseated = graph_reseat_index.is_some();
+        let persisted_state_index = brain.state_index;
+        let prior_state_index = graph_reseat_index.unwrap_or(persisted_state_index);
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -440,13 +447,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // immutable position snapshot before either branch can suppress target
         // work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
-        let prior_state_index = brain.state_index;
         let prior_acquired_target = brain.acquired_target;
         let (target, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
             // — chasing one, or acting on one. A resting brain re-ranks
             // candidates instead of honoring a stale acquired id.
-            let retained_target = engages(&brain.graph, brain.state_index)
+            let retained_target = engages(&brain.graph, prior_state_index)
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
@@ -565,15 +571,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // current state, so an unaddressable one would answer "stay put"
             // forever. The graph's `initial` is the same state the gate stands
             // brains down to.
-            let current_index = if state_at(&brain.graph, brain.state_index).is_some() {
-                brain.state_index
+            let current_index = if state_at(&brain.graph, prior_state_index).is_some() {
+                prior_state_index
             } else {
                 if reseat_warned.insert(snap.id) {
                     log::warn!(
                         "[AI] enemy {} sat in behavior state index {} which its graph does not \
                          declare; re-seating it to `{}`. Warned once per enemy.",
                         snap.id,
-                        brain.state_index,
+                        persisted_state_index,
                         brain.graph.initial,
                     );
                 }
@@ -669,7 +675,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             }
         }
 
-        let state_changed = next_index != prior_state_index;
+        let state_changed = graph_reseated || next_index != prior_state_index;
         let engaged = target.is_some() && engages(&brain.graph, next_index);
         brain.state_index = next_index;
         let on_enter = if state_changed {
@@ -685,6 +691,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             target,
             prior_acquired_target,
             prior_state_index,
+            graph_reseated,
             state_changed,
             attacked,
             on_enter,

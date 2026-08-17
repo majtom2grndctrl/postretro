@@ -1612,7 +1612,7 @@ declare module "postretro" {
     readonly targetDistance: RuntimeRead;
     /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
     readonly timeInStateMs: RuntimeRead;
-    /** Milliseconds left on the attack cooldown; `0` once elapsed (number). */
+    /** Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeRead;
     /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
     readonly acquisitionDue: RuntimeRead;

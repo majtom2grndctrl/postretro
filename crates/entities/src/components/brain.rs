@@ -20,7 +20,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use glam::Vec3;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::data_descriptors::BehaviorGraphDescriptor;
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
@@ -51,7 +51,7 @@ pub struct BrainComponent {
     /// entry counts down each tick; a missing name is ready (`0.0`). This
     /// transient simulation state is intentionally retained across graph reseats
     /// so a same-named attack inherits its remaining cooldown.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_attack_cooldowns")]
     pub attack_cooldown_remaining_ms: BTreeMap<String, f32>,
     /// Think-stride counter: incremented each tick by the FSM and compared
     /// against a distance-derived stride to time-slice target acquisition for
@@ -168,6 +168,25 @@ impl BrainComponent {
 /// definition of the index every `state_index` is measured against.
 pub fn graph_state_index(graph: &BehaviorGraphDescriptor, name: &str) -> Option<usize> {
     graph.states.keys().position(|state| state == name)
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SerializedAttackCooldowns {
+    Named(BTreeMap<String, f32>),
+    LegacyScalar(f32),
+}
+
+fn deserialize_attack_cooldowns<'de, D>(deserializer: D) -> Result<BTreeMap<String, f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match SerializedAttackCooldowns::deserialize(deserializer)? {
+        SerializedAttackCooldowns::Named(cooldowns) => Ok(cooldowns),
+        // The old scalar was transient state for the retired single attack.
+        // No attack name exists to carry it forward without guessing.
+        SerializedAttackCooldowns::LegacyScalar(_remaining_ms) => Ok(BTreeMap::new()),
+    }
 }
 
 const fn default_aggro_armed() -> bool {
@@ -429,20 +448,25 @@ mod tests {
         assert_eq!(restored.home_anchor, Vec3::ZERO);
     }
 
+    // Regression: pre-multi-attack brains stored one numeric cooldown, which
+    // failed deserialization after the field became a named map.
     #[test]
-    fn deserializing_a_pre_multi_attack_brain_defaults_cooldowns_to_ready() {
+    fn deserializing_a_pre_multi_attack_scalar_defaults_named_cooldowns_to_ready() {
         let brain = BrainComponent::from_graph(&authored_graph());
         let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
         serialized
             .as_object_mut()
             .expect("brain serializes as an object")
-            .remove("attack_cooldown_remaining_ms");
+            .insert(
+                "attack_cooldown_remaining_ms".to_string(),
+                serde_json::json!(375.0),
+            );
 
         let restored: BrainComponent =
             serde_json::from_value(serialized).expect("pre-multi-attack brain deserializes");
         assert!(
             restored.attack_cooldown_remaining_ms.is_empty(),
-            "an absent transient cooldown map leaves every named attack ready"
+            "the legacy unnamed transient cooldown cannot be assigned to a named attack"
         );
     }
 

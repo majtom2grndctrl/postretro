@@ -110,12 +110,15 @@ fn clear_combat_slot(outcome: &mut EnemyOutcome) {
 /// already engaged with this same target, and only while its hold window is
 /// open. A state transition also has to preserve the effective standoff;
 /// otherwise an old long-reach slot can strand a newly committed short-reach
-/// attack outside its reach for the rest of the hold window. Both slot fields
-/// are still the prior tick's here.
+/// attack outside its reach for the rest of the hold window. A replacement
+/// graph always invalidates the incumbent because its state semantics may have
+/// changed even when its resolved index or standoff bits did not. Both slot
+/// fields are still the prior tick's here.
 fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
     let target = outcome.target?;
     (outcome.engaged
         && outcome.prior_acquired_target == Some(target.entity)
+        && !outcome.graph_reseated
         && retained_standoff_matches_committed_state(outcome)
         && outcome.brain.combat_slot_hold_ticks > 0)
         .then_some(outcome.brain.combat_slot)

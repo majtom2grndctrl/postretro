@@ -332,8 +332,11 @@ pub fn drive_ring_scalar_binding(
             slot_values,
             cell_values,
         ) {
-            Some(SlotValue::Number(target)) => {
+            Some(SlotValue::Number(target)) if target.is_finite() => {
                 drive_tween_f32(tween, cfg.from, *target, cfg.duration_ms, cfg.easing, now)
+            }
+            Some(SlotValue::Number(_)) => {
+                return clear_invalid_ring_scalar(last_resolved, tween);
             }
             _ => {
                 let fallback =
@@ -345,11 +348,24 @@ pub fn drive_ring_scalar_binding(
         None => bound_scalar_value(source, bind_scope.as_deref(), slot_values, cell_values),
     };
 
+    if !resolved.is_finite() {
+        return clear_invalid_ring_scalar(last_resolved, tween);
+    }
+
     let changed = last_resolved.is_none_or(|previous| (previous - resolved).abs() > f32::EPSILON);
     if changed {
         *last_resolved = Some(resolved);
     }
     changed
+}
+
+fn clear_invalid_ring_scalar(
+    last_resolved: &mut Option<f32>,
+    tween: &mut Option<TweenState<f32>>,
+) -> bool {
+    let cleared_display = last_resolved.take().is_some();
+    let cleared_segment = tween.take().is_some();
+    cleared_display | cleared_segment
 }
 
 /// Drive a bar's denominator dependency. Literal max values settle after the

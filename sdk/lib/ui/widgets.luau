@@ -79,6 +79,15 @@ local function requireFiniteNumber(value: any, field: string, factory: string)
   end
 end
 
+local F32_MAX = 3.4028234663852886e38
+
+local function requireFiniteF32Number(value: any, field: string, factory: string)
+  requireFiniteNumber(value, field, factory)
+  if math.abs(value) > F32_MAX then
+    error(`{factory}: \`{field}\` must be representable as a finite f32`)
+  end
+end
+
 local function unwrapToken(value: any, category: string, field: string, factory: string): string?
   if type(value) ~= "table" or value.__postretroToken == nil then
     return nil
@@ -108,6 +117,16 @@ local function requireColor(value: any, field: string, factory: string): any
     requireFiniteNumber(value[i], `{field}[{i}]`, factory)
   end
   return value
+end
+
+local function requireF32Color(value: any, field: string, factory: string): any
+  local color = requireColor(value, field, factory)
+  if type(color) == "table" then
+    for i = 1, 4 do
+      requireFiniteF32Number(color[i], `{field}[{i}]`, factory)
+    end
+  end
+  return color
 end
 
 local function requireColorLiteral(value: any, field: string, factory: string)
@@ -172,7 +191,11 @@ local function buildBind(bind: any, factory: string, kind: string): any?
       error(`{factory}: \`bind.tween\` must be a table`)
     end
     local tw = bind.tween
-    requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory)
+    if kind == "scalar" then
+      requireFiniteF32Number(tw.durationMs, "bind.tween.durationMs", factory)
+    else
+      requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory)
+    end
     if tw.durationMs < 0 then
       error(`{factory}: \`bind.tween.durationMs\` must be non-negative`)
     end
@@ -181,6 +204,8 @@ local function buildBind(bind: any, factory: string, kind: string): any?
     if tw.from ~= nil then
       if kind == "panel" then
         requireColorLiteral(tw.from, "bind.tween.from", factory)
+      elseif kind == "scalar" then
+        requireFiniteF32Number(tw.from, "bind.tween.from", factory)
       else
         requireFiniteNumber(tw.from, "bind.tween.from", factory)
       end
@@ -195,7 +220,7 @@ end
 -- Build one ring geometric scalar: a literal number or a `{ slot }`/`{ local }` bind.
 local function buildScalar(value: any, name: string, factory: string): any
   if type(value) == "number" then
-    requireFiniteNumber(value, name, factory)
+    requireFiniteF32Number(value, name, factory)
     return value
   end
   if type(value) ~= "table" then
@@ -717,7 +742,7 @@ end
 --- A passive annulus or angular arc. Geometry is literal or a readonly 1:1 state/local bind.
 function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
   requireObject(props, "Ring")
-  requireFiniteNumber(props.diameter, "diameter", "Ring")
+  requireFiniteF32Number(props.diameter, "diameter", "Ring")
   if props.diameter <= 0 then
     error("Ring: `diameter` must be greater than zero")
   end
@@ -739,7 +764,7 @@ function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
       error("Ring: `thickness` must not exceed `radius`")
     end
   end
-  local fill = requireColor(props.fill, "fill", "Ring")
+  local fill = requireF32Color(props.fill, "fill", "Ring")
 
   local out: { [string]: any } = {
     kind = "ring",
@@ -759,7 +784,7 @@ function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
   end
   out.fill = fill
   if props.track ~= nil then
-    out.track = requireColor(props.track, "track", "Ring")
+    out.track = requireF32Color(props.track, "track", "Ring")
   end
   if props.id ~= nil then
     requireNonemptyString(props.id, "id", "Ring")

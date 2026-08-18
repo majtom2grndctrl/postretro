@@ -738,15 +738,20 @@ fn ring_factories_share_literal_and_bound_validation_contract() {
         const invalid = [
           () => Ring({ diameter: 0, radius: 25, thickness: 2, fill: [1,1,1,1] }),
           () => Ring({ diameter: Infinity, radius: 25, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 1e100, radius: 25, thickness: 2, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 0, thickness: 2, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 51, thickness: 2, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 25, thickness: 0, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 25, thickness: 26, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 25, thickness: 2, startAngle: Infinity, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, startAngle: 1e100, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 25, thickness: 2, sweep: 0, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: 25, thickness: 2, sweep: 361, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: { fact: "value" } as any, thickness: 2, fill: [1,1,1,1] }),
           () => Ring({ diameter: 100, radius: { slot: "hud.radius", tween: { durationMs: -1, easing: "linear" } } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: { slot: "hud.radius", tween: { durationMs: 1e100, easing: "linear" } } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: { slot: "hud.radius", tween: { durationMs: 90, easing: "linear", from: 1e100 } } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, fill: [1e100,1,1,1] }),
         ].map(rejects);
         JSON.stringify({ valid, invalid });
     "#;
@@ -767,15 +772,20 @@ fn ring_factories_share_literal_and_bound_validation_contract() {
         local invalid = {
           rejects(function() UI.Ring({ diameter = 0, radius = 25, thickness = 2, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = math.huge, radius = 25, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 1e100, radius = 25, thickness = 2, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 0, thickness = 2, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 51, thickness = 2, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 0, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 26, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, startAngle = math.huge, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, startAngle = 1e100, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, sweep = 0, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, sweep = 361, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = { fact = "value" }, thickness = 2, fill = {1,1,1,1} }) end),
           rejects(function() UI.Ring({ diameter = 100, radius = { slot = "hud.radius", tween = { durationMs = -1, easing = "linear" } }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = { slot = "hud.radius", tween = { durationMs = 1e100, easing = "linear" } }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = { slot = "hud.radius", tween = { durationMs = 90, easing = "linear", from = 1e100 } }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, fill = {1e100,1,1,1} }) end),
         }
         return { valid = valid, invalid = invalid }
     "#;
@@ -786,7 +796,8 @@ fn ring_factories_share_literal_and_bound_validation_contract() {
     assert_eq!(
         typescript["invalid"],
         serde_json::json!([
-            true, true, true, true, true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true
         ])
     );
 }

@@ -225,6 +225,143 @@ fn bound_ring_scalars_follow_raw_sources_without_relayout() {
 }
 
 #[test]
+fn nonfinite_bound_radius_invalidates_cached_draw_and_recovers() {
+    // Regression: NaN compared as unchanged and left the previous ring cached.
+    let root = ring_with_scalars(
+        bound("hud.radius", None),
+        ScalarValue::Literal(4.0),
+        ScalarValue::Literal(0.0),
+        ScalarValue::Literal(360.0),
+    );
+    let mut ui = UiTree::from_descriptor(&anchored(root), &theme());
+    let mut fonts = font_system();
+
+    let valid = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("hud.radius", 20.0)]),
+        &no_cells(),
+        0.0,
+    );
+    assert_eq!(valid.rings.len(), 1);
+    let rebuilds = ui.draw_rebuild_count();
+
+    let invalid = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("hud.radius", f32::NAN)]),
+        &no_cells(),
+        0.1,
+    );
+    assert!(invalid.rings.is_empty());
+    assert_eq!(ui.draw_rebuild_count(), rebuilds + 1);
+
+    let recovered = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("hud.radius", 30.0)]),
+        &no_cells(),
+        0.2,
+    );
+    assert_eq!(recovered.rings.len(), 1);
+    assert!(approx(recovered.rings[0].radius, 30.0));
+}
+
+#[test]
+fn nonfinite_bound_sweep_keeps_track_and_recovers_shape() {
+    // Regression: a NaN sweep kept both the previous track and shape cached.
+    let mut ring_widget = ring_with_scalars(
+        ScalarValue::Literal(40.0),
+        ScalarValue::Literal(4.0),
+        ScalarValue::Literal(0.0),
+        local_bound("sweep", None),
+    );
+    let Widget::Ring(ring) = &mut ring_widget else {
+        unreachable!("ring helper returns a Ring");
+    };
+    ring.track = Some(ColorValue::Literal([0.1, 0.1, 0.1, 1.0]));
+    let root = Widget::VStack(ContainerWidget {
+        gap: SpacingValue::Literal(0.0),
+        padding: SpacingValue::Literal(0.0),
+        align: Align::Start,
+        fill: None,
+        border: None,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
+        local_state: Some(LocalState {
+            scope: "ring-scope".to_string(),
+            cells: Default::default(),
+        }),
+        visible_when: None,
+        role: None,
+        children: vec![ring_widget],
+    });
+    let mut ui = UiTree::from_descriptor(&anchored(root), &theme());
+    let mut fonts = font_system();
+    let cells = |value| {
+        CellValues::from([(
+            ("ring-scope".to_string(), "sweep".to_string()),
+            SlotValue::Number(value),
+        )])
+    };
+
+    let valid = retained(&mut ui, &mut fonts, &no_slots(), &cells(90.0), 0.0);
+    assert_eq!(valid.rings.len(), 2);
+
+    let invalid = retained(&mut ui, &mut fonts, &no_slots(), &cells(f32::NAN), 0.1);
+    assert_eq!(invalid.rings.len(), 1, "only the track remains");
+    assert_eq!(invalid.rings[0].color, [0.1, 0.1, 0.1, 1.0]);
+
+    let recovered = retained(&mut ui, &mut fonts, &no_slots(), &cells(180.0), 0.2);
+    assert_eq!(recovered.rings.len(), 2);
+    assert!(approx(recovered.rings[1].sweep, std::f32::consts::PI));
+}
+
+#[test]
+fn nonfinite_ring_tween_result_invalidates_cached_draw_and_recovers() {
+    let root = ring_with_scalars(
+        bound("hud.radius", Some(tween(100.0, None))),
+        ScalarValue::Literal(4.0),
+        ScalarValue::Literal(0.0),
+        ScalarValue::Literal(360.0),
+    );
+    let mut ui = UiTree::from_descriptor(&anchored(root), &theme());
+    let mut fonts = font_system();
+
+    let valid = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("hud.radius", f32::MAX)]),
+        &no_cells(),
+        0.0,
+    );
+    assert_eq!(valid.rings.len(), 1);
+
+    // Retargeting across the full f32 range overflows the f32 difference. At
+    // retarget time its zero progress produces NaN, which must drop the cache.
+    let invalid = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("hud.radius", -f32::MAX)]),
+        &no_cells(),
+        0.1,
+    );
+    assert!(invalid.rings.is_empty());
+
+    let recovered = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("hud.radius", 20.0)]),
+        &no_cells(),
+        0.2,
+    );
+    assert_eq!(recovered.rings.len(), 1);
+    assert!(approx(recovered.rings[0].radius, 20.0));
+}
+
+#[test]
 fn two_bound_ring_scalars_tween_without_stalling_each_other() {
     let root = ring_with_scalars(
         bound("hud.radius", Some(tween(100.0, Some(0.0)))),

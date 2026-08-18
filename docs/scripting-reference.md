@@ -1899,7 +1899,8 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
   fill from the displayed fill fraction, so normalized health bands use
   `styleRanges.max = 1.0`. Horizontal only in v1.
 - **`ring`** — `{ kind: "ring", diameter, radius, thickness, fill, startAngle?, sweep?, track?, id? }`.
-  Passive annulus or clockwise arc. `diameter` fixes its layout box; each
+  Passive annulus or arc. Angles are degrees: `0°` is 12 o'clock and increases
+  clockwise. `diameter` fixes its layout box; each
   geometric property is either a literal or a bound state/local value read 1:1
   in that property's own units (px for `radius`/`thickness`, degrees for
   `startAngle`/`sweep`). It performs no value mapping. A cooldown arc or
@@ -2148,8 +2149,8 @@ const hud = Tree(
 ```
 
 - **Containers:** `VStack` / `HStack` / `Grid` — `(props, children)`.
-- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, and the interactive
-  `Button` / `Slider` (see *Operable UI* above) — `(props)`.
+- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, and non-visual
+  `Announce`; interactive `Button` / `Slider` (see *Operable UI* above) — `(props)`.
 - **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes

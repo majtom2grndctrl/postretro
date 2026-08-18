@@ -321,6 +321,14 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtim
             r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:90,easing:"linear",from:NaN}}, thickness:2, fill:[1,1,1,1] } })"#,
             r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=90,easing="linear",from=0/0}}, thickness=2, fill={1,1,1,1} } }"#,
         ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, fill:[1,NaN,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, fill={1,0/0,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, fill:[1,1,1,1], track:[1,1,Infinity,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, fill={1,1,1,1}, track={1,1,math.huge,1} } }"#,
+        ),
     ] {
         let js_error = eval_js(invalid_js, |ctx, value| {
             anchored_tree_from_js_value(ctx, value).unwrap_err()

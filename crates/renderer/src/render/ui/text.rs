@@ -1,11 +1,11 @@
 // glyphon shaped-text half of the UI pass: the embedded font, the glyph
 // atlas/renderer, and the shape→prepare→render→trim cycle. glyphon ships its OWN
 // pipeline and atlas — none of this routes through the quad pipeline in `mod.rs`;
-// the text draw records INTO the same render pass, after the quads, with depth
-// testing against the UI pass's private depth target.
+// prepared text spans record INTO the same render pass at their mixed
+// paint-stream positions, with depth testing against the private UI target.
 // See: context/lib/ui.md
 
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Range};
 
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache as GlyphCache, Color as GlyphColor, Family, Metrics,
@@ -34,14 +34,15 @@ pub(crate) struct UiTextRenderer {
     /// glyphon's glyph atlas, built with the sRGB surface format so coverage
     /// blends correctly against the sRGB swapchain (see `new`).
     text_atlas: TextAtlas,
-    /// glyphon's text pipeline/draw recorder.
-    text_renderer: TextRenderer,
-    /// Debug-only guard: counts glyphon `prepare` invocations since the last
-    /// submitted UI command buffer. The shared vertex buffer `prepare` fills is
-    /// overwritten at offset 0, so a SECOND `prepare` before submit would clobber
-    /// the first composition's glyphs. A `debug_assert!` in `prepare_text` fires
-    /// if this exceeds one. Release builds carry no guard cost (the field and its
-    /// uses are `cfg(debug_assertions)`).
+    /// One glyphon draw recorder per text span in the mixed paint stream. Each
+    /// owns a distinct vertex buffer, so every span can be prepared before the
+    /// render pass and then recorded at its actual painter-order position.
+    text_renderers: Vec<TextRenderer>,
+    depth_stencil: wgpu::DepthStencilState,
+    /// Debug-only guard: counts coordinated prepare phases since the last
+    /// submitted UI command buffer. A second phase would overwrite each retained
+    /// span buffer before the first composition executes. Release builds carry
+    /// no guard cost (the field and its uses are `cfg(debug_assertions)`).
     #[cfg(debug_assertions)]
     prepare_count: u32,
 }
@@ -74,7 +75,7 @@ impl UiTextRenderer {
             &mut text_atlas,
             device,
             wgpu::MultisampleState::default(),
-            Some(depth_stencil),
+            Some(depth_stencil.clone()),
         );
 
         Self {
@@ -82,7 +83,8 @@ impl UiTextRenderer {
             glyph_cache,
             viewport,
             text_atlas,
-            text_renderer,
+            text_renderers: vec![text_renderer],
+            depth_stencil,
             #[cfg(debug_assertions)]
             prepare_count: 0,
         }
@@ -155,18 +157,17 @@ impl UiTextRenderer {
         font_family_gained_face(font_system, family, &before)
     }
 
-    /// Run glyphon's `prepare` (CPU layout + atlas upload) for the shaped lines.
-    /// Sets the `Viewport` resolution from the device backbuffer size first.
-    /// Returns `true` if any text was prepared (so `encode` knows whether to
-    /// record the text draw). First-glyph rasterization lands here, on the first
-    /// shaped frame.
-    pub fn prepare_text(
+    /// Run glyphon's prepare phase for the contiguous text spans in one
+    /// composition. Every span has its own retained `TextRenderer` vertex
+    /// buffer, so preparing a later span cannot overwrite an earlier one.
+    pub fn prepare_text_batches(
         &mut self,
         font_system: &mut FontSystem,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input: TextPrepareInput<'_>,
-    ) -> bool {
+        batches: &[Range<usize>],
+    ) -> Vec<bool> {
         let TextPrepareInput {
             viewport,
             texts,
@@ -174,8 +175,8 @@ impl UiTextRenderer {
             depths,
         } = input;
 
-        if texts.is_empty() {
-            return false;
+        if texts.is_empty() || batches.is_empty() {
+            return Vec::new();
         }
 
         debug_assert_eq!(
@@ -184,20 +185,17 @@ impl UiTextRenderer {
             "each shaped UI text run needs one painter depth",
         );
 
-        // Once-per-submit guard: this is placed AFTER the empty-text
-        // early-return so empty-text frames never count. The shared vertex buffer
-        // `prepare` fills is overwritten at offset 0, so a SECOND `prepare`
-        // before submit would clobber the first composition's glyphs. The guard
-        // resets after submit, so two `UiPass::encode` calls recorded into one
-        // command buffer are caught here; release builds carry no cost.
+        // Once-per-submit guard: one coordinated preparation phase may fill
+        // several disjoint span buffers, but a second composition encode before
+        // submission would overwrite those same buffers.
         #[cfg(debug_assertions)]
         {
             self.prepare_count += 1;
             debug_assert!(
                 self.prepare_count <= 1,
-                "glyphon prepare reached {} times before submit — the shared \
-                 vertex buffer is overwritten at offset 0, so a second prepare \
-                 clobbers earlier glyphs (one prepare per submitted UI composition)",
+                "glyphon prepare reached {} times before submit — a second \
+                 composition would overwrite the retained text-span buffers \
+                 (one prepare phase per submitted UI composition)",
                 self.prepare_count,
             );
         }
@@ -210,49 +208,73 @@ impl UiTextRenderer {
             },
         );
 
-        let areas = texts.iter().zip(buffers).map(|(t, buffer)| TextArea {
-            buffer,
-            left: t.position[0],
-            top: t.position[1],
-            scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: 0,
-                right: viewport[0] as i32,
-                bottom: viewport[1] as i32,
-            },
-            default_color: GlyphColor::rgba(t.color[0], t.color[1], t.color[2], t.color[3]),
-            custom_glyphs: &[],
-        });
-
-        match self.text_renderer.prepare_with_depth(
-            device,
-            queue,
-            font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-            |metadata| depths.get(metadata).copied().unwrap_or(0.0),
-        ) {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("UI text prepare failed: {e}");
-                false
-            }
+        while self.text_renderers.len() < batches.len() {
+            self.text_renderers.push(TextRenderer::new(
+                &mut self.text_atlas,
+                device,
+                wgpu::MultisampleState::default(),
+                Some(self.depth_stencil.clone()),
+            ));
         }
+
+        batches
+            .iter()
+            .enumerate()
+            .map(|(batch_index, range)| {
+                debug_assert!(range.start <= range.end && range.end <= texts.len());
+                let areas = texts[range.clone()]
+                    .iter()
+                    .zip(&buffers[range.clone()])
+                    .map(|(t, buffer)| TextArea {
+                        buffer,
+                        left: t.position[0],
+                        top: t.position[1],
+                        scale: 1.0,
+                        bounds: TextBounds {
+                            left: 0,
+                            top: 0,
+                            right: viewport[0] as i32,
+                            bottom: viewport[1] as i32,
+                        },
+                        default_color: GlyphColor::rgba(
+                            t.color[0], t.color[1], t.color[2], t.color[3],
+                        ),
+                        custom_glyphs: &[],
+                    });
+
+                match self.text_renderers[batch_index].prepare_with_depth(
+                    device,
+                    queue,
+                    font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    areas,
+                    &mut self.swash_cache,
+                    |metadata| depths.get(metadata).copied().unwrap_or(0.0),
+                ) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("UI text prepare failed: {e}");
+                        false
+                    }
+                }
+            })
+            .collect()
     }
 
-    /// Record glyphon's text draw into an already-open render pass, after the
-    /// quad draws. Only called when `prepare_text` returned `true` (text this
-    /// frame). A failed draw is logged, not propagated — `render` only fails if
-    /// the atlas grew past `prepare` (it didn't, we just prepared into it), so a
-    /// panic here would needlessly crash the frame.
-    pub fn render<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
-        if let Err(e) = self
-            .text_renderer
-            .render(&self.text_atlas, &self.viewport, pass)
-        {
+    /// Record one prepared text span into an already-open render pass at its
+    /// retained paint-stream position. A failed draw is logged, not propagated —
+    /// `render` only fails if the atlas grew after prepare, so a panic here would
+    /// needlessly crash the frame.
+    pub fn render_batch<'pass>(
+        &'pass self,
+        batch_index: usize,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        let Some(renderer) = self.text_renderers.get(batch_index) else {
+            return;
+        };
+        if let Err(e) = renderer.render(&self.text_atlas, &self.viewport, pass) {
             log::warn!("UI text render failed: {e}");
         }
     }

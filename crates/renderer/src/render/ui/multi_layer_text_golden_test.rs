@@ -2,12 +2,11 @@
 // of the modal-stack text invariant that plain `cargo test` (no GPU) cannot see.
 //
 // Regression / invariant under test: `render_frame_indirect` historically looped
-// `UiPass::encode` ONCE PER modal-stack layer. Each encode ran glyphon `prepare`
-// against the shared `UiTextRenderer`, whose single internal vertex buffer is
-// overwritten at offset 0 — so an UPPER layer's glyphs clobbered the LOWER
-// layer's text. The single-`UiComposition` encode boundary made the per-layer
-// loop unrepresentable on the production surface: `encode` now consumes ONE
-// whole-frame `UiComposition` folding every layer's text into a single `prepare`.
+// `UiPass::encode` ONCE PER modal-stack layer. Each encode reused glyphon's
+// internal vertex buffer at offset 0, so an UPPER layer's glyphs clobbered the
+// LOWER layer's text. The single-`UiComposition` encode boundary made the
+// per-layer loop unrepresentable on the production surface: `encode` now consumes
+// ONE whole-frame composition and prepares disjoint buffers for its text spans.
 // This test drives the REAL retained gameplay text path (two independently-retained
 // `UiDrawData` trees, exactly the modal-stack shape) through that single composed
 // encode, reads the offscreen target back, and asserts the lower layer still
@@ -371,13 +370,13 @@ fn upper_layer_panel_occludes_lower_layer_text_without_losing_other_text() {
     let lower_visible = band_ink(&rb, LOWER_VISIBLE_BAND.0, LOWER_VISIBLE_BAND.1);
     assert!(
         lower_visible > 0,
-        "uncovered lower-layer text did not render through the single-prepare path",
+        "uncovered lower-layer text did not render through the coordinated prepare path",
     );
 
     let upper = band_ink(&rb, S1_BAND.0, S1_BAND.1);
     assert!(
         upper > 0,
-        "upper-layer text did not render through the single-prepare path",
+        "upper-layer text did not render through the coordinated prepare path",
     );
 }
 

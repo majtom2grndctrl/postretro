@@ -469,6 +469,7 @@ mod tests {
                 "Button",
                 "Slider",
                 "Bar",
+                "Ring",
                 "Announce",
                 "VStack",
                 "HStack",

@@ -734,7 +734,20 @@ impl RingWidget {
         if let Some(sweep) = &self.sweep {
             validate_ring_source("sweep", sweep)?;
         }
+        validate_ring_color("fill", &self.fill)?;
+        if let Some(track) = &self.track {
+            validate_ring_color("track", track)?;
+        }
         Ok(())
+    }
+}
+
+fn validate_ring_color(field: &str, value: &ColorValue) -> Result<(), String> {
+    match value {
+        ColorValue::Literal(color) if color.iter().any(|channel| !channel.is_finite()) => {
+            Err(format!("`ring.{field}` components must be finite numbers"))
+        }
+        ColorValue::Literal(_) | ColorValue::Token(_) => Ok(()),
     }
 }
 

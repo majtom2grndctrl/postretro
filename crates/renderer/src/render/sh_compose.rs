@@ -584,8 +584,8 @@ mod tests {
             source
                 .matches("if (output_is_valid && use_indirect_animated)")
                 .count(),
-            2,
-            "both dense L0 and coarsened L1/L2 delta accumulations must be gated",
+            1,
+            "dense L0 delta accumulation must be gated per valid output; coarsened L1/L2 uses the uniform gate asserted below so every workgroup invocation reaches its barriers",
         );
         let coarsened_delta_path = source
             .split("    } else {\n        // Coarsened L1/L2 cells")

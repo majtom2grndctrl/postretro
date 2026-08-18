@@ -265,6 +265,15 @@ function requireFiniteNumber(value: unknown, field: string, factory: string): vo
   }
 }
 
+const F32_MAX = 3.4028234663852886e38;
+
+function requireFiniteF32Number(value: unknown, field: string, factory: string): void {
+  requireFiniteNumber(value, field, factory);
+  if (Math.abs(value as number) > F32_MAX) {
+    throw new Error(`${factory}: \`${field}\` must be representable as a finite f32`);
+  }
+}
+
 function unwrapToken(
   value: unknown,
   category: "color" | "font" | "spacing",
@@ -304,6 +313,20 @@ function requireColor(value: unknown, field: string, factory: string): [number, 
     }
   }
   return value as [number, number, number, number];
+}
+
+function requireF32Color(
+  value: unknown,
+  field: string,
+  factory: string,
+): [number, number, number, number] | string {
+  const color = requireColor(value, field, factory);
+  if (Array.isArray(color)) {
+    for (let i = 0; i < 4; i++) {
+      requireFiniteF32Number(color[i], `${field}[${i}]`, factory);
+    }
+  }
+  return color;
 }
 
 function requireColorLiteral(value: unknown, field: string, factory: string): void {
@@ -395,7 +418,11 @@ function buildBind(
       throw new Error(`${factory}: \`bind.tween\` must be an object`);
     }
     const tw = t as Record<string, unknown>;
-    requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory);
+    if (kind === "scalar") {
+      requireFiniteF32Number(tw.durationMs, "bind.tween.durationMs", factory);
+    } else {
+      requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory);
+    }
     if ((tw.durationMs as number) < 0) {
       throw new Error(`${factory}: \`bind.tween.durationMs\` must be non-negative`);
     }
@@ -404,6 +431,8 @@ function buildBind(
     if (tw.from !== undefined) {
       if (kind === "panel") {
         requireColorLiteral(tw.from, "bind.tween.from", factory);
+      } else if (kind === "scalar") {
+        requireFiniteF32Number(tw.from, "bind.tween.from", factory);
       } else {
         requireFiniteNumber(tw.from, "bind.tween.from", factory);
       }
@@ -422,7 +451,7 @@ function buildScalar(
   factory: string,
 ): number | { slot?: string; local?: string; tween?: unknown } {
   if (typeof value === "number") {
-    requireFiniteNumber(value, name, factory);
+    requireFiniteF32Number(value, name, factory);
     return value;
   }
   if (value === null || typeof value !== "object") {
@@ -1049,7 +1078,7 @@ export type RingProps = {
 /** Build a passive annulus or angular arc descriptor. */
 export function Ring(props: RingProps): WidgetDescriptor {
   requireObject(props, "Ring");
-  requireFiniteNumber(props.diameter, "diameter", "Ring");
+  requireFiniteF32Number(props.diameter, "diameter", "Ring");
   if (props.diameter <= 0) {
     throw new Error("Ring: `diameter` must be greater than zero");
   }
@@ -1067,7 +1096,7 @@ export function Ring(props: RingProps): WidgetDescriptor {
       throw new Error("Ring: `thickness` must not exceed `radius`");
     }
   }
-  const fill = requireColor(props.fill, "fill", "Ring");
+  const fill = requireF32Color(props.fill, "fill", "Ring");
 
   const out: WidgetDescriptor = {
     kind: "ring",
@@ -1086,7 +1115,7 @@ export function Ring(props: RingProps): WidgetDescriptor {
     out.sweep = sweep;
   }
   out.fill = fill;
-  if (props.track !== undefined) out.track = requireColor(props.track, "track", "Ring");
+  if (props.track !== undefined) out.track = requireF32Color(props.track, "track", "Ring");
   if (props.id !== undefined) {
     requireNonemptyString(props.id, "id", "Ring");
     out.id = props.id;

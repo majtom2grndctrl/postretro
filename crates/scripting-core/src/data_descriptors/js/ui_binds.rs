@@ -280,6 +280,56 @@ pub fn slider_bind_from_js<'js>(
     }))
 }
 
+/// Read a ring scalar in its compact literal-or-bound wire form. Literal
+/// validation belongs to [`RingWidget::validate`], so bound values remain
+/// accepted for the retained UI's draw-time clamping path.
+pub fn scalar_value_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<ScalarValue, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    scalar_value_from_js_value(ctx, &raw, field)
+}
+
+/// Read an optional ring scalar. Omission stays omitted on the canonical wire.
+pub fn scalar_value_opt_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<ScalarValue>, DescriptorError> {
+    let Some(raw) = optional_value_js(obj, field)? else {
+        return Ok(None);
+    };
+    Ok(Some(scalar_value_from_js_value(ctx, &raw, field)?))
+}
+
+fn scalar_value_from_js_value<'js>(
+    ctx: &Ctx<'js>,
+    value: &JsValue<'js>,
+    field: &'static str,
+) -> Result<ScalarValue, DescriptorError> {
+    if let Some(value) = value.as_int() {
+        return Ok(ScalarValue::Literal(value as f32));
+    }
+    if let Some(value) = value.as_float() {
+        return Ok(ScalarValue::Literal(value as f32));
+    }
+    let bind = Object::from_value(value.clone()).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`ring.{field}` must be a number or a `{{ slot }}`/`{{ local }}` binding"),
+    })?;
+    Ok(ScalarValue::Bound(BoundScalar {
+        source: bind_source_from_js(&bind)?,
+        tween: text_tween_from_js(ctx, &bind)?,
+    }))
+}
+
 /// Read a bind source in `slot`, `local`, `fact` precedence order.
 pub fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, DescriptorError> {
     if let Some(slot) = get_optional_string_js(bind_obj, "slot")? {

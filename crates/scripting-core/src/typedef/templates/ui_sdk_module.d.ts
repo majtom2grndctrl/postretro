@@ -185,6 +185,10 @@ declare module "postretro/ui" {
   export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; width?: number; height?: number; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; exitFade?: BarExitFade; role?: WidgetRole };
   /** Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`. */
   export function Bar(props: BarProps): WidgetDescriptor;
+  /** Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind; angles are degrees with 0 at 12 o'clock and positive clockwise. */
+  export type RingProps = { diameter: number; radius: number | BarBindProp; thickness: number | BarBindProp; startAngle?: number | BarBindProp; sweep?: number | BarBindProp; fill: WidgetColor; track?: WidgetColor; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Build a passive annulus or angular arc descriptor. */
+  export function Ring(props: RingProps): WidgetDescriptor;
   /** Props for `Announce`. `priority` defaults to `"polite"`; `visibleWhen` gates whether the live-region message is active. */
   export type AnnounceProps = { priority?: AnnouncePriority; visibleWhen?: Predicate };
   /** Build a non-visual live-region announcement. `text` is positional display text. */

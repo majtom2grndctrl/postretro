@@ -24,10 +24,10 @@ pub use super::runtime::{
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
     AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
-    ButtonWidget, CaptureMode, CellInit, ColorValue, ContainerWidget, FocusNeighbors, FocusPolicy,
-    GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget, Predicate,
-    PredicateValue, Priority, RepeatPolicy, Role, SliderBind, SliderWidget, SpacerWidget,
-    SpacingValue, TextBind, TextTween, TextWidget, Widget,
+    BoundScalar, ButtonWidget, CaptureMode, CellInit, ColorValue, ContainerWidget, FocusNeighbors,
+    FocusPolicy, GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget,
+    Predicate, PredicateValue, Priority, RepeatPolicy, RingWidget, Role, ScalarValue, SliderBind,
+    SliderWidget, SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 #[allow(unused_imports)]
 pub use crate::ui::layout::Anchor;

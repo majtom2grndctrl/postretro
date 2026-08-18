@@ -233,6 +233,7 @@ pub fn luau_public_sdk_lib_block() -> String {
     remove_doc_and_decl_line(&mut block, "declare function Button(");
     remove_doc_and_decl_line(&mut block, "declare function Slider(");
     remove_doc_and_decl_line(&mut block, "declare function Bar(");
+    remove_doc_and_decl_line(&mut block, "declare function Ring(");
     remove_doc_and_decl_line(&mut block, "declare function Announce(");
     remove_doc_and_decl_line(&mut block, "declare function VStack(");
     remove_doc_and_decl_line(&mut block, "declare function HStack(");

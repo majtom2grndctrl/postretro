@@ -67,6 +67,7 @@ pub fn widget_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Widget
         "button" => Widget::Button(button_widget_from_js(ctx, &obj)?),
         "slider" => Widget::Slider(slider_widget_from_js(ctx, &obj)?),
         "bar" => Widget::Bar(bar_widget_from_js(ctx, &obj)?),
+        "ring" => Widget::Ring(ring_widget_from_js(ctx, &obj)?),
         "announce" => Widget::Announce(announce_widget_from_js(&obj)?),
         other => {
             return Err(DescriptorError::InvalidShape {
@@ -289,6 +290,27 @@ pub fn bar_widget_from_js<'js>(
     bar.validate()
         .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     Ok(bar)
+}
+
+pub fn ring_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<RingWidget, DescriptorError> {
+    let ring = RingWidget {
+        diameter: get_required_f32_js(obj, "diameter")?,
+        radius: scalar_value_from_js(ctx, obj, "radius")?,
+        thickness: scalar_value_from_js(ctx, obj, "thickness")?,
+        start_angle: scalar_value_opt_from_js(ctx, obj, "startAngle")?,
+        sweep: scalar_value_opt_from_js(ctx, obj, "sweep")?,
+        fill: color_value_from_js(obj, "fill")?,
+        track: color_value_opt_from_js(obj, "track")?,
+        id: get_optional_string_js(obj, "id")?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
+    };
+    ring.validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(ring)
 }
 
 fn optional_bar_dimension_js<'js>(

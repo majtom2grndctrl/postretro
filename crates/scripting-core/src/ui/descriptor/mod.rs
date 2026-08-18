@@ -754,6 +754,16 @@ mod tests {
                 r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
                 r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#,
             ),
+            // Ring() with literal geometry omits every optional field.
+            (
+                r#"{"kind":"ring","diameter":24,"radius":10,"thickness":2,"fill":[0.8,0.95,0.98,0.9]}"#,
+                r#"{"kind":"ring","diameter":24.0,"radius":10.0,"thickness":2.0,"fill":[0.8,0.95,0.98,0.9]}"#,
+            ),
+            // Ring() scalar bindings preserve slot/local sources and tween.
+            (
+                r#"{"kind":"ring","diameter":120,"radius":{"slot":"hud.radius","tween":{"durationMs":90,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":15,"sweep":{"slot":"hud.sweep"},"fill":[1,0.2,0.3,1],"track":[0.1,0.1,0.1,1],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#,
+                r#"{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":15.0,"sweep":{"slot":"hud.sweep"},"fill":[1.0,0.2,0.3,1.0],"track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#,
+            ),
             // VStack() with one child.
             (
                 r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,

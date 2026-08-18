@@ -80,6 +80,7 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "Button",
         "Slider",
         "Bar",
+        "Ring",
         "Announce",
         "VStack",
         "HStack",
@@ -246,6 +247,10 @@ fn typescript_ui_module_declaration_is_generated() {
 
     assert!(
         ui_module.contains("export function Text(props: TextProps): WidgetDescriptor;")
+            && ui_module.contains(
+                "export type RingProps = { diameter: number; radius: number | BarBindProp;"
+            )
+            && ui_module.contains("export function Ring(props: RingProps): WidgetDescriptor;")
             && ui_module.contains("export function defineTheme<const T extends ThemeDefinition>")
             && ui_module
                 .contains("export function getDesignTokens<const T extends ThemeDefinition>")

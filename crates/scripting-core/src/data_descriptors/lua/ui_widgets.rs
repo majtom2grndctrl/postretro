@@ -60,6 +60,7 @@ pub fn widget_from_lua(value: LuaValue) -> Result<Widget, DescriptorError> {
         "button" => Widget::Button(button_widget_from_lua(&table)?),
         "slider" => Widget::Slider(slider_widget_from_lua(&table)?),
         "bar" => Widget::Bar(bar_widget_from_lua(&table)?),
+        "ring" => Widget::Ring(ring_widget_from_lua(&table)?),
         "announce" => Widget::Announce(announce_widget_from_lua(&table)?),
         other => {
             return Err(DescriptorError::InvalidShape {
@@ -252,6 +253,24 @@ pub fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> 
     bar.validate()
         .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     Ok(bar)
+}
+
+pub fn ring_widget_from_lua(table: &Table) -> Result<RingWidget, DescriptorError> {
+    let ring = RingWidget {
+        diameter: get_required_f32_lua(table, "diameter")?,
+        radius: scalar_value_from_lua(table, "radius")?,
+        thickness: scalar_value_from_lua(table, "thickness")?,
+        start_angle: scalar_value_opt_from_lua(table, "startAngle")?,
+        sweep: scalar_value_opt_from_lua(table, "sweep")?,
+        fill: color_value_from_lua(table, "fill")?,
+        track: color_value_opt_from_lua(table, "track")?,
+        id: get_optional_string_lua(table, "id")?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
+    };
+    ring.validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(ring)
 }
 
 fn optional_bar_dimension_lua(

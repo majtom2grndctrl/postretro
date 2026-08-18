@@ -1,5 +1,5 @@
-// UI widget factories: capitalized constructors for the seven non-container
-// widget kinds — Text, Panel, Image, Button, Slider, Bar, Spacer.
+// UI widget factories: capitalized constructors for the eight non-container
+// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer.
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
@@ -352,7 +352,7 @@ function validateEasing(value: unknown, field: string, factory: string): void {
 function buildBind(
   bind: unknown,
   factory: string,
-  kind: "text" | "panel" | "slider",
+  kind: "text" | "panel" | "slider" | "scalar",
 ): { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } | undefined {
   if (bind === undefined) return undefined;
   if (bind === null || typeof bind !== "object") {
@@ -361,12 +361,20 @@ function buildBind(
   const b = bind as Record<string, unknown>;
   // Source precedence matches the descriptor bridge. Authored SDK refs carry
   // exactly one source key.
-  const out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } =
-    b.slot !== undefined
-      ? (requireNonemptyString(b.slot, "bind.slot", factory), { slot: b.slot as string })
-      : b.local !== undefined
-        ? (requireNonemptyString(b.local, "bind.local", factory), { local: b.local as string })
-        : (requireNonemptyString(b.fact, "bind.fact", factory), { fact: b.fact as string });
+  const out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown };
+  if (b.slot !== undefined) {
+    requireNonemptyString(b.slot, "bind.slot", factory);
+    out = { slot: b.slot as string };
+  } else if (b.local !== undefined) {
+    requireNonemptyString(b.local, "bind.local", factory);
+    out = { local: b.local as string };
+  } else {
+    if (kind === "scalar") {
+      throw new Error(`${factory}: scalar bindings must carry \`slot\` or \`local\``);
+    }
+    requireNonemptyString(b.fact, "bind.fact", factory);
+    out = { fact: b.fact as string };
+  }
 
   if (kind === "text" && b.format !== undefined) {
     requireString(b.format, "bind.format", factory);
@@ -394,6 +402,22 @@ function buildBind(
   }
 
   return out;
+}
+
+/** Build one ring geometric scalar: a literal number or a `{ slot }`/`{ local }` bind. */
+function buildScalar(
+  value: unknown,
+  name: string,
+  factory: string,
+): number | { slot?: string; local?: string; tween?: unknown } {
+  if (typeof value === "number") {
+    requireFiniteNumber(value, name, factory);
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`${name}\` must be a finite number or a state/local reference`);
+  }
+  return buildBind(value, factory, "scalar")!;
 }
 
 /**
@@ -992,6 +1016,52 @@ export function Bar(props: BarProps): WidgetDescriptor {
     }
     out.exitFade = { durationMs: props.exitFade.durationMs };
   }
+  return out;
+}
+
+// --- Ring -------------------------------------------------------------------
+
+/** Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind. */
+export type RingProps = {
+  diameter: number;
+  radius: number | BarBindProp;
+  thickness: number | BarBindProp;
+  startAngle?: number | BarBindProp;
+  sweep?: number | BarBindProp;
+  fill: WidgetColor;
+  track?: WidgetColor;
+  id?: string;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
+};
+
+/** Build a passive annulus or angular arc descriptor. */
+export function Ring(props: RingProps): WidgetDescriptor {
+  requireObject(props, "Ring");
+  requireFiniteNumber(props.diameter, "diameter", "Ring");
+  const radius = buildScalar(props.radius, "radius", "Ring");
+  const thickness = buildScalar(props.thickness, "thickness", "Ring");
+  const fill = requireColor(props.fill, "fill", "Ring");
+
+  const out: WidgetDescriptor = {
+    kind: "ring",
+    diameter: props.diameter,
+    radius,
+    thickness,
+  };
+  if (props.startAngle !== undefined) {
+    out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring");
+  }
+  if (props.sweep !== undefined) {
+    out.sweep = buildScalar(props.sweep, "sweep", "Ring");
+  }
+  out.fill = fill;
+  if (props.track !== undefined) out.track = requireColor(props.track, "track", "Ring");
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", "Ring");
+    out.id = props.id;
+  }
+  applyA11yFields(out, props, "Ring");
   return out;
 }
 

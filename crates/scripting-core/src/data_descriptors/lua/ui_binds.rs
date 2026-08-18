@@ -289,6 +289,52 @@ pub fn slider_bind_from_lua(
     }))
 }
 
+/// Lua twin of [`scalar_value_from_js`]. Literal validation belongs to
+/// [`RingWidget::validate`] so bound values remain available for draw-time
+/// clamping in the retained UI.
+pub fn scalar_value_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<ScalarValue, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    if matches!(raw, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field });
+    }
+    scalar_value_from_lua_value(raw, field)
+}
+
+/// Lua twin of [`scalar_value_opt_from_js`].
+pub fn scalar_value_opt_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<ScalarValue>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    if matches!(raw, LuaValue::Nil) {
+        return Ok(None);
+    }
+    Ok(Some(scalar_value_from_lua_value(raw, field)?))
+}
+
+fn scalar_value_from_lua_value(
+    value: LuaValue,
+    field: &'static str,
+) -> Result<ScalarValue, DescriptorError> {
+    match value {
+        LuaValue::Integer(value) => Ok(ScalarValue::Literal(value as f32)),
+        LuaValue::Number(value) => Ok(ScalarValue::Literal(value as f32)),
+        LuaValue::Table(bind) => Ok(ScalarValue::Bound(BoundScalar {
+            source: bind_source_from_lua(&bind)?,
+            tween: text_tween_from_lua(&bind)?,
+        })),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`ring.{field}` must be a number or a `{{ slot }}`/`{{ local }}` binding, got {}",
+                other.type_name()
+            ),
+        }),
+    }
+}
+
 /// Lua twin of [`bind_source_from_js`], with the same source precedence.
 pub fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError> {
     if let Some(slot) = get_optional_string_lua(bind, "slot")? {

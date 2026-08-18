@@ -1021,6 +1021,13 @@ export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, 
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction.
 declare function Bar(props: BarProps): WidgetDescriptor
 
+--- Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind;
+--- angles are degrees with 0 at 12 o'clock and positive clockwise.
+export type RingProps = { diameter: number, radius: number | BarBindProp, thickness: number | BarBindProp, startAngle: (number | BarBindProp)?, sweep: (number | BarBindProp)?, fill: WidgetColor, track: WidgetColor?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
+
+--- Build a passive annulus or angular arc descriptor.
+declare function Ring(props: RingProps): WidgetDescriptor
+
 --- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).
 export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicate? }
 --- A non-visual `announce` widget (M13 G2): a live-region message routed to the platform a11y layer at the declared `priority`. `text` is a POSITIONAL second argument.

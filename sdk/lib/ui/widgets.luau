@@ -1,6 +1,6 @@
 --!strict
--- UI widget factories (M13 G1a, Task 3): capitalized constructors for the seven
--- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Spacer.
+-- UI widget factories (M13 G1a, Task 3): capitalized constructors for the eight
+-- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer.
 -- (Containers -- VStack/HStack/Grid -- live in `layout.luau`.) Each mirrors the
 -- `emitter()` precedent: a props table validated synchronously (throwing a
 -- field-named error), documented defaults, a plain descriptor table whose keys
@@ -29,6 +29,19 @@ export type WidgetColor = { number } | ColorToken
 
 --- A flat descriptor table a widget factory produces.
 export type WidgetDescriptor = { [string]: any }
+
+export type RingProps = {
+  diameter: number,
+  radius: number | BarBindProp,
+  thickness: number | BarBindProp,
+  startAngle: (number | BarBindProp)?,
+  sweep: (number | BarBindProp)?,
+  fill: WidgetColor,
+  track: WidgetColor?,
+  id: string?,
+  visibleWhen: Predicate?,
+  role: WidgetRole?,
+}
 
 local UiWidgetsSdk = {}
 local unwrapThemeToken = rawget(_G, "__postretroUnwrapThemeToken")
@@ -139,6 +152,8 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   elseif bind["local"] ~= nil then
     requireNonemptyString(bind["local"], "bind.local", factory)
     out = { ["local"] = bind["local"] }
+  elseif kind == "scalar" then
+    error(`{factory}: scalar bindings must carry \`slot\` or \`local\``)
   else
     requireNonemptyString(bind.fact, "bind.fact", factory)
     out = { fact = bind.fact }
@@ -169,6 +184,18 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   end
 
   return out
+end
+
+-- Build one ring geometric scalar: a literal number or a `{ slot }`/`{ local }` bind.
+local function buildScalar(value: any, name: string, factory: string): any
+  if type(value) == "number" then
+    requireFiniteNumber(value, name, factory)
+    return value
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`{name}\` must be a finite number or a state/local reference`)
+  end
+  return buildBind(value, factory, "scalar") :: any
 end
 
 -- Validate + clone a `styleRanges` prop, or nil when absent.
@@ -676,6 +703,40 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
     end
     out.exitFade = { durationMs = props.exitFade.durationMs }
   end
+  return out
+end
+
+-- --- Ring -------------------------------------------------------------------
+
+--- A passive annulus or angular arc. Geometry is literal or a readonly 1:1 state/local bind.
+function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
+  requireObject(props, "Ring")
+  requireFiniteNumber(props.diameter, "diameter", "Ring")
+  local radius = buildScalar(props.radius, "radius", "Ring")
+  local thickness = buildScalar(props.thickness, "thickness", "Ring")
+  local fill = requireColor(props.fill, "fill", "Ring")
+
+  local out: { [string]: any } = {
+    kind = "ring",
+    diameter = props.diameter,
+    radius = radius,
+    thickness = thickness,
+  }
+  if props.startAngle ~= nil then
+    out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring")
+  end
+  if props.sweep ~= nil then
+    out.sweep = buildScalar(props.sweep, "sweep", "Ring")
+  end
+  out.fill = fill
+  if props.track ~= nil then
+    out.track = requireColor(props.track, "track", "Ring")
+  end
+  if props.id ~= nil then
+    requireNonemptyString(props.id, "id", "Ring")
+    out.id = props.id
+  end
+  applyA11yFields(out, props, "Ring")
   return out
 end
 

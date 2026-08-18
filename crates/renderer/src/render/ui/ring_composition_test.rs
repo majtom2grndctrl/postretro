@@ -20,6 +20,19 @@ fn ring_draw(color: [f32; 4]) -> tree::UiDrawData {
     draw
 }
 
+fn disc_draw(color: [f32; 4]) -> tree::UiDrawData {
+    let mut draw = tree::UiDrawData::default();
+    draw.push_ring(UiRingInstance {
+        rect: [0.0, 0.0, TARGET as f32, TARGET as f32],
+        color,
+        radius: 20.0,
+        thickness: 20.0,
+        start_angle: 0.0,
+        sweep: std::f32::consts::TAU,
+    });
+    draw
+}
+
 fn open_arc_draw(color: [f32; 4]) -> tree::UiDrawData {
     let mut draw = tree::UiDrawData::default();
     draw.push_ring(UiRingInstance {
@@ -107,6 +120,16 @@ fn rings_follow_painter_order_and_opaque_upper_quad_occludes_them() {
         arc.at(32, 51),
         [0, 0, 0, 255],
         "open arc must not wrap into the down quadrant"
+    );
+
+    // Regression: a ring whose thickness reaches its radius is a filled disc;
+    // the center must not retain the annulus inner-edge anti-aliasing.
+    let disc_layers = [disc_draw([1.0, 0.0, 1.0, 1.0])];
+    let disc = render_layers(&ctx, &disc_layers);
+    assert_eq!(
+        disc.at(32, 32),
+        [255, 0, 255, 255],
+        "full-thickness ring must cover its center as an opaque disc"
     );
 
     // Both rings are fully opaque in their solid band. The upper blue ring must

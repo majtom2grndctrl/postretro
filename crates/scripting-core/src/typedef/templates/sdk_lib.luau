@@ -1027,7 +1027,6 @@ export type RingProps = { diameter: number, radius: number | BarBindProp, thickn
 
 --- Build a passive annulus or angular arc descriptor.
 declare function Ring(props: RingProps): WidgetDescriptor
-
 --- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).
 export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicate? }
 --- A non-visual `announce` widget (M13 G2): a live-region message routed to the platform a11y layer at the declared `priority`. `text` is a POSITIONAL second argument.

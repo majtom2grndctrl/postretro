@@ -29,6 +29,7 @@ export type {
   PanelBindProp,
   SliderBindProp,
   BarBindProp,
+  RingBindProp,
   BarMaxProp,
   LocalBindRef,
   FactBindRef,

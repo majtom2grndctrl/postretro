@@ -627,7 +627,7 @@
   export type WidgetAlign = "start" | "center" | "end" | "stretch";
   /** Easing curve for a UI presentation tween. Valid values: `"linear"`, `"easeIn"`, `"easeOut"`, `"easeInOut"`. Tweens change renderer-local display state only. */
   export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
-  /** Number-shape value tween for text, slider, and bar binds. `durationMs` is milliseconds; optional `from` seeds the first displayed value before normal retargeting takes over. */
+  /** Number-shape value tween for text, slider, bar, and Ring scalar binds. `durationMs` is milliseconds; optional `from` seeds the first displayed value before normal retargeting takes over. */
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
   /** Color-shape value tween for panel binds. `from` is an optional initial RGBA tuple; later target changes retween from the current displayed color. */
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
@@ -652,6 +652,8 @@
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
   export type BarBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef | FactBindRef<number>) & { tween?: NumberTween };
+  /** Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported. */
+  export type RingBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** Bar denominator: either a literal number or a readonly numeric state ref such as `getGameState().player.maxHealth`. */
   export type BarMaxProp = number | ComputedRef<number>;
   /** One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold; omit it on the final entry to make that entry the default band. `color`, `pulse`, and `flash` affect the rendered style, not authoritative state. */

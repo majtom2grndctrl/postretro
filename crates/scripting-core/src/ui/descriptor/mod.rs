@@ -1209,4 +1209,57 @@ mod tests {
         non_finite_sweep.sweep = Some(ScalarValue::Literal(f32::NAN));
         assert!(non_finite_sweep.validate().is_err());
     }
+
+    #[test]
+    fn ring_validation_rejects_malformed_bound_tweens() {
+        let ring_with_tween = |tween: TextTween| RingWidget {
+            diameter: 100.0,
+            radius: ScalarValue::Bound(BoundScalar {
+                source: BindSource::Slot {
+                    slot: "hud.radius".to_string(),
+                },
+                tween: Some(tween),
+            }),
+            thickness: ScalarValue::Literal(2.0),
+            start_angle: None,
+            sweep: None,
+            fill: ColorValue::Literal([1.0; 4]),
+            track: None,
+            id: None,
+            visible_when: None,
+            role: None,
+        };
+
+        for tween in [
+            TextTween {
+                duration_ms: -1.0,
+                easing: Easing::Linear,
+                from: None,
+            },
+            TextTween {
+                duration_ms: f32::NAN,
+                easing: Easing::Linear,
+                from: None,
+            },
+            TextTween {
+                duration_ms: 90.0,
+                easing: Easing::EaseOut,
+                from: Some(f32::INFINITY),
+            },
+        ] {
+            assert!(ring_with_tween(tween).validate().is_err());
+        }
+
+        let zero_duration = ring_with_tween(TextTween {
+            duration_ms: 0.0,
+            easing: Easing::Linear,
+            from: Some(10.0),
+        });
+        zero_duration
+            .validate()
+            .expect("zero-duration ring tween is valid and settles immediately");
+
+        let negative_duration = r#"{"kind":"ring","diameter":100.0,"radius":{"slot":"hud.radius","tween":{"durationMs":-1.0,"easing":"linear"}},"thickness":2.0,"fill":[1.0,1.0,1.0,1.0]}"#;
+        assert!(serde_json::from_str::<Widget>(negative_duration).is_err());
+    }
 }

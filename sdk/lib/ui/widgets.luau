@@ -1,6 +1,6 @@
 --!strict
--- UI widget factories (M13 G1a, Task 3): capitalized constructors for the eight
--- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer.
+-- UI widget factories (M13 G1a, Task 3): capitalized constructors for the nine
+-- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
 -- (Containers -- VStack/HStack/Grid -- live in `layout.luau`.) Each mirrors the
 -- `emitter()` precedent: a props table validated synchronously (throwing a
 -- field-named error), documented defaults, a plain descriptor table whose keys
@@ -30,12 +30,15 @@ export type WidgetColor = { number } | ColorToken
 --- A flat descriptor table a widget factory produces.
 export type WidgetDescriptor = { [string]: any }
 
+--- Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported.
+export type RingBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
+
 export type RingProps = {
   diameter: number,
-  radius: number | BarBindProp,
-  thickness: number | BarBindProp,
-  startAngle: (number | BarBindProp)?,
-  sweep: (number | BarBindProp)?,
+  radius: number | RingBindProp,
+  thickness: number | RingBindProp,
+  startAngle: (number | RingBindProp)?,
+  sweep: (number | RingBindProp)?,
   fill: WidgetColor,
   track: WidgetColor?,
   id: string?,
@@ -170,6 +173,9 @@ local function buildBind(bind: any, factory: string, kind: string): any?
     end
     local tw = bind.tween
     requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory)
+    if tw.durationMs < 0 then
+      error(`{factory}: \`bind.tween.durationMs\` must be non-negative`)
+    end
     validateEasing(tw.easing, "bind.tween.easing", factory)
     local tween: { [string]: any } = { durationMs = tw.durationMs, easing = tw.easing }
     if tw.from ~= nil then
@@ -712,8 +718,27 @@ end
 function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
   requireObject(props, "Ring")
   requireFiniteNumber(props.diameter, "diameter", "Ring")
+  if props.diameter <= 0 then
+    error("Ring: `diameter` must be greater than zero")
+  end
   local radius = buildScalar(props.radius, "radius", "Ring")
   local thickness = buildScalar(props.thickness, "thickness", "Ring")
+  if type(radius) == "number" then
+    if radius <= 0 then
+      error("Ring: `radius` must be greater than zero")
+    end
+    if radius > props.diameter / 2 then
+      error("Ring: `radius` must not exceed half of `diameter`")
+    end
+  end
+  if type(thickness) == "number" then
+    if thickness <= 0 then
+      error("Ring: `thickness` must be greater than zero")
+    end
+    if type(radius) == "number" and thickness > radius then
+      error("Ring: `thickness` must not exceed `radius`")
+    end
+  end
   local fill = requireColor(props.fill, "fill", "Ring")
 
   local out: { [string]: any } = {
@@ -726,7 +751,11 @@ function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
     out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring")
   end
   if props.sweep ~= nil then
-    out.sweep = buildScalar(props.sweep, "sweep", "Ring")
+    local sweep = buildScalar(props.sweep, "sweep", "Ring")
+    if type(sweep) == "number" and (sweep <= 0 or sweep > 360) then
+      error("Ring: `sweep` must be within (0, 360]")
+    end
+    out.sweep = sweep
   end
   out.fill = fill
   if props.track ~= nil then

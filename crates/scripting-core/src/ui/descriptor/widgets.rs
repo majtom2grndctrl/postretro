@@ -745,6 +745,16 @@ fn validate_ring_source(field: &str, value: &ScalarValue) -> Result<(), String> 
                 "`ring.{field}` supports only `slot` or `local` bindings"
             ));
         }
+        if let Some(tween) = &bound.tween {
+            if !tween.duration_ms.is_finite() || tween.duration_ms < 0.0 {
+                return Err(format!(
+                    "`ring.{field}.tween.durationMs` must be a finite non-negative number"
+                ));
+            }
+            if tween.from.is_some_and(|from| !from.is_finite()) {
+                return Err(format!("`ring.{field}.tween.from` must be a finite number"));
+            }
+        }
     }
     Ok(())
 }

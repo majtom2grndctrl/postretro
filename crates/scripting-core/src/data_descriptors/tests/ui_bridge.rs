@@ -223,7 +223,7 @@ fn bar_bridge_accepts_sizing_and_exit_fade_and_rejects_invalid_authored_shapes()
 }
 
 #[test]
-fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_literals_in_both_runtimes() {
+fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtimes() {
     let valid_js = r#"({
         anchor: "center", offset: [0, 0],
         root: {
@@ -304,6 +304,22 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_literals_in_both_runtime
         (
             r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, sweep:360.1, fill:[1,1,1,1] } })"#,
             r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, sweep=360.1, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{fact:"unsupported"}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={fact="unsupported"}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:-1,easing:"linear"}}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=-1,easing="linear"}}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:NaN,easing:"linear"}}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=0/0,easing="linear"}}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:90,easing:"linear",from:NaN}}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=90,easing="linear",from=0/0}}, thickness=2, fill={1,1,1,1} } }"#,
         ),
     ] {
         let js_error = eval_js(invalid_js, |ctx, value| {

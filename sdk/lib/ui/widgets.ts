@@ -1,5 +1,5 @@
-// UI widget factories: capitalized constructors for the eight non-container
-// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer.
+// UI widget factories: capitalized constructors for the nine non-container
+// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
@@ -61,7 +61,7 @@ export type Ref<T> = ComputedRef<T> & {
 };
 
 /**
- * Value-tween config for a text/slider/bar bind (number shape). Mirrors
+ * Value-tween config for a text/slider/bar or Ring scalar bind (number shape). Mirrors
  * `descriptor.rs` `TextTween`: eases the resolved numeric value toward each new
  * target over `durationMs` using `easing`. `from` is the optional explicit start
  * value for the first tween.
@@ -170,6 +170,14 @@ export type BarBindProp = (
   | (ComputedRef<number> & { local?: never; format?: never })
   | LocalBindRef
   | FactBindRef<number>
+) & {
+  tween?: NumberTween;
+};
+
+/** Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported. */
+export type RingBindProp = (
+  | (ComputedRef<number> & { local?: never; format?: never })
+  | LocalBindRef
 ) & {
   tween?: NumberTween;
 };
@@ -388,6 +396,9 @@ function buildBind(
     }
     const tw = t as Record<string, unknown>;
     requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory);
+    if ((tw.durationMs as number) < 0) {
+      throw new Error(`${factory}: \`bind.tween.durationMs\` must be non-negative`);
+    }
     validateEasing(tw.easing, "bind.tween.easing", factory);
     const tween: Record<string, unknown> = { durationMs: tw.durationMs, easing: tw.easing };
     if (tw.from !== undefined) {
@@ -1024,10 +1035,10 @@ export function Bar(props: BarProps): WidgetDescriptor {
 /** Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind. */
 export type RingProps = {
   diameter: number;
-  radius: number | BarBindProp;
-  thickness: number | BarBindProp;
-  startAngle?: number | BarBindProp;
-  sweep?: number | BarBindProp;
+  radius: number | RingBindProp;
+  thickness: number | RingBindProp;
+  startAngle?: number | RingBindProp;
+  sweep?: number | RingBindProp;
   fill: WidgetColor;
   track?: WidgetColor;
   id?: string;
@@ -1039,8 +1050,23 @@ export type RingProps = {
 export function Ring(props: RingProps): WidgetDescriptor {
   requireObject(props, "Ring");
   requireFiniteNumber(props.diameter, "diameter", "Ring");
+  if (props.diameter <= 0) {
+    throw new Error("Ring: `diameter` must be greater than zero");
+  }
   const radius = buildScalar(props.radius, "radius", "Ring");
   const thickness = buildScalar(props.thickness, "thickness", "Ring");
+  if (typeof radius === "number") {
+    if (radius <= 0) throw new Error("Ring: `radius` must be greater than zero");
+    if (radius > props.diameter / 2) {
+      throw new Error("Ring: `radius` must not exceed half of `diameter`");
+    }
+  }
+  if (typeof thickness === "number") {
+    if (thickness <= 0) throw new Error("Ring: `thickness` must be greater than zero");
+    if (typeof radius === "number" && thickness > radius) {
+      throw new Error("Ring: `thickness` must not exceed `radius`");
+    }
+  }
   const fill = requireColor(props.fill, "fill", "Ring");
 
   const out: WidgetDescriptor = {
@@ -1053,7 +1079,11 @@ export function Ring(props: RingProps): WidgetDescriptor {
     out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring");
   }
   if (props.sweep !== undefined) {
-    out.sweep = buildScalar(props.sweep, "sweep", "Ring");
+    const sweep = buildScalar(props.sweep, "sweep", "Ring");
+    if (typeof sweep === "number" && (sweep <= 0 || sweep > 360)) {
+      throw new Error("Ring: `sweep` must be within (0, 360]");
+    }
+    out.sweep = sweep;
   }
   out.fill = fill;
   if (props.track !== undefined) out.track = requireColor(props.track, "track", "Ring");

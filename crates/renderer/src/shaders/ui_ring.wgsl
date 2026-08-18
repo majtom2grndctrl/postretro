@@ -72,11 +72,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         in.radius + radial_aa,
         radial_distance,
     );
-    let inner_coverage = smoothstep(
+    let annulus_inner_coverage = smoothstep(
         inner_radius - radial_aa,
         inner_radius + radial_aa,
         radial_distance,
     );
+    // A zero inner radius is a disc, not an annulus whose missing inner edge
+    // happens to cross its center pixel.
+    let inner_coverage = select(annulus_inner_coverage, 1.0, inner_radius == 0.0);
 
     // atan2(x, -y) puts 0 at up and increases clockwise in UI's Y-down space.
     let angle = atan2(relative.x, -relative.y);

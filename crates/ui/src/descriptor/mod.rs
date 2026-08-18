@@ -12,15 +12,15 @@ mod tests {
     // not re-exported because the descriptor API does not own it).
     use super::super::layout::Anchor;
 
-    /// A tree exercising the seven non-interactive kinds wrapped in the placement envelope.
-    /// Button/Slider/Bar (Goal F interactive widgets) are covered by their own round-trip tests.
+    /// A tree exercising all eight passive visual kinds in the placement envelope.
+    /// Button and Slider are covered by their own round-trip tests; Announce is non-visual.
     /// Field order matches the Rust struct declaration order so the
     /// re-serialized JSON is byte-identical to this source (serde emits fields
     /// in declaration order). The tag `kind` always serializes first.
-    const ALL_KINDS_JSON: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo"},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}]}}"#;
+    const ALL_KINDS_JSON: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo"},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]},{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]},{"kind":"ring","diameter":24.0,"radius":10.0,"thickness":2.0,"fill":[0.8,0.95,0.98,0.9]}]}}"#;
 
     #[test]
-    fn anchored_tree_round_trips_all_seven_noninteractive_kinds_identically() {
+    fn anchored_tree_round_trips_all_eight_passive_visual_kinds_identically() {
         let tree: AnchoredTree =
             serde_json::from_str(ALL_KINDS_JSON).expect("fixture must deserialize");
         let reserialized = serde_json::to_string(&tree).expect("must serialize");

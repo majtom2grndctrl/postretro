@@ -8,11 +8,14 @@ use postretro_entities::SlotValue;
 
 use super::CellValues;
 
+pub(super) const PRESENTATION_FACT_SCOPE: &str = "\0postretro.presentation.fact";
+
 /// Resolve a bind's value against the frame's snapshot: a `{ slot }` bind reads
 /// the authoritative store slot map; a `{ local }` bind reads the presentation
 /// cell `(scope, name)` where `scope` is the nearest declaring ancestor resolved
 /// at tree-build time (`None` when the local bind had no enclosing scope, so it
-/// degrades to "absent" — the bind silently falls back to its literal). This is
+/// degrades to "absent" — the bind silently falls back to its literal). A
+/// `{ fact }` bind reads the passive instance's producer-stamped scalar. This is
 /// the single seam every bind-resolution helper routes through.
 pub fn lookup_bound<'a>(
     source: &BindSource,
@@ -22,10 +25,20 @@ pub fn lookup_bound<'a>(
 ) -> Option<&'a SlotValue> {
     match source {
         BindSource::Slot { slot } => slots.get(slot),
-        BindSource::Local { local } => {
-            scope.and_then(|s| cells.get(&(s.to_string(), local.to_string())))
-        }
+        BindSource::Local { local } => scope.and_then(|scope| lookup_cell(cells, scope, local)),
+        BindSource::Fact { fact } => lookup_cell(cells, PRESENTATION_FACT_SCOPE, fact),
     }
+}
+
+/// Borrowed composite lookup for the legacy tuple-keyed cell snapshot. Tuple
+/// keys cannot borrow a `(&str, &str)` pair through `HashMap::get`; scanning the
+/// small bounded snapshot avoids allocating two temporary Strings at every bind
+/// resolution. A nested-map representation can replace this when another
+/// consumer justifies the wider API change.
+fn lookup_cell<'a>(cells: &'a CellValues, scope: &str, name: &str) -> Option<&'a SlotValue> {
+    cells.iter().find_map(|((cell_scope, cell_name), value)| {
+        (cell_scope == scope && cell_name == name).then_some(value)
+    })
 }
 
 /// Resolve a [`Predicate`] against the frame's snapshot to a deterministic
@@ -40,7 +53,7 @@ pub fn lookup_bound<'a>(
 /// - **With `equals`** → `1.0` iff the resolved `SlotValue` equals the comparand,
 ///   else `0.0`. `String`/`Enum` match the comparand by name; number/bool match
 ///   exactly. A type mismatch (e.g. a `Number` slot vs a string comparand) is `0.0`.
-/// - **Absent slot/cell** (the bind resolves to nothing) → `0.0`.
+/// - **Absent slot/cell/fact** (the bind resolves to nothing) → `0.0`.
 pub fn resolve_predicate(
     source: &BindSource,
     equals: Option<&PredicateValue>,

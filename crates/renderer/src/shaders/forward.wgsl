@@ -10,17 +10,13 @@ struct Uniforms {
     // Elapsed seconds since renderer start. Consumed by SH animated-layer
     // evaluation; wrapping is handled per-light via fract().
     time: f32,
-    // Lighting-term isolation for leak/bleed debugging. Set via the
-    // Diagnostics panel dropdown (dev-tools). Values 0..=9 — see fs_main for the full
-    // table; in summary 0 = Normal, 1 = NoLightmap, 2 = DirectOnly,
-    // 3 = IndirectOnly, 4 = AmbientOnly, 5 = LightmapOnly,
-    // 6 = StaticSHOnly, 7 = AnimatedDeltaOnly, 8 = DynamicOnly,
-    // 9 = SpecularOnly.
-    lighting_isolation: u32,
+    // `LightTermMask` from the dev-tools diagnostics checkboxes. Bits 0..=6
+    // independently gate the lighting terms; bit 7 is reserved/emissive and
+    // intentionally unwired.
+    light_term_mask: u32,
     // Per-frame multiplier on the SH indirect term. 1.0 preserves baked
     // intensity; lower values suppress SH fill on static surfaces to keep
-    // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
-    // modes so debug views aren't affected by runtime suppression.
+    // lightmap shadow contrast.
     indirect_scale: f32,
     // Gates whether the half-res SDF visibility target is sampled at all. See
     // `SDF_SHADOW_FLAG_*` in render/mod.rs:
@@ -49,16 +45,20 @@ struct Uniforms {
     // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
     // These belong to the DYNAMIC (entity / billboard) path and are NOT read by
     // the forward fragment. They are declared here only to keep the shared
-    // group-0 `Uniforms` byte layout in lockstep (the 3-way contract: Rust
-    // writer + forward.wgsl + billboard.wgsl). The first field repurposes the
-    // former `_sdf_pad1` slot; the rest land in a fresh 16-byte row so the
-    // struct stride is exactly 128 — wgpu rejects the pipeline if the CPU-side
-    // `UNIFORM_SIZE` and WGSL-derived stride drift.
+    // group-0 `Uniforms` byte layout in lockstep (the 4-way contract: Rust
+    // writer + forward.wgsl + billboard.wgsl + wireframe.wgsl). The first
+    // field repurposes the former `_sdf_pad1` slot; the rest land in a fresh
+    // 16-byte row so the struct stride is exactly 128 — wgpu rejects the
+    // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
     dynamic_direct_scale: f32,
-    dynamic_direct_isolation: u32,
+    // Retired billboard-only isolation selector; reserved padding keeps the
+    // following tail offsets stable.
+    _dynamic_direct_pad: u32,
     has_direct: u32,
     total_light_count: u32,
-    _dyn_pad1: u32,
+    // Dev toggle: force static-light shadowmask visibility to 1.0 for the
+    // manual pre-change A/B. It affects only the static world specular path.
+    spec_shadowmask_force_one: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -106,13 +106,13 @@ struct MaterialUniform {
 @group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
 
 // Static light buffer: specular + per-light SDF diffuse for sdf-tagged lights.
-// Four vec4 slots (64 B stride); see postretro/src/lighting/spec_buffer.rs
+// Four vec4 slots (64 B stride); see crates/lighting/src/spec_buffer.rs
 // for the CPU-side layout.
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
     cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer); non-spot carries 1/-1 (full bright)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none); non-spot carries 1/-1 (full bright)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -209,17 +209,9 @@ struct AnimationDescriptor {
 // Animated-light contribution atlas (Rgba16Float). Composed each frame by
 // the compute pre-pass in `animated_lightmap.rs` from per-animated-light
 // baked weight maps + runtime descriptor curves. `.rgb` carries pre-shaded
-// irradiance (Lambert already baked in); `.a` is a coverage flag reserved
-// for debug visualization. When the PRL has no animated weight maps, this
-// slot binds a 1×1 zero texture so the fragment shader reads 0.
-//
-// SINGLE-LAYER LIMITATION: this animated atlas (and `animated_lm_direction`
-// at binding 5) is a plain `texture_2d` covering atlas layer 0 only — unlike
-// the static `lightmap_irradiance`/`lightmap_direction` array textures at
-// bindings 0/1. Faces whose `lightmap_layer >= 1` therefore receive NO
-// animated lighting; the fragment shader guards both samples behind
-// `in.lightmap_layer == 0u` and falls back to the static-only path otherwise.
-@group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
+// irradiance. Array slices are dense animated slots, not static layers: the
+// binding-7 lookup maps each static lightmap layer to its animated slot.
+@group(4) @binding(3) var animated_lm_atlas: texture_2d_array<f32>;
 // Filtering (Linear) sampler — used for the irradiance + animated atlases so
 // baked penumbra ramps read as continuous gradients under magnification.
 // `Rgba16Float` linear-filterability is a hard runtime requirement, checked at
@@ -230,8 +222,16 @@ struct AnimationDescriptor {
 // coverage flag in .a). Composed each frame alongside the animated irradiance
 // atlas. Read through the nearest sampler at binding 2 — like the static
 // direction atlas, oct directions must not be linearly interpolated.
-@group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
+@group(4) @binding(5) var animated_lm_direction: texture_2d_array<f32>;
 @group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;
+
+// Four static layers per vec4 avoid uniform-space's 16-byte scalar-array
+// stride. This 64-vec4 layout must match `STATIC_LIGHTMAP_LAYER_CAP` (256) in
+// `lighting/lightmap.rs`. An absent layer holds INVALID_SLOT (0xFFFF_FFFF).
+struct AnimatedLightmapSlots {
+    static_layer_to_animated_slot: array<vec4<u32>, 64>,
+};
+@group(4) @binding(7) var<uniform> animated_lightmap_slots: AnimatedLightmapSlots;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
 // linear sampler at binding 4. `layer` selects the atlas array slice.
@@ -240,8 +240,17 @@ fn sample_lightmap_irradiance(uv: vec2<f32>, layer: u32) -> vec3<f32> {
 }
 
 // Same for the animated-light contribution atlas.
-fn sample_lightmap_animated(uv: vec2<f32>) -> vec3<f32> {
-    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv).rgb;
+fn sample_lightmap_animated(uv: vec2<f32>, slot: u32) -> vec3<f32> {
+    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv, i32(slot)).rgb;
+}
+
+fn animated_slot_for_static_layer(static_layer: u32) -> u32 {
+    const INVALID_SLOT: u32 = 0xffffffffu;
+    if static_layer >= 256u {
+        return INVALID_SLOT;
+    }
+    let packed_slots = animated_lightmap_slots.static_layer_to_animated_slot[static_layer / 4u];
+    return packed_slots[static_layer % 4u];
 }
 
 // Group 5 — dynamic spot light shadow maps.
@@ -635,6 +644,32 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
     }
 }
 
+// Rejected or absent shadowmask resources bind a one-layer all-white texture.
+// Clamp baked multi-layer vertex indices so that fallback always samples that
+// fully-visible layer instead of addressing outside the bound texture.
+fn sample_shadowmask_atlas(lightmap_uv: vec2<f32>, lightmap_layer: u32) -> vec4<f32> {
+    let last_layer = textureNumLayers(shadowmask_atlas) - 1u;
+    let safe_layer = min(lightmap_layer, last_layer);
+    return textureSample(
+        shadowmask_atlas,
+        lightmap_filtering_sampler,
+        lightmap_uv,
+        i32(safe_layer),
+    );
+}
+
+// Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
+// A dropped/no-mask channel samples as fully lit, preserving the prior behavior.
+fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>) -> f32 {
+    if uniforms.spec_shadowmask_force_one != 0u {
+        return 1.0;
+    }
+    if round(sl.cone_cos.z) >= SHADOWMASK_CHANNEL_DROPPED {
+        return 1.0;
+    }
+    return shadowmask_channel_value(mask, u32(round(sl.cone_cos.z)));
+}
+
 fn shadowmask_direct(
     sl: SpecLight,
     world_pos: vec3<f32>,
@@ -848,7 +883,7 @@ fn shadowmask_union_subtraction(
             continue;
         }
 
-        let mask = textureSample(shadowmask_atlas, lightmap_filtering_sampler, lightmap_uv, i32(lightmap_layer));
+        let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
         let baked_vis = shadowmask_channel_value(mask, channel);
         let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
         // The raw-pool diagnostic follows the union's promoted-light coverage;
@@ -876,41 +911,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Tangent-space normal map + TBN construction. The neutral placeholder
     // (127, 127, 255, 255) decodes to ~(0, 0, 1), which TBN transforms back
     // to the mesh normal — surfaces without `_n.png` are identical to the
-    // pre-bump path. Skipped in AmbientOnly (iso == 4u): ambient is
-    // view-independent and no N_bump consumer is active in that mode.
-    let iso = uniforms.lighting_isolation;
-    var N_bump: vec3<f32> = mesh_n;
-    if iso != 4u {
-        let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
-        N_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
-    }
+    // pre-bump path.
+    let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
+    let N_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
 
-    // Lighting isolation mode — enables each contributing term independently
-    // for leak/bleed debugging. Values:
-    //   0 = Normal             — all terms
-    //   1 = NoLightmap         — all terms except static lightmap
-    //   2 = DirectOnly         — lightmap + dynamic + specular
-    //   3 = IndirectOnly       — SH indirect + specular
-    //   4 = AmbientOnly        — ambient floor only
-    //   5 = LightmapOnly       — static lightmap (incl. animated atlas)
-    //   6 = StaticSHOnly       — static SH indirect only
-    //   7 = AnimatedDeltaOnly  — animated SH delta (no separate term yet)
-    //   8 = DynamicOnly        — dynamic direct lights only
-    //   9 = SpecularOnly       — specular only
-    // See `LightingIsolation` in crates/renderer/src/render/mod.rs.
-    let use_lightmap = (iso == 0u) || (iso == 2u) || (iso == 5u);
-    // Modes 6 and 7 both route through `use_indirect` until Task E adds a
-    // separate animated-delta term; mode 7 shows nothing useful intentionally.
-    let use_indirect = (iso == 0u) || (iso == 1u) || (iso == 3u) || (iso == 6u);
-    let use_specular = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 3u) || (iso == 9u);
-    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+    const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
+    const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;
+    const LIGHT_TERM_INDIRECT_ANIMATED: u32 = 0x04u;
+    const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
+    const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
+    const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
+    const LIGHT_TERM_SPECULAR: u32 = 0x40u;
+    let light_terms = uniforms.light_term_mask;
+    let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;
+    let use_indirect = (light_terms & (LIGHT_TERM_INDIRECT_STATIC | LIGHT_TERM_INDIRECT_ANIMATED)) != 0u;
+    let use_baked_direct_static = (light_terms & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
+    let use_baked_direct_animated = (light_terms & LIGHT_TERM_BAKED_DIRECT_ANIMATED) != 0u;
+    let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;
+    let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
 
-    // Force scale to 1.0 in modes that exist to view the indirect term directly
-    // (IndirectOnly = 3, StaticSHOnly = 6) so runtime suppression doesn't distort them.
-    let indirect_scale = select(uniforms.indirect_scale, 1.0, iso == 3u || iso == 6u);
     var indirect = vec3<f32>(0.0);
     if use_indirect {
-        indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * indirect_scale;
+        indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * uniforms.indirect_scale;
     }
 
     // SDF static-occluder shadow factor. The four RGBA channels are the K = 4
@@ -932,25 +954,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var static_direct = vec3<f32>(0.0);
     var shadowmask_union = vec3<f32>(0.0);
     var shadowmask_raw_pool_visibility = 1.0;
-    if use_lightmap {
+    if use_baked_direct_static || use_baked_direct_animated {
         // Irradiance + animated atlas filter bilinear (HW linear sampler at
         // binding 4) so baked penumbra ramps read as continuous gradients under
         // magnification. The direction channel below stays on the nearest
         // sampler (octahedral lerp ≠ slerp).
-        let lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
+        var lm_irr = vec3<f32>(0.0);
+        if use_baked_direct_static {
+            lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
+        }
         // Pre-shaded Lambert irradiance from the animated compose pre-pass.
-        // Uncovered atlas texels are zero so this is safe to add unconditionally.
-        //
-        // Animated-layer guard: the animated atlas + direction (bindings 3, 5)
-        // are single-layer `texture_2d` covering atlas layer 0 only. Faces on
-        // layers >= 1 get NO animated lighting — `lm_anim` stays zero and
-        // `anim_dir_sample.a` stays 0.0 (the zero-coverage sentinel the
-        // `use_correction_anim` gate keys on), so they take the static-only path.
+        // A static layer absent from section 25 resolves to INVALID_SLOT, so it
+        // contributes zero rather than accidentally sampling animated slot 0.
         var lm_anim = vec3<f32>(0.0);
         var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
-        if in.lightmap_layer == 0u {
-            lm_anim = sample_lightmap_animated(in.lightmap_uv);
-            anim_dir_sample = textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv);
+        let animated_slot = animated_slot_for_static_layer(in.lightmap_layer);
+        if use_baked_direct_animated && animated_slot != 0xffffffffu {
+            lm_anim = sample_lightmap_animated(in.lightmap_uv, animated_slot);
+            anim_dir_sample = textureSample(
+                animated_lm_direction,
+                lightmap_sampler,
+                in.lightmap_uv,
+                i32(animated_slot),
+            );
         }
 
         // Bumped-Lambert correction: the baker pre-multiplied by mesh-normal NdotL
@@ -982,8 +1008,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // coverage to 0.0 for uncovered/canceling texels (oct decode of those
         // yields a valid-but-meaningless direction, so a NaN sentinel no longer
         // works) — the use_correction_anim gate reads .a to skip them. The
-        // sample itself is hoisted above into the animated-layer guard so faces
-        // on atlas layers >= 1 keep the zero-coverage sentinel.
+        // sample itself is hoisted above into the static-layer-to-slot lookup;
+        // layers without animated receivers keep the zero-coverage sentinel.
         let dom_anim = decode_lightmap_direction(anim_dir_sample);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
         let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);
@@ -1024,9 +1050,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // /`lm_anim` by construction (the compiler excludes sdf lights from both
     // bake sets), so this is purely additive — no re-weighting. Multiplies each
     // selected light's Lambert diffuse by its upsampled visibility slice (slot i
-    // → R/G/B/A via `slice_for_visibility`). Gated by `use_lightmap` so it shows
-    // in exactly the direct-static-light isolation modes the baked term does.
-    if use_lightmap {
+    // → R/G/B/A via `slice_for_visibility`). It shares the baked-direct static
+    // gate because it is that term's runtime shadow implementation.
+    if use_baked_direct_static {
         for (var s: u32 = 0u; s < sdf_sel.count; s = s + 1u) {
             let sl = spec_lights[sdf_sel.indices[s]];
             let to_light = sl.position_and_range.xyz - in.world_position;
@@ -1047,7 +1073,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if use_lightmap || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
+    if use_baked_direct_static || use_specular || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
         let shadowmask = shadowmask_union_subtraction(
             in.world_position,
             in.lightmap_uv,
@@ -1057,18 +1083,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
         shadowmask_union = shadowmask.subtraction;
         shadowmask_raw_pool_visibility = shadowmask.raw_pool_visibility;
-        if use_lightmap {
+        if use_baked_direct_static {
             static_direct = max(static_direct - shadowmask_union, vec3<f32>(0.0));
         }
     }
 
-    var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;
+    var total_light = select(vec3<f32>(0.0), vec3<f32>(uniforms.ambient_floor), use_ambient_floor)
+        + indirect
+        + static_direct;
 
     var specular_sum = vec3<f32>(0.0);
     if use_specular {
         let V = normalize(uniforms.camera_position - in.world_position);
         let spec_int = sample_color(spec_texture, in.uv, ddx, ddy).r;
         let spec_exp = max(material.shininess, 1.0);
+        // Hoisted because every static specular light shares this fragment's
+        // lightmap UV/layer. Undo this if specular gains per-light UVs.
+        let specular_shadowmask = sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer);
 
         // Chunk lookup when the offline index is populated; otherwise walk
         // the full spec buffer.
@@ -1112,22 +1143,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
             let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
-            // Specular is shadowed by the light's OWN technique (invariant 9). An
-            // `sdf`-tagged light's specular multiplies by the SAME per-light
-            // visibility slice its diffuse used — resolved through the shared
-            // `sdf_sel` selection so slot/channel line up by construction; the
-            // slice is already sampled (`sdf_factor`), so this is near-zero cost
-            // and removes specular-through-walls for sdf lights. Non-`sdf`
-            // (`static_light_map`) lights' specular stays unshadowed (they carry
-            // no runtime visibility; baked = free) — a known limitation — so
-            // `sdf_visibility_for_light` returns 1.0 for them. The dev force-lit
-            // toggle (and `SdfShadowMode::Off`) forces 1.0, matching the diffuse.
-            let is_sdf = sdf_select_is_sdf(sl);
-            let visibility = select(
-                sdf_visibility_for_light(sdf_sel, sdf_factor, light_idx),
-                1.0,
-                sdf_force_lit || !is_sdf,
-            );
+            // Exactly one technique applies: SDF lights retain the per-light
+            // visibility slice shared with their diffuse term; other static
+            // lights use the baked shadowmask recorded on the SpecLight.
+            var visibility = 1.0;
+            if sdf_select_is_sdf(sl) {
+                visibility = sdf_visibility_for_light(sdf_sel, sdf_factor, light_idx);
+                if sdf_force_lit {
+                    visibility = 1.0;
+                }
+            } else if use_specular {
+                visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask);
+            }
             let contribution = blinn_phong(
                 L, V, N_bump, sl.color_and_pad.xyz, spec_exp, spec_int
             ) * (atten * cone * visibility);

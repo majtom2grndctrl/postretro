@@ -348,19 +348,22 @@ export type MotionVerb =
   --- Touch neither destination nor steering — terminal presentation.
   | "freeze"
 
---- What a behavior-graph state does besides moving. Omit the key for a state that takes no action. Valid values: `attack`.
-export type ActionVerb =
-  --- Cooldown-gated contact damage using the graph's `attack` block, which becomes required.
-  "attack"
+--- What a behavior-graph state does besides moving. Omit the key for a state that takes no action.
+export type ActionVerb = {
+  --- Name of the graph-wide contact attack this state fires.
+  attack: string,
+}
 
---- Attack tuning consumed by the `attack` action verb. Required exactly when some state declares that action.
+--- Tuning for one named contact attack in `BehaviorGraphDescriptor.attacks`.
 export type AttackParams = {
   --- Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).
   damage: number,
-  --- Distance within which the attack lands, in metres. Must be finite and > 0.
-  range: number,
+  --- Maximum distance within which the attack lands, in metres. Must be finite and > 0.
+  maxRange: number,
   --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
   cooldownMs: number,
+  --- Optional combat-slot standoff for a state firing this attack. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.
+  engagementRadius: number?,
 }
 
 --- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.
@@ -392,7 +395,7 @@ export type BehaviorStateDescriptor = {
   animation: string,
   --- What this state does with steering.
   motion: MotionVerb,
-  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
+  --- Optional action performed while this state is current. `{ attack: "name" }` must name an entry in the graph's `attacks` map. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
   action: ActionVerb?,
   --- State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.
   transitions: {TransitionDescriptor}?,
@@ -412,11 +415,11 @@ export type BehaviorGraphDescriptor = {
   candidateFilter: RuntimeValue?,
   --- Optional anchor-relative patrol route. Required with at least one point when any state uses `"patrol"` motion.
   patrol: PatrolDescriptor?,
-  --- Attack tuning for the `attack` action verb. Required exactly when some state declares that action.
-  attack: AttackParams?,
+  --- Named contact-attack vocabulary. A state action `{ attack: "name" }` must name one of these entries; omit for an attackless graph.
+  attacks: { [string]: AttackParams }?,
   --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,
-  --- Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.
+  --- Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default.
   engagementRadius: number?,
 }
 
@@ -695,6 +698,10 @@ export type ModManifest = {
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
+  --- Passive world-presentation templates. They never participate in modal UI input or focus.
+  presentationTemplates: {PresentationTemplate}?,
+  --- One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.
+  presentationOverlays: PresentationOverlay?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
@@ -1251,6 +1258,7 @@ export type RuntimeExpressionRefs = {
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "present", target: "@impact.target", args: { template: string, value: any } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
@@ -1294,6 +1302,48 @@ export type ImpactEvent = {
   isOverride: boolean,
   levels: {string}?,
   override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
+--- Passive renderer-owned template data returned through ModManifest only.
+export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
+export type PresentationTemplate = {
+  id: string,
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
+}
+export type PresentationTemplateProps = {
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
+}
+export type OverlayEntity = {
+  state: (self: OverlayEntity, name: string) -> RuntimeValue,
+}
+export type DamagedEnemiesProps = {
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: {
+    value: (entity: OverlayEntity) -> RuntimeValue,
+    max: (entity: OverlayEntity) -> RuntimeValue,
+  }?,
+}
+export type DamagedEnemiesSource = {
+  kind: "damagedEnemies",
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: { value: RuntimeValue, max: RuntimeValue }?,
+}
+export type PresentationOverlay = {
+  over: DamagedEnemiesSource,
+  template: string,
+  maxVisible: number,
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1415,7 +1465,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
---- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
+--- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
+--- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
@@ -1485,6 +1536,8 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
+  presentationTemplates: {PresentationTemplate}?,
+  presentationOverlays: PresentationOverlay?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,
@@ -1611,13 +1664,15 @@ export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {numb
 --- `ui.createLocalState(...).cells.<name>:get()`. It resolves inside the nearest
 --- declaring `localState` scope, not the engine state store.
 export type LocalBindRef = { ["local"]: string }
+--- A producer-stamped scalar available only during passive presentation layout.
+export type FactBindRef = { fact: string }
 --- A scalar comparand for UI visibility/selection predicates: number, boolean,
 --- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
---- A reactive condition used by `visibleWhen`, `selected`, and `checked`: read
---- either an engine state ref or presentation-local cell and compare it to
---- `equals` when provided.
-export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef) & { equals: PredicateValue? }
+--- A reactive condition used by `visibleWhen`, `selected`, and `checked`.
+--- Stamped facts are accepted only inside `definePresentationTemplate`; ordinary
+--- UI trees reject them during manifest validation.
+export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
 --- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
@@ -1626,10 +1681,10 @@ export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" |
 --- Live-region announcement urgency. Valid values: `"polite"` (default,
 --- interrupt less) and `"assertive"` (interrupt sooner).
 export type AnnouncePriority = "polite" | "assertive"
---- State binding for a `Text` widget. The source is a readable engine state ref
---- or presentation-local cell; `format` is a one-placeholder string such as
---- `"HP {}"`; numeric sources may also tween.
-export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef) & { format: string?, tween: NumberTween? }
+--- State binding for a `Text` widget. Stamped facts are accepted only inside
+--- `definePresentationTemplate`; ordinary UI trees reject them during manifest
+--- validation. `format` is a one-placeholder string such as `"HP {}"`.
+export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef | FactBindRef) & { format: string?, tween: NumberTween? }
 --- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
 --- array; `tween` eases the displayed color and never writes back to state.
 export type PanelBindProp = (ComputedRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
@@ -1683,9 +1738,10 @@ export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, rep
 --- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `disabled` makes it non-interactive.
 export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
 
---- State binding for a readonly numeric `Bar`. The value is displayed against
---- `max`; it is not interactive and never writes state.
-export type BarBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
+--- State binding for a readonly numeric `Bar`. Stamped facts are accepted only
+--- inside `definePresentationTemplate`; ordinary UI trees reject them during
+--- manifest validation.
+export type BarBindProp = (ComputedRef<number> | LocalBindRef | FactBindRef) & { tween: NumberTween? }
 --- Bar denominator: either a literal number or a readonly numeric state ref such
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ComputedRef<number>
@@ -1868,7 +1924,7 @@ export type BrainInputs = {
   targetDistance: RuntimeRead,
   --- Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number).
   timeInStateMs: RuntimeRead,
-  --- Milliseconds left on the attack cooldown; `0` once elapsed (number).
+  --- Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number).
   attackCooldownMs: RuntimeRead,
   --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
   acquisitionDue: RuntimeRead,
@@ -1953,6 +2009,20 @@ export type PostretroUiModule = {
   Tree: (props: TreeProps, root: WidgetDescriptor) -> AnchoredTreeDescriptor,
   --- Build a UI-tree registration object for `ModManifest.uiTrees` or `setupLevel().uiTrees`.
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
+  --- Build an explicit-id passive presentation template. It is manifest data, not a modal UI tree.
+  definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
+  --- Bind producer-stamped per-instance values inside a presentation template.
+  fact: {
+    number: (name: string, options: { format: string?, tween: NumberTween? }?) -> FactBindRef & { format: string?, tween: NumberTween? },
+    text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
+    bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
+  },
+  --- Build a target-keyed host/single-player damaged-enemy source.
+  damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
+  --- Bind an overlay source to a socket-anchored presentation template.
+  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
+  --- Add a passive visual effect to an impact policy `do` array.
+  present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),
   --- Compose bind-only options onto a state ref; pure and never reads live state.
   bindState: ((ComputedRef<number>, NumberStateBindOptions?) -> ComputedRef<number> & NumberStateBindOptions)

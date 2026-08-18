@@ -251,6 +251,8 @@ mod tests {
             switching: Default::default(),
             entities: vec![entity_descriptor()],
             ui_trees: Vec::new(),
+            presentation_templates: Vec::new(),
+            presentation_overlays: Vec::new(),
             theme: ModThemeTokens::default(),
             frontend: None,
             fonts: ModFontAssets::default(),
@@ -345,7 +347,7 @@ mod tests {
             interrupts: Vec::new(),
             candidate_filter: None,
             patrol: None,
-            attack: None,
+            attacks: Default::default(),
             engagement_radius: None,
             move_speed: 3.0,
         }

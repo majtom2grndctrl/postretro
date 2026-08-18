@@ -15,7 +15,7 @@ Read these skills before drafting:
 - **`/draft-plan`** — spec format, task-paragraph contract, sequencing rules, cross-check discipline. A spec is not a wish list; it is a grouping of tasks executed in coordination to produce a coherent unit of work. `/orchestrate` dispatches those tasks — phased, sized, briefed — so the spec must be machine-readable at that grain.
 - **`/orchestrate`** — how task agents receive context (Goal + their paragraph + AC list + Invariants table, nothing else), how phases sequence, how concurrent agents isolate. Write the spec knowing this is the consumer.
 
-**Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When table stakes are well known — or the destination is already clear — spec the full shape and build it, rather than reinventing known ground one slice at a time. Small increments earn their cost only when the path is genuinely uncertain. A spec session's job is to resolve that uncertainty up front so implementation can move in confident strides.
+**Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When table stakes are well known — or the destination is already clear — spec the full shape and build it, rather than reinventing known ground one slice at a time. Small increments earn their cost only when the path is genuinely uncertain. A spec session's job is to resolve that uncertainty up front so implementation can move in confident strides. When a spec lays a foundation, build its first consumer in the same unit of work — the consumer proves the foundation and keeps it from shipping as a stub nothing exercises.
 
 ## Habits
 
@@ -45,9 +45,11 @@ Eleven habits from a real review where three independent reviewers plus a later 
 
 **10. Newest acceptance criteria have the fewest tests.** Criteria added after the task list was written are delivered by nothing — no task was revised to cover them. Check coverage for the ACs added last, first.
 
+**11. Ammend our commit rather than persist iterative commits.** We need to persist iterative steps to git and origin, but iterative commits make the git history noisy. Commit the first change, then amend commits as we iterate.
+
 ### Before handoff
 
-**11. Self-review does not catch what you reasoned your way into.** It finds typos and contradictions you remember making. It does not find defects you argued yourself into believing — the argument still seems sound. Independent lenses that cannot see each other are the only thing that catches those. A clean self-review is necessary, not sufficient.
+**12. Self-review does not catch what you reasoned your way into.** It finds typos and contradictions you remember making. It does not find defects you argued yourself into believing — the argument still seems sound. Independent lenses that cannot see each other are the only thing that catches those. A clean self-review is necessary, not sufficient.
 
 ## Pre-handoff checklist
 

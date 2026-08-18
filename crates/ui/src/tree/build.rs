@@ -53,10 +53,8 @@ pub fn build_node(
     scope: Option<&str>,
 ) -> NodeId {
     /// The scope id stored on a node's bind context: the nearest enclosing scope
-    /// when the bind reads a presentation cell, else `None` (a `{ slot }` bind or
-    /// no bind reads no cell, so it needs no scope). Keeping it `None` for slot
-    /// binds means the draw walk's `lookup_bound` never consults the cell map for
-    /// them — slot resolution is unchanged.
+    /// when the bind reads a presentation cell, else `None`. Slot binds read the
+    /// global snapshot; fact binds use their reserved per-instance scope.
     fn bind_scope_for(source: Option<&BindSource>, scope: Option<&str>) -> Option<String> {
         match source {
             Some(BindSource::Local { local }) => {
@@ -268,7 +266,7 @@ fn build_slider(
     };
     let bind_scope = match &bind.source {
         BindSource::Local { .. } => scope.map(str::to_string),
-        BindSource::Slot { .. } => None,
+        BindSource::Slot { .. } | BindSource::Fact { .. } => None,
     };
     taffy
         .new_leaf_with_context(
@@ -305,7 +303,7 @@ fn build_bar(
 ) -> NodeId {
     let bind_scope = match &bar.bind.source {
         BindSource::Local { .. } => scope.map(str::to_string),
-        BindSource::Slot { .. } => None,
+        BindSource::Slot { .. } | BindSource::Fact { .. } => None,
     };
     let style = Style {
         size: Size {

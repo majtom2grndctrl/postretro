@@ -213,9 +213,47 @@ pub struct UiDrawData {
     pub images: Vec<(String, UiDrawList)>,
     pub texts: Vec<UiText>,
     pub paint_order: Vec<UiPaintOp>,
+    /// Cleared text records retained for translated presentation aggregation.
+    /// Keeping their Strings alive makes repeated content/family copies reuse
+    /// capacity instead of allocating at every world-anchor translation.
+    spare_texts: Vec<UiText>,
 }
 
 impl UiDrawData {
+    /// Pre-size the aggregate draw data for a bounded passive-presentation set.
+    /// Templates remain author-defined, so these are warm-path estimates rather
+    /// than hard limits; vectors still grow safely for a denser subtree.
+    pub fn with_estimated_presentation_capacity(instance_count: usize) -> Self {
+        let quad_count = instance_count.saturating_mul(4);
+        let image_count = instance_count;
+        let text_count = instance_count.saturating_mul(2);
+        let paint_count = quad_count
+            .saturating_add(image_count)
+            .saturating_add(text_count);
+        Self {
+            quads: UiDrawList {
+                instances: Vec::with_capacity(quad_count),
+            },
+            images: Vec::with_capacity(image_count),
+            texts: Vec::with_capacity(text_count),
+            paint_order: Vec::with_capacity(paint_count),
+            spare_texts: Vec::with_capacity(text_count),
+        }
+    }
+
+    /// Clear frame-local items while retaining every backing allocation. Image
+    /// batch keys are template assets and remain as empty reusable buckets; a
+    /// presentation-template registry replacement drops the whole scratch to
+    /// bound keys across hot reloads.
+    pub fn clear_preserving_capacity(&mut self) {
+        self.quads.clear();
+        for (_, list) in &mut self.images {
+            list.clear();
+        }
+        self.spare_texts.append(&mut self.texts);
+        self.paint_order.clear();
+    }
+
     /// `true` when this tree produced no drawable output: no panel quads, no
     /// image quads, and no text. The renderer early-outs at the composed
     /// `UiComposition` level; this per-layer predicate is test-only.
@@ -243,6 +281,54 @@ impl UiDrawData {
         let index = self.texts.len();
         self.texts.push(text);
         self.paint_order.push(UiPaintOp::Text { index });
+    }
+
+    fn push_translated_text(&mut self, source: &UiText, offset: [f32; 2], opacity: f32) {
+        let mut text = if let Some(mut text) = self.spare_texts.pop() {
+            text.content.clone_from(&source.content);
+            text.family.clone_from(&source.family);
+            text.font_size = source.font_size;
+            text.color = source.color;
+            text
+        } else {
+            source.clone()
+        };
+        text.position = [
+            source.position[0] + offset[0],
+            source.position[1] + offset[1],
+        ];
+        text.color[3] = (f32::from(source.color[3]) * opacity).round() as u8;
+        self.push_text(text);
+    }
+
+    /// Append another draw list after translating it in device pixels and
+    /// modulating its opacity. Presentation templates lower around `[0, 0]`;
+    /// the renderer uses this to place the result at a projected world anchor
+    /// without changing taffy's template-relative layout coordinates.
+    pub fn append_translated(&mut self, source: &UiDrawData, offset: [f32; 2], opacity: f32) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        for op in &source.paint_order {
+            match *op {
+                UiPaintOp::Quad { index } => {
+                    let mut instance = source.quads.instances[index];
+                    instance.rect[0] += offset[0];
+                    instance.rect[1] += offset[1];
+                    instance.color[3] *= opacity;
+                    self.push_quad(instance);
+                }
+                UiPaintOp::Image { batch, index } => {
+                    let (asset, list) = &source.images[batch];
+                    let mut instance = list.instances[index];
+                    instance.rect[0] += offset[0];
+                    instance.rect[1] += offset[1];
+                    instance.color[3] *= opacity;
+                    self.push_image(asset, instance);
+                }
+                UiPaintOp::Text { index } => {
+                    self.push_translated_text(&source.texts[index], offset, opacity);
+                }
+            }
+        }
     }
 
     /// Mutable handle to the quad list for `asset`, creating an empty list in
@@ -429,6 +515,7 @@ pub fn bind_target_name(source: &BindSource) -> &str {
     match source {
         BindSource::Slot { slot } => slot,
         BindSource::Local { local } => local,
+        BindSource::Fact { fact } => fact,
     }
 }
 

@@ -7,19 +7,17 @@
 
 // --- Group 0: camera uniforms (shared with forward pass) ---
 // Shares the forward pass's group-0 uniform buffer. The billboard path reads
-// `view_proj`, `camera_position`, `total_light_count`, and the dynamic-direct tail
-// (`direct_scale` / `dynamic_direct_isolation` / `has_direct`); the rest are
-// declared so the field offsets line up with the Rust `Uniforms` writer (a
-// 3-way byte contract: render/mod.rs + forward.wgsl + billboard.wgsl). The
-// existing `lighting_isolation` stays the forward/static control and is NOT
-// reused here.
+// `view_proj`, `camera_position`, `light_term_mask`, `total_light_count`, and
+// the dynamic-direct tail (`direct_scale` / `has_direct`); the rest are declared
+// so the field offsets line up with the Rust `Uniforms` writer (a 4-way byte
+// contract: Rust writer + forward.wgsl + billboard.wgsl + wireframe.wgsl).
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     indirect_scale: f32,
     sdf_shadow_flags: u32,
     sdf_shadow_mode: u32,
@@ -27,14 +25,16 @@ struct Uniforms {
     // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
     // Multiplies the baked DIRECT SH term (0..1).
     direct_scale: f32,
-    // 0 = combined (sh_ambient + scale·direct), 1 = direct-only (scale·direct),
-    // 2 = indirect-only (sh_ambient). Separate from `lighting_isolation`.
-    dynamic_direct_isolation: u32,
+    // Reserved padding after retiring the billboard-only dynamic-direct
+    // isolation selector. Keep the `has_direct` offset fixed at 116..120.
+    _dynamic_direct_pad: u32,
     // 0 when the baked DIRECT SH section is absent → skip the direct sample.
     has_direct: u32,
     // Dynamic-tier records plus promoted static records appended after them.
     total_light_count: u32,
-    _dyn_pad1: u32,
+    // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), inert
+    // here so the shared group-0 Uniforms layout remains 128 bytes.
+    _spec_shadowmask_force_one_inert: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -58,7 +58,10 @@ struct SpecLight {
     position_and_range: vec4<f32>,
     color_and_pad: vec4<f32>,
     cone_dir_and_type: vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos: vec4<f32>,          // x = cos(inner), y = cos(outer); non-spot carries 1/-1
+    // x = cos(inner), y = cos(outer), z = shadowmask channel (0..3) or
+    // none sentinel (4); z is inert and unread in the billboard path.
+    // Non-spot lights carry 1/-1 in x/y.
+    cone_cos: vec4<f32>,
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -157,10 +160,8 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) world_position: vec3<f32>,
     @location(2) opacity: f32,
-    // Full lighting term computed per-vertex: ambient floor + baked indirect +
-    // baked static direct (with the dynamic-direct isolation debug mode applied)
-    // PLUS the multi-source static-specular term and the dynamic-direct diffuse
-    // term.
+    // Full lighting term computed per-vertex: ambient floor + pre-composed
+    // indirect/direct SH + multi-source static-specular + dynamic-direct diffuse.
     // Every lighting input derives from the sprite center
     // (`world_position`, identical at all four quad corners) and the
     // camera-facing `N = V`, so this term is constant across the quad —
@@ -265,21 +266,21 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // per-sprite center, identical across the (single) invocation's data.
     let V = normalize(uniforms.camera_position - sprite_pos);
     let N = V;
+    const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
+    const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
+    const LIGHT_TERM_SPECULAR: u32 = 0x40u;
+    let light_terms = uniforms.light_term_mask;
+    let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;
+    let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
+    let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;
+
     let sh_ambient = sample_sh_indirect(sprite_pos, N);
     var sh_direct = vec3<f32>(0.0);
     if uniforms.has_direct != 0u {
         sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);
     }
-    // Dynamic-direct isolation over the SH terms (debug instrument):
-    //   0 = combined     → sh_ambient + scale·direct
-    //   1 = direct-only   → scale·direct
-    //   2 = indirect-only → sh_ambient
-    var sh_lighting = sh_ambient + sh_direct;
-    if uniforms.dynamic_direct_isolation == 1u {
-        sh_lighting = sh_direct;
-    } else if uniforms.dynamic_direct_isolation == 2u {
-        sh_lighting = sh_ambient;
-    }
+    // Indirect and baked direct are already isolated by their compose atlases.
+    let sh_lighting = sh_ambient + sh_direct;
 
     // Multi-source static specular via the chunk light list, hoisted from the
     // fragment stage. Evaluated at the sprite center `sprite_pos`.
@@ -291,7 +292,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // early-skip delivers.
     var static_specular = vec3<f32>(0.0);
     let spec_int = max(draw_params.params.y, 0.0);
-    if chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
+    if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
         let local = sprite_pos - chunk_grid.grid_origin;
         let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));
         let dims = vec3<i32>(chunk_grid.dims);
@@ -325,7 +326,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // read as artifact). Hoisted from the fragment stage; iterates uniform
     // `total_light_count`, keeping vertex-stage control flow uniform.
     var dynamic_diffuse = vec3<f32>(0.0);
-    let light_count = uniforms.total_light_count;
+    let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         let influence = light_influence[i];
         let inf_radius = influence.w;
@@ -375,12 +376,11 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // Fold the SH term together with the static-specular and dynamic-diffuse
     // terms into the single interpolated lighting output. The ambient floor is a
     // constant additive fill mirroring forward.wgsl's `total_light =
-    // vec3(ambient_floor) + ...` (rendering_pipeline.md §4): summed once, disjoint
-    // from the SH/specular/dynamic terms (no double-count), and added outside the
-    // dynamic-direct isolation branch like forward. The fragment multiplies this
-    // by sprite albedo·opacity·alpha, so the floor lifts only lit sprite texels —
-    // it adds no full-screen haze.
-    let lighting = vec3<f32>(uniforms.ambient_floor) + sh_lighting + static_specular + dynamic_diffuse;
+    // vec3(ambient_floor) + ...` (rendering_pipeline.md §4). The fragment
+    // multiplies this by sprite albedo·opacity·alpha, so the floor lifts only
+    // lit sprite texels — it adds no full-screen haze.
+    let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);
+    let lighting = vec3<f32>(ambient_floor) + sh_lighting + static_specular + dynamic_diffuse;
 
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);

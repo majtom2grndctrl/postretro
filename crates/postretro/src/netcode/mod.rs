@@ -21,6 +21,7 @@ mod lifecycle;
 mod movement_state;
 mod netdiag;
 mod prediction;
+mod presentation;
 mod reconcile;
 mod remote_materialize;
 mod replication;
@@ -85,6 +86,12 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub(crate) use prediction::ClientPrediction;
+#[cfg(test)]
+pub(crate) use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
+pub(crate) use presentation::{
+    ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
+    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
+};
 pub(crate) use state_slots::ReplicatedSlotIdentity;
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
@@ -396,6 +403,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
 
 fn discard_world_less_snapshots(client: &mut NetClient) {
     drop(client.drain_snapshots());
+    drop(client.drain_presentation());
 }
 
 fn replace_client_tuning(
@@ -934,6 +942,7 @@ pub(crate) fn client_receive_and_apply(
         // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
         // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
         for remote in &outcome.remote_entities {
+            replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
             let descriptor = descriptors.iter().find(|descriptor| {
                 descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
             });

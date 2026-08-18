@@ -4,6 +4,7 @@
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
@@ -26,7 +27,13 @@ pub(super) const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_SELECTION_WEIGHTS: u32 = 26;
 const BIND_DEBUG_OVERRIDE: u32 = 27;
 pub(super) const BIND_DELTA_COMPACTION_META: u32 = 28;
+/// Bindings 0..=28 are the existing Pass-A contract; append the private
+/// per-frame mask instead of changing any established binding.
+const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
+/// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.
+const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
+const _: () = assert!(DIRECT_COMPOSE_PARAMS_SIZE == 16);
 #[cfg(feature = "dev-tools")]
 const DIRECT_PROMOTION_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-41 promotion @group(0)";
 
@@ -63,6 +70,17 @@ pub(super) struct DirectShComposeTimestampWrites<'a> {
     pub(super) animated: Option<wgpu::ComputePassTimestampWrites<'a>>,
 }
 
+/// Inputs captured once for both direct-compose passes during scene recording.
+/// Keeping them together prevents Pass A's private mask from drifting from
+/// Pass B's shared group-0 snapshot.
+pub(super) struct DirectShComposeFrameInputs<'a> {
+    pub(super) uniform_bind_group: &'a wgpu::BindGroup,
+    pub(super) active: bool,
+    pub(super) light_term_mask: LightTermMask,
+    pub(super) debug_overrides: DirectShComposeDebugOverrides,
+    pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
+}
+
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
@@ -70,8 +88,13 @@ struct DirectShComposePipeline {
     /// 4×4×4 probe tiles belonging to one brick in both direct compose passes.
     dispatch_dimensions: [u32; 3],
     debug_override_buffer: wgpu::Buffer,
+    /// Pass A has no shared group-0 binding, so this mirrors that group's
+    /// frame snapshot in a private uniform.
+    light_term_mask_buffer: wgpu::Buffer,
     pending_copy_through: bool,
     was_active: bool,
+    /// The mask snapshot that produced the currently composed atlas.
+    last_composed_mask: LightTermMask,
     last_debug_override_bytes: [u8; DEBUG_OVERRIDE_SIZE],
     /// Present only for section-45 maps. Case 1 retains exactly one pass and
     /// writes the final sampled atlas directly.
@@ -163,8 +186,8 @@ impl DirectShComposeResources {
                 weights_buffer,
                 uniform_bind_group_layout,
             ),
-            // Preserve the promotion-only construction path, binding set, and
-            // single output target exactly when section 45 is absent.
+            // Section 45 absent: Pass A still performs base copy-through so
+            // the static-direct mask works even without promotion deltas.
             None => Self::new_case1(device, sh, direct_section, delta, weights_buffer),
         }
     }
@@ -179,9 +202,7 @@ impl DirectShComposeResources {
         let Some(section) = direct_section else {
             return Self::disabled();
         };
-        let Some(delta) = delta.filter(|delta| !delta.affinity_lights.is_empty()) else {
-            return Self::disabled();
-        };
+        let delta = delta.filter(|delta| !delta.affinity_lights.is_empty());
         let Some(composed_storage_view) = sh.direct_composed_storage_view.as_ref() else {
             return Self::disabled();
         };
@@ -199,14 +220,14 @@ impl DirectShComposeResources {
             device,
             sh,
             layout,
-            Some(delta),
+            delta,
             weights_buffer,
             composed_storage_view,
         );
 
         log::info!(
             "[Renderer] Direct SH compose: {} selected-light CSR entr(y/ies), atlas {}×{}",
-            delta.affinity_lights.len(),
+            delta.map_or(0, |delta| delta.affinity_lights.len()),
             section.atlas_dimensions[0],
             section.atlas_dimensions[1],
         );
@@ -276,11 +297,15 @@ impl DirectShComposeResources {
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        uniform_bind_group: &wgpu::BindGroup,
-        active: bool,
-        debug_overrides: DirectShComposeDebugOverrides,
-        timestamp_writes: DirectShComposeTimestampWrites<'_>,
+        frame: DirectShComposeFrameInputs<'_>,
     ) {
+        let DirectShComposeFrameInputs {
+            uniform_bind_group,
+            active,
+            light_term_mask: frame_light_term_mask,
+            debug_overrides,
+            timestamp_writes,
+        } = frame;
         let Some(pipeline) = self.pipeline.as_mut() else {
             return;
         };
@@ -306,10 +331,17 @@ impl DirectShComposeResources {
             active,
             pipeline.pending_copy_through,
             pipeline.was_active,
+            frame_light_term_mask,
+            pipeline.last_composed_mask,
         ) {
             return;
         }
 
+        // Keep Pass A's private input coherent with Pass B's group-0 input.
+        // This applies to the initial copy-through too, never relying on the
+        // construction-time default mask.
+        let light_term_mask_bytes = direct_compose_params_bytes(frame_light_term_mask);
+        queue.write_buffer(&pipeline.light_term_mask_buffer, 0, &light_term_mask_bytes);
         let wg_x = pipeline.dispatch_dimensions[0].max(1);
         let wg_y = pipeline.dispatch_dimensions[1].max(1);
         let wg_z = pipeline.dispatch_dimensions[2].max(1);
@@ -334,6 +366,7 @@ impl DirectShComposeResources {
         }
         pipeline.pending_copy_through = false;
         pipeline.was_active = active;
+        pipeline.last_composed_mask = frame_light_term_mask;
     }
 }
 
@@ -431,6 +464,12 @@ fn build_promotion_pass(
         contents: &debug_override_bytes,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
+    let initial_light_term_mask_bytes = direct_compose_params_bytes(LightTermMask::ALL);
+    let light_term_mask_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Direct SH Compose Frame Light-Term Mask"),
+        contents: &initial_light_term_mask_bytes,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Direct SH Compose BGL"),
@@ -500,6 +539,10 @@ fn build_promotion_pass(
                 binding: BIND_DEBUG_OVERRIDE,
                 resource: debug_override_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_FRAME_LIGHT_TERM_MASK,
+                resource: light_term_mask_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -508,8 +551,10 @@ fn build_promotion_pass(
         bind_group,
         dispatch_dimensions: buffers.affinity_dims,
         debug_override_buffer,
+        light_term_mask_buffer,
         pending_copy_through: true,
         was_active: false,
+        last_composed_mask: LightTermMask::ALL,
         last_debug_override_bytes: debug_override_bytes,
         animated_add: None,
     }
@@ -540,7 +585,21 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
         storage_bgl_entry(BIND_SELECTION_WEIGHTS),
         uniform_bgl_entry(BIND_DEBUG_OVERRIDE),
+        direct_compose_params_bgl_entry(),
     ]
+}
+
+fn direct_compose_params_bgl_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: BIND_FRAME_LIGHT_TERM_MASK,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(DIRECT_COMPOSE_PARAMS_SIZE as u64),
+        },
+        count: None,
+    }
 }
 
 pub(super) fn texture_bgl_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -612,12 +671,20 @@ fn debug_override_bytes(value: DirectShDebugOverride) -> [u8; DEBUG_OVERRIDE_SIZ
     bytes
 }
 
+fn direct_compose_params_bytes(mask: LightTermMask) -> [u8; DIRECT_COMPOSE_PARAMS_SIZE] {
+    let mut bytes = [0u8; DIRECT_COMPOSE_PARAMS_SIZE];
+    bytes[0..4].copy_from_slice(&mask.bits().to_ne_bytes());
+    bytes
+}
+
 fn direct_compose_should_dispatch(
     active: bool,
     pending_copy_through: bool,
     was_active: bool,
+    frame_light_term_mask: LightTermMask,
+    last_composed_mask: LightTermMask,
 ) -> bool {
-    active || pending_copy_through || was_active
+    active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
 }
 
 #[cfg(test)]
@@ -654,10 +721,89 @@ mod tests {
 
     #[test]
     fn direct_compose_schedules_load_active_and_zero_transition() {
-        assert!(direct_compose_should_dispatch(false, true, false));
-        assert!(direct_compose_should_dispatch(true, false, false));
-        assert!(direct_compose_should_dispatch(false, false, true));
-        assert!(!direct_compose_should_dispatch(false, false, false));
+        assert!(direct_compose_should_dispatch(
+            false,
+            true,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+        assert!(direct_compose_should_dispatch(
+            true,
+            false,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+        assert!(direct_compose_should_dispatch(
+            false,
+            false,
+            true,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+        assert!(!direct_compose_should_dispatch(
+            false,
+            false,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+    }
+
+    #[test]
+    fn direct_compose_mask_change_and_return_to_all_re_dirty() {
+        // Ordering T1: the predicate compares against the last composed mask,
+        // including when the newly selected value is the all-on default.
+        let mut static_direct_off = LightTermMask::ALL;
+        static_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+
+        assert!(direct_compose_should_dispatch(
+            false,
+            false,
+            false,
+            static_direct_off,
+            LightTermMask::ALL,
+        ));
+        assert!(direct_compose_should_dispatch(
+            false,
+            false,
+            false,
+            LightTermMask::ALL,
+            static_direct_off,
+        ));
+    }
+
+    #[test]
+    fn direct_compose_mask_change_stays_dirty_until_a_world_dispatch_records_it() {
+        // Ordering T8: a skipped non-world frame cannot consume this dirty state.
+        let mut animated_direct_off = LightTermMask::ALL;
+        animated_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_ANIMATED, false);
+        let last_composed_mask = LightTermMask::ALL;
+
+        // A non-world frame does not call dispatch_if_needed, so this unchanged
+        // stored value must still make the next world frame dispatch.
+        assert!(direct_compose_should_dispatch(
+            false,
+            false,
+            false,
+            animated_direct_off,
+            last_composed_mask,
+        ));
+        assert!(direct_compose_should_dispatch(
+            false,
+            false,
+            false,
+            animated_direct_off,
+            last_composed_mask,
+        ));
+        assert!(!direct_compose_should_dispatch(
+            false,
+            false,
+            false,
+            animated_direct_off,
+            animated_direct_off,
+        ));
     }
 
     #[test]
@@ -728,6 +874,29 @@ mod tests {
     }
 
     #[test]
+    fn base_only_direct_compose_uses_empty_csr_and_static_mask_copy_through() {
+        // Regression: without id 41 or id 45, Pass A must remain available so
+        // clearing bit 3 writes zero instead of exposing the immutable base.
+        let storage = DirectPromotionStorage::new(None, [1, 1, 1]);
+        assert!(storage.buffers.delta_subblocks.is_empty());
+        assert_eq!(storage.buffers.affinity_offsets, vec![0, 0]);
+        assert!(storage.buffers.affinity_lights.is_empty());
+
+        let mut static_direct_off = LightTermMask::ALL;
+        static_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+        let params = direct_compose_params_bytes(static_direct_off);
+        assert_eq!(
+            u32::from_ne_bytes(params[0..4].try_into().unwrap())
+                & LightTermMask::BAKED_DIRECT_STATIC.bits(),
+            0
+        );
+
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+        assert!(source.contains("if (in_grid && use_baked_direct_static)"));
+        assert!(source.contains("accum[texel_index] = vec4<f32>(0.0);"));
+    }
+
+    #[test]
     fn direct_sh_compose_shader_parses_and_exports_compose_main() {
         let module =
             naga::front::wgsl::parse_str(include_str!("../shaders/direct_sh_compose.wgsl"))
@@ -763,6 +932,35 @@ mod tests {
     }
 
     #[test]
+    fn direct_compose_appends_a_sixteen_byte_private_frame_mask_uniform() {
+        // Ordering T4/T11: Pass A receives the same captured frame mask as the
+        // group-0 reader used by Pass B and the world path.
+        let entries = promotion_compose_bgl_entries();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.binding == BIND_FRAME_LIGHT_TERM_MASK)
+            .expect("Pass A must bind its private per-frame mask input");
+        let wgpu::BindingType::Buffer {
+            ty,
+            min_binding_size,
+            ..
+        } = &entry.ty
+        else {
+            panic!("Pass A frame mask must be a uniform buffer");
+        };
+        assert_eq!(*ty, wgpu::BufferBindingType::Uniform);
+        assert_eq!(
+            min_binding_size.map(std::num::NonZeroU64::get),
+            Some(DIRECT_COMPOSE_PARAMS_SIZE as u64),
+        );
+
+        let bytes = direct_compose_params_bytes(LightTermMask::BAKED_DIRECT_STATIC);
+        assert_eq!(bytes.len(), DIRECT_COMPOSE_PARAMS_SIZE);
+        assert_eq!(u32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 0x08);
+        assert!(bytes[4..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
     fn direct_compose_uses_validity_to_gate_delta_reconstruction() {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
         assert!(
@@ -774,6 +972,77 @@ mod tests {
         assert!(
             !source.contains("enable f16"),
             "direct delta payloads remain Rgba16Float read through f32 unpacking"
+        );
+    }
+
+    #[test]
+    fn direct_compose_uses_private_mask_for_static_base_and_dynamic_subtraction() {
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+        assert!(source.contains("@group(0) @binding(29) var<uniform> direct_compose_params"));
+        assert!(source.contains(
+            "let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;"
+        ));
+        assert!(source.contains("if (in_grid && use_baked_direct_static)"));
+        assert!(source.contains(
+            "let required_terms = LIGHT_TERM_BAKED_DIRECT_STATIC | LIGHT_TERM_DYNAMIC_DIRECT;"
+        ));
+        assert!(source.contains(
+            "if ((direct_compose_params.light_term_mask & required_terms) != required_terms)"
+        ));
+        assert!(source.contains(
+            "let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;"
+        ));
+    }
+
+    #[test]
+    fn static_direct_off_with_dynamic_on_skips_dense_and_coarsened_promotion() {
+        // A negative SH delta exposes the original failure: subtracting it
+        // from an already-zero accumulator produces a positive coefficient
+        // that survives the final clamp. Keep a nonzero promotion weight in
+        // this reference case so both compose paths must be blocked by bit 3.
+        let mut static_off_dynamic_on = LightTermMask::ALL;
+        static_off_dynamic_on.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+        assert!(static_off_dynamic_on.contains(LightTermMask::DYNAMIC_DIRECT));
+        let use_baked_direct_static =
+            static_off_dynamic_on.contains(LightTermMask::BAKED_DIRECT_STATIC);
+        let use_dynamic_direct = static_off_dynamic_on.contains(LightTermMask::DYNAMIC_DIRECT);
+        let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;
+        let promotion_weight = 0.75_f32;
+
+        for coarsened in [false, true] {
+            let mut accum = if use_baked_direct_static { 1.0 } else { 0.0 };
+            if use_promotion_subtraction && promotion_weight > 0.0 {
+                let delta = if coarsened { -0.5 } else { -0.25 };
+                accum -= delta * promotion_weight;
+            }
+            assert_eq!(accum.max(0.0), 0.0);
+        }
+
+        let source = include_str!("../shaders/direct_sh_compose.wgsl");
+        let dense_start = source
+            .find("    if (level == 0u) {")
+            .expect("shader must retain the dense L0 path");
+        let coarsened_start = source[dense_start..]
+            .find("    } else if (use_promotion_subtraction) {")
+            .map(|offset| dense_start + offset)
+            .expect("bit 3 and bit 5 must uniformly guard the coarsened path");
+        let output_start = source[coarsened_start..]
+            .find("\n    if (in_grid) {")
+            .map(|offset| coarsened_start + offset)
+            .expect("shader must retain its output-store path");
+        let dense_path = &source[dense_start..coarsened_start];
+        let coarsened_path = &source[coarsened_start..output_start];
+
+        assert!(
+            dense_path.contains("if (output_is_valid && use_promotion_subtraction)")
+                && dense_path.contains("read_delta_texel("),
+            "the combined bit-3/bit-5 guard must wrap dense L0 delta reads",
+        );
+        assert!(
+            coarsened_path.starts_with("    } else if (use_promotion_subtraction) {")
+                && coarsened_path.contains("read_delta_texel(")
+                && coarsened_path.contains("reconstruct_l1_shared_texel("),
+            "the uniform combined guard must wrap coarsened reads and reconstruction",
         );
     }
 

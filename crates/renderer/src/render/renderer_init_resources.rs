@@ -333,7 +333,10 @@ pub(crate) fn build_lighting_bind_group(
     // Specular-only static lights; 1-record dummy avoids zero-size storage binding.
     let spec_lights_data = {
         let packed = geometry
-            .map(|g| pack_spec_lights(g.lights))
+            .map(|g| {
+                let shadowmask_channels = shadowmask::build_spec_light_shadowmask_channels(g);
+                pack_spec_lights(g.lights, &shadowmask_channels)
+            })
             .unwrap_or_default();
         if packed.is_empty() {
             vec![0u8; SPEC_LIGHT_SIZE]
@@ -588,7 +591,7 @@ pub(crate) fn build_initial_uniform_data(
         light_count,
         total_light_count: light_count,
         time: 0.0,
-        lighting_isolation: LightingIsolation::Normal,
+        light_term_mask: LightTermMask::ALL,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         // No level loaded yet — per-frame uniform upload in
         // `update_per_frame_uniforms` reflects `has_sdf_atlas()` +
@@ -597,10 +600,10 @@ pub(crate) fn build_initial_uniform_data(
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: false,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
-        dynamic_direct_isolation: DynamicDirectIsolation::Combined,
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,
+        spec_shadowmask_force_one: false,
     })
 }
 

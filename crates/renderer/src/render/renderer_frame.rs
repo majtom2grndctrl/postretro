@@ -267,6 +267,11 @@ impl Renderer {
         if full.sdf_atlas_resources.present {
             sdf_shadow_flags |= SDF_SHADOW_FLAG_ATLAS_PRESENT;
         }
+        // The diagnostics UI runs after this upload. Snapshot once so every
+        // consumer of the mask observes a checkbox change together on the
+        // following frame rather than mixing group-0's old value with live
+        // post-UI state.
+        full.frame_light_term_mask = full.light_term_mask;
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,
@@ -274,14 +279,14 @@ impl Renderer {
             light_count: full.light_count,
             total_light_count: full.total_light_count,
             time,
-            lighting_isolation: full.lighting_isolation,
+            light_term_mask: full.frame_light_term_mask,
             indirect_scale: full.indirect_scale,
             sdf_shadow_flags,
             sdf_shadow_mode: full.sdf_shadow_mode,
             sdf_force_visibility_one: full.sdf_force_visibility_one,
             dynamic_direct_scale: full.dynamic_direct_scale,
-            dynamic_direct_isolation: full.dynamic_direct_isolation,
             has_direct: full.sh_volume_resources.has_direct,
+            spec_shadowmask_force_one: full.spec_shadowmask_force_one,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
         full.last_camera_position = camera_position;
@@ -295,13 +300,10 @@ impl Renderer {
         full.mesh_dynamic_time = time;
 
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
-        // a trimmed camera uniform (no group-0 tail), so the scale/isolation/
-        // has_direct knobs reach it through this dedicated uniform instead.
-        full.sh_volume_resources.write_dynamic_direct_params(
-            queue,
-            full.dynamic_direct_scale,
-            full.dynamic_direct_isolation as u32,
-        );
+        // a trimmed camera uniform (no group-0 tail), so its direct scale and
+        // level-fixed `has_direct` flag reach it through this dedicated uniform.
+        full.sh_volume_resources
+            .write_dynamic_direct_params(queue, full.dynamic_direct_scale);
 
         // Must precede the compose and SH fragment passes (both read the descriptor buffer).
         full.sh_volume_resources

@@ -8,7 +8,8 @@
 // policies build on. Reward behavior is reference content only: the engine has
 // no concept of a reward, so a mod replaces these policies wholesale.
 
-import { defineImpactEvent, defineStore, update } from "postretro";
+import { defineImpactEvent, defineStore, present, update } from "postretro";
+import { damageNumber } from "./combat-presentation";
 
 // REFERENCE CONTENT — XP belongs to its earning player, while teamKills is one
 // session-wide counter. The two slots share a policy below so the cardinality
@@ -48,6 +49,7 @@ export const combatDummyLifecycle = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
+      { do: [present(damageNumber, impact.amount)] },
       // A gib is a level: a downed target may be gibbed by a later hit.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so repeated body hits cannot restart recovery.
@@ -85,6 +87,7 @@ export const enemyDeath = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
+      { do: [present(damageNumber, impact.amount)] },
       // A gib skips the clip entirely — there is no body left to animate.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so further hits on a corpse cannot restart the timer.
@@ -136,6 +139,7 @@ export const combatZombieLifecycle = enemyDeath.override(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
+      { do: [present(damageNumber, impact.amount)] },
       { when: gibbed, do: [target.despawn()] },
       {
         when: killed.and(gibbed.not()),

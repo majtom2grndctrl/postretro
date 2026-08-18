@@ -194,6 +194,10 @@ pub(crate) struct ClientReplication {
     /// is presentation state only: it detects shared-visible equip changes without
     /// deriving a weapon from owner-private data or mutating gameplay components.
     active_weapon_archetypes: HashMap<NetworkId, Option<String>>,
+    /// Descriptor class retained for each remote presentation entity. Overlay
+    /// anchoring uses the local descriptor's authored hitbox when a model socket
+    /// or derived skeletal bound is unavailable; no combat component is created.
+    remote_entity_classes: HashMap<NetworkId, String>,
     /// Entities awaiting a full-baseline refresh, keyed by `NetworkId`. An entry here
     /// resends a `BaselineRefreshRequest` on the 5 Hz cadence; the matching
     /// `FullBaseline` apply clears it.
@@ -503,6 +507,7 @@ impl ClientReplication {
         self.reverse_map.clear();
         self.baselines.clear();
         self.active_weapon_archetypes.clear();
+        self.remote_entity_classes.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
@@ -543,6 +548,7 @@ impl ClientReplication {
         self.reverse_map.clear();
         self.baselines.clear();
         self.active_weapon_archetypes.clear();
+        self.remote_entity_classes.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
@@ -596,11 +602,17 @@ impl ClientReplication {
     }
 
     /// Resolve a replicated `NetworkId` to the current client-local entity.
-    /// Test-only reverse lookup; production resolves via the forward map
-    /// (`network_id_for_entity`) instead.
-    #[allow(dead_code)]
+    /// Host-pushed presentation facts use this after snapshot apply.
     pub(crate) fn entity_for_network_id(&self, network_id: NetworkId) -> Option<EntityId> {
         self.map.get(&network_id).copied()
+    }
+
+    /// Descriptor class for a mapped remote presentation entity. The class is
+    /// cached by descriptor-aware receive glue and cleared with the mapping.
+    pub(crate) fn remote_entity_class(&self, network_id: NetworkId) -> Option<&str> {
+        self.remote_entity_classes
+            .get(&network_id)
+            .map(String::as_str)
     }
 
     /// Entity ids that should be drawn as remote debug markers. The local predicted
@@ -1274,6 +1286,7 @@ impl ClientReplication {
             .heading_yaws
             .remove(&network_id);
         self.active_weapon_archetypes.remove(&network_id);
+        self.remote_entity_classes.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
@@ -1293,6 +1306,7 @@ impl ClientReplication {
             self.map.remove(&previous_network);
             if previous_network != network_id {
                 self.active_weapon_archetypes.remove(&previous_network);
+                self.remote_entity_classes.remove(&previous_network);
             }
         }
     }
@@ -1301,6 +1315,7 @@ impl ClientReplication {
         let entity_id = self.map.remove(&network_id)?;
         self.reverse_map.remove(&entity_id);
         self.active_weapon_archetypes.remove(&network_id);
+        self.remote_entity_classes.remove(&network_id);
         Some(entity_id)
     }
 
@@ -1760,6 +1775,13 @@ impl ClientReplication {
                 self.remote_enemy_walk_playback.remove(&network_id);
             }
         }
+    }
+
+    /// Retain the descriptor identity already carried by the snapshot while
+    /// descriptor-aware presentation materialization has it in scope.
+    pub(crate) fn cache_remote_entity_class(&mut self, network_id: NetworkId, entity_class: &str) {
+        self.remote_entity_classes
+            .insert(network_id, entity_class.to_string());
     }
 
     /// Record immutable descriptor locomotion data after remote-player mesh

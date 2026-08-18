@@ -71,8 +71,8 @@ pub enum Easing {
     EaseInOut,
 }
 
-/// The source a widget bind reads from — the `{ slot }` vs `{ local }` wire
-/// alternative shared by every bound widget (M13 G1b, Task 5). Untagged so the
+/// The source a widget bind reads from — authoritative `{ slot }`, retained
+/// `{ local }`, or producer-stamped `{ fact }`. Untagged so the
 /// wire form stays a flat sibling key inside the bind object: a store binding is
 /// `{ "slot": "player.health" }`; a presentation-cell binding is
 /// `{ "local": "count" }`. The two are disjoint (each carries a different key),
@@ -92,6 +92,8 @@ pub enum BindSource {
     Slot { slot: String },
     /// Presentation cell read by name from the nearest `localState` scope.
     Local { local: String },
+    /// Producer-stamped scalar read by name during passive presentation layout.
+    Fact { fact: String },
 }
 
 impl BindSource {
@@ -101,7 +103,7 @@ impl BindSource {
     pub fn slot(&self) -> Option<&str> {
         match self {
             BindSource::Slot { slot } => Some(slot),
-            BindSource::Local { .. } => None,
+            BindSource::Local { .. } | BindSource::Fact { .. } => None,
         }
     }
 }

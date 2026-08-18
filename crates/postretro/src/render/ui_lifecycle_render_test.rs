@@ -102,6 +102,8 @@ fn staged_manifest_result(
             trigger_events: Vec::new(),
             trigger_pools: Vec::new(),
             ui_trees,
+            presentation_templates: Vec::new(),
+            presentation_overlays: Vec::new(),
             theme,
             frontend: None,
             store_declarations: Default::default(),

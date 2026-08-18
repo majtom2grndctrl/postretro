@@ -24,7 +24,7 @@ fn js_behavior(guard: &str, states_extra: &str) -> String {
         r#"({{ components: {{ behavior: {{
             initial: "idle",
             moveSpeed: 3,
-            attack: {{ damage: 8, range: 2, cooldownMs: 1200 }},
+            attacks: {{ attack: {{ damage: 8, maxRange: 2, cooldownMs: 1200 }} }},
             states: {{
                 idle: {{ animation: "idle", motion: "hold",
                         transitions: [{{ to: "chase", when: {guard} }}] }},
@@ -40,7 +40,7 @@ fn lua_behavior(guard: &str, states_extra: &str) -> String {
         r#"return {{ components = {{ behavior = {{
             initial = "idle",
             moveSpeed = 3,
-            attack = {{ damage = 8, range = 2, cooldownMs = 1200 }},
+            attacks = {{ attack = {{ damage = 8, maxRange = 2, cooldownMs = 1200 }} }},
             states = {{
                 idle = {{ animation = "idle", motion = "hold",
                          transitions = {{ {{ to = "chase", when = {guard} }} }} }},
@@ -71,13 +71,15 @@ fn js_entity_descriptor_parses_a_behavior_graph() {
     assert_eq!(graph.states["idle"].transitions.len(), 1);
     assert_eq!(graph.states["idle"].transitions[0].to, "chase");
     assert_eq!(
-        graph.attack.expect("attack block").cooldown_ms,
-        1200.0,
+        graph.attacks["attack"].cooldown_ms, 1200.0,
         "attack tuning survives the bridge"
     );
-    // Absent `engagementRadius` falls back to `attack.range` (the fixture's 2).
+    // Attack entries do not affect the graph-level default standoff.
     assert_eq!(graph.engagement_radius, None);
-    assert_eq!(graph.engagement_radius(), 2.0);
+    assert_eq!(
+        graph.engagement_radius(),
+        BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
+    );
 }
 
 #[test]
@@ -92,9 +94,12 @@ fn lua_entity_descriptor_parses_a_behavior_graph() {
     assert_eq!(graph.move_speed, 3.0);
     assert_eq!(graph.states["chase"].motion, MotionVerb::ChaseTarget);
     assert_eq!(graph.states["idle"].transitions[0].to, "chase");
-    assert_eq!(graph.attack.expect("attack block").cooldown_ms, 1200.0);
+    assert_eq!(graph.attacks["attack"].cooldown_ms, 1200.0);
     assert_eq!(graph.engagement_radius, None);
-    assert_eq!(graph.engagement_radius(), 2.0);
+    assert_eq!(
+        graph.engagement_radius(),
+        BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
+    );
 }
 
 #[test]
@@ -160,11 +165,11 @@ fn both_runtimes_parse_patrol_authoring_and_reject_missing_or_empty_routes() {
 fn both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions() {
     let js_chase = js_behavior(JS_NEAR_GUARD, "").replace(
         r#"motion: "chaseTarget""#,
-        r#"motion: "chaseTarget", action: "attack""#,
+        r#"motion: "chaseTarget", action: { attack: "attack" }"#,
     );
     let lua_chase = lua_behavior(LUA_NEAR_GUARD, "").replace(
         r#"motion = "chaseTarget""#,
-        r#"motion = "chaseTarget", action = "attack""#,
+        r#"motion = "chaseTarget", action = { attack = "attack" }"#,
     );
     let js_graph = eval_js(&js_chase, |ctx, value| {
         entity_descriptor_from_js(ctx, value)
@@ -178,7 +183,7 @@ fn both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions() {
     assert_eq!(js_graph, lua_graph, "the two descriptor bridges stay twins");
     assert_eq!(
         js_graph.states["chase"].action,
-        Some(ActionVerb::Attack),
+        Some(ActionVerb::Attack("attack".to_string())),
         "chaseTarget keeps its intended action semantics"
     );
 
@@ -188,11 +193,11 @@ fn both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions() {
     ] {
         let js = js_behavior(JS_NEAR_GUARD, "").replace(
             r#"motion: "chaseTarget""#,
-            &format!(r#"{js_motion}, action: "attack""#),
+            &format!(r#"{js_motion}, action: {{ attack: "attack" }}"#),
         );
         let lua = lua_behavior(LUA_NEAR_GUARD, "").replace(
             r#"motion = "chaseTarget""#,
-            &format!(r#"{lua_motion}, action = "attack""#),
+            &format!(r#"{lua_motion}, action = {{ attack = "attack" }}"#),
         );
 
         for error in [js_error(&js), lua_error(&lua)] {
@@ -203,6 +208,113 @@ fn both_runtimes_reject_actions_on_position_goals_and_accept_chase_actions() {
                 "{error}"
             );
         }
+    }
+}
+
+#[test]
+fn both_parsers_reject_invalid_attack_vocabulary_with_wire_cased_paths() {
+    let action_js = r#"motion: "chaseTarget", action: { attack: "attack" }"#;
+    let action_lua = r#"motion = "chaseTarget", action = { attack = "attack" }"#;
+    let unknown_action_js = r#"motion: "chaseTarget", action: { attack: "missing" }"#;
+    let unknown_action_lua = r#"motion = "chaseTarget", action = { attack = "missing" }"#;
+
+    let cases = [
+        (
+            js_behavior(JS_NEAR_GUARD, "")
+                .replace(
+                    "attacks: { attack: { damage: 8, maxRange: 2, cooldownMs: 1200 } }",
+                    "attacks: {}",
+                )
+                .replace(r#"motion: "chaseTarget""#, action_js),
+            lua_behavior(LUA_NEAR_GUARD, "")
+                .replace(
+                    "attacks = { attack = { damage = 8, maxRange = 2, cooldownMs = 1200 } }",
+                    "attacks = {}",
+                )
+                .replace(r#"motion = "chaseTarget""#, action_lua),
+            "components.behavior.attacks",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace(r#"motion: "chaseTarget""#, unknown_action_js),
+            lua_behavior(LUA_NEAR_GUARD, "")
+                .replace(r#"motion = "chaseTarget""#, unknown_action_lua),
+            "components.behavior.states.chase.action.attack",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("damage: 8", "damage: -1"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("damage = 8", "damage = -1"),
+            "components.behavior.attacks.attack.damage",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("damage: 8", "damage: Infinity"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("damage = 8", "damage = math.huge"),
+            "non-finite number at `attacks.attack.damage`",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("maxRange: 2", "maxRange: 0"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("maxRange = 2", "maxRange = 0"),
+            "components.behavior.attacks.attack.maxRange",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("maxRange: 2", "maxRange: Infinity"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("maxRange = 2", "maxRange = math.huge"),
+            "non-finite number at `attacks.attack.maxRange`",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("cooldownMs: 1200", "cooldownMs: 0"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("cooldownMs = 1200", "cooldownMs = 0"),
+            "components.behavior.attacks.attack.cooldownMs",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace("cooldownMs: 1200", "cooldownMs: Infinity"),
+            lua_behavior(LUA_NEAR_GUARD, "").replace("cooldownMs = 1200", "cooldownMs = math.huge"),
+            "non-finite number at `attacks.attack.cooldownMs`",
+        ),
+        (
+            js_behavior(JS_NEAR_GUARD, "").replace(
+                "cooldownMs: 1200 }",
+                "cooldownMs: 1200, engagementRadius: 3 }",
+            ),
+            lua_behavior(LUA_NEAR_GUARD, "").replace(
+                "cooldownMs = 1200 }",
+                "cooldownMs = 1200, engagementRadius = 3 }",
+            ),
+            "components.behavior.attacks.attack.engagementRadius",
+        ),
+    ];
+
+    for (js_source, lua_source, expected_path) in cases {
+        let js = js_error(&js_source);
+        let lua = lua_error(&lua_source);
+        for error in [&js, &lua] {
+            assert!(error.contains(expected_path), "{error}");
+            assert!(
+                !error.contains("max_range") && !error.contains("cooldown_ms"),
+                "attack errors retain their wire-cased paths: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_parsers_surface_missing_attack_fields_as_serde_errors_before_validation() {
+    let js = js_error(&js_behavior(JS_NEAR_GUARD, "").replace(
+        "damage: 8, maxRange: 2, cooldownMs: 1200",
+        "damage: 8, cooldownMs: 1200",
+    ));
+    let lua = lua_error(&lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "damage = 8, maxRange = 2, cooldownMs = 1200",
+        "damage = 8, cooldownMs = 1200",
+    ));
+
+    let expected =
+        "manifest deserialization failed: `components.behavior` invalid: missing field `maxRange`";
+    for error in [&js, &lua] {
+        assert_eq!(error, expected);
+        assert!(
+            !error.contains("components.behavior.attacks.attack.maxRange"),
+            "serde rejects the missing field before descriptor validation can add an authored field path: {error}"
+        );
     }
 }
 
@@ -758,10 +870,28 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     );
     assert_eq!(ts.move_speed, 3.0);
     assert_eq!(ts.engagement_radius, Some(2.0));
-    let attack = ts.attack.expect("the reference enemy attacks");
     assert_eq!(
-        (attack.damage, attack.range, attack.cooldown_ms),
-        (8.0, 2.0, 1200.0)
+        ts.attacks.len(),
+        2,
+        "the reference enemy exposes two independently named melee attacks"
+    );
+    assert_eq!(
+        ts.attacks["jab"],
+        AttackParams {
+            damage: 8.0,
+            max_range: 2.0,
+            cooldown_ms: 1200.0,
+            engagement_radius: None,
+        }
+    );
+    assert_eq!(
+        ts.attacks["slam"],
+        AttackParams {
+            damage: 14.0,
+            max_range: 3.5,
+            cooldown_ms: 1800.0,
+            engagement_radius: Some(3.5),
+        }
     );
 
     assert_eq!(
@@ -774,18 +904,31 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     );
     assert_eq!(
         ts.states.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["alert", "attack", "idle", "patrol", "retreat"],
-        "the reference graph has a distinct rest pose plus patrol, pursuit, attack, and retreat; death remains outside the graph"
+        vec![
+            "alert",
+            "attack_jab",
+            "attack_slam",
+            "idle",
+            "patrol",
+            "retreat"
+        ],
+        "the reference graph has a distinct rest pose plus patrol, pursuit, two attacks, and retreat; death remains outside the graph"
     );
     for (name, animation, motion, action) in [
         ("idle", "idle", MotionVerb::Hold, None),
         ("patrol", "walk", MotionVerb::Patrol, None),
         ("alert", "walk", MotionVerb::ChaseTarget, None),
         (
-            "attack",
-            "attack",
+            "attack_jab",
+            "attack_jab",
             MotionVerb::ChaseTarget,
-            Some(ActionVerb::Attack),
+            Some(ActionVerb::Attack("jab".to_string())),
+        ),
+        (
+            "attack_slam",
+            "attack_slam",
+            MotionVerb::ChaseTarget,
+            Some(ActionVerb::Attack("slam".to_string())),
         ),
         ("retreat", "walk", MotionVerb::MoveToAnchor, None),
     ] {
@@ -812,8 +955,9 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     for (state, targets) in [
         ("idle", vec!["patrol"]),
         ("patrol", vec!["alert"]),
-        ("alert", vec!["retreat", "attack"]),
-        ("attack", vec!["retreat", "alert"]),
+        ("alert", vec!["retreat", "attack_jab", "attack_slam"]),
+        ("attack_jab", vec!["retreat", "alert"]),
+        ("attack_slam", vec!["retreat", "attack_jab", "alert"]),
         ("retreat", vec!["patrol"]),
     ] {
         assert_eq!(
@@ -864,6 +1008,26 @@ fn shipped_pose_fixture_is_a_direct_graph_with_valid_mesh_animation_states() {
             .mesh
             .as_ref()
             .expect("the pose fixture carries an animated mesh");
+        assert_eq!(
+            graph.attacks.len(),
+            1,
+            "the pose fixture remains the single-entry jab cadence fixture"
+        );
+        assert_eq!(
+            graph.attacks["jab"],
+            AttackParams {
+                damage: 8.0,
+                max_range: 2.0,
+                cooldown_ms: 1200.0,
+                engagement_radius: None,
+            },
+            "the pose fixture preserves the reference jab tuning"
+        );
+        assert_eq!(
+            graph.states["attack"].action,
+            Some(ActionVerb::Attack("jab".to_string())),
+            "the pose fixture's action names its sole attack entry"
+        );
         assert_eq!(
             graph
                 .interrupts
@@ -1005,7 +1169,7 @@ fn js_behavior_rejects_a_named_key_transitions_object_naming_its_state() {
 
 // --- engagementRadius (both parsers) --------------------------------------
 
-/// A behavior block with neither `attack` nor `engagementRadius` — the
+/// A behavior block with neither `attacks` nor `engagementRadius` — the
 /// pure-pursuit graph whose radius must resolve to the shared default rather
 /// than to zero. JS source body; [`LUA_PURSUIT_ONLY`] is its twin.
 const JS_PURSUIT_ONLY: &str = r#"({ components: { behavior: {
@@ -1019,9 +1183,9 @@ const LUA_PURSUIT_ONLY: &str = r#"return { components = { behavior = {
 } } }"#;
 
 #[test]
-fn both_parsers_carry_an_explicit_engagement_radius_over_the_attack_range() {
-    // The base fixture authors `attack.range = 2`; the explicit field outranks
-    // it, so a graph can space its chasers wider than it can damage.
+fn both_parsers_carry_an_explicit_graph_engagement_radius() {
+    // The graph default applies to non-attack states even when its vocabulary
+    // also has named attack entries.
     let js = eval_js(
         &js_behavior(JS_NEAR_GUARD, "")
             .replace("moveSpeed: 3,", "moveSpeed: 3, engagementRadius: 4.5,"),
@@ -1044,8 +1208,8 @@ fn both_parsers_carry_an_explicit_engagement_radius_over_the_attack_range() {
 }
 
 #[test]
-fn both_parsers_resolve_an_absent_engagement_radius_to_the_default_without_an_attack_block() {
-    // No `attack` to fall back to: this is the case that must NOT land on zero,
+fn both_parsers_resolve_an_absent_engagement_radius_to_the_default_without_attacks() {
+    // No attack entry exists: this is the case that must NOT land on zero,
     // since a zero ring generates no combat slots and every chaser piles onto
     // the raw target position.
     let js_graph = eval_js(JS_PURSUIT_ONLY, |ctx, v| {
@@ -1059,7 +1223,7 @@ fn both_parsers_resolve_an_absent_engagement_radius_to_the_default_without_an_at
 
     for graph in [&js_graph, &lua_graph] {
         assert_eq!(graph.engagement_radius, None);
-        assert!(graph.attack.is_none());
+        assert!(graph.attacks.is_empty());
         assert_eq!(
             graph.engagement_radius(),
             BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS

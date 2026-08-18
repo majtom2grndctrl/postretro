@@ -25,7 +25,7 @@ struct Uniforms {
     ambient_floor: f32,
     light_count: u32,
     time: f32,
-    lighting_isolation: u32,
+    light_term_mask: u32,
     _pad: u32,
 };
 
@@ -72,7 +72,7 @@ struct DispatchTile {
     chunk_idx: u32,
     tile_origin_x: u32,
     tile_origin_y: u32,
-    _pad: u32,
+    target_slot: u32,
 };
 
 // Debug visualization uniform. Written once at init from the
@@ -97,7 +97,7 @@ struct DebugConfig {
 @group(1) @binding(3) var<storage, read> dispatch_tiles: array<DispatchTile>;
 @group(1) @binding(4) var<storage, read> descriptors: array<AnimationDescriptor>;
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
-@group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(6) var animated_lm_atlas: texture_storage_2d_array<rgba16float, write>;
 @group(1) @binding(7) var<uniform> debug_config: DebugConfig;
 // Per-texel fused dominant-direction atlas. Octahedral-encoded direction in
 // `.rg` (matching the static direction atlas, so the forward pass decodes both
@@ -105,7 +105,7 @@ struct DebugConfig {
 // where a dominant direction exists, 0.0 where animated lights cancel or no
 // light covers — lets the forward pass skip the bump correction without a NaN
 // sentinel. `.b` unused.
-@group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d<rgba8unorm, write>;
+@group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d_array<rgba8unorm, write>;
 
 // Decode the baked octahedral direction packed into a `TexelLight`'s
 // `direction_oct_packed` u32 (low 16 bits = x, high 16 bits = y). Mirrors the
@@ -172,6 +172,7 @@ fn compose_main(
         textureStore(
             animated_lm_atlas,
             vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
+            i32(tile.target_slot),
             vec4<f32>(heat, 0.0, 0.0, 1.0),
         );
         return;
@@ -213,6 +214,7 @@ fn compose_main(
     textureStore(
         animated_lm_atlas,
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
+        i32(tile.target_slot),
         vec4<f32>(accum, 1.0),
     );
     // Opposing lights can cancel and uncovered texels stay zero; encode a
@@ -228,6 +230,7 @@ fn compose_main(
     textureStore(
         animated_lm_direction_atlas,
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
+        i32(tile.target_slot),
         vec4<f32>(dir_oct, 0.0, coverage),
     );
 }

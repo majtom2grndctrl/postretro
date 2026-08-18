@@ -72,7 +72,18 @@ pub fn validate_cross_section(
         &postretro_level_format::animated_light_chunks::AnimatedLightChunksSection,
     >,
     animated_light_count: u32,
+    slot_to_static_layer: &[u32],
+    atlas_dimensions: (u32, u32),
 ) -> Result<(), String> {
+    if !slot_to_static_layer
+        .windows(2)
+        .all(|layers| layers[0] < layers[1])
+    {
+        return Err(
+            "animated slot table must be sorted in ascending order and duplicate-free".to_owned(),
+        );
+    }
+
     match animated_chunks {
         Some(chunks) => {
             if section.chunk_rects.len() != chunks.chunks.len() {
@@ -94,8 +105,38 @@ pub fn validate_cross_section(
         }
     }
 
+    let (atlas_width, atlas_height) = atlas_dimensions;
     let mut running: u32 = 0;
     for (i, rect) in section.chunk_rects.iter().enumerate() {
+        if slot_to_static_layer.binary_search(&rect.layer).is_err() {
+            return Err(format!(
+                "chunk_rects[{i}].layer ({}) is absent from the animated slot table",
+                rect.layer,
+            ));
+        }
+
+        let atlas_x_end = rect.atlas_x.checked_add(rect.width).ok_or_else(|| {
+            format!(
+                "chunk_rects[{i}] atlas x range overflows ({} + {})",
+                rect.atlas_x, rect.width,
+            )
+        })?;
+        let atlas_y_end = rect.atlas_y.checked_add(rect.height).ok_or_else(|| {
+            format!(
+                "chunk_rects[{i}] atlas y range overflows ({} + {})",
+                rect.atlas_y, rect.height,
+            )
+        })?;
+        if rect.atlas_x >= atlas_width
+            || rect.atlas_y >= atlas_height
+            || atlas_x_end > atlas_width
+            || atlas_y_end > atlas_height
+        {
+            return Err(format!(
+                "chunk_rects[{i}] atlas rectangle ({}, {}) {}x{} exceeds static atlas {}x{}",
+                rect.atlas_x, rect.atlas_y, rect.width, rect.height, atlas_width, atlas_height,
+            ));
+        }
         if rect.texel_offset != running {
             return Err(format!(
                 "chunk_rects[{}].texel_offset ({}) != prefix sum ({})",
@@ -110,6 +151,14 @@ pub fn validate_cross_section(
                 )
             })?)
             .ok_or_else(|| format!("chunk_rects prefix sum overflow at index {i}"))?;
+    }
+    if let Some(unoccupied_layer) = slot_to_static_layer
+        .iter()
+        .find(|&&layer| !section.chunk_rects.iter().any(|rect| rect.layer == layer))
+    {
+        return Err(format!(
+            "animated slot table layer {unoccupied_layer} has no chunk rectangle",
+        ));
     }
     if section.offset_counts.len() as u32 != running {
         return Err(format!(
@@ -179,6 +228,7 @@ mod tests {
             width: w,
             height: h,
             texel_offset: offset,
+            layer: 0,
         }
     }
 
@@ -187,10 +237,15 @@ mod tests {
         offset_counts: Vec<TexelLightEntry>,
         texel_lights: Vec<TexelLight>,
     ) -> AnimatedLightWeightMapsSection {
+        let mut slot_to_static_layer: Vec<u32> =
+            chunk_rects.iter().map(|rect| rect.layer).collect();
+        slot_to_static_layer.sort_unstable();
+        slot_to_static_layer.dedup();
         AnimatedLightWeightMapsSection {
             chunk_rects,
             offset_counts,
             texel_lights,
+            slot_to_static_layer,
         }
     }
 
@@ -236,7 +291,7 @@ mod tests {
             }],
         );
         let chunks = mk_chunks(1);
-        assert!(validate_cross_section(&section, Some(&chunks), 1).is_ok());
+        assert!(validate_cross_section(&section, Some(&chunks), 1, &[0], (8, 8)).is_ok());
     }
 
     #[test]
@@ -253,7 +308,7 @@ mod tests {
             vec![],
         );
         let chunks = mk_chunks(2);
-        let err = validate_cross_section(&section, Some(&chunks), 0).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[0], (8, 8)).unwrap_err();
         assert!(err.contains("prefix sum"), "unexpected error: {err}");
     }
 
@@ -272,7 +327,7 @@ mod tests {
             }],
         );
         let chunks = mk_chunks(1);
-        let err = validate_cross_section(&section, Some(&chunks), 5).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 5, &[0], (8, 8)).unwrap_err();
         assert!(err.contains("light_index"), "unexpected error: {err}");
     }
 
@@ -291,7 +346,7 @@ mod tests {
             }],
         );
         let chunks = mk_chunks(1);
-        let err = validate_cross_section(&section, Some(&chunks), 1).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 1, &[0], (8, 8)).unwrap_err();
         assert!(err.contains("texel_lights.len"), "unexpected error: {err}");
     }
 
@@ -309,7 +364,7 @@ mod tests {
             vec![],
         );
         let chunks = mk_chunks(1);
-        let err = validate_cross_section(&section, Some(&chunks), 0).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[0], (8, 8)).unwrap_err();
         assert!(err.contains("offset_counts.len"), "unexpected error: {err}");
     }
 
@@ -323,13 +378,104 @@ mod tests {
             }],
             vec![],
         );
-        let err = validate_cross_section(&section, None, 0).unwrap_err();
+        let err = validate_cross_section(&section, None, 0, &[0], (8, 8)).unwrap_err();
         assert!(err.contains("AnimatedLightChunks") && err.contains("malformed"));
     }
 
     #[test]
     fn validate_cross_section_accepts_empty_weight_maps_without_chunks() {
         let section = mk_section(vec![], vec![], vec![]);
-        assert!(validate_cross_section(&section, None, 0).is_ok());
+        assert!(validate_cross_section(&section, None, 0, &[], (8, 8)).is_ok());
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_rect_layer_absent_from_slot_table() {
+        let mut rect = mk_rect(1, 1, 0);
+        rect.layer = 4;
+        let section = mk_section(
+            vec![rect],
+            vec![TexelLightEntry {
+                offset: 0,
+                count: 0,
+            }],
+            vec![],
+        );
+        let chunks = mk_chunks(1);
+
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[0], (8, 8)).unwrap_err();
+        assert!(err.contains("absent from the animated slot table"));
+    }
+
+    fn two_layer_section() -> AnimatedLightWeightMapsSection {
+        let mut first = mk_rect(1, 1, 0);
+        first.layer = 2;
+        let mut second = mk_rect(1, 1, 1);
+        second.layer = 9;
+        mk_section(
+            vec![first, second],
+            vec![
+                TexelLightEntry {
+                    offset: 0,
+                    count: 0,
+                };
+                2
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_empty_slot_table_for_occupied_layers() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[], (8, 8)).unwrap_err();
+        assert!(err.contains("absent from the animated slot table"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_unsorted_slot_table() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[9, 2], (8, 8)).unwrap_err();
+        assert!(err.contains("sorted in ascending order"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_duplicate_slot_table_entry() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err =
+            validate_cross_section(&section, Some(&chunks), 0, &[2, 2, 9], (8, 8)).unwrap_err();
+        assert!(err.contains("duplicate-free"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_unoccupied_slot_table_entry() {
+        let section = two_layer_section();
+        let chunks = mk_chunks(2);
+        let err =
+            validate_cross_section(&section, Some(&chunks), 0, &[2, 7, 9], (8, 8)).unwrap_err();
+        assert!(err.contains("layer 7 has no chunk rectangle"));
+    }
+
+    #[test]
+    fn validate_cross_section_rejects_rect_outside_static_atlas_bounds() {
+        let mut rect = mk_rect(2, 1, 0);
+        rect.atlas_x = 7;
+        let section = mk_section(
+            vec![rect],
+            vec![
+                TexelLightEntry {
+                    offset: 0,
+                    count: 0,
+                };
+                2
+            ],
+            vec![],
+        );
+        let chunks = mk_chunks(1);
+
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[0], (8, 8)).unwrap_err();
+        assert!(err.contains("exceeds static atlas"));
     }
 }

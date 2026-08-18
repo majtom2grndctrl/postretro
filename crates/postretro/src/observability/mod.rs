@@ -315,7 +315,7 @@ mod tests {
                         BehaviorStateDescriptor {
                             animation: "idle".to_string(),
                             motion: MotionVerb::Hold,
-                            action: Some(ActionVerb::Attack),
+                            action: Some(ActionVerb::Attack("attack".to_string())),
                             transitions: Vec::new(),
                             on_enter: None,
                         },
@@ -323,11 +323,15 @@ mod tests {
                     interrupts: Vec::new(),
                     candidate_filter: None,
                     patrol: None,
-                    attack: Some(AttackParams {
-                        damage: 5.0,
-                        range: 2.0,
-                        cooldown_ms: 500.0,
-                    }),
+                    attacks: std::collections::BTreeMap::from([(
+                        "attack".to_string(),
+                        AttackParams {
+                            damage: 5.0,
+                            max_range: 2.0,
+                            cooldown_ms: 500.0,
+                            engagement_radius: None,
+                        },
+                    )]),
                     engagement_radius: None,
                     move_speed: 3.0,
                 }))

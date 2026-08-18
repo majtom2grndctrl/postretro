@@ -261,17 +261,34 @@ pub(crate) fn build_full_renderer(
         device.limits().max_texture_dimension_2d,
         device.limits().max_texture_array_layers,
     );
-    let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
-        device,
-        geometry.and_then(|g| g.animated_light_weight_maps),
-        geometry.and_then(|g| g.animated_light_chunks),
-        &bvh_leaves,
-        &sh_volume_resources.animation,
-        &uniform_bind_group_layout,
-        lightmap_atlas_dimensions,
-        animated_lm_debug,
-    )
-    .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
+    let slot_to_static_layer = geometry
+        .and_then(|g| g.animated_light_weight_maps)
+        .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
+    let animated_lightmap = animated_lightmap::with_dummy_fallback(
+        animated_lightmap::AnimatedLightmapResources::new(
+            device,
+            geometry.and_then(|g| g.animated_light_weight_maps),
+            geometry.and_then(|g| g.animated_light_chunks),
+            &bvh_leaves,
+            &sh_volume_resources.animation,
+            &uniform_bind_group_layout,
+            lightmap_atlas_dimensions,
+            animated_lm_debug,
+        ),
+        || {
+            animated_lightmap::AnimatedLightmapResources::dummy(
+                device,
+                &sh_volume_resources.animation,
+                &uniform_bind_group_layout,
+                animated_lm_debug,
+            )
+        },
+        "animated lightmap initialization",
+    );
+    let installed_slot_to_static_layer = animated_lightmap::installed_slot_to_static_layer(
+        animated_lightmap.is_active(),
+        slot_to_static_layer,
+    );
 
     // Group 4: lightmap atlas. Animated-contribution atlas at binding 3 (real or 1×1 zero dummy).
     let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(device);
@@ -283,6 +300,7 @@ pub(crate) fn build_full_renderer(
         &lightmap_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
+        installed_slot_to_static_layer,
     );
     let shadowmask_present = lightmap_resources.shadowmask_present;
 
@@ -543,6 +561,7 @@ pub(crate) fn build_full_renderer(
         light_count,
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
+        frame_light_term_mask: LightTermMask::ALL,
         kinematic_mover_draws: Vec::new(),
         kinematic_mover_shadow_draws: Vec::new(),
         mover_occluder_aabbs: Vec::new(),
@@ -652,10 +671,13 @@ pub(crate) fn build_full_renderer(
         agent_overlay: AgentOverlayState::default(),
         #[cfg(feature = "dev-tools")]
         show_navmesh: false,
-        lighting_isolation: LightingIsolation::Normal,
-        dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+        light_term_mask: LightTermMask::ALL,
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: std::env::var("POSTRETRO_SDF_FORCE_VISIBILITY_ONE")
+            .ok()
+            .as_deref()
+            == Some("1"),
+        spec_shadowmask_force_one: std::env::var("POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE")
             .ok()
             .as_deref()
             == Some("1"),
@@ -682,6 +704,7 @@ pub(crate) fn build_full_renderer(
         ui,
         ui_images: ui::UiImageRegistry::default(),
         ui_snapshot: ui::UiReadSnapshot::default(),
+        presentation_inputs: Vec::new(),
         ui_theme: ui::theme::UiTheme::engine_default(),
         ui_theme_generation: 0,
         fog,

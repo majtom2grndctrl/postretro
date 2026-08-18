@@ -3,16 +3,15 @@
 // tuples. Baked by the animator at compile time; composed at runtime into an
 // animated lightmap contribution atlas.
 //
-// See: context/plans/in-progress/animated-light-weight-maps/index.md
+// Format inventory: context/lib/build_pipeline.md §PRL section IDs.
 
 use crate::FormatError;
 
-/// Current section version. Bumped to 2 in the sdf-static-occluder-shadows
-/// branch when `TexelLight` grew a per-light per-texel `direction_oct` field
-/// (Task 2b). The animated-lightmap compose pass fuses these directions per
-/// frame, weighted by current radiance, into a runtime direction atlas the
-/// SDF shadow pass traces toward.
-pub const ANIMATED_LIGHT_WEIGHT_MAPS_VERSION: u32 = 2;
+/// Current section version. Version 3 adds static-atlas layer information so
+/// the runtime can compose animated lightmaps into an array atlas.
+pub const ANIMATED_LIGHT_WEIGHT_MAPS_VERSION: u32 = 3;
+
+const ANIMATED_LIGHT_WEIGHT_MAPS_V2_VERSION: u32 = 2;
 
 /// Atlas rectangle for one chunk: position and dimensions within the lightmap
 /// atlas, plus an offset into the per-texel offset-count table.
@@ -29,6 +28,8 @@ pub struct ChunkAtlasRect {
     pub width: u32,
     pub height: u32,
     pub texel_offset: u32, // index into the per-texel offset_counts array
+    // Appended in v3. Do not move before the v2 fields above.
+    pub layer: u32,
 }
 
 /// One per-texel entry: (offset, count) into the flat `texel_lights` pool.
@@ -68,18 +69,20 @@ pub struct TexelLight {
 /// On-disk layout (little-endian):
 ///
 /// ```text
-///   Header (16 bytes):
-///     u32      version            (= 1)
+///   Header (20 bytes):
+///     u32      version            (= 3)
 ///     u32      chunk_count
 ///     u32      offset_counts_len  (length of per-texel offset_counts array)
 ///     u32      texel_lights_len   (length of flat light weights pool)
+///     u32      slot_count          (length of slot_to_static_layer)
 ///
-///   Chunk rects (20 bytes × chunk_count):
+///   Chunk rects (24 bytes × chunk_count):
 ///     u32      atlas_x
 ///     u32      atlas_y
 ///     u32      width
 ///     u32      height
 ///     u32      texel_offset       (index into offset_counts)
+///     u32      layer              (static lightmap atlas layer)
 ///
 ///   Offset table (8 bytes × offset_counts_len):
 ///     u32      offset             (into texel_lights)
@@ -90,6 +93,9 @@ pub struct TexelLight {
 ///     f32      weight
 ///     u16      direction_oct[0]
 ///     u16      direction_oct[1]
+///
+///   Slot table (4 bytes × slot_count):
+///     u32      static_layer       (slot index maps to this static atlas layer)
 /// ```
 ///
 /// Invariants verified at load time:
@@ -97,17 +103,24 @@ pub struct TexelLight {
 ///   - offset_counts_len == Σ (chunk_rect.width × chunk_rect.height) for all chunks
 ///   - chunk_rect[i].texel_offset == Σ_{j<i} (chunk_rect[j].width × chunk_rect[j].height)
 ///   - All indices in texel_lights are within the animated-light descriptor array bounds.
+///   - slot_to_static_layer is sorted, duplicate-free, and maps exactly the
+///     static layers in chunk_rects.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatedLightWeightMapsSection {
     pub chunk_rects: Vec<ChunkAtlasRect>,
     pub offset_counts: Vec<TexelLightEntry>,
     pub texel_lights: Vec<TexelLight>,
+    /// Ascending static-atlas layers indexed by animated atlas slot.
+    pub slot_to_static_layer: Vec<u32>,
 }
 
-const HEADER_SIZE: usize = 16;
-const CHUNK_RECT_SIZE: usize = 20;
+const V2_HEADER_SIZE: usize = 16;
+const HEADER_SIZE: usize = 20;
+const V2_CHUNK_RECT_SIZE: usize = 20;
+const CHUNK_RECT_SIZE: usize = 24;
 const OFFSET_ENTRY_SIZE: usize = 8;
 const TEXEL_LIGHT_SIZE: usize = 12;
+const SLOT_STATIC_LAYER_SIZE: usize = 4;
 
 impl AnimatedLightWeightMapsSection {
     /// Empty section — used when a map has no animated lights or no weight maps.
@@ -116,27 +129,58 @@ impl AnimatedLightWeightMapsSection {
             chunk_rects: Vec::new(),
             offset_counts: Vec::new(),
             texel_lights: Vec::new(),
+            slot_to_static_layer: Vec::new(),
         }
     }
 
-    /// Verify internal consistency: offset_counts length matches chunk area sum,
-    /// chunk texel offsets form a valid partition, and every (offset, count)
-    /// pair falls within `texel_lights`.
+    /// Verify internal consistency: slots map bijectively to chunk layers,
+    /// offset_counts length matches chunk area sum, chunk texel offsets form a
+    /// valid partition, and every (offset, count) pair falls within
+    /// `texel_lights`.
     pub fn is_consistent(&self) -> bool {
-        let expected_offset_counts_len: u32 =
-            self.chunk_rects.iter().map(|r| r.width * r.height).sum();
-
-        if self.offset_counts.len() as u32 != expected_offset_counts_len {
+        if !self
+            .slot_to_static_layer
+            .windows(2)
+            .all(|layers| layers[0] < layers[1])
+        {
             return false;
         }
 
-        // Verify chunk texel offsets form a valid partition.
-        let mut expected_offset = 0;
+        if self.chunk_rects.iter().any(|chunk| {
+            self.slot_to_static_layer
+                .binary_search(&chunk.layer)
+                .is_err()
+        }) {
+            return false;
+        }
+
+        if self
+            .slot_to_static_layer
+            .iter()
+            .any(|layer| !self.chunk_rects.iter().any(|chunk| chunk.layer == *layer))
+        {
+            return false;
+        }
+
+        // Verify chunk texel offsets form a valid partition. Checked arithmetic
+        // keeps malformed wire values from panicking in debug builds before the
+        // runtime boundary can reject them.
+        let mut expected_offset = 0_u32;
         for chunk in &self.chunk_rects {
             if chunk.texel_offset != expected_offset {
                 return false;
             }
-            expected_offset += chunk.width * chunk.height;
+            let Some(area) = chunk.width.checked_mul(chunk.height) else {
+                return false;
+            };
+            let Some(next_offset) = expected_offset.checked_add(area) else {
+                return false;
+            };
+            expected_offset = next_offset;
+        }
+
+        if self.offset_counts.len() != expected_offset as usize {
+            return false;
         }
 
         // Verify every (offset, count) pair is in bounds within texel_lights.
@@ -160,13 +204,15 @@ impl AnimatedLightWeightMapsSection {
             HEADER_SIZE
                 + self.chunk_rects.len() * CHUNK_RECT_SIZE
                 + self.offset_counts.len() * OFFSET_ENTRY_SIZE
-                + self.texel_lights.len() * TEXEL_LIGHT_SIZE,
+                + self.texel_lights.len() * TEXEL_LIGHT_SIZE
+                + self.slot_to_static_layer.len() * SLOT_STATIC_LAYER_SIZE,
         );
 
         buf.extend_from_slice(&ANIMATED_LIGHT_WEIGHT_MAPS_VERSION.to_le_bytes());
         buf.extend_from_slice(&(self.chunk_rects.len() as u32).to_le_bytes());
         buf.extend_from_slice(&(self.offset_counts.len() as u32).to_le_bytes());
         buf.extend_from_slice(&(self.texel_lights.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(self.slot_to_static_layer.len() as u32).to_le_bytes());
 
         for rect in &self.chunk_rects {
             buf.extend_from_slice(&rect.atlas_x.to_le_bytes());
@@ -174,6 +220,7 @@ impl AnimatedLightWeightMapsSection {
             buf.extend_from_slice(&rect.width.to_le_bytes());
             buf.extend_from_slice(&rect.height.to_le_bytes());
             buf.extend_from_slice(&rect.texel_offset.to_le_bytes());
+            buf.extend_from_slice(&rect.layer.to_le_bytes());
         }
 
         for entry in &self.offset_counts {
@@ -188,11 +235,15 @@ impl AnimatedLightWeightMapsSection {
             buf.extend_from_slice(&light.direction_oct[1].to_le_bytes());
         }
 
+        for static_layer in &self.slot_to_static_layer {
+            buf.extend_from_slice(&static_layer.to_le_bytes());
+        }
+
         buf
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        if data.len() < HEADER_SIZE {
+        if data.len() < V2_HEADER_SIZE {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "animated light weight maps section too short for header",
@@ -200,12 +251,21 @@ impl AnimatedLightWeightMapsSection {
         }
 
         let version = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        if version != ANIMATED_LIGHT_WEIGHT_MAPS_VERSION {
+        let (header_size, chunk_rect_size, has_slot_table) = match version {
+            ANIMATED_LIGHT_WEIGHT_MAPS_V2_VERSION => (V2_HEADER_SIZE, V2_CHUNK_RECT_SIZE, false),
+            ANIMATED_LIGHT_WEIGHT_MAPS_VERSION => (HEADER_SIZE, CHUNK_RECT_SIZE, true),
+            _ => {
+                return Err(FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("animated light weight maps section unsupported version {version}"),
+                )));
+            }
+        };
+
+        if data.len() < header_size {
             return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "animated light weight maps section version {version}, expected {ANIMATED_LIGHT_WEIGHT_MAPS_VERSION}"
-                ),
+                std::io::ErrorKind::UnexpectedEof,
+                "animated light weight maps section too short for header",
             )));
         }
 
@@ -213,11 +273,28 @@ impl AnimatedLightWeightMapsSection {
         let offset_counts_len = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
         let texel_lights_len =
             u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+        let slot_count = if has_slot_table {
+            u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize
+        } else {
+            0
+        };
 
-        let needed = HEADER_SIZE
-            + chunk_count * CHUNK_RECT_SIZE
-            + offset_counts_len * OFFSET_ENTRY_SIZE
-            + texel_lights_len * TEXEL_LIGHT_SIZE;
+        let needed = header_size
+            .checked_add(chunk_count.checked_mul(chunk_rect_size).ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "animated light weight maps section size overflows",
+                ))
+            })?)
+            .and_then(|size| size.checked_add(offset_counts_len.checked_mul(OFFSET_ENTRY_SIZE)?))
+            .and_then(|size| size.checked_add(texel_lights_len.checked_mul(TEXEL_LIGHT_SIZE)?))
+            .and_then(|size| size.checked_add(slot_count.checked_mul(SLOT_STATIC_LAYER_SIZE)?))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "animated light weight maps section size overflows",
+                ))
+            })?;
 
         if data.len() < needed {
             return Err(FormatError::Io(std::io::Error::new(
@@ -230,13 +307,18 @@ impl AnimatedLightWeightMapsSection {
         }
 
         let mut chunk_rects = Vec::with_capacity(chunk_count);
-        let mut cursor = HEADER_SIZE;
+        let mut cursor = header_size;
         for _ in 0..chunk_count {
             let atlas_x = read_u32(data, cursor);
             let atlas_y = read_u32(data, cursor + 4);
             let width = read_u32(data, cursor + 8);
             let height = read_u32(data, cursor + 12);
             let texel_offset = read_u32(data, cursor + 16);
+            let layer = if has_slot_table {
+                read_u32(data, cursor + 20)
+            } else {
+                0
+            };
 
             chunk_rects.push(ChunkAtlasRect {
                 atlas_x,
@@ -244,8 +326,9 @@ impl AnimatedLightWeightMapsSection {
                 width,
                 height,
                 texel_offset,
+                layer,
             });
-            cursor += CHUNK_RECT_SIZE;
+            cursor += chunk_rect_size;
         }
 
         let mut offset_counts = Vec::with_capacity(offset_counts_len);
@@ -270,10 +353,24 @@ impl AnimatedLightWeightMapsSection {
             cursor += TEXEL_LIGHT_SIZE;
         }
 
+        let slot_to_static_layer = if has_slot_table {
+            let mut slots = Vec::with_capacity(slot_count);
+            for _ in 0..slot_count {
+                slots.push(read_u32(data, cursor));
+                cursor += SLOT_STATIC_LAYER_SIZE;
+            }
+            slots
+        } else if chunk_rects.is_empty() {
+            Vec::new()
+        } else {
+            vec![0]
+        };
+
         Ok(Self {
             chunk_rects,
             offset_counts,
             texel_lights,
+            slot_to_static_layer,
         })
     }
 }
@@ -304,6 +401,7 @@ mod tests {
                     width: 2,
                     height: 2,
                     texel_offset: 0,
+                    layer: 3,
                 },
                 ChunkAtlasRect {
                     atlas_x: 2,
@@ -311,6 +409,7 @@ mod tests {
                     width: 3,
                     height: 1,
                     texel_offset: 4,
+                    layer: 11,
                 },
             ],
             offset_counts: vec![
@@ -385,17 +484,109 @@ mod tests {
                     direction_oct: [12345, 54321],
                 },
             ],
+            slot_to_static_layer: vec![3, 11],
         }
     }
 
+    fn v2_bytes(section: &AnimatedLightWeightMapsSection) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&ANIMATED_LIGHT_WEIGHT_MAPS_V2_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(section.chunk_rects.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(section.offset_counts.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(section.texel_lights.len() as u32).to_le_bytes());
+
+        for rect in &section.chunk_rects {
+            bytes.extend_from_slice(&rect.atlas_x.to_le_bytes());
+            bytes.extend_from_slice(&rect.atlas_y.to_le_bytes());
+            bytes.extend_from_slice(&rect.width.to_le_bytes());
+            bytes.extend_from_slice(&rect.height.to_le_bytes());
+            bytes.extend_from_slice(&rect.texel_offset.to_le_bytes());
+        }
+
+        for entry in &section.offset_counts {
+            bytes.extend_from_slice(&entry.offset.to_le_bytes());
+            bytes.extend_from_slice(&entry.count.to_le_bytes());
+        }
+
+        for light in &section.texel_lights {
+            bytes.extend_from_slice(&light.light_index.to_le_bytes());
+            bytes.extend_from_slice(&light.weight.to_le_bytes());
+            bytes.extend_from_slice(&light.direction_oct[0].to_le_bytes());
+            bytes.extend_from_slice(&light.direction_oct[1].to_le_bytes());
+        }
+
+        bytes
+    }
+
     #[test]
-    fn round_trip_byte_identical() {
+    fn v3_multi_slot_round_trip_is_byte_identical() {
         let section = sample_section();
         let bytes = section.to_bytes();
+        assert_eq!(
+            &bytes[0..4],
+            &ANIMATED_LIGHT_WEIGHT_MAPS_VERSION.to_le_bytes()
+        );
+        assert_eq!(&bytes[16..20], &2_u32.to_le_bytes());
         let restored = AnimatedLightWeightMapsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
         let rebytes = restored.to_bytes();
         assert_eq!(bytes, rebytes);
+    }
+
+    #[test]
+    fn v3_appends_chunk_layer_and_slot_table() {
+        let section = sample_section();
+        let bytes = section.to_bytes();
+        let first_layer_offset = HEADER_SIZE + 20;
+        let slot_table_offset = HEADER_SIZE
+            + section.chunk_rects.len() * CHUNK_RECT_SIZE
+            + section.offset_counts.len() * OFFSET_ENTRY_SIZE
+            + section.texel_lights.len() * TEXEL_LIGHT_SIZE;
+
+        assert_eq!(
+            &bytes[first_layer_offset..first_layer_offset + 4],
+            &3_u32.to_le_bytes()
+        );
+        assert_eq!(
+            &bytes[slot_table_offset..],
+            &[3_u32.to_le_bytes(), 11_u32.to_le_bytes()].concat()
+        );
+    }
+
+    #[test]
+    fn v3_single_slot_round_trip_preserves_layer() {
+        let mut section = sample_section();
+        section.chunk_rects[1].layer = 3;
+        section.slot_to_static_layer = vec![3];
+
+        let restored = AnimatedLightWeightMapsSection::from_bytes(&section.to_bytes()).unwrap();
+        assert_eq!(restored, section);
+    }
+
+    #[test]
+    fn v2_nonempty_decode_defaults_chunks_to_layer_zero_and_one_slot() {
+        let section = sample_section();
+        let mut expected = section.clone();
+        expected
+            .chunk_rects
+            .iter_mut()
+            .for_each(|chunk| chunk.layer = 0);
+        expected.slot_to_static_layer = vec![0];
+
+        assert_eq!(
+            AnimatedLightWeightMapsSection::from_bytes(&v2_bytes(&section)).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn v2_empty_decode_has_no_slots() {
+        let bytes = v2_bytes(&AnimatedLightWeightMapsSection::empty());
+        assert_eq!(bytes.len(), V2_HEADER_SIZE);
+        assert_eq!(
+            AnimatedLightWeightMapsSection::from_bytes(&bytes).unwrap(),
+            AnimatedLightWeightMapsSection::empty()
+        );
     }
 
     #[test]
@@ -438,7 +629,8 @@ mod tests {
         let expected_len = HEADER_SIZE
             + section.chunk_rects.len() * CHUNK_RECT_SIZE
             + section.offset_counts.len() * OFFSET_ENTRY_SIZE
-            + section.texel_lights.len() * TEXEL_LIGHT_SIZE;
+            + section.texel_lights.len() * TEXEL_LIGHT_SIZE
+            + section.slot_to_static_layer.len() * SLOT_STATIC_LAYER_SIZE;
         assert_eq!(bytes.len(), expected_len);
     }
 
@@ -464,6 +656,41 @@ mod tests {
     }
 
     #[test]
+    fn consistency_check_fails_when_chunk_layer_has_no_slot() {
+        let mut section = sample_section();
+        section.chunk_rects[1].layer = 9;
+        assert!(!section.is_consistent());
+    }
+
+    #[test]
+    fn consistency_check_fails_when_occupied_layers_have_empty_slot_table() {
+        let mut section = sample_section();
+        section.slot_to_static_layer.clear();
+        assert!(!section.is_consistent());
+    }
+
+    #[test]
+    fn consistency_check_fails_when_slot_table_is_unsorted() {
+        let mut section = sample_section();
+        section.slot_to_static_layer = vec![11, 3];
+        assert!(!section.is_consistent());
+    }
+
+    #[test]
+    fn consistency_check_fails_when_slot_table_has_duplicates() {
+        let mut section = sample_section();
+        section.slot_to_static_layer = vec![3, 3, 11];
+        assert!(!section.is_consistent());
+    }
+
+    #[test]
+    fn consistency_check_fails_when_slot_table_has_unoccupied_layer() {
+        let mut section = sample_section();
+        section.slot_to_static_layer = vec![3, 7, 11];
+        assert!(!section.is_consistent());
+    }
+
+    #[test]
     fn rejects_truncated_header() {
         let err = AnimatedLightWeightMapsSection::from_bytes(&[0u8; 8]).unwrap_err();
         assert!(err.to_string().contains("too short"));
@@ -483,7 +710,13 @@ mod tests {
         let mut bytes = sample_section().to_bytes();
         bytes[0..4].copy_from_slice(&999u32.to_le_bytes());
         let err = AnimatedLightWeightMapsSection::from_bytes(&bytes).unwrap_err();
-        assert!(err.to_string().contains("version"));
+        let message = err.to_string();
+        assert!(message.contains("unsupported version"));
+        assert!(message.contains("999"));
+        match err {
+            FormatError::Io(error) => assert_eq!(error.kind(), std::io::ErrorKind::InvalidData),
+            _ => unreachable!("only I/O format errors are returned by this decoder"),
+        }
     }
 
     #[test]

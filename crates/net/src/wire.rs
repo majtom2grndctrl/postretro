@@ -26,6 +26,8 @@
 //
 // Handshake, admission, and host-control declarations live in `wire/control.rs`.
 
+use std::collections::BTreeMap;
+
 use bitcode::{Decode, Encode};
 
 mod control;
@@ -42,6 +44,54 @@ pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 /// carries it as a bare `u32` (bitcode encodes the inner field transparently).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
 pub struct NetworkId(pub u32);
+
+/// Producer-stamped scalar fact carried with a transient presentation spawn.
+///
+/// This is a wire mirror of the engine presentation fact vocabulary. Keeping the
+/// mirror here preserves the net crate's registry- and engine-blind boundary.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum PresentationFact {
+    Number(f32),
+    Text(String),
+    Bool(bool),
+}
+
+/// One host-to-client passive presentation event.
+///
+/// This family rides the dedicated unreliable `Channel::Presentation`; it is
+/// intentionally separate from [`ServerMessage`], whose envelope belongs to
+/// the reliable Input channel.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct ServerPresentationMessage {
+    pub payload: ServerPresentationPayload,
+}
+
+/// Payloads carried by [`ServerPresentationMessage`].
+///
+/// New variants must be appended. bitcode encodes enum tags positionally, and
+/// both current variants are defined together so the later overlay surface does
+/// not need a second wire-version bump.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum ServerPresentationPayload {
+    /// A one-shot transient authored from a presentation template. `value` is
+    /// the conventional numeric impact value; `facts` retains the complete
+    /// producer-stamped per-instance fact set.
+    Spawn {
+        template_id: String,
+        anchor: [f32; 3],
+        value: f32,
+        facts: BTreeMap<String, PresentationFact>,
+    },
+    /// Reserved for host-pushed enemy-status facts. It is deliberately fully
+    /// decodable now even though Tasks 7/8 are its first producer/consumer.
+    OverlayFact {
+        enemy_id: NetworkId,
+        health_fraction: f32,
+        shield_fraction: f32,
+        has_shield: bool,
+        alive: bool,
+    },
+}
 
 /// Pinned snapshot wire-format version. Carried in `RawSnapshotMessage.version`
 /// and asserted *after* the two handshake gates, so a Phase 1 peer is already
@@ -71,9 +121,9 @@ pub struct NetworkId(pub u32);
 /// gained the kinematic-mover-state slot and `WirePlayerMovementState` widened
 /// its grounded bool to a ground reference.
 ///
-/// E16 client-authoritative combat did not bump this: shot verdicts ride
-/// `ServerMessage::ShotVerdicts` on the reliable input channel, not
-/// `RawSnapshotMessage`.
+/// E16 client-authoritative combat and presentation did not bump this: shot
+/// verdicts ride `ServerMessage::ShotVerdicts` on reliable Input, while passive
+/// presentation rides its own unreliable channel, not `RawSnapshotMessage`.
 ///
 /// Bumped to 9 for E17 trigger commands: mover phase gained `target_segment`
 /// and movement input gained `use_pressed`.
@@ -1594,6 +1644,42 @@ mod tests {
         for msg in variants {
             assert!(round_trips(&msg));
         }
+    }
+
+    #[test]
+    fn presentation_message_payloads_round_trip_without_changing_snapshot_version() {
+        assert_eq!(
+            SNAPSHOT_VERSION, 13,
+            "presentation uses its own channel, not the snapshot record"
+        );
+
+        let spawn = ServerPresentationMessage {
+            payload: ServerPresentationPayload::Spawn {
+                template_id: "damage-number".to_string(),
+                anchor: [1.25, 2.5, -3.75],
+                value: 42.0,
+                facts: BTreeMap::from([
+                    ("value".to_string(), PresentationFact::Number(42.0)),
+                    ("critical".to_string(), PresentationFact::Bool(true)),
+                    (
+                        "label".to_string(),
+                        PresentationFact::Text("critical hit".to_string()),
+                    ),
+                ]),
+            },
+        };
+        assert!(round_trips(&spawn));
+
+        let overlay = ServerPresentationMessage {
+            payload: ServerPresentationPayload::OverlayFact {
+                enemy_id: NetworkId(77),
+                health_fraction: 0.25,
+                shield_fraction: 0.5,
+                has_shield: true,
+                alive: true,
+            },
+        };
+        assert!(round_trips(&overlay));
     }
 
     #[test]

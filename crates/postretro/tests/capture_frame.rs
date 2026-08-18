@@ -74,3 +74,204 @@ fn hdr_capture_writes_png_at_requested_dimensions() {
         "capture output dimensions must match the scene request",
     );
 }
+
+// Manual A/B gate for specular-shadowmask occlusion. The source fixture exists
+// only on this branch, so bake it once and hand the exact PRL plus its material
+// cache to both binaries through a shared standard dev-layout artifact tree:
+//
+// ```sh
+// BRANCH_WT=/absolute/path/to/specular-branch
+// MAIN_WT=/absolute/path/to/clean-main-worktree
+// BASELINE_REV=main
+// HANDOFF_DIR="$(mktemp -d)"
+// git -C "$BRANCH_WT" worktree add --detach "$MAIN_WT" "$BASELINE_REV"
+// mkdir -p "$HANDOFF_DIR/content/dev/maps" "$HANDOFF_DIR/baked/materials"
+// (
+//   cd "$BRANCH_WT"
+//   cargo run --quiet -p postretro-level-compiler --bin prl-build -- \
+//     content/dev/maps/specular-shadowmask-capture.map \
+//     -o "$HANDOFF_DIR/content/dev/maps/specular-shadowmask-capture.prl" \
+//     --no-tui
+// )
+// cp -R "$BRANCH_WT/baked/materials/." "$HANDOFF_DIR/baked/materials/"
+// cat > "$HANDOFF_DIR/scene.json" <<EOF
+// {
+//   "map": "$HANDOFF_DIR/content/dev/maps/specular-shadowmask-capture.prl",
+//   "camera": {
+//     "position": [-4.064, 4.064, -1.626],
+//     "yaw_deg": 45.0,
+//     "pitch_deg": 5.0,
+//     "fov_deg": 80.0
+//   },
+//   "resolution": [64, 48],
+//   "output": "$HANDOFF_DIR/capture.png"
+// }
+// EOF
+// (cd "$MAIN_WT" && cargo build -p postretro --features capture)
+// (cd "$BRANCH_WT" && cargo build -p postretro --features capture)
+// "$MAIN_WT/target/debug/postretro" --capture "$HANDOFF_DIR/scene.json"
+// mv "$HANDOFF_DIR/capture.png" "$HANDOFF_DIR/baseline.png"
+// POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE=1 \
+//   "$BRANCH_WT/target/debug/postretro" --capture "$HANDOFF_DIR/scene.json"
+// mv "$HANDOFF_DIR/capture.png" "$HANDOFF_DIR/forced.png"
+// cmp "$HANDOFF_DIR/baseline.png" "$HANDOFF_DIR/forced.png"
+// "$BRANCH_WT/target/debug/postretro" --capture "$HANDOFF_DIR/scene.json"
+// mv "$HANDOFF_DIR/capture.png" "$HANDOFF_DIR/occluded.png"
+// ```
+//
+// Run both binaries on the same GPU adapter. The PRL path deliberately remains
+// under `<handoff>/content/dev/maps`: capture derives `<handoff>/baked/materials`
+// from that layout, so both binaries load the copied specular material instead
+// of the black placeholder. A successful `cmp` proves byte identity without
+// requiring pre-change main to contain this test or source map. In
+// `occluded.png`, the blocker shadow on the north-wall grazing highlight must
+// visibly darken relative to `forced.png`. No golden is committed because
+// adapter rounding makes rendered output unsuitable for default CI.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
+fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {
+    let workspace = workspace_root();
+    let source_map = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        source_map.is_file(),
+        "capture source map missing: {}",
+        source_map.display()
+    );
+
+    // Keep the compiled PRL directly under content/dev/maps. Capture derives
+    // content/dev, then <workspace>/baked/materials, from this standard layout.
+    // Compiling into the generic temp directory makes that derivation point at
+    // the wrong tree and silently replaces the material's specular slot with
+    // the black placeholder.
+    let map_guard = tempfile::Builder::new()
+        .prefix(".specular-shadowmask-capture-")
+        .suffix(".prl")
+        .tempfile_in(workspace.join("content/dev/maps"))
+        .expect("reserve capture PRL path in content/dev/maps")
+        .into_temp_path();
+    let map = map_guard.to_path_buf();
+    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&source_map)
+        .arg("-o")
+        .arg(&map)
+        .arg("--no-tui")
+        .current_dir(&workspace)
+        .output()
+        .expect("launch prl-build");
+    assert!(
+        compile.status.success(),
+        "specular-shadowmask capture map compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let loaded = postretro_level_loader::load_prl(&map.to_string_lossy())
+        .expect("load compiled specular-shadowmask capture PRL");
+    assert_eq!(
+        loaded.lights.len(),
+        2,
+        "capture fixture must have two lights"
+    );
+    assert!(
+        loaded.lights[0].is_dynamic,
+        "the dynamic prefix must remain at global world.lights index zero"
+    );
+    assert!(
+        !loaded.lights[1].is_dynamic,
+        "the selected point light must follow the dynamic prefix"
+    );
+    assert_eq!(
+        loaded.entity_shadow_lights,
+        vec![1],
+        "selection indexes must target the selected static light in global world.lights space"
+    );
+    assert!(
+        loaded.shadowmask_atlas.is_some(),
+        "capture map must load a ShadowmaskAtlas section"
+    );
+
+    let material_index = loaded
+        .texture_names
+        .iter()
+        .position(|name| name == "50-free-textures/concrete_stone_021")
+        .expect("capture receiver material must remain in the compiled texture table");
+    let material_key = loaded.texture_cache_keys.keys[material_index];
+    assert_ne!(
+        material_key, [0; 32],
+        "capture receiver material must resolve to a compiled .prm bundle"
+    );
+    let prm_path = workspace.join("baked/materials").join(format!(
+        "{}.prm",
+        postretro_level_format::prm::cache_filename_for_key(&material_key)
+    ));
+    let prm_bytes = fs::read(&prm_path)
+        .unwrap_or_else(|err| panic!("read capture receiver bundle {}: {err}", prm_path.display()));
+    let (header, slots) = postretro_level_format::prm::PrmFile::from_bytes_partial(&prm_bytes);
+    header.expect("capture receiver .prm header must be valid");
+    let specular = slots
+        .into_iter()
+        .nth(1)
+        .expect("capture receiver .prm slot table must include specular index")
+        .expect("capture receiver .prm must carry a specular slot");
+    assert_eq!(
+        specular.format,
+        postretro_level_format::prm::PrmFormat::R8Unorm,
+        "capture receiver specular slot must use the runtime R8 format"
+    );
+    assert!(
+        specular.payload.iter().any(|&value| value != 0),
+        "capture receiver specular payload must contain non-black texels"
+    );
+
+    let temp = tempfile::tempdir().expect("create isolated capture directory");
+    let scene_path = temp.path().join("scene.json");
+    let output_path = temp.path().join("capture.png");
+    let scene = serde_json::json!({
+        "map": map.display().to_string(),
+        "camera": {
+            // Quake (64, 160, 160) translated to engine axes, looking across
+            // the north-wall receiver at a grazing angle around the blocker.
+            "position": [-4.064, 4.064, -1.626],
+            "yaw_deg": 45.0,
+            "pitch_deg": 5.0,
+            "fov_deg": 80.0
+        },
+        "resolution": [CAPTURE_WIDTH, CAPTURE_HEIGHT],
+        "output": output_path.display().to_string()
+    });
+    fs::write(
+        &scene_path,
+        serde_json::to_vec_pretty(&scene).expect("serialize capture scene"),
+    )
+    .expect("write capture scene");
+
+    let result = Command::new(env!("CARGO_BIN_EXE_postretro"))
+        .arg("--capture")
+        .arg(&scene_path)
+        .current_dir(&workspace)
+        .output()
+        .expect("launch postretro capture");
+    assert!(
+        result.status.success(),
+        "capture failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let image = image::ImageReader::open(&output_path)
+        .expect("open capture PNG")
+        .with_guessed_format()
+        .expect("detect capture image format")
+        .decode()
+        .expect("decode capture PNG");
+    assert_eq!(image.dimensions(), (CAPTURE_WIDTH, CAPTURE_HEIGHT));
+}

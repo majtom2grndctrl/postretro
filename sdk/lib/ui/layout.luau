@@ -22,7 +22,8 @@ export type WidgetColor = { number } | ColorToken
 --- A spacing slot (gap/padding): an inline logical-px number or a spacing token.
 export type WidgetSpacing = number | SpacingToken
 
-export type Predicate = { slot: string?, ["local"]: string?, equals: any? }
+--- `fact` is legal only when the container belongs to a presentation template.
+export type Predicate = { slot: string?, ["local"]: string?, fact: string?, equals: any? }
 export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"
 
 --- A flat descriptor table a container factory produces.
@@ -229,9 +230,12 @@ local function buildPredicate(value: any, field: string, factory: string): any?
   if value.slot ~= nil then
     requireNonemptyString(value.slot, `{field}.slot`, factory)
     out = { slot = value.slot }
-  else
+  elseif value["local"] ~= nil then
     requireNonemptyString(value["local"], `{field}.local`, factory)
     out = { ["local"] = value["local"] }
+  else
+    requireNonemptyString(value.fact, `{field}.fact`, factory)
+    out = { fact = value.fact }
   end
   if value.equals ~= nil then
     local e = value.equals

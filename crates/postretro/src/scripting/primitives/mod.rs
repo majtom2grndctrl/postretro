@@ -377,19 +377,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_enum("ActionVerb")
+        .register_type("ActionVerb")
         .doc("What a behavior-graph state does besides moving. Omit the key for a state that takes no action.")
-        .variant(
-            "attack",
-            "Cooldown-gated contact damage using the graph's `attack` block, which becomes required.",
-        )
+        .field("attack", "String", "Name of the graph-wide contact attack this state fires.")
         .finish();
     registry
         .register_type("AttackParams")
-        .doc("Attack tuning consumed by the `attack` action verb. Required exactly when some state declares that action.")
+        .doc("Tuning for one named contact attack in `BehaviorGraphDescriptor.attacks`.")
         .field("damage", "f32", "Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).")
-        .field("range", "f32", "Distance within which the attack lands, in metres. Must be finite and > 0.")
+        .field("maxRange", "f32", "Maximum distance within which the attack lands, in metres. Must be finite and > 0.")
         .field("cooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
+        .field("engagementRadius?", "f32", "Optional combat-slot standoff for a state firing this attack. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.")
         .finish();
     registry
         .register_enum("PatrolMode")
@@ -417,7 +415,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("One authored graph state: the animation it requests, what it does with motion and actions, and its ordered outgoing transitions.")
         .field("animation", "String", "Mesh animation-state name requested while this state is current. Must name a state declared in `components.mesh.animations`; resolved at spawn, where an unknown name warns and the prior animation is kept.")
         .field("motion", "MotionVerb", "What this state does with steering.")
-        .field("action?", "ActionVerb", "Optional action performed while this state is current. `\"attack\"` requires the graph's `attack` block. Must be omitted when `motion` is `\"moveToAnchor\"` or `\"patrol\"`; position goals are non-engaged.")
+        .field("action?", "ActionVerb", "Optional action performed while this state is current. `{ attack: \"name\" }` must name an entry in the graph's `attacks` map. Must be omitted when `motion` is `\"moveToAnchor\"` or `\"patrol\"`; position goals are non-engaged.")
         .field("transitions?", "Vec<TransitionDescriptor>", "State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.")
         .field("onEnter?", "String", "Optional named-event address fired through the post-tick drain when a transition changes the brain into this state. Initial spawn does not fire it.")
         .finish();
@@ -429,9 +427,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any state uses `\"patrol\"` motion.")
-        .field("attack?", "AttackParams", "Attack tuning for the `attack` action verb. Required exactly when some state declares that action.")
+        .field("attacks?", "BehaviorAttacks", "Named contact-attack vocabulary. A state action `{ attack: \"name\" }` must name one of these entries; omit for an attackless graph.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.")
-        .field("engagementRadius?", "f32", "Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.")
+        .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

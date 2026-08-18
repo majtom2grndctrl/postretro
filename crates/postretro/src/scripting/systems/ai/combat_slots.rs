@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 
-use super::EnemyOutcome;
+use super::{EnemyOutcome, graph_eval::state_at};
 use crate::collision::CollisionWorld;
 use crate::combat_positioning::{
     CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
@@ -60,7 +60,9 @@ pub(super) fn resolve_combat_slots(
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
             agent_pos: outcome.position,
-            engagement_radius: outcome.brain.graph.engagement_radius(),
+            engagement_radius: state_at(&outcome.brain.graph, outcome.brain.state_index)
+                .map(|state| outcome.brain.graph.engagement_radius_for_state(state))
+                .unwrap_or_else(|| outcome.brain.graph.engagement_radius()),
             target_pos: target.position,
             combat_slot: retained_slot,
             scan_challengers: retained_slot.is_none(),
@@ -106,12 +108,38 @@ fn clear_combat_slot(outcome: &mut EnemyOutcome) {
 
 /// The slot this enemy may re-present as an incumbent: the one it held while
 /// already engaged with this same target, and only while its hold window is
-/// open. Both slot fields are still the prior tick's here.
+/// open. A state transition also has to preserve the effective standoff;
+/// otherwise an old long-reach slot can strand a newly committed short-reach
+/// attack outside its reach for the rest of the hold window. A replacement
+/// graph always invalidates the incumbent because its state semantics may have
+/// changed even when its resolved index or standoff bits did not. Both slot
+/// fields are still the prior tick's here.
 fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
     let target = outcome.target?;
     (outcome.engaged
         && outcome.prior_acquired_target == Some(target.entity)
+        && !outcome.graph_reseated
+        && retained_standoff_matches_committed_state(outcome)
         && outcome.brain.combat_slot_hold_ticks > 0)
         .then_some(outcome.brain.combat_slot)
         .flatten()
+}
+
+fn retained_standoff_matches_committed_state(outcome: &EnemyOutcome) -> bool {
+    if !outcome.state_changed {
+        return true;
+    }
+
+    let graph = &outcome.brain.graph;
+    let Some(prior) = state_at(graph, outcome.prior_state_index)
+        .map(|state| graph.engagement_radius_for_state(state).to_bits())
+    else {
+        return false;
+    };
+    let Some(committed) = state_at(graph, outcome.brain.state_index)
+        .map(|state| graph.engagement_radius_for_state(state).to_bits())
+    else {
+        return false;
+    };
+    prior == committed
 }

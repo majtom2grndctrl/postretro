@@ -107,6 +107,20 @@ pub(crate) struct Session {
     /// NEVER the authoritative store. See: context/lib/ui.md §3/§6.
     pub(crate) presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
+    /// App-side transient presentation lifetime owner. It drains the registry
+    /// intake during Render and emits CPU draw data; renderer state stays out of
+    /// this session-owned bridge.
+    pub(crate) presentation_pool: crate::presentation_pool::PresentationPool,
+
+    /// Client-only terminal guards for unordered enemy-overlay facts. This is
+    /// separate from the pool because a removed overlay must still remember its
+    /// terminal `NetworkId` until the reorder horizon has elapsed.
+    pub(crate) client_overlay_facts: crate::netcode::ClientOverlayFactState,
+    /// Host-only recipient and change bookkeeping for remote damaged-enemy
+    /// overlay facts. Kept outside the registry so it cannot leak EntityIds onto
+    /// the wire or affect the host-owned local overlay.
+    pub(crate) host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker,
+
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
 
@@ -496,6 +510,9 @@ impl Session {
             font_system: postretro_ui::text::build_font_system(),
             scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
+            presentation_pool: crate::presentation_pool::PresentationPool::default(),
+            client_overlay_facts: crate::netcode::ClientOverlayFactState::default(),
+            host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker::default(),
             state_store_lifecycle: StateStoreLifecycle::default(),
             per_owner_save_timer: PerOwnerSaveTimer::default(),
             persisted_state: None,
@@ -821,7 +838,7 @@ impl ScriptingCore {
             .script_runtime
             .committed_mod_identity()
             .map(|(id, _)| id.to_string());
-        let events = {
+        let (events, presentation_templates, presentation_overlays) = {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
             };
@@ -841,10 +858,36 @@ impl ScriptingCore {
             data_registry
                 .replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
             data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
-            std::mem::take(&mut manifest.events)
+            (
+                std::mem::take(&mut manifest.events),
+                std::mem::take(&mut manifest.presentation_templates),
+                std::mem::take(&mut manifest.presentation_overlays),
+            )
         };
         self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
+        self.impact_policy_runtime
+            .replace_presentation_templates(presentation_templates);
+        self.impact_policy_runtime
+            .replace_presentation_overlays(presentation_overlays);
+    }
+
+    /// Renderer-facing copy of the committed passive template registry. The
+    /// policy runtime resolves spawn handles while the renderer independently
+    /// owns widget layout, so callers only transfer this VM-free snapshot.
+    pub(crate) fn presentation_templates(
+        &self,
+    ) -> Vec<postretro_scripting_core::data_descriptors::PresentationTemplate> {
+        self.impact_policy_runtime.presentation_templates()
+    }
+
+    pub(crate) fn presentation_template_registry(
+        &self,
+    ) -> &std::collections::HashMap<
+        String,
+        postretro_scripting_core::data_descriptors::PresentationTemplate,
+    > {
+        self.impact_policy_runtime.presentation_template_registry()
     }
 }
 

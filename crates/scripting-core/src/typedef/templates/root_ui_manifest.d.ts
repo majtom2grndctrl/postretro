@@ -28,3 +28,29 @@
     accessibleName?: string;
     role?: WidgetRole;
   };
+  /** Motion easing used by passive world-anchored presentation templates. */
+  export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  /** VM-free passive template resolved by the impact and renderer registries. */
+  export type PresentationTemplate = {
+    id: string;
+    root: WidgetDescriptor;
+    lifetimeMs: number;
+    motion: { rise: number; easing: PresentationEasing };
+    fade: { startMs: number };
+    spawnScatter: { radius: number };
+    /** Overlay-only authored socket and vertical world offset. */
+    worldAnchor?: { socket: string; offsetY: number };
+  };
+  /** Recently damaged target source. Shield values remain raw IR expressions. */
+  export type DamagedEnemiesOverlay = {
+    kind: "damagedEnemies";
+    lingerMs: number;
+    hideAtFull: boolean;
+    shield?: { value: RuntimeValue; max: RuntimeValue };
+  };
+  /** Passive target-keyed overlay declaration consumed only by the host. */
+  export type PresentationOverlay = {
+    over: DamagedEnemiesOverlay;
+    template: string;
+    maxVisible: number;
+  };

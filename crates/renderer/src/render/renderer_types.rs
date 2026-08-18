@@ -567,6 +567,10 @@ pub(super) struct FullRenderer {
     /// forward pass uses that frame. The scripted-light animated curves the mesh
     /// dynamic loop evaluates depend on this phase coherence.
     pub(super) mesh_dynamic_time: f32,
+    /// Captured alongside the group-0 uniform at the start of the render
+    /// frame. Consumers must use this, never the UI-mutated live mask, so a
+    /// toggle takes effect atomically on the following frame.
+    pub(super) frame_light_term_mask: LightTermMask,
     /// Camera-PVS-visible kinematic mover instances for the beauty pass.
     pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
     /// Every present kinematic mover transform, including camera-PVS-culled
@@ -809,15 +813,12 @@ pub(super) struct FullRenderer {
     #[cfg(feature = "dev-tools")]
     pub(super) show_navmesh: bool,
 
-    pub(super) lighting_isolation: LightingIsolation,
+    /// Live dev-tools value. `update_per_frame_uniforms` snapshots it into
+    /// `frame_light_term_mask` before scene recording begins.
+    pub(super) light_term_mask: LightTermMask,
 
-    /// DYNAMIC baked-static-direct SH isolation (combined / direct-only /
-    /// indirect-only). Separate from `lighting_isolation` (the forward/static
-    /// control), so the dynamic-vs-static parity comparison stays valid.
-    pub(super) dynamic_direct_isolation: DynamicDirectIsolation,
-
-    /// Debug selector for the SDF static-occluder shadow path. Mirrors
-    /// `lighting_isolation` — panel-only dropdown, surfaces through
+    /// Debug selector for the SDF static-occluder shadow path. Panel-only
+    /// dropdown, surfaces through
     /// `FrameUniforms.sdf_shadow_mode`.
     pub(super) sdf_shadow_mode: SdfShadowMode,
 
@@ -827,6 +828,13 @@ pub(super) struct FullRenderer {
     /// pre-change render). Seeded from the `POSTRETRO_SDF_FORCE_VISIBILITY_ONE`
     /// env flag at construction so a headless/no-UI run can exercise it too.
     pub(super) sdf_force_visibility_one: bool,
+
+    /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
+    /// forward world-specular path. Panel checkbox; surfaces through
+    /// `FrameUniforms.spec_shadowmask_force_one`. Seeded from
+    /// `POSTRETRO_SPEC_SHADOWMASK_FORCE_ONE` for repeatable headless A/B
+    /// captures. SDF and dynamic/mover paths remain unaffected.
+    pub(super) spec_shadowmask_force_one: bool,
 
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     pub(super) vsync_enabled: bool,
@@ -940,6 +948,12 @@ pub(super) struct FullRenderer {
     /// just before each render call; read when the UI pass records. Stored here so
     /// both render signatures stay stable.
     pub(super) ui_snapshot: ui::UiReadSnapshot,
+
+    /// Frame-local passive presentation instances from the app-side pool. The
+    /// renderer lowers them through its FontSystem-owned template path; they are
+    /// deliberately separate from the retained UI snapshot and carry no focus,
+    /// hit-test, or input state.
+    pub(super) presentation_inputs: Vec<PresentationDrawInput>,
 
     /// Active UI theme: the token table every descriptor tree resolves its
     /// color/spacing/font slots against at build time. Defaults to

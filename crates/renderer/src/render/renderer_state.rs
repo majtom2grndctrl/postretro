@@ -1,4 +1,4 @@
-// Renderer state accessors and toggles: lighting/SDF isolation modes, freeze,
+// Renderer state accessors and toggles: lighting/SDF diagnostics, freeze,
 // vsync, occluder counters, and the diagnostics slider getters/setters.
 // See: context/lib/rendering_pipeline.md
 
@@ -42,21 +42,6 @@ impl Renderer {
         }
     }
 
-    /// Direct setter used by the debug-panel dropdown. Logs only on actual
-    /// transition so spam-clicks on the current mode stay quiet.
-    #[cfg(feature = "dev-tools")]
-    pub fn set_lighting_isolation(&mut self, mode: LightingIsolation) {
-        if self.full().lighting_isolation != mode {
-            self.full_mut().lighting_isolation = mode;
-            log::info!("[Renderer] Lighting isolation: {}", mode.label());
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    pub fn lighting_isolation(&self) -> LightingIsolation {
-        self.full().lighting_isolation
-    }
-
     /// Direct setter for the `SdfShadowMode`; used by the debug-panel dropdown.
     /// Logs only on transition so spam clicks on the current mode stay quiet.
     #[cfg(feature = "dev-tools")]
@@ -86,6 +71,21 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn sdf_force_visibility_one(&self) -> bool {
         self.full().sdf_force_visibility_one
+    }
+
+    /// Dev toggle (panel checkbox): force static-light shadowmask visibility
+    /// to 1.0 in the forward world-specular path for a pre-change visual A/B.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_spec_shadowmask_force_one(&mut self, force: bool) {
+        if self.full().spec_shadowmask_force_one != force {
+            self.full_mut().spec_shadowmask_force_one = force;
+            log::info!("[Renderer] Specular shadowmask force visibility 1.0: {force}");
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn spec_shadowmask_force_one(&self) -> bool {
+        self.full().spec_shadowmask_force_one
     }
 
     #[cfg(feature = "dev-tools")]
@@ -215,17 +215,6 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_dynamic_direct_scale(&mut self, value: f32) {
         self.full_mut().dynamic_direct_scale = value.clamp(0.0, 1.0);
-    }
-
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn dynamic_direct_isolation(&self) -> DynamicDirectIsolation {
-        self.full().dynamic_direct_isolation
-    }
-
-    /// Takes effect on the next `update_per_frame_uniforms` upload.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn set_dynamic_direct_isolation(&mut self, mode: DynamicDirectIsolation) {
-        self.full_mut().dynamic_direct_isolation = mode;
     }
 
     #[cfg(feature = "dev-tools")]

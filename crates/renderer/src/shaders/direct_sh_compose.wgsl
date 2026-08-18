@@ -29,6 +29,15 @@ struct DebugOverride {
     _pad4: f32,
 };
 
+// Private Pass-A input. Its mask mirrors group-0's FrameUniforms snapshot
+// because this compose pipeline has an independent bind-group layout.
+struct DirectComposeParams {
+    light_term_mask: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
 @group(0) @binding(0) var direct_base_atlas: texture_2d_array<f32>;
 // Non-filtering (nearest) sampler. The base atlas is BC6H block-compressed at
 // rest; Metal disallows textureLoad (lowered to `.read()`) on compressed formats,
@@ -46,8 +55,11 @@ struct DebugOverride {
 // post-drop CSR entry. This direct pass has no base probe-indirection binding,
 // so the descriptor is also its required invalid-local read guard.
 @group(0) @binding(28) var<storage, read> delta_compaction_meta: array<u32>;
+@group(0) @binding(29) var<uniform> direct_compose_params: DirectComposeParams;
 
 const AFFINITY_FACTOR: u32 = 4u;
+const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
+const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
 // PRL validation pins the runtime tile dimension to 6. Keeping the shared
 // lattice fixed-size makes one brick workgroup fit well below the 16 KiB
 // WebGPU workgroup-storage floor.
@@ -213,6 +225,13 @@ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32>
 }
 
 fn selection_weight(selection_index: u32) -> f32 {
+    // Promoted static transport is removed only while both the baked-static
+    // source and its runtime direct counterpart are present. Otherwise the
+    // static-direct view either retains the full base or stays exactly zero.
+    let required_terms = LIGHT_TERM_BAKED_DIRECT_STATIC | LIGHT_TERM_DYNAMIC_DIRECT;
+    if ((direct_compose_params.light_term_mask & required_terms) != required_terms) {
+        return 0.0;
+    }
     if (debug_override.enabled != 0u) {
         if (selection_index == debug_override.selection_index) {
             return clamp(debug_override.weight, 0.0, 1.0);
@@ -241,13 +260,16 @@ fn compose_main(
     let in_grid = !any(probe >= grid.grid_dimensions);
     let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);
     let tile_origin = atlas_tile_origin(probe);
+    let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
+    let use_dynamic_direct = (direct_compose_params.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
+    let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;
 
     // Keeping the accumulator private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
     // geometry is fixed at 6×6 by PRL validation.
     var accum: array<vec4<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
-        if (in_grid) {
+        if (in_grid && use_baked_direct_static) {
             let tile_texel = vec2<u32>(
                 texel_index % RUNTIME_TILE_DIMENSION,
                 texel_index / RUNTIME_TILE_DIMENSION,
@@ -274,7 +296,7 @@ fn compose_main(
     if (level == 0u) {
         // Dense L0 has no dropped probes, so keep its direct compact-payload
         // reads and do not spend shared memory loading 64 tiles.
-        if (output_is_valid) {
+        if (output_is_valid && use_promotion_subtraction) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let w = selection_weight(affinity_lights[entry]);
@@ -297,7 +319,7 @@ fn compose_main(
                 }
             }
         }
-    } else {
+    } else if (use_promotion_subtraction) {
         // Coarsened L1/L2 cells load only their kept lattice into workgroup
         // memory. A load happens once per (brick, CSR entry, tile texel), then
         // every dropped-valid output probe reconstructs from those values.

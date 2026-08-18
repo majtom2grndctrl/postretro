@@ -521,7 +521,9 @@ defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attack: { damage: 8, range: 2, cooldownMs: 1200 },
+      attacks: {
+        swing: { damage: 8, maxRange: 2, cooldownMs: 1200 },
+      },
       engagementRadius: 2,
       // Eligibility is checked only for candidates the engine offers. This
       // graph will not newly acquire corpses or candidates beyond 50 metres.
@@ -555,7 +557,7 @@ defineEntity({
         swing: {
           animation: "swing",
           motion: "chaseTarget",
-          action: "attack",
+          action: { attack: "swing" },
           transitions: [
             { to: "chase", when: runtime.gt(brain.targetDistance, 2) },
           ],
@@ -575,8 +577,8 @@ defineEntity({
 | `interrupts` | `Transition[]` (optional) | Any-state edges, evaluated in declaration order **before** the current state's own transitions. Defaults to none. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. `points` is a non-empty list of `[x, z]` metre offsets from the spawn anchor; `mode` is `"loop"` or `"pingPong"`. Required whenever a state uses `"patrol"`. The per-enemy cursor persists when the graph leaves and re-enters patrol. |
-| `attack` | `{ damage, range, cooldownMs }` (optional) | Tuning for the `attack` action verb. **Required** whenever any state declares `action: "attack"`. Permitted even when none does, because `attack.range` is what `engagementRadius` falls back to. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `range` and `cooldownMs` must be finite and `> 0`. |
-| `engagementRadius` | `number` (optional) | Radius in metres of the ring of combat slots the engine spreads engaged agents around their target. Finite and `> 0`. See *`attack.range` vs `engagementRadius`* below. |
+| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius? } }` (optional) | Named attack vocabulary. A state with `action: { attack: "name" }` must name an entry here; unreferenced entries are allowed. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `maxRange` and `cooldownMs` must be finite and `> 0`. An entry's optional `engagementRadius` must be finite, `> 0`, and no greater than its `maxRange`. |
+| `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack states. Finite and `> 0`. An attack state uses its named entry's `engagementRadius`, or that entry's `maxRange` when omitted. See *`maxRange` vs `engagementRadius`* below. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
 Each entry in `states`:
@@ -585,7 +587,7 @@ Each entry in `states`:
 |-------|------|-------------|
 | `animation` | `string` | Non-empty. Names a key of `components.mesh.animations`. That link is checked at **spawn**, not at load (it is cross-component): an unknown name warns once and keeps the previous animation — it never aborts the spawn. |
 | `motion` | `"chaseTarget" \| "moveToAnchor" \| "patrol" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
-| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are always non-engaged. |
+| `action` | `{ attack: string }` (optional) | What the state does besides moving. The name must select an entry in graph-wide `attacks`. Omit for a state that takes no action. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are always non-engaged. |
 | `transitions` | `Transition[]` (optional) | State-local edges, evaluated in declaration order after the graph's interrupts. Omit for a state with no exits. |
 | `onEnter` | `string` (optional) | A named-event address fired through the post-tick event drain when the brain **changes into** this state. It is a *change*, not an entry: the brain is seeded directly in `initial` at spawn with no transition, so an `onEnter` on `initial` does **not** fire then. It does fire when the aggro gate forces the brain back to `initial` from somewhere else. Use it for reaction cues, not spawn-time setup. |
 
@@ -602,10 +604,10 @@ index:
 | A `transitions[].to` or `interrupts[].to` names no declared state | Rejected, with the path. |
 | A state's `animation` is an empty string | Rejected. |
 | A **state-local** transition whose `to` is the state that declares it | Rejected — see *Evaluation rules*. |
-| A state declares `action: "attack"` with no `attack` block on the graph | Rejected. |
+| A state declares `action: { attack: "name" }` with no `attacks` entry named `name` | Rejected. |
 | A `moveToAnchor` or `patrol` state declares any `action` | Rejected, with the state's `action` and `motion` paths. Position goals are non-engaged. |
 | A state selects `motion: "patrol"` without a `patrol` block, with no points, or with a non-finite point component | Rejected, with the `patrol` path. |
-| `moveSpeed`, `engagementRadius`, `attack.range`, `attack.cooldownMs` not finite and `> 0`; `attack.damage` not finite and `>= 0` | Rejected. |
+| `moveSpeed`, graph `engagementRadius`, or an attack entry's `maxRange`, `cooldownMs`, or present `engagementRadius` is not finite and `> 0`; an entry's `engagementRadius` exceeds `maxRange`; or `damage` is not finite and `>= 0` | Rejected. |
 | A guard that names an unknown input, mismatches operand types, or whose root produces a number rather than a boolean | Rejected, with the path. |
 | An unknown key anywhere in the block, or a duplicate state name | Rejected. |
 
@@ -641,16 +643,17 @@ leaves a position-goal state on arrival, its distance threshold must be **at
 least** that engine epsilon. A smaller threshold wedges: steering has already
 cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
 
-Action verbs are likewise closed; `"attack"` is the only one today. It applies
-`attack.damage` to the selected target through the engine's damage chokepoint —
-once per `attack.cooldownMs`, only while the target is inside `attack.range`, and
-only while it is still alive. A graph with no `attack` block never attacks.
+Action verbs are likewise closed; `{ attack: "name" }` is the only one today.
+It applies the named entry's `damage` to the selected target through the engine's
+damage chokepoint — once per that entry's `cooldownMs`, only while the target is
+inside its `maxRange`, and only while it is still alive. A graph with no
+`attacks` entries never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is
 `motion: "chaseTarget"` **or** any action on a non-position-goal state. Target
 retention across ticks, combat-slot participation and incumbency, and target
-facing all key on it. A `hold` + `attack` state stands its ground and swings, so
-it keeps its target, keeps its slot, and turns to face what it is hitting.
+facing all key on it. A `hold` + named attack state stands its ground and swings,
+so it keeps its target, keeps its slot, and turns to face what it is hitting.
 
 **Animation.** A state plays its own `animation` name, with one substitution: an
 *locomotion* state (actionless `chaseTarget`, or the always-actionless
@@ -722,7 +725,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
 | `brain.timeInStateMs` | `@brain.timeInStateMs` | `number` | Milliseconds since the brain entered its current state. Resets on every state change. |
-| `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the attack cooldown; `0` once elapsed. |
+| `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the **current state's** named attack cooldown; `0` for a non-attack state or once that entry has elapsed. Each named cooldown advances every tick, including while another attack is current or the aggro gate is closed. |
 | `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
 | `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
 | `brain.maxHealth` | `@brain.maxHealth` | `number` | The enemy's maximum hit points. |
@@ -840,35 +843,35 @@ inherits the pathfinder's freestanding-wall wraparound false-negative until the
 pursuit repair lands; do not treat it as a ground-truth visibility or geometry
 oracle.
 
-### `attack.range` vs `engagementRadius`
+### `maxRange` vs `engagementRadius`
 
 Two separate knobs that are easy to conflate:
 
-- **`attack.range` gates damage.** It is the distance within which the `attack`
-  action verb actually lands a hit, checked every tick. A state may declare the
-  action at any distance; this is what stops it connecting from across the room.
+- **An attack entry's `maxRange` gates damage.** It is the distance within which
+  a state selecting that entry actually lands a hit, checked every tick. A state
+  may select an attack at any distance; this is what stops it connecting from
+  across the room.
 - **`engagementRadius` sets combat spacing.** It is the radius of the ring of
   combat slots the engine spreads engaged agents around their target — where
-  chasers *stand*. It applies to **every** engaged state, attacking or not.
+  chasers *stand*. A named attack state uses its entry's `engagementRadius`, or
+  its `maxRange` when that field is omitted. Non-attack states use the graph-wide
+  `engagementRadius`.
 
-`engagementRadius` resolves as: the authored field, else `attack.range`, else the
-engine default of **2 m**. A pure-pursuit graph (`chaseTarget`, no `action`, no
-`attack` block) therefore gets the default rather than a radius of zero — which
+For a non-attack state, `engagementRadius` resolves as the graph-wide authored
+field, else the engine default of **2 m**. A pure-pursuit graph (`chaseTarget`,
+no `action`) therefore gets the default rather than a radius of zero — which
 would generate no slots at all and pile every chaser onto the target. If your
-pursuers should crowd tighter or hang back, author `engagementRadius` outright.
+pursuers should crowd tighter or hang back, author the graph-wide
+`engagementRadius` outright.
 
-Author it explicitly even when it equals `attack.range`: they are separate knobs,
-and a graph that later retunes its swing reach should not silently re-space its
-pack.
+An attack entry's `engagementRadius` defaults to its own `maxRange`. Author it
+explicitly when its desired standoff differs from its damage reach. Graph-wide
+and attack-specific standoff are separate knobs, so retuning one named attack
+does not re-space non-attack states or other attacks.
 
-### Recommended future attack-map grammar
-
-The currently shipped grammar is the singular `attack` block and
-`action: "attack"` shown above. The planned multi-attack surface should replace
-that with a named map — `attacks: Record<string, AttackParams>` — and an action
-reference such as `action: { attack: "melee" }`. Treat this as coordination
-guidance for future descriptors, not syntax accepted by the current runtime:
-there should be no privileged singular fallback once the named map lands.
+Each named cooldown is independent. Switching states never resets another
+attack's timer, so a graph can alternate attacks without bypassing their
+individual `cooldownMs` values.
 
 ### The level-wide pursuer
 
@@ -963,7 +966,9 @@ defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attack: { damage: 14, range: REACH, cooldownMs: 1400 },
+      attacks: {
+        slam: { damage: 14, maxRange: REACH, cooldownMs: 1400 },
+      },
       engagementRadius: REACH,
       interrupts: [
         // Stand down the instant the target is gone — declared first so it
@@ -999,7 +1004,7 @@ defineEntity({
         slam: {
           animation: "swing",
           motion: "chaseTarget",
-          action: "attack",
+          action: { attack: "slam" },
           transitions: [
             { to: "chase", when: runtime.gt(brain.targetDistance, REACH) },
           ],

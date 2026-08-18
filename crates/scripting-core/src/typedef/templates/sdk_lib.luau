@@ -378,6 +378,7 @@ export type RuntimeExpressionRefs = {
 type ImpactEffectWire =
   { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "present", target: "@impact.target", args: { template: string, value: any } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
@@ -421,6 +422,48 @@ export type ImpactEvent = {
   isOverride: boolean,
   levels: {string}?,
   override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
+--- Passive renderer-owned template data returned through ModManifest only.
+export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
+export type PresentationTemplate = {
+  id: string,
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
+}
+export type PresentationTemplateProps = {
+  root: { [string]: any },
+  lifetimeMs: number,
+  motion: { rise: number, easing: PresentationEasing },
+  fade: { startMs: number },
+  spawnScatter: { radius: number },
+  worldAnchor: { socket: string, offsetY: number }?,
+}
+export type OverlayEntity = {
+  state: (self: OverlayEntity, name: string) -> RuntimeValue,
+}
+export type DamagedEnemiesProps = {
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: {
+    value: (entity: OverlayEntity) -> RuntimeValue,
+    max: (entity: OverlayEntity) -> RuntimeValue,
+  }?,
+}
+export type DamagedEnemiesSource = {
+  kind: "damagedEnemies",
+  lingerMs: number,
+  hideAtFull: boolean,
+  shield: { value: RuntimeValue, max: RuntimeValue }?,
+}
+export type PresentationOverlay = {
+  over: DamagedEnemiesSource,
+  template: string,
+  maxVisible: number,
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -542,7 +585,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
---- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`.
+--- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
+--- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
@@ -746,6 +790,8 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
+  presentationTemplates: {PresentationTemplate}?,
+  presentationOverlays: PresentationOverlay?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   maps: {ModMapEntry}?,
@@ -874,13 +920,15 @@ export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {numb
 --- `ui.createLocalState(...).cells.<name>:get()`. It resolves inside the nearest
 --- declaring `localState` scope, not the engine state store.
 export type LocalBindRef = { ["local"]: string }
+--- A producer-stamped scalar available only during passive presentation layout.
+export type FactBindRef = { fact: string }
 --- A scalar comparand for UI visibility/selection predicates: number, boolean,
 --- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
---- A reactive condition used by `visibleWhen`, `selected`, and `checked`: read
---- either an engine state ref or presentation-local cell and compare it to
---- `equals` when provided.
-export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef) & { equals: PredicateValue? }
+--- A reactive condition used by `visibleWhen`, `selected`, and `checked`.
+--- Stamped facts are accepted only inside `definePresentationTemplate`; ordinary
+--- UI trees reject them during manifest validation.
+export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
 --- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
@@ -889,10 +937,10 @@ export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" |
 --- Live-region announcement urgency. Valid values: `"polite"` (default,
 --- interrupt less) and `"assertive"` (interrupt sooner).
 export type AnnouncePriority = "polite" | "assertive"
---- State binding for a `Text` widget. The source is a readable engine state ref
---- or presentation-local cell; `format` is a one-placeholder string such as
---- `"HP {}"`; numeric sources may also tween.
-export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef) & { format: string?, tween: NumberTween? }
+--- State binding for a `Text` widget. Stamped facts are accepted only inside
+--- `definePresentationTemplate`; ordinary UI trees reject them during manifest
+--- validation. `format` is a one-placeholder string such as `"HP {}"`.
+export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef | FactBindRef) & { format: string?, tween: NumberTween? }
 --- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
 --- array; `tween` eases the displayed color and never writes back to state.
 export type PanelBindProp = (ComputedRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
@@ -958,9 +1006,10 @@ export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: 
 --- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required.
 declare function Slider(props: SliderProps): WidgetDescriptor
 
---- State binding for a readonly numeric `Bar`. The value is displayed against
---- `max`; it is not interactive and never writes state.
-export type BarBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
+--- State binding for a readonly numeric `Bar`. Stamped facts are accepted only
+--- inside `definePresentationTemplate`; ordinary UI trees reject them during
+--- manifest validation.
+export type BarBindProp = (ComputedRef<number> | LocalBindRef | FactBindRef) & { tween: NumberTween? }
 --- Bar denominator: either a literal number or a readonly numeric state ref such
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ComputedRef<number>
@@ -1171,7 +1220,7 @@ export type BrainInputs = {
   targetDistance: RuntimeRead,
   --- Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number).
   timeInStateMs: RuntimeRead,
-  --- Milliseconds left on the attack cooldown; `0` once elapsed (number).
+  --- Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number).
   attackCooldownMs: RuntimeRead,
   --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
   acquisitionDue: RuntimeRead,

@@ -694,9 +694,7 @@ fn run_after_parsing(
         placements: face_placements,
         atlas_width,
         atlas_height,
-        // Animated weight maps are single-layer; the array layer count is carried
-        // on the section / per-chart placements, not needed here.
-        layer_count: _,
+        layer_count: static_atlas_layer_count,
     } = lightmap_bake_output;
     finish_stage(
         &mut timings,
@@ -1243,6 +1241,7 @@ fn run_after_parsing(
             face_placements: &face_placements,
             atlas_width,
             atlas_height,
+            static_atlas_layer_count,
             area_sample_count: args.soft_shadow_samples,
         };
 
@@ -1270,6 +1269,7 @@ fn run_after_parsing(
             buf.extend_from_slice(&final_lightmap_density.to_le_bytes());
             buf.extend_from_slice(&atlas_width.to_le_bytes());
             buf.extend_from_slice(&atlas_height.to_le_bytes());
+            buf.extend_from_slice(&static_atlas_layer_count.to_le_bytes());
             buf.extend_from_slice(&animated_light_chunks_section.to_bytes());
             buf.extend_from_slice(&args.soft_shadow_samples.to_le_bytes());
             *blake3::hash(&buf).as_bytes()
@@ -1291,6 +1291,12 @@ fn run_after_parsing(
 
         if let Some(section) = cached_wm_section {
             log::info!("[cache] animated_lm_weight_maps hit");
+            animated_light_weight_maps::validate_animated_atlas_budget(
+                atlas_width,
+                atlas_height,
+                section.slot_to_static_layer.len() as u32,
+            )
+            .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
             animated_weight_control.publish_total(animated_light_chunks_section.chunks.len());
             // Cache-hit fast-advance on the orchestrator thread: honor pause only,
             // no permit (the parallel bake path is what needs a permit).
@@ -1302,7 +1308,8 @@ fn run_after_parsing(
             let section = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
                 &wm_inputs,
                 &animated_weight_control,
-            );
+            )
+            .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
             if let Some(ref c) = stage_cache {
                 c.put(&wm_key, &section.to_bytes());
             }

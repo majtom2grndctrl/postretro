@@ -387,16 +387,16 @@ impl<'a> UiComposition<'a> {
         let mut order = 0usize;
         for draw in layer_draws {
             if draw.paint_order.is_empty() {
-                append_legacy_draw_order(
-                    draw,
+                LegacyDrawAppend {
                     white_bind_group,
                     images,
-                    &mut batches,
-                    &mut ring_batches,
-                    &mut texts,
-                    &mut text_orders,
-                    &mut order,
-                );
+                    batches: &mut batches,
+                    ring_batches: &mut ring_batches,
+                    texts: &mut texts,
+                    text_orders: &mut text_orders,
+                    order: &mut order,
+                }
+                .append(draw);
                 continue;
             }
 
@@ -539,50 +539,58 @@ fn append_ordered_quad_batch<'a>(
     });
 }
 
-fn append_legacy_draw_order<'a>(
-    draw: &'a tree::UiDrawData,
+/// Mutable accumulation context for the coarse legacy draw-list fallback.
+/// Keeping these outputs together makes the historical grouped order explicit
+/// without widening the append operation into an eight-argument helper.
+struct LegacyDrawAppend<'a, 'out> {
     white_bind_group: &'a wgpu::BindGroup,
     images: &'a UiImageRegistry,
-    batches: &mut Vec<OrderedUiBatch<'a>>,
-    ring_batches: &mut Vec<OrderedRingBatch>,
-    texts: &mut Vec<UiText>,
-    text_orders: &mut Vec<usize>,
-    order: &mut usize,
-) {
-    if !draw.quads.is_empty() {
-        batches.push(OrderedUiBatch {
-            instances: draw.quads.instances.clone(),
-            order: *order,
-            bind_group: white_bind_group,
-            writes_depth: draw.quads.instances.iter().all(instance_writes_depth),
-        });
-        *order += 1;
-    }
-    for (asset, list) in &draw.images {
-        if list.is_empty() {
-            continue;
-        }
-        if let Some(bind_group) = images.resolve(asset) {
-            batches.push(OrderedUiBatch {
-                instances: list.instances.clone(),
-                order: *order,
-                bind_group,
-                writes_depth: false,
+    batches: &'out mut Vec<OrderedUiBatch<'a>>,
+    ring_batches: &'out mut Vec<OrderedRingBatch>,
+    texts: &'out mut Vec<UiText>,
+    text_orders: &'out mut Vec<usize>,
+    order: &'out mut usize,
+}
+
+impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
+    /// Preserve the legacy coarse order: quads, images, rings, then text.
+    fn append(&mut self, draw: &tree::UiDrawData) {
+        if !draw.quads.is_empty() {
+            self.batches.push(OrderedUiBatch {
+                instances: draw.quads.instances.clone(),
+                order: *self.order,
+                bind_group: self.white_bind_group,
+                writes_depth: draw.quads.instances.iter().all(instance_writes_depth),
             });
-            *order += 1;
+            *self.order += 1;
         }
-    }
-    if !draw.rings.is_empty() {
-        ring_batches.push(OrderedRingBatch {
-            instances: draw.rings.clone(),
-            order: *order,
-        });
-        *order += 1;
-    }
-    if !draw.texts.is_empty() {
-        text_orders.extend(std::iter::repeat_n(*order, draw.texts.len()));
-        texts.extend_from_slice(&draw.texts);
-        *order += 1;
+        for (asset, list) in &draw.images {
+            if list.is_empty() {
+                continue;
+            }
+            if let Some(bind_group) = self.images.resolve(asset) {
+                self.batches.push(OrderedUiBatch {
+                    instances: list.instances.clone(),
+                    order: *self.order,
+                    bind_group,
+                    writes_depth: false,
+                });
+                *self.order += 1;
+            }
+        }
+        if !draw.rings.is_empty() {
+            self.ring_batches.push(OrderedRingBatch {
+                instances: draw.rings.clone(),
+                order: *self.order,
+            });
+            *self.order += 1;
+        }
+        if !draw.texts.is_empty() {
+            self.text_orders
+                .extend(std::iter::repeat_n(*self.order, draw.texts.len()));
+            self.texts.extend_from_slice(&draw.texts);
+            *self.order += 1;
+        }
     }
 }
 

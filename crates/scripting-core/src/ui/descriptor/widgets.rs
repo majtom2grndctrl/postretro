@@ -1,4 +1,4 @@
-// The widget vocabulary: the internally-tagged `Widget` enum (eleven kinds) and
+// The widget vocabulary: the internally-tagged `Widget` enum (twelve kinds) and
 // its per-kind field structs, plus the bind/tween value types those widgets carry.
 // Pure serde data — no rendering, no taffy, no retained tree.
 // See: context/lib/ui.md
@@ -20,7 +20,7 @@ use super::values::{
 /// tag is read by buffering the object through `serde_json::Value`, which a
 /// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
 /// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
-/// `button`/`slider`/`bar`/`announce`) carry no
+/// `button`/`slider`/`bar`/`ring`/`announce`) carry no
 /// `children` field. Compare `postretro_entities::ReactionDescriptor`,
 /// which discriminates by manual key-presence instead — this enum deliberately
 /// uses serde's tag mechanism.

@@ -36,7 +36,7 @@ pub enum Role {
 /// is authored. Pure — it maps the kind to its default role and nothing else:
 /// `Button`→`button`, `Slider`→`slider`, `Bar`→`progressbar`, `Image`→`image`,
 /// the containers (`vstack`/`hstack`/`grid`)→`group`, and `Text`/`Spacer`/
-/// `Announce`→`none` (no inherent interactive/structural role).
+/// `Ring`/`Announce`→`none` (no inherent interactive/structural role).
 //
 // Consumed by later G2 tasks (role projection); only the unit test calls it for
 // now, so it is dead outside `cfg(test)` until then.

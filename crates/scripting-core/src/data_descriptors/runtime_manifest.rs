@@ -5,7 +5,8 @@ use postretro_foundation::{IrNode, PresentationEasing};
 use serde::{Deserialize, Serialize};
 
 use crate::ui::descriptor::{
-    AnchoredTree, BarMax, BindSource, ColorValue, Predicate, SpacingValue, TextTween, Widget,
+    AnchoredTree, BarMax, BindSource, ColorValue, Predicate, ScalarValue, SpacingValue, TextTween,
+    Widget,
 };
 use crate::ui::style_ranges::StyleRanges;
 
@@ -155,6 +156,22 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
             source(&bar.bind.source, "bind")?;
             predicate(&bar.visible_when, "visibleWhen")
         }
+        Widget::Ring(ring) => {
+            for (field, scalar) in [("radius", &ring.radius), ("thickness", &ring.thickness)] {
+                if let ScalarValue::Bound(bound) = scalar {
+                    source(&bound.source, field)?;
+                }
+            }
+            for (field, scalar) in [
+                ("startAngle", ring.start_angle.as_ref()),
+                ("sweep", ring.sweep.as_ref()),
+            ] {
+                if let Some(ScalarValue::Bound(bound)) = scalar {
+                    source(&bound.source, field)?;
+                }
+            }
+            predicate(&ring.visible_when, "visibleWhen")
+        }
         Widget::Announce(announce) => predicate(&announce.visible_when, "visibleWhen"),
     }
 }
@@ -185,6 +202,9 @@ fn validate_presentation_widget(widget: &Widget, path: &str) -> Result<(), Strin
             validate_color(&bar.background, &format!("{path}.background"))?;
             validate_style_ranges(bar.style_ranges.as_ref(), &format!("{path}.styleRanges"))
         }
+        Widget::Ring(_) => Err(format!(
+            "{path}.kind `ring` is not supported in passive presentation templates"
+        )),
         Widget::Image(image) => {
             if image.asset.is_empty() {
                 return Err(format!("{path}.asset must be nonempty"));

@@ -11,7 +11,7 @@ use taffy::prelude::{
 
 use super::super::descriptor::{
     BindSource, Border, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelWidget,
-    SliderWidget, TextBind, TextWidget, Widget,
+    RingWidget, SliderWidget, TextBind, TextWidget, Widget,
 };
 use super::super::style_ranges::StyleEffectState;
 use super::super::theme::UiTheme;
@@ -177,6 +177,7 @@ pub fn build_node(
         Widget::Button(button) => build_button(taffy, button, theme, scope),
         Widget::Slider(slider) => build_slider(taffy, slider, theme, scope),
         Widget::Bar(bar) => build_bar(taffy, bar, theme, scope),
+        Widget::Ring(ring) => build_ring(taffy, ring, theme),
         // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
         // (no quad, no glyph). Routing its text to the a11y layer is a later task.
         Widget::Announce(_) => taffy
@@ -330,6 +331,33 @@ fn build_bar(
                 tween: None,
                 style_ranges,
                 style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
+}
+
+/// Build a passive ring leaf. Its fixed diameter is layout data; changing any
+/// radial scalar is intentionally appearance-only. Colors are resolved here so
+/// collection never performs a theme lookup.
+fn build_ring(taffy: &mut TaffyTree<NodeContext>, ring: &RingWidget, theme: &UiTheme) -> NodeId {
+    let style = Style {
+        size: Size {
+            width: length(ring.diameter),
+            height: length(ring.diameter),
+        },
+        ..Default::default()
+    };
+    taffy
+        .new_leaf_with_context(
+            style,
+            NodeContext::Ring {
+                diameter: ring.diameter,
+                radius: ring.radius.clone(),
+                thickness: ring.thickness.clone(),
+                start_angle: ring.start_angle.clone(),
+                sweep: ring.sweep.clone(),
+                fill: resolve_color(&ring.fill, theme),
+                track: ring.track.as_ref().map(|track| resolve_color(track, theme)),
             },
         )
         .expect("taffy leaf creation must succeed")

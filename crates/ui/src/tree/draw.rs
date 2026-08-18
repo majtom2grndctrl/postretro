@@ -8,7 +8,7 @@ use taffy::prelude::Layout;
 
 use super::super::descriptor::{BarMax, BindSource, Border, PanelBind, SliderBind, TextBind};
 use super::super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
-use super::super::{UiDrawList, UiInstance, UiText};
+use super::super::{UiDrawList, UiInstance, UiRingInstance, UiText};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
@@ -191,6 +191,7 @@ impl From<&super::super::descriptor::FocusNeighbors> for FocusNeighbors {
 pub enum UiPaintOp {
     Quad { index: usize },
     Image { batch: usize, index: usize },
+    Ring { index: usize },
     Text { index: usize },
 }
 
@@ -211,6 +212,9 @@ pub struct UiDrawData {
     /// Image quad batches keyed by `asset`, in first-seen order. Each entry is
     /// `(asset_key, quads)`; the renderer binds the key's texture for its quads.
     pub images: Vec<(String, UiDrawList)>,
+    /// SDF ring/arc instances in painter-stream order. Unlike image quads they
+    /// need no asset-key batch; the renderer owns one dedicated ring pipeline.
+    pub rings: Vec<UiRingInstance>,
     pub texts: Vec<UiText>,
     pub paint_order: Vec<UiPaintOp>,
     /// Cleared text records retained for translated presentation aggregation.
@@ -235,6 +239,7 @@ impl UiDrawData {
                 instances: Vec::with_capacity(quad_count),
             },
             images: Vec::with_capacity(image_count),
+            rings: Vec::with_capacity(instance_count),
             texts: Vec::with_capacity(text_count),
             paint_order: Vec::with_capacity(paint_count),
             spare_texts: Vec::with_capacity(text_count),
@@ -250,6 +255,7 @@ impl UiDrawData {
         for (_, list) in &mut self.images {
             list.clear();
         }
+        self.rings.clear();
         self.spare_texts.append(&mut self.texts);
         self.paint_order.clear();
     }
@@ -261,6 +267,7 @@ impl UiDrawData {
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty()
             && self.texts.is_empty()
+            && self.rings.is_empty()
             && self.images.iter().all(|(_, list)| list.is_empty())
     }
 
@@ -275,6 +282,12 @@ impl UiDrawData {
         let index = self.images[batch].1.len();
         self.images[batch].1.push(instance);
         self.paint_order.push(UiPaintOp::Image { batch, index });
+    }
+
+    pub fn push_ring(&mut self, instance: UiRingInstance) {
+        let index = self.rings.len();
+        self.rings.push(instance);
+        self.paint_order.push(UiPaintOp::Ring { index });
     }
 
     pub fn push_text(&mut self, text: UiText) {
@@ -323,6 +336,13 @@ impl UiDrawData {
                     instance.rect[1] += offset[1];
                     instance.color[3] *= opacity;
                     self.push_image(asset, instance);
+                }
+                UiPaintOp::Ring { index } => {
+                    let mut instance = source.rings[index];
+                    instance.rect[0] += offset[0];
+                    instance.rect[1] += offset[1];
+                    instance.color[3] *= opacity;
+                    self.push_ring(instance);
                 }
                 UiPaintOp::Text { index } => {
                     self.push_translated_text(&source.texts[index], offset, opacity);

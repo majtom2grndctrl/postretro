@@ -9,7 +9,8 @@ use super::super::style_ranges::StyleRanges;
 use super::accessibility::Role;
 use super::focus::{FocusNeighbors, FocusPolicy, RepeatPolicy};
 use super::values::{
-    Align, BindSource, Border, ColorValue, Easing, LocalState, Predicate, SpacingValue,
+    Align, BindSource, Border, ColorValue, Easing, LocalState, Predicate, ScalarValue,
+    SpacingValue, TextTween,
 };
 
 /// One node in the UI widget tree. Internally tagged on `kind` (`"text"`,
@@ -43,6 +44,9 @@ pub enum Widget {
     Button(ButtonWidget),
     Slider(SliderWidget),
     Bar(BarWidget),
+    /// Passive anti-aliased annulus or clockwise arc. Its fixed `diameter`
+    /// reserves layout space; radial geometry is a draw-only concern.
+    Ring(RingWidget),
     // M13 G2 — a net-new non-visual widget. It lays out as nothing (no quad, no
     // glyph); its sole payload is an a11y live-region announcement a later task
     // routes to the platform a11y layer with the declared `priority`.
@@ -124,21 +128,6 @@ pub struct TextBind {
     /// is omitted, not `null`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tween: Option<TextTween>,
-}
-
-/// Value-tweening config for a `text` bind (M13). When a bound numeric slot's
-/// value changes, the displayed value eases toward the new target over
-/// `duration_ms` (milliseconds) using `easing`. `from` is the optional explicit
-/// starting value for the FIRST tween (before any slot value has been seen);
-/// when absent the runtime starts from the first observed value. The wire shape
-/// differs from `PanelTween` only in `from`'s JSON type (a number here).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TextTween {
-    pub duration_ms: f32,
-    pub easing: Easing,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<f32>,
 }
 
 /// Solid-fill panel with an optional 9-slice border. `fill` is linear RGBA. The
@@ -631,6 +620,144 @@ impl BarWidget {
         }
         Ok(())
     }
+}
+
+/// Passive annulus/arc shape. `diameter` is the fixed logical-reference layout
+/// box; all other geometry is drawn inside it. Angles are authored in degrees
+/// with 0 at 12 o'clock and positive clockwise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "RingWidgetWire"
+)]
+pub struct RingWidget {
+    pub diameter: f32,
+    pub radius: ScalarValue,
+    pub thickness: ScalarValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_angle: Option<ScalarValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep: Option<ScalarValue>,
+    pub fill: ColorValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<ColorValue>,
+    /// Passive rings may carry an id for focus-neighbor references but do not
+    /// expose neighbor overrides or become interactive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+}
+
+/// Serde-only input for [`RingWidget`], keeping raw JSON assets on the same
+/// literal-validation path as script frontends.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RingWidgetWire {
+    diameter: f32,
+    radius: ScalarValue,
+    thickness: ScalarValue,
+    #[serde(default)]
+    start_angle: Option<ScalarValue>,
+    #[serde(default)]
+    sweep: Option<ScalarValue>,
+    fill: ColorValue,
+    #[serde(default)]
+    track: Option<ColorValue>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    visible_when: Option<Predicate>,
+    #[serde(default)]
+    role: Option<Role>,
+}
+
+impl TryFrom<RingWidgetWire> for RingWidget {
+    type Error = String;
+
+    fn try_from(wire: RingWidgetWire) -> Result<Self, Self::Error> {
+        let ring = Self {
+            diameter: wire.diameter,
+            radius: wire.radius,
+            thickness: wire.thickness,
+            start_angle: wire.start_angle,
+            sweep: wire.sweep,
+            fill: wire.fill,
+            track: wire.track,
+            id: wire.id,
+            visible_when: wire.visible_when,
+            role: wire.role,
+        };
+        ring.validate()?;
+        Ok(ring)
+    }
+}
+
+impl RingWidget {
+    /// Reject invalid authored literal geometry. Bound values are deliberately
+    /// accepted: their dynamic range is clamped at draw time by the retained UI
+    /// runtime added after this static vertical slice.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !self.diameter.is_finite() || self.diameter <= 0.0 {
+            return Err("`ring.diameter` must be a finite number greater than zero".to_string());
+        }
+        validate_ring_positive_literal("radius", &self.radius)?;
+        validate_ring_positive_literal("thickness", &self.thickness)?;
+        validate_ring_source("radius", &self.radius)?;
+        validate_ring_source("thickness", &self.thickness)?;
+        if let ScalarValue::Literal(radius) = &self.radius {
+            if *radius > self.diameter / 2.0 {
+                return Err("`ring.radius` must not exceed half of `ring.diameter`".to_string());
+            }
+            if let ScalarValue::Literal(thickness) = &self.thickness {
+                if *thickness > *radius {
+                    return Err("`ring.thickness` must not exceed `ring.radius`".to_string());
+                }
+            }
+        }
+        if let Some(ScalarValue::Literal(start_angle)) = &self.start_angle {
+            if !start_angle.is_finite() {
+                return Err("`ring.startAngle` must be finite".to_string());
+            }
+        }
+        if let Some(start_angle) = &self.start_angle {
+            validate_ring_source("startAngle", start_angle)?;
+        }
+        if let Some(ScalarValue::Literal(sweep)) = &self.sweep {
+            if !sweep.is_finite() || *sweep <= 0.0 || *sweep > 360.0 {
+                return Err("`ring.sweep` must be finite and within (0, 360]".to_string());
+            }
+        }
+        if let Some(sweep) = &self.sweep {
+            validate_ring_source("sweep", sweep)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_ring_source(field: &str, value: &ScalarValue) -> Result<(), String> {
+    if let ScalarValue::Bound(bound) = value {
+        if matches!(bound.source, BindSource::Fact { .. }) {
+            return Err(format!(
+                "`ring.{field}` supports only `slot` or `local` bindings"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_ring_positive_literal(field: &str, value: &ScalarValue) -> Result<(), String> {
+    if let ScalarValue::Literal(value) = value {
+        if !value.is_finite() || *value <= 0.0 {
+            return Err(format!(
+                "`ring.{field}` must be a finite number greater than zero"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Authored linear exit-fade policy for a passive [`BarWidget`]. The retained UI

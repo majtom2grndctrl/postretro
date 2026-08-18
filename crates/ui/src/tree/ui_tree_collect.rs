@@ -11,7 +11,7 @@ use taffy::prelude::NodeId;
 use super::super::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::style_ranges::evaluate;
 use super::super::theme::UiTheme;
-use super::super::{UiInstance, UiText};
+use super::super::{UiInstance, UiRingInstance, UiText};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
@@ -311,6 +311,77 @@ fn collect_node(
                 data.push_quad(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
             }
         }
+        Some(NodeContext::Ring {
+            diameter,
+            radius,
+            thickness,
+            start_angle,
+            sweep,
+            fill,
+            track,
+        }) => {
+            // Task 1 is an all-literal vertical slice. Preserve bound descriptor
+            // values on the retained node for Task 2, but do not invent binding
+            // mechanics here; an unresolved dynamic geometry simply emits no SDF
+            // instance on this frame.
+            let Some(radius) = ring_literal(radius) else {
+                return;
+            };
+            let Some(thickness) = ring_literal(thickness) else {
+                return;
+            };
+            let start_angle = start_angle.as_ref().map_or(Some(0.0), ring_literal);
+            let sweep = sweep.as_ref().map_or(Some(360.0), ring_literal);
+            let (Some(start_angle), Some(mut sweep)) = (start_angle, sweep) else {
+                return;
+            };
+            // Literal validation already rejects this form, but retain a draw
+            // guard so manually-constructed descriptors cannot send degenerate
+            // SDF input across the CPU→renderer boundary.
+            if !radius.is_finite()
+                || !thickness.is_finite()
+                || !start_angle.is_finite()
+                || !sweep.is_finite()
+                || radius <= 0.0
+                || thickness <= 0.0
+                || radius > diameter / 2.0
+                || thickness > radius
+                || sweep <= 0.0
+            {
+                return;
+            }
+            // Collector-side snap guarantees that a nearly-full resolved sweep
+            // reaches the shader's seamless full-circle path exactly.
+            const FULL_CIRCLE_EPSILON_DEGREES: f32 = 1.0e-3;
+            if (sweep - 360.0).abs() <= FULL_CIRCLE_EPSILON_DEGREES {
+                sweep = 360.0;
+            }
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let radius = radius * scale;
+            let thickness = thickness * scale;
+            let start_angle = start_angle.to_radians();
+            let sweep = sweep.to_radians();
+            // A track is a full annulus behind the shape, sharing the resolved
+            // radius and thickness regardless of the arc's start/sweep.
+            if let Some(track) = track {
+                data.push_ring(UiRingInstance {
+                    rect,
+                    color: *track,
+                    radius,
+                    thickness,
+                    start_angle: 0.0,
+                    sweep: std::f32::consts::TAU,
+                });
+            }
+            data.push_ring(UiRingInstance {
+                rect,
+                color: *fill,
+                radius,
+                thickness,
+                start_angle,
+                sweep,
+            });
+        }
         Some(NodeContext::Text {
             content,
             font_size,
@@ -418,5 +489,12 @@ fn collect_node(
             ref_origin[1] + child_layout.location.y,
         ];
         collect_node(taffy, child, child_origin, walk, visibility, data);
+    }
+}
+
+fn ring_literal(value: &super::super::descriptor::ScalarValue) -> Option<f32> {
+    match value {
+        super::super::descriptor::ScalarValue::Literal(value) => Some(*value),
+        super::super::descriptor::ScalarValue::Bound(_) => None,
     }
 }

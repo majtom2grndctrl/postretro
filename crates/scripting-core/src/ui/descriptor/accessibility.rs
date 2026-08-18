@@ -48,7 +48,11 @@ pub fn implicit_role(widget: &Widget) -> Role {
         Widget::Bar(_) => Role::Progressbar,
         Widget::Image(_) => Role::Image,
         Widget::VStack(_) | Widget::HStack(_) | Widget::Grid(_) => Role::Group,
-        Widget::Text(_) | Widget::Spacer(_) | Widget::Panel(_) | Widget::Announce(_) => Role::None,
+        Widget::Text(_)
+        | Widget::Spacer(_)
+        | Widget::Panel(_)
+        | Widget::Ring(_)
+        | Widget::Announce(_) => Role::None,
     }
 }
 

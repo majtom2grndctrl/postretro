@@ -18,7 +18,9 @@ pub mod tree;
 pub mod tree_asset;
 pub mod ui_texture;
 
-pub use output::{UiDrawList, UiInstance, UiReadSnapshot, UiText, UiTreeEntry, UiUniform};
+pub use output::{
+    UiDrawList, UiInstance, UiReadSnapshot, UiRingInstance, UiText, UiTreeEntry, UiUniform,
+};
 pub use ui_texture::UiTexture;
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use taffy::prelude::Display;
 
 use super::super::descriptor::{
-    BarExitFade, BarMax, Border, PanelBind, Predicate, SliderBind, TextBind,
+    BarExitFade, BarMax, Border, PanelBind, Predicate, ScalarValue, SliderBind, TextBind,
 };
 use super::super::style_ranges::{StyleEffectState, StyleRanges};
 use super::style::TweenState;
@@ -143,6 +143,19 @@ pub enum NodeContext {
         tween: Option<TweenState<f32>>,
         style_ranges: Option<StyleRanges>,
         style_state: RefCell<StyleEffectState>,
+    },
+    /// Passive SDF annulus/arc. Colors resolve at tree-build time, keeping the
+    /// frame draw walk theme-free. Scalar values retain their literal-or-bound
+    /// descriptor form in this first slice; bound drivers are deliberately added
+    /// by the follow-up binding task without changing layout.
+    Ring {
+        diameter: f32,
+        radius: ScalarValue,
+        thickness: ScalarValue,
+        start_angle: Option<ScalarValue>,
+        sweep: Option<ScalarValue>,
+        fill: [f32; 4],
+        track: Option<[f32; 4]>,
     },
 }
 

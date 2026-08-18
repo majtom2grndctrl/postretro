@@ -11,16 +11,16 @@ use taffy::prelude::{
 
 use super::super::descriptor::{
     BindSource, Border, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelWidget,
-    RingWidget, SliderWidget, TextBind, TextWidget, Widget,
+    RingWidget, ScalarValue, SliderWidget, TextBind, TextWidget, Widget,
 };
 use super::super::style_ranges::StyleEffectState;
 use super::super::theme::UiTheme;
 
+use super::node_context::{NodeContext, RingScalar};
 use super::style::{
     build_node_style_ranges, container_base_style, resolve_border, resolve_color, resolve_font,
     resolve_spacing,
 };
-use super::ui_tree::NodeContext;
 use super::widget_meta::local_state_scope;
 
 /// Default text size (logical-reference px) for an interactive `button`/`slider`
@@ -177,7 +177,7 @@ pub fn build_node(
         Widget::Button(button) => build_button(taffy, button, theme, scope),
         Widget::Slider(slider) => build_slider(taffy, slider, theme, scope),
         Widget::Bar(bar) => build_bar(taffy, bar, theme, scope),
-        Widget::Ring(ring) => build_ring(taffy, ring, theme),
+        Widget::Ring(ring) => build_ring(taffy, ring, theme, scope),
         // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
         // (no quad, no glyph). Routing its text to the a11y layer is a later task.
         Widget::Announce(_) => taffy
@@ -339,7 +339,12 @@ fn build_bar(
 /// Build a passive ring leaf. Its fixed diameter is layout data; changing any
 /// radial scalar is intentionally appearance-only. Colors are resolved here so
 /// collection never performs a theme lookup.
-fn build_ring(taffy: &mut TaffyTree<NodeContext>, ring: &RingWidget, theme: &UiTheme) -> NodeId {
+fn build_ring(
+    taffy: &mut TaffyTree<NodeContext>,
+    ring: &RingWidget,
+    theme: &UiTheme,
+    scope: Option<&str>,
+) -> NodeId {
     let style = Style {
         size: Size {
             width: length(ring.diameter),
@@ -352,15 +357,43 @@ fn build_ring(taffy: &mut TaffyTree<NodeContext>, ring: &RingWidget, theme: &UiT
             style,
             NodeContext::Ring {
                 diameter: ring.diameter,
-                radius: ring.radius.clone(),
-                thickness: ring.thickness.clone(),
-                start_angle: ring.start_angle.clone(),
-                sweep: ring.sweep.clone(),
+                radius: build_ring_scalar(&ring.radius, scope),
+                thickness: build_ring_scalar(&ring.thickness, scope),
+                start_angle: ring
+                    .start_angle
+                    .as_ref()
+                    .map_or(RingScalar::Literal(0.0), |value| {
+                        build_ring_scalar(value, scope)
+                    }),
+                sweep: ring
+                    .sweep
+                    .as_ref()
+                    .map_or(RingScalar::Literal(360.0), |value| {
+                        build_ring_scalar(value, scope)
+                    }),
                 fill: resolve_color(&ring.fill, theme),
                 track: ring.track.as_ref().map(|track| resolve_color(track, theme)),
             },
         )
         .expect("taffy leaf creation must succeed")
+}
+
+/// Resolve the build-time half of one ring scalar. A `{ local }` source stores
+/// the nearest enclosing `localState` scope just like a Bar; every source value
+/// remains raw until the retained binding diff drives it.
+fn build_ring_scalar(value: &ScalarValue, scope: Option<&str>) -> RingScalar {
+    match value {
+        ScalarValue::Literal(value) => RingScalar::Literal(*value),
+        ScalarValue::Bound(source) => RingScalar::Bound {
+            bind_scope: match &source.source {
+                BindSource::Local { .. } => scope.map(str::to_string),
+                BindSource::Slot { .. } | BindSource::Fact { .. } => None,
+            },
+            source: source.clone(),
+            last_resolved: None,
+            tween: None,
+        },
+    }
 }
 
 /// Optional backdrop `NodeContext` for a container declaring a `fill`/`border`.

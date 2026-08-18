@@ -15,13 +15,13 @@ use super::super::{UiInstance, UiRingInstance, UiText};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
-use super::bindings::DrawWalkCtx;
+use super::bindings::{DrawWalkCtx, bound_scalar_value};
 use super::draw::{
     UiDrawData, anchor_fractions, bar_max_value, bar_slot_value, canvas_origin,
     linear_rgba_to_srgb_u8, project_quad, project_rect, resolve_panel_fill, resolve_text,
     style_text_value, style_value,
 };
-use super::node_context::{NodeContext, VisibilityState};
+use super::node_context::{NodeContext, RingScalar, VisibilityState};
 use super::predicate::resolve_predicate;
 use super::ui_tree::UiTree;
 
@@ -320,47 +320,35 @@ fn collect_node(
             fill,
             track,
         }) => {
-            // Task 1 is an all-literal vertical slice. Preserve bound descriptor
-            // values on the retained node for Task 2, but do not invent binding
-            // mechanics here; an unresolved dynamic geometry simply emits no SDF
-            // instance on this frame.
-            let Some(radius) = ring_literal(radius) else {
-                return;
-            };
-            let Some(thickness) = ring_literal(thickness) else {
-                return;
-            };
-            let start_angle = start_angle.as_ref().map_or(Some(0.0), ring_literal);
-            let sweep = sweep.as_ref().map_or(Some(360.0), ring_literal);
-            let (Some(start_angle), Some(mut sweep)) = (start_angle, sweep) else {
-                return;
-            };
-            // Literal validation already rejects this form, but retain a draw
-            // guard so manually-constructed descriptors cannot send degenerate
-            // SDF input across the CPU→renderer boundary.
-            if !radius.is_finite()
+            let radius = ring_scalar_value(radius, slot_values, cell_values);
+            let thickness = ring_scalar_value(thickness, slot_values, cell_values);
+            let start_angle = ring_scalar_value(start_angle, slot_values, cell_values);
+            let sweep = ring_scalar_value(sweep, slot_values, cell_values);
+
+            // Dynamic values are allowed outside descriptor-time literal limits,
+            // but non-finite values cannot cross the CPU→renderer boundary.
+            if !diameter.is_finite()
+                || *diameter <= 0.0
+                || !radius.is_finite()
                 || !thickness.is_finite()
-                || !start_angle.is_finite()
-                || !sweep.is_finite()
-                || radius <= 0.0
-                || thickness <= 0.0
-                || radius > diameter / 2.0
-                || thickness > radius
-                || sweep <= 0.0
             {
                 return;
             }
+            // Clamp only while lowering to SDF geometry. Retained state holds the
+            // raw eased source, so a radius that briefly exceeds the layout box
+            // returns naturally once its source/ease comes back in range.
+            let radius = radius.clamp(0.0, *diameter / 2.0);
+            let thickness = thickness.clamp(0.0, radius);
+            if radius <= 0.0 || thickness <= 0.0 {
+                return;
+            }
+
             // Collector-side snap guarantees that a nearly-full resolved sweep
             // reaches the shader's seamless full-circle path exactly.
             const FULL_CIRCLE_EPSILON_DEGREES: f32 = 1.0e-3;
-            if (sweep - 360.0).abs() <= FULL_CIRCLE_EPSILON_DEGREES {
-                sweep = 360.0;
-            }
             let rect = project_rect(ref_origin, layout, scale, canvas_origin);
             let radius = radius * scale;
             let thickness = thickness * scale;
-            let start_angle = start_angle.to_radians();
-            let sweep = sweep.to_radians();
             // A track is a full annulus behind the shape, sharing the resolved
             // radius and thickness regardless of the arc's start/sweep.
             if let Some(track) = track {
@@ -373,13 +361,25 @@ fn collect_node(
                     sweep: std::f32::consts::TAU,
                 });
             }
+            // Track geometry deliberately ignores arc angles. A non-finite
+            // start/sweep or a non-positive sweep suppresses only the shape.
+            if !start_angle.is_finite() || !sweep.is_finite() {
+                return;
+            }
+            let mut sweep = sweep.min(360.0);
+            if sweep <= 0.0 {
+                return;
+            }
+            if (sweep - 360.0).abs() <= FULL_CIRCLE_EPSILON_DEGREES {
+                sweep = 360.0;
+            }
             data.push_ring(UiRingInstance {
                 rect,
                 color: *fill,
                 radius,
                 thickness,
-                start_angle,
-                sweep,
+                start_angle: start_angle.to_radians(),
+                sweep: sweep.to_radians(),
             });
         }
         Some(NodeContext::Text {
@@ -492,9 +492,21 @@ fn collect_node(
     }
 }
 
-fn ring_literal(value: &super::super::descriptor::ScalarValue) -> Option<f32> {
+fn ring_scalar_value(
+    value: &RingScalar,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> f32 {
     match value {
-        super::super::descriptor::ScalarValue::Literal(value) => Some(*value),
-        super::super::descriptor::ScalarValue::Bound(_) => None,
+        RingScalar::Literal(value) => *value,
+        RingScalar::Bound {
+            source,
+            bind_scope,
+            last_resolved,
+            tween,
+        } => match (tween, last_resolved) {
+            (Some(_), Some(displayed)) => *displayed,
+            _ => bound_scalar_value(source, bind_scope.as_deref(), slot_values, cell_values),
+        },
     }
 }

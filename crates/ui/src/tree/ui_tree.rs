@@ -14,7 +14,8 @@ use super::super::theme::UiTheme;
 use postretro_entities::SlotValue;
 
 use super::bindings::{
-    BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_text_binding,
+    BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_ring_scalar_binding,
+    drive_text_binding,
 };
 use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
@@ -524,6 +525,38 @@ impl UiTree {
                     if value_changed || max_changed {
                         // A bar is fixed-size: a value change only recolors/resizes
                         // its fill quad — appearance-only, never a relayout.
+                        diff.appearance_changed = true;
+                    }
+                }
+                Some(NodeContext::Ring {
+                    radius,
+                    thickness,
+                    start_angle,
+                    sweep,
+                    ..
+                }) => {
+                    // Each property owns an independent tween segment. Drive all
+                    // four even when an earlier property changes: `||` would
+                    // short-circuit and freeze later arcs while another one moves.
+                    let radius_changed =
+                        drive_ring_scalar_binding(radius, slot_values, cell_values, time_seconds);
+                    let thickness_changed = drive_ring_scalar_binding(
+                        thickness,
+                        slot_values,
+                        cell_values,
+                        time_seconds,
+                    );
+                    let start_angle_changed = drive_ring_scalar_binding(
+                        start_angle,
+                        slot_values,
+                        cell_values,
+                        time_seconds,
+                    );
+                    let sweep_changed =
+                        drive_ring_scalar_binding(sweep, slot_values, cell_values, time_seconds);
+                    if radius_changed | thickness_changed | start_angle_changed | sweep_changed {
+                        // A Ring's explicit diameter is its entire layout
+                        // contract. Scalar values only alter its SDF draw data.
                         diff.appearance_changed = true;
                     }
                 }

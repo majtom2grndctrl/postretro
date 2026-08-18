@@ -361,7 +361,7 @@ function buildBind(
   const b = bind as Record<string, unknown>;
   // Source precedence matches the descriptor bridge. Authored SDK refs carry
   // exactly one source key.
-  const out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown };
+  let out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown };
   if (b.slot !== undefined) {
     requireNonemptyString(b.slot, "bind.slot", factory);
     out = { slot: b.slot as string };

@@ -2475,6 +2475,13 @@ impl ApplicationHandler for App {
                         .pending_death_events,
                 );
 
+                // Fix B: restore connected-client pawns to their authoritative poses
+                // before any fixed tick and before snapshot serialization (`net_serialize_and_send`
+                // below) read them, undoing the previous frame's delayed presentation write.
+                // Unconditional so it runs even on zero-tick / no-gameplay-snapshot frames —
+                // serialization never ingests a delayed pose. A no-op off the host path.
+                self.host_restore_client_pawn_authoritative_poses();
+
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
                     // `player_options` is session-owned; copy the crouch mode out
                     // before the `&mut self.crouch_toggle_active` borrow.
@@ -2853,6 +2860,10 @@ impl ApplicationHandler for App {
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
+                        // Fix B: capture each connected-client pawn's authoritative pose
+                        // for this tick before the tick stamp advances, so the buffered
+                        // sample is keyed to the tick whose end-of-tick pose it carries.
+                        self.host_record_client_pawn_poses();
                         self.host_advance_fixed_sim_tick(&mut host_snapshot_due);
                         // Unconditional per-tick registration sweeps, not gated on "did a spawn
                         // happen this tick": they catch runtime enemies and component-driven
@@ -3149,6 +3160,13 @@ impl ApplicationHandler for App {
                 // authoritative snapshot cannot carry an entity already reaped
                 // this frame. No-op for the client and single-player.
                 let owner_projected_weapons = self.net_serialize_and_send(host_snapshot_due);
+
+                // Fix B: present connected-client pawns from the delay buffer at a delayed
+                // fractional target, AFTER serialization read the authoritative poses and
+                // BEFORE the render collectors read entities. Clocked off the host's own
+                // authoritative tick plus the render sub-tick `alpha`, so the presented
+                // pose varies smoothly per render frame instead of stepping at 60 Hz.
+                self.host_present_client_pawns(frame_result.alpha);
 
                 // Advance each reload-endpoint consumer only after it sampled
                 // this frame. Catch-up endpoints remain queued in tick order.
@@ -5730,6 +5748,7 @@ impl App {
                 last_sent_tuning,
                 join_seeds: join_seed_state,
                 missing_identity_warned: _,
+                client_pawn_presentation: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -6448,6 +6467,7 @@ impl App {
             last_sent_tuning: _,
             join_seeds: _,
             missing_identity_warned: _,
+            client_pawn_presentation: _,
         }) = session.net_endpoint.as_mut()
         else {
             return Vec::new();
@@ -6642,6 +6662,116 @@ impl App {
     /// per OWNED remote pawn through the deterministic gap policy. Movement consumes
     /// only the movement subset; host FIRE/reload consumes the same resolved command
     /// later in the sim weapon stage.
+    /// Fix B — restore each connected-client pawn's authoritative `Transform` from the
+    /// host presentation buffer before the fixed-tick loop, undoing the previous frame's
+    /// delayed presentation write so movement and snapshot serialization read the true
+    /// authoritative pose. Thin delegation to `netcode::host_presentation`; a no-op for
+    /// single-player, the client, and a host with no connected-client pawns.
+    fn host_restore_client_pawn_authoritative_poses(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            client_pawn_presentation,
+            owners,
+            allocator,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let mut registry = script_ctx.registry.borrow_mut();
+        netcode::host_restore_client_pawn_authoritative_poses(
+            client_pawn_presentation,
+            owners,
+            allocator,
+            &mut registry,
+        );
+    }
+
+    /// Fix B — record each connected-client pawn's authoritative `Transform` for the
+    /// current fixed tick into the host presentation buffer. Called after the tick's
+    /// movement has written the authoritative pose and before the tick stamp advances,
+    /// so the sample carries the correct end-of-tick pose. Thin delegation.
+    fn host_record_client_pawn_poses(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            client_pawn_presentation,
+            owners,
+            allocator,
+            tick,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let current_tick = *tick;
+        let registry = script_ctx.registry.borrow();
+        netcode::host_record_client_pawn_poses(
+            client_pawn_presentation,
+            owners,
+            allocator,
+            &registry,
+            current_tick,
+        );
+    }
+
+    /// Fix B — sample each connected-client pawn's buffer at a delayed fractional target
+    /// (`current_tick − 1 − delay + alpha`) and write the smoothed pose through the
+    /// registry's presentation helper. Called once per render frame after snapshot
+    /// serialization (which reads the authoritative pose) and before the render collectors
+    /// read entities. `alpha` is the render sub-tick accumulator, so the presented pose
+    /// varies smoothly per render frame rather than stepping once per 60 Hz tick. Thin
+    /// delegation; a no-op for single-player and the client.
+    fn host_present_client_pawns(&mut self, alpha: f32) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            client_pawn_presentation,
+            owners,
+            allocator,
+            tick,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let current_tick = *tick;
+        let mut registry = script_ctx.registry.borrow_mut();
+        netcode::host_present_client_pawns(
+            client_pawn_presentation,
+            owners,
+            allocator,
+            &mut registry,
+            current_tick,
+            alpha,
+        );
+    }
+
     fn host_resolve_remote_commands(&mut self) -> Vec<netcode::ResolvedPawnCommand> {
         let Some(netcode::NetEndpoint::Host {
             command_queues,

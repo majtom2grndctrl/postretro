@@ -353,6 +353,30 @@ All tick comparisons (stale-drop, duplicate-collapse, fast-forward cursor reseat
 the wrap-aware serial-number predicate (`client_tick_le`), correct across the u32
 `client_tick` wrap.
 
+## Host-side remote-pawn presentation
+
+The host presents each connected-client pawn through the **same** delay-buffered playout
+the client uses for remotes, closing the presentation asymmetry where the host saw a
+client's motion less smoothly than the client saw the host's. Each fixed tick the host
+records the client pawn's authoritative `Transform` into a `RemoteInterpolationBuffer`
+keyed by `NetworkId` (the client's key); each render frame it samples a **delayed
+fractional** target — `newest_recorded_tick − INPUT_BUFFER_TARGET + alpha`, where `alpha`
+is the render sub-tick accumulator — and writes the position-lerp/rotation-slerp result
+through `EntityRegistry::set_presentation_transform`. The clock is the host's own
+authoritative tick (the host *is* the clock — no `ClientTimeSync` estimate), and the
+fractional target is load-bearing: sampling at an integer tick would step the pose once
+per 60 Hz tick and reproduce the choppiness at the host's much higher render rate.
+
+Authority is untouched. The host *simulates* the client's pawn, so `run_host_movement_tick`
+and snapshot serialization must read the authoritative pose, never the delayed one. The
+buffer holds the authoritative history; the registry `Transform` carries the delayed pose
+only during the render-collect window. Per frame: **record** after each tick's movement,
+**restore** the authoritative pose from the buffer before the tick loop (and thus before
+serialization), and **present** the delayed pose after serialization. The path runs only
+on `NetEndpoint::Host` and only for pawns in `MovementOwners` — the host's own pawn is not
+an owner, so it keeps its live single-tick presentation. Engine glue lives in
+`netcode::host_presentation`; the buffer is owned by the `Host` endpoint.
+
 ## Combat authority: FIRE vs HIT
 
 Client-authoritative combat splits weapon fire into two independently-owned halves, both

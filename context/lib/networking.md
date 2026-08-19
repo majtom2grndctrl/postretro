@@ -296,17 +296,33 @@ exactly one command per owned pawn per 60 Hz fixed tick, advancing a per-pawn re
 cursor (`last_processed_client_tick`, stamped into snapshot authority metadata). Two
 policies govern resolution:
 
-- **Hold-then-neutral gap policy.** When the exact next tick is missing, the host holds
-  the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap of
-  dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
-  cannot coast on stale intent). A held command **does not advance the resolved cursor**:
-  the cursor waits on the awaited tick, so a real command arriving within the hold grace
-  resolves `Real` rather than being drop-staled — the +1-per-tick advance yields during
-  the grace. Only the give-up after the grace and the post-give-up neutral-walk (the
-  coast toward a stream that resumed at a far-future tick) advance the cursor with
-  synthesized neutral input. Neutralization clears movement, use, and fire but retains
-  the latest finite aim pitch and facing yaw for remote-avatar presentation. A client that
-  has never sent a command resolves to nothing — its pawn holds its authoritative pose.
+- **Hold-then-neutral gap policy, frontier-gated.** When the exact next tick is missing, the
+  host holds the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap
+  of dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
+  cannot coast on stale intent). Whether a held command **advances the resolved cursor**
+  depends on whether newer data is buffered behind the hole. A held command freezes the
+  cursor (no advance) **only while the buffer is EMPTY** (`pending.is_empty()` — the awaited
+  tick is at the buffer *frontier*): nothing newer has arrived, so this is a genuine
+  near-term late arrival (the clean-link sub-tick phase offset) worth waiting for, and the
+  real command arriving within the hold grace resolves `Real` rather than being drop-staled.
+  If **any** command is buffered past the hole (`!pending.is_empty()`), the stream already
+  continued — the missing tick was lost or reordered — so the host **advances** instead (the
+  "deep-buffer yield"): it repeats the last intent (`Held`) and moves the cursor +1, so the
+  cursor tracks the backlog rather than stalling the ack behind a lost tick (which would
+  drive the client's reconcile lead unbounded, and on a deep buffer overflow into the
+  catch-up trim). The deep-yield **counts toward the grace**, so a *sustained* non-empty gap
+  (a lone far-future command, a multi-tick hole) gives up after `INPUT_HOLD_TICKS` and
+  neutral-walks rather than `Held`-walking unbounded toward a distant command; an isolated
+  loss is followed by a `Real` that resets the count, so isolated losses never accumulate.
+  The give-up after the grace and the post-give-up neutral-walk (the coast toward a stream
+  that resumed at a far-future tick) advance the cursor with synthesized neutral input.
+  Neutralization clears movement, use, and fire but retains the latest finite aim pitch and
+  facing yaw for remote-avatar presentation. A client that has never sent a command resolves
+  to nothing — its pawn holds its authoritative pose. Clean loopback reaches the empty
+  frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
+  data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's
+  stale-drop and intake's stale-check guarantee `pending` holds only commands newer than the
+  awaited tick, so `pending.is_empty()` is precisely "nothing buffered ahead of the hole".)
 
 - **Bounded playout buffer: standing floor + depth-keyed catch-up.** The two 60 Hz
   clocks free-run ~1 tick out of phase, so on a clean link the awaited command is usually
@@ -336,6 +352,20 @@ policies govern resolution:
   commands), not tick-distance to the newest command** — the same depth-keying the buildup
   latch uses, and for the same reason. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET` gives
   hysteresis so catch-up does not thrash.
+
+  **Freeze and trim reconcile on depth.** The gap-policy freeze and the catch-up trim are
+  ordered so they never fight: the freeze fires only when `pending.is_empty()` (the frontier),
+  the trim only when `pending > INPUT_BUFFER_MAX`. A freeze therefore cannot grow the buffer
+  into the trim a fortiori — it fires at depth 0, and every *non-empty* missing tick advances
+  (the deep-buffer yield) rather than freezing, so a lossy backlog drains toward the frontier
+  instead of piling into the trim; only genuine backlogs (handshake window, host hitch) reach
+  it. This is what closes the divergence a count-blind freeze introduced: keying the freeze on
+  a *count* (`pending.len() <= INPUT_BUFFER_TARGET`) still froze a lost tick whenever `pending`
+  dipped to that count under jitter, stalling the ack and driving the reconcile error up; the
+  **frontier** gate distinguishes a genuine late arrival (buffer empty → wait) from a lost tick
+  with the stream continued (buffer non-empty → advance), so the ack never stalls behind
+  buffered data. `INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX` still bounds the buildup latch's
+  standing depth well below the trim.
 
 Reload uses a reliable edge lane beside command playout. Host intake observes reload
 rising edges before stale-drop and backlog trimming, then delivers each due edge once on

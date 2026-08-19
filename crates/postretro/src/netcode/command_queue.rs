@@ -10,11 +10,23 @@
 // (1) Standing playout floor (buildup latch). The two 60 Hz clocks free-run ~1 tick
 // out of phase, so on a clean link the awaited command is usually not-yet-arrived when
 // its tick resolves. Rather than neutral-fill and advance past it (which drop-stales
-// the real command when it lands), the resolver holds the cursor on a genuine
+// the real command when it lands), the resolver FREEZES the cursor on a genuine
 // late-arrival — no advance, no drop_stale — until the command lands within the hold
 // grace, and it withholds the FIRST real command at stream start / after an underrun
 // until `pending` has built to INPUT_BUFFER_TARGET. Steady state then trails the newest
 // received tick by ~INPUT_BUFFER_TARGET - 1 ticks, absorbing the phase offset.
+//
+// The freeze is frontier-gated: it fires only while `pending` is EMPTY — i.e. the awaited
+// tick is at the buffer frontier, nothing newer buffered behind it. A non-empty backlog —
+// a lossy link buffering commands behind a hole, or a reorder — must NOT freeze: buffered
+// newer data proves the stream already continued past a lost tick, so freezing there only
+// stalls the ack cursor behind that lost tick (driving the client's reconcile lead
+// unbounded) and, on a deep buffer, could grow `pending` into the catch-up trim. On a
+// non-empty buffer a missing tick advances instead (the "deep-buffer yield"), repeating
+// the last intent so the cursor tracks the backlog; the yield counts toward the grace, so
+// a sustained non-empty gap gives up rather than walking unbounded. A clean loopback
+// stream reaches `pending.is_empty()` at its buffer-empty edge and freezes exactly as
+// before; a lost tick with newer data buffered yields.
 //
 // (2) Depth-keyed catch-up. Drain-rate == produce-rate, so a deep backlog would become
 // PERMANENT latency. Two backlogs matter: (a) the client streams input at 60 Hz on
@@ -405,18 +417,28 @@ impl HostCommandQueues {
     ///
     /// Cursor model: the host expects the tick immediately after the resolved cursor.
     /// If that exact tick is queued, consume it (`Real`). If it is missing, the cursor
-    /// either HOLDS in place or ADVANCES, depending on the case:
-    /// - **Hold (no advance):** a genuine late-arrival — a real command is being held
-    ///   (`last_resolved.is_some()`) and the grace is not exhausted — holds the cursor
-    ///   so the awaited tick, arriving within [`INPUT_HOLD_TICKS`], still resolves
-    ///   `Real`. The one-shot buildup latch (`building_playout`) also holds, withholding
-    ///   the first `Real` until `pending` reaches [`INPUT_BUFFER_TARGET`].
-    /// - **Advance (+1):** the give-up after the hold grace (`Neutral`, so an absent
-    ///   client cannot stall the host) and the post-give-up neutral-walk toward a
-    ///   far-future resumed stream both synthesize `Neutral` and advance one tick.
+    /// either FREEZES in place or ADVANCES, depending on the case:
+    /// - **Freeze (no advance):** a genuine late-arrival at the buffer FRONTIER — a real
+    ///   command is being held (`last_resolved.is_some()`), the grace is not exhausted,
+    ///   AND `pending.is_empty()` (nothing newer buffered behind the hole) — freezes the
+    ///   cursor so the awaited tick, arriving within [`INPUT_HOLD_TICKS`], still resolves
+    ///   `Real`. (Separately, the one-shot buildup latch `building_playout`, evaluated
+    ///   before `take_exact`, withholds the first `Real` until `pending` reaches
+    ///   [`INPUT_BUFFER_TARGET`]; that withhold is not part of this gap-path freeze.)
+    /// - **Advance (+1):** three sub-cases. The give-up after the hold grace (`Neutral`,
+    ///   so an absent client cannot stall the host); the **deep-buffer yield** — a
+    ///   within-grace miss while `pending` is non-empty repeats the last intent (`Held`)
+    ///   and advances, so the cursor tracks the buffered backlog instead of stalling the
+    ///   ack behind a lost tick; and the post-give-up neutral-walk toward a far-future
+    ///   resumed stream (`Neutral`).
     ///
-    /// Held commands no longer advance the cursor; that establishes a standing playout
-    /// depth trailing the newest received tick by ~[`INPUT_BUFFER_TARGET`] − 1 ticks.
+    /// The frontier gate distinguishes a genuine late arrival (buffer empty ⟹ wait) from a
+    /// lost tick with the stream continued (buffer non-empty ⟹ advance). The deep-buffer
+    /// yield increments `held_ticks`, so a sustained non-empty gap gives up after the grace
+    /// rather than Held-walking unbounded; an isolated loss is followed by a `Real` that
+    /// resets the count. A frozen (frontier) held command does not advance the cursor; that,
+    /// with the buildup latch, establishes a standing playout depth trailing the newest
+    /// received tick by ~[`INPUT_BUFFER_TARGET`] − 1 ticks.
     ///
     /// Bounded playout + catch-up: BEFORE picking the expected tick, if the pending
     /// queue has grown past [`INPUT_BUFFER_MAX`] real buffered commands, fast-forward —
@@ -516,22 +538,19 @@ impl HostCommandQueues {
             });
         }
 
-        // Gap resolution. Two outcomes: HOLD the cursor in place (a genuine late-arrival
-        // wait, or an armed buildup withhold) or ADVANCE it (+1) with synthesized neutral
-        // (a give-up after the grace, or the post-give-up neutral-walk).
         let within_grace = state.held_ticks < INPUT_HOLD_TICKS;
-        // Hold without advancing iff the grace is not exhausted AND either the buildup
-        // latch is armed (withhold the first real command, regardless of `last_resolved`)
-        // or a real command is being held across the gap (`last_resolved.is_some()`). A
-        // disarmed gap with no command to hold is the neutral-walk — it must advance.
-        let hold_without_advance =
-            within_grace && (state.building_playout || state.last_resolved.is_some());
 
-        if hold_without_advance {
-            // Hold: leave `resolved_cursor` unchanged, do NOT `drop_stale`, do NOT
-            // `take_exact`, and do NOT thread `preserve_due_reload_press` (a non-advancing
-            // hold keeps `expected` constant, so a due reload press waits for an advancing
-            // tick). `held_ticks` still increments so the grace stays bounded.
+        // Buildup withhold (the standing playout floor). While the one-shot latch is armed
+        // and the grace is not exhausted, withhold the first `Real` — no advance, no
+        // `drop_stale`, no `take_exact` (already skipped above while armed), and no
+        // `preserve_due_reload_press` (a non-advancing withhold keeps `expected` constant).
+        // This is SEPARATE from the frontier gap-freeze below: buildup is depth-keyed on
+        // `pending.len()` (it disarms at `>= INPUT_BUFFER_TARGET`), so it withholds even
+        // with one command already buffered, which the frontier (`pending.is_empty()`) gate
+        // would not catch. `held_ticks` still counts so a stalled buildup falls through to
+        // the advancing give-up below — a client that sends one command then goes silent
+        // cannot pin the latch armed forever.
+        if state.building_playout && within_grace {
             state.held_ticks += 1;
             let (sim, source) = match &state.last_resolved {
                 Some(prev) => (held_gap_sim_command(prev), ResolutionSource::Held),
@@ -559,22 +578,101 @@ impl HostCommandQueues {
             });
         }
 
-        // Advancing gap resolution: give-up (grace exhausted while a command was held)
-        // or neutral-walk (no command to hold — the coast toward a far-future resume).
-        // Both synthesize neutral and advance the cursor one tick.
-        if state.held_ticks >= INPUT_HOLD_TICKS {
-            // Give-up: clear the held command so a later real command at a still-higher
-            // tick resumes cleanly rather than re-holding stale intent.
-            state.last_resolved = None;
+        // Gap resolution (buildup disarmed, or armed-but-grace-exhausted). Two outcomes:
+        // FREEZE the cursor in place (a genuine near-term late-arrival at the buffer
+        // FRONTIER) or ADVANCE it (+1) with a synthesized command (a give-up after the
+        // grace, the deep-buffer yield, or the post-give-up neutral-walk).
+        //
+        // Frontier gate. At this point `take_exact(expected)` found nothing, and the prior
+        // advance's `drop_stale` + `enqueue`'s stale-check guarantee `pending` holds ONLY
+        // commands with tick > `expected`. So `pending.is_empty()` means `expected` sits at
+        // the frontier — nothing newer is buffered, a genuine near-term late arrival (the
+        // clean-link sub-tick phase offset) worth waiting for. If ANY command is buffered
+        // past `expected`, the stream already continued (an isolated loss or reorder left a
+        // hole behind newer data), so freezing would stall the ack cursor behind a lost tick
+        // and drive the client's reconcile lead unbounded — advance instead (the deep-buffer
+        // yield below). Keyed on emptiness, not count, so a `pending` dip to any small depth
+        // under jitter still advances a lost tick rather than freezing it.
+        let at_frontier = state.pending.is_empty();
+        // Freeze without advancing iff the grace is not exhausted, the buffer is empty
+        // (frontier), AND a real command is being held across the gap
+        // (`last_resolved.is_some()`). The buildup withhold is handled separately above
+        // (depth-keyed on `pending.len()`), so it is NOT part of this gap-path freeze (no
+        // `building_playout ||` term here). A disarmed gap with no command to hold is the
+        // neutral-walk, and a non-empty gap is the deep-buffer yield — both advance.
+        let hold_without_advance = within_grace && at_frontier && state.last_resolved.is_some();
+
+        if hold_without_advance {
+            // Freeze: leave `resolved_cursor` unchanged, do NOT `drop_stale`, do NOT
+            // `take_exact`, and do NOT thread `preserve_due_reload_press` (a non-advancing
+            // freeze keeps `expected` constant, so a due reload press waits for an advancing
+            // tick). `held_ticks` still increments so the grace stays bounded.
+            state.held_ticks += 1;
+            let sim = held_gap_sim_command(
+                state
+                    .last_resolved
+                    .as_ref()
+                    .expect("frontier freeze requires a command to hold"),
+            );
+            let source = ResolutionSource::Held;
+            let diag_lead = state
+                .latest_observed_reload
+                .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
+            self.diag.record(QueueEvent {
+                client_id,
+                source,
+                lead: diag_lead,
+                yaw: Some(sim.movement.facing_yaw),
+                jump_pressed: sim.movement.jump_pressed,
+                trims: diag_trims,
+                trimmed_jump: diag_trimmed_jump,
+            });
+            return Some(ResolvedCommand {
+                command: sim,
+                client_tick: expected,
+                source,
+            });
         }
-        let mut sim = neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0));
-        state.held_ticks = 0;
+
+        // Advancing gap resolution — three sub-cases, all advancing the cursor +1:
+        let (mut sim, source) = if state.held_ticks >= INPUT_HOLD_TICKS {
+            // GIVE-UP (grace exhausted while a command was held): clear the held command so
+            // a later real command at a still-higher tick resumes cleanly rather than
+            // re-holding stale intent.
+            state.last_resolved = None;
+            state.held_ticks = 0;
+            (
+                neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
+                ResolutionSource::Neutral,
+            )
+        } else if let Some(prev) = state.last_resolved.clone() {
+            // DEEP-BUFFER YIELD (within grace, a command to hold, newer data buffered past
+            // the hole): repeat the last intent (Held) and advance so the cursor tracks the
+            // backlog instead of stalling the ack behind a lost tick. Held (not Neutral)
+            // keeps the pawn on the client's actual path — strictly better convergence on a
+            // moving pawn, identical to Neutral for an idle rider. `last_resolved` retained.
+            // `held_ticks` KEEPS COUNTING toward the grace (it is NOT reset), so a SUSTAINED
+            // non-empty gap — a lone far-future command, or a multi-tick hole — gives up
+            // after the grace and neutral-walks rather than Held-walking unbounded toward a
+            // distant command. An isolated loss is followed by a `Real` that resets it, so
+            // isolated losses never accumulate.
+            state.held_ticks += 1;
+            (held_gap_sim_command(&prev), ResolutionSource::Held)
+        } else {
+            // NEUTRAL-WALK (no command to hold — the post-give-up coast toward a stream that
+            // resumed at a far-future tick with commands still buffered).
+            state.held_ticks = 0;
+            (
+                neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
+                ResolutionSource::Neutral,
+            )
+        };
         state.resolved_cursor = Some(expected);
         state.drop_stale(expected);
         // Give-up latch recompute: re-arm buildup iff the give-up emptied the buffer (a
         // fresh stream must build depth again); a give-up that leaves commands buffered
-        // disarms so the neutral-walk advances toward them. For a neutral-walk, `pending`
-        // still holds the command being walked toward, so this is a no-op (stays false).
+        // disarms so the neutral-walk advances toward them. For a neutral-walk or a
+        // deep-buffer yield, `pending` still holds commands, so this stays false.
         state.building_playout = state.pending.is_empty();
         state.preserve_due_reload_press(expected, &mut sim);
         let diag_lead = state
@@ -582,7 +680,7 @@ impl HostCommandQueues {
             .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
         self.diag.record(QueueEvent {
             client_id,
-            source: ResolutionSource::Neutral,
+            source,
             lead: diag_lead,
             yaw: Some(sim.movement.facing_yaw),
             jump_pressed: sim.movement.jump_pressed,
@@ -592,7 +690,7 @@ impl HostCommandQueues {
         Some(ResolvedCommand {
             command: sim,
             client_tick: expected,
-            source: ResolutionSource::Neutral,
+            source,
         })
     }
 
@@ -1117,8 +1215,12 @@ mod tests {
         assert!((resolved.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
     }
 
-    // P1b: a give-up that leaves pending non-empty does NOT re-arm the latch; the
-    // neutral-walk advances immediately (no buildup withhold) to the buffered Real.
+    // P1b: a give-up that leaves pending non-empty does NOT re-arm the buildup latch. With
+    // newer data buffered ([60]), the missing ticks deep-yield (Held + advance, counting
+    // toward the grace) up to INPUT_HOLD_TICKS, then give up ONCE (Neutral); the give-up
+    // leaves pending non-empty so the latch stays disarmed and the neutral-walk (no further
+    // Held) marches to the buffered Real without a fresh buildup stall.
+    // Migrated from the count-gate behavior (3 frontier freezes at cursor 1, then give-up).
     #[test]
     fn give_up_with_cushion_intact_does_not_re_arm_buildup() {
         let mut queues = HostCommandQueues::new();
@@ -1128,26 +1230,34 @@ mod tests {
         // resolve until the cursor walks to it.
         assert!(queues.ingest(CLIENT, &command(60, -1.0)));
 
-        // Ticks 2.. miss: hold the grace (awaiting tick 2), then give up.
-        for _ in 0..INPUT_HOLD_TICKS {
+        // Ticks 2.. miss with newer data buffered: deep-yield Held + advance, bounded to
+        // the grace (held_ticks counts up), then a single give-up Neutral.
+        for expected_tick in 2..=(1 + INPUT_HOLD_TICKS) {
+            let held = queues.resolve_tick(CLIENT).unwrap();
             assert_eq!(
-                queues.resolve_tick(CLIENT).unwrap().source,
-                ResolutionSource::Held
+                held.source,
+                ResolutionSource::Held,
+                "a buffered-ahead miss deep-yields (advances), not a frontier freeze"
             );
+            assert_eq!(held.client_tick, expected_tick);
         }
         let giveup = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(giveup.source, ResolutionSource::Neutral);
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+        assert_eq!(
+            giveup.source,
+            ResolutionSource::Neutral,
+            "bounded: the deep-yield walk gives up after the grace"
+        );
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2 + INPUT_HOLD_TICKS));
 
-        // The latch did NOT re-arm (pending held [60]); no buildup hold — straight to the
-        // neutral-walk and Real at 60.
+        // The latch did NOT re-arm (pending held [60]); no buildup hold and no further
+        // deep-yield (last_resolved cleared) — the neutral-walk reaches Real at 60.
         let mut resolved_real = None;
         for _ in 0..70 {
             let r = queues.resolve_tick(CLIENT).unwrap();
             assert_ne!(
                 r.source,
                 ResolutionSource::Held,
-                "no buildup hold after a cushion-intact give-up"
+                "no buildup hold or re-yield after a cushion-intact give-up"
             );
             if r.source == ResolutionSource::Real {
                 resolved_real = Some(r);
@@ -1181,32 +1291,45 @@ mod tests {
         }
     }
 
-    // P3: a single packet delayed past the grace costs at most the hold grace — the
-    // give-up leaves the later commands buffered, so the latch does not re-arm and the
-    // next resolves are Real (no fresh buildup stall).
+    // P3: a lost/late packet with NEWER data already buffered costs at most ONE deep-yield
+    // (frontier gate: buffered-ahead data means the stream continued, so advance past the
+    // hole rather than freeze the ack behind it), then the buffered commands resolve Real —
+    // no fresh buildup stall and no full-grace freeze.
+    // Migrated from the count-gate behavior (3 freezes at cursor 1 then a give-up Neutral).
     #[test]
-    fn one_late_packet_costs_only_the_grace_no_fresh_buildup() {
+    fn one_late_packet_with_buffered_successor_yields_once_then_real() {
         let mut queues = HostCommandQueues::new();
         prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some
 
-        // Tick 2 is delayed; ticks 3 and 4 arrive and buffer.
+        // Tick 2 is missing; ticks 3 and 4 arrive and buffer ahead of the hole.
         assert!(queues.ingest(CLIENT, &command(3, 1.0)));
         assert!(queues.ingest(CLIENT, &command(4, 1.0)));
 
-        for _ in 0..INPUT_HOLD_TICKS {
-            assert_eq!(
-                queues.resolve_tick(CLIENT).unwrap().source,
-                ResolutionSource::Held
-            );
-        }
-        let giveup = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(giveup.source, ResolutionSource::Neutral);
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+        // pending = [3,4] is non-empty, so the missing tick 2 is a deep-buffer yield: ONE
+        // Held that ADVANCES the cursor (counting toward the grace), not a frontier freeze.
+        let yielded = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(yielded.source, ResolutionSource::Held);
+        assert_eq!(yielded.client_tick, 2);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(2),
+            "buffered-ahead data advances the cursor past the hole"
+        );
+        assert_eq!(
+            held_ticks(&queues, CLIENT),
+            1,
+            "the deep-yield counts toward the grace"
+        );
 
-        // The very next resolves are Real (tick 3 then 4) — no fresh buildup withhold.
+        // The buffered commands then resolve Real immediately — no fresh buildup withhold.
         let r3 = queues.resolve_tick(CLIENT).unwrap();
         assert_eq!(r3.source, ResolutionSource::Real);
         assert_eq!(r3.client_tick, 3);
+        assert_eq!(
+            held_ticks(&queues, CLIENT),
+            0,
+            "the Real resolve reset the grace count"
+        );
         let r4 = queues.resolve_tick(CLIENT).unwrap();
         assert_eq!(r4.source, ResolutionSource::Real);
         assert_eq!(r4.client_tick, 4);
@@ -1363,6 +1486,276 @@ mod tests {
             "INPUT_BUFFER_TARGET ({INPUT_BUFFER_TARGET}) must be < INPUT_HOLD_TICKS ({INPUT_HOLD_TICKS}) \
              so buildup completes before the grace give-up fires"
         );
+    }
+
+    /// The number of pending (buffered, not-yet-resolved) commands for `client`. Reads
+    /// the private queue state directly — the test module is a child of the queue's
+    /// module, so it may inspect `pending` without a production accessor.
+    fn pending_len(queues: &HostCommandQueues, client: u64) -> usize {
+        queues
+            .clients
+            .get(&client)
+            .map(|s| s.pending.len())
+            .unwrap_or(0)
+    }
+
+    /// The consecutive-gap grace counter for `client`. Read directly from the private
+    /// queue state (the test module is a child module) to assert the bounded deep-yield
+    /// walk: a deep-buffer yield increments this rather than resetting it.
+    fn held_ticks(queues: &HostCommandQueues, client: u64) -> u32 {
+        queues
+            .clients
+            .get(&client)
+            .map(|s| s.held_ticks)
+            .unwrap_or(0)
+    }
+
+    // P18: a within-grace miss with NEWER data buffered (non-empty pending) yields a
+    // Held-ADVANCE (cursor +1) instead of freezing, so the cursor tracks a lossy-link
+    // backlog rather than stalling the ack behind a lost tick (and, on a deep buffer, rather
+    // than freezing pending into the catch-up trim). Contrast the frontier "Command slightly
+    // late" row (`slightly_late_command_holds_without_advancing…`), where pending is EMPTY
+    // and the cursor does NOT advance. The deep-yield increments `held_ticks` (bounded walk).
+    #[test]
+    fn deep_backlog_miss_yields_held_advance_instead_of_freezing() {
+        let mut queues = HostCommandQueues::new();
+        // Ingest tick 0 then 2..=8 — tick 1 is the hole. 8 buffered <= INPUT_BUFFER_MAX,
+        // so no catch-up trim fires; the buffered-ahead data (pending non-empty) is what
+        // forces the yield rather than a frontier freeze.
+        assert!(queues.ingest(CLIENT, &command(0, 1.0)));
+        for t in 2..=8u32 {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+        }
+        assert!(
+            pending_len(&queues, CLIENT) <= INPUT_BUFFER_MAX,
+            "precondition: not deep enough to trip catch-up"
+        );
+
+        // Resolve tick 0 (Real): the depth disarms the buildup latch immediately.
+        let r0 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r0.source, ResolutionSource::Real);
+        assert_eq!(r0.client_tick, 0);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(0));
+        assert_eq!(
+            pending_len(&queues, CLIENT),
+            7,
+            "ticks 2..=8 remain buffered"
+        );
+        assert_eq!(
+            held_ticks(&queues, CLIENT),
+            0,
+            "a Real resolve resets the grace count"
+        );
+
+        // Tick 1 is a hole and pending is NON-EMPTY ([2..=8]): the deep-buffer yield
+        // repeats the last intent (Held) and ADVANCES the cursor — unlike the frontier
+        // freeze, which would hold at cursor 0. No trim fires, and `held_ticks` increments.
+        let held = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(held.source, ResolutionSource::Held);
+        assert_eq!(held.client_tick, 1);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(1),
+            "the deep-buffer yield advanced the cursor (unlike the frontier freeze)"
+        );
+        assert_eq!(
+            held_ticks(&queues, CLIENT),
+            1,
+            "the deep-yield counts toward the grace (incremented, not reset)"
+        );
+        assert!(
+            (held.command.movement.wish_dir.y - 1.0).abs() < EPSILON,
+            "the yield repeats the last real intent"
+        );
+        assert_eq!(
+            pending_len(&queues, CLIENT),
+            7,
+            "no catch-up trim batch-dropped the backlog (pending unchanged)"
+        );
+
+        // The next expected tick (2) is still present and resolves Real — the backlog was
+        // neither stalled into the trim nor lost — and the grace count resets.
+        let r2 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r2.source, ResolutionSource::Real);
+        assert_eq!(r2.client_tick, 2);
+        assert_eq!(
+            held_ticks(&queues, CLIENT),
+            0,
+            "the Real resolve reset the count"
+        );
+    }
+
+    // The load-bearing depth invariant that keeps the freeze clear of the catch-up trim:
+    // the freeze now fires only at `pending.is_empty()`, and the catch-up trim only at
+    // `pending > INPUT_BUFFER_MAX`, and `INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX` bounds the
+    // buildup depth well below the trim — so a freeze can never grow the buffer into the
+    // trim (a fortiori, since the freeze fires at depth 0).
+    #[test]
+    fn buffer_target_is_below_the_catch_up_max() {
+        assert!(
+            INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX,
+            "INPUT_BUFFER_TARGET ({INPUT_BUFFER_TARGET}) must be < INPUT_BUFFER_MAX ({INPUT_BUFFER_MAX}) \
+             so buildup depth stays clear of the catch-up trim"
+        );
+    }
+
+    // Test #3 (coordinator-required): the bounded deep-yield walk plus the silent-client
+    // drain from the deep regime.
+    //  (a) A multi-tick internal gap with newer data buffered deep-yields Held + advance,
+    //      the yield COUNTING toward the grace, so after INPUT_HOLD_TICKS yields it gives
+    //      up ONCE (Neutral) rather than Held-walking unbounded — the bounded-walk
+    //      invariant. Then the next buffered tick resolves Real.
+    //  (b) When the client goes silent the buffer drains to empty (frontier); frontier
+    //      freezes accumulate held_ticks -> give-up -> Neutral. The absent-client guarantee
+    //      holds even after entering the drain from the deep regime.
+    #[test]
+    fn deep_multi_tick_gap_walks_bounded_then_drains_to_neutral_when_client_goes_silent() {
+        let mut queues = HostCommandQueues::new();
+        // Holes at ticks 1..=4 (four holes > INPUT_HOLD_TICKS); ticks 0 and 5..=9 buffered.
+        // 6 buffered <= INPUT_BUFFER_MAX, so no catch-up trim.
+        assert!(queues.ingest(CLIENT, &command(0, 1.0)));
+        for t in 5..=9u32 {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+        }
+
+        // Resolve tick 0 (Real); ticks 5..=9 remain buffered behind the gap.
+        let r0 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r0.source, ResolutionSource::Real);
+        assert_eq!(r0.client_tick, 0);
+        assert_eq!(
+            pending_len(&queues, CLIENT),
+            5,
+            "backlog buffered behind the gap"
+        );
+
+        // (a) Ticks 1..=INPUT_HOLD_TICKS deep-yield Held + advance, the yield counting up
+        //     toward the grace (held_ticks 1,2,3). The backlog is preserved (no trim).
+        for expected_tick in 1..=INPUT_HOLD_TICKS {
+            let held = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(
+                held.source,
+                ResolutionSource::Held,
+                "a buffered-ahead gap deep-yields Held while within the grace"
+            );
+            assert_eq!(held.client_tick, expected_tick, "one tick per deep yield");
+            assert_eq!(
+                held_ticks(&queues, CLIENT),
+                expected_tick,
+                "the deep-yield counts toward the grace (bounded walk)"
+            );
+            assert_eq!(
+                pending_len(&queues, CLIENT),
+                5,
+                "backlog preserved (no trim)"
+            );
+        }
+
+        // Tick 4 is still a hole, but the grace is now exhausted: give up ONCE (Neutral,
+        // advance) rather than continuing an unbounded Held-walk toward the buffered data.
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(
+            giveup.source,
+            ResolutionSource::Neutral,
+            "the walk is BOUNDED: after the grace it gives up, not Held-walks unbounded"
+        );
+        assert_eq!(giveup.client_tick, 1 + INPUT_HOLD_TICKS);
+        assert_eq!(
+            held_ticks(&queues, CLIENT),
+            0,
+            "the give-up reset the grace count"
+        );
+
+        // Tick 5 is present -> Real; drain 5..=9 as Real, ending at the frontier (empty).
+        for t in 5..=9u32 {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(r.source, ResolutionSource::Real);
+            assert_eq!(r.client_tick, t);
+        }
+        assert_eq!(
+            pending_len(&queues, CLIENT),
+            0,
+            "buffer drained to the frontier"
+        );
+
+        // (b) The client is now silent (pending empty -> frontier). Within-grace frontier
+        //     freezes hold the last command WITHOUT advancing, accumulating held_ticks...
+        for _ in 0..INPUT_HOLD_TICKS {
+            let held = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(
+                held.source,
+                ResolutionSource::Held,
+                "an empty (frontier) buffer freezes on the missing tick"
+            );
+            assert_eq!(
+                queues.resolved_cursor(CLIENT),
+                Some(9),
+                "a frontier freeze does not advance the cursor"
+            );
+        }
+        // ...then the grace give-up neutralizes and advances — the absent-client guarantee
+        // holds even after the stream entered the drain from the deep regime.
+        let neutral = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(10),
+            "the give-up advances past the absent tick"
+        );
+        assert!(
+            neutral.command.movement.wish_dir.length_squared() < EPSILON,
+            "the give-up synthesizes neutral movement"
+        );
+    }
+
+    // Bounded deep-yield walk: a lone far-future command buffered within grace does NOT
+    // produce an unbounded Held-walk toward it. The deep-yield counts toward the grace, so
+    // after INPUT_HOLD_TICKS Held yields the resolver gives up (Neutral, clears
+    // last_resolved) and then neutral-walks the remaining distance — never dozens of Held
+    // ticks repeating stale intent.
+    #[test]
+    fn lone_far_future_command_within_grace_gives_up_not_walks() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some (wish 1.0)
+
+        // A single far-future command lands immediately (within grace), buffered ahead.
+        assert!(queues.ingest(CLIENT, &command(50, -1.0)));
+
+        // Ticks 2.. miss with [50] buffered: deep-yield Held + advance, bounded to the
+        // grace (held_ticks 1,2,3), each repeating the held intent (wish 1.0, NOT 50's).
+        for expected_tick in 2..=(1 + INPUT_HOLD_TICKS) {
+            let held = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(held.source, ResolutionSource::Held);
+            assert_eq!(held.client_tick, expected_tick);
+            assert!(
+                (held.command.movement.wish_dir.y - 1.0).abs() < EPSILON,
+                "the deep-yield repeats the LAST resolved intent, not the far command's"
+            );
+        }
+
+        // Grace exhausted: give up ONCE (Neutral, clears last_resolved) — the walk is
+        // bounded to the grace, not 48 ticks of Held toward tick 50.
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(giveup.source, ResolutionSource::Neutral);
+        assert_eq!(giveup.client_tick, 2 + INPUT_HOLD_TICKS);
+
+        // The remaining distance to tick 50 is covered by the neutral-walk (last_resolved
+        // now None -> no more Held), then tick 50 resolves Real.
+        let mut resolved_real = None;
+        for _ in 0..60 {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            assert_ne!(
+                r.source,
+                ResolutionSource::Held,
+                "after the give-up the walk is neutral, never an unbounded Held-walk"
+            );
+            if r.source == ResolutionSource::Real {
+                resolved_real = Some(r);
+                break;
+            }
+        }
+        let real = resolved_real.expect("neutral-walk reaches the far command");
+        assert_eq!(real.client_tick, 50);
+        assert!((real.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
     }
 
     // P16: in steady state the resolved cursor TRAILS the newest received tick by

@@ -1052,7 +1052,11 @@ mod tests {
             assert_eq!(held.source, ResolutionSource::Held);
             assert_eq!(held.client_tick, 2, "the held tick keeps awaiting tick 2");
             assert!((held.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
-            assert_eq!(queues.resolved_cursor(CLIENT), Some(1), "no advance on hold");
+            assert_eq!(
+                queues.resolved_cursor(CLIENT),
+                Some(1),
+                "no advance on hold"
+            );
         }
 
         let neutral = queues.resolve_tick(CLIENT).unwrap();
@@ -1151,7 +1155,9 @@ mod tests {
             }
         }
         assert_eq!(
-            resolved_real.expect("neutral-walk reaches Real").client_tick,
+            resolved_real
+                .expect("neutral-walk reaches Real")
+                .client_tick,
             60
         );
     }
@@ -1422,7 +1428,10 @@ mod tests {
             "fresh stream re-enters buildup from None"
         );
         assert_eq!(queues.resolved_cursor(CLIENT), None);
-        assert!(!n.command.reload, "no stale reload edge carried across the reset");
+        assert!(
+            !n.command.reload,
+            "no stale reload edge carried across the reset"
+        );
     }
 
     // Ordering "Multiple fixed ticks in one frame": ingest a burst once, then resolve
@@ -1604,7 +1613,10 @@ mod tests {
                 "the stale tap's movement is never replayed"
             );
         }
-        assert_eq!(reload_count, 1, "the drop-staled reload edge delivers exactly once");
+        assert_eq!(
+            reload_count, 1,
+            "the drop-staled reload edge delivers exactly once"
+        );
     }
 
     // Regression: retransmitting the stale tap after recovery must not re-latch the same

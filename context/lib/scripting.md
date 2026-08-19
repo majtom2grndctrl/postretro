@@ -504,6 +504,14 @@ two are not interchangeable: a fire-time-tag effect cannot be a `world.query` co
 per-entity id handles — the wrong cardinality and resolution time for a group that appears
 mid-session).
 
+**The active reaction set is a derived view, not storage.** The engine recomposes it from retained mod-global and level-scoped sources whenever the active level tags change — level load, hot reload, return to frontend. A recompose erases whatever was written into the composed set and re-derives positions within it. Addresses survive it; positions do not. Durable per-reaction state lives outside the composed set.
+
+**Dispatch has two paths, and only one walks a body at runtime.** Firing a reaction by address walks its steps at dispatch time. Binding one to a trigger partitions it at install instead: consequential steps become bound commands that run inside the fixed tick, and the rest becomes a residual the frame end drains. A pass that must see every step handles both — the install-time partition never reaches the runtime walker.
+
+**Named dispatch returns chained work; dropping the return value drops the chain.** Firing by address yields the follow-up addresses the body queued. A caller that discards them completes the first hop only, silently. Chaining callers feed those addresses back into the deferred dispatcher.
+
+**Deferred effects run at the frame-end drain, never inside the fixed tick.** The tick applies bound commands only, which is what keeps it free of VM invocation. Presentation and every later-resolved effect run once per frame, after the tick loop.
+
 ---
 
 ## 13. Crate Architecture

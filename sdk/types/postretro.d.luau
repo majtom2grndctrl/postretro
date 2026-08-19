@@ -1653,7 +1653,7 @@ export type WidgetAlign = "start" | "center" | "end" | "stretch"
 --- `"easeIn"`, `"easeOut"`, `"easeInOut"`. Tweens change renderer-local display
 --- state only.
 export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
---- Number-shape value tween for text, slider, and bar binds. `durationMs` is
+--- Number-shape value tween for text, slider, bar, and Ring scalar binds. `durationMs` is
 --- milliseconds; optional `from` seeds the first displayed value before normal
 --- retargeting takes over.
 export type NumberTween = { durationMs: number, easing: WidgetEasing, from: number? }
@@ -1742,6 +1742,8 @@ export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: 
 --- inside `definePresentationTemplate`; ordinary UI trees reject them during
 --- manifest validation.
 export type BarBindProp = (ComputedRef<number> | LocalBindRef | FactBindRef) & { tween: NumberTween? }
+--- Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported.
+export type RingBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
 --- Bar denominator: either a literal number or a readonly numeric state ref such
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ComputedRef<number>
@@ -1750,6 +1752,10 @@ export type BarMaxProp = number | ComputedRef<number>
 export type BarExitFade = { durationMs: number }
 --- Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly.
 export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, width: number?, height: number?, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, exitFade: BarExitFade?, role: WidgetRole? }
+
+--- Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind;
+--- angles are degrees with 0 at 12 o'clock and positive clockwise.
+export type RingProps = { diameter: number, radius: number | RingBindProp, thickness: number | RingBindProp, startAngle: (number | RingBindProp)?, sweep: (number | RingBindProp)?, fill: WidgetColor, track: WidgetColor?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 
 --- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).
 export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicate? }
@@ -1997,6 +2003,8 @@ export type PostretroUiModule = {
   Slider: (props: SliderProps) -> WidgetDescriptor,
   --- Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`.
   Bar: (props: BarProps) -> WidgetDescriptor,
+  --- Build a passive annulus or angular arc descriptor.
+  Ring: (props: RingProps) -> WidgetDescriptor,
   --- Build a non-visual live-region announcement. `text` is positional display text.
   Announce: (props: AnnounceProps, text: LocalizedText) -> WidgetDescriptor,
   --- Build a vertical stack. `children` is positional, not a prop.

@@ -36,7 +36,7 @@ pub enum Role {
 /// is authored. Pure — it maps the kind to its default role and nothing else:
 /// `Button`→`button`, `Slider`→`slider`, `Bar`→`progressbar`, `Image`→`image`,
 /// the containers (`vstack`/`hstack`/`grid`)→`group`, and `Text`/`Spacer`/
-/// `Announce`→`none` (no inherent interactive/structural role).
+/// `Ring`/`Announce`→`none` (no inherent interactive/structural role).
 //
 // Consumed by later G2 tasks (role projection); only the unit test calls it for
 // now, so it is dead outside `cfg(test)` until then.
@@ -48,7 +48,11 @@ pub fn implicit_role(widget: &Widget) -> Role {
         Widget::Bar(_) => Role::Progressbar,
         Widget::Image(_) => Role::Image,
         Widget::VStack(_) | Widget::HStack(_) | Widget::Grid(_) => Role::Group,
-        Widget::Text(_) | Widget::Spacer(_) | Widget::Panel(_) | Widget::Announce(_) => Role::None,
+        Widget::Text(_)
+        | Widget::Spacer(_)
+        | Widget::Panel(_)
+        | Widget::Ring(_)
+        | Widget::Announce(_) => Role::None,
     }
 }
 

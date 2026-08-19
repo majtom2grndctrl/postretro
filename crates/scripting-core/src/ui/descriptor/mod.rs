@@ -19,13 +19,13 @@ pub use accessibility::implicit_role;
 pub use envelope::{AnchoredTree, CaptureMode};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
 pub use values::{
-    Align, BindSource, Border, CellInit, ColorValue, Easing, LocalState, Predicate, PredicateValue,
-    SpacingValue,
+    Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
+    PredicateValue, ScalarValue, SpacingValue, TextTween,
 };
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
-    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, SliderBind,
-    SliderWidget, SpacerWidget, TextBind, TextTween, TextWidget, Widget,
+    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingWidget, SliderBind,
+    SliderWidget, SpacerWidget, TextBind, TextWidget, Widget,
 };
 
 #[cfg(test)]
@@ -36,15 +36,15 @@ mod tests {
     // not re-exported because the descriptor API does not own it).
     use super::super::layout::Anchor;
 
-    /// A tree exercising the seven non-interactive kinds wrapped in the placement envelope.
-    /// Button/Slider/Bar (Goal F interactive widgets) are covered by their own round-trip tests.
+    /// A tree exercising all nine passive visual kinds in the placement envelope.
+    /// Button and Slider have dedicated round-trip tests; Announce is non-visual.
     /// Field order matches the Rust struct declaration order so the
     /// re-serialized JSON is byte-identical to this source (serde emits fields
     /// in declaration order). The tag `kind` always serializes first.
-    const ALL_KINDS_JSON: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo"},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}]}}"#;
+    const ALL_KINDS_JSON: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo"},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]},{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]},{"kind":"ring","diameter":24.0,"radius":10.0,"thickness":2.0,"fill":[0.8,0.95,0.98,0.9]}]}}"#;
 
     #[test]
-    fn anchored_tree_round_trips_all_seven_noninteractive_kinds_identically() {
+    fn anchored_tree_round_trips_all_nine_passive_visual_kinds_identically() {
         let tree: AnchoredTree =
             serde_json::from_str(ALL_KINDS_JSON).expect("fixture must deserialize");
         let reserialized = serde_json::to_string(&tree).expect("must serialize");
@@ -754,6 +754,16 @@ mod tests {
                 r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
                 r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#,
             ),
+            // Ring() with literal geometry omits every optional field.
+            (
+                r#"{"kind":"ring","diameter":24,"radius":10,"thickness":2,"fill":[0.8,0.95,0.98,0.9]}"#,
+                r#"{"kind":"ring","diameter":24.0,"radius":10.0,"thickness":2.0,"fill":[0.8,0.95,0.98,0.9]}"#,
+            ),
+            // Ring() scalar bindings preserve slot/local sources and tween.
+            (
+                r#"{"kind":"ring","diameter":120,"radius":{"slot":"hud.radius","tween":{"durationMs":90,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":15,"sweep":{"slot":"hud.sweep"},"fill":[1,0.2,0.3,1],"track":[0.1,0.1,0.1,1],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#,
+                r#"{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":15.0,"sweep":{"slot":"hud.sweep"},"fill":[1.0,0.2,0.3,1.0],"track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#,
+            ),
             // VStack() with one child.
             (
                 r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
@@ -1106,5 +1116,150 @@ mod tests {
         let re = serde_json::to_string(&tree).unwrap();
         assert_eq!(re, without);
         assert!(!re.contains("accessibleName") && !re.contains("\"role\""));
+    }
+
+    #[test]
+    fn ring_literal_wire_round_trips_and_omits_defaulted_optionals() {
+        // Omitted startAngle/sweep remain omitted on the wire; their 0°/360°
+        // defaults belong to collection, not serde defaults that would emit keys.
+        let json = r#"{"kind":"ring","diameter":120.0,"radius":48.0,"thickness":3.0,"fill":[1.0,0.2,0.3,1.0]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("valid literal ring");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+        let Widget::Ring(ring) = widget else {
+            panic!("ring kind must deserialize to Widget::Ring");
+        };
+        assert!(ring.start_angle.is_none());
+        assert!(ring.sweep.is_none());
+        assert!(ring.track.is_none());
+        assert!(ring.id.is_none());
+        assert!(ring.visible_when.is_none());
+        assert!(ring.role.is_none());
+    }
+
+    #[test]
+    fn ring_bound_scalar_wire_round_trips_slot_local_and_tween() {
+        let json = r#"{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":{"slot":"hud.start"},"sweep":{"local":"sweep"},"fill":"critical","track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#;
+        let widget: Widget = serde_json::from_str(json).expect("valid bound ring");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+        let Widget::Ring(ring) = widget else {
+            panic!("ring kind must deserialize to Widget::Ring");
+        };
+        assert!(matches!(ring.radius, ScalarValue::Bound(_)));
+        assert!(matches!(ring.thickness, ScalarValue::Bound(_)));
+        assert!(matches!(ring.start_angle, Some(ScalarValue::Bound(_))));
+        assert!(matches!(ring.sweep, Some(ScalarValue::Bound(_))));
+    }
+
+    #[test]
+    fn ring_literal_geometry_rejects_invalid_ranges_but_accepts_bound_values() {
+        let invalid = [
+            r#"{"kind":"ring","diameter":0.0,"radius":1.0,"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":0.0,"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":0.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":51.0,"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":26.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":1.0,"sweep":0.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":1.0,"sweep":360.1,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":{"fact":"unsupported"},"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+        ];
+        for json in invalid {
+            assert!(
+                serde_json::from_str::<Widget>(json).is_err(),
+                "invalid ring must reject: {json}"
+            );
+        }
+
+        // Bound geometry is accepted even though its eventual runtime value may
+        // need clamping; Task 2 owns that dynamic draw-time behavior.
+        let bound = r#"{"kind":"ring","diameter":100.0,"radius":{"slot":"hud.radius"},"thickness":{"local":"stroke"},"sweep":{"slot":"hud.sweep"},"fill":[1.0,1.0,1.0,1.0]}"#;
+        serde_json::from_str::<Widget>(bound).expect("bound ring must be accepted");
+    }
+
+    #[test]
+    fn ring_validation_rejects_non_finite_literal_geometry() {
+        let valid = RingWidget {
+            diameter: 100.0,
+            radius: ScalarValue::Literal(25.0),
+            thickness: ScalarValue::Literal(2.0),
+            start_angle: Some(ScalarValue::Literal(0.0)),
+            sweep: Some(ScalarValue::Literal(90.0)),
+            fill: ColorValue::Literal([1.0; 4]),
+            track: None,
+            id: None,
+            visible_when: None,
+            role: None,
+        };
+        let mut non_finite_diameter = valid.clone();
+        non_finite_diameter.diameter = f32::NAN;
+        assert!(non_finite_diameter.validate().is_err());
+
+        let mut non_finite_radius = valid.clone();
+        non_finite_radius.radius = ScalarValue::Literal(f32::INFINITY);
+        assert!(non_finite_radius.validate().is_err());
+
+        let mut non_finite_thickness = valid.clone();
+        non_finite_thickness.thickness = ScalarValue::Literal(f32::NAN);
+        assert!(non_finite_thickness.validate().is_err());
+
+        let mut non_finite_start = valid.clone();
+        non_finite_start.start_angle = Some(ScalarValue::Literal(f32::NEG_INFINITY));
+        assert!(non_finite_start.validate().is_err());
+
+        let mut non_finite_sweep = valid;
+        non_finite_sweep.sweep = Some(ScalarValue::Literal(f32::NAN));
+        assert!(non_finite_sweep.validate().is_err());
+    }
+
+    #[test]
+    fn ring_validation_rejects_malformed_bound_tweens() {
+        let ring_with_tween = |tween: TextTween| RingWidget {
+            diameter: 100.0,
+            radius: ScalarValue::Bound(BoundScalar {
+                source: BindSource::Slot {
+                    slot: "hud.radius".to_string(),
+                },
+                tween: Some(tween),
+            }),
+            thickness: ScalarValue::Literal(2.0),
+            start_angle: None,
+            sweep: None,
+            fill: ColorValue::Literal([1.0; 4]),
+            track: None,
+            id: None,
+            visible_when: None,
+            role: None,
+        };
+
+        for tween in [
+            TextTween {
+                duration_ms: -1.0,
+                easing: Easing::Linear,
+                from: None,
+            },
+            TextTween {
+                duration_ms: f32::NAN,
+                easing: Easing::Linear,
+                from: None,
+            },
+            TextTween {
+                duration_ms: 90.0,
+                easing: Easing::EaseOut,
+                from: Some(f32::INFINITY),
+            },
+        ] {
+            assert!(ring_with_tween(tween).validate().is_err());
+        }
+
+        let zero_duration = ring_with_tween(TextTween {
+            duration_ms: 0.0,
+            easing: Easing::Linear,
+            from: Some(10.0),
+        });
+        zero_duration
+            .validate()
+            .expect("zero-duration ring tween is valid and settles immediately");
+
+        let negative_duration = r#"{"kind":"ring","diameter":100.0,"radius":{"slot":"hud.radius","tween":{"durationMs":-1.0,"easing":"linear"}},"thickness":2.0,"fill":[1.0,1.0,1.0,1.0]}"#;
+        assert!(serde_json::from_str::<Widget>(negative_duration).is_err());
     }
 }

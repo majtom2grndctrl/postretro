@@ -223,6 +223,126 @@ fn bar_bridge_accepts_sizing_and_exit_fade_and_rejects_invalid_authored_shapes()
 }
 
 #[test]
+fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtimes() {
+    let valid_js = r#"({
+        anchor: "center", offset: [0, 0],
+        root: {
+            kind: "vstack", gap: 0, padding: 0, align: "start",
+            localState: { scope: "ring", cells: { stroke: 3 } },
+            children: [{
+                kind: "ring", diameter: 120,
+                radius: { slot: "hud.radius", tween: { durationMs: 90, easing: "easeOut" } },
+                thickness: { local: "stroke" }, startAngle: 15, sweep: { slot: "hud.sweep" },
+                fill: [1, 0.2, 0.3, 1], track: [0.1, 0.1, 0.1, 1],
+                id: "reticle", visibleWhen: { slot: "hud.visible" }, role: "none"
+            }]
+        }
+    })"#;
+    let valid_lua = r#"return {
+        anchor = "center", offset = {0, 0},
+        root = {
+            kind = "vstack", gap = 0, padding = 0, align = "start",
+            localState = { scope = "ring", cells = { stroke = 3 } },
+            children = {{
+                kind = "ring", diameter = 120,
+                radius = { slot = "hud.radius", tween = { durationMs = 90, easing = "easeOut" } },
+                thickness = { ["local"] = "stroke" }, startAngle = 15, sweep = { slot = "hud.sweep" },
+                fill = {1, 0.2, 0.3, 1}, track = {0.1, 0.1, 0.1, 1},
+                id = "reticle", visibleWhen = { slot = "hud.visible" }, role = "none"
+            }}
+        }
+    }"#;
+
+    let js_tree = eval_js(valid_js, |ctx, value| {
+        anchored_tree_from_js_value(ctx, value).expect("valid JS ring must convert")
+    });
+    let lua_tree = eval_lua(valid_lua, |value| {
+        anchored_tree_from_lua_value(value).expect("valid Luau ring must convert")
+    });
+    assert_eq!(js_tree, lua_tree);
+
+    let Widget::VStack(root) = &js_tree.root else {
+        panic!("ring fixture root must be a vstack");
+    };
+    let Widget::Ring(ring) = &root.children[0] else {
+        panic!("fixture child must be a ring");
+    };
+    assert!(matches!(ring.radius, ScalarValue::Bound(_)));
+    assert!(matches!(ring.thickness, ScalarValue::Bound(_)));
+    assert!(matches!(ring.start_angle, Some(ScalarValue::Literal(15.0))));
+    assert!(matches!(ring.sweep, Some(ScalarValue::Bound(_))));
+    assert_eq!(
+        serde_json::to_string(&js_tree).unwrap(),
+        r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","localState":{"scope":"ring","cells":{"stroke":3.0}},"children":[{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":15.0,"sweep":{"slot":"hud.sweep"},"fill":[1.0,0.2,0.3,1.0],"track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}]}}"#
+    );
+
+    for (invalid_js, invalid_lua) in [
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:0, radius:25, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=0, radius=25, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:0, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=0, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:0, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=0, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:51, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=51, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:26, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=26, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, sweep:0, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, sweep=0, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, sweep:360.1, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, sweep=360.1, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{fact:"unsupported"}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={fact="unsupported"}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:-1,easing:"linear"}}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=-1,easing="linear"}}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:NaN,easing:"linear"}}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=0/0,easing="linear"}}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{slot:"hud.radius",tween:{durationMs:90,easing:"linear",from:NaN}}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius={slot="hud.radius",tween={durationMs=90,easing="linear",from=0/0}}, thickness=2, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, fill:[1,NaN,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, fill={1,0/0,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, fill:[1,1,1,1], track:[1,1,Infinity,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, fill={1,1,1,1}, track={1,1,math.huge,1} } }"#,
+        ),
+    ] {
+        let js_error = eval_js(invalid_js, |ctx, value| {
+            anchored_tree_from_js_value(ctx, value).unwrap_err()
+        });
+        assert!(matches!(js_error, DescriptorError::InvalidShape { .. }));
+
+        let lua_error = eval_lua(invalid_lua, |value| {
+            anchored_tree_from_lua_value(value).unwrap_err()
+        });
+        assert!(matches!(lua_error, DescriptorError::InvalidShape { .. }));
+    }
+}
+
+#[test]
 fn js_bridge_rejects_a_bind_with_neither_slot_nor_local() {
     // A bind object must carry exactly one source key; neither is a shape error.
     let src = r#"({

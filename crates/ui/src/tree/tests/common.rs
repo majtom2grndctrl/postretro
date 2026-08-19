@@ -13,16 +13,17 @@ pub use super::super::predicate::resolve_predicate;
 pub use super::super::ui_tree::NodeContext;
 pub use super::super::{
     CellValues, FocusKind, FocusNeighbors, FocusRect, FocusRectList, ImageSizes, NodeInteraction,
-    UiDrawData, UiTree,
+    UiDrawData, UiPaintOp, UiTree,
 };
 
 // Descriptor model + sibling-module types the tests construct.
 pub use super::super::build::INTERACTIVE_LABEL_COLOR;
 pub use crate::descriptor::{
-    Align, AnchoredTree, BarExitFade, BarMax, BarMaxStateRef, BarWidget, BindSource, ButtonWidget,
-    CaptureMode, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget, LocalState,
-    PanelBind, PanelTween, PanelWidget, Predicate, PredicateValue, SliderBind, SliderWidget,
-    SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
+    Align, AnchoredTree, BarExitFade, BarMax, BarMaxStateRef, BarWidget, BindSource, BoundScalar,
+    ButtonWidget, CaptureMode, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget,
+    LocalState, PanelBind, PanelTween, PanelWidget, Predicate, PredicateValue, RingWidget,
+    ScalarValue, SliderBind, SliderWidget, SpacerWidget, SpacingValue, TextBind, TextTween,
+    TextWidget, Widget,
 };
 pub use crate::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 pub use crate::style_ranges::{StyleEntry, StyleRanges};

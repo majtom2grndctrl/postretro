@@ -29,6 +29,7 @@ export type {
   PanelBindProp,
   SliderBindProp,
   BarBindProp,
+  RingBindProp,
   BarMaxProp,
   LocalBindRef,
   FactBindRef,
@@ -50,9 +51,10 @@ export type {
   ButtonProps,
   SliderProps,
   BarProps,
+  RingProps,
   AnnounceProps,
 } from "./ui/widgets";
-export { Text, Panel, Image, Spacer, Button, Slider, Bar, Announce } from "./ui/widgets";
+export { Text, Panel, Image, Spacer, Button, Slider, Bar, Ring, Announce } from "./ui/widgets";
 
 export type {
   FocusKind,

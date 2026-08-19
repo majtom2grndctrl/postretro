@@ -1,6 +1,7 @@
 import {
   Bar,
   HStack,
+  Ring,
   Text,
   Tree,
   VStack,
@@ -131,7 +132,12 @@ export const reticle = defineUiTree({
   alwaysOn: true,
   tree: Tree(
     { anchor: "center", offset: [0.0, 0.0] },
-    Text({ content: "+", font: font.mono }),
+    Ring({
+      diameter: 28.0,
+      radius: 10.0,
+      thickness: 2.0,
+      fill: color.hud.text,
+    }),
   ),
 });
 

@@ -80,6 +80,28 @@ impl UiInstance {
     }
 }
 
+/// Per-instance CPU draw-list record for one anti-aliased UI ring or arc.
+///
+/// The ring path deliberately has a separate ABI from [`UiInstance`]: quads
+/// retain their locked 64-byte 9-slice layout while this record carries only the
+/// device-pixel radial inputs its SDF shader needs. The 48-byte stride is guarded
+/// below so the renderer-local upload mirror cannot drift accidentally.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct UiRingInstance {
+    /// Device-pixel bounding rect: `[x, y, width, height]`, top-left origin.
+    pub rect: [f32; 4],
+    /// Linear RGBA fill color.
+    pub color: [f32; 4],
+    /// Outer radius and annulus thickness in device pixels.
+    pub radius: f32,
+    pub thickness: f32,
+    /// Clockwise angular interval in radians. Zero is straight up in UI's
+    /// Y-down device space; a sweep of `TAU` is a seamless full circle.
+    pub start_angle: f32,
+    pub sweep: f32,
+}
+
 /// Pure CPU draw list - a flat batch of instances sharing one bound texture.
 /// Built with no wgpu call so layout/scaling logic stays GPU-independent: the
 /// `layout` projection path populates it and the CPU layout tests assert against
@@ -328,5 +350,14 @@ mod tests {
         assert_eq!(list.len(), 1);
         list.clear();
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn ui_ring_instance_byte_layout_is_48_bytes_no_padding() {
+        // This is intentionally a separate ABI from UiInstance. The renderer
+        // appends its painter depth into its own upload mirror, so the CPU stride
+        // remains 48 bytes / align 4 at the app→renderer boundary.
+        assert_eq!(std::mem::size_of::<UiRingInstance>(), 48);
+        assert_eq!(std::mem::align_of::<UiRingInstance>(), 4);
     }
 }

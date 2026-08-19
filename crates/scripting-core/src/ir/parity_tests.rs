@@ -721,6 +721,88 @@ fn presentation_fact_builders_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn ring_factories_share_literal_and_bound_validation_contract() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { Ring } from "postretro/ui";
+        const rejects = (build: () => unknown) => {
+          try { build(); return false; } catch (_) { return true; }
+        };
+        const valid = Ring({
+          diameter: 100,
+          radius: { slot: "hud.radius" } as any,
+          thickness: { local: "stroke" } as any,
+          startAngle: { slot: "hud.start" } as any,
+          sweep: { local: "sweep" } as any,
+          fill: [1, 1, 1, 1],
+        });
+        const invalid = [
+          () => Ring({ diameter: 0, radius: 25, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: Infinity, radius: 25, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 1e100, radius: 25, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 0, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 51, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 0, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 26, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, startAngle: Infinity, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, startAngle: 1e100, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, sweep: 0, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, sweep: 361, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: { fact: "value" } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: { slot: "hud.radius", tween: { durationMs: -1, easing: "linear" } } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: { slot: "hud.radius", tween: { durationMs: 1e100, easing: "linear" } } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: { slot: "hud.radius", tween: { durationMs: 90, easing: "linear", from: 1e100 } } as any, thickness: 2, fill: [1,1,1,1] }),
+          () => Ring({ diameter: 100, radius: 25, thickness: 2, fill: [1e100,1,1,1] }),
+        ].map(rejects);
+        JSON.stringify({ valid, invalid });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local UI = require("postretro/ui")
+        local function rejects(build)
+          local ok = pcall(build)
+          return not ok
+        end
+        local valid = UI.Ring({
+          diameter = 100,
+          radius = { slot = "hud.radius" },
+          thickness = { ["local"] = "stroke" },
+          startAngle = { slot = "hud.start" },
+          sweep = { ["local"] = "sweep" },
+          fill = {1, 1, 1, 1},
+        })
+        local invalid = {
+          rejects(function() UI.Ring({ diameter = 0, radius = 25, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = math.huge, radius = 25, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 1e100, radius = 25, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 0, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 51, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 0, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 26, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, startAngle = math.huge, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, startAngle = 1e100, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, sweep = 0, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, sweep = 361, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = { fact = "value" }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = { slot = "hud.radius", tween = { durationMs = -1, easing = "linear" } }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = { slot = "hud.radius", tween = { durationMs = 1e100, easing = "linear" } }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = { slot = "hud.radius", tween = { durationMs = 90, easing = "linear", from = 1e100 } }, thickness = 2, fill = {1,1,1,1} }) end),
+          rejects(function() UI.Ring({ diameter = 100, radius = 25, thickness = 2, fill = {1e100,1,1,1} }) end),
+        }
+        return { valid = valid, invalid = invalid }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau);
+    assert_eq!(
+        typescript["invalid"],
+        serde_json::json!([
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true, true
+        ])
+    );
+}
+
+#[test]
 fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     // Exercise the shipped root SDK rather than raw runtime builders. The
     // assertion pins every cross-task leaf/token spelling and proves the

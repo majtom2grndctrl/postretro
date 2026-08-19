@@ -1,6 +1,6 @@
 --!strict
--- UI widget factories (M13 G1a, Task 3): capitalized constructors for the seven
--- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Spacer.
+-- UI widget factories (M13 G1a, Task 3): capitalized constructors for the nine
+-- non-container widget kinds -- Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
 -- (Containers -- VStack/HStack/Grid -- live in `layout.luau`.) Each mirrors the
 -- `emitter()` precedent: a props table validated synchronously (throwing a
 -- field-named error), documented defaults, a plain descriptor table whose keys
@@ -29,6 +29,22 @@ export type WidgetColor = { number } | ColorToken
 
 --- A flat descriptor table a widget factory produces.
 export type WidgetDescriptor = { [string]: any }
+
+--- Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported.
+export type RingBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
+
+export type RingProps = {
+  diameter: number,
+  radius: number | RingBindProp,
+  thickness: number | RingBindProp,
+  startAngle: (number | RingBindProp)?,
+  sweep: (number | RingBindProp)?,
+  fill: WidgetColor,
+  track: WidgetColor?,
+  id: string?,
+  visibleWhen: Predicate?,
+  role: WidgetRole?,
+}
 
 local UiWidgetsSdk = {}
 local unwrapThemeToken = rawget(_G, "__postretroUnwrapThemeToken")
@@ -63,6 +79,15 @@ local function requireFiniteNumber(value: any, field: string, factory: string)
   end
 end
 
+local F32_MAX = 3.4028234663852886e38
+
+local function requireFiniteF32Number(value: any, field: string, factory: string)
+  requireFiniteNumber(value, field, factory)
+  if math.abs(value) > F32_MAX then
+    error(`{factory}: \`{field}\` must be representable as a finite f32`)
+  end
+end
+
 local function unwrapToken(value: any, category: string, field: string, factory: string): string?
   if type(value) ~= "table" or value.__postretroToken == nil then
     return nil
@@ -92,6 +117,16 @@ local function requireColor(value: any, field: string, factory: string): any
     requireFiniteNumber(value[i], `{field}[{i}]`, factory)
   end
   return value
+end
+
+local function requireF32Color(value: any, field: string, factory: string): any
+  local color = requireColor(value, field, factory)
+  if type(color) == "table" then
+    for i = 1, 4 do
+      requireFiniteF32Number(color[i], `{field}[{i}]`, factory)
+    end
+  end
+  return color
 end
 
 local function requireColorLiteral(value: any, field: string, factory: string)
@@ -139,6 +174,8 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   elseif bind["local"] ~= nil then
     requireNonemptyString(bind["local"], "bind.local", factory)
     out = { ["local"] = bind["local"] }
+  elseif kind == "scalar" then
+    error(`{factory}: scalar bindings must carry \`slot\` or \`local\``)
   else
     requireNonemptyString(bind.fact, "bind.fact", factory)
     out = { fact = bind.fact }
@@ -154,12 +191,21 @@ local function buildBind(bind: any, factory: string, kind: string): any?
       error(`{factory}: \`bind.tween\` must be a table`)
     end
     local tw = bind.tween
-    requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory)
+    if kind == "scalar" then
+      requireFiniteF32Number(tw.durationMs, "bind.tween.durationMs", factory)
+    else
+      requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory)
+    end
+    if tw.durationMs < 0 then
+      error(`{factory}: \`bind.tween.durationMs\` must be non-negative`)
+    end
     validateEasing(tw.easing, "bind.tween.easing", factory)
     local tween: { [string]: any } = { durationMs = tw.durationMs, easing = tw.easing }
     if tw.from ~= nil then
       if kind == "panel" then
         requireColorLiteral(tw.from, "bind.tween.from", factory)
+      elseif kind == "scalar" then
+        requireFiniteF32Number(tw.from, "bind.tween.from", factory)
       else
         requireFiniteNumber(tw.from, "bind.tween.from", factory)
       end
@@ -169,6 +215,18 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   end
 
   return out
+end
+
+-- Build one ring geometric scalar: a literal number or a `{ slot }`/`{ local }` bind.
+local function buildScalar(value: any, name: string, factory: string): any
+  if type(value) == "number" then
+    requireFiniteF32Number(value, name, factory)
+    return value
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`{name}\` must be a finite number or a state/local reference`)
+  end
+  return buildBind(value, factory, "scalar") :: any
 end
 
 -- Validate + clone a `styleRanges` prop, or nil when absent.
@@ -676,6 +734,63 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
     end
     out.exitFade = { durationMs = props.exitFade.durationMs }
   end
+  return out
+end
+
+-- --- Ring -------------------------------------------------------------------
+
+--- A passive annulus or angular arc. Geometry is literal or a readonly 1:1 state/local bind.
+function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
+  requireObject(props, "Ring")
+  requireFiniteF32Number(props.diameter, "diameter", "Ring")
+  if props.diameter <= 0 then
+    error("Ring: `diameter` must be greater than zero")
+  end
+  local radius = buildScalar(props.radius, "radius", "Ring")
+  local thickness = buildScalar(props.thickness, "thickness", "Ring")
+  if type(radius) == "number" then
+    if radius <= 0 then
+      error("Ring: `radius` must be greater than zero")
+    end
+    if radius > props.diameter / 2 then
+      error("Ring: `radius` must not exceed half of `diameter`")
+    end
+  end
+  if type(thickness) == "number" then
+    if thickness <= 0 then
+      error("Ring: `thickness` must be greater than zero")
+    end
+    if type(radius) == "number" and thickness > radius then
+      error("Ring: `thickness` must not exceed `radius`")
+    end
+  end
+  local fill = requireF32Color(props.fill, "fill", "Ring")
+
+  local out: { [string]: any } = {
+    kind = "ring",
+    diameter = props.diameter,
+    radius = radius,
+    thickness = thickness,
+  }
+  if props.startAngle ~= nil then
+    out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring")
+  end
+  if props.sweep ~= nil then
+    local sweep = buildScalar(props.sweep, "sweep", "Ring")
+    if type(sweep) == "number" and (sweep <= 0 or sweep > 360) then
+      error("Ring: `sweep` must be within (0, 360]")
+    end
+    out.sweep = sweep
+  end
+  out.fill = fill
+  if props.track ~= nil then
+    out.track = requireF32Color(props.track, "track", "Ring")
+  end
+  if props.id ~= nil then
+    requireNonemptyString(props.id, "id", "Ring")
+    out.id = props.id
+  end
+  applyA11yFields(out, props, "Ring")
   return out
 end
 

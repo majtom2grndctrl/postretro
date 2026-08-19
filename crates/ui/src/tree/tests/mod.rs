@@ -11,6 +11,7 @@ mod focus;
 mod gating;
 mod layout;
 mod local_state;
+mod ring;
 mod style_ranges;
 mod theming;
 mod tween_panel;

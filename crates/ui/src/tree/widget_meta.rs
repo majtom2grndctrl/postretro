@@ -85,6 +85,7 @@ pub fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
         Widget::Button(w) => (Some(&w.id), (&w.focus_neighbors).into()),
         Widget::Slider(w) => (Some(&w.id), (&w.focus_neighbors).into()),
         Widget::Bar(w) => (w.id.as_ref(), FocusNeighbors::default()),
+        Widget::Ring(w) => (w.id.as_ref(), FocusNeighbors::default()),
         // M13 G2: a non-visual announcement carries no focus id/neighbors.
         Widget::Announce(_) => (None, FocusNeighbors::default()),
     }
@@ -207,6 +208,7 @@ fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
         Widget::Button(w) => w.visible_when.as_ref(),
         Widget::Slider(w) => w.visible_when.as_ref(),
         Widget::Bar(w) => w.visible_when.as_ref(),
+        Widget::Ring(w) => w.visible_when.as_ref(),
         Widget::Announce(w) => w.visible_when.as_ref(),
     }
 }

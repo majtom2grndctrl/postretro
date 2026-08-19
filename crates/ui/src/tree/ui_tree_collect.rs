@@ -11,17 +11,17 @@ use taffy::prelude::NodeId;
 use super::super::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::style_ranges::evaluate;
 use super::super::theme::UiTheme;
-use super::super::{UiInstance, UiText};
+use super::super::{UiInstance, UiRingInstance, UiText};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
-use super::bindings::DrawWalkCtx;
+use super::bindings::{DrawWalkCtx, bound_scalar_value};
 use super::draw::{
     UiDrawData, anchor_fractions, bar_max_value, bar_slot_value, canvas_origin,
     linear_rgba_to_srgb_u8, project_quad, project_rect, resolve_panel_fill, resolve_text,
     style_text_value, style_value,
 };
-use super::node_context::{NodeContext, VisibilityState};
+use super::node_context::{NodeContext, RingScalar, VisibilityState};
 use super::predicate::resolve_predicate;
 use super::ui_tree::UiTree;
 
@@ -311,6 +311,77 @@ fn collect_node(
                 data.push_quad(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
             }
         }
+        Some(NodeContext::Ring {
+            diameter,
+            radius,
+            thickness,
+            start_angle,
+            sweep,
+            fill,
+            track,
+        }) => {
+            let radius = ring_scalar_value(radius, slot_values, cell_values);
+            let thickness = ring_scalar_value(thickness, slot_values, cell_values);
+            let start_angle = ring_scalar_value(start_angle, slot_values, cell_values);
+            let sweep = ring_scalar_value(sweep, slot_values, cell_values);
+
+            // Dynamic values are allowed outside descriptor-time literal limits,
+            // but non-finite values cannot cross the CPU→renderer boundary.
+            if !diameter.is_finite()
+                || *diameter <= 0.0
+                || !radius.is_finite()
+                || !thickness.is_finite()
+            {
+                return;
+            }
+            // Clamp only while lowering to SDF geometry. Retained state holds the
+            // raw eased source, so a radius that briefly exceeds the layout box
+            // returns naturally once its source/ease comes back in range.
+            let radius = radius.clamp(0.0, *diameter / 2.0);
+            let thickness = thickness.clamp(0.0, radius);
+            if radius <= 0.0 || thickness <= 0.0 {
+                return;
+            }
+
+            // Collector-side snap guarantees that a nearly-full resolved sweep
+            // reaches the shader's seamless full-circle path exactly.
+            const FULL_CIRCLE_EPSILON_DEGREES: f32 = 1.0e-3;
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let radius = radius * scale;
+            let thickness = thickness * scale;
+            // A track is a full annulus behind the shape, sharing the resolved
+            // radius and thickness regardless of the arc's start/sweep.
+            if let Some(track) = track {
+                data.push_ring(UiRingInstance {
+                    rect,
+                    color: *track,
+                    radius,
+                    thickness,
+                    start_angle: 0.0,
+                    sweep: std::f32::consts::TAU,
+                });
+            }
+            // Track geometry deliberately ignores arc angles. A non-finite
+            // start/sweep or a non-positive sweep suppresses only the shape.
+            if !start_angle.is_finite() || !sweep.is_finite() {
+                return;
+            }
+            let mut sweep = sweep.min(360.0);
+            if sweep <= 0.0 {
+                return;
+            }
+            if (sweep - 360.0).abs() <= FULL_CIRCLE_EPSILON_DEGREES {
+                sweep = 360.0;
+            }
+            data.push_ring(UiRingInstance {
+                rect,
+                color: *fill,
+                radius,
+                thickness,
+                start_angle: start_angle.to_radians(),
+                sweep: sweep.to_radians(),
+            });
+        }
         Some(NodeContext::Text {
             content,
             font_size,
@@ -418,5 +489,24 @@ fn collect_node(
             ref_origin[1] + child_layout.location.y,
         ];
         collect_node(taffy, child, child_origin, walk, visibility, data);
+    }
+}
+
+fn ring_scalar_value(
+    value: &RingScalar,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> f32 {
+    match value {
+        RingScalar::Literal(value) => *value,
+        RingScalar::Bound {
+            source,
+            bind_scope,
+            last_resolved,
+            tween,
+        } => match (tween, last_resolved) {
+            (Some(_), Some(displayed)) => *displayed,
+            _ => bound_scalar_value(source, bind_scope.as_deref(), slot_values, cell_values),
+        },
     }
 }

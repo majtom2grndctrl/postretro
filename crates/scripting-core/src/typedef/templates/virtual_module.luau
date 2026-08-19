@@ -20,6 +20,8 @@ export type PostretroUiModule = {
   Slider: (props: SliderProps) -> WidgetDescriptor,
   --- Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`.
   Bar: (props: BarProps) -> WidgetDescriptor,
+  --- Build a passive annulus or angular arc descriptor.
+  Ring: (props: RingProps) -> WidgetDescriptor,
   --- Build a non-visual live-region announcement. `text` is positional display text.
   Announce: (props: AnnounceProps, text: LocalizedText) -> WidgetDescriptor,
   --- Build a vertical stack. `children` is positional, not a prop.

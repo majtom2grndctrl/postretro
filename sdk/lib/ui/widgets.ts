@@ -1,5 +1,5 @@
-// UI widget factories: capitalized constructors for the seven non-container
-// widget kinds — Text, Panel, Image, Button, Slider, Bar, Spacer.
+// UI widget factories: capitalized constructors for the nine non-container
+// widget kinds — Text, Panel, Image, Button, Slider, Bar, Ring, Spacer, Announce.
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
@@ -61,7 +61,7 @@ export type Ref<T> = ComputedRef<T> & {
 };
 
 /**
- * Value-tween config for a text/slider/bar bind (number shape). Mirrors
+ * Value-tween config for a text/slider/bar or Ring scalar bind (number shape). Mirrors
  * `descriptor.rs` `TextTween`: eases the resolved numeric value toward each new
  * target over `durationMs` using `easing`. `from` is the optional explicit start
  * value for the first tween.
@@ -174,6 +174,14 @@ export type BarBindProp = (
   tween?: NumberTween;
 };
 
+/** Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported. */
+export type RingBindProp = (
+  | (ComputedRef<number> & { local?: never; format?: never })
+  | LocalBindRef
+) & {
+  tween?: NumberTween;
+};
+
 export type BarMaxProp = number | ComputedRef<number>;
 
 /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
@@ -257,6 +265,15 @@ function requireFiniteNumber(value: unknown, field: string, factory: string): vo
   }
 }
 
+const F32_MAX = 3.4028234663852886e38;
+
+function requireFiniteF32Number(value: unknown, field: string, factory: string): void {
+  requireFiniteNumber(value, field, factory);
+  if (Math.abs(value as number) > F32_MAX) {
+    throw new Error(`${factory}: \`${field}\` must be representable as a finite f32`);
+  }
+}
+
 function unwrapToken(
   value: unknown,
   category: "color" | "font" | "spacing",
@@ -296,6 +313,20 @@ function requireColor(value: unknown, field: string, factory: string): [number, 
     }
   }
   return value as [number, number, number, number];
+}
+
+function requireF32Color(
+  value: unknown,
+  field: string,
+  factory: string,
+): [number, number, number, number] | string {
+  const color = requireColor(value, field, factory);
+  if (Array.isArray(color)) {
+    for (let i = 0; i < 4; i++) {
+      requireFiniteF32Number(color[i], `${field}[${i}]`, factory);
+    }
+  }
+  return color;
 }
 
 function requireColorLiteral(value: unknown, field: string, factory: string): void {
@@ -352,7 +383,7 @@ function validateEasing(value: unknown, field: string, factory: string): void {
 function buildBind(
   bind: unknown,
   factory: string,
-  kind: "text" | "panel" | "slider",
+  kind: "text" | "panel" | "slider" | "scalar",
 ): { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } | undefined {
   if (bind === undefined) return undefined;
   if (bind === null || typeof bind !== "object") {
@@ -361,12 +392,20 @@ function buildBind(
   const b = bind as Record<string, unknown>;
   // Source precedence matches the descriptor bridge. Authored SDK refs carry
   // exactly one source key.
-  const out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } =
-    b.slot !== undefined
-      ? (requireNonemptyString(b.slot, "bind.slot", factory), { slot: b.slot as string })
-      : b.local !== undefined
-        ? (requireNonemptyString(b.local, "bind.local", factory), { local: b.local as string })
-        : (requireNonemptyString(b.fact, "bind.fact", factory), { fact: b.fact as string });
+  let out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown };
+  if (b.slot !== undefined) {
+    requireNonemptyString(b.slot, "bind.slot", factory);
+    out = { slot: b.slot as string };
+  } else if (b.local !== undefined) {
+    requireNonemptyString(b.local, "bind.local", factory);
+    out = { local: b.local as string };
+  } else {
+    if (kind === "scalar") {
+      throw new Error(`${factory}: scalar bindings must carry \`slot\` or \`local\``);
+    }
+    requireNonemptyString(b.fact, "bind.fact", factory);
+    out = { fact: b.fact as string };
+  }
 
   if (kind === "text" && b.format !== undefined) {
     requireString(b.format, "bind.format", factory);
@@ -379,12 +418,21 @@ function buildBind(
       throw new Error(`${factory}: \`bind.tween\` must be an object`);
     }
     const tw = t as Record<string, unknown>;
-    requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory);
+    if (kind === "scalar") {
+      requireFiniteF32Number(tw.durationMs, "bind.tween.durationMs", factory);
+    } else {
+      requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory);
+    }
+    if ((tw.durationMs as number) < 0) {
+      throw new Error(`${factory}: \`bind.tween.durationMs\` must be non-negative`);
+    }
     validateEasing(tw.easing, "bind.tween.easing", factory);
     const tween: Record<string, unknown> = { durationMs: tw.durationMs, easing: tw.easing };
     if (tw.from !== undefined) {
       if (kind === "panel") {
         requireColorLiteral(tw.from, "bind.tween.from", factory);
+      } else if (kind === "scalar") {
+        requireFiniteF32Number(tw.from, "bind.tween.from", factory);
       } else {
         requireFiniteNumber(tw.from, "bind.tween.from", factory);
       }
@@ -394,6 +442,22 @@ function buildBind(
   }
 
   return out;
+}
+
+/** Build one ring geometric scalar: a literal number or a `{ slot }`/`{ local }` bind. */
+function buildScalar(
+  value: unknown,
+  name: string,
+  factory: string,
+): number | { slot?: string; local?: string; tween?: unknown } {
+  if (typeof value === "number") {
+    requireFiniteF32Number(value, name, factory);
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`${name}\` must be a finite number or a state/local reference`);
+  }
+  return buildBind(value, factory, "scalar")!;
 }
 
 /**
@@ -992,6 +1056,71 @@ export function Bar(props: BarProps): WidgetDescriptor {
     }
     out.exitFade = { durationMs: props.exitFade.durationMs };
   }
+  return out;
+}
+
+// --- Ring -------------------------------------------------------------------
+
+/** Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind. */
+export type RingProps = {
+  diameter: number;
+  radius: number | RingBindProp;
+  thickness: number | RingBindProp;
+  startAngle?: number | RingBindProp;
+  sweep?: number | RingBindProp;
+  fill: WidgetColor;
+  track?: WidgetColor;
+  id?: string;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
+};
+
+/** Build a passive annulus or angular arc descriptor. */
+export function Ring(props: RingProps): WidgetDescriptor {
+  requireObject(props, "Ring");
+  requireFiniteF32Number(props.diameter, "diameter", "Ring");
+  if (props.diameter <= 0) {
+    throw new Error("Ring: `diameter` must be greater than zero");
+  }
+  const radius = buildScalar(props.radius, "radius", "Ring");
+  const thickness = buildScalar(props.thickness, "thickness", "Ring");
+  if (typeof radius === "number") {
+    if (radius <= 0) throw new Error("Ring: `radius` must be greater than zero");
+    if (radius > props.diameter / 2) {
+      throw new Error("Ring: `radius` must not exceed half of `diameter`");
+    }
+  }
+  if (typeof thickness === "number") {
+    if (thickness <= 0) throw new Error("Ring: `thickness` must be greater than zero");
+    if (typeof radius === "number" && thickness > radius) {
+      throw new Error("Ring: `thickness` must not exceed `radius`");
+    }
+  }
+  const fill = requireF32Color(props.fill, "fill", "Ring");
+
+  const out: WidgetDescriptor = {
+    kind: "ring",
+    diameter: props.diameter,
+    radius,
+    thickness,
+  };
+  if (props.startAngle !== undefined) {
+    out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring");
+  }
+  if (props.sweep !== undefined) {
+    const sweep = buildScalar(props.sweep, "sweep", "Ring");
+    if (typeof sweep === "number" && (sweep <= 0 || sweep > 360)) {
+      throw new Error("Ring: `sweep` must be within (0, 360]");
+    }
+    out.sweep = sweep;
+  }
+  out.fill = fill;
+  if (props.track !== undefined) out.track = requireF32Color(props.track, "track", "Ring");
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", "Ring");
+    out.id = props.id;
+  }
+  applyA11yFields(out, props, "Ring");
   return out;
 }
 

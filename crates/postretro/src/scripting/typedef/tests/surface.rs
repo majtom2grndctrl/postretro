@@ -80,6 +80,7 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "Button",
         "Slider",
         "Bar",
+        "Ring",
         "Announce",
         "VStack",
         "HStack",
@@ -189,6 +190,9 @@ fn luau_virtual_module_types_and_require_overloads_are_generated() {
             && luau.contains("color: DesignTokenTree<ColorToken>,")
             && luau.contains("export type WidgetColor = {number} | ColorToken")
             && luau.contains("export type WidgetSpacing = number | SpacingToken")
+            && luau.contains(
+                "export type RingBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }"
+            )
             && luau.contains("font: FontToken?"),
         "luau output missing virtual module aliases:\n{luau}"
     );
@@ -246,6 +250,13 @@ fn typescript_ui_module_declaration_is_generated() {
 
     assert!(
         ui_module.contains("export function Text(props: TextProps): WidgetDescriptor;")
+            && ui_module.contains(
+                "export type RingBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };"
+            )
+            && ui_module.contains(
+                "export type RingProps = { diameter: number; radius: number | RingBindProp;"
+            )
+            && ui_module.contains("export function Ring(props: RingProps): WidgetDescriptor;")
             && ui_module.contains("export function defineTheme<const T extends ThemeDefinition>")
             && ui_module
                 .contains("export function getDesignTokens<const T extends ThemeDefinition>")

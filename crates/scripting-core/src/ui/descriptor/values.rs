@@ -23,6 +23,44 @@ pub enum ColorValue {
     Token(String),
 }
 
+/// A scalar property on a passive shape. A literal keeps the compact numeric
+/// wire form; a bound value retains its source for the retained UI tree to
+/// resolve on later frames. `Literal` intentionally comes first so bare JSON
+/// numbers select the canonical representation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ScalarValue {
+    Literal(f32),
+    Bound(BoundScalar),
+}
+
+/// A scalar binding flattened into the property object, preserving the shared
+/// `{ slot } | { local }` source form beside its optional presentation tween.
+///
+/// This type deliberately contains no runtime driver state. Descriptor loading
+/// accepts bound values even when their eventual values would need draw-time
+/// clamping; the retained tree owns that future behavior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundScalar {
+    #[serde(flatten)]
+    pub source: BindSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tween: Option<TextTween>,
+}
+
+/// Numeric presentation tween shared by text, slider, and scalar bindings.
+/// `from` is an optional explicit first-segment start; absent begins at the
+/// first observed source value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextTween {
+    pub duration_ms: f32,
+    pub easing: Easing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<f32>,
+}
+
 /// A spacing slot (gap/padding) on a container: either a literal logical-px value
 /// or a named theme token. Untagged so the wire form stays a bare JSON number
 /// (`4.0`) or a bare string (`"tight"`). `Literal` wraps a bare `f32` (no newtype)

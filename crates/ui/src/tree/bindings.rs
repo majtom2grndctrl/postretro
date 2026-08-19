@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::super::descriptor::{Easing, PanelBind, SliderBind, TextBind};
+use super::super::descriptor::{BoundScalar, Easing, PanelBind, SliderBind, TextBind};
 use super::super::theme::UiTheme;
 use postretro_entities::SlotValue;
 
@@ -13,6 +13,7 @@ use super::CellValues;
 use super::draw::{
     bar_max_value, bar_slot_value, bind_target_name, resolve_panel_fill, resolve_text,
 };
+use super::node_context::RingScalar;
 use super::predicate::lookup_bound;
 use super::style::{TweenState, apply, lerp_rgba};
 
@@ -288,6 +289,83 @@ pub fn drive_bar_binding(
         *last_resolved = Some(resolved);
     }
     changed
+}
+
+/// Resolve a scalar property's raw numeric source, or zero when the source is
+/// absent/non-numeric. A ring has no separate literal fallback for a bound
+/// property, so zero is the same degenerate fallback a Bar uses for its source.
+pub fn bound_scalar_value(
+    source: &BoundScalar,
+    bind_scope: Option<&str>,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> f32 {
+    match lookup_bound(&source.source, bind_scope, slot_values, cell_values) {
+        Some(SlotValue::Number(value)) => *value,
+        _ => 0.0,
+    }
+}
+
+/// Drive one ring property without transforming its source value. The retained
+/// state stores a raw, unclamped value; radius/thickness/sweep clamps belong to
+/// collection, where they cannot corrupt a later eased recovery.
+pub fn drive_ring_scalar_binding(
+    scalar: &mut RingScalar,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+    now: f64,
+) -> bool {
+    let RingScalar::Bound {
+        source,
+        bind_scope,
+        last_resolved,
+        tween,
+    } = scalar
+    else {
+        return false;
+    };
+
+    let resolved = match source.tween.as_ref() {
+        Some(cfg) => match lookup_bound(
+            &source.source,
+            bind_scope.as_deref(),
+            slot_values,
+            cell_values,
+        ) {
+            Some(SlotValue::Number(target)) if target.is_finite() => {
+                drive_tween_f32(tween, cfg.from, *target, cfg.duration_ms, cfg.easing, now)
+            }
+            Some(SlotValue::Number(_)) => {
+                return clear_invalid_ring_scalar(last_resolved, tween);
+            }
+            _ => {
+                let fallback =
+                    bound_scalar_value(source, bind_scope.as_deref(), slot_values, cell_values);
+                seed_tween(tween, fallback, now);
+                fallback
+            }
+        },
+        None => bound_scalar_value(source, bind_scope.as_deref(), slot_values, cell_values),
+    };
+
+    if !resolved.is_finite() {
+        return clear_invalid_ring_scalar(last_resolved, tween);
+    }
+
+    let changed = last_resolved.is_none_or(|previous| (previous - resolved).abs() > f32::EPSILON);
+    if changed {
+        *last_resolved = Some(resolved);
+    }
+    changed
+}
+
+fn clear_invalid_ring_scalar(
+    last_resolved: &mut Option<f32>,
+    tween: &mut Option<TweenState<f32>>,
+) -> bool {
+    let cleared_display = last_resolved.take().is_some();
+    let cleared_segment = tween.take().is_some();
+    cleared_display | cleared_segment
 }
 
 /// Drive a bar's denominator dependency. Literal max values settle after the

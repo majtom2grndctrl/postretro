@@ -15,14 +15,14 @@ use postretro_ui::text::FontSystem;
 
 use self::text::{TextPrepareInput, UiTextRenderer};
 
-/// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderer,
-/// and the shape→prepare→render→trim cycle. glyphon owns its own pipeline; the
-/// text draw records into this same render pass, after the quads. The UI depth
-/// target keeps later-layer quads in front of earlier-layer text.
+/// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderers,
+/// and the shape→prepare→render→trim cycle. Text spans record into this same
+/// render pass at their retained paint-stream positions.
 pub(crate) mod text;
 
 pub(crate) use postretro_ui::{
-    UiDrawList, UiInstance, UiReadSnapshot, UiText, UiUniform, descriptor, layout, theme, tree,
+    UiDrawList, UiInstance, UiReadSnapshot, UiRingInstance, UiText, UiUniform, descriptor, layout,
+    theme, tree,
 };
 /// Shared headless GPU harness for the UI offscreen golden tests: the
 /// `pollster` device init (self-skip on no adapter) and the offscreen-texture
@@ -47,12 +47,18 @@ mod multi_batch_test;
 #[cfg(test)]
 mod multi_layer_text_golden_test;
 
+#[cfg(test)]
+mod ring_composition_test;
+
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
+const UI_RING_WGSL: &str = include_str!("../../shaders/ui_ring.wgsl");
 
 /// 9 regions * 2 triangles * 3 vertices. The vertex shader keys off
 /// `vertex_index` to expand one instance into the 9-slice geometry; total is
 /// 9 regions × `VERTS_PER_REGION` (= 6u) in `ui_quad.wgsl` = 54.
 const VERTS_PER_INSTANCE: u32 = 54;
+/// One bounding quad (two triangles) per SDF ring instance.
+const RING_VERTS_PER_INSTANCE: u32 = 6;
 
 /// Small key→bind-group registry for `image` widget assets. The descriptor's
 /// `image` nodes reference a texture by string key; the renderer pre-registers
@@ -155,6 +161,7 @@ impl UiImageRegistry {
 /// Initial instance-buffer capacity (records). Grows on demand in `encode`.
 const INITIAL_INSTANCE_CAPACITY: usize = 64;
 const INSTANCE_SIZE: usize = std::mem::size_of::<GpuUiInstance>();
+const RING_INSTANCE_SIZE: usize = std::mem::size_of::<GpuUiRingInstance>();
 const UI_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 
 /// Renderer-local instance layout. CPU UI draw lists stay GPU-free and carry no
@@ -181,6 +188,34 @@ impl GpuUiInstance {
     }
 }
 
+/// Renderer-local upload mirror for [`UiRingInstance`]. CPU records retain their
+/// 48-byte shape-only ABI; this mirror appends the renderer-owned painter depth.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuUiRingInstance {
+    rect: [f32; 4],
+    color: [f32; 4],
+    radius: f32,
+    thickness: f32,
+    start_angle: f32,
+    sweep: f32,
+    depth: f32,
+}
+
+impl GpuUiRingInstance {
+    fn from_ui(instance: &UiRingInstance, depth: f32) -> Self {
+        Self {
+            rect: instance.rect,
+            color: instance.color,
+            radius: instance.radius,
+            thickness: instance.thickness,
+            start_angle: instance.start_angle,
+            sweep: instance.sweep,
+            depth,
+        }
+    }
+}
+
 /// Instanced quad / 9-slice pass for panels and images. Owns its pipeline, BGL,
 /// sampler, uniform buffer, instance buffer, and a 1×1 white texture so solid
 /// panels and textured images share one instanced path. Uses a private UI depth
@@ -189,9 +224,13 @@ impl GpuUiInstance {
 pub(crate) struct UiPass {
     opaque_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
+    ring_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
+    ring_instance_buffer: wgpu::Buffer,
+    ring_instance_capacity: usize,
+    ring_bind_group: wgpu::BindGroup,
     /// 1×1 white texel bound for solid panels (degenerate UV slice). An
     /// untextured panel and a textured image then share one instanced batch.
     /// Held to keep the view alive for `white_bind_group`, which references it.
@@ -201,12 +240,12 @@ pub(crate) struct UiPass {
     /// uniform buffer changes, which it never does after construction.
     white_bind_group: wgpu::BindGroup,
 
-    /// glyphon shaped-text half of the pass. Owns its own pipeline/atlas; its
-    /// draw records into this same render pass, after the quads. See `text`.
+    /// glyphon shaped-text half of the pass. Owns its pipeline, atlas, and
+    /// per-span draw recorders. See `text`.
     text: UiTextRenderer,
 
     /// Private depth target for the UI pass. It is cleared every encode and only
-    /// exists to preserve painter order across the quad/text draw split.
+    /// exists to preserve painter depth across mixed UI commands.
     depth_texture: Option<wgpu::Texture>,
     depth_view: Option<wgpu::TextureView>,
     depth_size: [u32; 2],
@@ -286,6 +325,24 @@ struct OrderedUiBatch<'a> {
     writes_depth: bool,
 }
 
+/// An SDF ring batch with a unique painter-depth order. Ring instances use a
+/// dedicated vertex buffer and pipeline, so they cannot share quad batches.
+struct OrderedRingBatch {
+    instances: Vec<UiRingInstance>,
+    order: usize,
+}
+
+struct OrderedTextBatch {
+    range: std::ops::Range<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum UiDrawCommand {
+    Quad(usize),
+    Ring(usize),
+    Text(usize),
+}
+
 /// The whole frame's UI composition: every modal-stack layer's quad batches and
 /// shaped-text runs in bottom→top painter order, as the single unit
 /// `UiPass::encode` records. The encode boundary is the WHOLE composition, never
@@ -293,26 +350,26 @@ struct OrderedUiBatch<'a> {
 /// shared glyphon vertex buffer across layers) unrepresentable on the production
 /// surface.
 ///
-/// **Invariant — one `prepare`/vertex-buffer fill per surface composition.** All
-/// layers funnel through ONE `encode`, so glyphon's `prepare` (which overwrites
-/// its single internal vertex buffer at offset 0) runs once per composed frame.
-/// The text path obeys the same "one fill per composition" rule the quad path
-/// already enforces by giving each batch a disjoint instance-buffer region.
+/// **Invariant — one coordinated prepare phase per surface composition.** All
+/// layers funnel through ONE `encode`. Each text span in that phase owns a
+/// disjoint glyphon vertex buffer, just as each shape batch owns a disjoint
+/// instance-buffer region, so no queued upload can clobber another command.
 ///
-/// Owns renderer-local quad batches and concatenated text runs. Each batch and
-/// text run also carries a composition order. `encode` still draws quads before
-/// glyphon text, but the private UI depth target makes later opaque commands
-/// occlude earlier commands across that split. Translucent/image batches
-/// depth-test without writing depth so they do not hard-erase lower text before
-/// glyphon renders; exact source-over ordering between translucent quads and text
-/// is still limited by glyphon's single render call. Built in the caller's frame
-/// scope so the bind-group borrows coexist with the `&mut self.ui` encode call.
+/// Owns renderer-local quad/ring batches and concatenated text runs plus the
+/// mixed command stream that records them. Consecutive text runs share one
+/// glyphon batch; a shape between text runs starts another batch with independent
+/// prepared storage so source-over painter order remains representable. Built in
+/// the caller's frame scope so the bind-group borrows coexist with the
+/// `&mut self.ui` encode call.
 /// Two constructors: `from_layer_draws` (gameplay modal stack) and `from_batches`
 /// (test assembly).
 pub(crate) struct UiComposition<'a> {
     batches: Vec<OrderedUiBatch<'a>>,
+    ring_batches: Vec<OrderedRingBatch>,
     texts: Vec<UiText>,
     text_orders: Vec<usize>,
+    text_batches: Vec<OrderedTextBatch>,
+    commands: Vec<UiDrawCommand>,
     order_count: usize,
 }
 
@@ -333,20 +390,26 @@ impl<'a> UiComposition<'a> {
         images: &'a UiImageRegistry,
     ) -> Self {
         let mut batches: Vec<OrderedUiBatch<'a>> = Vec::new();
+        let mut ring_batches: Vec<OrderedRingBatch> = Vec::new();
         let mut texts: Vec<UiText> = Vec::new();
         let mut text_orders: Vec<usize> = Vec::new();
+        let mut text_batches: Vec<OrderedTextBatch> = Vec::new();
+        let mut commands: Vec<UiDrawCommand> = Vec::new();
         let mut order = 0usize;
         for draw in layer_draws {
             if draw.paint_order.is_empty() {
-                append_legacy_draw_order(
-                    draw,
+                LegacyDrawAppend {
                     white_bind_group,
                     images,
-                    &mut batches,
-                    &mut texts,
-                    &mut text_orders,
-                    &mut order,
-                );
+                    batches: &mut batches,
+                    ring_batches: &mut ring_batches,
+                    texts: &mut texts,
+                    text_orders: &mut text_orders,
+                    text_batches: &mut text_batches,
+                    commands: &mut commands,
+                    order: &mut order,
+                }
+                .append(draw);
                 continue;
             }
 
@@ -365,12 +428,13 @@ impl<'a> UiComposition<'a> {
                         .iter()
                         .map(|(_, list)| list.len())
                         .sum::<usize>()
+                    + draw.rings.len()
                     + draw.texts.len();
                 debug_assert_eq!(
                     draw.paint_order.len(),
                     grouped_len,
                     "UiDrawData.paint_order is non-empty but incomplete: {} ops vs {} grouped items \
-                     (quads + images + texts). A non-empty-but-incomplete paint_order silently drops \
+                     (quads + images + rings + texts). A non-empty-but-incomplete paint_order silently drops \
                      whichever grouped items were added directly instead of through push_quad/push_image/push_text. \
                      All production collection must route through those push_* helpers to keep the stream complete.",
                     draw.paint_order.len(),
@@ -389,6 +453,7 @@ impl<'a> UiComposition<'a> {
                                 order,
                                 true,
                             );
+                            commands.push(UiDrawCommand::Quad(batches.len() - 1));
                             order += 1;
                         }
                     }
@@ -409,6 +474,17 @@ impl<'a> UiComposition<'a> {
                                 order,
                                 false,
                             );
+                            commands.push(UiDrawCommand::Quad(batches.len() - 1));
+                            order += 1;
+                        }
+                    }
+                    tree::UiPaintOp::Ring { index } => {
+                        if let Some(instance) = draw.rings.get(index).copied() {
+                            ring_batches.push(OrderedRingBatch {
+                                instances: vec![instance],
+                                order,
+                            });
+                            commands.push(UiDrawCommand::Ring(ring_batches.len() - 1));
                             order += 1;
                         }
                     }
@@ -416,6 +492,11 @@ impl<'a> UiComposition<'a> {
                         if let Some(text) = draw.texts.get(index) {
                             text_orders.push(order);
                             texts.push(text.clone());
+                            append_ordered_text_batch(
+                                &mut text_batches,
+                                &mut commands,
+                                texts.len() - 1,
+                            );
                             order += 1;
                         }
                     }
@@ -424,8 +505,11 @@ impl<'a> UiComposition<'a> {
         }
         Self {
             batches,
+            ring_batches,
             texts,
             text_orders,
+            text_batches,
+            commands,
             order_count: order,
         }
     }
@@ -438,28 +522,61 @@ impl<'a> UiComposition<'a> {
     pub fn from_batches(batches: Vec<UiBatch<'a>>, texts: Vec<UiText>) -> Self {
         let order_count = batches.len() + usize::from(!texts.is_empty());
         let text_order = batches.len();
+        let batches: Vec<OrderedUiBatch<'a>> = batches
+            .into_iter()
+            .enumerate()
+            .map(|(order, batch)| OrderedUiBatch {
+                instances: batch.list.instances.clone(),
+                order,
+                bind_group: batch.bind_group,
+                writes_depth: batch.list.instances.iter().all(instance_writes_depth),
+            })
+            .collect();
+        let mut commands: Vec<UiDrawCommand> =
+            (0..batches.len()).map(UiDrawCommand::Quad).collect();
+        let text_batches = if texts.is_empty() {
+            Vec::new()
+        } else {
+            commands.push(UiDrawCommand::Text(0));
+            vec![OrderedTextBatch {
+                range: 0..texts.len(),
+            }]
+        };
         Self {
-            batches: batches
-                .into_iter()
-                .enumerate()
-                .map(|(order, batch)| OrderedUiBatch {
-                    instances: batch.list.instances.clone(),
-                    order,
-                    bind_group: batch.bind_group,
-                    writes_depth: batch.list.instances.iter().all(instance_writes_depth),
-                })
-                .collect(),
+            batches,
+            ring_batches: Vec::new(),
             text_orders: std::iter::repeat_n(text_order, texts.len()).collect(),
             texts,
+            text_batches,
+            commands,
             order_count,
         }
     }
 
-    /// `true` when the composition records nothing — no quad batches and no text.
+    /// `true` when the composition records nothing — no quad, ring, or text batches.
     /// The gameplay path early-outs the UI pass on this.
     pub fn is_empty(&self) -> bool {
-        self.batches.is_empty() && self.texts.is_empty()
+        self.batches.is_empty() && self.ring_batches.is_empty() && self.texts.is_empty()
     }
+}
+
+fn append_ordered_text_batch(
+    batches: &mut Vec<OrderedTextBatch>,
+    commands: &mut Vec<UiDrawCommand>,
+    text_index: usize,
+) {
+    if let Some(UiDrawCommand::Text(batch_index)) = commands.last().copied()
+        && batches[batch_index].range.end == text_index
+    {
+        batches[batch_index].range.end += 1;
+        return;
+    }
+
+    let batch_index = batches.len();
+    batches.push(OrderedTextBatch {
+        range: text_index..text_index + 1,
+    });
+    commands.push(UiDrawCommand::Text(batch_index));
 }
 
 fn append_ordered_quad_batch<'a>(
@@ -477,42 +594,71 @@ fn append_ordered_quad_batch<'a>(
     });
 }
 
-fn append_legacy_draw_order<'a>(
-    draw: &'a tree::UiDrawData,
+/// Mutable accumulation context for the coarse legacy draw-list fallback.
+/// Keeping these outputs together makes the historical grouped order explicit
+/// without widening the append operation into an eight-argument helper.
+struct LegacyDrawAppend<'a, 'out> {
     white_bind_group: &'a wgpu::BindGroup,
     images: &'a UiImageRegistry,
-    batches: &mut Vec<OrderedUiBatch<'a>>,
-    texts: &mut Vec<UiText>,
-    text_orders: &mut Vec<usize>,
-    order: &mut usize,
-) {
-    if !draw.quads.is_empty() {
-        batches.push(OrderedUiBatch {
-            instances: draw.quads.instances.clone(),
-            order: *order,
-            bind_group: white_bind_group,
-            writes_depth: draw.quads.instances.iter().all(instance_writes_depth),
-        });
-        *order += 1;
-    }
-    for (asset, list) in &draw.images {
-        if list.is_empty() {
-            continue;
-        }
-        if let Some(bind_group) = images.resolve(asset) {
-            batches.push(OrderedUiBatch {
-                instances: list.instances.clone(),
-                order: *order,
-                bind_group,
-                writes_depth: false,
+    batches: &'out mut Vec<OrderedUiBatch<'a>>,
+    ring_batches: &'out mut Vec<OrderedRingBatch>,
+    texts: &'out mut Vec<UiText>,
+    text_orders: &'out mut Vec<usize>,
+    text_batches: &'out mut Vec<OrderedTextBatch>,
+    commands: &'out mut Vec<UiDrawCommand>,
+    order: &'out mut usize,
+}
+
+impl<'a, 'out> LegacyDrawAppend<'a, 'out> {
+    /// Preserve the legacy coarse order: quads, images, rings, then text.
+    fn append(&mut self, draw: &tree::UiDrawData) {
+        if !draw.quads.is_empty() {
+            self.batches.push(OrderedUiBatch {
+                instances: draw.quads.instances.clone(),
+                order: *self.order,
+                bind_group: self.white_bind_group,
+                writes_depth: draw.quads.instances.iter().all(instance_writes_depth),
             });
-            *order += 1;
+            self.commands
+                .push(UiDrawCommand::Quad(self.batches.len() - 1));
+            *self.order += 1;
         }
-    }
-    if !draw.texts.is_empty() {
-        text_orders.extend(std::iter::repeat_n(*order, draw.texts.len()));
-        texts.extend_from_slice(&draw.texts);
-        *order += 1;
+        for (asset, list) in &draw.images {
+            if list.is_empty() {
+                continue;
+            }
+            if let Some(bind_group) = self.images.resolve(asset) {
+                self.batches.push(OrderedUiBatch {
+                    instances: list.instances.clone(),
+                    order: *self.order,
+                    bind_group,
+                    writes_depth: false,
+                });
+                self.commands
+                    .push(UiDrawCommand::Quad(self.batches.len() - 1));
+                *self.order += 1;
+            }
+        }
+        if !draw.rings.is_empty() {
+            self.ring_batches.push(OrderedRingBatch {
+                instances: draw.rings.clone(),
+                order: *self.order,
+            });
+            self.commands
+                .push(UiDrawCommand::Ring(self.ring_batches.len() - 1));
+            *self.order += 1;
+        }
+        if !draw.texts.is_empty() {
+            self.text_orders
+                .extend(std::iter::repeat_n(*self.order, draw.texts.len()));
+            self.texts.extend_from_slice(&draw.texts);
+            let batch_index = self.text_batches.len();
+            self.text_batches.push(OrderedTextBatch {
+                range: self.texts.len() - draw.texts.len()..self.texts.len(),
+            });
+            self.commands.push(UiDrawCommand::Text(batch_index));
+            *self.order += 1;
+        }
     }
 }
 
@@ -564,6 +710,25 @@ impl UiPass {
                 },
             ],
         });
+
+        // Rings only need the viewport uniform: all geometry and color arrive
+        // as instance attributes, with no texture/sampler contract.
+        let ring_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("UI Ring BGL"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<UiUniform>() as u64
+                        ),
+                    },
+                    count: None,
+                }],
+            });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("UI Quad Shader"),
@@ -630,6 +795,66 @@ impl UiPass {
             "UI Quad Translucent Pipeline",
         );
 
+        let ring_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("UI Ring Shader"),
+            source: wgpu::ShaderSource::Wgsl(UI_RING_WGSL.into()),
+        });
+        let ring_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("UI Ring Pipeline Layout"),
+            bind_group_layouts: &[Some(&ring_bind_group_layout)],
+            immediate_size: 0,
+        });
+        // Rect/color plus four radial scalars and renderer-local painter depth.
+        // This 52-byte upload layout mirrors GpuUiRingInstance exactly.
+        let ring_instance_layout = wgpu::VertexBufferLayout {
+            array_stride: RING_INSTANCE_SIZE as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 16,
+                    shader_location: 1,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 32,
+                    shader_location: 2,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 36,
+                    shader_location: 3,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 40,
+                    shader_location: 4,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 44,
+                    shader_location: 5,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 48,
+                    shader_location: 6,
+                },
+            ],
+        };
+        let ring_pipeline = create_ui_ring_pipeline(
+            device,
+            &ring_pipeline_layout,
+            &ring_shader,
+            &ring_instance_layout,
+            color_format,
+        );
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("UI Quad Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -655,6 +880,21 @@ impl UiPass {
             size: (INITIAL_INSTANCE_CAPACITY * INSTANCE_SIZE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+        let ring_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("UI Ring Instance Buffer"),
+            size: (INITIAL_INSTANCE_CAPACITY * RING_INSTANCE_SIZE) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let ring_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UI Ring Bind Group"),
+            layout: &ring_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
         });
 
         // 1×1 white texel: solid panels sample this so they share the image
@@ -694,9 +934,13 @@ impl UiPass {
         Self {
             opaque_pipeline,
             translucent_pipeline,
+            ring_pipeline,
             uniform_buffer,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            ring_instance_buffer,
+            ring_instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            ring_bind_group,
             white_view,
             white_bind_group,
             text,
@@ -990,7 +1234,7 @@ impl UiPass {
 
     /// Mark the command buffer containing the UI encode as submitted. The debug
     /// text guard resets here, not at `encode` entry, so two UI encodes recorded
-    /// before one submit still count as two glyphon prepares and trip the guard.
+    /// before one submit still count as two prepare phases and trip the guard.
     pub fn mark_submitted(&mut self) {
         self.text.reset_prepare_guard();
     }
@@ -999,24 +1243,20 @@ impl UiPass {
     /// batches + text runs, in painter order) into `view`. The encode boundary is
     /// the COMPOSITION, not one layer — a caller cannot loop `encode` per layer, so
     /// the historical cross-layer glyphon vertex-buffer clobber is unrepresentable
-    /// here. See `UiComposition` for the "one `prepare`/vertex-buffer fill per
-    /// surface composition" invariant; its text-path sibling is the disjoint
-    /// per-batch instance-buffer region the quad loop below documents.
+    /// here. See `UiComposition` for the one coordinated prepare phase and
+    /// disjoint per-command GPU-buffer invariant.
     ///
     /// Single color target plus a private UI depth target; the caller's `load` op
     /// controls whether the color surface is cleared first. The depth target is
     /// always cleared. `load` rides alongside `&UiComposition` because
     /// clear-vs-load is a target concern, not a composition one.
     ///
-    /// Record order is quads first, then one glyphon text draw. Painter order is
-    /// preserved for opaque occlusion by depth: later composition commands use
-    /// smaller depth, so an opaque top-layer panel/backdrop rejects lower-layer
-    /// text even though text records after quads. Translucent/image batches test
-    /// depth but do not write it, preventing hard erasure of lower text; exact
-    /// alpha source-over interleaving with text would require splitting glyphon's
-    /// single render call. glyphon's atlas upload + CPU layout (`prepare`) runs
-    /// BEFORE the pass opens (it needs `device`/`queue`, not the pass). With no
-    /// quads and no text the pass still opens so the caller's `load` op lands.
+    /// Quad, image, ring, and text batches record in their mixed paint-stream
+    /// order. Consecutive text runs remain batched, while shapes split text into
+    /// independently prepared spans so translucent source-over blending follows
+    /// the authored order. Every glyphon atlas upload + CPU layout runs BEFORE
+    /// the pass opens (it needs `device`/`queue`, not the pass). With no UI draws
+    /// the pass still opens so the caller's `load` op lands.
     // Wide by necessity: the GPU handles (device/queue/encoder/view), the
     // viewport, the target's `load` op, and the whole-frame `UiComposition` are
     // all distinct encode inputs; bundling them into a builder would obscure the
@@ -1037,6 +1277,7 @@ impl UiPass {
         // boundary takes the whole composition so caller-side per-layer encode
         // loops stay unrepresentable.
         let batches: &[OrderedUiBatch<'_>] = &composition.batches;
+        let ring_batches: &[OrderedRingBatch] = &composition.ring_batches;
         let texts: &[UiText] = &composition.texts;
 
         queue.write_buffer(
@@ -1060,6 +1301,10 @@ impl UiPass {
         if total_instances > self.instance_capacity {
             self.grow_instance_buffer(device, total_instances);
         }
+        let total_ring_instances: usize = ring_batches.iter().map(|b| b.instances.len()).sum();
+        if total_ring_instances > self.ring_instance_capacity {
+            self.grow_ring_instance_buffer(device, total_ring_instances);
+        }
 
         // --- Shape + prepare text BEFORE the pass opens --------------------
         // glyphon shapes each line into a `Buffer`, then `prepare` does CPU
@@ -1073,7 +1318,12 @@ impl UiPass {
             .iter()
             .map(|&order| painter_depth(order, composition.order_count))
             .collect();
-        let prepared = self.text.prepare_text(
+        let text_ranges: Vec<std::ops::Range<usize>> = composition
+            .text_batches
+            .iter()
+            .map(|batch| batch.range.clone())
+            .collect();
+        let prepared_text_batches = self.text.prepare_text_batches(
             font_system,
             device,
             queue,
@@ -1083,6 +1333,7 @@ impl UiPass {
                 buffers: &text_buffers,
                 depths: &text_depths,
             },
+            &text_ranges,
         );
 
         self.ensure_depth_target(device, viewport);
@@ -1114,41 +1365,69 @@ impl UiPass {
             ..Default::default()
         });
 
-        // Quads first. Each non-empty batch concatenates into its own region:
-        // batch K starts at `offset_k = (sum of prior batch lens) * INSTANCE_SIZE`.
-        // The draw binds the vertex buffer from `offset_k` and uses instance
-        // range `0..count_k`, so it reads its own region without relying on a
-        // non-zero `first_instance`. Empty batches are skipped without consuming
-        // a region.
+        // Each shape batch concatenates into its own type-specific buffer region.
+        // Commands then bind those disjoint regions in the retained mixed paint
+        // order, without relying on a non-zero `first_instance`.
         let mut offset = 0u64;
-        for ordered in batches {
-            if ordered.instances.is_empty() {
-                continue;
+        let mut ring_offset = 0u64;
+        for command in &composition.commands {
+            match *command {
+                UiDrawCommand::Quad(batch_index) => {
+                    let ordered = &batches[batch_index];
+                    if ordered.instances.is_empty() {
+                        continue;
+                    }
+                    let depth = painter_depth(ordered.order, composition.order_count);
+                    let upload: Vec<GpuUiInstance> = ordered
+                        .instances
+                        .iter()
+                        .map(|instance| GpuUiInstance::from_ui(instance, depth))
+                        .collect();
+                    let bytes: &[u8] = bytemuck::cast_slice(&upload);
+                    queue.write_buffer(&self.instance_buffer, offset, bytes);
+                    let pipeline = if ordered.writes_depth {
+                        &self.opaque_pipeline
+                    } else {
+                        &self.translucent_pipeline
+                    };
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, ordered.bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.instance_buffer.slice(offset..));
+                    pass.draw(0..VERTS_PER_INSTANCE, 0..ordered.instances.len() as u32);
+                    offset += bytes.len() as u64;
+                }
+                UiDrawCommand::Ring(batch_index) => {
+                    let ordered = &ring_batches[batch_index];
+                    if ordered.instances.is_empty() {
+                        continue;
+                    }
+                    let depth = painter_depth(ordered.order, composition.order_count);
+                    let upload: Vec<GpuUiRingInstance> = ordered
+                        .instances
+                        .iter()
+                        .map(|instance| GpuUiRingInstance::from_ui(instance, depth))
+                        .collect();
+                    let bytes: &[u8] = bytemuck::cast_slice(&upload);
+                    queue.write_buffer(&self.ring_instance_buffer, ring_offset, bytes);
+                    pass.set_pipeline(&self.ring_pipeline);
+                    pass.set_bind_group(0, &self.ring_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.ring_instance_buffer.slice(ring_offset..));
+                    pass.draw(
+                        0..RING_VERTS_PER_INSTANCE,
+                        0..ordered.instances.len() as u32,
+                    );
+                    ring_offset += bytes.len() as u64;
+                }
+                UiDrawCommand::Text(batch_index) => {
+                    if prepared_text_batches
+                        .get(batch_index)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        self.text.render_batch(batch_index, &mut pass);
+                    }
+                }
             }
-            let depth = painter_depth(ordered.order, composition.order_count);
-            let upload: Vec<GpuUiInstance> = ordered
-                .instances
-                .iter()
-                .map(|instance| GpuUiInstance::from_ui(instance, depth))
-                .collect();
-            let bytes: &[u8] = bytemuck::cast_slice(&upload);
-            queue.write_buffer(&self.instance_buffer, offset, bytes);
-            let pipeline = if ordered.writes_depth {
-                &self.opaque_pipeline
-            } else {
-                &self.translucent_pipeline
-            };
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, ordered.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.instance_buffer.slice(offset..));
-            pass.draw(0..VERTS_PER_INSTANCE, 0..ordered.instances.len() as u32);
-            offset += bytes.len() as u64;
-        }
-
-        // Then glyphon's text draw, into the same pass, after the quads. Skipped
-        // when `prepare` had nothing to record (no text this frame).
-        if prepared {
-            self.text.render(&mut pass);
         }
 
         // Drop the pass (ends its borrow of `self.text`) before trimming, since
@@ -1199,6 +1478,20 @@ impl UiPass {
         });
         self.instance_capacity = capacity;
     }
+
+    fn grow_ring_instance_buffer(&mut self, device: &wgpu::Device, needed: usize) {
+        let mut capacity = self.ring_instance_capacity.max(1);
+        while capacity < needed {
+            capacity *= 2;
+        }
+        self.ring_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("UI Ring Instance Buffer"),
+            size: (capacity * RING_INSTANCE_SIZE) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.ring_instance_capacity = capacity;
+    }
 }
 
 fn create_ui_quad_pipeline(
@@ -1234,6 +1527,45 @@ fn create_ui_quad_pipeline(
             targets: &[Some(wgpu::ColorTargetState {
                 format: color_format,
                 // Standard alpha blend over the existing surface contents.
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_ui_ring_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    instance_layout: &wgpu::VertexBufferLayout<'_>,
+    color_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("UI Ring Pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: std::slice::from_ref(instance_layout),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        // Rings always use alpha coverage from their SDF edge, so they test but
+        // never write the shared UI depth target.
+        depth_stencil: Some(ui_depth_stencil_state(false)),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -1358,6 +1690,28 @@ mod tests {
         )
         .validate(&module)
         .expect("ui_quad.wgsl must pass naga validation");
+    }
+
+    #[test]
+    fn ui_ring_wgsl_parses_and_validates() {
+        let module =
+            naga::front::wgsl::parse_str(UI_RING_WGSL).expect("ui_ring.wgsl should parse as WGSL");
+        let has_vs = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "vs_main" && ep.stage == naga::ShaderStage::Vertex);
+        let has_fs = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "fs_main" && ep.stage == naga::ShaderStage::Fragment);
+        assert!(has_vs, "ui_ring.wgsl must export @vertex vs_main");
+        assert!(has_fs, "ui_ring.wgsl must export @fragment fs_main");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("ui_ring.wgsl must pass naga validation");
     }
 
     #[test]

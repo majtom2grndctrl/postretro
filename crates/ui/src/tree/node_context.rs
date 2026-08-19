@@ -7,10 +7,32 @@ use std::cell::RefCell;
 use taffy::prelude::Display;
 
 use super::super::descriptor::{
-    BarExitFade, BarMax, Border, PanelBind, Predicate, SliderBind, TextBind,
+    BarExitFade, BarMax, Border, BoundScalar, PanelBind, Predicate, SliderBind, TextBind,
 };
 use super::super::style_ranges::{StyleEffectState, StyleRanges};
 use super::style::TweenState;
+
+/// One resolved radial scalar. Literals are immutable draw values; a bound
+/// scalar retains the descriptor source plus presentation-local display state.
+///
+/// `last_resolved` is deliberately raw and unclamped. The collector applies the
+/// ring's radius/thickness/sweep limits only while emitting draw data, so an
+/// over-range eased value can later return in-range without being stuck at the
+/// previous draw clamp.
+#[derive(Debug, Clone)]
+pub enum RingScalar {
+    Literal(f32),
+    Bound {
+        source: BoundScalar,
+        /// Nearest declaring `localState` scope for a `{ local }` source.
+        /// Slot sources need no scope.
+        bind_scope: Option<String>,
+        /// Last raw source or eased display value observed by the retained diff.
+        last_resolved: Option<f32>,
+        /// Born on first numeric resolution when the source carries a tween.
+        tween: Option<TweenState<f32>>,
+    },
+}
 
 /// Per-node draw payload carried alongside each taffy node. Pure layout nodes
 /// (stacks, grids, spacers) carry `None`; only nodes that emit a draw entry hold
@@ -143,6 +165,19 @@ pub enum NodeContext {
         tween: Option<TweenState<f32>>,
         style_ranges: Option<StyleRanges>,
         style_state: RefCell<StyleEffectState>,
+    },
+    /// Passive SDF annulus/arc. Colors resolve at tree-build time, keeping the
+    /// frame draw walk theme-free. Its radial values are fixed-layout,
+    /// appearance-only drivers: their raw sources ease independently while the
+    /// collector applies draw-only range clamps.
+    Ring {
+        diameter: f32,
+        radius: RingScalar,
+        thickness: RingScalar,
+        start_angle: RingScalar,
+        sweep: RingScalar,
+        fill: [f32; 4],
+        track: Option<[f32; 4]>,
     },
 }
 

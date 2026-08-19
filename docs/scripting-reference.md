@@ -1898,6 +1898,16 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
   width is `value/max` clamped to `[0, 1]`. On a bar, `styleRanges` recolors the
   fill from the displayed fill fraction, so normalized health bands use
   `styleRanges.max = 1.0`. Horizontal only in v1.
+- **`ring`** — `{ kind: "ring", diameter, radius, thickness, fill, startAngle?, sweep?, track?, id? }`.
+  Passive annulus or arc. Angles are degrees: `0°` is 12 o'clock and increases
+  clockwise. `diameter` fixes its layout box; each
+  geometric property is either a literal or a bound state/local value read 1:1
+  in that property's own units (px for `radius`/`thickness`, degrees for
+  `startAngle`/`sweep`). It performs no value mapping. A cooldown arc or
+  bullet-spread crosshair therefore awaits the successor
+  **UI-computed-bindings (Behavior IR)** spec; spread also needs a gameplay
+  producer that does not exist yet. Until then, any bound source must already
+  provide the desired px or degree value.
 
 ### `updateState`
 
@@ -2119,7 +2129,7 @@ first** and **children as a positional second argument** (the Compose / SwiftUI
 shape); leaf widgets take only props. All factories return a plain descriptor.
 
 ```typescript
-import { Tree, VStack, Text, Bar, defineTheme, getDesignTokens, getGameState } from "postretro/ui";
+import { Tree, VStack, Text, Bar, Ring, defineTheme, getDesignTokens, getGameState } from "postretro/ui";
 
 const hudTheme = defineTheme({
   color: { ok: [0.12, 0.72, 0.40, 1] },
@@ -2139,8 +2149,8 @@ const hud = Tree(
 ```
 
 - **Containers:** `VStack` / `HStack` / `Grid` — `(props, children)`.
-- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, and the interactive
-  `Button` / `Slider` (see *Operable UI* above) — `(props)`.
+- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, `Ring`, and non-visual
+  `Announce`; interactive `Button` / `Slider` (see *Operable UI* above) — `(props)`.
 - **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes

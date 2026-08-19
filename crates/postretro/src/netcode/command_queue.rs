@@ -34,6 +34,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use postretro_net::wire::InputCommand;
 
+use crate::netcode::netdiag::{HostQueueDiag, QueueEvent};
 use crate::netcode::prediction::client_tick_le;
 use crate::netcode::wire_convert::{input_command_to_sim, sanitize_input_command};
 use crate::sim::SimCommand;
@@ -298,6 +299,9 @@ impl ClientCommandState {
 #[derive(Debug, Default)]
 pub(crate) struct HostCommandQueues {
     clients: HashMap<u64, ClientCommandState>,
+    /// Off-by-default per-client resolution/jump diagnostics (see `netdiag`). Reset
+    /// with the queue on level unload; inert unless `postretro::netdiag=debug`.
+    diag: HostQueueDiag,
 }
 
 /// What the gap policy resolved for one pawn this fixed tick: the command to apply
@@ -393,6 +397,11 @@ impl HostCommandQueues {
     pub(crate) fn resolve_tick(&mut self, client_id: u64) -> Option<ResolvedCommand> {
         let state = self.clients.get_mut(&client_id)?;
 
+        // Diagnostics-only: whether this resolution performed a catch-up trim and how
+        // many trimmed commands carried a pressed jump. Pure observability.
+        let mut diag_trims: u32 = 0;
+        let mut diag_trimmed_jump: u32 = 0;
+
         // Catch-up fast-forward: a deep pending queue means real commands are stacking
         // up faster than the +1-per-tick cursor consumes them — a startup-handshake or
         // hitch backlog. Drop all but the newest INPUT_BUFFER_TARGET so the resolved
@@ -403,6 +412,11 @@ impl HostCommandQueues {
         // `Real`.
         if state.pending.len() > INPUT_BUFFER_MAX {
             let drop_count = state.pending.len() - INPUT_BUFFER_TARGET;
+            diag_trims = 1;
+            diag_trimmed_jump = state.pending[0..drop_count]
+                .iter()
+                .filter(|c| c.movement.jump_pressed)
+                .count() as u32;
             state.pending.drain(0..drop_count);
             // `pending` is non-empty here (INPUT_BUFFER_TARGET >= 1), so `first()` holds.
             let new_first = state.pending[0].client_tick;
@@ -430,6 +444,18 @@ impl HostCommandQueues {
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
             state.preserve_due_reload_press(expected, &mut sim);
+            let diag_lead = state
+                .latest_observed_reload
+                .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
+            self.diag.record(QueueEvent {
+                client_id,
+                source: ResolutionSource::Real,
+                lead: diag_lead,
+                yaw: Some(sim.movement.facing_yaw),
+                jump_pressed: sim.movement.jump_pressed,
+                trims: diag_trims,
+                trimmed_jump: diag_trimmed_jump,
+            });
             return Some(ResolvedCommand {
                 command: sim,
                 client_tick: expected,
@@ -464,6 +490,18 @@ impl HostCommandQueues {
         state.resolved_cursor = Some(expected);
         state.drop_stale(expected);
         state.preserve_due_reload_press(expected, &mut sim);
+        let diag_lead = state
+            .latest_observed_reload
+            .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
+        self.diag.record(QueueEvent {
+            client_id,
+            source,
+            lead: diag_lead,
+            yaw: Some(sim.movement.facing_yaw),
+            jump_pressed: sim.movement.jump_pressed,
+            trims: diag_trims,
+            trimmed_jump: diag_trimmed_jump,
+        });
         Some(ResolvedCommand {
             command: sim,
             client_tick: expected,

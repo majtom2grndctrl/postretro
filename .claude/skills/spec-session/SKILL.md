@@ -23,7 +23,7 @@ Eleven habits from a real review where three independent reviewers plus a later 
 
 ### While writing
 
-**1. A coherent rationale is not evidence.** A chain of plausible clauses can still be wrong — the premise was never checked. Open the file before building an argument on what it does.
+**1. A coherent rationale is not evidence.** A chain of plausible clauses can still be wrong — the premise was never checked, or it was checked and the next clause went a step past it. Open the file before building an argument on what it does, then check the step you took from what you read. Common slips: *this path* → *every path*; *outside the loop* → *after the loop*; *runs there* → *knows what's in scope there*; *handles this type* → *accepts this value*.
 
 **2. Verify the path, not just the line.** Line numbers come from an actual read; paths get reconstructed from memory. A real line number on a wrong path reads as more verified than either alone. Prefer citing by identifier and symbol name — line numbers go stale on the next edit.
 
@@ -54,6 +54,7 @@ Eleven habits from a real review where three independent reviewers plus a later 
 ## Pre-handoff checklist
 
 - [ ] Every claimed mechanism, path, and identifier verified against source this session — not from memory
+- [ ] Every "X, so Y" sentence checked at the arrow, not just at X
 - [ ] Every "this requires" and "this is unnecessary" carries a stated warrant
 - [ ] Every gap names its consumer
 - [ ] No pivot language — no "originally," "was thought," "no longer," "fewer than assumed"

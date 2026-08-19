@@ -299,24 +299,43 @@ policies govern resolution:
 - **Hold-then-neutral gap policy.** When the exact next tick is missing, the host holds
   the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap of
   dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
-  cannot coast on stale intent). Neutralization clears movement, use, and fire but
-  retains the latest finite aim pitch and facing yaw for remote-avatar presentation. A client that
+  cannot coast on stale intent). A held command **does not advance the resolved cursor**:
+  the cursor waits on the awaited tick, so a real command arriving within the hold grace
+  resolves `Real` rather than being drop-staled — the +1-per-tick advance yields during
+  the grace. Only the give-up after the grace and the post-give-up neutral-walk (the
+  coast toward a stream that resumed at a far-future tick) advance the cursor with
+  synthesized neutral input. Neutralization clears movement, use, and fire but retains
+  the latest finite aim pitch and facing yaw for remote-avatar presentation. A client that
   has never sent a command resolves to nothing — its pawn holds its authoritative pose.
 
-- **Bounded playout buffer with depth-keyed catch-up.** Drain-rate equals produce-rate
-  (both 60 Hz) and the cursor advances +1 per tick, so any backlog in the pending queue
-  would become *permanent* latency. Two backlogs arise: a client streams input on
-  connect before the host can drain its pawn (the accept/spawn handshake window), and a
-  mid-session host frame hitch stalls the drain while commands keep arriving. To
-  self-correct, when the pending queue's depth exceeds `INPUT_BUFFER_MAX` (~8 ticks ≈
-  133 ms), the host fast-forwards: it keeps only the newest `INPUT_BUFFER_TARGET`
-  (~2 ticks ≈ 33 ms) commands and reseats the cursor on the new oldest, so the resolved
-  cursor never sits more than a small bounded buffer behind the newest received command.
-  The trigger is **pending-queue depth (count of buffered commands), not tick-distance
-  to the newest command** — a client that went silent then resumed at a far-future tick
-  holds a single command far ahead (depth 1), which must NOT catch up; the
-  hold→neutral→real resume path stays intact. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET`
-  gives hysteresis so catch-up does not thrash.
+- **Bounded playout buffer: standing floor + depth-keyed catch-up.** The two 60 Hz
+  clocks free-run ~1 tick out of phase, so on a clean link the awaited command is usually
+  not-yet-arrived when its tick resolves. A **one-shot buildup latch** establishes a
+  standing playout floor proactively: armed at stream begin and after any give-up that
+  empties the pending queue, it withholds the first `Real` — holding without consuming or
+  advancing — until pending depth first reaches `INPUT_BUFFER_TARGET` (~2 ticks ≈ 33 ms),
+  then disarms. After the first consume drops one command, the resolved cursor trails the
+  newest received tick by ~`INPUT_BUFFER_TARGET − 1` ticks (≈ 1 tick / 16 ms in steady
+  state — the signed `cursor_lead` diagnostic reads a small **negative** value, not the
+  pre-fix 0). This margin absorbs the sub-tick phase offset that otherwise drop-staled the
+  majority of a client's input. The latch is depth-keyed on pending count alone — a client
+  that went silent then resumed at a far-future tick holds a single command far ahead
+  (depth 1), which keeps the latch armed rather than reading as "buffer full", so the
+  resume path stays intact. The standing invariant `INPUT_BUFFER_TARGET < INPUT_HOLD_TICKS`
+  guarantees a normal buildup completes before the hold grace can give up on it (and a
+  client that sends one command then goes silent still neutralizes — the latch cannot pin
+  the pawn armed forever).
+
+  A separate **catch-up** path handles deep backlogs, which would become *permanent*
+  latency because drain-rate equals produce-rate. Two backlogs arise: a client streams
+  input on connect before the host can drain its pawn (the accept/spawn handshake window),
+  and a mid-session host frame hitch stalls the drain while commands keep arriving. When
+  the pending queue's depth exceeds `INPUT_BUFFER_MAX` (~8 ticks ≈ 133 ms), the host
+  fast-forwards: it keeps only the newest `INPUT_BUFFER_TARGET` commands and reseats the
+  cursor on the new oldest. The trigger is **pending-queue depth (count of buffered
+  commands), not tick-distance to the newest command** — the same depth-keying the buildup
+  latch uses, and for the same reason. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET` gives
+  hysteresis so catch-up does not thrash.
 
 Reload uses a reliable edge lane beside command playout. Host intake observes reload
 rising edges before stale-drop and backlog trimming, then delivers each due edge once on

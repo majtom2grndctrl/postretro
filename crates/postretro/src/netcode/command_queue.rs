@@ -3,24 +3,33 @@
 // id; the per-pawn resolved cursor (`last_processed_client_tick`) drives a
 // hold-then-neutral gap policy so a missing command tick never stalls locomotion.
 //
-// Bounded playout buffer + depth-keyed catch-up: the resolved cursor consumes one
-// command per 60 Hz tick, the same rate the client produces them. Without catch-up,
-// any backlog that builds up in `pending` becomes PERMANENT latency, because
-// drain-rate == produce-rate and the cursor only advances +1 per tick. Two backlogs
-// matter: (1) the client streams input at 60 Hz immediately on connect, but the host
-// can't drain a pawn until `owners.set()` runs at the end of accept+spawn — so a
-// handshake/spawn-window backlog (tens of ticks ≈ hundreds of ms) accumulates; (2) a
-// mid-session host frame hitch stalls the drain while commands keep arriving. Either
-// way, a seed at the oldest queued command with +1-only advance locks that backlog in
-// forever (a 48-command startup backlog → a rock-steady ~800 ms lag that never
-// shrinks). The fix: when `pending` depth exceeds INPUT_BUFFER_MAX, fast-forward —
-// drop all but the newest INPUT_BUFFER_TARGET commands and reseat the cursor on the
-// new oldest, so playout converges to a small bounded buffer and stays there.
+// Bounded playout buffer with a standing playout floor. The resolved cursor consumes
+// one command per 60 Hz tick, the same rate the client produces them. Two mechanisms
+// keep playout smooth:
 //
-// Why depth-keyed (number of buffered commands), NOT tick-distance to the newest:
-// a continuous-stream backlog holds MANY commands queued ahead (catch up), but a
-// client that went silent then RESUMED at a far-future tick holds exactly ONE command
-// far ahead (must NOT catch up — the hold→neutral→real resume path must stay intact).
+// (1) Standing playout floor (buildup latch). The two 60 Hz clocks free-run ~1 tick
+// out of phase, so on a clean link the awaited command is usually not-yet-arrived when
+// its tick resolves. Rather than neutral-fill and advance past it (which drop-stales
+// the real command when it lands), the resolver holds the cursor on a genuine
+// late-arrival — no advance, no drop_stale — until the command lands within the hold
+// grace, and it withholds the FIRST real command at stream start / after an underrun
+// until `pending` has built to INPUT_BUFFER_TARGET. Steady state then trails the newest
+// received tick by ~INPUT_BUFFER_TARGET - 1 ticks, absorbing the phase offset.
+//
+// (2) Depth-keyed catch-up. Drain-rate == produce-rate, so a deep backlog would become
+// PERMANENT latency. Two backlogs matter: (a) the client streams input at 60 Hz on
+// connect, but the host can't drain a pawn until `owners.set()` runs at the end of
+// accept+spawn — so a handshake/spawn-window backlog (tens of ticks ≈ hundreds of ms)
+// accumulates; (b) a mid-session host frame hitch stalls the drain while commands keep
+// arriving. When `pending` depth exceeds INPUT_BUFFER_MAX, fast-forward — drop all but
+// the newest INPUT_BUFFER_TARGET commands and reseat the cursor on the new oldest, so
+// playout converges to the small bounded buffer and stays there.
+//
+// Why depth-keyed (number of buffered commands), NOT tick-distance to the newest: both
+// the catch-up trigger and the buildup latch key on `pending.len()`. A continuous-stream
+// backlog holds MANY commands queued ahead (catch up), but a client that went silent then
+// RESUMED at a far-future tick holds exactly ONE command far ahead (must NOT catch up, and
+// must NOT read as "buffer full" — the hold→neutral→real resume path must stay intact).
 // Tick-distance can't tell those apart; pending depth can.
 // See: context/lib/networking.md
 //
@@ -142,11 +151,17 @@ pub(crate) fn active_wieldable_for_pawn(
 /// intent.
 pub(crate) const INPUT_HOLD_TICKS: u32 = 3;
 
-/// Steady-state playout floor: the pending depth a catch-up fast-forward trims back
-/// to. ~2 ticks ≈ 33 ms at 60 Hz — a small buffer that absorbs one late/dropped
-/// packet (it complements [`INPUT_HOLD_TICKS`]: the buffer rides out jitter on the
-/// way in, the hold rides it out on the way out) without re-introducing perceptible
-/// latency. Kept well below [`INPUT_BUFFER_MAX`] so catch-up restores real headroom.
+/// Standing playout depth: both the buildup latch's *disarm depth* and the pending
+/// depth a catch-up fast-forward trims back to. ~2 ticks ≈ 33 ms at 60 Hz. The buildup
+/// latch withholds the first real command until `pending` first reaches this depth;
+/// after the first consume drops one command, the resolved cursor trails the newest
+/// received tick by ~`INPUT_BUFFER_TARGET - 1` ticks (≈ 1 tick / 16 ms) — the standing
+/// margin that absorbs the sub-tick phase offset between the client's send clock and the
+/// host's resolve clock. It complements [`INPUT_HOLD_TICKS`]: the buffer rides out jitter
+/// on the way in, the hold rides it out on the way out. Kept well below
+/// [`INPUT_BUFFER_MAX`] so catch-up restores real headroom, and strictly below
+/// [`INPUT_HOLD_TICKS`] (the standing invariant `INPUT_BUFFER_TARGET < INPUT_HOLD_TICKS`)
+/// so a normal buildup completes before the hold grace can give up on it.
 pub(crate) const INPUT_BUFFER_TARGET: usize = 2;
 
 /// Catch-up trigger: the pending depth above which `resolve_tick` fast-forwards,
@@ -203,6 +218,15 @@ struct ClientCommandState {
     /// press waits behind one false tick when necessary so the weapon's level-to-edge
     /// dedup sees a genuine rising edge.
     last_emitted_reload: bool,
+    /// One-shot buildup latch for the standing playout floor. Armed at stream begin
+    /// (`resolved_cursor == None`) and re-armed by a give-up that empties `pending`;
+    /// disarmed the instant `pending.len()` first reaches [`INPUT_BUFFER_TARGET`].
+    /// While armed, `resolve_tick` withholds the first real command — holding without
+    /// consuming or advancing — until the queue has built to the disarm depth, so the
+    /// resolved cursor establishes a small playout margin behind the newest received
+    /// tick proactively (not only reactively via catch-up). Depth-keyed on
+    /// `pending.len()` alone, never tick-distance. `Default` is disarmed.
+    building_playout: bool,
 }
 
 impl ClientCommandState {
@@ -380,9 +404,19 @@ impl HostCommandQueues {
     /// command (held or neutral) so the pawn advances deterministically.
     ///
     /// Cursor model: the host expects the tick immediately after the resolved cursor.
-    /// If that exact tick is queued, consume it (`Real`). Otherwise hold the previous
-    /// command for up to [`INPUT_HOLD_TICKS`] ticks (`Held`), then synthesize neutral
-    /// (`Neutral`). Real and synthetic resolutions both advance the cursor.
+    /// If that exact tick is queued, consume it (`Real`). If it is missing, the cursor
+    /// either HOLDS in place or ADVANCES, depending on the case:
+    /// - **Hold (no advance):** a genuine late-arrival — a real command is being held
+    ///   (`last_resolved.is_some()`) and the grace is not exhausted — holds the cursor
+    ///   so the awaited tick, arriving within [`INPUT_HOLD_TICKS`], still resolves
+    ///   `Real`. The one-shot buildup latch (`building_playout`) also holds, withholding
+    ///   the first `Real` until `pending` reaches [`INPUT_BUFFER_TARGET`].
+    /// - **Advance (+1):** the give-up after the hold grace (`Neutral`, so an absent
+    ///   client cannot stall the host) and the post-give-up neutral-walk toward a
+    ///   far-future resumed stream both synthesize `Neutral` and advance one tick.
+    ///
+    /// Held commands no longer advance the cursor; that establishes a standing playout
+    /// depth trailing the newest received tick by ~[`INPUT_BUFFER_TARGET`] − 1 ticks.
     ///
     /// Bounded playout + catch-up: BEFORE picking the expected tick, if the pending
     /// queue has grown past [`INPUT_BUFFER_MAX`] real buffered commands, fast-forward —
@@ -390,10 +424,10 @@ impl HostCommandQueues {
     /// oldest. Because drain-rate == produce-rate (both 60 Hz), a backlog that builds
     /// during the accept/spawn handshake window (the client streams on connect before
     /// the host can drain) or a mid-session host hitch would otherwise become permanent
-    /// latency under +1-only advance; this single path drains it back to a small buffer
-    /// and keeps it there. It is depth-keyed (count of buffered commands), NOT
-    /// tick-distance to the newest, so a single far-future command after a silence does
-    /// NOT trip it — the hold→neutral→real resume path stays intact.
+    /// latency; this single path drains it back to a small buffer and keeps it there. It
+    /// is depth-keyed (count of buffered commands), NOT tick-distance to the newest, so a
+    /// single far-future command after a silence does NOT trip it — the resume path stays
+    /// intact.
     pub(crate) fn resolve_tick(&mut self, client_id: u64) -> Option<ResolvedCommand> {
         let state = self.clients.get_mut(&client_id)?;
 
@@ -429,13 +463,32 @@ impl HostCommandQueues {
         let expected = match state.resolved_cursor {
             // First resolution: the next tick we want is the oldest queued command's
             // tick (the client's command stream may not start at 0). With nothing
-            // queued and nothing prior resolved, there is nothing to drive yet.
-            None => state.pending.first().map(|c| c.client_tick)?,
+            // queued and nothing prior resolved, there is nothing to drive yet. This is
+            // the stream-begin path: arm the one-shot buildup latch so the first real
+            // command is withheld until a small playout depth accumulates.
+            None => {
+                let first = state.pending.first().map(|c| c.client_tick)?;
+                state.building_playout = true;
+                first
+            }
             Some(cursor) => cursor.wrapping_add(1),
         };
 
-        // Exact-tick hit: a real command resolves this tick.
-        if let Some(cmd) = state.take_exact(expected) {
+        // Disarm the buildup latch the instant the pending queue first reaches the
+        // target depth — depth-keyed on `pending.len()` ALONE (never tick-distance), so
+        // a lone far-future command after a silence stays at depth 1 and keeps the latch
+        // armed rather than reading as "buffer full".
+        if state.building_playout && state.pending.len() >= INPUT_BUFFER_TARGET {
+            state.building_playout = false;
+        }
+
+        // Exact-tick hit: a real command resolves this tick. Skipped while the buildup
+        // latch is armed — evaluating the latch BEFORE `take_exact` is load-bearing:
+        // `take_exact` removes the command, so a buildup check after it would pop the
+        // awaited command and still resolve `Neutral`, and the buffer could never build.
+        if !state.building_playout
+            && let Some(cmd) = state.take_exact(expected)
+        {
             let mut sim = input_command_to_sim(&cmd);
             state.latest_aim_pitch = Some(cmd.movement.aim_pitch);
             state.latest_facing_yaw = Some(cmd.movement.facing_yaw);
@@ -463,39 +516,73 @@ impl HostCommandQueues {
             });
         }
 
-        // Gap: hold the previous command for up to INPUT_HOLD_TICKS, then neutral.
-        let (mut sim, source) = if state.held_ticks < INPUT_HOLD_TICKS {
-            match &state.last_resolved {
-                Some(prev) => {
-                    state.held_ticks += 1;
-                    (held_gap_sim_command(prev), ResolutionSource::Held)
-                }
-                // No previous command to hold (cursor advanced via neutral only):
-                // neutral immediately.
+        // Gap resolution. Two outcomes: HOLD the cursor in place (a genuine late-arrival
+        // wait, or an armed buildup withhold) or ADVANCE it (+1) with synthesized neutral
+        // (a give-up after the grace, or the post-give-up neutral-walk).
+        let within_grace = state.held_ticks < INPUT_HOLD_TICKS;
+        // Hold without advancing iff the grace is not exhausted AND either the buildup
+        // latch is armed (withhold the first real command, regardless of `last_resolved`)
+        // or a real command is being held across the gap (`last_resolved.is_some()`). A
+        // disarmed gap with no command to hold is the neutral-walk — it must advance.
+        let hold_without_advance =
+            within_grace && (state.building_playout || state.last_resolved.is_some());
+
+        if hold_without_advance {
+            // Hold: leave `resolved_cursor` unchanged, do NOT `drop_stale`, do NOT
+            // `take_exact`, and do NOT thread `preserve_due_reload_press` (a non-advancing
+            // hold keeps `expected` constant, so a due reload press waits for an advancing
+            // tick). `held_ticks` still increments so the grace stays bounded.
+            state.held_ticks += 1;
+            let (sim, source) = match &state.last_resolved {
+                Some(prev) => (held_gap_sim_command(prev), ResolutionSource::Held),
                 None => (
                     neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
                     ResolutionSource::Neutral,
                 ),
-            }
-        } else {
-            // Hold lapsed: neutral. Clear the held command so a later real command at
-            // a still-higher tick resumes cleanly rather than re-holding stale intent.
-            state.last_resolved = None;
-            (
-                neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
-                ResolutionSource::Neutral,
-            )
-        };
+            };
+            let diag_lead = state
+                .latest_observed_reload
+                .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
+            self.diag.record(QueueEvent {
+                client_id,
+                source,
+                lead: diag_lead,
+                yaw: Some(sim.movement.facing_yaw),
+                jump_pressed: sim.movement.jump_pressed,
+                trims: diag_trims,
+                trimmed_jump: diag_trimmed_jump,
+            });
+            return Some(ResolvedCommand {
+                command: sim,
+                client_tick: expected,
+                source,
+            });
+        }
 
+        // Advancing gap resolution: give-up (grace exhausted while a command was held)
+        // or neutral-walk (no command to hold — the coast toward a far-future resume).
+        // Both synthesize neutral and advance the cursor one tick.
+        if state.held_ticks >= INPUT_HOLD_TICKS {
+            // Give-up: clear the held command so a later real command at a still-higher
+            // tick resumes cleanly rather than re-holding stale intent.
+            state.last_resolved = None;
+        }
+        let mut sim = neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0));
+        state.held_ticks = 0;
         state.resolved_cursor = Some(expected);
         state.drop_stale(expected);
+        // Give-up latch recompute: re-arm buildup iff the give-up emptied the buffer (a
+        // fresh stream must build depth again); a give-up that leaves commands buffered
+        // disarms so the neutral-walk advances toward them. For a neutral-walk, `pending`
+        // still holds the command being walked toward, so this is a no-op (stays false).
+        state.building_playout = state.pending.is_empty();
         state.preserve_due_reload_press(expected, &mut sim);
         let diag_lead = state
             .latest_observed_reload
             .map(|(newest, _)| expected.wrapping_sub(newest) as i32);
         self.diag.record(QueueEvent {
             client_id,
-            source,
+            source: ResolutionSource::Neutral,
             lead: diag_lead,
             yaw: Some(sim.movement.facing_yaw),
             jump_pressed: sim.movement.jump_pressed,
@@ -505,7 +592,7 @@ impl HostCommandQueues {
         Some(ResolvedCommand {
             command: sim,
             client_tick: expected,
-            source,
+            source: ResolutionSource::Neutral,
         })
     }
 
@@ -644,6 +731,31 @@ mod tests {
         }
     }
 
+    /// A reload-pressed command at `client_tick` (rising edge on the wire level bit).
+    fn reload_command(client_tick: u32, wish_forward: f32) -> InputCommand {
+        let mut cmd = command(client_tick, wish_forward);
+        cmd.reload = true;
+        cmd
+    }
+
+    /// Drive the buildup latch to DISARMED steady state: ingest the two consecutive
+    /// commands [`base`, `base + 1`] and resolve both `Real`, leaving `resolved_cursor`
+    /// at `base + 1` with an empty pending queue, the latch disarmed, and a real command
+    /// held. A single command can never disarm the one-shot latch (depth 1 <
+    /// [`INPUT_BUFFER_TARGET`]), so priming a "first Real resolves" state needs two.
+    fn prime_disarmed(queues: &mut HostCommandQueues, base: u32) {
+        assert!(queues.ingest(CLIENT, &command(base, 1.0)));
+        assert!(queues.ingest(CLIENT, &command(base + 1, 1.0)));
+        let r0 = queues.resolve_tick(CLIENT).expect("primed real 0");
+        assert_eq!(r0.source, ResolutionSource::Real);
+        assert_eq!(r0.client_tick, base);
+        let r1 = queues.resolve_tick(CLIENT).expect("primed real 1");
+        assert_eq!(r1.source, ResolutionSource::Real);
+        assert_eq!(r1.client_tick, base + 1);
+    }
+
+    // === Intake / sanitize (unchanged by the playout fix) ===
+
     // Intake sanitizes and queues a finite command; a non-finite command is rejected
     // and mutates no queue state (no client entry is even created).
     #[test]
@@ -667,14 +779,18 @@ mod tests {
     }
 
     // Out-of-range finite wish_dir is clamped by sanitize before queueing (the
-    // sanitizer's contract); the queued+resolved command reflects the clamp.
+    // sanitizer's contract); the queued+resolved command reflects the clamp. A second
+    // command brings depth to INPUT_BUFFER_TARGET so the buildup latch disarms and the
+    // first command resolves Real.
     #[test]
     fn ingest_clamps_out_of_range_wish_dir_before_queueing() {
         let mut queues = HostCommandQueues::new();
         let mut cmd = command(0, 5.0); // forward 5.0 -> clamp to 1.0
         cmd.movement.wish_dir[0] = -3.0; // right -3.0 -> clamp to -1.0
         assert!(queues.ingest(CLIENT, &cmd));
+        assert!(queues.ingest(CLIENT, &command(1, 0.0)));
         let resolved = queues.resolve_tick(CLIENT).expect("a command resolves");
+        assert_eq!(resolved.source, ResolutionSource::Real);
         assert!((resolved.command.movement.wish_dir.x - (-1.0)).abs() < EPSILON);
         assert!((resolved.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
     }
@@ -682,15 +798,25 @@ mod tests {
     #[test]
     fn current_aim_pitch_tracks_the_last_resolved_input() {
         let mut queues = HostCommandQueues::new();
-        let mut input = command(0, 1.0);
-        input.movement.aim_pitch = -0.42;
-        assert!(queues.ingest(CLIENT, &input));
-        assert!(queues.resolve_tick(CLIENT).is_some());
+        let mut a = command(0, 1.0);
+        a.movement.aim_pitch = -0.42;
+        let mut b = command(1, 1.0);
+        b.movement.aim_pitch = -0.42;
+        assert!(queues.ingest(CLIENT, &a));
+        assert!(queues.ingest(CLIENT, &b));
+        assert_eq!(
+            queues.resolve_tick(CLIENT).unwrap().source,
+            ResolutionSource::Real
+        );
+        assert_eq!(
+            queues.resolve_tick(CLIENT).unwrap().source,
+            ResolutionSource::Real
+        );
         assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
 
         // Regression: an outage longer than INPUT_HOLD_TICKS neutralizes gameplay
         // intent but must not snap the remote torso back to zero pitch.
-        for _ in 0..=INPUT_HOLD_TICKS + 2 {
+        for _ in 0..(INPUT_HOLD_TICKS + 3) {
             assert!(queues.resolve_tick(CLIENT).is_some());
         }
         assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
@@ -703,13 +829,690 @@ mod tests {
         );
     }
 
+    // An exact duplicate tick collapses to one queued command; a stale command at or
+    // below the resolved cursor is dropped. Neither mutates unrelated state.
     #[test]
-    fn reload_survives_sanitize_hold_and_neutral_fallback() {
+    fn ingest_collapses_duplicates_and_drops_stale() {
         let mut queues = HostCommandQueues::new();
-        let mut cmd = command(0, 1.0);
+        assert!(queues.ingest(CLIENT, &command(0, 1.0)));
+        // Exact duplicate of tick 0: collapsed.
+        assert!(!queues.ingest(CLIENT, &command(0, 0.5)));
+        // A second command brings depth to INPUT_BUFFER_TARGET so tick 0 resolves Real.
+        assert!(queues.ingest(CLIENT, &command(1, 1.0)));
+        let r = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r.client_tick, 0);
+        assert_eq!(r.source, ResolutionSource::Real);
+        // First-arrival wins the duplicate collapse: forward intent is 1.0, not 0.5.
+        assert!((r.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+
+        // A late command at the resolved cursor (0) is stale -> dropped.
+        assert!(!queues.ingest(CLIENT, &command(0, 0.0)));
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(0));
+    }
+
+    // A real command at or below the resolved cursor is stale and dropped at intake —
+    // it never resurrects an already-settled tick. Three commands pre-buffered
+    // (depth >= INPUT_BUFFER_TARGET) so the latch disarms immediately.
+    #[test]
+    fn stale_command_at_or_below_cursor_is_dropped() {
+        let mut queues = HostCommandQueues::new();
+        for t in 0..3u32 {
+            queues.ingest(CLIENT, &command(t, 1.0));
+        }
+        for _ in 0..3 {
+            let _ = queues.resolve_tick(CLIENT);
+        }
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+
+        // A duplicate/old command for tick 1 (<= cursor 2) is dropped, not re-applied.
+        assert!(!queues.ingest(CLIENT, &command(1, -1.0)));
+        // And tick 2 (== cursor) is also stale.
+        assert!(!queues.ingest(CLIENT, &command(2, -1.0)));
+    }
+
+    // A client that never sent a command resolves to None — its pawn holds its
+    // authoritative pose, the gap policy never fabricates input out of nothing.
+    #[test]
+    fn no_commands_resolves_none() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.resolve_tick(CLIENT).is_none());
+        // Injecting then removing the client clears state cleanly.
+        queues.ingest(CLIENT, &command(0, 1.0));
+        queues.remove_client(CLIENT);
+        assert!(queues.resolve_tick(CLIENT).is_none());
+    }
+
+    // Duplicate `ClientMessage::Input` injected at the drain/queue seam does not mutate
+    // unrelated clients' state and does not panic. Both clients are primed to
+    // INPUT_BUFFER_TARGET depth so their first commands resolve Real.
+    #[test]
+    fn duplicate_injection_does_not_disturb_other_clients() {
+        let mut queues = HostCommandQueues::new();
+        const A: u64 = 1;
+        const B: u64 = 2;
+        assert!(queues.ingest(A, &command(0, 1.0)));
+        assert!(queues.ingest(A, &command(1, 1.0)));
+        assert!(queues.ingest(B, &command(0, -1.0)));
+        assert!(queues.ingest(B, &command(1, -1.0)));
+
+        // Flood A with duplicates and stale commands.
+        for _ in 0..10 {
+            let _ = queues.ingest(A, &command(0, 0.0));
+        }
+        // B is untouched: its command resolves with its own intent.
+        let rb = queues.resolve_tick(B).unwrap();
+        assert_eq!(rb.source, ResolutionSource::Real);
+        assert!((rb.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
+        // A still resolves its first-arrival command, not a duplicate's 0.0 intent.
+        let ra = queues.resolve_tick(A).unwrap();
+        assert_eq!(ra.source, ResolutionSource::Real);
+        assert!((ra.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn host_resolve_remote_commands_preserves_full_sim_command_per_pawn() {
+        let mut queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let pawn = EntityId::from_raw(2);
+        owners.set(pawn, CLIENT);
+
+        // Prime the client to a disarmed state so the full command resolves Real.
+        prime_disarmed(&mut queues, 0);
+
+        let mut cmd = command(2, 0.75);
+        cmd.fire_button = WireFireButtonState {
+            pressed: true,
+            active: true,
+        };
         cmd.reload = true;
         assert!(queues.ingest(CLIENT, &cmd));
 
+        let resolved = host_resolve_remote_commands(&owners, &mut queues);
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].pawn, pawn);
+        assert_eq!(resolved[0].client_id, CLIENT);
+        assert_eq!(resolved[0].client_tick, 2);
+        assert_eq!(resolved[0].source, ResolutionSource::Real);
+        assert!(resolved[0].command.fire_button.pressed);
+        assert!(resolved[0].command.fire_button.active);
+        assert!(resolved[0].command.reload);
+        assert!((resolved[0].command.movement.wish_dir.y - 0.75).abs() < EPSILON);
+    }
+
+    #[test]
+    fn held_gap_command_preserves_locomotion_but_clears_fire_authorization() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, disarmed
+        let mut cmd = command(2, 1.0);
+        cmd.fire_button = WireFireButtonState {
+            pressed: true,
+            active: true,
+        };
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
+        assert_eq!(real.source, ResolutionSource::Real);
+        assert!(real.command.fire_button.active);
+
+        // Tick 3 is missing: a hold (no advance) carries movement but not FIRE.
+        let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+        assert_eq!(held.source, ResolutionSource::Held);
+        assert!((held.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+        assert!(
+            !held.command.fire_button.pressed && !held.command.fire_button.active,
+            "gap-filled movement hold must not synthesize remote FIRE"
+        );
+    }
+
+    #[test]
+    fn one_drop_press_crossing_a_packet_gap_resolves_exactly_once() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, disarmed
+        let mut cmd = command(2, 1.0);
+        cmd.movement.drop_pressed = true;
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
+        assert!(real.command.drop_pressed);
+        assert!(real.command.movement.drop_pressed);
+        let mut resolved_drop_edges = usize::from(real.command.drop_pressed);
+
+        // Holds (no advance) carry no drop edge...
+        for _ in 0..INPUT_HOLD_TICKS {
+            let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+            assert_eq!(held.source, ResolutionSource::Held);
+            resolved_drop_edges += usize::from(held.command.drop_pressed);
+        }
+        // ...and neither does the give-up neutral.
+        let neutral = queues
+            .resolve_tick(CLIENT)
+            .expect("neutral fallback resolves");
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert!(!neutral.command.drop_pressed);
+        resolved_drop_edges += usize::from(neutral.command.drop_pressed);
+        assert_eq!(
+            resolved_drop_edges, 1,
+            "a held packet gap cannot replay the one-tick drop action"
+        );
+    }
+
+    // === Orderings table: playout behavior (P-labeled rows) ===
+
+    // Ordering "Command on time": a command buffered before its tick resolves is Real,
+    // in disarmed steady state.
+    #[test]
+    fn command_on_time_resolves_real() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1
+        assert!(queues.ingest(CLIENT, &command(2, -1.0))); // buffered before tick 2 resolves
+        let r = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r.source, ResolutionSource::Real);
+        assert_eq!(r.client_tick, 2);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+    }
+
+    // Ordering "Command slightly late" (the bug): the cursor HOLDS without advancing on
+    // an unfilled tick, and the command arriving within the grace resolves Real.
+    // Regression: the host advanced the cursor past an unfilled tick and drop-staled the
+    // client's on-time-but-slightly-late command, discarding ~75% of input on a clean link.
+    #[test]
+    fn slightly_late_command_holds_without_advancing_then_resolves_real() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some
+
+        // Tick 2's command has not arrived: HOLD (no advance), not neutral-fill-and-advance.
+        let held = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(held.source, ResolutionSource::Held);
+        assert_eq!(held.client_tick, 2);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(1),
+            "a held tick does not advance the cursor"
+        );
+
+        // It lands within the hold grace and resolves Real at its own tick, not stale.
+        assert!(queues.ingest(CLIENT, &command(2, -1.0)));
+        let real = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(real.source, ResolutionSource::Real);
+        assert_eq!(real.client_tick, 2);
+        assert!((real.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+    }
+
+    // Ordering "Command never arrives": held for the whole grace (no advance), then a
+    // single Neutral give-up that DOES advance past the absent tick.
+    #[test]
+    fn never_arriving_command_holds_then_neutral_give_up_advances() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some (wish 1.0)
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            let held = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(held.source, ResolutionSource::Held);
+            assert_eq!(held.client_tick, 2, "the held tick keeps awaiting tick 2");
+            assert!((held.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+            assert_eq!(queues.resolved_cursor(CLIENT), Some(1), "no advance on hold");
+        }
+
+        let neutral = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert_eq!(neutral.client_tick, 2);
+        assert!(neutral.command.movement.wish_dir.y.abs() < EPSILON);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(2),
+            "the give-up advances past the absent tick"
+        );
+    }
+
+    // P1: after a give-up that empties pending and re-arms the latch, a far-future resume
+    // holds until depth reaches INPUT_BUFFER_TARGET, then neutral-walks +1 per tick and
+    // resolves Real — it must NOT freeze at the give-up cursor.
+    // Regression: a naive "don't advance on any within-grace gap" freezes the resume.
+    #[test]
+    fn neutral_walk_after_give_up_advances_to_far_future_resume() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some
+
+        // Silence -> hold grace -> give-up (cursor 2, last_resolved None, pending empty
+        // -> latch re-arms).
+        for _ in 0..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues.resolve_tick(CLIENT).unwrap().source,
+                ResolutionSource::Held
+            );
+        }
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(giveup.source, ResolutionSource::Neutral);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+
+        // A single far-future command keeps the re-armed latch armed (depth 1 < target).
+        assert!(queues.ingest(CLIENT, &command(60, -1.0)));
+        let h = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(h.source, ResolutionSource::Neutral);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(2),
+            "armed buildup holds the lone far command in place"
+        );
+
+        // A second far-future command brings depth to the target: the latch disarms and
+        // the neutral-walk marches to the resumed Real at tick 60.
+        assert!(queues.ingest(CLIENT, &command(61, -1.0)));
+        let mut resolved_real = None;
+        for _ in 0..70 {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            if r.source == ResolutionSource::Real {
+                resolved_real = Some(r);
+                break;
+            }
+        }
+        let resolved = resolved_real.expect("neutral-walk reaches the resumed Real");
+        assert_eq!(resolved.client_tick, 60);
+        assert!((resolved.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
+    }
+
+    // P1b: a give-up that leaves pending non-empty does NOT re-arm the latch; the
+    // neutral-walk advances immediately (no buildup withhold) to the buffered Real.
+    #[test]
+    fn give_up_with_cushion_intact_does_not_re_arm_buildup() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some
+
+        // A far-future command is buffered early; the stream is DISARMED, so it does not
+        // resolve until the cursor walks to it.
+        assert!(queues.ingest(CLIENT, &command(60, -1.0)));
+
+        // Ticks 2.. miss: hold the grace (awaiting tick 2), then give up.
+        for _ in 0..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues.resolve_tick(CLIENT).unwrap().source,
+                ResolutionSource::Held
+            );
+        }
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(giveup.source, ResolutionSource::Neutral);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+
+        // The latch did NOT re-arm (pending held [60]); no buildup hold — straight to the
+        // neutral-walk and Real at 60.
+        let mut resolved_real = None;
+        for _ in 0..70 {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            assert_ne!(
+                r.source,
+                ResolutionSource::Held,
+                "no buildup hold after a cushion-intact give-up"
+            );
+            if r.source == ResolutionSource::Real {
+                resolved_real = Some(r);
+                break;
+            }
+        }
+        assert_eq!(
+            resolved_real.expect("neutral-walk reaches Real").client_tick,
+            60
+        );
+    }
+
+    // P2: a steady 1-in/1-out stream where every resolve sees pending depth 1 must still
+    // resolve Real and advance — the one-shot latch, once disarmed, never re-fires.
+    #[test]
+    fn steady_low_water_stream_stays_real_and_never_re_arms() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, disarmed
+        for t in 2..40u32 {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(
+                r.source,
+                ResolutionSource::Real,
+                "steady low-water resolve stays Real"
+            );
+            assert_eq!(r.client_tick, t);
+            assert_eq!(queues.resolved_cursor(CLIENT), Some(t));
+        }
+    }
+
+    // P3: a single packet delayed past the grace costs at most the hold grace — the
+    // give-up leaves the later commands buffered, so the latch does not re-arm and the
+    // next resolves are Real (no fresh buildup stall).
+    #[test]
+    fn one_late_packet_costs_only_the_grace_no_fresh_buildup() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved Some
+
+        // Tick 2 is delayed; ticks 3 and 4 arrive and buffer.
+        assert!(queues.ingest(CLIENT, &command(3, 1.0)));
+        assert!(queues.ingest(CLIENT, &command(4, 1.0)));
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues.resolve_tick(CLIENT).unwrap().source,
+                ResolutionSource::Held
+            );
+        }
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(giveup.source, ResolutionSource::Neutral);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+
+        // The very next resolves are Real (tick 3 then 4) — no fresh buildup withhold.
+        let r3 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r3.source, ResolutionSource::Real);
+        assert_eq!(r3.client_tick, 3);
+        let r4 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r4.source, ResolutionSource::Real);
+        assert_eq!(r4.client_tick, 4);
+    }
+
+    // P4: at stream start the buildup latch withholds the first command WITHOUT consuming
+    // it (no take_exact), keeping the cursor unset, until depth reaches INPUT_BUFFER_TARGET.
+    #[test]
+    fn buildup_at_stream_start_withholds_without_consuming() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.ingest(CLIENT, &command(0, 1.0))); // depth 1 < INPUT_BUFFER_TARGET
+        let n = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(n.source, ResolutionSource::Neutral);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            None,
+            "buildup withholds: the cursor is not advanced"
+        );
+
+        // The command was NOT consumed: when a second command makes depth reach the
+        // target, the next resolve consumes tick 0 as the first Real.
+        assert!(queues.ingest(CLIENT, &command(1, 1.0)));
+        let r = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r.source, ResolutionSource::Real);
+        assert_eq!(r.client_tick, 0);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(0));
+    }
+
+    // P4b: a lone command then silence during buildup cannot pin the pawn armed forever —
+    // armed holds increment held_ticks and the grace give-up fires (AC "absent client").
+    #[test]
+    fn lone_command_then_silence_during_buildup_gives_up() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.ingest(CLIENT, &command(0, 1.0))); // depth 1, then silence
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            let n = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(n.source, ResolutionSource::Neutral);
+            assert_eq!(
+                queues.resolved_cursor(CLIENT),
+                None,
+                "armed buildup does not advance while within grace"
+            );
+        }
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(giveup.source, ResolutionSource::Neutral);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(0),
+            "the grace give-up advances past the withheld command"
+        );
+    }
+
+    // P5: a lone far-future command after a silence sits at depth 1 and keeps the re-armed
+    // latch armed — it is NOT read as "buffer full" by any tick-distance. With no second
+    // command, the grace give-up disarms and the neutral-walk then advances toward it.
+    // Regression: a tick-distance readiness check would silently resume, skipping the fill.
+    #[test]
+    fn far_future_resume_is_depth_one_not_buffer_full() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues.resolve_tick(CLIENT).unwrap().source,
+                ResolutionSource::Held
+            );
+        }
+        let giveup = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(giveup.source, ResolutionSource::Neutral);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+
+        // A single far-future command: depth 1, latch stays armed (no advance).
+        assert!(queues.ingest(CLIENT, &command(200, -1.0)));
+        let held = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(held.source, ResolutionSource::Neutral);
+        assert_eq!(
+            queues.resolved_cursor(CLIENT),
+            Some(2),
+            "the lone far command does not disarm the latch"
+        );
+
+        // With no second command, the armed grace give-up disarms (pending still [200])
+        // and the neutral-walk advances to the resumed Real at 200.
+        let mut resolved_real = None;
+        for _ in 0..260 {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            if r.source == ResolutionSource::Real {
+                resolved_real = Some(r);
+                break;
+            }
+        }
+        assert_eq!(resolved_real.expect("resumes").client_tick, 200);
+    }
+
+    // P6: a command landing on the grace-edge tick is consumed Real (take_exact runs
+    // before the give-up), not turned into a Neutral give-up.
+    #[test]
+    fn command_on_grace_edge_resolves_real_not_give_up() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1 (T-1 = 1, T = 2)
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues.resolve_tick(CLIENT).unwrap().source,
+                ResolutionSource::Held
+            );
+        }
+        // The frame that would give up instead ingests tick 2's command first.
+        assert!(queues.ingest(CLIENT, &command(2, -1.0)));
+        let r = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(
+            r.source,
+            ResolutionSource::Real,
+            "the grace-edge tick resolves Real, not a give-up Neutral"
+        );
+        assert_eq!(r.client_tick, 2);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+    }
+
+    // P8: a multi-tick hitch frame (no ingest between resolves) burns the whole grace and
+    // gives up in one frame; a command for the drop-staled tick in the next frame's ingest
+    // is stale. Bounded loss on hitch frames is accepted.
+    #[test]
+    fn hitch_frame_burns_the_whole_grace() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            assert_eq!(
+                queues.resolve_tick(CLIENT).unwrap().source,
+                ResolutionSource::Held
+            );
+        }
+        assert_eq!(
+            queues.resolve_tick(CLIENT).unwrap().source,
+            ResolutionSource::Neutral
+        );
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+
+        // Tick 2's command, arriving in the next frame's ingest, is drop-staled.
+        assert!(
+            !queues.ingest(CLIENT, &command(2, -1.0)),
+            "tick 2 was advanced past and is drop-staled"
+        );
+    }
+
+    // P14: the standing invariant that a normal buildup completes before the hold grace
+    // can give up on it — else buildup self-triggers a give-up.
+    #[test]
+    fn buildup_target_is_below_the_hold_grace() {
+        assert!(
+            INPUT_BUFFER_TARGET < INPUT_HOLD_TICKS as usize,
+            "INPUT_BUFFER_TARGET ({INPUT_BUFFER_TARGET}) must be < INPUT_HOLD_TICKS ({INPUT_HOLD_TICKS}) \
+             so buildup completes before the grace give-up fires"
+        );
+    }
+
+    // P16: in steady state the resolved cursor TRAILS the newest received tick by
+    // INPUT_BUFFER_TARGET - 1 (the signed netdiag cursor_lead reads a small negative).
+    #[test]
+    fn steady_state_cursor_trails_newest_by_the_playout_margin() {
+        let mut queues = HostCommandQueues::new();
+        // Fresh stream: buildup withholds until depth INPUT_BUFFER_TARGET, then the first
+        // consume leaves the cursor trailing newest by INPUT_BUFFER_TARGET - 1.
+        for t in 0..(INPUT_BUFFER_TARGET as u32) {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+        }
+        let r = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r.source, ResolutionSource::Real);
+        assert_eq!(r.client_tick, 0);
+
+        let expected_lead = -((INPUT_BUFFER_TARGET as i32) - 1);
+        let newest = INPUT_BUFFER_TARGET as u32 - 1;
+        let cursor = queues.resolved_cursor(CLIENT).unwrap();
+        assert_eq!(
+            cursor.wrapping_sub(newest) as i32,
+            expected_lead,
+            "first consume trails newest by INPUT_BUFFER_TARGET - 1 (negative cursor_lead)"
+        );
+
+        // The margin stays negative under continued 1-in/1-out streaming.
+        for t in (INPUT_BUFFER_TARGET as u32)..40 {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(r.source, ResolutionSource::Real);
+            let cursor = queues.resolved_cursor(CLIENT).unwrap();
+            assert_eq!(
+                cursor.wrapping_sub(t) as i32,
+                expected_lead,
+                "steady-state cursor_lead stays negative"
+            );
+        }
+    }
+
+    // P17: reset_level_scoped_host_state replaces HostCommandQueues wholesale
+    // (netcode/endpoint.rs), so all per-client state resets to Default. A mid-buildup
+    // stream carries nothing across the reset: the next stream re-enters buildup from None
+    // and no stale reload edge survives.
+    #[test]
+    fn level_reset_clears_all_per_client_state_and_re_enters_buildup() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.ingest(CLIENT, &reload_command(0, 1.0))); // mid-buildup, reload edge pending
+        assert_eq!(
+            queues.resolve_tick(CLIENT).unwrap().source,
+            ResolutionSource::Neutral,
+            "armed buildup withholds"
+        );
+
+        // Level change: the endpoint drops the whole queue and installs a fresh one.
+        queues = HostCommandQueues::new();
+
+        // The fresh stream re-enters buildup from None and carries no reload edge.
+        assert!(queues.ingest(CLIENT, &command(5, 1.0)));
+        let n = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(
+            n.source,
+            ResolutionSource::Neutral,
+            "fresh stream re-enters buildup from None"
+        );
+        assert_eq!(queues.resolved_cursor(CLIENT), None);
+        assert!(!n.command.reload, "no stale reload edge carried across the reset");
+    }
+
+    // Ordering "Multiple fixed ticks in one frame": ingest a burst once, then resolve
+    // several times; the playout depth absorbs it and resolutions are Real.
+    #[test]
+    fn multiple_fixed_ticks_in_one_frame_resolve_real() {
+        let mut queues = HostCommandQueues::new();
+        for t in 0..6u32 {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+        }
+        for t in 0..6u32 {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(r.source, ResolutionSource::Real);
+            assert_eq!(r.client_tick, t);
+        }
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(5));
+    }
+
+    // Ordered input: consecutive ticks resolve Real and advance the cursor by one each.
+    // Four commands pre-buffered (depth >= INPUT_BUFFER_TARGET) so the latch disarms
+    // immediately.
+    #[test]
+    fn ordered_input_resolves_each_tick_real() {
+        let mut queues = HostCommandQueues::new();
+        for t in 0..4u32 {
+            queues.ingest(CLIENT, &command(t, 1.0));
+        }
+        for t in 0..4u32 {
+            let r = queues.resolve_tick(CLIENT).expect("a command per tick");
+            assert_eq!(r.client_tick, t);
+            assert_eq!(r.source, ResolutionSource::Real);
+        }
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(3));
+    }
+
+    // === client_tick wrap ===
+
+    // Ordering "client_tick wraps": all cursor/stale/hold comparisons stay wrap-aware; a
+    // session crossing the u32 client_tick boundary resolves without a spurious flush.
+    // Regression: a plain `<=` stale-check mis-ordered across the wrap, freezing the pawn
+    // to neutral for the half-range past u32::MAX.
+    #[test]
+    fn client_tick_wrap_resolves_without_a_spurious_flush() {
+        let mut queues = HostCommandQueues::new();
+
+        // Prime disarmed just before the wrap (two commands so the latch disarms).
+        assert!(queues.ingest(CLIENT, &command(u32::MAX - 1, 1.0)));
+        assert!(queues.ingest(CLIENT, &command(u32::MAX, 1.0)));
+        let a = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(a.source, ResolutionSource::Real);
+        assert_eq!(a.client_tick, u32::MAX - 1);
+        let b = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(b.source, ResolutionSource::Real);
+        assert_eq!(b.client_tick, u32::MAX);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(u32::MAX));
+
+        // Post-wrap commands (ticks 0, 1) are AHEAD of the cursor in serial order — they
+        // queue; a plain `0 <= u32::MAX` would wrongly drop them as stale.
+        assert!(
+            queues.ingest(CLIENT, &command(0, -1.0)),
+            "a post-wrap command is not stale against a pre-wrap cursor"
+        );
+        assert!(queues.ingest(CLIENT, &command(1, -1.0)));
+
+        // The expected tick wraps u32::MAX -> 0 and resolves Real without a flush.
+        let c = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(c.source, ResolutionSource::Real);
+        assert_eq!(c.client_tick, 0, "cursor+1 wraps to 0 cleanly");
+        let d = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(d.source, ResolutionSource::Real);
+        assert_eq!(d.client_tick, 1);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(1));
+
+        // And a genuinely stale pre-wrap command (<= cursor across the wrap) is dropped.
+        assert!(
+            !queues.ingest(CLIENT, &command(u32::MAX, 0.0)),
+            "a pre-wrap command below the post-wrap cursor is stale"
+        );
+    }
+
+    // === Reload recovery lane (logic unchanged; call sites re-threaded off the hold path) ===
+
+    // A real reload resolves Real (edge delivered), a hold carries the held command's
+    // reload level forward without advancing, and the give-up neutral clears it.
+    #[test]
+    fn reload_survives_real_then_hold_then_neutral_fallback() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, disarmed (non-reload)
+
+        assert!(queues.ingest(CLIENT, &reload_command(2, 1.0)));
         let real = queues.resolve_tick(CLIENT).expect("real command resolves");
         assert_eq!(real.source, ResolutionSource::Real);
         assert!(real.command.reload, "real command preserves reload");
@@ -717,7 +1520,10 @@ mod tests {
         for _ in 0..INPUT_HOLD_TICKS {
             let held = queues.resolve_tick(CLIENT).expect("held command resolves");
             assert_eq!(held.source, ResolutionSource::Held);
-            assert!(held.command.reload, "held command preserves reload");
+            assert!(
+                held.command.reload,
+                "the held tick carries the held command's reload level forward"
+            );
         }
 
         let neutral = queues
@@ -726,44 +1532,112 @@ mod tests {
         assert_eq!(neutral.source, ResolutionSource::Neutral);
         assert!(
             !neutral.command.reload,
-            "neutral fallback clears reload intent"
+            "the neutral give-up clears reload intent"
         );
     }
 
-    // Regression: a delayed true→false reload tap could arrive after gap recovery had
-    // already advanced past both ticks, so stale-drop discarded the entire press.
+    /// Drive the cursor several ticks past the reload marker via silence give-ups (the
+    /// marker stays at the prime), then record a stale-but-newer reload rising edge whose
+    /// tick the give-up already advanced past. Leaves the latch armed with the recovered
+    /// press queued. `tap_wish` is the (never-replayed) movement on the stale tap.
+    fn setup_drop_staled_reload_edge(queues: &mut HostCommandQueues, tap_tick: u32, tap_wish: f32) {
+        prime_disarmed(queues, 0); // cursor 1, reload marker (1, false)
+        // Give-ups advance the cursor while the marker stays at 1.
+        while queues.resolved_cursor(CLIENT).unwrap() < tap_tick {
+            let _ = queues.resolve_tick(CLIENT);
+        }
+        // The tap is newer than the marker (records an edge) but <= the cursor (stale).
+        let mut tap = reload_command(tap_tick, tap_wish);
+        tap.movement.wish_dir[1] = tap_wish;
+        assert!(
+            !queues.ingest(CLIENT, &tap),
+            "the reload tap is stale for movement (dropped), but records its edge"
+        );
+    }
+
+    // P11: a recovered reload press is never delivered on a non-advancing hold (which
+    // would re-test the same tick each hold and risk early delivery); it delivers once on
+    // the next advancing resolution.
     #[test]
-    fn stale_reload_tap_is_delivered_once_on_next_resolution() {
+    fn recovered_reload_press_waits_for_an_advancing_resolution() {
         let mut queues = HostCommandQueues::new();
-        assert!(queues.ingest(CLIENT, &command(0, 0.25)));
-        assert!(!queues.resolve_tick(CLIENT).unwrap().command.reload);
-        assert!(!queues.resolve_tick(CLIENT).unwrap().command.reload);
-        assert!(!queues.resolve_tick(CLIENT).unwrap().command.reload);
+        setup_drop_staled_reload_edge(&mut queues, 2, 0.0);
 
-        let mut pressed = command(1, 0.75);
-        pressed.reload = true;
+        // The armed holds must NOT deliver the recovered press.
+        for _ in 0..INPUT_HOLD_TICKS {
+            let h = queues.resolve_tick(CLIENT).unwrap();
+            assert!(
+                !h.command.reload,
+                "a non-advancing hold never delivers a recovered reload press"
+            );
+        }
+        // The next advancing resolution (the give-up) delivers it, exactly once.
+        let adv = queues.resolve_tick(CLIENT).unwrap();
         assert!(
-            !queues.ingest(CLIENT, &pressed),
-            "late press command is stale"
-        );
-        assert!(
-            !queues.ingest(CLIENT, &command(2, -0.5)),
-            "late release command is stale"
-        );
-
-        let recovered = queues.resolve_tick(CLIENT).expect("recovery tick resolves");
-        assert!(recovered.command.reload, "stale reload edge is preserved");
-        assert!(
-            (recovered.command.movement.wish_dir.y - 0.25).abs() < EPSILON,
-            "edge recovery does not replay stale movement"
+            adv.command.reload,
+            "the recovered press delivers on the advancing resolution"
         );
         assert!(
             !queues.resolve_tick(CLIENT).unwrap().command.reload,
-            "recovered tap is one tick wide"
+            "the recovered press is delivered exactly once"
         );
     }
 
-    // Regression: catch-up trimmed a reload tap along with the old movement prefix.
+    // P12: a reload edge whose tick a give-up advanced past is recorded before the
+    // stale-drop and delivered once on the next advancing resolution; the stale tap's
+    // movement is never replayed.
+    // Regression: a delayed true->false reload tap arriving after gap recovery had already
+    // advanced past both ticks discarded the entire press.
+    #[test]
+    fn drop_staled_reload_edge_delivers_once_without_replaying_movement() {
+        let mut queues = HostCommandQueues::new();
+        setup_drop_staled_reload_edge(&mut queues, 2, 0.9); // stale tap carries wish 0.9
+
+        let mut reload_count = 0;
+        for _ in 0..(INPUT_HOLD_TICKS + 2) {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            if r.command.reload {
+                reload_count += 1;
+            }
+            assert!(
+                (r.command.movement.wish_dir.y - 0.9).abs() > EPSILON,
+                "the stale tap's movement is never replayed"
+            );
+        }
+        assert_eq!(reload_count, 1, "the drop-staled reload edge delivers exactly once");
+    }
+
+    // Regression: retransmitting the stale tap after recovery must not re-latch the same
+    // reload edge if intake tracked only the latest Boolean level.
+    #[test]
+    fn stale_reload_retransmit_does_not_deliver_duplicate_press() {
+        let mut queues = HostCommandQueues::new();
+        setup_drop_staled_reload_edge(&mut queues, 2, 0.0);
+
+        // Deliver the recovered press once.
+        let mut delivered = false;
+        for _ in 0..(INPUT_HOLD_TICKS + 1) {
+            if queues.resolve_tick(CLIENT).unwrap().command.reload {
+                delivered = true;
+                break;
+            }
+        }
+        assert!(delivered, "the recovered press was delivered once");
+
+        // Retransmit the same stale tap: dedup (tick == marker) blocks a new edge, and the
+        // command is stale-dropped. No second press may be minted.
+        assert!(!queues.ingest(CLIENT, &reload_command(2, 0.0)));
+        for _ in 0..(INPUT_HOLD_TICKS + 2) {
+            assert!(
+                !queues.resolve_tick(CLIENT).unwrap().command.reload,
+                "a duplicate/stale retransmit cannot mint another reload press"
+            );
+        }
+    }
+
+    // Regression: catch-up trimmed a reload tap along with the old movement prefix. The
+    // catch-up path reseats the cursor (so the buildup latch is bypassed) and the reload
+    // edge from the discarded prefix survives in the independent recovery lane.
     #[test]
     fn backlog_trim_preserves_reload_press_from_dropped_prefix() {
         let mut queues = HostCommandQueues::new();
@@ -791,357 +1665,7 @@ mod tests {
         );
     }
 
-    // Regression: retransmitting the stale tap after recovery could re-latch the same
-    // reload edge if intake tracked only the latest Boolean level.
-    #[test]
-    fn stale_reload_retransmit_does_not_deliver_duplicate_press() {
-        let mut queues = HostCommandQueues::new();
-        assert!(queues.ingest(CLIENT, &command(0, 0.0)));
-        let _ = queues.resolve_tick(CLIENT);
-        let _ = queues.resolve_tick(CLIENT);
-        let _ = queues.resolve_tick(CLIENT);
-
-        let mut pressed = command(1, 0.0);
-        pressed.reload = true;
-        assert!(!queues.ingest(CLIENT, &pressed));
-        assert!(!queues.ingest(CLIENT, &command(2, 0.0)));
-        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
-
-        assert!(
-            !queues.ingest(CLIENT, &pressed),
-            "duplicate press stays stale"
-        );
-        assert!(
-            !queues.ingest(CLIENT, &command(2, 0.0)),
-            "duplicate release stays stale"
-        );
-        for _ in 0..3 {
-            assert!(
-                !queues.resolve_tick(CLIENT).unwrap().command.reload,
-                "duplicate/stale retransmit cannot mint another reload press"
-            );
-        }
-    }
-
-    #[test]
-    fn recovered_reload_press_inserts_release_after_held_reload_level() {
-        let mut queues = HostCommandQueues::new();
-        let mut initial_press = command(0, 0.0);
-        initial_press.reload = true;
-        assert!(queues.ingest(CLIENT, &initial_press));
-        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
-        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
-        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
-
-        assert!(!queues.ingest(CLIENT, &command(1, 0.0)));
-        let mut second_press = command(2, 0.0);
-        second_press.reload = true;
-        assert!(!queues.ingest(CLIENT, &second_press));
-
-        assert!(
-            !queues.resolve_tick(CLIENT).unwrap().command.reload,
-            "recovery emits a release before a second rising edge"
-        );
-        assert!(
-            queues.resolve_tick(CLIENT).unwrap().command.reload,
-            "preserved press follows the synthetic release exactly once"
-        );
-    }
-
-    #[test]
-    fn held_gap_command_preserves_locomotion_but_clears_fire_authorization() {
-        let mut queues = HostCommandQueues::new();
-        let mut cmd = command(0, 1.0);
-        cmd.fire_button = WireFireButtonState {
-            pressed: true,
-            active: true,
-        };
-        assert!(queues.ingest(CLIENT, &cmd));
-
-        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
-        assert_eq!(real.source, ResolutionSource::Real);
-        assert!(real.command.fire_button.active);
-
-        let held = queues.resolve_tick(CLIENT).expect("held command resolves");
-        assert_eq!(held.source, ResolutionSource::Held);
-        assert!((held.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
-        assert!(
-            !held.command.fire_button.pressed && !held.command.fire_button.active,
-            "gap-filled movement hold must not synthesize remote FIRE"
-        );
-    }
-
-    #[test]
-    fn one_drop_press_crossing_a_packet_gap_resolves_exactly_once() {
-        let mut queues = HostCommandQueues::new();
-        let mut cmd = command(0, 1.0);
-        cmd.movement.drop_pressed = true;
-        assert!(queues.ingest(CLIENT, &cmd));
-
-        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
-        assert!(real.command.drop_pressed);
-        assert!(real.command.movement.drop_pressed);
-        let mut resolved_drop_edges = usize::from(real.command.drop_pressed);
-
-        let held = queues.resolve_tick(CLIENT).expect("held command resolves");
-        assert_eq!(held.source, ResolutionSource::Held);
-        assert!(!held.command.drop_pressed);
-        assert!(!held.command.movement.drop_pressed);
-        resolved_drop_edges += usize::from(held.command.drop_pressed);
-
-        for _ in 1..INPUT_HOLD_TICKS {
-            let held = queues.resolve_tick(CLIENT).expect("held command resolves");
-            assert_eq!(held.source, ResolutionSource::Held);
-            resolved_drop_edges += usize::from(held.command.drop_pressed);
-        }
-        let neutral = queues
-            .resolve_tick(CLIENT)
-            .expect("neutral fallback resolves");
-        assert_eq!(neutral.source, ResolutionSource::Neutral);
-        assert!(!neutral.command.drop_pressed);
-        assert!(!neutral.command.movement.drop_pressed);
-        resolved_drop_edges += usize::from(neutral.command.drop_pressed);
-        assert_eq!(
-            resolved_drop_edges, 1,
-            "a held packet gap cannot replay the one-tick drop action"
-        );
-    }
-
-    #[test]
-    fn host_resolve_remote_commands_preserves_full_sim_command_per_pawn() {
-        let mut queues = HostCommandQueues::new();
-        let mut owners = MovementOwners::new();
-        let pawn = EntityId::from_raw(2);
-        owners.set(pawn, CLIENT);
-
-        let mut cmd = command(0, 0.75);
-        cmd.fire_button = WireFireButtonState {
-            pressed: true,
-            active: true,
-        };
-        cmd.reload = true;
-        assert!(queues.ingest(CLIENT, &cmd));
-
-        let resolved = host_resolve_remote_commands(&owners, &mut queues);
-
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].pawn, pawn);
-        assert_eq!(resolved[0].client_id, CLIENT);
-        assert_eq!(resolved[0].client_tick, 0);
-        assert!(resolved[0].command.fire_button.pressed);
-        assert!(resolved[0].command.fire_button.active);
-        assert!(resolved[0].command.reload);
-        assert!((resolved[0].command.movement.wish_dir.y - 0.75).abs() < EPSILON);
-    }
-
-    // An exact duplicate tick collapses to one queued command; a stale command at or
-    // below the resolved cursor is dropped. Neither mutates unrelated state.
-    #[test]
-    fn ingest_collapses_duplicates_and_drops_stale() {
-        let mut queues = HostCommandQueues::new();
-        assert!(queues.ingest(CLIENT, &command(0, 1.0)));
-        // Exact duplicate of tick 0: collapsed.
-        assert!(!queues.ingest(CLIENT, &command(0, 0.5)));
-        // Resolve tick 0 so the cursor advances to 0.
-        let r = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(r.client_tick, 0);
-        assert_eq!(r.source, ResolutionSource::Real);
-        // The first-arrival wins the duplicate collapse: forward intent is 1.0, not 0.5.
-        assert!((r.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
-
-        // A late command at the resolved cursor (0) is stale -> dropped.
-        assert!(!queues.ingest(CLIENT, &command(0, 0.0)));
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(0));
-    }
-
-    // Regression: the enqueue stale-check used a plain `<=`, which mis-ordered the
-    // comparison straddling the u32 client_tick wrap (the allocator wraps with
-    // wrapping_add) — freezing the pawn to neutral for the half-range past u32::MAX.
-    // The wrap-aware predicate keeps a post-wrap command live against a pre-wrap cursor.
-    #[test]
-    fn enqueue_stale_check_is_wrap_aware_at_the_u32_boundary() {
-        let mut queues = HostCommandQueues::new();
-
-        // Resolve a command just before the wrap so the cursor sits at u32::MAX - 1.
-        assert!(queues.ingest(CLIENT, &command(u32::MAX - 1, 1.0)));
-        let r = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(r.client_tick, u32::MAX - 1);
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(u32::MAX - 1));
-
-        // A post-wrap command (tick 1) is AHEAD of the cursor in serial-number order,
-        // so it must queue — a plain `1 <= u32::MAX-1` would wrongly drop it as stale.
-        assert!(
-            queues.ingest(CLIENT, &command(1, -1.0)),
-            "a post-wrap command is not stale against a pre-wrap cursor"
-        );
-
-        // And a genuinely stale pre-wrap command (== cursor) is still dropped.
-        assert!(
-            !queues.ingest(CLIENT, &command(u32::MAX - 1, 0.0)),
-            "a command at the cursor is stale across the wrap too"
-        );
-    }
-
-    // Ordered input: consecutive ticks resolve as Real and advance the cursor by one
-    // each, returning the matching command.
-    #[test]
-    fn ordered_input_resolves_each_tick_real() {
-        let mut queues = HostCommandQueues::new();
-        for t in 0..4u32 {
-            queues.ingest(CLIENT, &command(t, 1.0));
-        }
-        for t in 0..4u32 {
-            let r = queues.resolve_tick(CLIENT).expect("a command per tick");
-            assert_eq!(r.client_tick, t);
-            assert_eq!(r.source, ResolutionSource::Real);
-        }
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(3));
-    }
-
-    // Gap policy: a missing tick holds the last intent for INPUT_HOLD_TICKS ticks,
-    // then synthesizes neutral. Every synthetic tick advances the cursor.
-    #[test]
-    fn missing_tick_holds_then_neutral_advancing_cursor() {
-        let mut queues = HostCommandQueues::new();
-        // Tick 0 arrives with distinctive forward intent; ticks 1.. are missing.
-        queues.ingest(CLIENT, &command(0, 1.0));
-        let r0 = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(r0.source, ResolutionSource::Real);
-
-        // Ticks 1..=3: held (INPUT_HOLD_TICKS = 3), each carrying the held forward
-        // intent and advancing the cursor.
-        for expected_tick in 1..=INPUT_HOLD_TICKS {
-            let r = queues.resolve_tick(CLIENT).unwrap();
-            assert_eq!(r.source, ResolutionSource::Held);
-            assert_eq!(r.client_tick, expected_tick);
-            assert!(
-                (r.command.movement.wish_dir.y - 1.0).abs() < EPSILON,
-                "held command repeats the last real intent"
-            );
-        }
-
-        // Tick 4: hold lapsed -> neutral (no forward intent), cursor still advances.
-        let r = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(r.source, ResolutionSource::Neutral);
-        assert_eq!(r.client_tick, INPUT_HOLD_TICKS + 1);
-        assert!(
-            r.command.movement.wish_dir.y.abs() < EPSILON,
-            "neutral synthesizes no movement intent"
-        );
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(INPUT_HOLD_TICKS + 1));
-    }
-
-    // Late arrival: a command that arrives for a tick still ahead of the cursor (a
-    // bounded delay within the hold window) is consumed as Real once the cursor
-    // reaches it, even though intervening ticks were held.
-    #[test]
-    fn late_arrival_within_hold_resolves_real_when_cursor_reaches_it() {
-        let mut queues = HostCommandQueues::new();
-        queues.ingest(CLIENT, &command(0, 1.0));
-        let _ = queues.resolve_tick(CLIENT); // resolve tick 0 (Real)
-
-        // Tick 1 is missing now -> hold.
-        let held = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(held.source, ResolutionSource::Held);
-        assert_eq!(held.client_tick, 1);
-
-        // Tick 2's command arrives late (but still ahead of the cursor). The next
-        // resolve targets tick 2 and consumes it as Real.
-        queues.ingest(CLIENT, &command(2, -1.0));
-        let real = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(real.source, ResolutionSource::Real);
-        assert_eq!(real.client_tick, 2);
-        assert!((real.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
-    }
-
-    // A real command at or below the resolved cursor is stale and dropped at intake —
-    // it never resurrects an already-settled tick.
-    #[test]
-    fn stale_command_at_or_below_cursor_is_dropped() {
-        let mut queues = HostCommandQueues::new();
-        for t in 0..3u32 {
-            queues.ingest(CLIENT, &command(t, 1.0));
-        }
-        for _ in 0..3 {
-            let _ = queues.resolve_tick(CLIENT);
-        }
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
-
-        // A duplicate/old command for tick 1 (<= cursor 2) is dropped, not re-applied.
-        assert!(!queues.ingest(CLIENT, &command(1, -1.0)));
-        // And tick 2 (== cursor) is also stale.
-        assert!(!queues.ingest(CLIENT, &command(2, -1.0)));
-    }
-
-    // Resumed input after a long gap: once the hold lapses to neutral and a fresh
-    // command arrives at a higher tick, the cursor advances (neutral) up to the new
-    // command and then resolves it Real. The pawn resumes cleanly without replaying
-    // stale held intent.
-    #[test]
-    fn resumed_input_after_gap_resolves_cleanly() {
-        let mut queues = HostCommandQueues::new();
-        queues.ingest(CLIENT, &command(0, 1.0));
-        let _ = queues.resolve_tick(CLIENT); // tick 0 Real, cursor 0
-
-        // Long silence: resolve enough ticks to exhaust the hold and go neutral.
-        // Ticks 1..=3 held, tick 4 neutral.
-        for _ in 0..(INPUT_HOLD_TICKS + 1) {
-            let _ = queues.resolve_tick(CLIENT);
-        }
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(INPUT_HOLD_TICKS + 1));
-
-        // Client resumes at a fresh higher tick (e.g. 10). It is queued, not stale.
-        let resume_tick = 10u32;
-        assert!(queues.ingest(CLIENT, &command(resume_tick, -1.0)));
-
-        // The next resolutions synthesize neutral for the still-missing ticks
-        // (cursor+1 .. resume_tick-1), then resolve tick `resume_tick` Real. The
-        // cursor sits at INPUT_HOLD_TICKS+1, so it takes exactly
-        // `resume_tick - (INPUT_HOLD_TICKS + 1)` resolutions to land on resume_tick.
-        let mut last = None;
-        for _ in 0..(resume_tick - (INPUT_HOLD_TICKS + 1)) {
-            last = queues.resolve_tick(CLIENT);
-        }
-        let resolved = last.expect("resumed command resolves");
-        assert_eq!(resolved.client_tick, resume_tick);
-        assert_eq!(resolved.source, ResolutionSource::Real);
-        assert!((resolved.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
-    }
-
-    // A client that never sent a command resolves to None — its pawn holds its
-    // authoritative pose, the gap policy never fabricates input out of nothing.
-    #[test]
-    fn no_commands_resolves_none() {
-        let mut queues = HostCommandQueues::new();
-        assert!(queues.resolve_tick(CLIENT).is_none());
-        // Injecting then removing the client clears state cleanly.
-        queues.ingest(CLIENT, &command(0, 1.0));
-        queues.remove_client(CLIENT);
-        assert!(queues.resolve_tick(CLIENT).is_none());
-    }
-
-    // Duplicate `ClientMessage::Input` injected at the drain/queue seam does not
-    // mutate unrelated clients' state and does not panic. (Task gate: duplicate/old
-    // injected at the drain/queue seam are inert against other entities.)
-    #[test]
-    fn duplicate_injection_does_not_disturb_other_clients() {
-        let mut queues = HostCommandQueues::new();
-        const A: u64 = 1;
-        const B: u64 = 2;
-        queues.ingest(A, &command(0, 1.0));
-        queues.ingest(B, &command(0, -1.0));
-
-        // Flood A with duplicates and stale commands.
-        for _ in 0..10 {
-            let _ = queues.ingest(A, &command(0, 0.0));
-        }
-        // B is untouched: its command resolves with its own intent.
-        let rb = queues.resolve_tick(B).unwrap();
-        assert!((rb.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
-        // A still resolves its first-arrival command, not a duplicate's 0.0 intent.
-        let ra = queues.resolve_tick(A).unwrap();
-        assert!((ra.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
-    }
+    // === Catch-up / bounded playout (depth-keyed; unchanged) ===
 
     /// Lag (in ticks) between the newest received command and the resolved cursor.
     /// `None` cursor (never resolved) reports the full depth from tick 0. Wrap-safe via
@@ -1151,25 +1675,21 @@ mod tests {
         newest_received.wrapping_sub(cursor)
     }
 
-    // Regression: a backlog accumulated during the accept/spawn handshake window (the
-    // client streams at 60 Hz on connect before the host can drain) became PERMANENT
-    // ~800 ms latency, because the cursor seeded at the oldest queued command and only
-    // advanced +1 per tick — drain-rate == produce-rate, so the backlog never shrank.
-    // The depth-keyed catch-up must converge the lag to a small bounded buffer within a
-    // tick or two and keep it there under steady 1-in/1-out streaming.
+    // Regression (Ordering "Backlog burst"): a backlog accumulated during the accept/spawn
+    // handshake window became PERMANENT ~800 ms latency, because the cursor seeded at the
+    // oldest queued command and only advanced +1 per tick. The depth-keyed catch-up must
+    // converge the lag to a small bounded buffer within a tick or two and keep it there.
     #[test]
     fn startup_backlog_converges_and_stays_bounded() {
         let mut queues = HostCommandQueues::new();
 
-        // The host couldn't drain this pawn until ownership was set: a 48-command
-        // backlog (≈ 800 ms at 60 Hz) piled up in `pending`. Nothing resolved yet.
         const BACKLOG: u32 = 48;
         for t in 0..BACKLOG {
             assert!(queues.ingest(CLIENT, &command(t, 1.0)));
         }
 
-        // First resolve fast-forwards: depth 48 > INPUT_BUFFER_MAX. The lag must
-        // immediately drop into the bounded range (≤ INPUT_BUFFER_MAX), NOT stay at 47.
+        // First resolve fast-forwards: depth 48 > INPUT_BUFFER_MAX. Lag drops into the
+        // bounded range immediately, NOT staying at 47.
         let newest = BACKLOG - 1;
         let r = queues.resolve_tick(CLIENT).expect("a command resolves");
         assert_eq!(
@@ -1183,8 +1703,8 @@ mod tests {
             lag(&queues, CLIENT, newest)
         );
 
-        // Now run steady state: one fresh command ingested per simulated tick, one
-        // resolved. The lag must stay bounded forever — never creep back toward 48.
+        // Steady state: one fresh command ingested per tick, one resolved. Lag stays
+        // bounded forever — never creeps back toward 48.
         for next_tick in BACKLOG..(BACKLOG + 200) {
             assert!(queues.ingest(CLIENT, &command(next_tick, 1.0)));
             let r = queues.resolve_tick(CLIENT).expect("steady-state resolve");
@@ -1201,16 +1721,17 @@ mod tests {
         }
     }
 
-    // Regression: a mid-session host frame hitch stalls the drain while the client
-    // keeps streaming, deepening `pending` the same way the startup backlog did. The
-    // same catch-up path must re-converge the lag after the burst lands in one go.
+    // Regression: a mid-session host frame hitch stalls the drain while the client keeps
+    // streaming, deepening `pending`. The catch-up path must re-converge the lag after the
+    // burst lands in one go.
     #[test]
     fn mid_session_hitch_catches_up() {
         let mut queues = HostCommandQueues::new();
 
-        // Reach steady state cleanly: a few ordered ticks, one resolved each.
-        let mut next_tick = 0u32;
-        for _ in 0..5 {
+        // Reach a disarmed steady state, then run a few clean ticks.
+        prime_disarmed(&mut queues, 0); // cursor 1
+        let mut next_tick = 2u32;
+        for _ in 0..3 {
             assert!(queues.ingest(CLIENT, &command(next_tick, 1.0)));
             queues.resolve_tick(CLIENT).expect("steady resolve");
             next_tick += 1;
@@ -1218,8 +1739,7 @@ mod tests {
         let steady_newest = next_tick - 1;
         assert!(lag(&queues, CLIENT, steady_newest) <= INPUT_BUFFER_MAX as u32);
 
-        // The host stalls for a long frame: BURST commands arrive before the next
-        // resolve (depth jumps well past INPUT_BUFFER_MAX).
+        // The host stalls for a long frame: BURST commands arrive before the next resolve.
         const BURST: u32 = 30;
         for _ in 0..BURST {
             assert!(queues.ingest(CLIENT, &command(next_tick, -1.0)));
@@ -1248,51 +1768,5 @@ mod tests {
                 lag(&queues, CLIENT, newest_received)
             );
         }
-    }
-
-    // Resume-after-silence must NOT trip catch-up: a single far-future command after a
-    // long gap holds exactly ONE entry in `pending`, so depth never exceeds
-    // INPUT_BUFFER_MAX. This guards that the depth-keyed (not tick-distance) trigger
-    // preserves the hold→neutral→real resume semantics — the inverse failure mode the
-    // catch-up must avoid. Mirrors `resumed_input_after_gap_resolves_cleanly`.
-    #[test]
-    fn resume_after_silence_does_not_trigger_catchup() {
-        let mut queues = HostCommandQueues::new();
-        queues.ingest(CLIENT, &command(0, 1.0));
-        let _ = queues.resolve_tick(CLIENT); // tick 0 Real, cursor 0
-
-        // Long silence: exhaust the hold and go neutral (ticks 1..=3 held, tick 4
-        // neutral).
-        for _ in 0..(INPUT_HOLD_TICKS + 1) {
-            let _ = queues.resolve_tick(CLIENT);
-        }
-        assert_eq!(queues.resolved_cursor(CLIENT), Some(INPUT_HOLD_TICKS + 1));
-
-        // Client resumes at a far-future tick. Pending depth is exactly 1 — far below
-        // INPUT_BUFFER_MAX — so catch-up must NOT fire and discard it.
-        let resume_tick = 200u32;
-        assert!(queues.ingest(CLIENT, &command(resume_tick, -1.0)));
-
-        // Walk the neutral fill up to the resume tick, then resolve it Real. If catch-up
-        // had wrongly fired, the single far-future command would have been kept (depth 1
-        // is already <= INPUT_BUFFER_TARGET) but the cursor would have JUMPED forward to
-        // resume_tick-1, skipping the deterministic neutral fill — so the first resolve
-        // would already be Real. Assert the gap is filled with neutral first.
-        let first = queues.resolve_tick(CLIENT).unwrap();
-        assert_eq!(
-            first.source,
-            ResolutionSource::Neutral,
-            "a far-future single command does NOT fast-forward the cursor; the gap fills neutral"
-        );
-        assert_eq!(first.client_tick, INPUT_HOLD_TICKS + 2);
-
-        let mut last = Some(first);
-        for _ in 0..(resume_tick - (INPUT_HOLD_TICKS + 2)) {
-            last = queues.resolve_tick(CLIENT);
-        }
-        let resolved = last.expect("resumed command resolves");
-        assert_eq!(resolved.client_tick, resume_tick);
-        assert_eq!(resolved.source, ResolutionSource::Real);
-        assert!((resolved.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
     }
 }

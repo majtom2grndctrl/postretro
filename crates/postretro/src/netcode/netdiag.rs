@@ -47,9 +47,12 @@ pub(crate) struct HostQueueDiag {
 pub(crate) struct QueueEvent {
     pub(crate) client_id: u64,
     pub(crate) source: ResolutionSource,
-    /// `resolved_cursor - newest_received_client_tick` (wrap-aware, signed). Positive
-    /// means the cursor is ahead of the delivered input stream. `None` when nothing
-    /// has been received yet.
+    /// `expected_tick - newest_received_client_tick` (wrap-aware, signed). Negative
+    /// means the resolved cursor TRAILS the delivered input stream — the steady state
+    /// after the playout fix, where the buildup latch holds the cursor ~`INPUT_BUFFER_TARGET`
+    /// − 1 ticks behind newest (≈ −1 at target 2). A positive or zero reading signals the
+    /// cursor has caught up to or run ahead of the stream (the pre-fix bug). `None` when
+    /// nothing has been received yet.
     pub(crate) lead: Option<i32>,
     /// The facing yaw carried by this tick's resolved command (finite).
     pub(crate) yaw: Option<f32>,

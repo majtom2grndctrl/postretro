@@ -9271,6 +9271,37 @@ mod tests {
         );
     }
 
+    /// Prime a host command queue past Fix A's buildup latch by ingesting a later no-fire tick,
+    /// bringing the pending buffer to `INPUT_BUFFER_TARGET` depth so a lone earlier command
+    /// resolves `Real` instead of being withheld during buildup.
+    // Regression: Fix A's one-shot buildup latch withholds the first command until the pending
+    // buffer reaches INPUT_BUFFER_TARGET; a single ingested fire no longer resolves immediately.
+    fn prime_remote_buildup(queues: &mut netcode::HostCommandQueues, client_id: u64, tick: u32) {
+        queues.ingest(
+            client_id,
+            &postretro_net::wire::InputCommand {
+                client_tick: tick,
+                movement: postretro_net::wire::WireMovementInput {
+                    wish_dir: [0.0, 0.0],
+                    jump_pressed: false,
+                    dash_pressed: false,
+                    running: false,
+                    crouch_intent: false,
+                    facing_yaw: 0.0,
+                    use_pressed: false,
+                    drop_pressed: false,
+                    aim_pitch: 0.0,
+                    firing_slot: 0,
+                },
+                fire_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                reload: false,
+            },
+        );
+    }
+
     #[test]
     fn o27_unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
@@ -9304,6 +9335,7 @@ mod tests {
                 reload: false,
             },
         );
+        prime_remote_buildup(&mut queues, 7, 34);
         let resolved = netcode::host_resolve_remote_commands(&owners, &mut queues);
         let resolved = resolved.first().expect("weaponless fire command resolves");
 
@@ -9385,6 +9417,7 @@ mod tests {
                 reload: false,
             },
         );
+        prime_remote_buildup(&mut queues, 7, 34);
         let resolved = netcode::host_resolve_remote_commands(&owners, &mut queues);
         let resolved = resolved.first().expect("remote command resolves");
 

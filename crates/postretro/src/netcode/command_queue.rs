@@ -645,7 +645,7 @@ impl HostCommandQueues {
                 neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
                 ResolutionSource::Neutral,
             )
-        } else if let Some(prev) = state.last_resolved.clone() {
+        } else if let Some(prev) = state.last_resolved {
             // DEEP-BUFFER YIELD (within grace, a command to hold, newer data buffered past
             // the hole): repeat the last intent (Held) and advance so the cursor tracks the
             // backlog instead of stalling the ack behind a lost tick. Held (not Neutral)

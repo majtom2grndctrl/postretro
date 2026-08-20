@@ -2,10 +2,10 @@ import { defineEntity } from "postretro";
 
 const WORLD_PICKUP_MODEL = "models/smg/model.gltf";
 
-// Reference projectile weapons stay in the default dev loadout so every dev
-// map can exercise both body variants without an FGD tuning surface. Their
-// body and trail values are presentation only; collision and damage use the
-// descriptor's speed, radius, lifetime, and range.
+// Reference projectile weapons use the existing SMG dev model for pickups and
+// stay in the default dev loadout so every map can exercise both body variants.
+// Their body and trail values are presentation only; collision and damage use
+// the descriptor's speed, radius, lifetime, and range.
 export const referencePlasmaBoltEntity = defineEntity({
   canonicalName: "reference_plasma_bolt",
   components: {
@@ -49,7 +49,7 @@ export const referenceRocketEntity = defineEntity({
         radius: 0.25,
         lifetimeMs: 4000.0,
         visual: {
-          // The existing dev grenade-launcher glTF is the model-body fixture;
+          // The existing SMG dev model is the model-body fixture;
           // the trailing smoke makes the separate body + trail forms obvious.
           body: { kind: "model", model: WORLD_PICKUP_MODEL },
           trail: {

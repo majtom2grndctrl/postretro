@@ -30,7 +30,9 @@ enum PresentationFlight {
         speed: f32,
         remaining_range: f32,
         remaining_lifetime: f32,
-        spawned: bool,
+        advanced_since_launch: bool,
+        advanced_state_published: bool,
+        path_finished: bool,
     },
 }
 
@@ -72,7 +74,9 @@ impl HostProjectilePresentations {
                 speed: launch.projectile.speed,
                 remaining_range: launch.range,
                 remaining_lifetime: launch.projectile.lifetime_ms / 1_000.0,
-                spawned: true,
+                advanced_since_launch: false,
+                advanced_state_published: false,
+                path_finished: false,
             },
         );
     }
@@ -137,15 +141,21 @@ impl HostProjectilePresentations {
                     speed,
                     remaining_range,
                     remaining_lifetime,
-                    spawned,
+                    advanced_since_launch,
+                    advanced_state_published,
+                    path_finished,
                 } => {
-                    if open_shots.get(*shot_id).is_none() {
+                    if *advanced_state_published
+                        && (open_shots.get(*shot_id).is_none() || *path_finished)
+                    {
                         false
-                    } else if *spawned {
-                        *spawned = false;
+                    } else if *path_finished {
+                        // A very short shot may finish between snapshot edges. Hold
+                        // its endpoint until one advanced state has been published.
                         true
                     } else {
-                        advance_straight_line_visual(
+                        *advanced_since_launch = true;
+                        let keeps_flying = advance_straight_line_visual(
                             registry,
                             id,
                             *direction,
@@ -153,7 +163,11 @@ impl HostProjectilePresentations {
                             remaining_range,
                             remaining_lifetime,
                             dt,
-                        )
+                        );
+                        *path_finished = !keeps_flying;
+                        // Even an already-retired shot stays registered until the
+                        // post-loop snapshot publisher observes this advanced pose.
+                        !*advanced_state_published || keeps_flying
                     }
                 }
             };
@@ -167,6 +181,22 @@ impl HostProjectilePresentations {
             let _ = registry.despawn(id);
             replicable.unregister(id);
             allocator.forget(id);
+        }
+    }
+
+    /// Mark the advanced states included by a completed host snapshot batch.
+    /// Retirement may remove a straight-line visual only after this witness is set.
+    pub(crate) fn mark_advanced_states_published(&mut self) {
+        for flight in self.flights.values_mut() {
+            if let PresentationFlight::StraightLine {
+                advanced_since_launch,
+                advanced_state_published,
+                ..
+            } = flight
+                && *advanced_since_launch
+            {
+                *advanced_state_published = true;
+            }
         }
     }
 }
@@ -551,6 +581,26 @@ mod tests {
             registry.exists(visual),
             "the launch pass does not retire the visual"
         );
+        let advanced_snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        replication.ingest_tick(advanced_snapshots);
+        let advanced_sequence = replication.begin_batch();
+        let observer_advanced = replication
+            .encode_in_batch(OBSERVING_CLIENT, 2, advanced_sequence)
+            .expect("observer receives the advanced projectile state");
+        assert!(
+            observer_advanced
+                .records
+                .iter()
+                .any(|record| record.network_id == visual_network_id.0),
+            "the observer sees flight motion before retirement"
+        );
+        presentations.mark_advanced_states_published();
         open_shots.retire(shot_id);
         presentations.advance(
             &mut registry,
@@ -566,7 +616,7 @@ mod tests {
         replication.ingest_tick(Vec::new());
         let despawn_sequence = replication.begin_batch();
         let observer_despawn = replication
-            .encode_in_batch(OBSERVING_CLIENT, 2, despawn_sequence)
+            .encode_in_batch(OBSERVING_CLIENT, 3, despawn_sequence)
             .expect("observer remains registered for projectile retirement");
         let observer_despawn = observer_despawn
             .validate()
@@ -586,5 +636,124 @@ mod tests {
                 .any(|(network_id, _)| *network_id == visual_network_id.0),
             "client acknowledges the remote projectile tombstone"
         );
+    }
+
+    // Regression: an impact declaration could retire a short remote shot in the
+    // same host tick that spawned it, before a 30 Hz snapshot ever named it.
+    #[test]
+    fn short_remote_shot_holds_advanced_state_until_snapshot_publication() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 21);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(
+            AuthorizedShot {
+                shot_id,
+                pawn,
+                weapon,
+                fire_tick: 1,
+                damage: 10.0,
+                range: 0.01,
+                pellet_count: 1,
+                credit_source: "weapon.test.short".to_string(),
+                is_projectile: true,
+                fire_origin: Vec3::ZERO,
+                timeout_budget_ticks: 180,
+            },
+            FIRING_CLIENT,
+        );
+        let mut short_descriptor = descriptor();
+        short_descriptor.speed = 100.0;
+        short_descriptor.lifetime_ms = 1.0;
+        let launch = RemoteProjectilePresentationLaunch {
+            owner_client_id: FIRING_CLIENT,
+            shot_id,
+            origin: Vec3::ZERO,
+            direction: Vec3::NEG_Z,
+            range: 0.01,
+            descriptor_class: "test_remote_projectile".to_string(),
+            projectile: short_descriptor,
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+        presentations.spawn_remote(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &launch,
+        );
+        let visual = *presentations
+            .flights
+            .keys()
+            .next()
+            .expect("short shot spawns one observer visual");
+        let network_id = allocator
+            .network_id_for_entity(visual)
+            .expect("short observer visual is stamped");
+
+        open_shots.retire(shot_id);
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            1.0 / 60.0,
+        );
+        assert!(registry.exists(visual));
+        assert!(
+            registry
+                .get_component::<Transform>(visual)
+                .expect("short shot endpoint remains live")
+                .position
+                .z
+                < 0.0,
+            "the presentation advances even though authority already retired"
+        );
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            1.0 / 60.0,
+        );
+        assert!(
+            registry.exists(visual),
+            "the finished endpoint survives catch-up ticks before serialization"
+        );
+
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        replication.ingest_tick(snapshots);
+        let sequence = replication.begin_batch();
+        let observer_snapshot = replication
+            .encode_in_batch(OBSERVING_CLIENT, 2, sequence)
+            .expect("observer receives the held short-shot endpoint");
+        assert!(
+            observer_snapshot
+                .records
+                .iter()
+                .any(|record| record.network_id == network_id.0)
+        );
+        presentations.mark_advanced_states_published();
+
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            1.0 / 60.0,
+        );
+        assert!(!registry.exists(visual));
+        assert!(!replicable.contains(visual));
     }
 }

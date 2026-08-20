@@ -17,11 +17,11 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::{ProjectileBodyVisual, ResolutionMode};
+use postretro_foundation::{FireMode, ProjectileBodyVisual, ResolutionMode};
 
 use super::super::{
     OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand,
-    RemoteProjectilePresentationLaunch,
+    RemoteProjectileFireRejection, RemoteProjectilePresentationLaunch,
 };
 use super::impact::apply_authorized_weapon_impact_damage;
 use super::machine::tick_weapon_machine;
@@ -37,6 +37,15 @@ pub(in crate::sim) struct LocalWeaponCommandResult {
     pub(in crate::sim) projectile_spawns: Vec<EntityId>,
     #[cfg(test)]
     pub(in crate::sim) weapon_impact_points: Vec<Vec3>,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::sim) struct RemoteWeaponCommandResult {
+    pub(in crate::sim) authorized_shots: Vec<OpenAuthorizedShot>,
+    pub(in crate::sim) projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
+    pub(in crate::sim) rejected_projectile_fires: Vec<RemoteProjectileFireRejection>,
+    pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
+    pub(in crate::sim) weapon_events: Vec<&'static str>,
 }
 
 pub(in crate::sim) fn weapon_fire_command(
@@ -80,15 +89,11 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     registry: &Rc<RefCell<EntityRegistry>>,
     remote_pawn_commands: &[RemotePawnCommand],
     tick_dt: f32,
-) -> (
-    Vec<OpenAuthorizedShot>,
-    Vec<RemoteProjectilePresentationLaunch>,
-    Vec<ReloadDelivery>,
-    Vec<&'static str>,
-) {
+) -> RemoteWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut authorized = Vec::new();
     let mut projectile_presentations = Vec::new();
+    let mut rejected_projectile_fires = Vec::new();
     let mut reload_deliveries = Vec::new();
     let mut weapon_events = Vec::new();
 
@@ -104,6 +109,14 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let Ok(mut weapon_component) = registry.get_component::<WeaponComponent>(weapon).cloned()
         else {
             continue;
+        };
+        let projectile_fire_intended = {
+            let effective = weapon_component.effective();
+            matches!(effective.resolution, ResolutionMode::Projectile)
+                && match effective.fire_mode {
+                    FireMode::Semi => remote.command.fire_button.pressed,
+                    FireMode::Auto => remote.command.fire_button.active,
+                }
         };
         let command = WeaponFireCommand {
             button: remote.command.fire_button,
@@ -173,9 +186,23 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
             WeaponFireAuthorization::Empty => {
                 weapon_events.push("dry_fire");
+                if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                }
                 continue;
             }
-            WeaponFireAuthorization::Rejected => continue,
+            WeaponFireAuthorization::Rejected => {
+                if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                }
+                continue;
+            }
         }
         let Some(shot_id) = remote.shot_id else {
             continue;
@@ -187,10 +214,18 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     log::warn!(
                         "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
                     );
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
                     continue;
                 };
                 let Some(fire_origin) = remote_fire_origin(&registry, remote.pawn) else {
                     log::warn!("[Net] remote projectile fire has no live pawn eye; dropping shot");
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
                     continue;
                 };
                 (
@@ -226,12 +261,13 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         }
     }
 
-    (
-        authorized,
-        projectile_presentations,
+    RemoteWeaponCommandResult {
+        authorized_shots: authorized,
+        projectile_presentation_launches: projectile_presentations,
+        rejected_projectile_fires,
         reload_deliveries,
         weapon_events,
-    )
+    }
 }
 
 fn remote_fire_origin(registry: &EntityRegistry, pawn: EntityId) -> Option<Vec3> {

@@ -1,4 +1,4 @@
-// Fixed-tick straight-line projectile advance and direct-impact resolution.
+// Authoritative fixed-tick projectile resolution and per-frame prediction.
 // See: context/lib/entity_model.md §5, §7
 
 use std::cell::RefCell;
@@ -294,6 +294,12 @@ fn advance_matching(
                 component,
             } => {
                 if registry.exists(projectile) {
+                    // Connected clients skip the registry-wide stage-0 snapshot.
+                    // Preserve the prior frame pose before each predicted write so
+                    // rigid model bodies interpolate over the flight segment.
+                    if component.predicted_shot_id.is_some() {
+                        registry.snapshot_transform(projectile);
+                    }
                     let _ = registry.set_component(projectile, transform);
                     let _ = registry.set_component(projectile, component);
                 }
@@ -843,5 +849,57 @@ mod tests {
             (current - 20.0).abs() <= f32::EPSILON,
             "connected-client prediction declares the hit; it never writes enemy Health"
         );
+    }
+
+    // Regression: connected-client model projectiles updated only current Transform,
+    // leaving mesh interpolation pinned to their spawn pose.
+    #[test]
+    fn predicted_model_projectile_snapshots_each_frame_before_transform_update() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 10.0, 0.0, 5.0);
+        let mut component = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.predicted_shot_id = Some(17);
+        {
+            let mut registry = registry.borrow_mut();
+            registry
+                .set_component(projectile, component)
+                .expect("prediction shot id attaches");
+            registry
+                .set_component(
+                    projectile,
+                    MeshComponent::stateless("models/projectiles/test-rocket.gltf".to_string()),
+                )
+                .expect("rigid model body attaches");
+        }
+
+        let world = CollisionWorld::default();
+        let zones = HitZoneStore::new();
+        let mut resolutions = Vec::new();
+        advance_predicted(&registry, &world, &zones, 0.0, 0.0, &mut |resolution| {
+            resolutions.push(resolution)
+        });
+        advance_predicted(&registry, &world, &zones, 0.0, 1.0, &mut |resolution| {
+            resolutions.push(resolution)
+        });
+
+        let registry = registry.borrow();
+        assert!(resolutions.is_empty());
+        assert!(registry.get_component::<MeshComponent>(projectile).is_ok());
+        let previous = registry
+            .interpolated_transform(projectile, 0.0)
+            .expect("model body retains its prior frame pose");
+        let midpoint = registry
+            .interpolated_transform(projectile, 0.5)
+            .expect("model body interpolates between frame poses");
+        let current = registry
+            .interpolated_transform(projectile, 1.0)
+            .expect("model body reaches its current frame pose");
+        assert!((previous.position.z - 0.0).abs() <= f32::EPSILON);
+        assert!((midpoint.position.z + 0.5).abs() <= f32::EPSILON);
+        assert!((current.position.z + 1.0).abs() <= f32::EPSILON);
     }
 }

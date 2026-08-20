@@ -2865,6 +2865,9 @@ impl ApplicationHandler for App {
                             tick_dt,
                         );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
+                        self.host_send_rejected_projectile_fire_verdicts(
+                            &tick_events.rejected_remote_projectile_fires,
+                        );
                         self.host_spawn_projectile_presentations(
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
@@ -6693,7 +6696,7 @@ impl App {
             join_seeds: _,
             missing_identity_warned: _,
             client_pawn_presentation: _,
-            projectile_presentations: _,
+            projectile_presentations,
         }) = session.net_endpoint.as_mut()
         else {
             return Vec::new();
@@ -6735,7 +6738,8 @@ impl App {
             // without depending on those later HUD slot writes.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
-            netcode::host_replicate(
+            let prior_emitted_tick = *last_emitted_snapshot_tick;
+            let sampled_weapons = netcode::host_replicate(
                 &registry,
                 &slot_table,
                 &replication_identity,
@@ -6751,7 +6755,11 @@ impl App {
                 *tick,
                 snapshot_due,
                 last_emitted_snapshot_tick,
-            )
+            );
+            if *last_emitted_snapshot_tick != prior_emitted_tick {
+                projectile_presentations.mark_advanced_states_published();
+            }
+            sampled_weapons
         }
     }
 
@@ -7097,6 +7105,28 @@ impl App {
         };
         for shot in shots {
             open_shots.record(shot.shot.clone(), shot.owner_client_id);
+        }
+    }
+
+    fn host_send_rejected_projectile_fire_verdicts(
+        &mut self,
+        rejections: &[sim::RemoteProjectileFireRejection],
+    ) {
+        let Some(netcode::NetEndpoint::Host { server, .. }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        for rejection in rejections {
+            netcode::send_shot_verdict(
+                server,
+                rejection.owner_client_id,
+                rejection.shot_id.raw(),
+                false,
+                false,
+            );
         }
     }
 

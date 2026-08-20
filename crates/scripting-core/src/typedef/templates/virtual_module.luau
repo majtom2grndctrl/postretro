@@ -120,6 +120,8 @@ export type PostretroModule = {
   spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),
   disarmTrigger: typeof(disarmTrigger),
+  wait: typeof(wait),
+  fire: typeof(fire),
   onTriggerEvent: typeof(onTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),

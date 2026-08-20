@@ -1118,9 +1118,15 @@ fn reaction_uses_trigger_sentinel(
 
     match &reaction.descriptor {
         ReactionDescriptor::Primitive(primitive) => primitive.target.is_some(),
-        ReactionDescriptor::Sequence(steps) => steps
-            .iter()
-            .any(|step| !matches!(step.id, SequenceTarget::Entity(_))),
+        // A control step (`@wait`/`@fire`) is not trigger-sentinel work: a
+        // `levelLoad` body containing a wait must keep its crossing subscriptions
+        // and must not warn "levelLoad references trigger-sentinel work".
+        ReactionDescriptor::Sequence(steps) => steps.iter().any(|step| {
+            !matches!(
+                step.id,
+                SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire
+            )
+        }),
         ReactionDescriptor::Progress(_) => false,
     }
 }
@@ -1585,6 +1591,7 @@ mod tests {
                         scripting::reactions::system_commands::SystemReactionRegistry::new(),
                     system_reaction_ir_bindings: Default::default(),
                     slot_accumulator_bindings: Default::default(),
+                    scheduler: Default::default(),
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),

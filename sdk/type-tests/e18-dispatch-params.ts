@@ -6,6 +6,7 @@ import {
   armTrigger,
   damage,
   defineReaction,
+  fire,
   onTriggerEvent,
   runtime,
   scopeReactions,
@@ -26,6 +27,11 @@ const invalidCrossingRead = (on: CrossingParams) => on.dt;
 
 // @ts-expect-error Scoped reactions cannot be erased to an unscoped reaction.
 const invalidScopeErasure: Reaction<{}> = crossingScoped;
+
+// @ts-expect-error `fire()` takes `Reaction<{}>`, not `Reaction<S>`: no resumed
+// step reads fire-time context, so firing a scoped reaction from a sequence
+// is a compile error (O30, scripting.md §12).
+const invalidFireOfScopedReaction = fire(crossingScoped);
 
 const scopedCrossingList = scopeReactions(["arena"], [crossingScoped]);
 // @ts-expect-error Adding level tags must not erase a reaction's dispatch scope.
@@ -62,6 +68,7 @@ defineReaction((on: TriggerEventParams) => {
 void invalidTickRead;
 void invalidCrossingRead;
 void invalidScopeErasure;
+void invalidFireOfScopedReaction;
 void invalidScopedHelperErasure;
 void legalAccumulator;
 void invalidReadonlyAccumulator;

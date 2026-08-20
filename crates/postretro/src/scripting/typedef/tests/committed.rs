@@ -281,6 +281,62 @@ fn trigger_command_step_types_are_emitted_in_both_sdk_surfaces() {
     }
 }
 
+/// E18 Task 2: `wait`/`fire` control-step types and builders must reach both
+/// SDK surfaces the same way `armTrigger`/`disarmTrigger` do (the boundary
+/// inventory's settled wire shapes).
+#[test]
+fn wait_and_fire_step_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+
+    for (label, output) in [("ts", &ts), ("luau", &luau)] {
+        for needle in [
+            "WaitArgs",
+            "FireArgs",
+            "WaitStep",
+            "FireStep",
+            "\"@wait\"",
+            "\"@fire\"",
+            "wait",
+            "fire",
+        ] {
+            assert!(
+                output.contains(needle),
+                "{label} typedef output missing wait/fire control-step type `{needle}`"
+            );
+        }
+    }
+
+    // Pin the exact settled signatures (Boundary inventory): `fire` takes
+    // `Reaction<{}>`, not `Reaction<S>` — the phantom scope gate that makes
+    // firing a scoped reaction a TS compile error (O30).
+    assert!(
+        ts.contains("export function wait(durationMs: number, opts?: { interruptible?: boolean }): SequenceStep[];"),
+        "ts must declare the settled `wait` signature:\n{ts}"
+    );
+    assert!(
+        ts.contains("export function fire(reaction: Reaction<{}> | string): SequenceStep[];"),
+        "ts `fire` must accept `Reaction<{{}}>`, not a scoped reaction:\n{ts}"
+    );
+    assert!(
+        luau.contains("declare function wait(durationMs: number, opts: { interruptible: boolean? }?): {SequenceStep}"),
+        "luau must declare the settled `wait` signature:\n{luau}"
+    );
+    assert!(
+        luau.contains("declare function fire(reaction: Reaction<any> | string): {SequenceStep}"),
+        "luau `fire` relies on the V4b engine gate, not a type gate:\n{luau}"
+    );
+    assert!(
+        luau.contains("wait: typeof(wait),") && luau.contains("fire: typeof(fire),"),
+        "luau `require(\"postretro\")` virtual module must export wait/fire:\n{luau}"
+    );
+}
+
 /// `defineStore` returns a pure flattened store handle. The generator
 /// special-cases it (like `worldQuery`) so the static SDK block's generic
 /// `defineStore<const S>` supplies its schema-keyed top-level refs and the

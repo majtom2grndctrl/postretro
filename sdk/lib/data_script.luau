@@ -182,9 +182,28 @@ export type DisarmTriggerStep = {
   args: {},
 }
 
+export type WaitArgs = { durationMs: number, interruptible: boolean }
+export type FireArgs = { event: string }
+
+--- Control step: enrolls the rest of the sequence body with the host
+--- scheduler and stops; the tail resumes after `durationMs` (rounded up to
+--- whole authoritative ticks).
+export type WaitStep = {
+  id: "@wait",
+  primitive: "wait",
+  args: WaitArgs,
+}
+
+--- Control step: dispatches a named reaction from inside a sequence body.
+export type FireStep = {
+  id: "@fire",
+  primitive: "fire",
+  args: FireArgs,
+}
+
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -503,6 +522,25 @@ end
 function DataScriptSdk.disarmTrigger(target: TriggerTarget): {SequenceStep}
   local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" else "@invalid"
   return { { id = wireTarget, primitive = "disarmTrigger", args = {} } :: any }
+end
+
+--- Enroll the rest of this sequence body with the host scheduler and stop;
+--- the remaining steps resume after `durationMs` (rounded up to whole
+--- authoritative ticks). `interruptible` (default `false`) lets the
+--- reaction's paired trigger Exit edge cancel the remaining steps while
+--- parked.
+function DataScriptSdk.wait(durationMs: number, opts: { interruptible: boolean? }?): {SequenceStep}
+  local interruptible = if opts ~= nil and opts.interruptible ~= nil then opts.interruptible else false
+  return { { id = "@wait", primitive = "wait", args = { durationMs = durationMs, interruptible = interruptible } } :: any }
+end
+
+--- Dispatch a named reaction by handle or name from inside a sequence body.
+--- Resolves exactly as `onTriggerEvent` resolves its `fire` entries. Luau has
+--- no phantom-typed scope gate; a scoped reaction fired this way is rejected
+--- at install (V4b), not at author time.
+function DataScriptSdk.fire(reaction: Reaction<any> | string): {SequenceStep}
+  local event = if type(reaction) == "string" then reaction else (reaction :: Reaction<any>).name
+  return { { id = "@fire", primitive = "fire", args = { event = event } } :: any }
 end
 
 -- Order-stable serialization of a reaction body: table keys are emitted sorted

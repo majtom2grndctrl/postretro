@@ -701,13 +701,18 @@ pub(crate) fn nearest_entity_hit(
     origin: Vec3,
     direction: Vec3,
     range: f32,
+    projectile_radius: f32,
 ) -> Option<EntityRayHit> {
     // The facility assumes a unit-length ray direction (so `toi` is a distance).
     // A zero-length or non-finite direction poisons every slab/capsule test with
     // inf/NaN times, silently rejecting or accepting every entity — refuse it
     // early and report no hit. `debug_assert` catches a caller that forgot to
     // normalize; release stays safe.
-    if !direction.is_finite() || direction.length_squared() < 1.0e-12 {
+    if !direction.is_finite()
+        || direction.length_squared() < 1.0e-12
+        || !projectile_radius.is_finite()
+        || projectile_radius < 0.0
+    {
         debug_assert!(
             false,
             "nearest_entity_hit requires a finite, non-zero direction"
@@ -763,6 +768,7 @@ pub(crate) fn nearest_entity_hit(
                     origin,
                     direction,
                     range,
+                    projectile_radius,
                 ) {
                     // Pose available AND trustworthy: the capsule result is
                     // AUTHORITATIVE. A `Resolved(None)` is a genuine miss
@@ -785,15 +791,24 @@ pub(crate) fn nearest_entity_hit(
                         hitbox,
                         zoned.zones,
                         range,
+                        projectile_radius,
                         id,
                     ),
                 }
             }
             // No zone-bearing model: the authored AABB is both broad and narrow
             // phase. Health without a hitbox is not targetable.
-            None => {
-                hitbox.and_then(|hitbox| aabb_hit(origin, direction, transform, hitbox, range, id))
-            }
+            None => hitbox.and_then(|hitbox| {
+                aabb_hit(
+                    origin,
+                    direction,
+                    transform,
+                    hitbox,
+                    range,
+                    projectile_radius,
+                    id,
+                )
+            }),
         };
 
         if let Some(hit) = hit {
@@ -849,14 +864,16 @@ fn aabb_hit(
     transform: &Transform,
     hitbox: &Hitbox,
     range: f32,
+    projectile_radius: f32,
     id: EntityId,
 ) -> Option<EntityRayHit> {
     let center = transform.position + hitbox.offset;
+    let expansion = Vec3::splat(projectile_radius);
     ray_aabb_slab(
         origin,
         direction,
-        center - hitbox.half_extents,
-        center + hitbox.half_extents,
+        center - hitbox.half_extents - expansion,
+        center + hitbox.half_extents + expansion,
         range,
     )
     .map(|(toi, normal)| EntityRayHit {
@@ -887,23 +904,38 @@ fn coarse_fallback_hit(
     hitbox: Option<&Hitbox>,
     zones: &ModelHitZones,
     range: f32,
+    projectile_radius: f32,
     id: EntityId,
 ) -> Option<EntityRayHit> {
     if let Some(hitbox) = hitbox {
-        return aabb_hit(origin, direction, transform, hitbox, range, id);
+        return aabb_hit(
+            origin,
+            direction,
+            transform,
+            hitbox,
+            range,
+            projectile_radius,
+            id,
+        );
     }
     // No authored AABB (a valid zone-only enemy): fall back to the derived reach
     // bound, placed model→world exactly as the capsule broad phase places it.
     let model_to_world = model_matrix(transform, origin_offset)?;
     let bound = transformed_zone_bound(zones, &model_to_world, transform)?;
-    ray_aabb_slab(origin, direction, bound.min, bound.max, range).map(|(toi, normal)| {
-        EntityRayHit {
-            toi,
-            point: origin + direction * toi,
-            normal,
-            target: id,
-            zone: None,
-        }
+    let expansion = Vec3::splat(projectile_radius);
+    ray_aabb_slab(
+        origin,
+        direction,
+        bound.min - expansion,
+        bound.max + expansion,
+        range,
+    )
+    .map(|(toi, normal)| EntityRayHit {
+        toi,
+        point: origin + direction * toi,
+        normal,
+        target: id,
+        zone: None,
     })
 }
 
@@ -943,6 +975,7 @@ fn nearest_zone_hit(
     origin: Vec3,
     direction: Vec3,
     range: f32,
+    projectile_radius: f32,
 ) -> ZoneResolve {
     // Model→world uses the same full transform layout the renderer packs for the
     // instance buffer: scale, rotation, and translation with the mesh origin
@@ -967,10 +1000,13 @@ fn nearest_zone_hit(
     // by construction) — a genuine miss, NOT a pose failure, so it does not
     // degrade to the AABB (which lies inside this bound). Rejecting before
     // resolving (cloning) the animation means a rejected entity pays no deep clone.
-    let Some(bound) = transformed_zone_bound(zones, &model_to_world, transform) else {
+    let Some(mut bound) = transformed_zone_bound(zones, &model_to_world, transform) else {
         debug_assert!(false, "nearest_zone_hit reached with no derived bound");
         return ZoneResolve::Unavailable;
     };
+    let expansion = Vec3::splat(projectile_radius);
+    bound.expand(bound.min - expansion);
+    bound.expand(bound.max + expansion);
     if ray_aabb_slab(origin, direction, bound.min, bound.max, range).is_none() {
         // A degenerate ball's broad-phase reject is untrustworthy — degrade so the
         // coarse AABB (a superset) can still catch the shot.
@@ -1011,7 +1047,7 @@ fn nearest_zone_hit(
         // origin. A tagged LEAF joint (no child) is a zero-length sphere.
         let a_model = world_joint.w_axis.truncate();
         let b_model = first_child_origin(zones, &world_joints, joint_index);
-        let radius = zone_radius(zone) * radius_scale;
+        let radius = zone_radius(zone) * radius_scale + projectile_radius;
 
         // Model→world for the two segment endpoints.
         let a = model_to_world.transform_point3(a_model);
@@ -2194,6 +2230,7 @@ mod tests {
             Vec3::new(0.0, 8.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("full model transform places the rest joint at y=8");
 
@@ -2328,6 +2365,7 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("Mesh-only remote enemy should hit through its zone-bearing model");
 
@@ -2349,6 +2387,7 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         );
 
         assert!(
@@ -2415,6 +2454,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("Mesh-only unavailable pose should degrade to the model derived bound");
 
@@ -2443,13 +2483,13 @@ mod tests {
         let origin = Vec3::new(5.0, 0.0, 10.0);
         let dir = Vec3::new(0.0, 0.0, -1.0);
 
-        let at_rest = nearest_entity_hit(&reg, &store, 0.0, origin, dir, 100.0);
+        let at_rest = nearest_entity_hit(&reg, &store, 0.0, origin, dir, 100.0, 0.0);
         assert!(
             at_rest.is_none(),
             "a ray through the limb's POSED position misses while it is at REST"
         );
 
-        let posed = nearest_entity_hit(&reg, &store, 1.0, origin, dir, 100.0)
+        let posed = nearest_entity_hit(&reg, &store, 1.0, origin, dir, 100.0, 0.0)
             .expect("the posed limb lies on the ray");
         assert_eq!(posed.target, id, "the zone entity is hit");
         assert_eq!(posed.zone.as_deref(), Some("hand"), "zone tag surfaced");
@@ -2472,6 +2512,7 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         );
         assert!(
             moving_clip_position.is_none(),
@@ -2485,6 +2526,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("stateless capsule remains at the authored rest position");
         assert_eq!(rest_position.zone.as_deref(), Some("hand"));
@@ -2506,6 +2548,7 @@ mod tests {
             Vec3::new(4.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("rest-pose zone away from origin should pass broad phase and hit");
 
@@ -2576,11 +2619,11 @@ mod tests {
 
         // anim_time 3.0 → clip-local 0.0 → child at rest (origin) → miss at x=5.
         assert!(
-            nearest_entity_hit(&reg, &store, 3.0, origin, dir, 100.0).is_none(),
+            nearest_entity_hit(&reg, &store, 3.0, origin, dir, 100.0, 0.0).is_none(),
             "at the entry instant the limb is at rest; a ray through x=5 misses"
         );
         // anim_time 4.0 → clip-local 1.0 → child at x=5 → hit.
-        let hit = nearest_entity_hit(&reg, &store, 4.0, origin, dir, 100.0)
+        let hit = nearest_entity_hit(&reg, &store, 4.0, origin, dir, 100.0, 0.0)
             .expect("the state-posed limb lies on the ray");
         assert_eq!(hit.target, id);
         assert_eq!(hit.zone.as_deref(), Some("hand"));
@@ -2660,12 +2703,21 @@ mod tests {
         .unwrap();
 
         let dir = Vec3::new(0.0, 0.0, -1.0);
-        let captured = nearest_entity_hit(&reg, &store, t2, Vec3::new(5.0, 0.0, 10.0), dir, 100.0)
-            .expect("snapshot-captured pose at x=5 should be hittable");
+        let captured =
+            nearest_entity_hit(&reg, &store, t2, Vec3::new(5.0, 0.0, 10.0), dir, 100.0, 0.0)
+                .expect("snapshot-captured pose at x=5 should be hittable");
         assert_eq!(captured.target, id);
         assert_eq!(captured.zone.as_deref(), Some("core"));
 
-        let fallback = nearest_entity_hit(&reg, &store, t2, Vec3::new(10.0, 0.0, 10.0), dir, 100.0);
+        let fallback = nearest_entity_hit(
+            &reg,
+            &store,
+            t2,
+            Vec3::new(10.0, 0.0, 10.0),
+            dir,
+            100.0,
+            0.0,
+        );
         assert!(
             fallback.is_none(),
             "fallback clip pose at x=10 must not be used for smooth snapshot hits"
@@ -2734,14 +2786,28 @@ mod tests {
         .unwrap();
 
         let dir = Vec3::new(0.0, 0.0, -1.0);
-        let outgoing_pose =
-            nearest_entity_hit(&reg, &store, 1.0, Vec3::new(0.0, 0.0, 10.0), dir, 100.0)
-                .expect("weight-0 crossfade still shows and hits the outgoing pose");
+        let outgoing_pose = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(0.0, 0.0, 10.0),
+            dir,
+            100.0,
+            0.0,
+        )
+        .expect("weight-0 crossfade still shows and hits the outgoing pose");
         assert_eq!(outgoing_pose.target, id);
         assert_eq!(outgoing_pose.zone.as_deref(), Some("core"));
 
-        let new_primary_pose =
-            nearest_entity_hit(&reg, &store, 1.0, Vec3::new(10.0, 0.0, 10.0), dir, 100.0);
+        let new_primary_pose = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(10.0, 0.0, 10.0),
+            dir,
+            100.0,
+            0.0,
+        );
         assert!(
             new_primary_pose.is_none(),
             "pending stamp must not consume as the new primary-only pose"
@@ -2834,6 +2900,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("chained snapshot interrupt degrades to the authored AABB and stays hittable");
         assert_eq!(hit.target, id);
@@ -2953,6 +3020,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("a zone-only enemy with an unavailable pose degrades to its derived bound");
         assert_eq!(hit.target, id);
@@ -3000,6 +3068,7 @@ mod tests {
             Vec3::new(0.5, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("a static-identity origin-ball miss degrades to the authored AABB");
         assert_eq!(hit.target, id);
@@ -3050,6 +3119,7 @@ mod tests {
             Vec3::new(0.5, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("a static-identity no-op-clip miss degrades to the authored AABB");
         assert_eq!(hit.target, id);
@@ -3097,6 +3167,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("a ray through the origin strikes the zone ball");
         assert_eq!(hit.target, id);
@@ -3149,6 +3220,7 @@ mod tests {
             Vec3::new(2.5, 3.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         );
         assert!(
             hit.is_none(),
@@ -3245,6 +3317,7 @@ mod tests {
             Vec3::new(phased_x, 0.0, 10.0),
             dir,
             100.0,
+            0.0,
         )
         .expect("a ray through the PHASED limb position hits");
         assert_eq!(hit.target, id);
@@ -3260,7 +3333,15 @@ mod tests {
         // phase folded in, the limb is at `phased_x`, far (≥ ~0.5) from x=0, so a
         // facility that ignored phase (posing at clip-local 0) would wrongly hit
         // here. The miss proves the phase is actually applied.
-        let unphased = nearest_entity_hit(&reg, &store, 0.0, Vec3::new(0.0, 0.0, 10.0), dir, 100.0);
+        let unphased = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.0, 0.0, 10.0),
+            dir,
+            100.0,
+            0.0,
+        );
         assert!(
             unphased.is_none(),
             "a ray through the UN-PHASED rest position (x=0) must miss once phase \
@@ -3298,6 +3379,7 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("posed limb outside a small box is still hit");
         assert_eq!(hit.zone.as_deref(), Some("hand"));
@@ -3335,6 +3417,7 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("offset mesh hit zones should follow the rendered model origin");
         assert_eq!(hit.zone.as_deref(), Some("hand"));
@@ -3360,6 +3443,7 @@ mod tests {
             Vec3::new(2.5, 3.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         );
         assert!(
             inside_bound_x.is_none(),
@@ -3385,7 +3469,7 @@ mod tests {
         let dir = Vec3::new(0.0, 0.0, -1.0);
 
         // Hand sphere at z=0 (toi 10) is nearer than the AABB at z=-20 (toi 30).
-        let hit = nearest_entity_hit(&reg, &store, 1.0, origin, dir, 100.0)
+        let hit = nearest_entity_hit(&reg, &store, 1.0, origin, dir, 100.0, 0.0)
             .expect("a contender lies on the ray");
         assert_eq!(
             hit.target, zone_id,
@@ -3397,7 +3481,7 @@ mod tests {
         let mut reg2 = EntityRegistry::new();
         let _zone = spawn_zone_entity(&mut reg2, "mob", Vec3::ZERO);
         let aabb_near = spawn_aabb_entity(&mut reg2, Vec3::new(5.0, 0.0, 5.0), Vec3::splat(0.5));
-        let hit2 = nearest_entity_hit(&reg2, &store, 1.0, origin, dir, 100.0)
+        let hit2 = nearest_entity_hit(&reg2, &store, 1.0, origin, dir, 100.0, 0.0)
             .expect("a contender lies on the ray");
         assert_eq!(hit2.target, aabb_near, "nearer AABB beats the farther zone");
         assert_eq!(hit2.zone, None, "an AABB hit reports no zone tag");
@@ -3421,6 +3505,7 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
+            0.0,
         )
         .expect("a downed zero-HP entity remains targetable");
         assert_eq!(hit.target, id);
@@ -3480,6 +3565,7 @@ mod tests {
             Vec3::ZERO,
             Vec3::new(0.0, 0.0, -1.0),
             10.0,
+            0.0,
         )
         .expect("the authored AABB is hit on the ray");
         assert_eq!(hit.target, id);

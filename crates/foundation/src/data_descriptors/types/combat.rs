@@ -20,6 +20,115 @@ pub enum FireMode {
 #[serde(rename_all = "camelCase")]
 pub enum ResolutionMode {
     Hitscan,
+    Projectile,
+}
+
+/// Descriptor-owned tuning for a straight-line direct-impact projectile.
+///
+/// This stays in the foundation descriptor because it is pure authored data;
+/// the entities crate materializes the flight state and the game layer owns the
+/// collision and damage resolution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileDescriptor {
+    /// Straight-line launch speed in metres per second.
+    pub speed: f32,
+    /// Swept-sphere radius in metres.
+    pub radius: f32,
+    /// Maximum flight time in milliseconds. Weapon range remains a second cap.
+    #[serde(rename = "lifetimeMs")]
+    pub lifetime_ms: f32,
+    pub visual: ProjectileVisual,
+}
+
+/// Presentation attached to a projectile at spawn. It is descriptor data only:
+/// rendering never decides whether the projectile hits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileVisual {
+    pub body: ProjectileBodyVisual,
+    #[serde(default)]
+    pub trail: Option<ProjectileTrailVisual>,
+}
+
+/// The projectile's visible body. A mesh body is rigid; no animation state is
+/// attached to a travelling projectile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProjectileBodyVisual {
+    Sprite {
+        sprite: String,
+        #[serde(default = "default_projectile_sprite_size")]
+        size: f32,
+        #[serde(default = "default_projectile_sprite_opacity")]
+        opacity: f32,
+        #[serde(default)]
+        rotation: f32,
+        #[serde(default = "default_projectile_sprite_tint")]
+        tint: [f32; 3],
+    },
+    Model {
+        model: String,
+    },
+}
+
+/// Optional descriptor-owned billboard-emitter trail. Defaults make the short
+/// form `{ sprite: "sprites/trail.png" }` useful while retaining the existing
+/// emitter component's complete presentation controls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileTrailVisual {
+    pub sprite: String,
+    #[serde(default = "default_projectile_trail_rate")]
+    pub rate: f32,
+    #[serde(default = "default_projectile_trail_lifetime")]
+    pub lifetime: f32,
+    #[serde(default)]
+    pub burst: Option<u32>,
+    #[serde(default)]
+    pub spread: f32,
+    #[serde(default)]
+    pub velocity: [f32; 3],
+    #[serde(default)]
+    pub buoyancy: f32,
+    #[serde(default)]
+    pub drag: f32,
+    #[serde(default = "default_projectile_trail_size_curve")]
+    pub size_over_lifetime: Vec<f32>,
+    #[serde(default = "default_projectile_trail_opacity_curve")]
+    pub opacity_over_lifetime: Vec<f32>,
+    #[serde(default = "default_projectile_sprite_tint")]
+    pub color: [f32; 3],
+    #[serde(default)]
+    pub spin_rate: f32,
+}
+
+const fn default_projectile_sprite_size() -> f32 {
+    0.35
+}
+
+const fn default_projectile_sprite_opacity() -> f32 {
+    1.0
+}
+
+const fn default_projectile_sprite_tint() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+
+const fn default_projectile_trail_rate() -> f32 {
+    30.0
+}
+
+const fn default_projectile_trail_lifetime() -> f32 {
+    0.4
+}
+
+fn default_projectile_trail_size_curve() -> Vec<f32> {
+    vec![0.2, 0.12, 0.0]
+}
+
+fn default_projectile_trail_opacity_curve() -> Vec<f32> {
+    vec![0.8, 0.45, 0.0]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +194,10 @@ pub struct WeaponDescriptor {
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
+    /// Required when `resolution` is `Projectile`; omitted by all other
+    /// resolution modes so existing hitscan descriptors remain unchanged.
+    #[serde(default)]
+    pub projectile: Option<ProjectileDescriptor>,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
     /// Optional content-relative rigid prop model mounted at the pawn's third-person hand socket.
@@ -149,6 +262,17 @@ impl WeaponDescriptor {
                 ),
             });
         }
+        match (self.resolution, self.projectile.as_ref()) {
+            (ResolutionMode::Projectile, Some(projectile)) => {
+                validate_projectile_descriptor(projectile)?;
+            }
+            (ResolutionMode::Projectile, None) => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: "`components.weapon.projectile` is required when `components.weapon.resolution` is `projectile`".to_string(),
+                });
+            }
+            (ResolutionMode::Hitscan, _) => {}
+        }
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
         }
@@ -184,6 +308,129 @@ impl WeaponDescriptor {
         }
         Ok(self)
     }
+}
+
+fn validate_projectile_descriptor(
+    projectile: &ProjectileDescriptor,
+) -> Result<(), DescriptorError> {
+    for (field, value, valid) in [
+        (
+            "speed",
+            projectile.speed,
+            projectile.speed.is_finite() && projectile.speed > 0.0,
+        ),
+        (
+            "radius",
+            projectile.radius,
+            projectile.radius.is_finite() && projectile.radius >= 0.0,
+        ),
+        (
+            "lifetimeMs",
+            projectile.lifetime_ms,
+            projectile.lifetime_ms.is_finite() && projectile.lifetime_ms > 0.0,
+        ),
+    ] {
+        if !valid {
+            let constraint = if field == "radius" { ">= 0.0" } else { "> 0.0" };
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.projectile.{field}` must be a finite value {constraint}, got {value}"
+                ),
+            });
+        }
+    }
+
+    match &projectile.visual.body {
+        ProjectileBodyVisual::Sprite {
+            sprite,
+            size,
+            opacity,
+            rotation,
+            tint,
+        } => {
+            validate_projectile_asset_path("body.sprite", sprite)?;
+            for (field, value) in [
+                ("body.size", *size),
+                ("body.opacity", *opacity),
+                ("body.rotation", *rotation),
+            ] {
+                if !value.is_finite() || (field == "body.size" && value <= 0.0) {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.weapon.projectile.visual.{field}` must be finite{}",
+                            if field == "body.size" {
+                                " and > 0.0"
+                            } else {
+                                ""
+                            }
+                        ),
+                    });
+                }
+            }
+            if !tint.iter().all(|value| value.is_finite()) {
+                return Err(DescriptorError::InvalidShape {
+                    reason:
+                        "`components.weapon.projectile.visual.body.tint` must contain finite values"
+                            .to_string(),
+                });
+            }
+        }
+        ProjectileBodyVisual::Model { model } => {
+            validate_projectile_asset_path("body.model", model)?
+        }
+    }
+
+    if let Some(trail) = projectile.visual.trail.as_ref() {
+        validate_projectile_asset_path("trail.sprite", &trail.sprite)?;
+        for (field, value, positive) in [
+            ("trail.rate", trail.rate, false),
+            ("trail.lifetime", trail.lifetime, true),
+            ("trail.spread", trail.spread, false),
+            ("trail.buoyancy", trail.buoyancy, false),
+            ("trail.drag", trail.drag, false),
+            ("trail.spinRate", trail.spin_rate, false),
+        ] {
+            if !value.is_finite()
+                || (positive && value <= 0.0)
+                || (!positive && field != "trail.buoyancy" && value < 0.0)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.{field}` has an invalid value {value}"
+                    ),
+                });
+            }
+        }
+        if !trail
+            .velocity
+            .iter()
+            .chain(trail.color.iter())
+            .all(|value| value.is_finite())
+            || trail.size_over_lifetime.is_empty()
+            || trail.opacity_over_lifetime.is_empty()
+            || !trail
+                .size_over_lifetime
+                .iter()
+                .chain(&trail.opacity_over_lifetime)
+                .all(|value| value.is_finite())
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`components.weapon.projectile.visual.trail` must contain finite vectors and non-empty finite curves".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_projectile_asset_path(field: &str, path: &str) -> Result<(), DescriptorError> {
+    if is_portable_content_relative_asset_path(path) {
+        return Ok(());
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!(
+            "`components.weapon.projectile.visual.{field}` must be a non-empty, content-relative asset path using forward slashes with no parent traversal"
+        ),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,6 +569,7 @@ mod tests {
             cooldown_ms: 180.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: credit_source.map(str::to_string),
             third_person_model: None,
             viewmodel: None,
@@ -330,6 +578,49 @@ mod tests {
             raise_ms: 0,
             block_during_reload: None,
         }
+    }
+
+    fn projectile_descriptor() -> ProjectileDescriptor {
+        ProjectileDescriptor {
+            speed: 24.0,
+            radius: 0.1,
+            lifetime_ms: 1_500.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/projectiles/bolt.png".to_string(),
+                    size: 0.35,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                },
+                trail: None,
+            },
+        }
+    }
+
+    #[test]
+    fn projectile_resolution_requires_finite_travel_tuning_and_a_visual() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+        assert!(descriptor.clone().validate().is_ok());
+
+        for field in ["speed", "radius", "lifetimeMs"] {
+            let mut invalid = descriptor.clone();
+            let projectile = invalid.projectile.as_mut().unwrap();
+            match field {
+                "speed" => projectile.speed = f32::NAN,
+                "radius" => projectile.radius = -0.01,
+                "lifetimeMs" => projectile.lifetime_ms = 0.0,
+                _ => unreachable!(),
+            }
+            let error = invalid.validate().unwrap_err();
+            assert!(error.to_string().contains(field), "{error}");
+        }
+
+        descriptor.projectile = None;
+        let error = descriptor.validate().unwrap_err();
+        assert!(error.to_string().contains("resolution"), "{error}");
     }
 
     #[test]

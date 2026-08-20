@@ -709,6 +709,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::DeferredEffect => 18,
         ComponentKind::Inventory => 19,
         ComponentKind::Touchable => 20,
+        ComponentKind::Projectile => 21,
     }
 }
 
@@ -2432,6 +2433,7 @@ mod tests {
             cooldown_ms: 180.0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some("weapon.test.retuned".to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -2627,6 +2629,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some("weapon.test.net".to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -2934,6 +2937,7 @@ mod tests {
                 cooldown_ms: 1.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: Some("models/pistol/model.gltf".to_string()),
                 viewmodel: None,
@@ -3867,7 +3871,8 @@ mod tests {
                 ComponentKind::EntityState => Some(ComponentKind::DeferredEffect),
                 ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
                 ComponentKind::Inventory => Some(ComponentKind::Touchable),
-                ComponentKind::Touchable => None,
+                ComponentKind::Touchable => Some(ComponentKind::Projectile),
+                ComponentKind::Projectile => None,
             }
         }
 

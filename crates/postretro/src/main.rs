@@ -8099,6 +8099,7 @@ mod tests {
                 cooldown_ms: 1.0,
                 fire_mode: postretro_foundation::FireMode::Semi,
                 resolution: postretro_foundation::ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),

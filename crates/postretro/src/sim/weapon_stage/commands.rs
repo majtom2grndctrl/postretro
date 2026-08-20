@@ -6,11 +6,16 @@ use glam::Vec3;
 use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::projectile::ProjectileComponent;
+use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::ProjectileBodyVisual;
 
 use super::super::{OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand};
 use super::impact::apply_authorized_weapon_impact_damage;
@@ -245,7 +250,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         // pass that would advance cooldown or fire input a second time.
         machine.lowered = lower_ms == 0;
     }
-    let events = weapon::tick_resolved_component(
+    let mut events = weapon::tick_resolved_component(
         &registry,
         &mut weapon_component,
         &pellet_salt_name,
@@ -286,6 +291,15 @@ pub(in crate::sim) fn run_local_weapon_command(
         }
     }
     let _ = registry.set_component(weapon_id, weapon_component);
+    if let Some(pawn) = pawn {
+        for launch in std::mem::take(&mut events.projectile_launches) {
+            if let Some(projectile_id) = spawn_projectile(&mut registry, pawn, weapon_id, launch) {
+                events
+                    .spawned
+                    .push(weapon::ActivationOutcome::Spawned(projectile_id));
+            }
+        }
+    }
     for impact in &events.impacts {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
 
@@ -321,6 +335,85 @@ pub(in crate::sim) fn run_local_weapon_command(
         #[cfg(test)]
         weapon_impact_points,
     }
+}
+
+fn spawn_projectile(
+    registry: &mut EntityRegistry,
+    owner_pawn: EntityId,
+    owner_weapon: EntityId,
+    launch: weapon::ProjectileLaunch,
+) -> Option<EntityId> {
+    let Some(projectile_id) = registry.try_spawn(
+        Transform {
+            position: launch.origin,
+            ..Transform::default()
+        },
+        &[],
+    ) else {
+        log::warn!("[Weapon] entity registry exhausted; dropping projectile launch");
+        return None;
+    };
+
+    let component = ProjectileComponent {
+        direction: launch.direction.to_array(),
+        speed: launch.speed,
+        radius: launch.radius,
+        remaining_range: launch.range,
+        remaining_lifetime: launch.lifetime,
+        damage: launch.damage,
+        credit_source: launch.credit_source,
+        owner_pawn,
+        owner_weapon,
+        spawned: true,
+        shot_id: 0,
+    };
+    let _ = registry.set_component(projectile_id, component);
+
+    match launch.descriptor.visual.body {
+        ProjectileBodyVisual::Sprite {
+            sprite,
+            size,
+            opacity,
+            rotation,
+            tint,
+        } => {
+            let _ = registry.set_component(
+                projectile_id,
+                SpriteVisual {
+                    sprite,
+                    size,
+                    opacity,
+                    rotation,
+                    tint,
+                },
+            );
+        }
+        ProjectileBodyVisual::Model { model } => {
+            let _ = registry.set_component(projectile_id, MeshComponent::stateless(model));
+        }
+    }
+    if let Some(trail) = launch.descriptor.visual.trail {
+        let _ = registry.set_component(
+            projectile_id,
+            BillboardEmitterComponent {
+                rate: trail.rate,
+                burst: trail.burst,
+                spread: trail.spread,
+                lifetime: trail.lifetime,
+                velocity: trail.velocity,
+                buoyancy: trail.buoyancy,
+                drag: trail.drag,
+                size_over_lifetime: LifetimeCurve::from(trail.size_over_lifetime),
+                opacity_over_lifetime: LifetimeCurve::from(trail.opacity_over_lifetime),
+                color: trail.color,
+                sprite: trail.sprite,
+                spin_rate: trail.spin_rate,
+                spin_animation: None,
+            },
+        );
+    }
+
+    Some(projectile_id)
 }
 
 pub(crate) fn normalize_inventory_liveness(
@@ -450,4 +543,104 @@ pub(crate) fn refuse_local_switch(
 
     let _ = registry.set_component(pawn, inventory);
     true
+}
+
+#[cfg(test)]
+mod projectile_spawn_tests {
+    use super::*;
+    use postretro_foundation::{
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
+    };
+
+    fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
+        weapon::ProjectileLaunch {
+            origin: Vec3::new(1.0, 2.0, 3.0),
+            direction: Vec3::NEG_Z,
+            speed: 40.0,
+            radius: 0.2,
+            range: 64.0,
+            lifetime: 2.0,
+            damage: 25.0,
+            credit_source: "plasma.primary".to_string(),
+            descriptor: ProjectileDescriptor {
+                speed: 40.0,
+                radius: 0.2,
+                lifetime_ms: 2000.0,
+                visual,
+            },
+        }
+    }
+
+    #[test]
+    fn projectile_spawn_attaches_sprite_body_and_optional_trail() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Sprite {
+                sprite: "sprites/plasma.png".to_string(),
+                size: 0.4,
+                opacity: 0.9,
+                rotation: 0.25,
+                tint: [0.2, 0.8, 1.0],
+            },
+            trail: Some(ProjectileTrailVisual {
+                sprite: "sprites/trail.png".to_string(),
+                rate: 60.0,
+                lifetime: 0.5,
+                burst: None,
+                spread: 0.1,
+                velocity: [0.0, 0.0, 0.0],
+                buoyancy: 0.0,
+                drag: 0.0,
+                size_over_lifetime: vec![0.2, 0.0],
+                opacity_over_lifetime: vec![1.0, 0.0],
+                color: [1.0, 1.0, 1.0],
+                spin_rate: 0.0,
+            }),
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual))
+            .expect("projectile spawns");
+        assert!(
+            registry
+                .get_component::<ProjectileComponent>(projectile)
+                .is_ok()
+        );
+        assert_eq!(
+            registry
+                .get_component::<SpriteVisual>(projectile)
+                .expect("sprite body attaches")
+                .sprite,
+            "sprites/plasma.png"
+        );
+        assert_eq!(
+            registry
+                .get_component::<BillboardEmitterComponent>(projectile)
+                .expect("trail emitter attaches")
+                .sprite,
+            "sprites/trail.png"
+        );
+    }
+
+    #[test]
+    fn projectile_spawn_attaches_rigid_mesh_body() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Model {
+                model: "models/rocket.gltf".to_string(),
+            },
+            trail: None,
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual))
+            .expect("projectile spawns");
+        let mesh = registry
+            .get_component::<MeshComponent>(projectile)
+            .expect("rigid mesh body attaches");
+        assert_eq!(mesh.model, "models/rocket.gltf");
+        assert!(mesh.animation.is_none(), "projectile mesh is rigid");
+    }
 }

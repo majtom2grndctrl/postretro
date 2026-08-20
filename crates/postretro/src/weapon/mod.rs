@@ -8,7 +8,7 @@ use parry3d::math::{Point, Vector};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
-use postretro_foundation::{FireMode, ResolutionMode};
+use postretro_foundation::{FireMode, ProjectileDescriptor, ResolutionMode};
 
 use crate::collision::{CollisionWorld, cast_ray};
 use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
@@ -216,10 +216,29 @@ pub(crate) struct WeaponImpact {
     pub(crate) outcome: ActivationOutcome,
 }
 
+/// Immutable fire-time data the mutable weapon stage materializes as an entity.
+/// `fire_hitscan` deliberately returns this rather than spawning while it holds
+/// only an immutable registry borrow.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectileLaunch {
+    pub(crate) origin: Vec3,
+    pub(crate) direction: Vec3,
+    pub(crate) speed: f32,
+    pub(crate) radius: f32,
+    pub(crate) range: f32,
+    pub(crate) lifetime: f32,
+    pub(crate) damage: f32,
+    pub(crate) credit_source: String,
+    pub(crate) descriptor: ProjectileDescriptor,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impacts: Vec<WeaponImpact>,
+    pub(crate) projectile_launches: Vec<ProjectileLaunch>,
+    /// Filled only by the mutable caller after it materializes a launch intent.
+    pub(crate) spawned: Vec<ActivationOutcome>,
     pub(crate) dry_fire: bool,
 }
 
@@ -234,6 +253,9 @@ impl WeaponFireEvents {
         }
         if !self.impacts.is_empty() {
             names.push("impact");
+        }
+        if !self.spawned.is_empty() {
+            names.push("spawned");
         }
         names
     }
@@ -335,6 +357,8 @@ pub(crate) fn tick_resolved_component(
     let spread_radians = stats.spread_degrees.to_radians();
     let range = stats.range;
     let resolution = stats.resolution;
+    let projectile = stats.projectile.cloned();
+    let credit_source = stats.credit_source.to_string();
     match fire {
         WeaponFireAuthorization::Accepted => {
             // A shell position is consumed whether it is a single exact-axis ray
@@ -354,6 +378,8 @@ pub(crate) fn tick_resolved_component(
                 spread_radians,
                 range,
                 resolution,
+                projectile.as_ref(),
+                &credit_source,
                 shell_counter,
                 pellet_salt_name,
                 active_slot,
@@ -380,6 +406,8 @@ fn fire_hitscan(
     spread_radians: f32,
     range: f32,
     resolution: ResolutionMode,
+    projectile: Option<&ProjectileDescriptor>,
+    credit_source: &str,
     shell_counter: u32,
     pellet_salt_name: &str,
     active_slot: usize,
@@ -387,6 +415,8 @@ fn fire_hitscan(
     let mut events = WeaponFireEvents {
         activate: Some(WeaponActivation { origin, direction }),
         impacts: Vec::with_capacity(pellet_count as usize),
+        projectile_launches: Vec::new(),
+        spawned: Vec::new(),
         dry_fire: false,
     };
 
@@ -425,6 +455,25 @@ fn fire_hitscan(
                 };
                 events.impacts.push(impact);
             }
+        }
+        ResolutionMode::Projectile => {
+            let Some(projectile) = projectile else {
+                log::warn!(
+                    "[Weapon] projectile resolution has no projectile descriptor; dropping launch"
+                );
+                return events;
+            };
+            events.projectile_launches.push(ProjectileLaunch {
+                origin,
+                direction,
+                speed: projectile.speed,
+                radius: projectile.radius,
+                range,
+                lifetime: projectile.lifetime_ms / 1000.0,
+                damage,
+                credit_source: credit_source.to_string(),
+                descriptor: projectile.clone(),
+            });
         }
     }
 
@@ -557,6 +606,11 @@ fn resolve_client_hitscan(
             }
             hits
         }
+        // Connected-client projectile prediction is deliberately deferred to
+        // the later authority task. The local/host path materializes through
+        // the mutable weapon stage above; this existing hitscan-only path must
+        // not invent a same-frame hit declaration.
+        ResolutionMode::Projectile => Vec::new(),
     }
 }
 
@@ -641,6 +695,7 @@ fn resolve_nearest_hit(
         origin,
         direction,
         range,
+        0.0,
     );
 
     match (world_hit, entity_hit) {
@@ -717,6 +772,7 @@ pub(crate) mod tests {
             cooldown_ms,
             fire_mode,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -754,6 +810,7 @@ pub(crate) mod tests {
             cooldown_ms,
             fire_mode,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -1691,7 +1748,7 @@ pub(crate) mod tests {
         let direction = Vec3::new(0.0, 0.0, -1.0);
 
         // Direct facility call with the same ray + range (weapon range = 10).
-        let direct = nearest_entity_hit(&registry, &store, 0.0, origin, direction, 10.0)
+        let direct = nearest_entity_hit(&registry, &store, 0.0, origin, direction, 10.0, 0.0)
             .expect("facility resolves the entity directly");
 
         // The weapon path for the same ray.

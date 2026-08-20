@@ -22,6 +22,7 @@ use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
+use crate::components::projectile::ProjectileComponent;
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::touchable::TouchableComponent;
@@ -140,6 +141,8 @@ pub enum ComponentKind {
     Inventory = 19,
     /// Host-local interaction tuning for a world touchable entity.
     Touchable = 20,
+    /// Engine-owned direct-impact projectile flight state.
+    Projectile = 21,
 }
 
 impl ComponentKind {
@@ -170,6 +173,7 @@ impl ComponentKind {
             ComponentKind::DeferredEffect,
             ComponentKind::Inventory,
             ComponentKind::Touchable,
+            ComponentKind::Projectile,
         ];
         VARIANTS.len()
     };
@@ -236,6 +240,7 @@ pub enum ComponentValue {
     DeferredEffect(DeferredEffectComponent),
     Inventory(Inventory),
     Touchable(TouchableComponent),
+    Projectile(ProjectileComponent),
 }
 
 impl ComponentValue {
@@ -262,6 +267,7 @@ impl ComponentValue {
             ComponentValue::DeferredEffect(_) => ComponentKind::DeferredEffect,
             ComponentValue::Inventory(_) => ComponentKind::Inventory,
             ComponentValue::Touchable(_) => ComponentKind::Touchable,
+            ComponentValue::Projectile(_) => ComponentKind::Projectile,
         }
     }
 }
@@ -645,6 +651,21 @@ impl Component for TouchableComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Touchable(self)
+    }
+}
+
+impl Component for ProjectileComponent {
+    const KIND: ComponentKind = ComponentKind::Projectile;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Projectile(projectile) => Some(projectile),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Projectile(self)
     }
 }
 

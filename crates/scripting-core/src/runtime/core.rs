@@ -1166,6 +1166,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),

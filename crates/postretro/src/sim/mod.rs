@@ -220,6 +220,20 @@ pub(crate) struct RemotePawnCommand {
     pub(crate) command: SimCommand,
 }
 
+/// A host-only presentation launch for an accepted connected-client projectile
+/// fire. The authoritative hit remains client-declared; this is only the data the
+/// host needs to show that flight to observers through the existing snapshot path.
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteProjectilePresentationLaunch {
+    pub(crate) owner_client_id: u64,
+    pub(crate) shot_id: ShotId,
+    pub(crate) origin: Vec3,
+    pub(crate) direction: Vec3,
+    pub(crate) range: f32,
+    pub(crate) descriptor_class: String,
+    pub(crate) projectile: postretro_foundation::ProjectileDescriptor,
+}
+
 /// Host-only inputs for the trigger stage. The system itself consumes the
 /// per-player map, never an action snapshot; local and remote use edges are
 /// keyed by `PlayerId` at this boundary.
@@ -253,6 +267,12 @@ pub(crate) struct TickEvents {
     pub(crate) mover: Vec<(kinematic_mover::MoverEventKind, u32)>,
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
+    /// Host-only remote-fire visual launches. No component here is gameplay
+    /// authoritative and nothing in this event crosses the wire directly.
+    pub(crate) remote_projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
+    /// Locally simulated projectiles that a listen host mirrors for remote observers.
+    /// The host's renderer suppresses the mirror and continues to draw this source.
+    pub(crate) local_projectile_spawns: Vec<EntityId>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
     /// Pawns whose active inventory slot repointed this tick. Presentation drains
     /// this after simulation so the hand socket follows committed ownership, never
@@ -587,8 +607,12 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         );
     }
 
-    let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
-        weapon_stage::run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
+    let (
+        authorized_shots,
+        remote_projectile_presentation_launches,
+        mut reload_deliveries,
+        remote_weapon_events,
+    ) = weapon_stage::run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
     let own_pawn = {
         let registry = registry.borrow();
         registry.local_player_movement_pawn()
@@ -640,6 +664,8 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         mover: mover_events,
         death,
         authorized_shots,
+        remote_projectile_presentation_launches,
+        local_projectile_spawns: local_result.projectile_spawns,
         reload_deliveries,
         repointed_pawns,
         dropped_item_meshes: touch_events.dropped_item_meshes,

@@ -60,6 +60,8 @@ pub(crate) fn is_networked_ai_enemy(registry: &EntityRegistry, id: EntityId) -> 
 ///   the descriptor class the host registered it under.
 /// - a **world item** (carries `ComponentKind::Touchable`) — its canonical descriptor
 ///   class lets the client materialize its mesh presentation from a Transform-only record.
+/// - a **projectile presentation** — host-created Transform/provenance-only flight
+///   entity whose canonical class names the firing weapon descriptor.
 ///
 /// The wire allows `entity_class` on any non-despawn finite-`Transform` record (E10
 /// Task 3 relaxed it off the movement-only gate), so AI enemies and world items ride
@@ -84,6 +86,16 @@ pub(super) fn descriptor_entity_class(
             DescriptorSpawnPath::NetworkSlot | DescriptorSpawnPath::PlayerSpawn
         )
     {
+        return Some(provenance.canonical_name.clone());
+    }
+
+    // Projectile observer copies deliberately carry no gameplay component. Their
+    // dedicated provenance path is therefore the only classifier signal; the client
+    // resolves the weapon descriptor and attaches its visual-only body/trail.
+    if matches!(
+        provenance.spawn_path,
+        DescriptorSpawnPath::ProjectilePresentation
+    ) {
         return Some(provenance.canonical_name.clone());
     }
 
@@ -227,6 +239,36 @@ mod tests {
         assert!(
             !is_networked_ai_enemy(&reg, grunt),
             "RuntimeSpawn with a missing Brain is not a networked AI enemy"
+        );
+    }
+
+    #[test]
+    fn projectile_presentation_provenance_stamps_weapon_descriptor_class() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(postretro_entities::Transform::default());
+        reg.set_component(
+            id,
+            DescriptorProvenance {
+                canonical_name: "plasma_rifle".to_string(),
+                owned_components: Default::default(),
+                map_overrides: Default::default(),
+                spawn_path: DescriptorSpawnPath::ProjectilePresentation,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            descriptor_entity_class(
+                &reg,
+                id,
+                &[ComponentPayload::Transform(WireTransform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                })],
+            ),
+            Some("plasma_rifle".to_string()),
+            "Transform-only projectile presentation records name the weapon descriptor"
         );
     }
 }

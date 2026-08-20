@@ -2843,9 +2843,15 @@ impl ApplicationHandler for App {
                             tick_dt,
                         );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
+                        self.host_spawn_projectile_presentations(
+                            &script_ctx.registry,
+                            &tick_events.remote_projectile_presentation_launches,
+                            &tick_events.local_projectile_spawns,
+                        );
                         if self.host_flush_pending_hit_declarations() {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
                         }
+                        self.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         append_tick_weapon_script_events(
@@ -6899,6 +6905,72 @@ impl App {
         for shot in shots {
             open_shots.record(shot.shot.clone(), shot.owner_client_id);
         }
+    }
+
+    fn host_spawn_projectile_presentations(
+        &mut self,
+        registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
+        remote_launches: &[sim::RemoteProjectilePresentationLaunch],
+        local_projectile_spawns: &[postretro_entities::EntityId],
+    ) {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replication,
+            replicable,
+            projectile_presentations,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let mut registry = registry.borrow_mut();
+        for launch in remote_launches {
+            projectile_presentations.spawn_remote(
+                &mut registry,
+                allocator,
+                replicable,
+                replication,
+                launch,
+            );
+        }
+        for &projectile in local_projectile_spawns {
+            projectile_presentations.mirror_local_gameplay_projectile(
+                &mut registry,
+                allocator,
+                replicable,
+                projectile,
+            );
+        }
+    }
+
+    fn host_advance_projectile_presentations(
+        &mut self,
+        registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
+        tick_dt: f32,
+    ) {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            open_shots,
+            projectile_presentations,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        projectile_presentations.advance(
+            &mut registry.borrow_mut(),
+            allocator,
+            replicable,
+            open_shots,
+            tick_dt,
+        );
     }
 
     fn host_flush_pending_hit_declarations(&mut self) -> bool {

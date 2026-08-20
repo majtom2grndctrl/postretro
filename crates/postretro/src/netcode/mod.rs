@@ -25,6 +25,7 @@ mod movement_state;
 mod netdiag;
 mod prediction;
 mod presentation;
+mod projectile_presentation;
 mod reconcile;
 mod remote_materialize;
 mod replication;
@@ -957,8 +958,14 @@ pub(crate) fn client_receive_and_apply(
             let descriptor = descriptors.iter().find(|descriptor| {
                 descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
             });
-            let materialized = if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some())
+            let materialized = if matches!(descriptor, Some(descriptor) if descriptor.weapon.as_ref().and_then(|weapon| weapon.projectile.as_ref()).is_some())
             {
+                remote_materialize::materialize_armed_remote_projectile(
+                    remote,
+                    descriptors,
+                    registry,
+                )
+            } else if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some()) {
                 let player_locomotion = descriptor.and_then(|descriptor| {
                     let movement = descriptor.movement.as_ref()?;
                     let mesh = descriptor.mesh.as_ref()?;

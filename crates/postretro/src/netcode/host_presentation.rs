@@ -1,41 +1,20 @@
 // Host-side delay-buffered presentation of connected-client pawns (Fix B).
 // See: context/lib/networking.md
 //
-// The client smooths every remote pawn through a `RemoteInterpolationBuffer`
-// (delay-buffered position-lerp + rotation-slerp playout), while the host presents
-// the client's authoritative pawn live with only a single-tick slerp. That
-// asymmetry is why the host sees the client's motion less smoothly than the client
-// sees the host's. This module gives the host the same delay-buffered presentation,
-// but clocked off the host's OWN authoritative tick — the host IS the clock, so
-// there is no `ClientTimeSync` estimate to read (unlike the client path).
+// Code-adjacent rationale not covered there:
 //
-// Clock source (the plan's "Fix B host clock source" open question): authoritative
-// tick + render sub-tick accumulator, NOT wall-clock playout. Rationale:
-//   - The host already owns an authoritative fixed tick and the render-time
-//     accumulator fraction (`FrameTickResult::alpha`, the SAME alpha the host's own
-//     pawn renders with via `EntityRegistry::interpolated_transform`). Presenting
-//     remotes on that shared clock keeps both pawns' presentation coherent and needs
-//     no second, drifting timeline.
-//   - It is wall-clock-free and therefore deterministic and unit-testable on injected
-//     ticks/alpha (testing_guide §3), like the interpolation buffer it samples.
-//   - The host is the authority; a wall-clock playout would re-introduce a clock the
-//     host does not otherwise need.
+// Sub-tick smoothness: the host renders well above tick rate (measured 250-330 fps).
+// Sampling at an INTEGER target tick would only change the presented pose once per 60 Hz
+// tick — it would step across the ~4-5 render frames per tick and reproduce the
+// choppiness this module exists to remove. Instead the render target is FRACTIONAL:
+// `(newest_recorded_tick - delay) + alpha`, where `alpha` sweeps [0, 1) across the render
+// frames between two authoritative ticks. The buffer lerps/slerps between the two
+// bracketing authoritative samples at that fraction, so the presented pose advances
+// smoothly per render frame rather than per tick.
 //
-// Sub-tick smoothness at high host render rate: the host renders well above tick rate
-// (measured 250-330 fps). Sampling at an INTEGER target tick would only change the
-// presented pose once per 60 Hz tick — it would step across the ~4-5 render frames per
-// tick and reproduce the choppiness this module exists to remove. Instead the render
-// target is FRACTIONAL: `(newest_recorded_tick - delay) + alpha`, where `alpha` sweeps
-// [0, 1) across the render frames between two authoritative ticks. The buffer lerps /
-// slerps between the two bracketing authoritative samples at that fraction, so the
-// presented pose advances smoothly per render frame rather than per tick.
-//
-// Authority is never corrupted. The host SIMULATES the client's pawn: `run_host_movement_tick`
-// reads the pawn's registry `Transform` as its start-of-tick position, and snapshot
-// serialization reads it to replicate the authoritative pose. So the delayed pose must
-// never be visible to those reads. The buffer holds the authoritative history; the
-// registry `Transform` holds the delayed presentation pose only during the render-collect
-// window. Three seams enforce this per frame:
+// Authority must never see the delayed pose: `run_host_movement_tick` reads the pawn's
+// registry `Transform` as its start-of-tick position, and snapshot serialization reads it
+// to replicate the authoritative pose. Three seams enforce this per frame:
 //   1. record  — after each fixed tick's movement, capture the authoritative `Transform`
 //                 into the buffer (keyed by `NetworkId`).
 //   2. restore — before the tick loop (and thus before serialize), rewrite the registry
@@ -44,12 +23,6 @@
 //   3. present — after serialize, sample the buffer at the delayed fractional target and
 //                 write it via `set_presentation_transform` (which seeds `previous ==
 //                 current`, so the render blend reproduces the sampled pose at any alpha).
-//
-// Gating mirrors the client-only remote-interpolation gate: this whole path runs only on
-// the `NetEndpoint::Host` endpoint (the App wiring early-returns otherwise), and only for
-// pawns in `MovementOwners` — the connected-client pawns. The host's own pawn is never in
-// `MovementOwners`, so it keeps its live single-tick presentation; only remote client
-// pawns are delay-buffered.
 
 use postretro_entities::{EntityRegistry, Transform};
 
@@ -104,6 +77,13 @@ pub(crate) fn record_client_pawn_poses(
 /// snapshot serialization read the pawn) to undo the previous frame's delayed presentation
 /// write, so authoritative reads never see a delayed pose. A pawn with no buffered sample
 /// yet (freshly spawned, no tick recorded) keeps its live registry pose.
+///
+/// Precondition: this recovers the TRUE authoritative pose only because every
+/// authoritative `Transform` write to an owned client pawn happens inside the fixed-tick
+/// loop and is captured by that tick's end-of-tick `record`. A write that lands AFTER the
+/// tick loop but before the next frame's restore — e.g. a same-`EntityId` respawn or
+/// teleport of a still-owned pawn — is not in the buffer yet and would be silently
+/// reverted by this function on the very next frame.
 pub(crate) fn restore_client_pawn_authoritative_poses(
     buffer: &RemoteInterpolationBuffer,
     owners: &MovementOwners,
@@ -139,6 +119,20 @@ pub(crate) fn present_client_pawns(
     current_tick: u32,
     alpha: f32,
 ) {
+    // Coupling guard: the delayed target must land inside the samples the buffer still
+    // holds, or it silently slides into `RemoteInterpolationBuffer`'s hold-oldest/
+    // extrapolate branch instead of interpolating between two authoritative samples —
+    // defeating this module's whole point. That requires `PRESENTATION_DELAY_TICKS + 1`
+    // (delay plus the in-flight tick) to stay below the buffer's per-entity cap. The cap
+    // (`MAX_SAMPLES_PER_ENTITY` in `netcode::interpolation`) is private to that module, so
+    // it is duplicated here as a literal; keep the two in sync. This guards the "Fix B
+    // host clock source" open question against silently raising the delay past the cap.
+    debug_assert!(
+        (PRESENTATION_DELAY_TICKS as usize) + 1 < 16,
+        "PRESENTATION_DELAY_TICKS ({PRESENTATION_DELAY_TICKS}) + 1 must stay below \
+         MAX_SAMPLES_PER_ENTITY (16, netcode::interpolation) or the delayed presentation \
+         target slides into the hold-oldest/extrapolate branch"
+    );
     let target = presentation_target_tick(current_tick, alpha, PRESENTATION_DELAY_TICKS);
     for (pawn, _client_id) in owners.iter() {
         let Some(network_id) = allocator.network_id_for_entity(pawn) else {

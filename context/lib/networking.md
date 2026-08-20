@@ -356,15 +356,18 @@ policies govern resolution:
   **Freeze and trim reconcile on depth.** The gap-policy freeze and the catch-up trim are
   ordered so they never fight: the freeze fires only when `pending.is_empty()` (the frontier),
   the trim only when `pending > INPUT_BUFFER_MAX`. A freeze therefore cannot grow the buffer
-  into the trim a fortiori — it fires at depth 0, and every *non-empty* missing tick advances
-  (the deep-buffer yield) rather than freezing, so a lossy backlog drains toward the frontier
-  instead of piling into the trim; only genuine backlogs (handshake window, host hitch) reach
-  it. This is what closes the divergence a count-blind freeze introduced: keying the freeze on
-  a *count* (`pending.len() <= INPUT_BUFFER_TARGET`) still froze a lost tick whenever `pending`
-  dipped to that count under jitter, stalling the ack and driving the reconcile error up; the
-  **frontier** gate distinguishes a genuine late arrival (buffer empty → wait) from a lost tick
-  with the stream continued (buffer non-empty → advance), so the ack never stalls behind
-  buffered data. `INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX` still bounds the buildup latch's
+  into the trim a fortiori — it fires at depth 0, and in the gap-resolution phase every
+  *non-empty* missing tick advances (the deep-buffer yield) rather than freezing, so a lossy
+  backlog drains toward the frontier instead of piling into the trim; only genuine backlogs
+  (handshake window, host hitch) reach it. The buildup-withhold above is a separate armed
+  phase: it holds without advancing even though `pending` is non-empty, until depth first
+  reaches `INPUT_BUFFER_TARGET`. This is what closes the divergence a count-blind freeze
+  introduced: keying the freeze on a *count* (`pending.len() <= INPUT_BUFFER_TARGET`) still
+  froze a lost tick whenever `pending` dipped to that count under jitter, stalling the ack
+  and driving the reconcile error up; the **frontier** gate distinguishes a genuine late
+  arrival (buffer empty → wait) from a lost tick with the stream continued (buffer non-empty
+  → advance), so the ack never stalls behind buffered data.
+  `INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX` still bounds the buildup latch's
   standing depth well below the trim.
 
 Reload uses a reliable edge lane beside command playout. Host intake observes reload

@@ -1,55 +1,23 @@
 // Host-side authoritative command queues and the deterministic input-gap policy.
-// Per-client queues hold sanitized inbound full remote commands keyed by client
-// id; the per-pawn resolved cursor (`last_processed_client_tick`) drives a
-// hold-then-neutral gap policy so a missing command tick never stalls locomotion.
+// Per-client queues hold sanitized inbound full remote commands keyed by client id; the
+// per-pawn resolved cursor (`last_processed_client_tick`) drives a hold-then-neutral gap
+// policy so a missing command tick never stalls locomotion.
+// See: context/lib/networking.md (gap policy, bounded playout, reload edge lane).
 //
-// Bounded playout buffer with a standing playout floor. The resolved cursor consumes
-// one command per 60 Hz tick, the same rate the client produces them. Two mechanisms
-// keep playout smooth:
+// Freeze/trim depth-ordering — the one coupling worth stating in-file, because the two
+// depth-keyed mechanisms live in the same function and must not fight. The gap-policy
+// freeze fires only at `pending.is_empty()` (the frontier); the catch-up trim only at
+// `pending.len() > INPUT_BUFFER_MAX`. A freeze holds at depth 0, so it can never grow the
+// buffer into the trim, and a lossy backlog buffered behind a hole ADVANCES (the
+// "deep-buffer yield") rather than freezing the ack cursor behind a lost tick and driving
+// the client's reconcile lead unbounded. Per-path detail lives on `resolve_tick` and the
+// constant docs below; networking.md carries the standing-floor / catch-up design prose.
 //
-// (1) Standing playout floor (buildup latch). The two 60 Hz clocks free-run ~1 tick
-// out of phase, so on a clean link the awaited command is usually not-yet-arrived when
-// its tick resolves. Rather than neutral-fill and advance past it (which drop-stales
-// the real command when it lands), the resolver FREEZES the cursor on a genuine
-// late-arrival — no advance, no drop_stale — until the command lands within the hold
-// grace, and it withholds the FIRST real command at stream start / after an underrun
-// until `pending` has built to INPUT_BUFFER_TARGET. Steady state then trails the newest
-// received tick by ~INPUT_BUFFER_TARGET - 1 ticks, absorbing the phase offset.
-//
-// The freeze is frontier-gated: it fires only while `pending` is EMPTY — i.e. the awaited
-// tick is at the buffer frontier, nothing newer buffered behind it. A non-empty backlog —
-// a lossy link buffering commands behind a hole, or a reorder — must NOT freeze: buffered
-// newer data proves the stream already continued past a lost tick, so freezing there only
-// stalls the ack cursor behind that lost tick (driving the client's reconcile lead
-// unbounded) and, on a deep buffer, could grow `pending` into the catch-up trim. On a
-// non-empty buffer a missing tick advances instead (the "deep-buffer yield"), repeating
-// the last intent so the cursor tracks the backlog; the yield counts toward the grace, so
-// a sustained non-empty gap gives up rather than walking unbounded. A clean loopback
-// stream reaches `pending.is_empty()` at its buffer-empty edge and freezes exactly as
-// before; a lost tick with newer data buffered yields.
-//
-// (2) Depth-keyed catch-up. Drain-rate == produce-rate, so a deep backlog would become
-// PERMANENT latency. Two backlogs matter: (a) the client streams input at 60 Hz on
-// connect, but the host can't drain a pawn until `owners.set()` runs at the end of
-// accept+spawn — so a handshake/spawn-window backlog (tens of ticks ≈ hundreds of ms)
-// accumulates; (b) a mid-session host frame hitch stalls the drain while commands keep
-// arriving. When `pending` depth exceeds INPUT_BUFFER_MAX, fast-forward — drop all but
-// the newest INPUT_BUFFER_TARGET commands and reseat the cursor on the new oldest, so
-// playout converges to the small bounded buffer and stays there.
-//
-// Why depth-keyed (number of buffered commands), NOT tick-distance to the newest: both
-// the catch-up trigger and the buildup latch key on `pending.len()`. A continuous-stream
-// backlog holds MANY commands queued ahead (catch up), but a client that went silent then
-// RESUMED at a far-future tick holds exactly ONE command far ahead (must NOT catch up, and
-// must NOT read as "buffer full" — the hold→neutral→real resume path must stay intact).
-// Tick-distance can't tell those apart; pending depth can.
-// See: context/lib/networking.md
-//
-// Boundary: this is engine-side game logic, not the net crate. The net crate is
-// registry-blind and only moves typed messages; intake/selection/gap policy live
-// here because they bridge the client-id keyed wire stream to the per-pawn movement
-// seam (`sim::host_movement`). Intake runs `wire_convert::sanitize_input_command`
-// before queueing — an invalid command never mutates a queue.
+// Boundary: engine-side game logic, not the net crate. The net crate is registry-blind
+// and only moves typed messages; intake/selection/gap policy live here because they bridge
+// the client-id keyed wire stream to the per-pawn movement seam (`sim::host_movement`).
+// Intake runs `wire_convert::sanitize_input_command` before queueing — an invalid command
+// never mutates a queue.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -342,15 +310,16 @@ pub(crate) struct HostCommandQueues {
 
 /// What the gap policy resolved for one pawn this fixed tick: the command to apply
 /// and whether it was a real client command (vs. a held repeat or synthesized
-/// neutral). The resolved command always advances the pawn's `last_processed_client_tick`.
+/// neutral). A `Real`, deep-buffer-yield `Held`, or `Neutral` resolution advances the
+/// pawn's `last_processed_client_tick`; a frontier-freeze `Held` does not — see
+/// `resolve_tick`.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCommand {
     /// The sim command to feed the movement seam this tick.
     pub(crate) command: SimCommand,
-    /// The client tick this resolution advances the cursor to. Read by this module's
-    /// tests and the Task 5/6 reconciliation/harness consumers; staged dead-code-
-    /// allowed (like the Task 2 helpers) until a non-test caller reads it.
-    #[allow(dead_code)]
+    /// The client tick this resolution advances the cursor to (unchanged on a
+    /// frontier freeze). Stamped into `ResolvedPawnCommand` by
+    /// `host_resolve_remote_commands` and asserted in this module's tests.
     pub(crate) client_tick: u32,
     /// How the command was resolved (real / held / neutral) — diagnostic and
     /// test-observable; the movement seam treats all three identically. Staged for
@@ -551,6 +520,13 @@ impl HostCommandQueues {
         // the advancing give-up below — a client that sends one command then goes silent
         // cannot pin the latch armed forever.
         if state.building_playout && within_grace {
+            // `building_playout` is only ever armed where `last_resolved == None`:
+            // stream-begin (`resolved_cursor == None`) and a give-up that empties
+            // `pending` (which sets `last_resolved = None` before re-arming). So while
+            // armed, `last_resolved` is invariantly `None` and the withhold always takes
+            // the `None => Neutral` arm — the `Some(prev) => Held` arm below is
+            // unreachable. Buildup withholds neutral; it never emits `Held`.
+            debug_assert!(state.last_resolved.is_none());
             state.held_ticks += 1;
             let (sim, source) = match &state.last_resolved {
                 Some(prev) => (held_gap_sim_command(prev), ResolutionSource::Held),
@@ -2067,6 +2043,117 @@ mod tests {
         assert!(
             !queues.resolve_tick(CLIENT).unwrap().command.reload,
             "trimmed tap is delivered only once"
+        );
+    }
+
+    // Finding (1): the frontier-freeze reload divergence corner. A Real reload command
+    // that inserts a release for a due recovered press (`preserve_due_reload_press` with
+    // `last_emitted_reload == true`) leaves `last_resolved.reload == true` while
+    // `last_emitted_reload == false`. A frontier freeze on the next tick replays the held
+    // reload level (true) via `held_gap_sim_command` — a false->true on a NON-advancing
+    // hold. This PINS that the corner is benign for the weapon's level->edge dedup
+    // (`WeaponComponent::reload_press_consumed`): the freeze does not pop the recovered
+    // press, so the next advancing `preserve_due_reload_press` re-emits the same high
+    // level as a weapon no-op while re-syncing `last_emitted_reload`. The emitted stream
+    // therefore carries exactly ONE rising edge for the one recovered press — not dropped,
+    // not doubled. Determined benign, so the behavior is pinned, not changed: syncing
+    // `last_emitted_reload` to the emitted held level on the freeze would instead make the
+    // next preserve insert a spurious release and deliver the press a SECOND time.
+    #[test]
+    fn frontier_freeze_after_reload_release_divergence_delivers_press_once() {
+        let mut queues = HostCommandQueues::new();
+        // Construct the divergence directly (the child test module may build private
+        // state): last_resolved carries reload == true, last_emitted_reload == false (a
+        // release was just emitted for the due press), one recovered press queued at a
+        // tick the cursor already passed, pending empty (frontier), grace fresh. The next
+        // resolve fires a frontier freeze.
+        let diverged = ClientCommandState {
+            resolved_cursor: Some(10),
+            last_resolved: Some(reload_command(10, 1.0)), // reload == true
+            last_emitted_reload: false,
+            pending_reload_presses: VecDeque::from([5u32]), // 5 <= cursor: a due press
+            latest_observed_reload: Some((10, true)),
+            ..Default::default()
+        };
+        queues.clients.insert(CLIENT, diverged);
+
+        // Mirror the weapon's level->edge dedup: an edge is a false->true transition in
+        // the emitted reload level. `consumed` starts false (a fresh weapon).
+        let mut consumed = false;
+        let mut edges = 0;
+        let mut freeze_reload = None;
+        for i in 0..(INPUT_HOLD_TICKS + 4) {
+            let r = queues.resolve_tick(CLIENT).unwrap();
+            if i == 0 {
+                assert_eq!(
+                    r.source,
+                    ResolutionSource::Held,
+                    "the first resolve is the frontier freeze"
+                );
+                assert_eq!(
+                    r.client_tick, 11,
+                    "the freeze does not advance the cursor's expected tick"
+                );
+                freeze_reload = Some(r.command.reload);
+            }
+            if r.command.reload && !consumed {
+                edges += 1;
+            }
+            consumed = r.command.reload;
+        }
+        assert_eq!(
+            freeze_reload,
+            Some(true),
+            "the frontier freeze replays the held reload level"
+        );
+        assert_eq!(
+            edges, 1,
+            "the recovered press delivers exactly one weapon edge: not dropped, not doubled"
+        );
+    }
+
+    // Finding (1) reload matrix — the deep-buffer-yield path (P11/P12 cover the frontier
+    // freeze and the give-up). A reload rising edge buffered AHEAD of a hole (hole at K,
+    // commands buffered at K+1/K+2) must not be delivered by the deep-buffer yield that
+    // fills K: the yield repeats the pre-hole command's reload level, not the
+    // buffered-ahead edge. The edge delivers exactly once when `take_exact` resolves its
+    // own tick `Real`.
+    #[test]
+    fn deep_buffer_yield_does_not_deliver_a_buffered_ahead_reload_early() {
+        let mut queues = HostCommandQueues::new();
+        prime_disarmed(&mut queues, 0); // cursor 1, last_resolved reload == false
+
+        // Hole at tick 2 (K); a reload rising edge buffered ahead at tick 3 (K+1) and a
+        // non-reload command at tick 4 (K+2). pending = [3, 4] is non-empty, so tick 2 is
+        // a deep-buffer yield, not a frontier freeze.
+        assert!(queues.ingest(CLIENT, &reload_command(3, 1.0)));
+        assert!(queues.ingest(CLIENT, &command(4, 1.0)));
+
+        // Tick 2 deep-yields (Held + advance) and must NOT carry the buffered-ahead
+        // reload: it repeats the pre-hole command's reload level (false), not tick 3's edge.
+        let yielded = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(yielded.source, ResolutionSource::Held);
+        assert_eq!(yielded.client_tick, 2);
+        assert!(
+            !yielded.command.reload,
+            "the deep-buffer yield does not deliver the buffered-ahead reload early"
+        );
+
+        // Tick 3 resolves Real and delivers the reload edge.
+        let r3 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r3.source, ResolutionSource::Real);
+        assert_eq!(r3.client_tick, 3);
+        assert!(
+            r3.command.reload,
+            "the reload edge delivers when its own tick resolves Real"
+        );
+
+        // Tick 4 (and the edge's own resolution being spent) mints no second edge.
+        let r4 = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r4.source, ResolutionSource::Real);
+        assert!(
+            !r4.command.reload,
+            "no duplicate reload edge after the buffered edge resolved Real"
         );
     }
 

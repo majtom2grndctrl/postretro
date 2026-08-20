@@ -364,6 +364,11 @@ pub(crate) fn host_unregister_own_pawn(
 /// Game-logic-owned: the registry mutation flows through `EntityRegistry::despawn`.
 /// The mutable registry borrow is threaded in by the caller so this module never
 /// reaches into `App`.
+///
+/// Returns the `NetworkId` of every pawn despawned by an exit event, so the caller
+/// can forget those entries in the host's remote-presentation buffer (which lives on
+/// the `Host` endpoint variant, out of reach here). Empty when no exit cleaned up a
+/// stamped pawn.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_lifecycle(
     registry: &mut EntityRegistry,
@@ -381,15 +386,16 @@ pub(crate) fn host_handle_lifecycle(
     last_sent_tuning: &mut HashMap<u64, TuningPayload>,
     mut seat_table: Option<&mut SeatTable>,
     lifecycle: &[postretro_net::slots::SlotEvent],
-) {
+) -> Vec<NetworkId> {
     use postretro_net::slots::SlotEvent;
+    let mut forgotten_presentation = Vec::new();
     for event in lifecycle {
         match event {
             SlotEvent::Closed { client_id, .. } | SlotEvent::Demoted { client_id, .. } => {
                 let durable_pawn = seat_table
                     .as_deref()
                     .and_then(|seats| seats.pawn_for_client(*client_id));
-                host_handle_transport_disconnect(
+                if let Some(net_id) = host_handle_transport_disconnect(
                     registry,
                     allocator,
                     replicable,
@@ -406,7 +412,9 @@ pub(crate) fn host_handle_lifecycle(
                     seat_table.as_deref_mut(),
                     *client_id,
                     durable_pawn,
-                );
+                ) {
+                    forgotten_presentation.push(net_id);
+                }
             }
             // Entry is handled by the App's participation seam, which registers
             // replication and spawns the pawn. Kept exhaustive so a new slot event
@@ -414,6 +422,7 @@ pub(crate) fn host_handle_lifecycle(
             SlotEvent::Participating { .. } => {}
         }
     }
+    forgotten_presentation
 }
 
 /// Tear down one disconnected client's pawn and authority bookkeeping.
@@ -421,6 +430,11 @@ pub(crate) fn host_handle_lifecycle(
 /// `durable_pawn` is the seat-owned fallback used when suspend has already
 /// cleared the endpoint's level-scoped `SlotPawns` map. Repeated calls are safe:
 /// a poll can carry both the transport disconnect and a lifecycle exit.
+///
+/// Returns the despawned pawn's `NetworkId` when it had one, so the caller can
+/// forget its entry in the host's remote-presentation buffer (the buffer field
+/// lives on the `Host` endpoint variant, out of reach here). `None` when no pawn
+/// was cleaned up or the pawn was never stamped.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_transport_disconnect(
     registry: &mut EntityRegistry,
@@ -439,7 +453,7 @@ pub(crate) fn host_handle_transport_disconnect(
     seat_table: Option<&mut SeatTable>,
     client_id: u64,
     durable_pawn: Option<EntityId>,
-) {
+) -> Option<NetworkId> {
     let previous_pawn = slot_pawns.pawn_for(client_id).or(durable_pawn);
     if let (Some(seats), Some(pawn)) = (seat_table, previous_pawn) {
         seats.harvest_pawn(registry, pawn);
@@ -447,7 +461,7 @@ pub(crate) fn host_handle_transport_disconnect(
     if let Some(pawn) = previous_pawn {
         pending_hit_declarations.remove_pawn_shots(allocator, pawn);
     }
-    let despawned = on_slot_closed_with_fallback(
+    let closed = on_slot_closed_with_fallback(
         registry,
         slot_pawns,
         allocator,
@@ -459,6 +473,7 @@ pub(crate) fn host_handle_transport_disconnect(
     command_queues.remove_client(client_id);
     state_slots.remove_client(client_id);
     last_sent_tuning.remove(&client_id);
+    let despawned = closed.as_ref().map(|closed| closed.pawn);
     if let Some(pawn) = despawned.or(previous_pawn) {
         cleanup_remote_pawn_owned_state(
             registry,
@@ -474,6 +489,7 @@ pub(crate) fn host_handle_transport_disconnect(
             &[],
         );
     }
+    closed.and_then(|closed| closed.network_id)
 }
 
 #[cfg(test)]

@@ -6,13 +6,14 @@ use std::rc::Rc;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
-use parry3d::shape::Capsule;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
-use crate::collision::{CollisionWorld, cast_capsule};
-use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
+use crate::collision::{CollisionWorld, cast_sphere_exact};
+use crate::scripting_systems::hit_zones::{
+    EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
+};
 use crate::sim::weapon_stage::apply_authorized_weapon_impact_damage;
 use crate::weapon::{self, ActivationOutcome, DamagePayload, WeaponImpact};
 
@@ -231,6 +232,7 @@ fn advance_matching(
             direction,
             segment_length,
             component.radius,
+            projectile_id,
         ) {
             let impact = match hit {
                 NearestProjectileHit::World(world) => WeaponImpact {
@@ -341,12 +343,12 @@ fn nearest_projectile_hit(
     direction: Vec3,
     range: f32,
     radius: f32,
+    projectile_id: EntityId,
 ) -> Option<NearestProjectileHit> {
-    let sphere = Capsule::new(Point::origin(), Point::origin(), radius);
-    let world_hit = cast_capsule(
+    let world_hit = cast_sphere_exact(
         collision_world,
         Point::new(origin.x, origin.y, origin.z),
-        &sphere,
+        radius,
         Vector::new(direction.x, direction.y, direction.z),
         range,
     )
@@ -355,7 +357,7 @@ fn nearest_projectile_hit(
         point: origin + direction * hit.time_of_impact.max(0.0),
         normal: Vec3::new(hit.normal2.x, hit.normal2.y, hit.normal2.z),
     });
-    let entity_hit = nearest_entity_hit(
+    let entity_hit = nearest_entity_hit_ignoring(
         registry,
         hit_zone_store,
         anim_time,
@@ -363,6 +365,7 @@ fn nearest_projectile_hit(
         direction,
         range,
         radius,
+        |id| projectile_collision_excludes(registry, projectile_id, id),
     );
 
     match (world_hit, entity_hit) {
@@ -375,12 +378,34 @@ fn nearest_projectile_hit(
     }
 }
 
+fn projectile_collision_excludes(
+    registry: &EntityRegistry,
+    active_projectile: EntityId,
+    candidate: EntityId,
+) -> bool {
+    if candidate == active_projectile
+        || registry
+            .has_component_kind(candidate, ComponentKind::Projectile)
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    registry
+        .get_component::<postretro_entities::provenance::DescriptorProvenance>(candidate)
+        .is_ok_and(|provenance| {
+            provenance.spawn_path
+                == postretro_entities::provenance::DescriptorSpawnPath::ProjectilePresentation
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::Hitbox;
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 
     fn spawn_target(registry: &mut EntityRegistry, position: Vec3, half_extents: Vec3) -> EntityId {
         let target = registry.spawn(Transform {
@@ -654,6 +679,80 @@ mod tests {
             "world wins the equal-TOI tie, so the entity takes no damage"
         );
         assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn entity_contact_just_before_wall_wins_without_movement_skin_inflation() {
+        // Regression: movement's skin distance advanced the projectile/world
+        // contact ahead of an entity whose expanded volume was physically first.
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.41),
+            Vec3::splat(0.02),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 1.0, 0.1, 5.0);
+        let world = wall_at_z(-0.4);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!((current - 15.0).abs() <= f32::EPSILON);
+        assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn projectile_collision_excludes_model_body_and_independent_observer_visual() {
+        // Regression: a zone-bearing model body hit itself at TOI zero, while an
+        // independent visual projectile could consume another projectile's flight.
+        let mut registry = EntityRegistry::new();
+        let active = spawn_projectile(&mut registry, 1.0, 0.1, 5.0);
+        registry
+            .set_component(
+                active,
+                MeshComponent::stateless("models/bolt.gltf".to_string()),
+            )
+            .expect("model body attaches");
+        let observer = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                observer,
+                MeshComponent::stateless("models/bolt.gltf".to_string()),
+            )
+            .expect("observer model attaches");
+        registry
+            .set_component(
+                observer,
+                DescriptorProvenance {
+                    canonical_name: "bolt_weapon".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::ProjectilePresentation,
+                },
+            )
+            .expect("observer provenance attaches");
+        let intentional_mesh_target = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                intentional_mesh_target,
+                MeshComponent::stateless("models/target.gltf".to_string()),
+            )
+            .expect("intentional mesh target attaches");
+
+        assert!(projectile_collision_excludes(&registry, active, active));
+        assert!(projectile_collision_excludes(&registry, active, observer));
+        assert!(!projectile_collision_excludes(
+            &registry,
+            active,
+            intentional_mesh_target,
+        ));
     }
 
     #[test]

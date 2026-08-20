@@ -303,6 +303,8 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
             LuaValue::String(value) => match value.to_str().map_err(lua_err)?.as_ref() {
                 "@activators" => SequenceTarget::Activators,
                 "@trigger" => SequenceTarget::FiredTrigger,
+                "@wait" => SequenceTarget::Wait,
+                "@fire" => SequenceTarget::Fire,
                 spelling => {
                     return Err(DescriptorError::InvalidSequenceShape {
                         reason: format!("step {i} has illegal sentinel `{spelling}`"),

@@ -341,6 +341,62 @@ fn spawner_fire_descriptors_match_across_authoring_runtimes() {
     );
 }
 
+/// E18 Task 2 both-runtime parity fixture: the same timed sequence authored
+/// in TypeScript and Luau must emit byte-identical wire steps, pinning the
+/// Boundary inventory's settled `wait`/`fire` shapes
+/// (`{ id: "@wait", primitive: "wait", args: { durationMs, interruptible } }`,
+/// `{ id: "@fire", primitive: "fire", args: { event } }`) and proving `fire`
+/// resolves a reaction handle exactly like a bare name string. The Luau
+/// spelling uses bare globals to prove `wait`/`fire` are lifted from
+/// `data_script.luau` into `DATA_SCRIPT_FIELDS`.
+#[test]
+fn wait_and_fire_step_builders_match_across_authoring_runtimes() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineReaction, fire, wait } from "postretro";
+
+        const alarm = defineReaction("alarm", { primitive: "playSound", args: { sound: "alarm" } });
+        JSON.stringify({
+          sequence: [
+            wait(800, { interruptible: true })[0],
+            fire(alarm)[0],
+            fire("byName")[0],
+          ],
+          defaultInterruptible: wait(50)[0],
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local alarm = defineReaction("alarm", { primitive = "playSound", args = { sound = "alarm" } })
+        return {
+          sequence = {
+            wait(800, { interruptible = true })[1],
+            fire(alarm)[1],
+            fire("byName")[1],
+          },
+          defaultInterruptible = wait(50)[1],
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        serde_json::to_vec(&typescript).expect("serialize TypeScript wait/fire sequence"),
+        serde_json::to_vec(&luau).expect("serialize Luau wait/fire sequence"),
+        "TS and Luau wait/fire control steps diverged"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "sequence": [
+                { "id": "@wait", "primitive": "wait", "args": { "durationMs": 800, "interruptible": true } },
+                { "id": "@fire", "primitive": "fire", "args": { "event": "alarm" } },
+                { "id": "@fire", "primitive": "fire", "args": { "event": "byName" } },
+            ],
+            "defaultInterruptible": { "id": "@wait", "primitive": "wait", "args": { "durationMs": 50, "interruptible": false } },
+        }),
+        "wait/fire must emit the settled Boundary-inventory wire shapes, including the omitted-opts default"
+    );
+}
+
 #[test]
 fn resource_reaction_builders_match_across_root_sdk_surfaces() {
     const TYPESCRIPT_FIXTURE: &str = r#"

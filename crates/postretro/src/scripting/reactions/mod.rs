@@ -5,7 +5,8 @@
 use postretro_entities::{DataRegistry, ScriptCtx, SlotTable};
 use postretro_foundation::IrValue;
 use postretro_scripting_core::reaction_dispatch::{
-    NamedEventDispatchContext, fire_named_event_with_sequences,
+    NamedEventDispatchContext, dispatch_deferred_named_events_with_sequences,
+    fire_named_event_with_sequences,
 };
 use postretro_scripting_core::reaction_registry::{
     ReactionPrimitiveRegistry, SystemReactionRegistry,
@@ -43,9 +44,13 @@ pub(crate) fn dispatch_state_crossings_with_sequences(
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
     let crossing_events = crossing_detector.detect(slot_table);
+    // Chained names from a `fire` step or a fired `Primitive`'s `on_complete`.
+    // Previously discarded (`let _ =`); capturing them activates `on_complete`
+    // chaining and `fire` steps for crossing-fired reactions.
+    let mut chained = Vec::new();
     for fire in &crossing_events {
         let dispatch_values = [("@rising".to_string(), IrValue::Bool(fire.rising))];
-        let _ = fire_named_event_with_sequences(
+        chained.extend(fire_named_event_with_sequences(
             &fire.reaction,
             data_registry,
             sequence_registry,
@@ -56,6 +61,16 @@ pub(crate) fn dispatch_state_crossings_with_sequences(
                 source: format!("crossing:{}", fire.source_id),
                 values: &dispatch_values,
             }),
+        ));
+    }
+    if !chained.is_empty() {
+        dispatch_deferred_named_events_with_sequences(
+            chained,
+            data_registry,
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            script_ctx,
         );
     }
     crossing_events

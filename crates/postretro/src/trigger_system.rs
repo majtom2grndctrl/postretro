@@ -140,6 +140,15 @@ impl TriggerSystem {
         self.occupants.get(&trigger).map_or(0, BTreeSet::len)
     }
 
+    /// The set of `(trigger, player)` pairs whose Enter gate has fired and whose
+    /// paired Exit obligation is still standing. E18 Task 5's enrollment check
+    /// borrows this from the frame-end drain: an interruptible wait may park only
+    /// while its origin's paired enter is live, otherwise a player who entered and
+    /// left within one frame would park an uncancellable instance (O52, O60).
+    pub(crate) fn paired_enters(&self) -> &BTreeSet<(EntityId, PlayerId)> {
+        &self.paired_enters
+    }
+
     /// Run after player movement and before AI. This function is called only by
     /// the host/single-player simulation path; clients receive mover phase over
     /// replication and never evaluate or apply trigger commands locally.

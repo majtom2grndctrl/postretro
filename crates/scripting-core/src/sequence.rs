@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
+use super::data_descriptors::SequenceStep;
 use super::registry::EntityId;
 
 /// Errors produced when a sequenced-primitive handler runs. Distinct from
@@ -42,12 +43,30 @@ pub enum SequenceError {
 pub type SequencedPrimitiveFn =
     Box<dyn Fn(EntityId, &serde_json::Value) -> Result<(), SequenceError>>;
 
+/// Boxed handler for a **control** sequenced primitive (`wait`). Control steps
+/// carry no entity target: they act on the reaction *tail* rather than on one
+/// resolved entity, so they receive the enrolling reaction's address and body
+/// ordinal (the first two components of a scheduler instance key), the remaining
+/// steps of the body, and the control step's `args`. Registered from the binary
+/// crate capturing a `ReactionScheduler` clone; the dispatcher's control arm
+/// consults this table and never reaches the inert `handlers` entry a control
+/// primitive also holds purely to satisfy sequence-validation admission.
+///
+/// Main-thread only, matching [`SequencedPrimitiveFn`].
+pub type ControlSequencedPrimitiveFn =
+    Box<dyn Fn(&str, usize, &[SequenceStep], &serde_json::Value)>;
+
 /// Lookup table: primitive name → handler. Populated before level load and
 /// consulted by both the registration-time validator (to reject sequences
 /// naming unknown primitives) and the dispatcher.
 #[derive(Default)]
 pub struct SequencedPrimitiveRegistry {
     handlers: HashMap<String, SequencedPrimitiveFn>,
+    /// Parallel table for control steps (`wait`). A control primitive carries an
+    /// **inert** `handlers` entry only so `contains` admits it at
+    /// `setupLevel`/`ModManifest` validation; its real behavior lives here and is
+    /// invoked by the dispatcher's control arm ahead of the entity-target guard.
+    control_handlers: HashMap<String, ControlSequencedPrimitiveFn>,
 }
 
 impl SequencedPrimitiveRegistry {
@@ -77,6 +96,31 @@ impl SequencedPrimitiveRegistry {
 
     pub fn get(&self, name: &str) -> Option<&SequencedPrimitiveFn> {
         self.handlers.get(name)
+    }
+
+    /// Register a control handler under `name` (e.g. `"wait"`). The caller must
+    /// also register an inert [`Self::register`] entry for the same name so
+    /// sequence validation admits it; the two registrations are complementary,
+    /// not contradictory — the dispatcher's control arm reads only this table.
+    pub fn register_control<F>(&mut self, name: impl Into<String>, handler: F)
+    where
+        F: Fn(&str, usize, &[SequenceStep], &serde_json::Value) + 'static,
+    {
+        let name = name.into();
+        if self.control_handlers.contains_key(&name) {
+            debug_assert!(
+                false,
+                "duplicate control sequenced primitive registration: {name}"
+            );
+            log::warn!(
+                "[Scripting] SequencedPrimitiveRegistry: overwriting existing control handler for '{name}'"
+            );
+        }
+        self.control_handlers.insert(name, Box::new(handler));
+    }
+
+    pub fn get_control(&self, name: &str) -> Option<&ControlSequencedPrimitiveFn> {
+        self.control_handlers.get(name)
     }
 }
 

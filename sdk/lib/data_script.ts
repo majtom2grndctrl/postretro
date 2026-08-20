@@ -73,6 +73,8 @@ export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type MoverSetBlockPolicyStep = import("postretro").MoverSetBlockPolicyStep;
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
+export type WaitStep = import("postretro").WaitStep;
+export type FireStep = import("postretro").FireStep;
 
 /** Union of supported sequence step shapes. Mirrors the generated
  * `SequenceStep` in `postretro.d.ts`; new sequenced primitives extend
@@ -92,7 +94,9 @@ export type SequenceStep =
   | MoverSetSpinRateStep
   | MoverSetBlockPolicyStep
   | ArmTriggerStep
-  | DisarmTriggerStep;
+  | DisarmTriggerStep
+  | WaitStep
+  | FireStep;
 
 /** Ordered per-entity primitive invocations. Steps run in array order at dispatch time. */
 export type SequenceReactionDescriptor = {
@@ -668,6 +672,33 @@ export function armTrigger(target: TriggerTarget): SequenceStep[] {
 export function disarmTrigger(target: TriggerTarget): SequenceStep[] {
   const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
   return [{ id: wireTarget, primitive: "disarmTrigger", args: {} } as SequenceStep];
+}
+
+/**
+ * Enroll the rest of this sequence body with the host scheduler and stop; the
+ * remaining steps resume after `durationMs` (rounded up to whole authoritative
+ * ticks). `interruptible` (default `false`) lets the reaction's paired trigger
+ * Exit edge cancel the remaining steps while parked.
+ */
+export function wait(durationMs: number, opts?: { interruptible?: boolean }): SequenceStep[] {
+  return [{
+    id: "@wait",
+    primitive: "wait",
+    args: { durationMs, interruptible: opts?.interruptible ?? false },
+  } as SequenceStep];
+}
+
+/**
+ * Dispatch a named reaction by handle or name from inside a sequence body.
+ * `reaction` accepts a `Reaction<{}>` handle or a bare name string, resolved
+ * exactly as `onTriggerEvent` resolves its `fire` entries. Typing the
+ * parameter `Reaction<{}>` rather than `Reaction<S>` makes firing a scoped
+ * reaction a compile-time error: a `fire` step dispatches on the app drain
+ * with no fire-time dispatch context.
+ */
+export function fire(reaction: Reaction<{}> | string): SequenceStep[] {
+  const event = typeof reaction === "string" ? reaction : reaction.name;
+  return [{ id: "@fire", primitive: "fire", args: { event } } as SequenceStep];
 }
 
 /**

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub(crate) mod lifecycle;
+pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 pub(crate) mod session;
 pub(crate) mod splash_lifecycle;

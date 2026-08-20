@@ -289,6 +289,13 @@ pub(crate) struct ScriptingCore {
     pub(crate) slot_accumulator_bindings:
         scripting_systems::slot_accumulators::SlotAccumulatorBindings,
 
+    /// Host-only scheduler for timed/delayed reaction steps (E18). Sibling to the
+    /// slot accumulators and `auto_close_timers`; its `Rc<RefCell<_>>` clone is
+    /// captured into the `wait` control handler at registration. Intentionally out
+    /// of snapshots/digests/connected-client simulation — enrollment is refused
+    /// host-side by its `enabled` latch.
+    pub(crate) scheduler: scripting_systems::reaction_scheduler::ReactionScheduler,
+
     /// Publishes live pawn health before each impact snapshot, then republishes
     /// health, ammo, and reload state for HUD consumers after game logic.
     /// See: context/lib/scripting.md §5 for the store contract.
@@ -484,6 +491,12 @@ impl Session {
                 Some(netcode::NetEndpoint::Client { .. })
             ));
         scripting.auto_close_timers.set_enabled(!matches!(
+            &net_endpoint,
+            Some(netcode::NetEndpoint::Client { .. })
+        ));
+        // E18: refuse timed-reaction enrollment on a connected client. Named fires
+        // run there too, so the guard lives at the scheduler, not at a call site.
+        scripting.scheduler.set_enabled(!matches!(
             &net_endpoint,
             Some(netcode::NetEndpoint::Client { .. })
         ));
@@ -730,9 +743,17 @@ fn build_scripting_core(
     // `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.
     timings.record("script_runtime_ctor");
 
+    // Host-only timed-reaction scheduler. Its clone is captured into the `wait`
+    // control primitive registered just below.
+    let scheduler = scripting_systems::reaction_scheduler::ReactionScheduler::default();
+
     // Rust-only handlers on the sequence-dispatch path — distinct from the
     // script-facing primitive registry (these never run inside QuickJS/Luau).
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
+    scripting_systems::reaction_scheduler::register_reaction_control_primitives(
+        &mut sequence_registry,
+        scheduler.clone(),
+    );
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
     register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
     register_sequenced_mover_primitives(
@@ -797,6 +818,7 @@ fn build_scripting_core(
         system_registry,
         system_reaction_ir_bindings: Default::default(),
         slot_accumulator_bindings: Default::default(),
+        scheduler,
         player_hud_state,
         flash_decay,
         vignette_decay,

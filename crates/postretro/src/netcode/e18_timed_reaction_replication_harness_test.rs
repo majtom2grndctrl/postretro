@@ -1,31 +1,26 @@
-// Headless co-op proof for trigger writes becoming client-local crossing presentation.
-// See: context/lib/networking.md · context/lib/scripting.md · context/lib/testing_guide.md
+// E18 Task 7 — the two-endpoint replication checks the plan requires: (1) a
+// delayed `fire` step dispatching a system-targeted `setState` reaction
+// reaches a connected client through state replication, with no client-side
+// scheduler evaluation (O24's positive replication half — O24's own
+// mechanism, "the client parks nothing", is unit-tested directly against
+// `ReactionScheduler::enroll` in `reaction_scheduler.rs` and
+// `reaction_scheduler_ordering_tests.rs`; this file adds the two-endpoint wire
+// proof), and (2) the consumer's alarm crossing fires client-side once the
+// write lands (O42).
 //
-// What this file covers — and what it does NOT — stated plainly, so the next reader
-// does not take it for more than it is.
+// Modeled directly on `trigger_state_channel_harness_test.rs` (same
+// production seams: `client_receive_and_apply`, `netcode::frame_order`,
+// `dispatch_state_crossings_with_sequences`, a real conditioned
+// `PacketConditioner` link) — read that file's header for what this pattern
+// covers and does NOT cover (role gating, the two host-side production call
+// sites). This file's addition on top of that pattern: the HOST side no
+// longer writes the shared slot directly from an in-tick `BoundTriggerCommand`
+// — it enrolls a `wait` at the trigger's Enter edge and only writes once the
+// scheduler lands the tail's `fire` step, driven through the same
+// `ReactionScheduler` production code Task 1/3/5 shipped.
 //
-// COVERED (client half). The client runs the production seams: `client_receive_and_apply`
-// (the same function `App::net_poll_and_apply` calls on a connected client) over a
-// conditioned `PacketConditioner` link with real wire encode/decode, and the production
-// stage order from `netcode::frame_order` — this harness cannot detect crossings before
-// applying the frame's snapshots, because `run_crossing_stage` consumes the witness that
-// `run_snapshot_apply_stage` mints. The client stage also drains reliable Control before
-// Snapshot, matching `App::net_poll_and_apply`; that drain arms the transport-owned
-// participation epoch without exposing a promotion message to the engine. A break in
-// decode, the ack gate, fingerprint validation, baseline/refresh plumbing, or the
-// apply-before-detect order fails a test here.
-//
-// NOT COVERED — role gating. This harness never constructs a `NetEndpoint`. The
-// `NetEndpoint::Client` match arm in `App::net_poll_and_apply` and `App::is_connected_client`
-// are never exercised: nothing here proves that a connected client is the role production
-// routes down the client apply arm, nor that a host / single-player build stays out of it.
-// A regression in that role dispatch would pass every test in this file.
-//
-// NOT COVERED — host half. `enqueue_host_snapshot` builds the snapshot envelope by hand
-// instead of calling production `netcode::host_replicate`, and `apply_client_control_messages`
-// re-implements production `netcode::host_handle_client_messages`. Both drive the real
-// `HostStateReplication` tracker (production/ack/refresh bookkeeping is genuine), but the
-// two host-side production call sites themselves remain uncovered.
+// It is a `fire` step, not a `setState` step, and not `moverStart`: see the
+// AC text this file backs (E18 index.md, "Co-op replication AC").
 
 #![cfg(test)]
 
@@ -37,7 +32,6 @@ use std::{
 
 use glam::{Vec2, Vec3};
 use postretro_net::harness::{LinkConfig, PacketConditioner};
-use postretro_net::slots::CloseCause;
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{self, ClientMessage, RawSnapshotMessage, SNAPSHOT_VERSION};
 
@@ -55,6 +49,9 @@ use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
 };
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::reaction_scheduler::{
+    ReactionScheduler, register_reaction_control_primitives,
+};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::sim::{
     PostMovementCommand, RemotePawnCommand, SimCommand, TickEvents, TriggerTickContext,
@@ -63,51 +60,50 @@ use crate::sim::{
 use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_system::TriggerSystem;
 use crate::weapon::FireButtonState;
-use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
-    EntityId, FogVolumeComponent, MoverCommand, ReplicationScope, ScriptCtx, SlotOwnership,
+    EntityId, FogVolumeComponent, MoverCommand, NamedReaction, PrimitiveDescriptor,
+    ReactionDescriptor, ReplicationScope, ScriptCtx, SequenceStep, SequenceTarget, SlotOwnership,
     SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
     TriggerFireMode, TriggerVolumeComponent,
 };
-use postretro_foundation::HealthDescriptor;
 use postretro_scripting_core::StoreIdentityLedger;
-use postretro_scripting_core::data_descriptors::{
-    CrossingCondition, CrossingDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+use postretro_scripting_core::data_descriptors::{CrossingCondition, CrossingDescriptor};
+use postretro_scripting_core::reaction_dispatch::{
+    ResidualOrigin, fire_prepartitioned_reactions_with_sequences,
 };
-use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
-use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
+use postretro_scripting_core::reaction_registry::{
+    ReactionPrimitiveRegistry, SystemReactionCommand,
+};
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
 const CLIENT_ID: u64 = 1;
 const TICK_MS: u64 = 16;
-/// The frame delta the harness hands the production apply stage, matching `TICK_MS`.
 const FRAME_DT: f32 = TICK_MS as f32 / 1000.0;
-const BLACKOUT_SLOT: &str = "atmosphere.blackout";
-const TRIGGER_EVENT: &str = "triggerBlackout";
-const PRESENTATION_EVENT: &str = "blackoutPresentation";
-const FOG_TAG: &str = "blackout-fog";
+const ALARM_SLOT: &str = "encounter.alarm";
+const TRIGGER_EVENT: &str = "closet.timedReveal";
+const RAISE_ALARM: &str = "closet.raiseAlarm";
+const PRESENTATION_EVENT: &str = "closet.alarmPresentation";
+const FOG_TAG: &str = "closet-alarm-fog";
 const PRESENTATION_DENSITY: f32 = 0.85;
+const WAIT_DURATION_MS: f64 = 34.0; // ceil(34_000 / 16_667) = 3 ticks.
 
-/// The E17-C loopback profile, reused here with fixed loss/jitter so this channel
-/// stays covered by a real conditioned two-endpoint path rather than a direct call.
 fn loopback_profile() -> LinkConfig {
     LinkConfig {
         delay: 45,
         jitter: 60,
         loss_probability: 0.05,
-        seed: 0xE18_0006,
+        seed: 0xE18_0007,
     }
 }
 
-/// Minimal `sharedGlobal` declaration from the fixture's level script.
-fn atmosphere_slots() -> SlotTable {
+fn alarm_slots() -> SlotTable {
     let mut table = SlotTable::new();
     table
         .insert_namespace(
-            "atmosphere",
+            "encounter",
             vec![(
-                "blackout".to_string(),
+                "alarm".to_string(),
                 SlotRecord::new(SlotSchema {
                     slot_type: SlotType::Number,
                     default: Some(SlotValue::Number(0.0)),
@@ -125,63 +121,17 @@ fn atmosphere_slots() -> SlotTable {
     table
 }
 
-fn atmosphere_replication_identity() -> ReplicatedSlotIdentity<'static> {
+fn alarm_replication_identity() -> ReplicatedSlotIdentity<'static> {
     ReplicatedSlotIdentity::new(
-        Some("test.atmosphere".to_string()),
+        Some("test.e18-timed-reaction".to_string()),
         Some(StoreIdentityLedger {
             version: 1,
-            slots: [(BLACKOUT_SLOT.to_string(), "k0123456789abcdef".to_string())]
+            slots: [(ALARM_SLOT.to_string(), "k0123456789abcdef".to_string())]
                 .into_iter()
                 .collect(),
         }),
-        [BLACKOUT_SLOT.to_string()].into_iter().collect(),
+        [ALARM_SLOT.to_string()].into_iter().collect(),
     )
-}
-
-/// Minimal level-script manifest. `triggerBlackout` has the requested direct
-/// `setState` plus a presentation step; the client obtains presentation through the
-/// separate crossing reaction after replicated-state convergence.
-fn atmosphere_reactions() -> Vec<NamedReaction> {
-    vec![
-        NamedReaction {
-            name: TRIGGER_EVENT.to_string(),
-            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                primitive: "applyDamage".to_string(),
-                target: Some("@activators".to_string()),
-                tag: None,
-                on_complete: None,
-                args: serde_json::json!({ "amount": 25 }),
-            }),
-        },
-        primitive(
-            TRIGGER_EVENT,
-            "setState",
-            None,
-            serde_json::json!({ "slot": BLACKOUT_SLOT, "value": 1 }),
-        ),
-        primitive(
-            TRIGGER_EVENT,
-            "setFogDensity",
-            Some(FOG_TAG),
-            serde_json::json!({ "density": PRESENTATION_DENSITY }),
-        ),
-        primitive(
-            PRESENTATION_EVENT,
-            "setFogDensity",
-            Some(FOG_TAG),
-            serde_json::json!({ "density": PRESENTATION_DENSITY }),
-        ),
-    ]
-}
-
-fn atmosphere_crossings() -> Vec<CrossingDescriptor> {
-    vec![CrossingDescriptor {
-        slot: Some(BLACKOUT_SLOT.to_string()),
-        condition: CrossingCondition::Above { threshold: 0.5 },
-        max: 1.0,
-        edge: None,
-        fire: vec![PRESENTATION_EVENT.to_string()],
-    }]
 }
 
 fn primitive(
@@ -202,13 +152,60 @@ fn primitive(
     }
 }
 
+/// `TRIGGER_EVENT` = `[wait(34ms), fire(raiseAlarm)]` — the wait is the FIRST
+/// step, so `partition_direct_reaction`'s amended binder routes the whole body
+/// into the residual unfiltered (O46: no pre-wait consequential steps here).
+/// `raiseAlarm` is a sourceless system `setState` with a LITERAL value (not an
+/// IR node), so the app-drain write goes through the simple
+/// `write_state_slot_json` fallback rather than needing a
+/// `SystemReactionIrBindings` rebuild in this harness.
+fn fixture_reactions() -> Vec<NamedReaction> {
+    vec![
+        NamedReaction {
+            name: TRIGGER_EVENT.to_string(),
+            descriptor: ReactionDescriptor::Sequence(vec![
+                SequenceStep {
+                    id: SequenceTarget::Wait,
+                    primitive: "wait".to_string(),
+                    args: serde_json::json!({ "durationMs": WAIT_DURATION_MS, "interruptible": false }),
+                },
+                SequenceStep {
+                    id: SequenceTarget::Fire,
+                    primitive: "fire".to_string(),
+                    args: serde_json::json!({ "event": RAISE_ALARM }),
+                },
+            ]),
+        },
+        primitive(
+            RAISE_ALARM,
+            "setState",
+            None,
+            serde_json::json!({ "slot": ALARM_SLOT, "value": 1 }),
+        ),
+        primitive(
+            PRESENTATION_EVENT,
+            "setFogDensity",
+            Some(FOG_TAG),
+            serde_json::json!({ "density": PRESENTATION_DENSITY }),
+        ),
+    ]
+}
+
+fn fixture_crossings() -> Vec<CrossingDescriptor> {
+    vec![CrossingDescriptor {
+        slot: Some(ALARM_SLOT.to_string()),
+        condition: CrossingCondition::Above { threshold: 0.5 },
+        max: 1.0,
+        edge: None,
+        fire: vec![PRESENTATION_EVENT.to_string()],
+    }]
+}
+
 fn install_fixture_level_script(ctx: &ScriptCtx) {
-    *ctx.slot_table.borrow_mut() = atmosphere_slots();
-    ctx.data_registry.borrow_mut().populate_level(
-        atmosphere_reactions(),
-        atmosphere_crossings(),
-        &[],
-    );
+    *ctx.slot_table.borrow_mut() = alarm_slots();
+    ctx.data_registry
+        .borrow_mut()
+        .populate_level(fixture_reactions(), fixture_crossings(), &[]);
 }
 
 fn fog_volume() -> FogVolumeComponent {
@@ -249,52 +246,6 @@ fn idle_command() -> SimCommand {
     }
 }
 
-/// Test-only two-endpoint fixture following the E17-C loopback pattern. The client half
-/// drives the production transport, `client_receive_and_apply`, and crossing-dispatch
-/// seams in the production `netcode::frame_order` stage order. The host half hand-rolls
-/// its snapshot send and control-message drain (see the file header for the gaps).
-struct PersistentAtmosphereHarness {
-    host_ctx: ScriptCtx,
-    host_trigger_system: TriggerSystem,
-    host_trigger_bridge: TriggerVolumeBridge,
-    host_bindings: TriggerBindingTable,
-    host_state: HostStateReplication,
-    replication_identity: ReplicatedSlotIdentity<'static>,
-    host_remote_pawn: EntityId,
-    host_local_pawn: EntityId,
-    host_owners: MovementOwners,
-
-    server: NetServer,
-    client: NetClient,
-    client_ctx: ScriptCtx,
-    client_fog: Option<EntityId>,
-    client_replication: ClientReplication,
-    client_prediction: ClientPrediction,
-    client_state: ClientStateApply,
-    client_crossing_detector: CrossingDetector,
-    client_sequence_registry: SequencedPrimitiveRegistry,
-    client_reaction_registry: ReactionPrimitiveRegistry,
-    client_system_registry: SystemReactionRegistry,
-    client_applied_blackout: bool,
-    client_level_installed: bool,
-    /// Set by the production apply stage each step; read back by `step_network`.
-    accepted_snapshot: bool,
-
-    to_client: PacketConditioner,
-    to_server: PacketConditioner,
-    sequence: u32,
-    /// The harness's stand-in for `ScriptCtx::frame` — the per-frame stamp the
-    /// `frame_order` witness carries, so a witness cannot be reused across steps.
-    engine_frame: u64,
-    connected: bool,
-}
-
-#[derive(Default)]
-struct ClientNetworkStep {
-    crossing_events: Vec<String>,
-    accepted_snapshot: bool,
-}
-
 fn relay_pair() -> (NetServer, NetClient) {
     let origin = Duration::from_secs(1);
     let server_socket =
@@ -323,7 +274,6 @@ fn relay_pair() -> (NetServer, NetClient) {
     )
     .expect("fixture client transport constructs");
 
-    // E15 requires matching admission and parity declarations before participation.
     server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
     server.set_mod_digest(Some(static_fingerprint));
     server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
@@ -334,12 +284,59 @@ fn relay_pair() -> (NetServer, NetClient) {
     (server, client)
 }
 
-impl PersistentAtmosphereHarness {
+struct TimedAlarmHarness {
+    host_ctx: ScriptCtx,
+    host_trigger_system: TriggerSystem,
+    host_trigger_bridge: TriggerVolumeBridge,
+    host_bindings: TriggerBindingTable,
+    host_state: HostStateReplication,
+    replication_identity: ReplicatedSlotIdentity<'static>,
+    host_remote_pawn: EntityId,
+    host_owners: MovementOwners,
+    host_scheduler: ReactionScheduler,
+    host_sequence_registry: SequencedPrimitiveRegistry,
+    host_reaction_registry: ReactionPrimitiveRegistry,
+    host_system_registry: SystemReactionRegistry,
+
+    server: NetServer,
+    client: NetClient,
+    client_ctx: ScriptCtx,
+    client_fog: Option<EntityId>,
+    client_replication: ClientReplication,
+    client_prediction: ClientPrediction,
+    client_state: ClientStateApply,
+    client_crossing_detector: CrossingDetector,
+    client_sequence_registry: SequencedPrimitiveRegistry,
+    client_reaction_registry: ReactionPrimitiveRegistry,
+    client_system_registry: SystemReactionRegistry,
+    /// A connected client's own scheduler. Never enabled — a connected client
+    /// keeps no active scheduler even though the control handler is
+    /// registered on its long-lived sequence registry (O24's host-only guard,
+    /// driven the same way `auto_close.rs`'s own tests drive `set_enabled`).
+    client_scheduler: ReactionScheduler,
+    client_applied_alarm: bool,
+    client_level_installed: bool,
+    accepted_snapshot: bool,
+
+    to_client: PacketConditioner,
+    to_server: PacketConditioner,
+    sequence: u32,
+    engine_frame: u64,
+    connected: bool,
+}
+
+#[derive(Default)]
+struct ClientNetworkStep {
+    crossing_events: Vec<String>,
+    accepted_snapshot: bool,
+}
+
+impl TimedAlarmHarness {
     fn new() -> Self {
         let host_ctx = ScriptCtx::new();
         install_fixture_level_script(&host_ctx);
 
-        let (_host_trigger, host_bindings, host_trigger_bridge, host_remote_pawn, host_local_pawn) = {
+        let (_host_trigger, host_bindings, host_trigger_bridge, host_remote_pawn, _host_local_pawn) = {
             let mut registry = host_ctx.registry.borrow_mut();
             let remote_pawn = registry.spawn(Transform {
                 position: Vec3::new(0.0, 1.0, 0.0),
@@ -348,17 +345,6 @@ impl PersistentAtmosphereHarness {
             registry
                 .set_component(remote_pawn, player_component())
                 .expect("fixture pawn accepts movement");
-            registry
-                .set_component(
-                    remote_pawn,
-                    HealthComponent::from_descriptor(&HealthDescriptor {
-                        max: 100.0,
-                        hitbox: None,
-                        zone_multipliers: HashMap::new(),
-                    }),
-                )
-                .expect("fixture remote pawn accepts health");
-
             let local_pawn = registry.spawn(Transform {
                 position: Vec3::new(20.0, 1.0, 0.0),
                 ..Transform::default()
@@ -366,16 +352,6 @@ impl PersistentAtmosphereHarness {
             registry
                 .set_component(local_pawn, player_component())
                 .expect("fixture local pawn accepts movement");
-            registry
-                .set_component(
-                    local_pawn,
-                    HealthComponent::from_descriptor(&HealthDescriptor {
-                        max: 100.0,
-                        hitbox: None,
-                        zone_multipliers: HashMap::new(),
-                    }),
-                )
-                .expect("fixture local pawn accepts health");
             registry
                 .mark_local_player_pawn(local_pawn)
                 .expect("fixture pawn becomes the host-local player");
@@ -390,16 +366,13 @@ impl PersistentAtmosphereHarness {
                         TRIGGER_EVENT.to_string(),
                         String::new(),
                         MoverCommand::Start,
-                        TriggerFireMode::Once,
+                        TriggerFireMode::Multiple,
                         0.0,
                         true,
                     ),
                 )
                 .expect("fixture trigger accepts its component");
 
-            // This harness drives the live-script simulation path below, so
-            // bindings must own the reusable dispatch scope too. The literal-only
-            // table builder intentionally has no scope for that execution mode.
             let bindings = TriggerBindingTable::build_with_script_ctx(
                 &registry,
                 &host_ctx.data_registry.borrow(),
@@ -412,6 +385,22 @@ impl PersistentAtmosphereHarness {
         let mut host_owners = MovementOwners::new();
         host_owners.set(host_remote_pawn, CLIENT_ID);
 
+        let host_scheduler = ReactionScheduler::default();
+        host_scheduler.set_enabled(true);
+        let mut host_sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(&mut host_sequence_registry, host_scheduler.clone());
+        let host_reaction_registry = ReactionPrimitiveRegistry::new();
+        let mut host_system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut host_system_registry);
+
+        // A connected client's scheduler is constructed but never enabled —
+        // the O24 mechanism.
+        let client_scheduler = ReactionScheduler::default();
+        let mut client_sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(
+            &mut client_sequence_registry,
+            client_scheduler.clone(),
+        );
         let mut client_reaction_registry = ReactionPrimitiveRegistry::new();
         register_fog_reaction_primitives(&mut client_reaction_registry);
         let mut client_system_registry = SystemReactionRegistry::new();
@@ -424,10 +413,13 @@ impl PersistentAtmosphereHarness {
             host_trigger_bridge,
             host_bindings,
             host_state: HostStateReplication::new(),
-            replication_identity: atmosphere_replication_identity(),
+            replication_identity: alarm_replication_identity(),
             host_remote_pawn,
-            host_local_pawn,
             host_owners,
+            host_scheduler,
+            host_sequence_registry,
+            host_reaction_registry,
+            host_system_registry,
             server,
             client,
             client_ctx: ScriptCtx::new(),
@@ -436,10 +428,11 @@ impl PersistentAtmosphereHarness {
             client_prediction: ClientPrediction::new(),
             client_state: ClientStateApply::new(),
             client_crossing_detector: CrossingDetector::new(),
-            client_sequence_registry: SequencedPrimitiveRegistry::new(),
+            client_sequence_registry,
             client_reaction_registry,
             client_system_registry,
-            client_applied_blackout: false,
+            client_scheduler,
+            client_applied_alarm: false,
             client_level_installed: false,
             accepted_snapshot: false,
             to_client: PacketConditioner::new(loopback_profile()),
@@ -466,8 +459,6 @@ impl PersistentAtmosphereHarness {
         panic!("conditioned relay did not complete the fixture handshake");
     }
 
-    /// Production installs local script defaults and subscriber state before accepted
-    /// network baselines arrive. The headless fixture stops before App's window/UI loop.
     fn install_client_level_before_network_baseline(&mut self) {
         assert!(
             !self.client_level_installed,
@@ -494,10 +485,96 @@ impl PersistentAtmosphereHarness {
         self.client_level_installed = true;
     }
 
-    /// Run the authoritative fixed tick. The assertion made by callers immediately
-    /// afterward is intentionally before any network send, pinning the same-tick
-    /// trigger-binding write contract.
-    fn fire_host_trigger(&mut self) -> TickEvents {
+    /// Fire the host trigger's Enter edge, then drive the resumed tail through
+    /// the SAME sequence `main.rs`'s frame-end drain uses: resolve the
+    /// residual under a scoped origin guard, dispatch it (the wait enrolls
+    /// and stops), then advance frames until the scheduler lands the tail's
+    /// `fire(raiseAlarm)` and the app-drain queue write applies. Returns once
+    /// the alarm slot is written host-side — no client machinery touched.
+    fn fire_trigger_and_wait_for_alarm(&mut self) {
+        let host_events = self.simulate_host_tick();
+        assert_eq!(
+            host_events.trigger_residuals.len(),
+            1,
+            "one Enter-bound residual fires"
+        );
+        let (handle, trigger, player) = host_events.trigger_residuals[0];
+
+        {
+            // Scoped exactly like `main.rs`'s residual loop: the origin guard
+            // covers only the residual dispatch, not the later deferred hop —
+            // there is none here, since the wait's `fire` step does not
+            // collect into `chained` (it's past the wait, in the tail).
+            let _origin = self.host_scheduler.begin_origin(trigger, player, true);
+            let steps = self
+                .host_bindings
+                .residual(handle)
+                .expect("fixture residual stays bound")
+                .steps()
+                .to_vec();
+            let follow_ups = fire_prepartitioned_reactions_with_sequences(
+                &steps,
+                &self.host_sequence_registry,
+                &self.host_reaction_registry,
+                &self.host_system_registry,
+                &self.host_ctx,
+                ResidualOrigin::TriggerBinding,
+            );
+            assert!(
+                follow_ups.is_empty(),
+                "the wait stops the drain before any fire collects"
+            );
+        }
+        assert_eq!(
+            self.host_scheduler.pending_len(),
+            1,
+            "the tail parked host-side"
+        );
+        assert!(
+            self.host_ctx
+                .slot_table
+                .borrow()
+                .get(ALARM_SLOT)
+                .unwrap()
+                .value
+                == Some(SlotValue::Number(0.0)),
+            "no write yet — the tail has not landed"
+        );
+
+        // Advance frames until the scheduler lands the tail. Mirrors
+        // `SimHarness::frame`: several idle ticks, then the frame-end drain.
+        for _ in 0..8 {
+            self.host_scheduler.begin_frame();
+            self.host_scheduler.evaluate(&[]);
+        }
+        {
+            let data = self.host_ctx.data_registry.borrow();
+            self.host_scheduler.drain_landings(
+                &data,
+                &self.host_sequence_registry,
+                &self.host_reaction_registry,
+                &self.host_system_registry,
+                &self.host_ctx,
+            );
+        }
+        assert_eq!(self.host_scheduler.pending_len(), 0, "the wait landed");
+
+        // The app-drain write: `raiseAlarm`'s literal `setState` value queues
+        // a `SystemReactionCommand::SetState`, applied through the same
+        // literal-fallback path `dispatch_system_commands` uses in `main.rs`.
+        for command in self.host_ctx.system_commands.take() {
+            if let SystemReactionCommand::SetState { slot, value, .. } = command {
+                crate::scripting::primitives::store::write_state_slot_json(
+                    &self.host_ctx,
+                    &slot,
+                    &value,
+                )
+                .expect("literal alarm write applies");
+            }
+        }
+    }
+
+    fn simulate_host_tick(&mut self) -> TickEvents {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
@@ -545,13 +622,6 @@ impl PersistentAtmosphereHarness {
         )
     }
 
-    /// Produce one host snapshot through the real `HostStateReplication` tracker and send
-    /// it over the real `NetServer`. Repeated sends before the ack arrives intentionally
-    /// mirror the normal baseline-repair behavior under the conditioned E17-C link.
-    ///
-    /// GAP: the snapshot envelope is assembled here rather than by production
-    /// `netcode::host_replicate`, so the host's own send call site is not covered — only
-    /// the state producer it wraps.
     fn enqueue_host_snapshot(&mut self) {
         assert!(
             self.connected && self.server.is_participating(CLIENT_ID),
@@ -559,7 +629,6 @@ impl PersistentAtmosphereHarness {
         );
         let sequence = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
-
         let weapon_owners = WeaponOwners::new();
         let slots = self.host_ctx.slot_table.borrow();
         let registry = self.host_ctx.registry.borrow();
@@ -592,25 +661,12 @@ impl PersistentAtmosphereHarness {
         );
     }
 
-    /// One client frame, sequenced by the production `netcode::frame_order` stages rather
-    /// than by this harness. `run_snapshot_apply_stage` mints the `SnapshotsApplied`
-    /// witness that `run_crossing_stage` consumes, so the two calls below cannot be
-    /// written in the other order — that is a type error, in `main.rs` exactly as here.
-    ///
-    /// What sits BETWEEN the two stages in production — the catch-up tick loop, the HUD
-    /// publisher, the system-command drains — is not modeled; this harness covers the
-    /// stages and their order, not App's frame.
-    ///
-    /// The trailing client→server pump is the harness's stand-in for the socket, and is
-    /// deliberately outside the two client stages.
     fn step_network(&mut self) -> ClientNetworkStep {
         let engine_frame = self.engine_frame;
         self.engine_frame = self.engine_frame.wrapping_add(1);
         self.accepted_snapshot = false;
-
         let applied = frame_order::run_snapshot_apply_stage(self, engine_frame, FRAME_DT);
         let crossing_events = frame_order::run_crossing_stage(self, engine_frame, applied);
-
         self.relay_client_to_server();
         self.apply_client_control_messages();
         ClientNetworkStep {
@@ -619,23 +675,21 @@ impl PersistentAtmosphereHarness {
         }
     }
 
-    fn replicate_until_client_applies_blackout(&mut self) -> Vec<String> {
+    fn replicate_until_client_applies_alarm(&mut self) -> Vec<String> {
         let mut crossing_events = Vec::new();
         for _ in 0..128 {
             self.enqueue_host_snapshot();
             let step = self.step_network();
-            let applied_this_step = self.client_applied_blackout;
+            let applied_this_step = self.client_applied_alarm;
             if applied_this_step {
-                // The apply stage runs before the crossing stage within one frame, so the
-                // presentation crossing fires on the SAME frame the authoritative blackout
-                // lands — never a frame late. Detect-before-apply would leave this step's
-                // crossing list empty and defer the event to the next step.
+                assert!(
+                    step.accepted_snapshot,
+                    "the alarm can only apply on a step that accepted a host snapshot"
+                );
                 assert_eq!(
                     step.crossing_events,
                     vec![PRESENTATION_EVENT.to_string()],
-                    "the frame that applies the authoritative blackout must also cross to \
-                     presentation: production applies received snapshots before crossing \
-                     detection reads the slot table"
+                    "the frame that applies the alarm must also cross to presentation"
                 );
             }
             crossing_events.extend(step.crossing_events);
@@ -643,50 +697,30 @@ impl PersistentAtmosphereHarness {
                 return crossing_events;
             }
         }
-        panic!("conditioned loopback did not deliver the shared blackout baseline");
+        panic!("conditioned loopback did not deliver the alarm baseline");
     }
 
-    fn host_blackout(&self) -> Option<SlotValue> {
+    fn host_alarm(&self) -> Option<SlotValue> {
         self.host_ctx
             .slot_table
             .borrow()
-            .get(BLACKOUT_SLOT)
-            .and_then(|record| record.value.clone())
+            .get(ALARM_SLOT)
+            .and_then(|r| r.value.clone())
     }
 
-    fn client_blackout(&self) -> Option<SlotValue> {
+    fn client_alarm(&self) -> Option<SlotValue> {
         self.client_ctx
             .slot_table
             .borrow()
-            .get(BLACKOUT_SLOT)
-            .and_then(|record| record.value.clone())
-    }
-
-    fn host_pawn_health(&self, pawn: EntityId) -> f32 {
-        self.host_ctx
-            .registry
-            .borrow()
-            .get_component::<HealthComponent>(pawn)
-            .expect("fixture pawn keeps health")
-            .current
-    }
-
-    fn client_health(&self) -> Option<SlotValue> {
-        self.client_ctx
-            .slot_table
-            .borrow()
-            .get("player.health")
-            .and_then(|record| record.value.clone())
+            .get(ALARM_SLOT)
+            .and_then(|r| r.value.clone())
     }
 
     fn client_fog_density(&self) -> f32 {
         self.client_ctx
             .registry
             .borrow()
-            .get_component::<FogVolumeComponent>(
-                self.client_fog
-                    .expect("client level installs the fixture fog before networking"),
-            )
+            .get_component::<FogVolumeComponent>(self.client_fog.expect("client fog installed"))
             .expect("fixture client fog remains present")
             .density
     }
@@ -717,9 +751,6 @@ impl PersistentAtmosphereHarness {
             .update_connections(Duration::from_millis(TICK_MS));
     }
 
-    /// GAP: this re-implements production `netcode::host_handle_client_messages` over the
-    /// same `HostStateReplication` tracker. The ack / refresh bookkeeping is real; the
-    /// production drain call site is not covered.
     fn apply_client_control_messages(&mut self) {
         for bytes in self.server.drain_input(CLIENT_ID) {
             let message = wire::decode::<ClientMessage>(&bytes)
@@ -739,33 +770,11 @@ impl PersistentAtmosphereHarness {
             }
         }
     }
-
-    fn state_send_is_participating(&mut self) -> bool {
-        self.server.send_snapshot(CLIENT_ID, Vec::new())
-    }
-
-    fn close_client(&mut self) {
-        let _ = self
-            .server
-            .close_relay_connection(CLIENT_ID, CloseCause::Disconnect);
-        self.connected = false;
-    }
 }
 
-/// The harness supplies the two stage bodies; `netcode::frame_order` owns their order.
-/// `App` implements the same trait against `net_poll_and_apply` and the crossing
-/// dispatcher, so the order under test here is the order production runs — it is not
-/// re-declared by this file. This does NOT cover App's role dispatch: the harness is not
-/// a `NetEndpoint`, so the `NetEndpoint::Client` arm that would host the apply body in
-/// production is never entered (see the file header).
-impl ReplicatedStateFrame for PersistentAtmosphereHarness {
-    /// Deliver the conditioned link's due packets — the harness's stand-in for the socket
-    /// read production does inside `NetClient::update` — then drain reliable Control
-    /// before running `client_receive_and_apply`, matching `App::net_poll_and_apply`.
+impl ReplicatedStateFrame for TimedAlarmHarness {
     fn apply_received_snapshots(&mut self, frame_dt: f32) {
         self.relay_server_to_client();
-        // Regression: the conditioned harness skipped Control and therefore rejected
-        // every correctly epoch-framed Snapshot as inactive participation traffic.
         assert!(
             self.client.drain_control().is_empty(),
             "the fixture expects only the transport-owned participation marker"
@@ -798,16 +807,12 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;
         self.accepted_snapshot = accepted;
-        if accepted
-            && matches!(self.client_blackout(), Some(SlotValue::Number(value)) if value == 1.0)
+        if accepted && matches!(self.client_alarm(), Some(SlotValue::Number(value)) if value == 1.0)
         {
-            self.client_applied_blackout = true;
+            self.client_applied_alarm = true;
         }
     }
 
-    /// The exact dispatcher App runs later in the same frame. The fog reaction mutates the
-    /// client registry directly; App's window, input, and command-drain work is outside
-    /// this headless test.
     fn dispatch_state_crossings(&mut self) -> Vec<String> {
         dispatch_state_crossings_with_sequences(
             &mut self.client_crossing_detector,
@@ -838,50 +843,37 @@ fn assert_fog_density_near(actual: f32, expected: f32, context: &str) {
     );
 }
 
+/// The co-op replication AC and O42: a delayed `fire` step dispatching a
+/// system-targeted `setState` reaction — reached only after the scheduler
+/// lands the wait, entirely host-side — writes a `network: "shared"` slot
+/// that reaches the connected client through state replication, and the
+/// client's crossing fires its local presentation reaction from that write.
 #[test]
-fn persistent_atmosphere_trigger_replication_drives_client_local_presentation() {
-    let mut harness = PersistentAtmosphereHarness::new();
+fn delayed_fire_of_system_setstate_replicates_and_drives_client_local_presentation() {
+    let mut harness = TimedAlarmHarness::new();
     harness.connect_client();
 
-    let host_events = harness.fire_host_trigger();
-    assert!((harness.host_pawn_health(harness.host_remote_pawn) - 75.0).abs() <= 1e-6);
-    assert!((harness.host_pawn_health(harness.host_local_pawn) - 100.0).abs() <= 1e-6);
+    harness.fire_trigger_and_wait_for_alarm();
     assert_number_slot_near(
-        harness.host_blackout(),
+        harness.host_alarm(),
         1.0,
-        "host touch entry writes the sharedGlobal slot inside the firing fixed tick",
+        "the delayed fire(raiseAlarm) writes the sharedGlobal slot host-side, after the wait lands",
     );
-    assert_eq!(host_events.trigger_residuals.len(), 1);
-    assert!(matches!(
-        harness
-            .host_bindings
-            .residual(host_events.trigger_residuals[0].0)
-            .expect("fixture presentation step stays bound as a residual")
-            .steps(),
-        [PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Primitive(
-            PrimitiveDescriptor { primitive, .. }
-        ))] if primitive == "setFogDensity"
-    ));
     assert_fog_density_near(
         harness.client_fog_density(),
         0.0,
-        "the client has not received a trigger event or presentation command directly",
+        "the client has received no trigger event or presentation command directly",
     );
 
-    let client_crossings = harness.replicate_until_client_applies_blackout();
+    let client_crossings = harness.replicate_until_client_applies_alarm();
     assert!(
-        harness.client_applied_blackout,
+        harness.client_applied_alarm,
         "the client slot value was written by ClientStateApply::apply_snapshot_state"
     );
     assert_number_slot_near(
-        harness.client_blackout(),
+        harness.client_alarm(),
         1.0,
         "the client converges to the host's persistent shared state",
-    );
-    assert_number_slot_near(
-        harness.client_health(),
-        75.0,
-        "owner-private health converges from the trigger-damaged remote pawn",
     );
     assert_eq!(
         client_crossings,
@@ -895,80 +887,28 @@ fn persistent_atmosphere_trigger_replication_drives_client_local_presentation() 
     );
 }
 
+/// O24's negative half, made concrete in the two-endpoint context: even
+/// though the client possesses a fully wired scheduler (control handlers
+/// registered, `wait`/`fire` reachable), it is never enabled — attempting to
+/// enroll the SAME reaction's wait client-side is refused at the host-only
+/// guard, so "no client-side scheduler evaluation" is not merely "the client
+/// never tried" but "the client is structurally blocked if it did".
 #[test]
-fn late_join_blackout_baseline_crosses_once_and_stays_quiet() {
-    let mut harness = PersistentAtmosphereHarness::new();
-
-    // The host fires while this client is disconnected. The later connect therefore
-    // receives a full baseline rather than a transient event broadcast.
-    let _ = harness.fire_host_trigger();
-    assert_number_slot_near(harness.host_blackout(), 1.0, "host trigger state persists");
-    harness.connect_client();
-
-    let client_crossings = harness.replicate_until_client_applies_blackout();
+fn client_scheduler_never_enrolls_the_same_reaction() {
+    let harness = TimedAlarmHarness::new();
     assert_eq!(
-        client_crossings,
-        vec![PRESENTATION_EVENT.to_string()],
-        "a late join crosses once from the level-default baseline to the host state"
+        harness.client_scheduler.pending_len(),
+        0,
+        "a freshly constructed, never-enabled client scheduler starts empty"
     );
-    assert!(
-        harness
-            .client_crossing_detector
-            .detect(&harness.client_ctx.slot_table.borrow())
-            .is_empty(),
-        "the already-observed late-join baseline cannot replay presentation every frame"
-    );
-    assert_fog_density_near(
-        harness.client_fog_density(),
-        PRESENTATION_DENSITY,
-        "late-join presentation runs on the client",
-    );
-}
-
-#[test]
-fn repeated_same_value_snapshot_stays_quiet_after_crossing() {
-    let mut harness = PersistentAtmosphereHarness::new();
-    harness.connect_client();
-    let _ = harness.fire_host_trigger();
-    let initial_crossings = harness.replicate_until_client_applies_blackout();
-    assert_eq!(initial_crossings, vec![PRESENTATION_EVENT.to_string()]);
-
-    let mut accepted_repeat = false;
-    for _ in 0..128 {
-        harness.enqueue_host_snapshot();
-        let step = harness.step_network();
-        assert!(
-            step.crossing_events.is_empty(),
-            "a repeated authoritative blackout value must not replay presentation"
-        );
-        if step.accepted_snapshot {
-            accepted_repeat = true;
-            break;
-        }
-    }
-    assert!(
-        accepted_repeat,
-        "the real client receive path must accept a later unchanged snapshot"
-    );
-    assert_fog_density_near(
-        harness.client_fog_density(),
-        PRESENTATION_DENSITY,
-        "a quiet repeated snapshot leaves prior client-local presentation intact",
-    );
-}
-
-#[test]
-fn pending_and_disconnected_clients_receive_no_state_records() {
-    let mut harness = PersistentAtmosphereHarness::new();
-    assert!(
-        !harness.state_send_is_participating(),
-        "a disconnected client has no transport slot and receives no state"
-    );
-
-    harness.connect_client();
-    harness.close_client();
-    assert!(
-        !harness.state_send_is_participating(),
-        "a closed client slot refuses all later state records"
+    // Attempt the exact enrollment a client-side re-run of TRIGGER_EVENT's
+    // wait would make.
+    harness
+        .client_scheduler
+        .enroll(TRIGGER_EVENT, 0, None, vec![], 3, false);
+    assert_eq!(
+        harness.client_scheduler.pending_len(),
+        0,
+        "the host-only guard refuses enrollment; no tail ever parks or runs client-side"
     );
 }

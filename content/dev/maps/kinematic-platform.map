@@ -547,40 +547,45 @@
 "_tb_name" "Ambient Room Light"
 "_tb_id" "2"
 "_tb_linked_group_id" "988e7648-039e-4327-b62a-c98ec1982a25"
+"_tb_transformation" "1 0 0 -64 0 1 0 -16 0 0 1 -2.842170943040401e-14 0 0 0 1"
 }
 // entity 40
 {
 "classname" "light"
-"origin" "2264 72 120"
+"origin" "2200 56 120"
 "_bake_only" "1"
-"light" "300"
-"_falloff_range" "250"
+"light" "035"
+"_falloff_range" "475"
+"_color" "0 102 255"
 "_tb_group" "2"
 }
 // entity 41
 {
 "classname" "light"
-"origin" "2984 72 120"
+"origin" "2968 56 120"
 "_bake_only" "1"
-"light" "300"
-"_falloff_range" "250"
+"light" "035"
+"_falloff_range" "475"
+"_color" "0 102 255"
 "_tb_group" "2"
 }
 // entity 42
 {
 "classname" "light"
-"origin" "1736 56 120"
+"origin" "1384 40 120"
 "_bake_only" "1"
-"light" "300"
-"_falloff_range" "250"
+"light" "035"
+"_falloff_range" "475"
+"_color" "0 102 255"
 "_tb_group" "2"
 }
 // entity 43
 {
 "classname" "light"
-"origin" "1016 56 120"
+"origin" "664 40 120"
 "_bake_only" "1"
-"light" "300"
-"_falloff_range" "250"
+"light" "035"
+"_falloff_range" "475"
+"_color" "0 102 255"
 "_tb_group" "2"
 }

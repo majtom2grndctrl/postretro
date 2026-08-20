@@ -26,6 +26,7 @@ import {
   progression,
 } from "./scripts/combat-lifecycle";
 import { runCounter } from "./scripts/run-counter";
+import { closetStore } from "./scripts/closet-store";
 import {
   damagedEnemyBar,
   damagedEnemyOverlay,
@@ -79,7 +80,7 @@ export default defineMod({
     ammoOnKill,
     combatZombieLifecycle,
   ],
-  stores: [runCounter, progression],
+  stores: [runCounter, progression, closetStore],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

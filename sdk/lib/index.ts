@@ -64,6 +64,8 @@ export type {
   MoverSetSpinRateStep,
   ArmTriggerStep,
   DisarmTriggerStep,
+  WaitStep,
+  FireStep,
   CrossingParams,
   TickParams,
   TriggerEventParams,
@@ -112,6 +114,8 @@ export {
   addSlot,
   armTrigger,
   disarmTrigger,
+  wait,
+  fire,
   onTriggerEvent,
 } from "./data_script";
 

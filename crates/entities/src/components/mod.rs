@@ -17,6 +17,7 @@ pub mod light;
 pub mod mesh;
 pub mod particle;
 pub mod player_movement;
+pub mod projectile;
 pub mod spawner;
 pub mod sprite_visual;
 pub mod touchable;

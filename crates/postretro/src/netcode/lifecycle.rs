@@ -620,6 +620,7 @@ mod tests {
                 cooldown_ms: 120.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,
@@ -727,7 +728,7 @@ mod tests {
         // (default `"player"`) so the client materializes the matching component.
         assert_eq!(
             owned[0].entity_class,
-            Some("player".to_string()),
+            Some("descriptor:player".to_string()),
             "descriptor net-slot pawn stamps its entity_class for the wire"
         );
     }
@@ -820,6 +821,9 @@ mod tests {
                 range: 64.0,
                 pellet_count: 1,
                 credit_source: "weapon.test.lifecycle".to_string(),
+                is_projectile: false,
+                fire_origin: glam::Vec3::ZERO,
+                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
             },
             CLIENT_A,
         );
@@ -1095,6 +1099,9 @@ mod tests {
                 range: 64.0,
                 pellet_count: 1,
                 credit_source: "weapon.test.lifecycle".to_string(),
+                is_projectile: false,
+                fire_origin: glam::Vec3::ZERO,
+                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
             },
             CLIENT_A,
         );

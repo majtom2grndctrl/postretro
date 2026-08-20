@@ -25,6 +25,7 @@ mod movement_state;
 mod netdiag;
 mod prediction;
 mod presentation;
+mod projectile_presentation;
 mod reconcile;
 mod remote_materialize;
 mod replication;
@@ -471,7 +472,10 @@ impl ShotId {
 }
 
 const HIT_RANGE_TOLERANCE: f32 = 1.25;
-const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
+pub(crate) const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
+/// Two seconds comfortably covers the conditioned co-op link's RTT and leaves
+/// room for a delayed rendered-frame declaration after projectile travel.
+const PROJECTILE_RTT_MARGIN_TICKS: u32 = 120;
 const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -484,6 +488,46 @@ pub(crate) struct AuthorizedShot {
     pub(crate) range: f32,
     pub(crate) pellet_count: usize,
     pub(crate) credit_source: String,
+    /// Frozen at FIRE because the weapon may be switched or despawned before a
+    /// later projectile declaration arrives. This authority data never crosses
+    /// the wire.
+    pub(crate) is_projectile: bool,
+    pub(crate) fire_origin: Vec3,
+    pub(crate) timeout_budget_ticks: u32,
+}
+
+/// Keep a projectile declaration open through its maximum authored travel time
+/// plus a deliberately generous return-trip margin. The `u32` serial tick clock
+/// is wrap-aware only through half its range, so cap an absurd authored lifetime
+/// there rather than accidentally retaining an open shot forever at wrap.
+pub(crate) fn projectile_timeout_budget_ticks(
+    range: f32,
+    speed: f32,
+    lifetime_seconds: f32,
+    tick_dt_seconds: f32,
+) -> u32 {
+    let travel_seconds = if range.is_finite()
+        && range >= 0.0
+        && speed.is_finite()
+        && speed > 0.0
+        && lifetime_seconds.is_finite()
+        && lifetime_seconds >= 0.0
+        && tick_dt_seconds.is_finite()
+        && tick_dt_seconds > 0.0
+    {
+        (f64::from(range) / f64::from(speed)).min(f64::from(lifetime_seconds))
+    } else {
+        return MAX_OPEN_SHOT_AGE_TICKS;
+    };
+    let max_budget = u32::MAX / 2;
+    // Promote before dividing. Finite f32 authoring bounds can overflow either
+    // division in f32 even though the corresponding duration is representable
+    // well enough to saturate this bounded host-side retention budget.
+    let travel_ticks = (travel_seconds / f64::from(tick_dt_seconds)).ceil();
+    let travel_ticks = travel_ticks
+        .min(f64::from(max_budget - PROJECTILE_RTT_MARGIN_TICKS))
+        .max(0.0) as u32;
+    MAX_OPEN_SHOT_AGE_TICKS.max(travel_ticks.saturating_add(PROJECTILE_RTT_MARGIN_TICKS))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -531,7 +575,7 @@ impl OpenAuthorizedShots {
 
     pub(crate) fn prune_stale(&mut self, current_tick: u32) {
         self.shots.retain(|_, shot| {
-            current_tick.wrapping_sub(shot.shot.fire_tick) <= MAX_OPEN_SHOT_AGE_TICKS
+            current_tick.wrapping_sub(shot.shot.fire_tick) <= shot.shot.timeout_budget_ticks
         });
     }
 
@@ -596,16 +640,21 @@ impl PendingHitDeclarations {
         &mut self,
         command_queues: &HostCommandQueues,
         open_shots: &OpenAuthorizedShots,
+        current_tick: u32,
     ) -> Vec<PendingHitDeclaration> {
         let mut ready = Vec::new();
         let mut waiting = VecDeque::new();
         while let Some(pending) = self.declarations.pop_front() {
             let shot_id = ShotId::from_raw(pending.declaration.shot_id);
-            let shot_open = open_shots.get(shot_id).is_some();
+            let open_shot = open_shots.get(shot_id);
+            let shot_open = open_shot.is_some();
+            let projectile_waits_for_later_tick = open_shot.is_some_and(|open| {
+                open.shot.is_projectile && current_tick.wrapping_sub(open.shot.fire_tick) == 0
+            });
             let resolved_past_shot = command_queues
                 .resolved_cursor(pending.client_id)
                 .is_some_and(|cursor| prediction::client_tick_le(shot_id.client_tick(), cursor));
-            if shot_open || resolved_past_shot {
+            if !projectile_waits_for_later_tick && (shot_open || resolved_past_shot) {
                 ready.push(pending);
             } else {
                 waiting.push_back(pending);
@@ -711,6 +760,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::DeferredEffect => 18,
         ComponentKind::Inventory => 19,
         ComponentKind::Touchable => 20,
+        ComponentKind::Projectile => 21,
     }
 }
 
@@ -931,7 +981,11 @@ pub(crate) fn client_receive_and_apply(
                 );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
-                entity_class: armed.entity_class.clone(),
+                entity_class: armed.entity_class.as_deref().map(|class| {
+                    descriptor_class::decode_replicated_descriptor_class(class)
+                        .canonical_name()
+                        .to_string()
+                }),
             });
         }
         // The local pawn's world body is shadow-only, but it still needs the same
@@ -950,16 +1004,28 @@ pub(crate) fn client_receive_and_apply(
         // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
         // its presentation materialized here, where the shared descriptor table is in scope
         // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
-        // durable player-type signal; names are author-controlled. Both paths attach ONLY the
-        // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
-        // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
+        // durable player-type signal; names are author-controlled. These paths attach ONLY
+        // descriptor presentation — a mesh or projectile body/trail — and never
+        // Brain/Agent/Health/Weapon/PlayerMovement. They are idempotent and
+        // unknown-class-tolerant, so failed presentation still interpolates transform.
         for remote in &outcome.remote_entities {
+            let representation =
+                descriptor_class::decode_replicated_descriptor_class(&remote.entity_class);
+            let entity_class = representation.canonical_name();
             replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
-            let descriptor = descriptors.iter().find(|descriptor| {
-                descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
-            });
-            let materialized = if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some())
-            {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class));
+            let materialized = if matches!(
+                representation,
+                descriptor_class::ReplicatedDescriptorClass::Projectile(_)
+            ) {
+                remote_materialize::materialize_armed_remote_projectile(
+                    remote,
+                    descriptors,
+                    registry,
+                )
+            } else if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some()) {
                 let player_locomotion = descriptor.and_then(|descriptor| {
                     let movement = descriptor.movement.as_ref()?;
                     let mesh = descriptor.mesh.as_ref()?;
@@ -1688,7 +1754,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
 ) -> bool {
     open_shots.prune_stale(current_tick);
     let mut accepted_any_hit = false;
-    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots) {
+    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots, current_tick) {
         let result = ingest_hit_declaration(
             HostHitIngestContext {
                 registry: &mut *registry,
@@ -1770,7 +1836,7 @@ fn host_handle_client_message_inner(
     }
 }
 
-fn send_shot_verdict(
+pub(crate) fn send_shot_verdict(
     server: &mut NetServer,
     client_id: u64,
     shot_id: u64,
@@ -1827,11 +1893,7 @@ fn ingest_hit_declaration(
             context.registry,
             context.collision_world,
             context.allocator,
-            open.shot.pawn,
-            open.shot.weapon,
-            open.shot.damage,
-            open.shot.range,
-            open.shot.credit_source.clone(),
+            &open.shot,
             record,
         );
         if accepted {
@@ -1849,38 +1911,80 @@ fn ingest_hit_declaration(
     }
 }
 
+/// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
+/// same ingester through [`host_flush_pending_hit_declarations`]; this keeps tests from
+/// duplicating its authorization and damage rules just to observe the result.
+#[cfg(test)]
+pub(crate) fn ingest_hit_declaration_for_test(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    owners: &MovementOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    client_id: u64,
+    declaration: &wire::HitDeclaration,
+) -> (bool, bool) {
+    let result = ingest_hit_declaration(
+        HostHitIngestContext {
+            registry,
+            collision_world,
+            allocator,
+            owners,
+            open_shots,
+        },
+        client_id,
+        declaration,
+        |_| {},
+    );
+    (result.fire_accepted, result.hit_accepted)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_valid_hit_record(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     allocator: &NetworkIdAllocator,
-    attacker: EntityId,
-    weapon_id: EntityId,
-    damage: f32,
-    range: f32,
-    credit_source: String,
+    shot: &AuthorizedShot,
     record: &wire::HitRecord,
 ) -> bool {
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
-    if registry.get_component::<HealthComponent>(target).is_err() {
+    let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
+        return false;
+    };
+    // Deferred direct-impact projectiles share the local projectile liveness
+    // contract: once a target is down, their sole impact is spent without a
+    // second application. Hitscan/pellet declarations retain the common impact
+    // dispatch semantics used by authored zero-HP/downed policies.
+    if shot.is_projectile && (!target_health.current.is_finite() || target_health.current <= 0.0) {
         return false;
     }
     let point = Vec3::from_array(record.point);
     if !point.is_finite() {
         return false;
     }
-    // Reconstruct the attacker eye once and reuse it for both the static-world LOS
-    // check and the range check below.
-    let Some(eye) = attacker_eye(registry, attacker) else {
-        return false;
+    let origin = if shot.is_projectile {
+        // A later projectile declaration is valid after the pawn moved or took
+        // cover. The fire-time origin measures its travel; present-eye LOS is
+        // intentionally a hitscan-only corruption check in co-op PvE.
+        if !shot.fire_origin.is_finite() {
+            return false;
+        }
+        shot.fire_origin
+    } else {
+        // Preserve the shipped hitscan/pellet validation exactly: live eye for
+        // both static-world LOS and its range check.
+        let Some(eye) = attacker_eye(registry, shot.pawn) else {
+            return false;
+        };
+        if !has_static_world_los(collision_world, eye, point) {
+            return false;
+        }
+        eye
     };
-    if !has_static_world_los(collision_world, eye, point) {
-        return false;
-    }
-    let distance = eye.distance(point);
-    let max_range = range * HIT_RANGE_TOLERANCE;
+    let distance = origin.distance(point);
+    let max_range = shot.range * HIT_RANGE_TOLERANCE;
     if !max_range.is_finite() || distance > max_range {
         return false;
     }
@@ -1890,15 +1994,17 @@ fn apply_valid_hit_record(
         normal: Vec3::ZERO,
         target: Some(target),
         zone: record.zone.clone(),
-        outcome: ActivationOutcome::Hit(weapon::DamagePayload { amount: damage }),
+        outcome: ActivationOutcome::Hit(weapon::DamagePayload {
+            amount: shot.damage,
+        }),
     };
     crate::sim::apply_authorized_weapon_impact_damage(
         registry,
-        weapon_id,
-        Some(attacker),
+        shot.weapon,
+        Some(shot.pawn),
         &impact,
-        credit_source,
-        damage,
+        shot.credit_source.clone(),
+        shot.damage,
     );
     true
 }
@@ -2434,6 +2540,7 @@ mod tests {
             cooldown_ms: 180.0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some("weapon.test.retuned".to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -2629,6 +2736,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some("weapon.test.net".to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -2936,6 +3044,7 @@ mod tests {
                 cooldown_ms: 1.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: Some("models/pistol/model.gltf".to_string()),
                 viewmodel: None,
@@ -3002,6 +3111,9 @@ mod tests {
             range,
             pellet_count: 1,
             credit_source: "weapon.test.net".to_string(),
+            is_projectile: false,
+            fire_origin: Vec3::ZERO,
+            timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
         }
     }
 
@@ -3214,6 +3326,9 @@ mod tests {
                     range: stats.range,
                     pellet_count: stats.pellet_count as usize,
                     credit_source: stats.credit_source.to_string(),
+                    is_projectile: false,
+                    fire_origin: Vec3::ZERO,
+                    timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
                 },
                 7,
             );
@@ -3302,6 +3417,74 @@ mod tests {
     }
 
     #[test]
+    fn projectile_open_shot_timeout_covers_travel_and_generous_rtt_margin() {
+        assert_eq!(
+            projectile_timeout_budget_ticks(128.0, 80.0, 4.0, 1.0 / 60.0),
+            216,
+            "1.6 seconds of flight plus the two-second margin exceeds the hitscan floor"
+        );
+        assert_eq!(
+            projectile_timeout_budget_ticks(64.0, 80.0, 4.0, 1.0 / 60.0),
+            MAX_OPEN_SHOT_AGE_TICKS,
+            "the existing 180-tick floor remains the hitscan and fast-projectile minimum"
+        );
+    }
+
+    #[test]
+    fn projectile_open_shot_timeout_saturates_finite_f32_extremes() {
+        // Regression: f32 division overflowed to infinity and selected the
+        // short hitscan fallback, false-rejecting a still-live projectile.
+        assert_eq!(
+            projectile_timeout_budget_ticks(
+                f32::MAX,
+                f32::MIN_POSITIVE,
+                f32::MAX,
+                f32::MIN_POSITIVE,
+            ),
+            u32::MAX / 2,
+        );
+    }
+
+    #[test]
+    fn projectile_open_shot_prune_uses_its_flight_budget_and_keeps_the_store_bounded() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let kept_id = ShotId::from_parts(NetworkId(12), 10);
+        let expired_id = ShotId::from_parts(NetworkId(12), 11);
+        let timeout = projectile_timeout_budget_ticks(128.0, 80.0, 4.0, 1.0 / 60.0);
+        let mut kept = authorized_test_shot(kept_id, pawn, weapon, 10, 10.0, 128.0);
+        kept.is_projectile = true;
+        kept.timeout_budget_ticks = timeout;
+        let mut expired = authorized_test_shot(expired_id, pawn, weapon, 11, 10.0, 128.0);
+        expired.is_projectile = true;
+        expired.timeout_budget_ticks = timeout;
+        let mut shots = OpenAuthorizedShots::new();
+        shots.record(kept, 7);
+        shots.record(expired, 7);
+
+        shots.prune_stale(10 + timeout);
+        assert!(
+            shots.get(kept_id).is_some(),
+            "the budget is inclusive at its final tick"
+        );
+        assert!(shots.get(expired_id).is_some());
+
+        shots.prune_stale(11 + timeout);
+        assert!(shots.get(kept_id).is_none());
+        assert!(
+            shots.get(expired_id).is_some(),
+            "the later shot retains its own budget"
+        );
+        shots.prune_stale(12 + timeout);
+        assert_eq!(
+            shots.len(),
+            0,
+            "unreported projectiles cannot accumulate indefinitely"
+        );
+    }
+
+    #[test]
     fn pending_hit_declarations_are_bounded_per_client_and_cleanable() {
         let mut pending = PendingHitDeclarations::new();
         for tick in 0..=MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT {
@@ -3376,7 +3559,7 @@ mod tests {
 
         assert!(
             pending
-                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots)
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100)
                 .is_empty(),
             "before FIRE authorization the declaration remains queued"
         );
@@ -3391,7 +3574,7 @@ mod tests {
             ),
             7,
         );
-        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots);
+        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].client_id, 7);
 
@@ -3399,6 +3582,41 @@ mod tests {
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
         assert_eq!(fixture.target_health().current, 90.0);
+    }
+
+    #[test]
+    fn pending_projectile_declaration_waits_until_after_its_fire_tick() {
+        // Regression: FIRE authorization and declaration drain shared one host
+        // tick, allowing an impossible zero-flight-time projectile impact.
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            100,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        fixture.open_shots.record(shot, 7);
+        let mut pending = PendingHitDeclarations::new();
+        pending.push(7, fixture.declaration(Vec::new()));
+
+        assert!(
+            pending
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100)
+                .is_empty(),
+            "a projectile declaration cannot resolve on its authorization tick"
+        );
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 101)
+                .len(),
+            1,
+            "the same declaration becomes eligible on the next host tick"
+        );
     }
 
     #[test]
@@ -3434,7 +3652,35 @@ mod tests {
         assert_eq!(entry.last_weapon, Some(fixture.weapon));
     }
 
-    // Regression: remote HIT validation rejected persistent zero-HP targets,
+    #[test]
+    fn empty_projectile_declaration_retires_the_authorized_shot_without_damage() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        shot.fire_origin = Vec3::new(0.0, 0.5, 0.0);
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(Vec::new());
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert!((fixture.target_health().current - 100.0).abs() <= f32::EPSILON);
+        assert!(
+            fixture.open_shots.get(fixture.shot_id).is_none(),
+            "the client's expiry declaration retires flight immediately instead of waiting for prune"
+        );
+    }
+
+    // Regression: hitscan HIT validation rejected persistent zero-HP targets,
     // so gib policies saw local impacts but never authoritative remote ones.
     #[test]
     fn hit_declaration_on_zero_health_target_reaches_common_impact_dispatch() {
@@ -3457,6 +3703,37 @@ mod tests {
         assert_eq!(dispatches[0].target, fixture.target);
         assert!(dispatches[0].health_before.abs() <= f32::EPSILON);
         assert!((dispatches[0].health_after + 10.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn projectile_declaration_rejects_target_that_died_during_flight() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut health = fixture.target_health();
+        health.current = 0.0;
+        fixture
+            .registry
+            .set_component(fixture.target, health)
+            .unwrap();
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        shot.fire_origin = Vec3::new(0.0, 0.5, 0.0);
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert!(fixture.target_health().current.abs() <= f32::EPSILON);
+        assert!(fixture.registry.take_impact_dispatches().is_empty());
     }
 
     // Regression: multi-pellet declarations used to batch every damage record
@@ -3588,6 +3865,104 @@ mod tests {
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
         assert_eq!(live_pose_mismatch.target_health().current, 90.0);
+    }
+
+    #[test]
+    fn hitscan_and_pellet_declarations_keep_live_eye_world_los_validation() {
+        for pellet_count in [1, 8] {
+            let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
+            fixture.open_shots.retire(fixture.shot_id);
+            let mut shot = authorized_test_shot(
+                fixture.shot_id,
+                fixture.pawn,
+                fixture.weapon,
+                99,
+                10.0,
+                10.0,
+            );
+            shot.pellet_count = pellet_count;
+            fixture.open_shots.record(shot, 7);
+            let declaration =
+                fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+            let result = fixture.ingest_result(7, &declaration);
+
+            assert!(
+                result.fire_accepted,
+                "authorized shell {pellet_count} binds first"
+            );
+            assert!(
+                !result.hit_accepted,
+                "hitscan/pellet shell {pellet_count} keeps its live-eye wall check"
+            );
+            assert!((fixture.target_health().current - 100.0).abs() <= f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn projectile_declaration_uses_fire_origin_and_skips_late_world_los() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
+        fixture
+            .registry
+            .set_component(
+                fixture.pawn,
+                Transform {
+                    position: Vec3::new(-100.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .expect("the shooter can move after firing");
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        shot.fire_origin = Vec3::new(0.0, 0.5, 0.0);
+        shot.timeout_budget_ticks = projectile_timeout_budget_ticks(10.0, 1.0, 10.0, 1.0 / 60.0);
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(
+            result.hit_accepted,
+            "later cover and current pose cannot reject a projectile"
+        );
+        assert_eq!(fixture.target_health().current, 90.0);
+        let health = fixture.target_health();
+        let credit = health
+            .contributor_ledger
+            .entries()
+            .first()
+            .expect("later projectile damage preserves the authorized credit path");
+        assert_eq!(credit.last_attacker, Some(fixture.pawn));
+        assert_eq!(credit.last_weapon, Some(fixture.weapon));
+        assert_eq!(credit.source_id, "weapon.test.net");
+    }
+
+    #[test]
+    fn projectile_authority_reuses_the_existing_wire_versions() {
+        assert_eq!(
+            postretro_net::handshake::PROTOCOL_ID,
+            0x_5052_4C37,
+            "projectile authority adds no application message vocabulary"
+        );
+        assert_eq!(
+            postretro_net::handshake::WIRE_VERSION,
+            19,
+            "the fire-time snapshot and declaration reuse are host-internal"
+        );
+        assert_eq!(
+            postretro_net::wire::SNAPSHOT_VERSION,
+            13,
+            "projectile presentation reuses Transform plus entity_class snapshots"
+        );
     }
 
     #[test]
@@ -3869,7 +4244,8 @@ mod tests {
                 ComponentKind::EntityState => Some(ComponentKind::DeferredEffect),
                 ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
                 ComponentKind::Inventory => Some(ComponentKind::Touchable),
-                ComponentKind::Touchable => None,
+                ComponentKind::Touchable => Some(ComponentKind::Projectile),
+                ComponentKind::Projectile => None,
             }
         }
 
@@ -4411,7 +4787,7 @@ mod tests {
         );
         assert_eq!(
             entity_class.as_deref(),
-            Some("player"),
+            Some("descriptor:player"),
             "the host boot pawn carries the descriptor class needed for remote presentation"
         );
 
@@ -4431,7 +4807,7 @@ mod tests {
             .remote_entities
             .first()
             .expect("host pawn baseline asks the client to materialize its remote presentation");
-        assert_eq!(remote.entity_class, "player");
+        assert_eq!(remote.entity_class, "descriptor:player");
         assert!(remote_materialize::materialize_armed_remote_player(
             remote,
             &[host_player_descriptor()],

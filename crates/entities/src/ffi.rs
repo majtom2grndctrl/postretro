@@ -179,6 +179,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::DeferredEffect => "deferred_effect",
         ComponentKind::Inventory => "inventory",
         ComponentKind::Touchable => "touchable",
+        ComponentKind::Projectile => "projectile",
     }
 }
 
@@ -380,6 +381,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Touchable component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Projectile(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Projectile component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -543,6 +548,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Touchable(_) => Err(mlua::Error::RuntimeError(
                 "Touchable component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Projectile(_) => Err(mlua::Error::RuntimeError(
+                "Projectile component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

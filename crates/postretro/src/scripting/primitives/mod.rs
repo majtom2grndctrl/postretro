@@ -296,6 +296,76 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "hitscan",
             "Resolve instantly against the static-world collision ray.",
         )
+        .variant(
+            "projectile",
+            "Launch a straight-line projectile that resolves a direct impact on a later simulation pass.",
+        )
+        .finish();
+    registry
+        .register_type("ProjectileDescriptor")
+        .doc("Descriptor-owned tuning for a straight-line direct-impact projectile. Required on a weapon whose `resolution` is `projectile`; these fields are never FGD KVP overrides.")
+        .field("speed", "f32", "Launch speed in metres per second. Must be finite and > 0.")
+        .field("radius", "f32", "Swept-sphere collision radius in metres. Must be finite and >= 0.")
+        .field("lifetimeMs", "f32", "Maximum flight time in milliseconds. Must be finite and > 0; weapon range remains a second travel cap.")
+        .field("visual", "ProjectileVisual", "Required presentation-only body and optional trail. It never gates impact resolution.")
+        .finish();
+    registry
+        .register_type("ProjectileVisual")
+        .doc("Presentation attached when a projectile launches. A body is required; the optional trail is cosmetic.")
+        .field("body", "ProjectileBodyVisual", "Required discriminated projectile body.")
+        .field("trail?", "ProjectileTrailVisual", "Optional billboard-emitter trail configuration.")
+        .finish();
+    registry
+        .register_type("ProjectileSpriteBodyVisual")
+        .doc("Sprite-body payload for `ProjectileBodyVisual`.")
+        .field("sprite", "String", "Content-relative sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.")
+        .field("size?", "f32", "Billboard size in metres. Must be finite and > 0; defaults to 0.35.")
+        .field("opacity?", "f32", "Billboard opacity. Must be finite; defaults to 1.")
+        .field("rotation?", "f32", "Billboard rotation in radians. Must be finite; defaults to 0.")
+        .field("tint?", "[f32; 3]", "Linear RGB tint. Each value must be finite; defaults to white.")
+        .finish();
+    registry
+        .register_type("ProjectileModelBodyVisual")
+        .doc("Rigid model-body payload for `ProjectileBodyVisual`.")
+        .field("model", "String", "Content-relative glTF model path. Must be non-empty, use forward slashes, and contain no parent traversal.")
+        .finish();
+    registry
+        .register_tagged_union("ProjectileBodyVisual")
+        .flat()
+        .doc("Required projectile body. `kind` selects exactly one presentation form.")
+        .variant(
+            "sprite",
+            "ProjectileSpriteBodyVisual",
+            "Billboard sprite body.",
+        )
+        .variant(
+            "model",
+            "ProjectileModelBodyVisual",
+            "Rigid glTF model body.",
+        )
+        .finish();
+    registry
+        .register_type("ProjectileTrailVisual")
+        .doc("Optional billboard-emitter trail attached to a projectile. It is presentation-only and uses the emitter component's authored bounds.")
+        .field("sprite", "String", "Content-relative trail sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.")
+        .field("rate?", "f32", "Continuous particle spawn rate per second. Must be finite and >= 0; defaults to 30.")
+        .field("lifetime?", "f32", "Particle lifetime in seconds. Must be finite and > 0; defaults to 0.4.")
+        .field("burst?", "Option<u32>", "Optional one-time particle count emitted when the projectile spawns.")
+        .field("spread?", "f32", "Random angular spread in radians. Must be finite and >= 0; defaults to 0.")
+        .field("velocity?", "[f32; 3]", "Initial particle velocity in metres per second. Each value must be finite; defaults to zero.")
+        .field("buoyancy?", "f32", "Signed gravity multiplier control. Must be finite; defaults to 0.")
+        .field("drag?", "f32", "Particle drag. Must be finite and >= 0; defaults to 0.")
+        .field("sizeOverLifetime?", "Vec<f32>", "Non-empty finite billboard-size curve; defaults to a short fade-out curve.")
+        .field("opacityOverLifetime?", "Vec<f32>", "Non-empty finite opacity curve; defaults to a short fade-out curve.")
+        .field("color?", "[f32; 3]", "Linear RGB particle tint. Each value must be finite; defaults to white.")
+        .field("spinRate?", "f32", "Signed particle rotation rate. Must be finite; defaults to 0.")
+        .field("spinAnimation?", "ProjectileTrailSpinAnimation", "Optional spin-rate tween. Duration must be finite and > 0; rateCurve must be non-empty.")
+        .finish();
+    registry
+        .register_type("ProjectileTrailSpinAnimation")
+        .doc("Spin-rate tween copied into the projectile trail's billboard emitter when the projectile materializes.")
+        .field("duration", "f32", "Tween duration in seconds. Must be finite and > 0.")
+        .field("rateCurve", "Vec<f32>", "Non-empty curve of spin rates in radians per second, sampled evenly across duration.")
         .finish();
     registry
         .register_enum("ReloadStyle")
@@ -321,13 +391,14 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
-        .field("damage", "f32", "Base damage payload per pellet; a shell's total is damage × pelletCount. Must be finite and ≥ 0.")
-        .field("pelletCount?", "u32", "Pellets resolved per shell. Range: 1..=32; defaults to 1.")
+        .field("damage", "f32", "Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.")
+        .field("pelletCount?", "u32", "Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.")
         .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
-        .field("range", "f32", "Maximum hitscan distance in metres. Must be finite and > 0.")
+        .field("range", "f32", "Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0.")
         .field("fireRateMs", "f32", "Minimum interval between shots in milliseconds. Must be finite and > 0.")
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
-        .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
+        .field("resolution", "ResolutionMode", "Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block.")
+        .field("projectile?", "ProjectileDescriptor", "Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.")
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
@@ -344,15 +415,15 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("HitboxDescriptor")
-        .doc("One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.")
+        .doc("One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.")
         .field("halfExtents", "[f32; 3]", "Box half-size on each axis, in metres. Each element must be finite and > 0.")
         .field("offset?", "[f32; 3]", "Center offset from the entity's transform position, in metres. Each element must be finite. Optional; defaults to [0, 0, 0].")
         .finish();
     registry
         .register_type("HealthDescriptor")
-        .doc("Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn.")
+        .doc("Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling. The optional `hitbox` supplies a world-aligned AABB to the shared hitscan/projectile target query; a zone-bearing skinned model can supply target shapes without it. Materializes into a Health component with `current == max` at spawn.")
         .field("max", "f32", "Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.")
-        .field("hitbox?", "HitboxDescriptor", "Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.")
+        .field("hitbox?", "HitboxDescriptor", "Optional direct-impact AABB. Present participates in the shared hitscan/projectile query; absent requires usable model hit zones for targetability.")
         .field("zoneMultipliers?", "ZoneMultipliers", "Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.")
         .finish();
     registry

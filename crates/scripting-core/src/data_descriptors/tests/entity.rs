@@ -329,6 +329,138 @@ fn paired_weapon_pellet_stats_reject_out_of_range_values() {
 }
 
 #[test]
+fn projectile_weapon_rejects_multi_pellet_authoring_in_both_vms() {
+    let js = r#"({ components: { weapon: {
+        damage: 12, pelletCount: 2, range: 64, fireRateMs: 180,
+        fireMode: "semi", resolution: "projectile",
+        projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500,
+          visual: { body: { kind: "sprite", sprite: "sprites/bolt.png" } } }
+    } } })"#;
+    let lua = r#"return { components = { weapon = {
+        damage = 12, pelletCount = 2, range = 64, fireRateMs = 180,
+        fireMode = "semi", resolution = "projectile",
+        projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500,
+          visual = { body = { kind = "sprite", sprite = "sprites/bolt.png" } } }
+    } } }"#;
+
+    for error in [
+        eval_js(js, entity_descriptor_from_js)
+            .unwrap_err()
+            .to_string(),
+        eval_lua(lua, entity_descriptor_from_lua)
+            .unwrap_err()
+            .to_string(),
+    ] {
+        assert!(error.contains("pelletCount"), "{error}");
+        assert!(error.contains("exactly 1"), "{error}");
+    }
+}
+
+#[test]
+fn projectile_trail_spin_animation_has_quickjs_luau_parity() {
+    let js = r#"({ components: { weapon: {
+        damage: 12, range: 64, fireRateMs: 180,
+        fireMode: "semi", resolution: "projectile",
+        projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
+          body: { kind: "sprite", sprite: "sprites/bolt.png" },
+          trail: { sprite: "sprites/trail.png", spinAnimation: {
+            duration: 0.75, rateCurve: [0, 2, -1]
+          } }
+        } }
+    } } })"#;
+    let lua = r#"return { components = { weapon = {
+        damage = 12, range = 64, fireRateMs = 180,
+        fireMode = "semi", resolution = "projectile",
+        projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
+          body = { kind = "sprite", sprite = "sprites/bolt.png" },
+          trail = { sprite = "sprites/trail.png", spinAnimation = {
+            duration = 0.75, rateCurve = { 0, 2, -1 }
+          } }
+        } }
+    } } }"#;
+
+    let js = eval_js(js, entity_descriptor_from_js).unwrap();
+    let lua = eval_lua(lua, entity_descriptor_from_lua).unwrap();
+    assert_eq!(js, lua);
+    let animation = js
+        .weapon
+        .unwrap()
+        .projectile
+        .unwrap()
+        .visual
+        .trail
+        .unwrap()
+        .spin_animation
+        .unwrap();
+    assert!((animation.duration - 0.75).abs() <= f32::EPSILON);
+    assert_eq!(animation.rate_curve, [0.0, 2.0, -1.0]);
+}
+
+#[test]
+fn projectile_trail_function_is_rejected_with_vm_parity() {
+    let js = r#"({ components: { weapon: {
+        damage: 12, range: 64, fireRateMs: 180,
+        fireMode: "semi", resolution: "projectile",
+        projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
+          body: { kind: "sprite", sprite: "sprites/bolt.png" },
+          trail: function () {}
+        } }
+    } } })"#;
+    let lua = r#"return { components = { weapon = {
+        damage = 12, range = 64, fireRateMs = 180,
+        fireMode = "semi", resolution = "projectile",
+        projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
+          body = { kind = "sprite", sprite = "sprites/bolt.png" },
+          trail = function() end
+        } }
+    } } }"#;
+
+    let js_error = eval_js(js, entity_descriptor_from_js)
+        .unwrap_err()
+        .to_string();
+    let lua_error = eval_lua(lua, entity_descriptor_from_lua)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(js_error, lua_error);
+    assert!(
+        js_error.contains("components.weapon.projectile.visual.trail"),
+        "{js_error}"
+    );
+}
+
+#[test]
+fn projectile_trail_spin_animation_function_is_rejected_with_vm_parity() {
+    let js = r#"({ components: { weapon: {
+        damage: 12, range: 64, fireRateMs: 180,
+        fireMode: "semi", resolution: "projectile",
+        projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
+          body: { kind: "sprite", sprite: "sprites/bolt.png" },
+          trail: { sprite: "sprites/trail.png", spinAnimation: function () {} }
+        } }
+    } } })"#;
+    let lua = r#"return { components = { weapon = {
+        damage = 12, range = 64, fireRateMs = 180,
+        fireMode = "semi", resolution = "projectile",
+        projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
+          body = { kind = "sprite", sprite = "sprites/bolt.png" },
+          trail = { sprite = "sprites/trail.png", spinAnimation = function() end }
+        } }
+    } } }"#;
+
+    let js_error = eval_js(js, entity_descriptor_from_js)
+        .unwrap_err()
+        .to_string();
+    let lua_error = eval_lua(lua, entity_descriptor_from_lua)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(js_error, lua_error);
+    assert!(
+        js_error.contains("components.weapon.projectile.visual.trail.spinAnimation"),
+        "{js_error}"
+    );
+}
+
+#[test]
 fn paired_weapon_pellet_spread_rejects_non_finite_values_at_the_conversion_boundary() {
     for (js_stats, lua_stats) in [
         (", spreadDegrees: Infinity", ", spreadDegrees = math.huge"),

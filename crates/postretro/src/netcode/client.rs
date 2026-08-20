@@ -382,8 +382,9 @@ pub(crate) struct RemoteEntityMaterialize {
     /// The mapped `EntityId` the spawn produced (Transform-only at this point).
     pub(crate) entity_id: EntityId,
     /// The descriptor class the host stamped on the wire. The caller resolves this to
-    /// a descriptor and attaches its mesh; an unregistered class leaves the entity
-    /// transform-only (logged, not rejected).
+    /// a descriptor and attaches its mesh. This is the replicated semantic
+    /// representation, not necessarily the canonical descriptor name. An unregistered
+    /// class leaves the entity transform-only (logged, not rejected).
     pub(crate) entity_class: String,
     /// Optional current mesh-animation state carried by the spawn baseline. It is
     /// applied after descriptor mesh materialization so a client joining an already
@@ -1778,8 +1779,12 @@ impl ClientReplication {
     }
 
     /// Retain the descriptor identity already carried by the snapshot while
-    /// descriptor-aware presentation materialization has it in scope.
+    /// descriptor-aware presentation materialization has it in scope. The cache stores
+    /// the canonical descriptor name because overlay lookup consumes it directly.
     pub(crate) fn cache_remote_entity_class(&mut self, network_id: NetworkId, entity_class: &str) {
+        let entity_class =
+            super::descriptor_class::decode_replicated_descriptor_class(entity_class)
+                .canonical_name();
         self.remote_entity_classes
             .insert(network_id, entity_class.to_string());
     }

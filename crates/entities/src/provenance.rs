@@ -69,6 +69,10 @@ pub enum DescriptorSpawnPath {
     /// single-player spawn: it is descriptor-backed like `PlayerSpawn` but is NOT
     /// marked the local player and carries no global `active_wieldable`.
     NetworkSlot,
+    /// A host-created visual flight entity for a weapon descriptor's projectile.
+    /// It has only Transform/provenance plus presentation components; no gameplay
+    /// projectile state is materialized on a remote client.
+    ProjectilePresentation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

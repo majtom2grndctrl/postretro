@@ -32,7 +32,7 @@ use super::types::{
 /// cannot update those consumers atomically, so preserve presentation paths until
 /// reload while still applying ordinary weapon tuning changes immediately.
 #[cfg(debug_assertions)]
-fn defer_mesh_descriptor_refreshes(
+fn defer_visual_asset_descriptor_refreshes(
     old_descriptors: &[crate::data_descriptors::EntityTypeDescriptor],
     next_descriptors: &mut Vec<crate::data_descriptors::EntityTypeDescriptor>,
 ) -> bool {
@@ -57,6 +57,38 @@ fn defer_mesh_descriptor_refreshes(
         }
 
         let old_weapon = old_descriptor.and_then(|old| old.weapon.as_ref());
+        let old_projectile_assets = projectile_presentation_asset_paths(old_weapon);
+        let next_projectile_assets = projectile_presentation_asset_paths(next.weapon.as_ref());
+        if next_projectile_assets != old_projectile_assets {
+            deferred = true;
+            log::warn!(
+                "[Scripting] staged descriptor refresh deferred components.weapon projectile presentation assets for `{name}`; active renderer uploads remain in use until the next level load"
+            );
+
+            if let Some(old_weapon) = old_weapon {
+                if let Some(next_weapon) = next.weapon.as_mut() {
+                    match (
+                        old_weapon.projectile.as_ref(),
+                        next_weapon.projectile.as_mut(),
+                    ) {
+                        (Some(old_projectile), Some(next_projectile))
+                            if old_weapon.resolution == next_weapon.resolution =>
+                        {
+                            next_projectile.visual = old_projectile.visual.clone();
+                        }
+                        _ => {
+                            next_weapon.resolution = old_weapon.resolution;
+                            next_weapon.projectile = old_weapon.projectile.clone();
+                        }
+                    }
+                } else {
+                    next.weapon = Some(old_weapon.clone());
+                }
+            } else if let Some(next_weapon) = next.weapon.as_mut() {
+                next_weapon.resolution = crate::data_descriptors::ResolutionMode::Hitscan;
+                next_weapon.projectile = None;
+            }
+        }
         let presentation_paths = |weapon: Option<&crate::data_descriptors::WeaponDescriptor>| {
             weapon.and_then(|weapon| {
                 (weapon.third_person_model.is_some() || weapon.viewmodel.is_some())
@@ -105,7 +137,9 @@ fn defer_mesh_descriptor_refreshes(
             continue;
         }
         let weapon_presentation_installed = old.weapon.as_ref().is_some_and(|weapon| {
-            weapon.third_person_model.is_some() || weapon.viewmodel.is_some()
+            weapon.third_person_model.is_some()
+                || weapon.viewmodel.is_some()
+                || weapon.projectile.is_some()
         });
         if old.mesh.is_none() && !weapon_presentation_installed {
             continue;
@@ -118,6 +152,27 @@ fn defer_mesh_descriptor_refreshes(
         next_descriptors.push(old.clone());
     }
     deferred
+}
+
+#[cfg(debug_assertions)]
+fn projectile_presentation_asset_paths(
+    weapon: Option<&crate::data_descriptors::WeaponDescriptor>,
+) -> Option<(String, Option<String>)> {
+    let projectile = weapon.and_then(|weapon| weapon.projectile.as_ref())?;
+    let body = match &projectile.visual.body {
+        crate::data_descriptors::ProjectileBodyVisual::Sprite { sprite, .. } => {
+            format!("sprite:{sprite}")
+        }
+        crate::data_descriptors::ProjectileBodyVisual::Model { model } => {
+            format!("model:{model}")
+        }
+    };
+    let trail = projectile
+        .visual
+        .trail
+        .as_ref()
+        .map(|trail| trail.sprite.clone());
+    Some((body, trail))
 }
 
 impl ScriptRuntime {
@@ -262,8 +317,9 @@ impl ScriptRuntime {
     }
 
     /// Promote presentation descriptor changes deferred by a staged hot reload
-    /// before the next level's model and attachment install sweep reads descriptors.
-    /// Live components intentionally keep their existing bindings until then.
+    /// before the next level's model, attachment, and projectile-visual preload
+    /// sweeps read descriptors. Live components intentionally keep their existing
+    /// bindings until then.
     pub fn install_deferred_mesh_descriptors(&mut self, ctx: &ScriptCtx) -> bool {
         #[cfg(debug_assertions)]
         {
@@ -457,13 +513,13 @@ impl ScriptRuntime {
 
             let old_descriptors = ctx.data_registry.borrow().entities.clone();
             let incoming_descriptors = next_descriptors.clone();
-            if defer_mesh_descriptor_refreshes(&old_descriptors, &mut next_descriptors) {
+            if defer_visual_asset_descriptor_refreshes(&old_descriptors, &mut next_descriptors) {
                 // Preserve the unmodified, latest snapshot. A subsequent staged
                 // reload replaces it, so the next level sees the final authored
-                // mesh additions, removals, and attachment-map changes.
+                // presentation asset additions, removals, and path changes.
                 self.deferred_mesh_descriptors = Some(incoming_descriptors);
             } else {
-                // A later reload can revert every previously deferred mesh
+                // A later reload can revert every previously deferred presentation
                 // change. Its snapshot is now safe for the active level, so do
                 // not let an older deferred snapshot override it at install.
                 self.deferred_mesh_descriptors = None;
@@ -678,6 +734,7 @@ mod tests {
     use crate::components::health::HealthComponent;
     use crate::data_descriptors::{
         EntityTypeDescriptor, FireMode, HealthDescriptor, InventoryDescriptor, MeshDescriptor,
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
         ResolutionMode, WeaponDescriptor,
     };
     use crate::provenance::{DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath};
@@ -1166,6 +1223,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),
@@ -1173,6 +1231,36 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+        }
+    }
+
+    fn projectile_descriptor(
+        body: ProjectileBodyVisual,
+        trail_sprite: Option<&str>,
+        speed: f32,
+    ) -> ProjectileDescriptor {
+        ProjectileDescriptor {
+            speed,
+            radius: 0.1,
+            lifetime_ms: 1_500.0,
+            visual: ProjectileVisual {
+                body,
+                trail: trail_sprite.map(|sprite| ProjectileTrailVisual {
+                    sprite: sprite.to_string(),
+                    rate: 30.0,
+                    lifetime: 0.4,
+                    burst: None,
+                    spread: 0.0,
+                    velocity: [0.0; 3],
+                    buoyancy: 0.0,
+                    drag: 0.0,
+                    size_over_lifetime: vec![0.2, 0.0],
+                    opacity_over_lifetime: vec![0.8, 0.0],
+                    color: [1.0; 3],
+                    spin_rate: 0.0,
+                    spin_animation: None,
+                }),
+            },
         }
     }
 
@@ -1198,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn staged_refresh_defers_mesh_and_weapon_presentation_but_commits_tuning() {
+    fn staged_refresh_defers_visual_assets_but_commits_tuning() {
         // Regression: committing a refreshed attachment descriptor while a level
         // still holds old mesh bindings left remote materialization pointing at a
         // prop model the level never uploaded.
@@ -1219,6 +1307,21 @@ mod tests {
             Some("models/old_weapon.gltf"),
             Some("models/old_view.gltf"),
         ));
+        {
+            let weapon = old[0].weapon.as_mut().unwrap();
+            weapon.resolution = ResolutionMode::Projectile;
+            weapon.projectile = Some(projectile_descriptor(
+                ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/old_bolt.png".to_string(),
+                    size: 0.3,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0; 3],
+                },
+                Some("sprites/old_trail.png"),
+                20.0,
+            ));
+        }
         let mut next = vec![
             descriptor(
                 "remote_enemy",
@@ -1238,8 +1341,19 @@ mod tests {
             Some("models/new_weapon.gltf"),
             Some("models/new_view.gltf"),
         ));
+        {
+            let weapon = next[0].weapon.as_mut().unwrap();
+            weapon.resolution = ResolutionMode::Projectile;
+            weapon.projectile = Some(projectile_descriptor(
+                ProjectileBodyVisual::Model {
+                    model: "models/new_rocket.gltf".to_string(),
+                },
+                Some("sprites/new_trail.png"),
+                35.0,
+            ));
+        }
         let incoming = next.clone();
-        assert!(defer_mesh_descriptor_refreshes(&old, &mut next));
+        assert!(defer_visual_asset_descriptor_refreshes(&old, &mut next));
 
         assert_eq!(
             next[0].mesh, old[0].mesh,
@@ -1265,6 +1379,32 @@ mod tests {
         assert_eq!(
             active_weapon.viewmodel.as_deref(),
             Some("models/old_view.gltf")
+        );
+        let active_projectile = active_weapon.projectile.as_ref().unwrap();
+        assert!((active_projectile.speed - 35.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            active_projectile.visual,
+            old[0]
+                .weapon
+                .as_ref()
+                .unwrap()
+                .projectile
+                .as_ref()
+                .unwrap()
+                .visual,
+            "active-level launches keep only renderer-preloaded projectile visual assets"
+        );
+        assert_ne!(
+            incoming[0]
+                .weapon
+                .as_ref()
+                .unwrap()
+                .projectile
+                .as_ref()
+                .unwrap()
+                .visual,
+            active_projectile.visual,
+            "the next-level snapshot retains the newly authored body and trail assets"
         );
         assert_eq!(
             incoming[0]
@@ -1316,14 +1456,60 @@ mod tests {
         ));
         let mut tuning_only = descriptor("tuning_only", None, None);
         tuning_only.weapon = Some(weapon_descriptor(10.0, None, None));
-        let old = vec![mesh_backed.clone(), weapon_backed.clone(), tuning_only];
+        let mut projectile_backed = descriptor("projectile_backed", None, None);
+        let mut projectile_weapon = weapon_descriptor(10.0, None, None);
+        projectile_weapon.resolution = ResolutionMode::Projectile;
+        projectile_weapon.projectile = Some(projectile_descriptor(
+            ProjectileBodyVisual::Model {
+                model: "models/projectile.gltf".to_string(),
+            },
+            Some("sprites/projectile_trail.png"),
+            20.0,
+        ));
+        projectile_backed.weapon = Some(projectile_weapon);
+        let old = vec![
+            mesh_backed.clone(),
+            weapon_backed.clone(),
+            projectile_backed.clone(),
+            tuning_only,
+        ];
         let mut next = Vec::new();
 
-        assert!(defer_mesh_descriptor_refreshes(&old, &mut next));
+        assert!(defer_visual_asset_descriptor_refreshes(&old, &mut next));
         assert_eq!(
             next,
-            vec![mesh_backed, weapon_backed],
+            vec![mesh_backed, weapon_backed, projectile_backed],
             "installed presentation descriptors remain addressable even when no live holder is observable; tuning-only deletion remains immediate"
+        );
+    }
+
+    #[test]
+    fn staged_refresh_defers_new_projectile_assets_until_level_install() {
+        let old = vec![descriptor("new_projectile", None, None)];
+        let mut next = old.clone();
+        let mut weapon = weapon_descriptor(18.0, None, None);
+        weapon.resolution = ResolutionMode::Projectile;
+        weapon.projectile = Some(projectile_descriptor(
+            ProjectileBodyVisual::Sprite {
+                sprite: "sprites/new_bolt.png".to_string(),
+                size: 0.3,
+                opacity: 1.0,
+                rotation: 0.0,
+                tint: [1.0; 3],
+            },
+            Some("sprites/new_trail.png"),
+            24.0,
+        ));
+        next[0].weapon = Some(weapon);
+
+        let incoming = next.clone();
+        assert!(defer_visual_asset_descriptor_refreshes(&old, &mut next));
+        let active_weapon = next[0].weapon.as_ref().unwrap();
+        assert_eq!(active_weapon.resolution, ResolutionMode::Hitscan);
+        assert!(active_weapon.projectile.is_none());
+        assert!(
+            incoming[0].weapon.as_ref().unwrap().projectile.is_some(),
+            "the deferred next-level snapshot keeps the new projectile assets"
         );
     }
 

@@ -7,6 +7,7 @@ mod impact;
 mod machine;
 mod state;
 
+pub(crate) use commands::spawn_projectile;
 pub(super) use commands::{
     LocalWeaponCommandResult, normalize_all_inventory_liveness, normalize_inventory_liveness,
     refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
@@ -36,12 +37,18 @@ mod tests {
 
     use crate::collision::CollisionWorld;
     use crate::kinematic_mover::MoverTickStateTable;
+    use crate::netcode::{
+        MovementOwners, NetworkIdAllocator, OpenAuthorizedShots, ingest_hit_declaration_for_test,
+    };
     use crate::scripting_systems::hit_zones::HitZoneStore;
     use crate::sim::tests::{
         remote_command, run_local_only_tick, run_remote_only_tick, sim_command, spawn_reload_pair,
         trigger_movement, weapon_component,
     };
-    use crate::sim::{PostMovementCommand, ReloadDelivery, ReloadOutcome, ShotId, simulate_tick};
+    use crate::sim::{
+        PostMovementCommand, PredictedProjectileResolution, ReloadDelivery, ReloadOutcome, ShotId,
+        advance_predicted, simulate_tick,
+    };
     use crate::weapon::tests::{
         ammo_weapon_component as gate_ammo_weapon_component, wall_world,
         weapon_component as gate_weapon_component,
@@ -58,8 +65,10 @@ mod tests {
         AmmoResource, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
     };
     use postretro_entities::{AmmoReserve, EntityId, EntityRegistry, Transform};
-    use postretro_foundation::FireMode;
-    use postretro_net::wire::NetworkId;
+    use postretro_foundation::{
+        FireMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual,
+    };
+    use postretro_net::wire::{self, ClientMessage, HitDeclaration, HitRecord, NetworkId};
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
     fn fire_command(pressed: bool, active: bool) -> WeaponFireCommand {
@@ -150,6 +159,27 @@ mod tests {
         target
     }
 
+    fn projectile_weapon_component(credit_source: &str) -> WeaponComponent {
+        let mut component = weapon_component(credit_source);
+        component.resolution = ResolutionMode::Projectile;
+        component.projectile = Some(ProjectileDescriptor {
+            speed: 1.0,
+            radius: 0.0,
+            lifetime_ms: 5_000.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/projectiles/test-bolt.png".to_string(),
+                    size: 0.25,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                },
+                trail: None,
+            },
+        });
+        component
+    }
+
     fn set_reload_style(
         registry: &mut EntityRegistry,
         weapon: EntityId,
@@ -176,6 +206,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some("weapon.test.reload".to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -1793,6 +1824,10 @@ mod tests {
         assert_eq!(events.authorized_shots[0].shot.fire_tick, 33);
         assert_eq!(events.authorized_shots[0].shot.pellet_count, 8);
         assert_eq!(events.authorized_shots[0].owner_client_id, 7);
+        assert!(
+            events.rejected_remote_projectile_fires.is_empty(),
+            "accepted hitscan/pellet FIRE keeps its existing declaration-time verdict path"
+        );
         assert_eq!(events.weapon, vec!["activate"]);
         let registry = registry.borrow();
         let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
@@ -1803,6 +1838,419 @@ mod tests {
         );
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert!((health.current - 100.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn local_projectile_fire_spawns_a_deferred_visual_projectile_without_hitscan_damage() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    weapon,
+                    projectile_weapon_component("weapon.test.projectile"),
+                )
+                .expect("projectile weapon attaches");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry
+                .set_component(pawn, inventory)
+                .expect("pawn wields projectile weapon");
+            let target = registry.spawn(Transform {
+                position: Vec3::new(0.0, 0.0, -0.75),
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: Some(Hitbox {
+                            half_extents: Vec3::splat(0.1),
+                            offset: Vec3::ZERO,
+                        }),
+                        death_handled: false,
+                        pending_kill_credit: None,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .expect("target health attaches");
+            (pawn, weapon, target)
+        };
+        let mut ignore_impact = ignore_impact;
+
+        let result = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+            &mut ignore_impact,
+        );
+
+        assert_eq!(result.weapon_events, vec!["activate", "spawned"]);
+        let [projectile] = result.projectile_spawns.as_slice() else {
+            panic!("accepted projectile fire must produce exactly one projectile");
+        };
+        let registry = registry.borrow();
+        assert!(
+            registry
+                .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+                    *projectile
+                )
+                .expect("projectile carries gameplay flight state")
+                .spawned,
+            "the projectile is marked to skip the fire tick's advance pass"
+        );
+        assert_eq!(
+            registry
+                .get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(
+                    *projectile
+                )
+                .expect("descriptor body attaches at fire time")
+                .sprite,
+            "sprites/projectiles/test-bolt.png"
+        );
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current
+                - 100.0)
+                .abs()
+                <= f32::EPSILON,
+            "fire itself emits no hitscan impact; damage waits for projectile advance"
+        );
+        assert!(registry.exists(weapon));
+    }
+
+    #[test]
+    fn rejected_remote_projectile_fire_mints_neither_authorization_nor_visual() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            let mut component = projectile_weapon_component("weapon.test.projectile");
+            component.cooldown_remaining_ms = 100.0;
+            registry
+                .set_component(weapon, component)
+                .expect("projectile weapon attaches");
+            (pawn, weapon)
+        };
+
+        let events = run_remote_only_tick(
+            registry,
+            &[remote_command(pawn, Some(weapon), 42, 9, true, false)],
+        );
+
+        assert!(events.authorized_shots.is_empty());
+        assert!(events.remote_projectile_presentation_launches.is_empty());
+        assert_eq!(
+            events.rejected_remote_projectile_fires,
+            vec![crate::sim::RemoteProjectileFireRejection {
+                owner_client_id: 7,
+                shot_id: ShotId::from_parts(NetworkId(42), 9),
+            }],
+            "the host emits an immediate owner-private correction instead of waiting for flight expiry"
+        );
+        assert!(events.weapon.is_empty());
+    }
+
+    #[test]
+    fn rejected_remote_projectile_fire_cannot_later_declare_plausible_damage() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry
+                .set_component(pawn, trigger_movement())
+                .expect("remote pawn has a live fire origin");
+            let weapon = registry.spawn(Transform::default());
+            let mut component = projectile_weapon_component("weapon.test.projectile");
+            component.cooldown_remaining_ms = 100.0;
+            registry
+                .set_component(weapon, component)
+                .expect("projectile weapon attaches");
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, weapon, target)
+        };
+        let shot_id = ShotId::from_parts(NetworkId(42), 9);
+        let events = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 9, true, false)],
+        );
+        assert!(
+            events.authorized_shots.is_empty(),
+            "cooldown rejection mints no authority for the declared shot"
+        );
+        assert_eq!(events.rejected_remote_projectile_fires.len(), 1);
+        assert_eq!(events.rejected_remote_projectile_fires[0].shot_id, shot_id);
+
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(pawn);
+        let target_network_id = allocator.stamp(target);
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, 7);
+        let mut open_shots = OpenAuthorizedShots::new();
+        for open in events.authorized_shots {
+            open_shots.record(open.shot, open.owner_client_id);
+        }
+        let declaration = HitDeclaration {
+            shot_id: shot_id.raw(),
+            records: vec![HitRecord {
+                target: target_network_id.0,
+                point: Vec3::new(0.0, 0.5, -5.0).to_array(),
+                zone: None,
+            }],
+        };
+
+        let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+            &mut registry.borrow_mut(),
+            &CollisionWorld::new(),
+            &allocator,
+            &owners,
+            &mut open_shots,
+            7,
+            &declaration,
+        );
+        assert!(!fire_accepted);
+        assert!(!hit_accepted);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current,
+            100.0,
+            "an unbound declaration cannot apply host damage"
+        );
+    }
+
+    #[test]
+    fn connected_client_projectile_declares_later_and_host_applies_authorized_credit() {
+        let host_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (host_pawn, host_weapon, host_target) = {
+            let mut registry = host_registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry
+                .set_component(pawn, trigger_movement())
+                .expect("host remote pawn has a fire-time eye");
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    weapon,
+                    projectile_weapon_component("weapon.test.projectile"),
+                )
+                .expect("host projectile weapon attaches");
+            let target = registry.spawn(Transform {
+                position: Vec3::new(0.0, 0.0, -2.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: Some(Hitbox {
+                            half_extents: Vec3::splat(0.5),
+                            offset: Vec3::ZERO,
+                        }),
+                        death_handled: false,
+                        pending_kill_credit: None,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .expect("host target has health");
+            (pawn, weapon, target)
+        };
+        let shot_id = ShotId::from_parts(NetworkId(42), 9);
+        let host_fire = run_remote_only_tick(
+            host_registry.clone(),
+            &[remote_command(
+                host_pawn,
+                Some(host_weapon),
+                42,
+                9,
+                true,
+                false,
+            )],
+        );
+        let [authorized] = host_fire.authorized_shots.as_slice() else {
+            panic!("accepted remote projectile fire must mint exactly one authorized shot");
+        };
+        assert_eq!(authorized.shot.shot_id, shot_id);
+        assert!(authorized.shot.is_projectile);
+        assert!(
+            authorized.shot.fire_origin.is_finite()
+                && authorized.shot.fire_origin.y > 0.45
+                && authorized.shot.fire_origin.y <= 0.5,
+            "the accepted remote fire freezes its live eye origin after this tick's movement"
+        );
+
+        let client_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (client_pawn, client_weapon, client_target) = {
+            let mut registry = client_registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            let target = registry.spawn(Transform {
+                position: Vec3::new(0.0, 0.0, -2.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: Some(Hitbox {
+                            half_extents: Vec3::splat(0.5),
+                            offset: Vec3::ZERO,
+                        }),
+                        death_handled: false,
+                        pending_kill_credit: None,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .expect("client target has a predictable hitbox");
+            (pawn, weapon, target)
+        };
+        let mut client_weapon_component = projectile_weapon_component("weapon.test.projectile");
+        let launch = weapon::resolve_client_fire(
+            &mut client_weapon_component,
+            "weapon.test.projectile",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            9,
+            &CollisionWorld::new(),
+            &client_registry.borrow(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("connected client accepts its local fire intent")
+        .projectile_launch
+        .expect("projectile resolution creates deferred flight rather than a same-frame hit");
+        let client_projectile = spawn_projectile(
+            &mut client_registry.borrow_mut(),
+            client_pawn,
+            client_weapon,
+            launch,
+            Some(shot_id.raw()),
+        )
+        .expect("connected client has space for its predicted projectile");
+        assert!(client_registry.borrow().exists(client_projectile));
+
+        let mut resolutions = Vec::new();
+        advance_predicted(
+            &client_registry,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        assert!(
+            resolutions.is_empty(),
+            "the launch pass clears spawned state without declaring a same-tick impact"
+        );
+        advance_predicted(
+            &client_registry,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            2.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        let [
+            PredictedProjectileResolution::Impact {
+                shot_id: declared_shot_id,
+                impact,
+            },
+        ] = resolutions.as_slice()
+        else {
+            panic!("later predicted projectile advance must resolve exactly one impact");
+        };
+        assert_eq!(*declared_shot_id, shot_id.raw());
+        assert_eq!(impact.target, Some(client_target));
+        assert_eq!(
+            client_registry
+                .borrow()
+                .get_component::<HealthComponent>(client_target)
+                .expect("client target remains a presentation query candidate")
+                .current,
+            100.0,
+            "client projectile prediction emits a declaration but never changes client health"
+        );
+
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(host_pawn);
+        let host_target_network_id = allocator.stamp(host_target);
+        let mut owners = MovementOwners::new();
+        owners.set(host_pawn, 7);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(authorized.shot.clone(), authorized.owner_client_id);
+        let declaration = HitDeclaration {
+            shot_id: *declared_shot_id,
+            records: vec![HitRecord {
+                target: host_target_network_id.0,
+                point: impact.point.to_array(),
+                zone: impact.zone.clone(),
+            }],
+        };
+        let bytes = wire::encode(&ClientMessage::HitDeclaration(declaration));
+        let ClientMessage::HitDeclaration(delivered) =
+            wire::decode(&bytes).expect("client declaration survives the real input-wire encoding")
+        else {
+            panic!("encoded declaration retains its input message variant");
+        };
+        let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+            &mut host_registry.borrow_mut(),
+            &CollisionWorld::new(),
+            &allocator,
+            &owners,
+            &mut open_shots,
+            7,
+            &delivered,
+        );
+        assert!(fire_accepted);
+        assert!(hit_accepted);
+        let host_registry = host_registry.borrow();
+        let host_health = host_registry
+            .get_component::<HealthComponent>(host_target)
+            .expect("host target remains live after nonlethal impact");
+        assert_eq!(host_health.current, 90.0);
+        assert_eq!(
+            host_health
+                .contributor_ledger
+                .recorded_damage_by_source("weapon.test.projectile"),
+            Some(10.0),
+            "the host credits the authorized projectile weapon rather than the client"
+        );
+        let credit = host_health
+            .contributor_ledger
+            .entries()
+            .first()
+            .expect("accepted host impact records attacker credit");
+        assert_eq!(credit.last_attacker, Some(host_pawn));
+        assert_eq!(credit.last_weapon, Some(host_weapon));
     }
 
     // Regression: a delayed command for a despawned remote pawn cancelled and

@@ -18,6 +18,7 @@ use winit::event_loop::ActiveEventLoop;
 
 use crate::frame_timing::InterpolableState;
 use crate::render;
+use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -933,14 +934,17 @@ impl App {
         }
 
         // Register sprite collections for every distinct emitter `sprite` in the
-        // registry — map-spawned and descriptor-spawned alike — plus the weapon
-        // impact collection. One pass after segment B populated the full registry
-        // (both dispatch sweeps), folding what were two interleaved passes before
-        // the extraction; the registered-collection set is identical.
+        // registry — map-spawned and descriptor-spawned alike — plus descriptor
+        // projectile bodies/trails and the weapon impact collection. A projectile
+        // materializes only after a fire command, so descriptor discovery is the
+        // required level-install path that keeps GPU uploads renderer-owned.
         if let Some(renderer) = self.renderer.as_mut() {
-            use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
             use postretro_entities::{ComponentKind, ComponentValue};
             let texture_root = self.content_root.join("textures");
+            let projectile_sprites = {
+                let data_registry = script_ctx.data_registry.borrow();
+                projectile_presentation_assets(&data_registry.entities).1
+            };
             let registry = script_ctx.registry.borrow();
             let particle_render = &mut self
                 .session
@@ -948,17 +952,24 @@ impl App {
                 .expect("session installed before level install")
                 .particle_render;
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut collections = Vec::new();
             for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
                 let ComponentValue::BillboardEmitter(c) = value else {
                     continue;
                 };
-                let _: &BillboardEmitterComponent = c;
-                let collection = c.sprite.clone();
+                collections.push((c.sprite.clone(), c.lifetime));
+            }
+            collections.extend(
+                projectile_sprites
+                    .into_iter()
+                    .map(|sprite| (sprite.collection, sprite.lifetime)),
+            );
+            for (collection, lifetime) in collections {
                 if collection.is_empty() || !seen.insert(collection.clone()) {
                     continue;
                 }
                 let frames =
-                    postretro_render_cpu::smoke::load_collection_frames(&texture_root, &collection)
+                    postretro_render_cpu::smoke::load_sprite_frames(&texture_root, &collection)
                         .unwrap_or_else(|| {
                             vec![postretro_render_cpu::smoke::SpriteFrame {
                                 data: vec![255, 255, 255, 255],
@@ -966,7 +977,7 @@ impl App {
                                 height: 1,
                             }]
                         });
-                renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
+                renderer.register_smoke_collection(&collection, &frames, 0.3, lifetime);
                 particle_render.register_sprite(&collection);
             }
 

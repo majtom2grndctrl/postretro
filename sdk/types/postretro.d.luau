@@ -244,10 +244,97 @@ export type TouchMode =
   --- Require an explicit use press while overlapping before touch policy can take the item.
   | "press"
 
---- Valid values: `hitscan`.
+--- Valid values: `hitscan`, `projectile`.
 export type ResolutionMode =
   --- Resolve instantly against the static-world collision ray.
   "hitscan"
+  --- Launch a straight-line projectile that resolves a direct impact on a later simulation pass.
+  | "projectile"
+
+--- Descriptor-owned tuning for a straight-line direct-impact projectile. Required on a weapon whose `resolution` is `projectile`; these fields are never FGD KVP overrides.
+export type ProjectileDescriptor = {
+  --- Launch speed in metres per second. Must be finite and > 0.
+  speed: number,
+  --- Swept-sphere collision radius in metres. Must be finite and >= 0.
+  radius: number,
+  --- Maximum flight time in milliseconds. Must be finite and > 0; weapon range remains a second travel cap.
+  lifetimeMs: number,
+  --- Required presentation-only body and optional trail. It never gates impact resolution.
+  visual: ProjectileVisual,
+}
+
+--- Presentation attached when a projectile launches. A body is required; the optional trail is cosmetic.
+export type ProjectileVisual = {
+  --- Required discriminated projectile body.
+  body: ProjectileBodyVisual,
+  --- Optional billboard-emitter trail configuration.
+  trail: ProjectileTrailVisual?,
+}
+
+--- Sprite-body payload for `ProjectileBodyVisual`.
+export type ProjectileSpriteBodyVisual = {
+  --- Content-relative sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.
+  sprite: string,
+  --- Billboard size in metres. Must be finite and > 0; defaults to 0.35.
+  size: number?,
+  --- Billboard opacity. Must be finite; defaults to 1.
+  opacity: number?,
+  --- Billboard rotation in radians. Must be finite; defaults to 0.
+  rotation: number?,
+  --- Linear RGB tint. Each value must be finite; defaults to white.
+  tint: {number}?,
+}
+
+--- Rigid model-body payload for `ProjectileBodyVisual`.
+export type ProjectileModelBodyVisual = {
+  --- Content-relative glTF model path. Must be non-empty, use forward slashes, and contain no parent traversal.
+  model: string,
+}
+
+--- Required projectile body. `kind` selects exactly one presentation form.
+export type ProjectileBodyVisual =
+  --- Billboard sprite body.
+  (ProjectileSpriteBodyVisual & { kind: "sprite" })
+  --- Rigid glTF model body.
+  | (ProjectileModelBodyVisual & { kind: "model" })
+
+--- Optional billboard-emitter trail attached to a projectile. It is presentation-only and uses the emitter component's authored bounds.
+export type ProjectileTrailVisual = {
+  --- Content-relative trail sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.
+  sprite: string,
+  --- Continuous particle spawn rate per second. Must be finite and >= 0; defaults to 30.
+  rate: number?,
+  --- Particle lifetime in seconds. Must be finite and > 0; defaults to 0.4.
+  lifetime: number?,
+  --- Optional one-time particle count emitted when the projectile spawns.
+  burst: number?,
+  --- Random angular spread in radians. Must be finite and >= 0; defaults to 0.
+  spread: number?,
+  --- Initial particle velocity in metres per second. Each value must be finite; defaults to zero.
+  velocity: {number}?,
+  --- Signed gravity multiplier control. Must be finite; defaults to 0.
+  buoyancy: number?,
+  --- Particle drag. Must be finite and >= 0; defaults to 0.
+  drag: number?,
+  --- Non-empty finite billboard-size curve; defaults to a short fade-out curve.
+  sizeOverLifetime: {number}?,
+  --- Non-empty finite opacity curve; defaults to a short fade-out curve.
+  opacityOverLifetime: {number}?,
+  --- Linear RGB particle tint. Each value must be finite; defaults to white.
+  color: {number}?,
+  --- Signed particle rotation rate. Must be finite; defaults to 0.
+  spinRate: number?,
+  --- Optional spin-rate tween. Duration must be finite and > 0; rateCurve must be non-empty.
+  spinAnimation: ProjectileTrailSpinAnimation?,
+}
+
+--- Spin-rate tween copied into the projectile trail's billboard emitter when the projectile materializes.
+export type ProjectileTrailSpinAnimation = {
+  --- Tween duration in seconds. Must be finite and > 0.
+  duration: number,
+  --- Non-empty curve of spin rates in radians per second, sampled evenly across duration.
+  rateCurve: {number},
+}
 
 --- Valid values: `magazine`, `perShell`.
 export type ReloadStyle =
@@ -279,20 +366,22 @@ export type WeaponResource =
 
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
-  --- Base damage payload per pellet; a shell's total is damage × pelletCount. Must be finite and ≥ 0.
+  --- Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.
   damage: number,
-  --- Pellets resolved per shell. Range: 1..=32; defaults to 1.
+  --- Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.
   pelletCount: number?,
   --- Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).
   spreadDegrees: number?,
-  --- Maximum hitscan distance in metres. Must be finite and > 0.
+  --- Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0.
   range: number,
   --- Minimum interval between shots in milliseconds. Must be finite and > 0.
   fireRateMs: number,
   --- Semi or automatic input gate.
   fireMode: FireMode,
-  --- Shot resolution mode. Currently supports hitscan only.
+  --- Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block.
   resolution: ResolutionMode,
+  --- Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.
+  projectile: ProjectileDescriptor?,
   --- Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.
   creditSource: string?,
   --- Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
@@ -317,7 +406,7 @@ export type TouchableDescriptor = {
   radius: number?,
 }
 
---- One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
+--- One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
 export type HitboxDescriptor = {
   --- Box half-size on each axis, in metres. Each element must be finite and > 0.
   halfExtents: {number},
@@ -325,11 +414,11 @@ export type HitboxDescriptor = {
   offset: {number}?,
 }
 
---- Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn.
+--- Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling. The optional `hitbox` supplies a world-aligned AABB to the shared hitscan/projectile target query; a zone-bearing skinned model can supply target shapes without it. Materializes into a Health component with `current == max` at spawn.
 export type HealthDescriptor = {
   --- Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.
   max: number,
-  --- Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.
+  --- Optional direct-impact AABB. Present participates in the shared hitscan/projectile query; absent requires usable model hit zones for targetability.
   hitbox: HitboxDescriptor?,
   --- Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.
   zoneMultipliers: { [string]: number }?,

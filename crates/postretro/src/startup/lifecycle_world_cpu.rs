@@ -2,6 +2,7 @@
 
 use super::*;
 
+use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
@@ -291,6 +292,10 @@ pub(crate) fn install_world_cpu(
     // declared third- and first-person model so attachment/viewmodel changes never
     // trigger runtime model loads or leave a transient placeholder.
     let weapon_presentation_models = weapon_presentation_models(&descriptors);
+    // Projectile meshes materialize only when a weapon fires, after the registry
+    // sweep. Enroll every descriptor-owned body model in this install-time upload
+    // so gameplay never reaches across the renderer boundary.
+    let (projectile_presentation_models, _) = projectile_presentation_assets(&descriptors);
     // A loadout-only touchable wieldable loses its own MeshComponent when held,
     // but drop restores that descriptor mesh during gameplay. Preload the world
     // holder and attachments now; model upload remains renderer-owned.
@@ -410,6 +415,11 @@ pub(crate) fn install_world_cpu(
             }
         }
         for model in &weapon_presentation_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &projectile_presentation_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

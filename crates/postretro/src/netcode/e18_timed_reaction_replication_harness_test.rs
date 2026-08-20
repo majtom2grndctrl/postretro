@@ -292,7 +292,6 @@ struct TimedAlarmHarness {
     host_state: HostStateReplication,
     replication_identity: ReplicatedSlotIdentity<'static>,
     host_remote_pawn: EntityId,
-    host_local_pawn: EntityId,
     host_owners: MovementOwners,
     host_scheduler: ReactionScheduler,
     host_sequence_registry: SequencedPrimitiveRegistry,
@@ -337,7 +336,7 @@ impl TimedAlarmHarness {
         let host_ctx = ScriptCtx::new();
         install_fixture_level_script(&host_ctx);
 
-        let (_host_trigger, host_bindings, host_trigger_bridge, host_remote_pawn, host_local_pawn) = {
+        let (_host_trigger, host_bindings, host_trigger_bridge, host_remote_pawn, _host_local_pawn) = {
             let mut registry = host_ctx.registry.borrow_mut();
             let remote_pawn = registry.spawn(Transform {
                 position: Vec3::new(0.0, 1.0, 0.0),
@@ -416,7 +415,6 @@ impl TimedAlarmHarness {
             host_state: HostStateReplication::new(),
             replication_identity: alarm_replication_identity(),
             host_remote_pawn,
-            host_local_pawn,
             host_owners,
             host_scheduler,
             host_sequence_registry,
@@ -684,6 +682,10 @@ impl TimedAlarmHarness {
             let step = self.step_network();
             let applied_this_step = self.client_applied_alarm;
             if applied_this_step {
+                assert!(
+                    step.accepted_snapshot,
+                    "the alarm can only apply on a step that accepted a host snapshot"
+                );
                 assert_eq!(
                     step.crossing_events,
                     vec![PRESENTATION_EVENT.to_string()],

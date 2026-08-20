@@ -6287,6 +6287,29 @@ impl App {
         if !self.is_connected_client() {
             return;
         }
+        self.run_client_fire_path_post_loop_inner(
+            snapshot,
+            zero_tick_snapshot,
+            sent_fire_commands,
+            frame_dt,
+            frame_anim_time,
+            pending_weapon_script_events,
+        );
+        // Connected clients never enter the host simulation seam. Advance their
+        // locally predicted projectiles once here, after interpolation wrote the
+        // rendered poses, so they cannot double-advance in a catch-up tick.
+        self.advance_client_predicted_projectiles(frame_dt, frame_anim_time);
+    }
+
+    fn run_client_fire_path_post_loop_inner(
+        &mut self,
+        snapshot: Option<&input::ActionSnapshot>,
+        zero_tick_snapshot: Option<&input::ActionSnapshot>,
+        sent_fire_commands: &[ClientFrameFireCommand],
+        frame_dt: f32,
+        frame_anim_time: f64,
+        pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
+    ) {
         let Some(snapshot) = client_fire_snapshot_for_post_loop(snapshot, zero_tick_snapshot)
         else {
             return;
@@ -6323,7 +6346,7 @@ impl App {
             return;
         };
         let script_ctx = session.scripting.script_ctx.clone();
-        let (active_slot, weapon_id, mut component, pellet_salt_name) = {
+        let (local_pawn, active_slot, weapon_id, mut component, pellet_salt_name) = {
             let registry = script_ctx.registry.borrow();
             let Some((active_slot, weapon_id)) = local_active_wieldable(&registry) else {
                 if zero_tick_fire_command.is_some()
@@ -6333,6 +6356,9 @@ impl App {
                 }
                 return;
             };
+            let local_pawn = registry
+                .local_player_movement_pawn()
+                .expect("an active local wieldable belongs to the local pawn");
             let Ok(component) = registry
                 .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon_id)
                 .cloned()
@@ -6340,7 +6366,13 @@ impl App {
                 return;
             };
             let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &component);
-            (active_slot, weapon_id, component, pellet_salt_name)
+            (
+                local_pawn,
+                active_slot,
+                weapon_id,
+                component,
+                pellet_salt_name,
+            )
         };
         if let Some(command) = zero_tick_fire_command.as_mut() {
             command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
@@ -6409,6 +6441,7 @@ impl App {
                 }
             }
             let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
+            let projectile_launch = resolution.projectile_launch.clone();
             self.client_predicted_shots.predict(
                 shot_id,
                 weapon_id,
@@ -6421,13 +6454,28 @@ impl App {
             // batch at the shared `fire_named_event` site; a host reject rolls this
             // shot's `muzzle_fx_visible` state back in reconcile.
             pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon("activate"));
-            let _ = netcode::client_send_hit_declaration(
-                self.session
-                    .as_mut()
-                    .and_then(|session| session.net_endpoint.as_mut()),
-                shot_id,
-                &resolution.hits,
-            );
+            let projectile_spawned = projectile_launch.is_some_and(|launch| {
+                sim::spawn_projectile(
+                    &mut script_ctx.registry.borrow_mut(),
+                    local_pawn,
+                    weapon_id,
+                    launch,
+                    shot_id,
+                )
+                .is_some()
+            });
+            if !projectile_spawned {
+                // Hitscan resolves now. A projectile that could not materialize
+                // cannot declare later, so promptly retire its authorized shot
+                // with the same valid empty declaration used on normal expiry.
+                let _ = netcode::client_send_hit_declaration(
+                    self.session
+                        .as_mut()
+                        .and_then(|session| session.net_endpoint.as_mut()),
+                    shot_id,
+                    &resolution.hits,
+                );
+            }
             // Only the first tick casts a ray (once per frame, at the rendered pose);
             // each later tick in a multi-tick frame still authorized a host shot, so
             // send an empty declaration per remaining tick to retire it and keep
@@ -6446,6 +6494,50 @@ impl App {
         } else if zero_tick_fire_command.is_some() {
             if let Some(session) = self.session.as_mut() {
                 session.gameplay_input_latch.clear_pressed(Action::Shoot);
+            }
+        }
+    }
+
+    fn advance_client_predicted_projectiles(&mut self, frame_dt: f32, frame_anim_time: f64) {
+        let mut declarations = Vec::new();
+        {
+            let Some(session) = self.session.as_ref() else {
+                return;
+            };
+            sim::advance_predicted(
+                &session.scripting.script_ctx.registry,
+                &self.collision_world,
+                &session.hit_zone_store,
+                frame_anim_time,
+                frame_dt,
+                &mut |resolution| match resolution {
+                    sim::PredictedProjectileResolution::Impact { shot_id, impact } => {
+                        let hits = impact.target.map_or_else(Vec::new, |target| {
+                            vec![weapon::LocalHitRecord {
+                                target,
+                                point: impact.point,
+                                zone: impact.zone,
+                            }]
+                        });
+                        declarations.push((shot_id, hits));
+                    }
+                    sim::PredictedProjectileResolution::Expired { shot_id } => {
+                        declarations.push((shot_id, Vec::new()));
+                    }
+                },
+            );
+        }
+
+        for (shot_id, hits) in declarations {
+            let sent_records = netcode::client_send_hit_declaration(
+                self.session
+                    .as_mut()
+                    .and_then(|session| session.net_endpoint.as_mut()),
+                shot_id,
+                &hits,
+            );
+            if sent_records.is_some_and(|record_count| record_count > 0) {
+                self.client_predicted_shots.mark_hitmarker(shot_id);
             }
         }
     }
@@ -8406,6 +8498,7 @@ mod tests {
             &weapon::ClientFireResolution {
                 client_tick: 3,
                 hits: Vec::new(),
+                projectile_launch: None,
             },
             0.0,
             80.0,

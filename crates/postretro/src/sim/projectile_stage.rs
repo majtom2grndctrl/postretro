@@ -22,12 +22,31 @@ enum PendingProjectileAction {
         transform: Transform,
         component: ProjectileComponent,
     },
-    Expire(EntityId),
+    Expire {
+        projectile: EntityId,
+        component: ProjectileComponent,
+    },
     Impact {
         projectile: EntityId,
         component: ProjectileComponent,
         impact: WeaponImpact,
     },
+}
+
+enum ProjectileResolution<'a> {
+    Impact {
+        component: &'a ProjectileComponent,
+        impact: &'a WeaponImpact,
+    },
+    Expire {
+        component: &'a ProjectileComponent,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PredictedProjectileResolution {
+    Impact { shot_id: u64, impact: WeaponImpact },
+    Expired { shot_id: u64 },
 }
 
 struct WorldHit {
@@ -55,6 +74,87 @@ pub(crate) fn advance(
     dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) {
+    advance_matching(
+        registry,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        dt,
+        |_| true,
+        |registry, resolution| {
+            let ProjectileResolution::Impact { component, impact } = resolution else {
+                return;
+            };
+            weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
+
+            let target_is_live = impact.target.is_none_or(|target| {
+                registry
+                    .get_component::<HealthComponent>(target)
+                    .is_ok_and(|health| health.current.is_finite() && health.current > 0.0)
+            });
+            if target_is_live && let ActivationOutcome::Hit(payload) = &impact.outcome {
+                let attacker = registry
+                    .exists(component.owner_pawn)
+                    .then_some(component.owner_pawn);
+                apply_authorized_weapon_impact_damage(
+                    registry,
+                    component.owner_weapon,
+                    attacker,
+                    impact,
+                    component.credit_source.clone(),
+                    payload.amount,
+                );
+                on_impact(registry);
+            }
+        },
+    );
+}
+
+/// Advance only locally-predicted connected-client projectiles. Their collision
+/// result is a declaration, never a local Health mutation. Presentation-only
+/// projectiles reserve `shot_id == 0` so they cannot enter this authority path.
+pub(crate) fn advance_predicted(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    dt: f32,
+    on_resolution: &mut impl FnMut(PredictedProjectileResolution),
+) {
+    advance_matching(
+        registry,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        dt,
+        |component| component.shot_id != 0,
+        |registry, resolution| match resolution {
+            ProjectileResolution::Impact { component, impact } => {
+                weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
+                on_resolution(PredictedProjectileResolution::Impact {
+                    shot_id: component.shot_id,
+                    impact: impact.clone(),
+                });
+            }
+            ProjectileResolution::Expire { component } => {
+                on_resolution(PredictedProjectileResolution::Expired {
+                    shot_id: component.shot_id,
+                });
+            }
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_matching(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    dt: f32,
+    should_advance: impl Fn(&ProjectileComponent) -> bool,
+    mut on_resolution: impl for<'a> FnMut(&mut EntityRegistry, ProjectileResolution<'a>),
+) {
     if !dt.is_finite() || dt < 0.0 {
         return;
     }
@@ -67,6 +167,9 @@ pub(crate) fn advance(
                 let ComponentValue::Projectile(component) = value else {
                     return None;
                 };
+                if !should_advance(component) {
+                    return None;
+                }
                 let transform = registry.get_component::<Transform>(id).ok()?;
                 Some((id, *transform, component.clone()))
             })
@@ -95,7 +198,10 @@ pub(crate) fn advance(
             || !component.remaining_range.is_finite()
             || !component.remaining_lifetime.is_finite()
         {
-            pending.push(PendingProjectileAction::Expire(projectile_id));
+            pending.push(PendingProjectileAction::Expire {
+                projectile: projectile_id,
+                component,
+            });
             continue;
         }
 
@@ -152,7 +258,10 @@ pub(crate) fn advance(
         if expires_after_segment {
             // The segment was already swept above. A contact at the final range
             // or lifetime boundary wins over expiry; only an empty sweep expires.
-            pending.push(PendingProjectileAction::Expire(projectile_id));
+            pending.push(PendingProjectileAction::Expire {
+                projectile: projectile_id,
+                component,
+            });
             continue;
         }
 
@@ -182,8 +291,19 @@ pub(crate) fn advance(
                     let _ = registry.set_component(projectile, component);
                 }
             }
-            PendingProjectileAction::Expire(projectile) => {
-                let _ = registry.despawn(projectile);
+            PendingProjectileAction::Expire {
+                projectile,
+                component,
+            } => {
+                if registry.exists(projectile) {
+                    on_resolution(
+                        &mut registry,
+                        ProjectileResolution::Expire {
+                            component: &component,
+                        },
+                    );
+                    let _ = registry.despawn(projectile);
+                }
             }
             PendingProjectileAction::Impact {
                 projectile,
@@ -193,27 +313,13 @@ pub(crate) fn advance(
                 if !registry.exists(projectile) {
                     continue;
                 }
-                weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-
-                let target_is_live = impact.target.is_none_or(|target| {
-                    registry
-                        .get_component::<HealthComponent>(target)
-                        .is_ok_and(|health| health.current.is_finite() && health.current > 0.0)
-                });
-                if target_is_live && let ActivationOutcome::Hit(payload) = impact.outcome {
-                    let attacker = registry
-                        .exists(component.owner_pawn)
-                        .then_some(component.owner_pawn);
-                    apply_authorized_weapon_impact_damage(
-                        &mut registry,
-                        component.owner_weapon,
-                        attacker,
-                        &impact,
-                        component.credit_source,
-                        payload.amount,
-                    );
-                    on_impact(&mut registry);
-                }
+                on_resolution(
+                    &mut registry,
+                    ProjectileResolution::Impact {
+                        component: &component,
+                        impact: &impact,
+                    },
+                );
                 let _ = registry.despawn(projectile);
             }
         }
@@ -413,5 +519,61 @@ mod tests {
             "the swept width should reach the expanded hitbox"
         );
         assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn predicted_projectile_declares_later_impact_without_mutating_target_health() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let mut component = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.shot_id = 77;
+        registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("prediction shot id attaches");
+
+        let world = CollisionWorld::default();
+        let zones = HitZoneStore::new();
+        let mut resolutions = Vec::new();
+        advance_predicted(&registry, &world, &zones, 0.0, 1.0, &mut |resolution| {
+            resolutions.push(resolution)
+        });
+        assert!(
+            resolutions.is_empty(),
+            "spawn pass never resolves an impact"
+        );
+
+        advance_predicted(&registry, &world, &zones, 0.0, 1.0, &mut |resolution| {
+            resolutions.push(resolution)
+        });
+
+        assert_eq!(resolutions.len(), 1);
+        match &resolutions[0] {
+            PredictedProjectileResolution::Impact { shot_id, impact } => {
+                assert_eq!(*shot_id, 77);
+                assert_eq!(impact.target, Some(target));
+            }
+            PredictedProjectileResolution::Expired { .. } => {
+                panic!("the target contact must declare an impact, not expiry")
+            }
+        }
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current,
+            20.0,
+            "connected-client prediction declares the hit; it never writes enemy Health"
+        );
     }
 }

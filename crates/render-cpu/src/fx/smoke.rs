@@ -59,6 +59,42 @@ pub struct SpriteFrame {
     pub height: u32,
 }
 
+/// Load an authored sprite reference relative to the texture root. A `.png`
+/// reference names one exact frame; every other reference names a sequential
+/// collection directory.
+pub fn load_sprite_frames(texture_root: &Path, sprite: &str) -> Option<Vec<SpriteFrame>> {
+    if sprite.is_empty() {
+        return None;
+    }
+    if Path::new(sprite)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        let path = texture_root.join(sprite);
+        return load_frame(&path).map(|frame| vec![frame]);
+    }
+    load_collection_frames(texture_root, sprite)
+}
+
+fn load_frame(path: &Path) -> Option<SpriteFrame> {
+    match image::open(path) {
+        Ok(image) => {
+            let rgba = image.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            Some(SpriteFrame {
+                data: rgba.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(err) => {
+            log::warn!("[Smoke] Failed to load '{}': {err}", path.display());
+            None
+        }
+    }
+}
+
 /// Load all frames for a sprite collection (e.g., `smoke_00.png`, `spark_01.png`, …)
 /// from `textures/<collection>/`. Returns `None` if no frames are found; startup
 /// callers substitute a 1x1 white frame before renderer registration.
@@ -111,21 +147,7 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
 
     let frames: Vec<SpriteFrame> = frame_paths
         .iter()
-        .filter_map(|(_, path)| match image::open(path) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
-                let (w, h) = rgba.dimensions();
-                Some(SpriteFrame {
-                    data: rgba.into_raw(),
-                    width: w,
-                    height: h,
-                })
-            }
-            Err(err) => {
-                log::warn!("[Smoke] Failed to load '{}': {err}", path.display());
-                None
-            }
-        })
+        .filter_map(|(_, path)| load_frame(path))
         .collect();
 
     if frames.is_empty() {
@@ -145,5 +167,24 @@ mod tests {
     fn frame_duration_basic() {
         assert!((frame_duration(4, 2.0) - 0.5).abs() < 1e-6);
         assert!((frame_duration(0, 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reference_projectile_body_and_trail_paths_decode_real_frames() {
+        // Regression: documented texture-relative PNG paths were interpreted as
+        // collection directories and silently registered the white fallback.
+        let texture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/textures");
+        for sprite in [
+            "projectiles/plasma_blue_orb.png",
+            "smoke_puff/smoke_puff_00.png",
+        ] {
+            let frames = load_sprite_frames(&texture_root, sprite)
+                .unwrap_or_else(|| panic!("reference projectile sprite `{sprite}` must decode"));
+            assert_eq!(frames.len(), 1);
+            let frame = &frames[0];
+            assert!(frame.width > 1 || frame.height > 1);
+            assert_eq!(frame.data.len(), (frame.width * frame.height * 4) as usize);
+            assert_ne!(frame.data.as_slice(), &[255, 255, 255, 255]);
+        }
     }
 }

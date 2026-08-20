@@ -2382,6 +2382,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::NEG_Z,
             10.0,
+            0.0,
         )
         .expect("the downed target remains on the weapon ray");
         assert_eq!(hit.target, target);

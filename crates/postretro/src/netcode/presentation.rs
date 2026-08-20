@@ -1290,7 +1290,7 @@ mod tests {
 
         let outcome = replication.apply_snapshot(
             &mut registry,
-            &remote_baseline(21, "remote_enemy", Vec3::new(1.0, 2.0, 3.0)),
+            &remote_baseline(21, "descriptor:remote_enemy", Vec3::new(1.0, 2.0, 3.0)),
         );
         let remote = outcome
             .remote_entities

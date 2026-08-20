@@ -69,10 +69,13 @@ pub(crate) enum NetEndpoint {
         /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
         /// and retires entries from this store.
         open_shots: OpenAuthorizedShots,
+        /// Presentation-only projectile copies for remote observers. Their flight
+        /// state is host-local; clients receive only Transform + descriptor class.
+        projectile_presentations: projectile_presentation::HostProjectilePresentations,
         /// E16 client HIT declarations received before the matching fixed-sim FIRE
         /// authorization has opened its shot. Flushed after host weapon simulation
-        /// records authorized shots, so same-frame Input(FIRE)+HitDeclaration can
-        /// settle in order without losing owner-private verdict scoping.
+        /// records authorized shots. Hitscan declarations may settle then;
+        /// projectile declarations stay queued until a later host tick.
         pending_hit_declarations: PendingHitDeclarations,
         /// De-dup latch for weaponless remote pawns that try to fire. Missing weapons
         /// are a normal descriptor state, so this logs once per pawn rather than as an
@@ -280,6 +283,7 @@ pub(crate) struct ClientApplyFrameOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClientArmedLocalPawn {
     pub(crate) entity_id: EntityId,
+    /// Canonical descriptor name, decoded from the replicated presentation classifier.
     pub(crate) entity_class: Option<String>,
 }
 
@@ -631,6 +635,8 @@ impl NetEndpoint {
                     owners: MovementOwners::new(),
                     weapon_owners: WeaponOwners::new(),
                     open_shots: OpenAuthorizedShots::new(),
+                    projectile_presentations:
+                        projectile_presentation::HostProjectilePresentations::default(),
                     pending_hit_declarations: PendingHitDeclarations::new(),
                     weaponless_fire_logged: std::collections::HashSet::new(),
                     host_pawn: None,
@@ -806,6 +812,7 @@ impl NetEndpoint {
             owners,
             weapon_owners,
             open_shots,
+            projectile_presentations,
             pending_hit_declarations,
             weaponless_fire_logged,
             host_pawn,
@@ -829,6 +836,7 @@ impl NetEndpoint {
         *owners = MovementOwners::new();
         *weapon_owners = WeaponOwners::new();
         *open_shots = OpenAuthorizedShots::new();
+        *projectile_presentations = projectile_presentation::HostProjectilePresentations::default();
         *pending_hit_declarations = PendingHitDeclarations::new();
         weaponless_fire_logged.clear();
         *host_pawn = None;

@@ -1,10 +1,10 @@
-// Particle render collector: walks ParticleState entities and packs SpriteInstance bytes per collection.
+// Particle render collector: packs ParticleState and projectile SpriteVisual bytes per collection.
 // See: context/lib/scripting.md
 
 use std::collections::{HashMap, HashSet};
 
-use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
+use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
@@ -69,8 +69,9 @@ impl ParticleRenderCollector {
         }
     }
 
-    /// Walk the registry, bucket by `SpriteVisual.sprite`, pack bytes. Clears
-    /// each per-collection buffer first so capacity is reused across frames.
+    /// Walk particle and projectile-body sprites, bucket by `SpriteVisual.sprite`,
+    /// and pack bytes. Clears each per-collection buffer first so capacity is
+    /// reused across frames.
     ///
     /// Mirrors the mesh collector's render-frame cull (`mesh_render.rs`): each
     /// particle is gated against this frame's `visible` cell set, so off-screen /
@@ -80,7 +81,7 @@ impl ParticleRenderCollector {
     ///
     /// Cull granularity is the **particle**, not its emitter. Each billboard is
     /// gated by the cell of *its own* world position — the same
-    /// `transform.position` that `pack_particle_instance` writes into the GPU
+    /// `transform.position` that `pack_sprite_instance` writes into the GPU
     /// instance — so a smoke puff that has drifted into a portal-visible cell is
     /// drawn even when its emitter sits behind a wall, and a puff that drifted
     /// out is culled even when its emitter is on-screen. (A per-emitter decision
@@ -128,38 +129,99 @@ impl ParticleRenderCollector {
                 continue;
             };
 
-            // Per-billboard cull: test the particle's OWN cell (from the same
-            // position that gets packed) against the visible set. `None` ⇒
-            // draw-all short-circuit, so skip the locator descent entirely.
-            if let Some(cells) = visible_cells.as_ref() {
-                // `world` is `Some` whenever `visible_cells` is `Some`.
-                let world = world.expect("visible_cells implies a loaded world");
-                let cell = world.locate_cell(transform.position) as u32;
-                if !cells.contains(&cell) {
-                    continue;
-                }
-            }
+            self.collect_sprite(
+                transform,
+                visual,
+                particle.age,
+                world,
+                visible_cells.as_ref(),
+            );
+        }
 
-            // Resolve the target collection key. The common case (sprite was
-            // registered at level load) is a borrowed map lookup with no
-            // allocation. Only an unregistered runtime sprite takes the cold
-            // fallback branch (which may emit a one-time warning).
-            let target: &str = match self.sprite_to_collection.get(&visual.sprite) {
-                Some(key) => key.as_str(),
-                None => match Self::resolve_fallback(
-                    &self.default_collection,
-                    &mut self.warned_unregistered,
-                    &visual.sprite,
-                ) {
-                    Some(key) => key,
-                    None => continue,
-                },
-            };
-            let Some(buf) = self.buffers.get_mut(target) else {
+        // A local travelling projectile has `SpriteVisual` but deliberately no
+        // `ParticleState`: its visual is persistent until collision/expiry, not
+        // a simulated smoke puff. Pack it at age zero into the existing pass.
+        for (id, value) in registry.iter_with_kind(ComponentKind::Projectile) {
+            let ComponentValue::Projectile(_) = value else {
                 continue;
             };
-            pack_particle_instance(transform, particle, visual, buf);
+            let Ok(transform) = registry.get_component::<Transform>(id) else {
+                continue;
+            };
+            let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
+                continue;
+            };
+            self.collect_sprite(transform, visual, 0.0, world, visible_cells.as_ref());
         }
+
+        // A host-replicated observer copy intentionally carries no gameplay
+        // ProjectileComponent. Its provenance marks the exact visual-only
+        // projectile shape, preventing this path from broadening into a generic
+        // renderer for every entity that happens to carry SpriteVisual.
+        for (id, value) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
+            let ComponentValue::DescriptorProvenance(provenance) = value else {
+                continue;
+            };
+            if provenance.spawn_path != DescriptorSpawnPath::ProjectilePresentation
+                || registry
+                    .has_component_kind(id, ComponentKind::Projectile)
+                    .unwrap_or(false)
+                || registry
+                    .has_component_kind(id, ComponentKind::ParticleState)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            let Ok(transform) = registry.get_component::<Transform>(id) else {
+                continue;
+            };
+            let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
+                continue;
+            };
+            self.collect_sprite(transform, visual, 0.0, world, visible_cells.as_ref());
+        }
+    }
+
+    /// Cull and pack one sprite into its registered collection. The caller passes
+    /// a particle's animated age or zero for a persistent projectile body.
+    fn collect_sprite(
+        &mut self,
+        transform: &Transform,
+        visual: &SpriteVisual,
+        age: f32,
+        world: Option<&LevelWorld>,
+        visible_cells: Option<&HashSet<u32>>,
+    ) {
+        // Per-billboard cull: test this sprite's OWN cell (from the same position
+        // that gets packed) against the visible set. `None` => draw-all
+        // short-circuit, so skip the locator descent entirely.
+        if let Some(cells) = visible_cells {
+            // `world` is `Some` whenever `visible_cells` is `Some`.
+            let world = world.expect("visible_cells implies a loaded world");
+            let cell = world.locate_cell(transform.position) as u32;
+            if !cells.contains(&cell) {
+                return;
+            }
+        }
+
+        // Resolve the target collection key. The common case (sprite was
+        // registered at level load) is a borrowed map lookup with no allocation.
+        // Only an unregistered runtime sprite takes the cold fallback branch.
+        let target: &str = match self.sprite_to_collection.get(&visual.sprite) {
+            Some(key) => key.as_str(),
+            None => match Self::resolve_fallback(
+                &self.default_collection,
+                &mut self.warned_unregistered,
+                &visual.sprite,
+            ) {
+                Some(key) => key,
+                None => return,
+            },
+        };
+        let Some(buf) = self.buffers.get_mut(target) else {
+            return;
+        };
+        pack_sprite_instance(transform, age, visual, buf);
     }
 
     /// Cold-path resolution for a sprite that was **not** pre-registered at
@@ -213,17 +275,12 @@ impl Default for ParticleRenderCollector {
 /// Layout: `(position.xyz, age) + (size, rotation, opacity, _pad)`.
 /// `SpriteVisual.tint` is intentionally not packed — the current GPU layout
 /// has no color channel (plan §Non-goals).
-fn pack_particle_instance(
-    transform: &Transform,
-    particle: &ParticleState,
-    visual: &SpriteVisual,
-    out: &mut Vec<u8>,
-) {
+fn pack_sprite_instance(transform: &Transform, age: f32, visual: &SpriteVisual, out: &mut Vec<u8>) {
     let start_len = out.len();
     out.extend_from_slice(&transform.position.x.to_ne_bytes());
     out.extend_from_slice(&transform.position.y.to_ne_bytes());
     out.extend_from_slice(&transform.position.z.to_ne_bytes());
-    out.extend_from_slice(&particle.age.to_ne_bytes());
+    out.extend_from_slice(&age.to_ne_bytes());
     out.extend_from_slice(&visual.size.to_ne_bytes());
     out.extend_from_slice(&visual.rotation.to_ne_bytes());
     out.extend_from_slice(&visual.opacity.to_ne_bytes());
@@ -236,6 +293,7 @@ mod tests {
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::particle::ParticleState;
+    use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::components::sprite_visual::SpriteVisual;
     use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
@@ -393,6 +451,51 @@ mod tests {
             .unwrap();
     }
 
+    /// Spawn the static billboard body of a travelling projectile. It has no
+    /// `ParticleState`: flight is owned by `ProjectileComponent` and the body
+    /// remains visible until the projectile resolves.
+    fn spawn_projectile_sprite(
+        registry: &mut EntityRegistry,
+        position: Vec3,
+        sprite: &str,
+    ) -> EntityId {
+        let id = registry.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                id,
+                ProjectileComponent {
+                    direction: [0.0, 0.0, -1.0],
+                    speed: 40.0,
+                    radius: 0.2,
+                    remaining_range: 64.0,
+                    remaining_lifetime: 2.0,
+                    damage: 25.0,
+                    credit_source: "plasma.primary".to_string(),
+                    owner_pawn: EntityId::from_raw(1),
+                    owner_weapon: EntityId::from_raw(2),
+                    spawned: false,
+                    predicted_shot_id: None,
+                },
+            )
+            .unwrap();
+        registry
+            .set_component(
+                id,
+                SpriteVisual {
+                    sprite: sprite.into(),
+                    size: 0.4,
+                    opacity: 0.9,
+                    rotation: 0.25,
+                    tint: [0.2, 0.8, 1.0],
+                },
+            )
+            .unwrap();
+        id
+    }
+
     /// Spawn a bare emitter entity (just a `Transform`) and return its id so a
     /// particle can back-reference it. The emitter's position is *not* consulted
     /// by the cull (that is per-particle now); these helpers place the emitter
@@ -423,6 +526,59 @@ mod tests {
         let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert!((px - 1.0).abs() < 1e-6);
         assert!((age - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collect_packs_projectile_sprite_body_without_particle_state() {
+        // Regression: projectile bodies attach SpriteVisual but not ParticleState,
+        // so the particle-only collector silently omitted them while travelling.
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("sprites/plasma.png");
+        let projectile = spawn_projectile_sprite(
+            &mut registry,
+            Vec3::new(1.0, 2.0, 3.0),
+            "sprites/plasma.png",
+        );
+        assert!(registry.get_component::<ParticleState>(projectile).is_err());
+
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
+        assert_eq!(pairs.len(), 1);
+        let (name, bytes) = pairs[0];
+        assert_eq!(name, "sprites/plasma.png");
+        assert_eq!(bytes.len(), SPRITE_INSTANCE_SIZE);
+        let px = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
+        let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert!((px - 1.0).abs() < 1e-6);
+        assert!(
+            age.abs() <= f32::EPSILON,
+            "persistent projectile bodies use frame zero"
+        );
+    }
+
+    #[test]
+    fn collect_does_not_broaden_bare_sprite_visual_into_projectile_rendering() {
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                SpriteVisual {
+                    sprite: "sprites/decorative.png".to_string(),
+                    size: 1.0,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0; 3],
+                },
+            )
+            .unwrap();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("sprites/decorative.png");
+
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+
+        assert_eq!(collector.iter_collections().count(), 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // Spawn and hot reload set `max` and the optional hitbox; `current` is live HP
 // that damage mutates and a later death sweep resolves.
 //
-// See: context/lib/entity_model.md §2 (Health component), §7 (Collision / hitscan targeting)
+// See: context/lib/entity_model.md §2 (Health component), §7 (Collision / hit targeting)
 
 use std::collections::HashMap;
 
@@ -18,9 +18,9 @@ use postretro_foundation::{DamagePayload, IrType, IrValue};
 pub const CONTRIBUTOR_LEDGER_CAPACITY: usize = 8;
 
 /// One world-aligned AABB hitbox, fixed per archetype. Health-bearing entities
-/// are hitscan-targetable when they carry this hitbox or use a zone-bearing
-/// skinned model. `offset` shifts the box center from the entity's
-/// `Transform.position`; entity rotation is ignored.
+/// are valid hitscan and swept-projectile targets when they carry this hitbox
+/// or use a zone-bearing skinned model. `offset` shifts the box center from the
+/// entity's `Transform.position`; entity rotation is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Hitbox {
     pub half_extents: Vec3,

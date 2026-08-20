@@ -8,7 +8,7 @@ use std::sync::Once;
 
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
-    FireMode, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
+    FireMode, ProjectileDescriptor, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
 };
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
@@ -34,6 +34,7 @@ pub struct EffectiveStats<'a> {
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
+    pub projectile: Option<&'a ProjectileDescriptor>,
     pub lower_ms: u32,
     pub raise_ms: u32,
     /// Per-weapon override of the mod-global reload-interrupt policy. This is
@@ -263,6 +264,8 @@ pub struct WeaponComponent {
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
     #[serde(default)]
+    pub projectile: Option<ProjectileDescriptor>,
+    #[serde(default)]
     pub lower_ms: u32,
     #[serde(default)]
     pub raise_ms: u32,
@@ -321,6 +324,7 @@ impl WeaponComponent {
             cooldown_ms: desc.cooldown_ms,
             fire_mode: desc.fire_mode,
             resolution: desc.resolution,
+            projectile: desc.projectile.clone(),
             lower_ms: desc.lower_ms,
             raise_ms: desc.raise_ms,
             block_during_reload: desc.block_during_reload,
@@ -349,6 +353,7 @@ impl WeaponComponent {
             cooldown_ms: self.cooldown_ms,
             fire_mode: self.fire_mode,
             resolution: self.resolution,
+            projectile: self.projectile.as_ref(),
             lower_ms: self.lower_ms,
             raise_ms: self.raise_ms,
             block_during_reload: self.block_during_reload,
@@ -371,6 +376,7 @@ impl WeaponComponent {
         self.cooldown_ms = desc.cooldown_ms;
         self.fire_mode = desc.fire_mode;
         self.resolution = desc.resolution;
+        self.projectile = desc.projectile.clone();
         self.lower_ms = desc.lower_ms;
         self.raise_ms = desc.raise_ms;
         self.block_during_reload = desc.block_during_reload;
@@ -531,6 +537,7 @@ mod tests {
             cooldown_ms,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,

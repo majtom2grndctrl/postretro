@@ -6,13 +6,23 @@ use glam::Vec3;
 use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::projectile::ProjectileComponent;
+use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::provenance::DescriptorProvenance;
+use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::{FireMode, ProjectileBodyVisual, ResolutionMode};
 
-use super::super::{OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand};
+use super::super::{
+    OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand,
+    RemoteProjectileFireRejection, RemoteProjectilePresentationLaunch,
+};
 use super::impact::apply_authorized_weapon_impact_damage;
 use super::machine::tick_weapon_machine;
 use super::state::{
@@ -24,8 +34,18 @@ pub(in crate::sim) struct LocalWeaponCommandResult {
     pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
     pub(in crate::sim) weapon_events: Vec<&'static str>,
     pub(in crate::sim) repointed_pawn: Option<EntityId>,
+    pub(in crate::sim) projectile_spawns: Vec<EntityId>,
     #[cfg(test)]
     pub(in crate::sim) weapon_impact_points: Vec<Vec3>,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::sim) struct RemoteWeaponCommandResult {
+    pub(in crate::sim) authorized_shots: Vec<OpenAuthorizedShot>,
+    pub(in crate::sim) projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
+    pub(in crate::sim) rejected_projectile_fires: Vec<RemoteProjectileFireRejection>,
+    pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
+    pub(in crate::sim) weapon_events: Vec<&'static str>,
 }
 
 pub(in crate::sim) fn weapon_fire_command(
@@ -69,13 +89,11 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     registry: &Rc<RefCell<EntityRegistry>>,
     remote_pawn_commands: &[RemotePawnCommand],
     tick_dt: f32,
-) -> (
-    Vec<OpenAuthorizedShot>,
-    Vec<ReloadDelivery>,
-    Vec<&'static str>,
-) {
+) -> RemoteWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut authorized = Vec::new();
+    let mut projectile_presentations = Vec::new();
+    let mut rejected_projectile_fires = Vec::new();
     let mut reload_deliveries = Vec::new();
     let mut weapon_events = Vec::new();
 
@@ -91,6 +109,14 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let Ok(mut weapon_component) = registry.get_component::<WeaponComponent>(weapon).cloned()
         else {
             continue;
+        };
+        let projectile_fire_intended = {
+            let effective = weapon_component.effective();
+            matches!(effective.resolution, ResolutionMode::Projectile)
+                && match effective.fire_mode {
+                    FireMode::Semi => remote.command.fire_button.pressed,
+                    FireMode::Auto => remote.command.fire_button.active,
+                }
         };
         let command = WeaponFireCommand {
             button: remote.command.fire_button,
@@ -116,17 +142,103 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let range = effective.range;
         let pellet_count = effective.pellet_count as usize;
         let credit_source = effective.credit_source.to_string();
+        let resolution = effective.resolution;
+        let projectile = effective.projectile.cloned();
+        let projectile_presentation = matches!(effective.resolution, ResolutionMode::Projectile)
+            .then(|| {
+                let projectile = projectile.clone()?;
+                let transform = registry.get_component::<Transform>(remote.pawn).ok()?;
+                let movement = registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(remote.pawn)
+                    .ok()?;
+                let yaw = remote.command.movement.facing_yaw;
+                let pitch = remote.aim_pitch;
+                if !yaw.is_finite() || !pitch.is_finite() {
+                    return None;
+                }
+                let direction = Vec3::new(
+                    -yaw.sin() * pitch.cos(),
+                    pitch.sin(),
+                    -yaw.cos() * pitch.cos(),
+                );
+                let length_squared = direction.length_squared();
+                if !length_squared.is_finite() || length_squared <= 1.0e-12 {
+                    return None;
+                }
+                let descriptor_class = registry
+                    .get_component::<DescriptorProvenance>(weapon)
+                    .ok()?
+                    .canonical_name
+                    .clone();
+                (!descriptor_class.is_empty()).then_some(RemoteProjectilePresentationLaunch {
+                    owner_client_id: remote.owner_client_id,
+                    shot_id: remote.shot_id?,
+                    origin: transform.position + Vec3::Y * movement.capsule.eye_height,
+                    direction: direction / length_squared.sqrt(),
+                    range,
+                    descriptor_class,
+                    projectile,
+                })
+            })
+            .flatten();
         let _ = registry.set_component(weapon, weapon_component);
         match machine.authorization {
             WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
             WeaponFireAuthorization::Empty => {
                 weapon_events.push("dry_fire");
+                if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                }
                 continue;
             }
-            WeaponFireAuthorization::Rejected => continue,
+            WeaponFireAuthorization::Rejected => {
+                if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                }
+                continue;
+            }
         }
         let Some(shot_id) = remote.shot_id else {
             continue;
+        };
+        let (is_projectile, fire_origin, timeout_budget_ticks) = match resolution {
+            ResolutionMode::Hitscan => (false, Vec3::ZERO, crate::netcode::MAX_OPEN_SHOT_AGE_TICKS),
+            ResolutionMode::Projectile => {
+                let Some(projectile) = projectile.as_ref() else {
+                    log::warn!(
+                        "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
+                    );
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                    continue;
+                };
+                let Some(fire_origin) = remote_fire_origin(&registry, remote.pawn) else {
+                    log::warn!("[Net] remote projectile fire has no live pawn eye; dropping shot");
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                    continue;
+                };
+                (
+                    true,
+                    fire_origin,
+                    crate::netcode::projectile_timeout_budget_ticks(
+                        range,
+                        projectile.speed,
+                        projectile.lifetime_ms / 1000.0,
+                        tick_dt,
+                    ),
+                )
+            }
         };
         authorized.push(OpenAuthorizedShot {
             shot: super::super::AuthorizedShot {
@@ -138,12 +250,32 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 range,
                 pellet_count,
                 credit_source,
+                is_projectile,
+                fire_origin,
+                timeout_budget_ticks,
             },
             owner_client_id: remote.owner_client_id,
         });
+        if let Some(presentation) = projectile_presentation {
+            projectile_presentations.push(presentation);
+        }
     }
 
-    (authorized, reload_deliveries, weapon_events)
+    RemoteWeaponCommandResult {
+        authorized_shots: authorized,
+        projectile_presentation_launches: projectile_presentations,
+        rejected_projectile_fires,
+        reload_deliveries,
+        weapon_events,
+    }
+}
+
+fn remote_fire_origin(registry: &EntityRegistry, pawn: EntityId) -> Option<Vec3> {
+    let transform = registry.get_component::<Transform>(pawn).ok()?;
+    let movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()?;
+    Some(transform.position + Vec3::Y * movement.capsule.eye_height)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -245,7 +377,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         // pass that would advance cooldown or fire input a second time.
         machine.lowered = lower_ms == 0;
     }
-    let events = weapon::tick_resolved_component(
+    let mut events = weapon::tick_resolved_component(
         &registry,
         &mut weapon_component,
         &pellet_salt_name,
@@ -286,6 +418,19 @@ pub(in crate::sim) fn run_local_weapon_command(
         }
     }
     let _ = registry.set_component(weapon_id, weapon_component);
+    let mut projectile_spawns = Vec::new();
+    if let Some(pawn) = pawn {
+        for launch in std::mem::take(&mut events.projectile_launches) {
+            if let Some(projectile_id) =
+                spawn_projectile(&mut registry, pawn, weapon_id, launch, None)
+            {
+                events
+                    .spawned
+                    .push(weapon::ActivationOutcome::Spawned(projectile_id));
+                projectile_spawns.push(projectile_id);
+            }
+        }
+    }
     for impact in &events.impacts {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
 
@@ -318,9 +463,95 @@ pub(in crate::sim) fn run_local_weapon_command(
         reload_deliveries: machine.deliveries,
         weapon_events: events.event_names(),
         repointed_pawn,
+        projectile_spawns,
         #[cfg(test)]
         weapon_impact_points,
     }
+}
+
+pub(crate) fn spawn_projectile(
+    registry: &mut EntityRegistry,
+    owner_pawn: EntityId,
+    owner_weapon: EntityId,
+    launch: weapon::ProjectileLaunch,
+    predicted_shot_id: Option<u64>,
+) -> Option<EntityId> {
+    let Some(projectile_id) = registry.try_spawn(
+        Transform {
+            position: launch.origin,
+            ..Transform::default()
+        },
+        &[],
+    ) else {
+        log::warn!("[Weapon] entity registry exhausted; dropping projectile launch");
+        return None;
+    };
+
+    let component = ProjectileComponent {
+        direction: launch.direction.to_array(),
+        speed: launch.speed,
+        radius: launch.radius,
+        remaining_range: launch.range,
+        remaining_lifetime: launch.lifetime,
+        damage: launch.damage,
+        credit_source: launch.credit_source,
+        owner_pawn,
+        owner_weapon,
+        spawned: true,
+        predicted_shot_id,
+    };
+    let _ = registry.set_component(projectile_id, component);
+
+    match launch.descriptor.visual.body {
+        ProjectileBodyVisual::Sprite {
+            sprite,
+            size,
+            opacity,
+            rotation,
+            tint,
+        } => {
+            let _ = registry.set_component(
+                projectile_id,
+                SpriteVisual {
+                    sprite,
+                    size,
+                    opacity,
+                    rotation,
+                    tint,
+                },
+            );
+        }
+        ProjectileBodyVisual::Model { model } => {
+            let _ = registry.set_component(projectile_id, MeshComponent::stateless(model));
+        }
+    }
+    if let Some(trail) = launch.descriptor.visual.trail {
+        let _ = registry.set_component(
+            projectile_id,
+            BillboardEmitterComponent {
+                rate: trail.rate,
+                burst: trail.burst,
+                spread: trail.spread,
+                lifetime: trail.lifetime,
+                velocity: trail.velocity,
+                buoyancy: trail.buoyancy,
+                drag: trail.drag,
+                size_over_lifetime: LifetimeCurve::from(trail.size_over_lifetime),
+                opacity_over_lifetime: LifetimeCurve::from(trail.opacity_over_lifetime),
+                color: trail.color,
+                sprite: trail.sprite,
+                spin_rate: trail.spin_rate,
+                spin_animation: trail.spin_animation.map(|animation| {
+                    postretro_entities::components::billboard_emitter::SpinAnimation {
+                        duration: animation.duration,
+                        rate_curve: animation.rate_curve,
+                    }
+                }),
+            },
+        );
+    }
+
+    Some(projectile_id)
 }
 
 pub(crate) fn normalize_inventory_liveness(
@@ -450,4 +681,112 @@ pub(crate) fn refuse_local_switch(
 
     let _ = registry.set_component(pawn, inventory);
     true
+}
+
+#[cfg(test)]
+mod projectile_spawn_tests {
+    use super::*;
+    use postretro_foundation::{
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailSpinAnimation,
+        ProjectileTrailVisual, ProjectileVisual,
+    };
+
+    fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
+        weapon::ProjectileLaunch {
+            origin: Vec3::new(1.0, 2.0, 3.0),
+            direction: Vec3::NEG_Z,
+            speed: 40.0,
+            radius: 0.2,
+            range: 64.0,
+            lifetime: 2.0,
+            damage: 25.0,
+            credit_source: "plasma.primary".to_string(),
+            descriptor: ProjectileDescriptor {
+                speed: 40.0,
+                radius: 0.2,
+                lifetime_ms: 2000.0,
+                visual,
+            },
+        }
+    }
+
+    #[test]
+    fn projectile_spawn_attaches_sprite_body_and_optional_trail() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Sprite {
+                sprite: "sprites/plasma.png".to_string(),
+                size: 0.4,
+                opacity: 0.9,
+                rotation: 0.25,
+                tint: [0.2, 0.8, 1.0],
+            },
+            trail: Some(ProjectileTrailVisual {
+                sprite: "sprites/trail.png".to_string(),
+                rate: 60.0,
+                lifetime: 0.5,
+                burst: None,
+                spread: 0.1,
+                velocity: [0.0, 0.0, 0.0],
+                buoyancy: 0.0,
+                drag: 0.0,
+                size_over_lifetime: vec![0.2, 0.0],
+                opacity_over_lifetime: vec![1.0, 0.0],
+                color: [1.0, 1.0, 1.0],
+                spin_rate: 0.0,
+                spin_animation: Some(ProjectileTrailSpinAnimation {
+                    duration: 0.75,
+                    rate_curve: vec![0.0, 2.0, -1.0],
+                }),
+            }),
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+            .expect("projectile spawns");
+        assert!(
+            registry
+                .get_component::<ProjectileComponent>(projectile)
+                .is_ok()
+        );
+        assert_eq!(
+            registry
+                .get_component::<SpriteVisual>(projectile)
+                .expect("sprite body attaches")
+                .sprite,
+            "sprites/plasma.png"
+        );
+        let trail = registry
+            .get_component::<BillboardEmitterComponent>(projectile)
+            .expect("trail emitter attaches");
+        assert_eq!(trail.sprite, "sprites/trail.png");
+        let animation = trail
+            .spin_animation
+            .as_ref()
+            .expect("trail spin animation materializes locally");
+        assert!((animation.duration - 0.75).abs() <= f32::EPSILON);
+        assert_eq!(animation.rate_curve, [0.0, 2.0, -1.0]);
+    }
+
+    #[test]
+    fn projectile_spawn_attaches_rigid_mesh_body() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Model {
+                model: "models/rocket.gltf".to_string(),
+            },
+            trail: None,
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+            .expect("projectile spawns");
+        let mesh = registry
+            .get_component::<MeshComponent>(projectile)
+            .expect("rigid mesh body attaches");
+        assert_eq!(mesh.model, "models/rocket.gltf");
+        assert!(mesh.animation.is_none(), "projectile mesh is rigid");
+    }
 }

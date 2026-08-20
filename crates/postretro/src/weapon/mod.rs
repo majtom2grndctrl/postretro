@@ -7,8 +7,8 @@ use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
-use postretro_entities::registry::{EntityId, EntityRegistry};
-use postretro_foundation::{FireMode, ResolutionMode};
+use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_foundation::{FireMode, ProjectileDescriptor, ResolutionMode};
 
 use crate::collision::{CollisionWorld, cast_ray};
 use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
@@ -66,6 +66,9 @@ pub(crate) struct LocalHitRecord {
 pub(crate) struct ClientFireResolution {
     pub(crate) client_tick: u32,
     pub(crate) hits: Vec<LocalHitRecord>,
+    /// A projectile launch is deferred to the connected client's post-loop
+    /// presentation path. It must not produce a same-frame hit declaration.
+    pub(crate) projectile_launch: Option<ProjectileLaunch>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,8 +184,35 @@ impl ClientPredictedShots {
             record.muzzle_fx_visible = false;
             record.hitmarker_visible = false;
             record.status = PredictedShotStatus::Rejected;
+
+            // A rejected FIRE has no host authority to resolve later. Remove only
+            // this client's matching predicted flight; remote observer entities
+            // carry no ProjectileComponent and other local shots keep their ids.
+            let rejected_projectiles = registry
+                .iter_with_kind(ComponentKind::Projectile)
+                .filter_map(|(id, value)| {
+                    let ComponentValue::Projectile(projectile) = value else {
+                        return None;
+                    };
+                    (projectile.predicted_shot_id == Some(shot_id)).then_some(id)
+                })
+                .collect::<Vec<_>>();
+            for projectile in rejected_projectiles {
+                let _ = registry.despawn(projectile);
+            }
         }
         self.shots.remove(&shot_id)
+    }
+
+    /// A predicted projectile only knows whether it hit after its later
+    /// frame-driven sweep. The verdict remains the authority that keeps or
+    /// clears this local presentation state.
+    pub(crate) fn mark_hitmarker(&mut self, shot_id: u64) {
+        if let Some(record) = self.shots.get_mut(&shot_id)
+            && record.status == PredictedShotStatus::Pending
+        {
+            record.hitmarker_visible = true;
+        }
     }
 
     #[cfg(test)]
@@ -216,10 +246,29 @@ pub(crate) struct WeaponImpact {
     pub(crate) outcome: ActivationOutcome,
 }
 
+/// Immutable fire-time data the mutable weapon stage materializes as an entity.
+/// `fire_hitscan` deliberately returns this rather than spawning while it holds
+/// only an immutable registry borrow.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectileLaunch {
+    pub(crate) origin: Vec3,
+    pub(crate) direction: Vec3,
+    pub(crate) speed: f32,
+    pub(crate) radius: f32,
+    pub(crate) range: f32,
+    pub(crate) lifetime: f32,
+    pub(crate) damage: f32,
+    pub(crate) credit_source: String,
+    pub(crate) descriptor: ProjectileDescriptor,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impacts: Vec<WeaponImpact>,
+    pub(crate) projectile_launches: Vec<ProjectileLaunch>,
+    /// Filled only by the mutable caller after it materializes a launch intent.
+    pub(crate) spawned: Vec<ActivationOutcome>,
     pub(crate) dry_fire: bool,
 }
 
@@ -234,6 +283,9 @@ impl WeaponFireEvents {
         }
         if !self.impacts.is_empty() {
             names.push("impact");
+        }
+        if !self.spawned.is_empty() {
+            names.push("spawned");
         }
         names
     }
@@ -335,6 +387,8 @@ pub(crate) fn tick_resolved_component(
     let spread_radians = stats.spread_degrees.to_radians();
     let range = stats.range;
     let resolution = stats.resolution;
+    let projectile = stats.projectile.cloned();
+    let credit_source = stats.credit_source.to_string();
     match fire {
         WeaponFireAuthorization::Accepted => {
             // A shell position is consumed whether it is a single exact-axis ray
@@ -354,6 +408,8 @@ pub(crate) fn tick_resolved_component(
                 spread_radians,
                 range,
                 resolution,
+                projectile.as_ref(),
+                &credit_source,
                 shell_counter,
                 pellet_salt_name,
                 active_slot,
@@ -380,6 +436,8 @@ fn fire_hitscan(
     spread_radians: f32,
     range: f32,
     resolution: ResolutionMode,
+    projectile: Option<&ProjectileDescriptor>,
+    credit_source: &str,
     shell_counter: u32,
     pellet_salt_name: &str,
     active_slot: usize,
@@ -387,6 +445,8 @@ fn fire_hitscan(
     let mut events = WeaponFireEvents {
         activate: Some(WeaponActivation { origin, direction }),
         impacts: Vec::with_capacity(pellet_count as usize),
+        projectile_launches: Vec::new(),
+        spawned: Vec::new(),
         dry_fire: false,
     };
 
@@ -426,6 +486,25 @@ fn fire_hitscan(
                 events.impacts.push(impact);
             }
         }
+        ResolutionMode::Projectile => {
+            let Some(projectile) = projectile else {
+                log::warn!(
+                    "[Weapon] projectile resolution has no projectile descriptor; dropping launch"
+                );
+                return events;
+            };
+            events.projectile_launches.push(ProjectileLaunch {
+                origin,
+                direction,
+                speed: projectile.speed,
+                radius: projectile.radius,
+                range,
+                lifetime: projectile.lifetime_ms / 1000.0,
+                damage,
+                credit_source: credit_source.to_string(),
+                descriptor: projectile.clone(),
+            });
+        }
     }
 
     events
@@ -455,7 +534,16 @@ pub(crate) fn resolve_client_fire(
     // roll this back: the next shell must use the next fan.
     let shell_counter = weapon.shells_fired;
     weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (cooldown_ms, pellet_count, spread_radians, range, resolution) = {
+    let (
+        cooldown_ms,
+        pellet_count,
+        spread_radians,
+        range,
+        resolution,
+        projectile,
+        damage,
+        credit_source,
+    ) = {
         let stats = weapon.effective();
         (
             stats.cooldown_ms,
@@ -463,25 +551,54 @@ pub(crate) fn resolve_client_fire(
             stats.spread_degrees.to_radians(),
             stats.range,
             stats.resolution,
+            stats.projectile.cloned(),
+            stats.damage,
+            stats.credit_source.to_string(),
         )
     };
     weapon.cooldown_remaining_ms = cooldown_ms;
-    let hits = resolve_client_hitscan(
-        aim_origin,
-        aim_direction,
-        collision_world,
-        registry,
-        hit_zone_store,
-        anim_time,
-        pellet_count,
-        spread_radians,
-        range,
-        resolution,
-        shell_counter,
-        pellet_salt_name,
-        active_slot,
-    );
-    Some(ClientFireResolution { client_tick, hits })
+    let (hits, projectile_launch) = match resolution {
+        ResolutionMode::Hitscan => (
+            resolve_client_hitscan(
+                aim_origin,
+                aim_direction,
+                collision_world,
+                registry,
+                hit_zone_store,
+                anim_time,
+                pellet_count,
+                spread_radians,
+                range,
+                resolution,
+                shell_counter,
+                pellet_salt_name,
+                active_slot,
+            ),
+            None,
+        ),
+        ResolutionMode::Projectile => {
+            let projectile = projectile?;
+            (
+                Vec::new(),
+                Some(ProjectileLaunch {
+                    origin: aim_origin,
+                    direction: aim_direction,
+                    speed: projectile.speed,
+                    radius: projectile.radius,
+                    range,
+                    lifetime: projectile.lifetime_ms / 1000.0,
+                    damage,
+                    credit_source,
+                    descriptor: projectile,
+                }),
+            )
+        }
+    };
+    Some(ClientFireResolution {
+        client_tick,
+        hits,
+        projectile_launch,
+    })
 }
 
 pub(crate) fn advance_client_fire_state(
@@ -557,6 +674,10 @@ fn resolve_client_hitscan(
             }
             hits
         }
+        // Projectile flight is materialized by the connected client's mutable
+        // post-loop path. This ray-resolution helper emits no same-frame hit;
+        // the projectile declares its later collision or expiry instead.
+        ResolutionMode::Projectile => Vec::new(),
     }
 }
 
@@ -641,6 +762,7 @@ fn resolve_nearest_hit(
         origin,
         direction,
         range,
+        0.0,
     );
 
     match (world_hit, entity_hit) {
@@ -670,6 +792,7 @@ pub(crate) mod tests {
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
+    use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::registry::{ComponentKind, Transform};
     use postretro_foundation::{AmmoResource, ReloadStyle, WeaponDescriptor, WeaponResource};
     use winit::event::MouseButton;
@@ -717,6 +840,7 @@ pub(crate) mod tests {
             cooldown_ms,
             fire_mode,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -754,6 +878,7 @@ pub(crate) mod tests {
             cooldown_ms,
             fire_mode,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -1055,7 +1180,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn client_zero_spread_pellets_emit_one_entity_record_per_pellet() {
+    fn client_zero_radius_pellets_keep_the_legacy_entity_query_results() {
         let mut registry = EntityRegistry::new();
         let target = spawn_hitbox_entity(
             &mut registry,
@@ -1066,6 +1191,16 @@ pub(crate) mod tests {
         let mut weapon = weapon_component(FireMode::Auto, 100.0);
         weapon.pellet_count = 8;
         weapon.spread_degrees = 0.0;
+        let legacy = nearest_entity_hit(
+            &registry,
+            &HitZoneStore::new(),
+            0.0,
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            10.0,
+            0.0,
+        )
+        .expect("the legacy r = 0 entity ray has a target");
 
         let resolution = resolve_client_fire(
             &mut weapon,
@@ -1090,6 +1225,8 @@ pub(crate) mod tests {
         for hit in resolution.hits {
             assert_eq!(hit.target, target);
             assert_vec3_approx(hit.point, Vec3::new(0.0, 0.0, -4.5));
+            assert_vec3_bits_eq(hit.point, legacy.point);
+            assert_eq!(hit.zone, legacy.zone);
         }
         assert_eq!(weapon.shells_fired, 1);
     }
@@ -1691,7 +1828,7 @@ pub(crate) mod tests {
         let direction = Vec3::new(0.0, 0.0, -1.0);
 
         // Direct facility call with the same ray + range (weapon range = 10).
-        let direct = nearest_entity_hit(&registry, &store, 0.0, origin, direction, 10.0)
+        let direct = nearest_entity_hit(&registry, &store, 0.0, origin, direction, 10.0, 0.0)
             .expect("facility resolves the entity directly");
 
         // The weapon path for the same ray.
@@ -1749,6 +1886,7 @@ pub(crate) mod tests {
                 point: Vec3::new(1.0, 2.0, 3.0),
                 zone: Some("head".to_string()),
             }],
+            projectile_launch: None,
         };
         let mut predicted = ClientPredictedShots::new();
 
@@ -1762,6 +1900,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn predicted_projectile_impact_marks_hitmarker_after_later_resolution() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: Vec::new(),
+            projectile_launch: None,
+        };
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, EntityId::from_raw(1), &resolution, 0.0, 100.0);
+
+        assert!(
+            !predicted
+                .get(0xA)
+                .expect("projectile fire is pending")
+                .hitmarker_visible
+        );
+        predicted.mark_hitmarker(0xA);
+        assert!(
+            predicted
+                .get(0xA)
+                .expect("projectile remains pending before verdict")
+                .hitmarker_visible
+        );
+    }
+
+    #[test]
     fn shot_verdict_accept_confirms_predicted_markers() {
         let resolution = ClientFireResolution {
             client_tick: 9,
@@ -1770,6 +1933,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1799,6 +1963,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1828,6 +1993,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1848,6 +2014,78 @@ pub(crate) mod tests {
         );
     }
 
+    // Regression: a host-rejected projectile kept flying locally until its later
+    // impact/expiry declaration, despite FIRE already having no authority.
+    #[test]
+    fn shot_verdict_reject_removes_only_matching_predicted_projectile() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: Vec::new(),
+            projectile_launch: None,
+        };
+        let (mut registry, weapon) = client_weapon_registry();
+        let owner = registry.spawn(Transform::default());
+        let remote_target = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                remote_target,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("remote target health attaches");
+        let spawn_predicted = |registry: &mut EntityRegistry, shot_id| {
+            let projectile = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    projectile,
+                    ProjectileComponent {
+                        direction: Vec3::NEG_Z.to_array(),
+                        speed: 10.0,
+                        radius: 0.1,
+                        remaining_range: 100.0,
+                        remaining_lifetime: 10.0,
+                        damage: 25.0,
+                        credit_source: "weapon.test.projectile".to_string(),
+                        owner_pawn: owner,
+                        owner_weapon: weapon,
+                        spawned: false,
+                        predicted_shot_id: Some(shot_id),
+                    },
+                )
+                .expect("predicted projectile state attaches");
+            projectile
+        };
+        let rejected = spawn_predicted(&mut registry, 0xA);
+        let other = spawn_predicted(&mut registry, 0xB);
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+
+        let record = predicted
+            .apply_verdict(&mut registry, 0xA, false, false)
+            .expect("prompt rejection matches the predicted fire");
+
+        assert_eq!(record.status, PredictedShotStatus::Rejected);
+        assert!(!registry.exists(rejected));
+        assert!(
+            registry.exists(other),
+            "a different local shot identity keeps flying"
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(remote_target)
+                .expect("remote health remains host-owned")
+                .current,
+            100.0
+        );
+    }
+
     #[test]
     fn duplicate_or_late_reject_does_not_undo_accepted_predicted_shot() {
         let resolution = ClientFireResolution {
@@ -1857,6 +2095,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1890,6 +2129,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);

@@ -52,6 +52,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::DeferredEffect,
     ComponentKind::Inventory,
     ComponentKind::Touchable,
+    ComponentKind::Projectile,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -84,6 +85,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::DeferredEffect => "deferred_effect",
         ComponentKind::Inventory => "inventory",
         ComponentKind::Touchable => "touchable",
+        ComponentKind::Projectile => "projectile",
     }
 }
 
@@ -147,12 +149,13 @@ mod tests {
     use postretro_entities::components::mesh::MeshComponent;
     use postretro_entities::components::particle::ParticleState;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::components::sprite_visual::SpriteVisual;
     use postretro_entities::components::weapon::WeaponComponent;
     use postretro_entities::{
         ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorGraphDescriptor,
         BehaviorStateDescriptor, CapsuleParams, ComponentValue, DescriptorProvenance,
-        DescriptorSpawnPath, FallParams, FireMode, FogVolumeComponent, GroundParams,
+        DescriptorSpawnPath, EntityId, FallParams, FireMode, FogVolumeComponent, GroundParams,
         KinematicMoverComponent, KinematicMoverMode, MotionVerb, MoverCommand,
         PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform, TriggerActivation,
         TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
@@ -277,6 +280,7 @@ mod tests {
                     cooldown_ms: 100.0,
                     fire_mode: FireMode::Semi,
                     resolution: ResolutionMode::Hitscan,
+                    projectile: None,
                     credit_source: None,
                     third_person_model: None,
                     viewmodel: None,
@@ -388,6 +392,19 @@ mod tests {
                     radius: 40.0,
                 },
             ),
+            ComponentKind::Projectile => ComponentValue::Projectile(ProjectileComponent {
+                direction: [0.0, 0.0, -1.0],
+                speed: 20.0,
+                radius: 0.1,
+                remaining_range: 64.0,
+                remaining_lifetime: 1.0,
+                damage: 10.0,
+                credit_source: "test.projectile".to_string(),
+                owner_pawn: EntityId::from_raw(1),
+                owner_weapon: EntityId::from_raw(2),
+                spawned: false,
+                predicted_shot_id: None,
+            }),
         }
     }
 

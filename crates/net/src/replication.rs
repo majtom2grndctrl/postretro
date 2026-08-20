@@ -114,6 +114,12 @@ struct ClientReplicationState {
     /// missing_baseline_ref)` so a duplicate request collapses to one queued
     /// `FullBaseline`. Cleared once the refresh is emitted.
     pending_refreshes: HashSet<(u32, u32)>,
+    /// Entity ids this recipient must never receive. This is host-local
+    /// presentation routing, not snapshot metadata: the omitted record has no
+    /// owner field on the wire. Excluded ids are removed once their tombstone
+    /// drains, so the session-monotonic network-id namespace cannot accumulate
+    /// per-shot entries forever.
+    excluded_entities: HashSet<u32>,
 }
 
 /// Current server-tracked state for one entity: its latest owned components, the
@@ -236,6 +242,19 @@ impl ServerReplication {
         self.prune_acked_tombstones();
     }
 
+    /// Omit one entity from this recipient's snapshots for its remaining lifetime.
+    ///
+    /// The tracker remains registry-blind: both ids are transport identities. This
+    /// is intentionally stronger than per-recipient authority metadata because the
+    /// recipient receives no baseline, delta, or later tombstone for the entity.
+    /// It is used when a client already presents its own locally predicted visual.
+    pub fn exclude_entity_for_client(&mut self, client_id: u64, network_id: u32) {
+        if let Some(state) = self.clients.get_mut(&client_id) {
+            state.excluded_entities.insert(network_id);
+            state.pending_refreshes.retain(|(id, _)| *id != network_id);
+        }
+    }
+
     /// Drop every global tombstone that all currently-registered clients have acked.
     ///
     /// A tombstone must keep resending to clients that have not yet acked it, so it is
@@ -261,18 +280,27 @@ impl ServerReplication {
     /// on the reliable-ordered `Channel::Input`.
     fn prune_acked_tombstones(&mut self) {
         let clients = &self.clients;
-        self.tombstones.retain(|network_id, tombstone| {
-            let acked_by_all = clients.values().all(|client| {
-                client
-                    .acked_tombstones
-                    .get(network_id)
-                    .copied()
-                    .unwrap_or(0)
-                    >= tombstone.tombstone_id
-            });
-            // Retain (keep) while NOT yet acked by all registered clients.
-            !acked_by_all
-        });
+        let drained: Vec<u32> = self
+            .tombstones
+            .iter()
+            .filter_map(|(network_id, tombstone)| {
+                let acked_by_all = clients.values().all(|client| {
+                    client
+                        .acked_tombstones
+                        .get(network_id)
+                        .copied()
+                        .unwrap_or(0)
+                        >= tombstone.tombstone_id
+                });
+                acked_by_all.then_some(*network_id)
+            })
+            .collect();
+        for network_id in drained {
+            self.tombstones.remove(&network_id);
+            for client in self.clients.values_mut() {
+                client.excluded_entities.remove(&network_id);
+            }
+        }
     }
 
     /// Ingest the engine-produced owned snapshots for this server tick. Compares
@@ -354,6 +382,14 @@ impl ServerReplication {
                     reason: 0,
                 },
             );
+            // A recipient excluded before the entity's first baseline has no
+            // mapping to tear down. Mark this tombstone as already acknowledged
+            // for that client instead of sending an unknown-id despawn forever.
+            for client in self.clients.values_mut() {
+                if client.excluded_entities.contains(&id) {
+                    client.acked_tombstones.insert(id, tombstone_id);
+                }
+            }
         }
         self.prune_acked_tombstones();
     }
@@ -514,6 +550,13 @@ impl ServerReplication {
         // consulted read-only here, then mutated below would violate the borrow, so
         // read it through an immutable borrow scoped to this loop.
         for (&network_id, entity) in &self.entities {
+            if self
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.excluded_entities.contains(&network_id))
+            {
+                continue;
+            }
             let acked = self
                 .clients
                 .get(&client_id)
@@ -572,6 +615,13 @@ impl ServerReplication {
 
         // Despawn records: resend every active tombstone the client has not acked.
         for (&network_id, tombstone) in &self.tombstones {
+            if self
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.excluded_entities.contains(&network_id))
+            {
+                continue;
+            }
             let acked = self
                 .clients
                 .get(&client_id)
@@ -1753,6 +1803,63 @@ mod tests {
             }
             other => panic!("expected one FullBaseline, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn recipient_entity_exclusion_hides_full_delta_and_despawn_records() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        server.ingest_tick(vec![entity(17, vec![transform(0.0)])]);
+        server.exclude_entity_for_client(CLIENT_A, 17);
+
+        let hidden = server.encode_for_client(CLIENT_A, 60).unwrap();
+        assert!(
+            record_for(&hidden, 17).is_none(),
+            "the excluded recipient never receives an initial baseline"
+        );
+        let visible = server.encode_for_client(CLIENT_B, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&visible, 17).unwrap()
+        else {
+            panic!("visible recipient needs a full baseline");
+        };
+        server.apply_ack(CLIENT_B, visible.sequence, &[(17, baseline_id)], &[]);
+
+        server.ingest_tick(vec![entity(17, vec![transform(1.0)])]);
+        assert!(
+            record_for(&server.encode_for_client(CLIENT_A, 61).unwrap(), 17).is_none(),
+            "the exclusion holds after a dirty update as well"
+        );
+        assert!(matches!(
+            record_for(&server.encode_for_client(CLIENT_B, 61).unwrap(), 17),
+            Some(EntityRecord::Delta { .. })
+        ));
+
+        server.ingest_tick(vec![]);
+        assert!(
+            record_for(&server.encode_for_client(CLIENT_A, 62).unwrap(), 17).is_none(),
+            "the excluded recipient receives no unknown-id despawn"
+        );
+        let visible_despawn = server.encode_for_client(CLIENT_B, 62).unwrap();
+        let EntityRecord::Despawn { tombstone_id, .. } = record_for(&visible_despawn, 17).unwrap()
+        else {
+            panic!("visible recipient needs a despawn");
+        };
+        server.apply_ack(
+            CLIENT_B,
+            visible_despawn.sequence,
+            &[],
+            &[(17, tombstone_id)],
+        );
+
+        assert!(
+            server.tombstones.is_empty(),
+            "the exclusion acks its own tombstone"
+        );
+        assert!(
+            !server.clients[&CLIENT_A].excluded_entities.contains(&17),
+            "tombstone retirement clears the per-client exclusion entry"
+        );
     }
 
     // E10 Task 4: an entity_class is withheld at production on a record that carries NO

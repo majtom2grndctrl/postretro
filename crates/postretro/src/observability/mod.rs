@@ -403,7 +403,7 @@ mod tests {
                 owner_pawn: EntityId::from_raw(1),
                 owner_weapon: EntityId::from_raw(2),
                 spawned: false,
-                shot_id: 0,
+                predicted_shot_id: None,
             }),
         }
     }

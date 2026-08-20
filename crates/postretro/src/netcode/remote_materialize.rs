@@ -3,6 +3,7 @@
 // See: context/lib/networking.md
 
 use postretro_entities::components::mesh::{MeshAttachment, MeshComponent};
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
 
@@ -138,8 +139,8 @@ pub(super) fn update_active_weapon_attachment(
 /// idempotent, so a re-arm of the same pawn keeps its live state.
 ///
 /// This seam also carries remote presentation calls so descriptor
-/// materialization for replicated entities lives in one focused place, off the
-/// `client_receive_and_apply` hot path.
+/// materialization stays explicit inside the client receive/apply phase instead
+/// of leaking into the registry-blind snapshot decoder.
 pub(super) fn materialize_armed_local_pawn(
     armed: &ArmedLocalPawn,
     descriptors: &[EntityTypeDescriptor],
@@ -284,6 +285,15 @@ pub(super) fn materialize_armed_remote_projectile(
         remote.entity_id,
         projectile,
     );
+    let _ = registry.set_component(
+        remote.entity_id,
+        DescriptorProvenance {
+            canonical_name: remote.entity_class.clone(),
+            owned_components: Default::default(),
+            map_overrides: Default::default(),
+            spawn_path: DescriptorSpawnPath::ProjectilePresentation,
+        },
+    );
     true
 }
 
@@ -298,7 +308,8 @@ mod tests {
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, FireMode, GroundParams, NavAgentParams,
         PlayerMovementDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
-        ProjectileTrailVisual, ProjectileVisual, ResolutionMode, SpeedParams, WeaponDescriptor,
+        ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual, ResolutionMode,
+        SpeedParams, WeaponDescriptor,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -440,6 +451,10 @@ mod tests {
                         opacity_over_lifetime: vec![1.0, 0.0],
                         color: [1.0; 3],
                         spin_rate: 0.0,
+                        spin_animation: Some(ProjectileTrailSpinAnimation {
+                            duration: 0.5,
+                            rate_curve: vec![0.0, 1.0],
+                        }),
                     }),
                 },
             }),
@@ -574,12 +589,16 @@ mod tests {
                 .sprite,
             "sprites/projectiles/bolt.png"
         );
-        assert_eq!(
-            reg.get_component::<postretro_entities::components::billboard_emitter::BillboardEmitterComponent>(id)
-                .unwrap()
-                .sprite,
-            "sprites/projectiles/trail.png"
-        );
+        let trail = reg
+            .get_component::<postretro_entities::components::billboard_emitter::BillboardEmitterComponent>(id)
+            .unwrap();
+        assert_eq!(trail.sprite, "sprites/projectiles/trail.png");
+        let animation = trail
+            .spin_animation
+            .as_ref()
+            .expect("remote trail keeps descriptor spin animation");
+        assert!((animation.duration - 0.5).abs() <= f32::EPSILON);
+        assert_eq!(animation.rate_curve, [0.0, 1.0]);
         for kind in [
             ComponentKind::Projectile,
             ComponentKind::Health,

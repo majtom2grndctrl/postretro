@@ -991,9 +991,10 @@ pub(crate) fn client_receive_and_apply(
         // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
         // its presentation materialized here, where the shared descriptor table is in scope
         // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
-        // durable player-type signal; names are author-controlled. Both paths attach ONLY the
-        // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
-        // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
+        // durable player-type signal; names are author-controlled. These paths attach ONLY
+        // descriptor presentation — a mesh or projectile body/trail — and never
+        // Brain/Agent/Health/Weapon/PlayerMovement. They are idempotent and
+        // unknown-class-tolerant, so failed presentation still interpolates transform.
         for remote in &outcome.remote_entities {
             replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
             let descriptor = descriptors.iter().find(|descriptor| {
@@ -1931,7 +1932,14 @@ fn apply_valid_hit_record(
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
-    if registry.get_component::<HealthComponent>(target).is_err() {
+    let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
+        return false;
+    };
+    // Deferred direct-impact projectiles share the local projectile liveness
+    // contract: once a target is down, their sole impact is spent without a
+    // second application. Hitscan/pellet declarations retain the common impact
+    // dispatch semantics used by authored zero-HP/downed policies.
+    if shot.is_projectile && (!target_health.current.is_finite() || target_health.current <= 0.0) {
         return false;
     }
     let point = Vec3::from_array(record.point);
@@ -3604,7 +3612,7 @@ mod tests {
         );
     }
 
-    // Regression: remote HIT validation rejected persistent zero-HP targets,
+    // Regression: hitscan HIT validation rejected persistent zero-HP targets,
     // so gib policies saw local impacts but never authoritative remote ones.
     #[test]
     fn hit_declaration_on_zero_health_target_reaches_common_impact_dispatch() {
@@ -3627,6 +3635,37 @@ mod tests {
         assert_eq!(dispatches[0].target, fixture.target);
         assert!(dispatches[0].health_before.abs() <= f32::EPSILON);
         assert!((dispatches[0].health_after + 10.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn projectile_declaration_rejects_target_that_died_during_flight() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut health = fixture.target_health();
+        health.current = 0.0;
+        fixture
+            .registry
+            .set_component(fixture.target, health)
+            .unwrap();
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        shot.fire_origin = Vec3::new(0.0, 0.5, 0.0);
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert!(fixture.target_health().current.abs() <= f32::EPSILON);
+        assert!(fixture.registry.take_impact_dispatches().is_empty());
     }
 
     // Regression: multi-pellet declarations used to batch every damage record

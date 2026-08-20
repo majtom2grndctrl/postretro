@@ -324,6 +324,16 @@ export type ProjectileTrailVisual = {
   color: {number}?,
   --- Signed particle rotation rate. Must be finite; defaults to 0.
   spinRate: number?,
+  --- Optional spin-rate tween. Duration must be finite and > 0; rateCurve must be non-empty.
+  spinAnimation: ProjectileTrailSpinAnimation?,
+}
+
+--- Spin-rate tween copied into the projectile trail's billboard emitter when the projectile materializes.
+export type ProjectileTrailSpinAnimation = {
+  --- Tween duration in seconds. Must be finite and > 0.
+  duration: number,
+  --- Non-empty curve of spin rates in radians per second, sampled evenly across duration.
+  rateCurve: {number},
 }
 
 --- Valid values: `magazine`, `perShell`.
@@ -356,9 +366,9 @@ export type WeaponResource =
 
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
-  --- Base damage payload per pellet; a shell's total is damage × pelletCount. Must be finite and ≥ 0.
+  --- Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.
   damage: number,
-  --- Pellets resolved per shell. Range: 1..=32; defaults to 1.
+  --- Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.
   pelletCount: number?,
   --- Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).
   spreadDegrees: number?,
@@ -396,7 +406,7 @@ export type TouchableDescriptor = {
   radius: number?,
 }
 
---- One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
+--- One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
 export type HitboxDescriptor = {
   --- Box half-size on each axis, in metres. Each element must be finite and > 0.
   halfExtents: {number},
@@ -404,11 +414,11 @@ export type HitboxDescriptor = {
   offset: {number}?,
 }
 
---- Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn.
+--- Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling. The optional `hitbox` supplies a world-aligned AABB to the shared hitscan/projectile target query; a zone-bearing skinned model can supply target shapes without it. Materializes into a Health component with `current == max` at spawn.
 export type HealthDescriptor = {
   --- Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.
   max: number,
-  --- Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.
+  --- Optional direct-impact AABB. Present participates in the shared hitscan/projectile query; absent requires usable model hit zones for targetability.
   hitbox: HitboxDescriptor?,
   --- Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.
   zoneMultipliers: { [string]: number }?,

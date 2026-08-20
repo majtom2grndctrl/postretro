@@ -2962,6 +2962,7 @@ mod tests {
                     opacity_over_lifetime: vec![1.0, 0.0],
                     color: [1.0, 1.0, 1.0],
                     spin_rate: 0.0,
+                    spin_animation: None,
                 }),
             },
         });
@@ -2990,6 +2991,7 @@ mod tests {
                     opacity_over_lifetime: vec![1.0, 0.0],
                     color: [1.0, 1.0, 1.0],
                     spin_rate: 0.0,
+                    spin_animation: None,
                 }),
             },
         });

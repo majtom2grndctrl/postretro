@@ -470,7 +470,10 @@ impl ShotId {
 }
 
 const HIT_RANGE_TOLERANCE: f32 = 1.25;
-const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
+pub(crate) const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
+/// Two seconds comfortably covers the conditioned co-op link's RTT and leaves
+/// room for a delayed rendered-frame declaration after projectile travel.
+const PROJECTILE_RTT_MARGIN_TICKS: u32 = 120;
 const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -483,6 +486,44 @@ pub(crate) struct AuthorizedShot {
     pub(crate) range: f32,
     pub(crate) pellet_count: usize,
     pub(crate) credit_source: String,
+    /// Frozen at FIRE because the weapon may be switched or despawned before a
+    /// later projectile declaration arrives. This authority data never crosses
+    /// the wire.
+    pub(crate) is_projectile: bool,
+    pub(crate) fire_origin: Vec3,
+    pub(crate) timeout_budget_ticks: u32,
+}
+
+/// Keep a projectile declaration open through its maximum authored travel time
+/// plus a deliberately generous return-trip margin. The `u32` serial tick clock
+/// is wrap-aware only through half its range, so cap an absurd authored lifetime
+/// there rather than accidentally retaining an open shot forever at wrap.
+pub(crate) fn projectile_timeout_budget_ticks(
+    range: f32,
+    speed: f32,
+    lifetime_seconds: f32,
+    tick_dt_seconds: f32,
+) -> u32 {
+    let travel_seconds = if range.is_finite()
+        && range >= 0.0
+        && speed.is_finite()
+        && speed > 0.0
+        && lifetime_seconds.is_finite()
+        && lifetime_seconds >= 0.0
+        && tick_dt_seconds.is_finite()
+        && tick_dt_seconds > 0.0
+    {
+        (range / speed).min(lifetime_seconds)
+    } else {
+        return MAX_OPEN_SHOT_AGE_TICKS;
+    };
+    let travel_ticks = (travel_seconds / tick_dt_seconds).ceil();
+    if !travel_ticks.is_finite() || travel_ticks < 0.0 {
+        return MAX_OPEN_SHOT_AGE_TICKS;
+    }
+    let max_budget = u32::MAX / 2;
+    let travel_ticks = travel_ticks.min((max_budget - PROJECTILE_RTT_MARGIN_TICKS) as f32) as u32;
+    MAX_OPEN_SHOT_AGE_TICKS.max(travel_ticks.saturating_add(PROJECTILE_RTT_MARGIN_TICKS))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -530,7 +571,7 @@ impl OpenAuthorizedShots {
 
     pub(crate) fn prune_stale(&mut self, current_tick: u32) {
         self.shots.retain(|_, shot| {
-            current_tick.wrapping_sub(shot.shot.fire_tick) <= MAX_OPEN_SHOT_AGE_TICKS
+            current_tick.wrapping_sub(shot.shot.fire_tick) <= shot.shot.timeout_budget_ticks
         });
     }
 
@@ -1833,11 +1874,7 @@ fn ingest_hit_declaration(
             context.registry,
             context.collision_world,
             context.allocator,
-            open.shot.pawn,
-            open.shot.weapon,
-            open.shot.damage,
-            open.shot.range,
-            open.shot.credit_source.clone(),
+            &open.shot,
             record,
         );
         if accepted {
@@ -1860,11 +1897,7 @@ fn apply_valid_hit_record(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     allocator: &NetworkIdAllocator,
-    attacker: EntityId,
-    weapon_id: EntityId,
-    damage: f32,
-    range: f32,
-    credit_source: String,
+    shot: &AuthorizedShot,
     record: &wire::HitRecord,
 ) -> bool {
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
@@ -1877,16 +1910,27 @@ fn apply_valid_hit_record(
     if !point.is_finite() {
         return false;
     }
-    // Reconstruct the attacker eye once and reuse it for both the static-world LOS
-    // check and the range check below.
-    let Some(eye) = attacker_eye(registry, attacker) else {
-        return false;
+    let origin = if shot.is_projectile {
+        // A later projectile declaration is valid after the pawn moved or took
+        // cover. The fire-time origin measures its travel; present-eye LOS is
+        // intentionally a hitscan-only corruption check in co-op PvE.
+        if !shot.fire_origin.is_finite() {
+            return false;
+        }
+        shot.fire_origin
+    } else {
+        // Preserve the shipped hitscan/pellet validation exactly: live eye for
+        // both static-world LOS and its range check.
+        let Some(eye) = attacker_eye(registry, shot.pawn) else {
+            return false;
+        };
+        if !has_static_world_los(collision_world, eye, point) {
+            return false;
+        }
+        eye
     };
-    if !has_static_world_los(collision_world, eye, point) {
-        return false;
-    }
-    let distance = eye.distance(point);
-    let max_range = range * HIT_RANGE_TOLERANCE;
+    let distance = origin.distance(point);
+    let max_range = shot.range * HIT_RANGE_TOLERANCE;
     if !max_range.is_finite() || distance > max_range {
         return false;
     }
@@ -1896,15 +1940,17 @@ fn apply_valid_hit_record(
         normal: Vec3::ZERO,
         target: Some(target),
         zone: record.zone.clone(),
-        outcome: ActivationOutcome::Hit(weapon::DamagePayload { amount: damage }),
+        outcome: ActivationOutcome::Hit(weapon::DamagePayload {
+            amount: shot.damage,
+        }),
     };
     crate::sim::apply_authorized_weapon_impact_damage(
         registry,
-        weapon_id,
-        Some(attacker),
+        shot.weapon,
+        Some(shot.pawn),
         &impact,
-        credit_source,
-        damage,
+        shot.credit_source.clone(),
+        shot.damage,
     );
     true
 }
@@ -3011,6 +3057,9 @@ mod tests {
             range,
             pellet_count: 1,
             credit_source: "weapon.test.net".to_string(),
+            is_projectile: false,
+            fire_origin: Vec3::ZERO,
+            timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
         }
     }
 
@@ -3223,6 +3272,9 @@ mod tests {
                     range: stats.range,
                     pellet_count: stats.pellet_count as usize,
                     credit_source: stats.credit_source.to_string(),
+                    is_projectile: false,
+                    fire_origin: Vec3::ZERO,
+                    timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
                 },
                 7,
             );
@@ -3308,6 +3360,20 @@ mod tests {
 
         shots.remove_client(8);
         assert_eq!(shots.len(), 0);
+    }
+
+    #[test]
+    fn projectile_open_shot_timeout_covers_travel_and_generous_rtt_margin() {
+        assert_eq!(
+            projectile_timeout_budget_ticks(128.0, 80.0, 4.0, 1.0 / 60.0),
+            216,
+            "1.6 seconds of flight plus the two-second margin exceeds the hitscan floor"
+        );
+        assert_eq!(
+            projectile_timeout_budget_ticks(64.0, 80.0, 4.0, 1.0 / 60.0),
+            MAX_OPEN_SHOT_AGE_TICKS,
+            "the existing 180-tick floor remains the hitscan and fast-projectile minimum"
+        );
     }
 
     #[test]
@@ -3597,6 +3663,44 @@ mod tests {
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
         assert_eq!(live_pose_mismatch.target_health().current, 90.0);
+    }
+
+    #[test]
+    fn projectile_declaration_uses_fire_origin_and_skips_late_world_los() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
+        fixture
+            .registry
+            .set_component(
+                fixture.pawn,
+                Transform {
+                    position: Vec3::new(-100.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .expect("the shooter can move after firing");
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        shot.fire_origin = Vec3::new(0.0, 0.5, 0.0);
+        shot.timeout_budget_ticks = projectile_timeout_budget_ticks(10.0, 1.0, 10.0, 1.0 / 60.0);
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(
+            result.hit_accepted,
+            "later cover and current pose cannot reject a projectile"
+        );
+        assert_eq!(fixture.target_health().current, 90.0);
     }
 
     #[test]

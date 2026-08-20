@@ -10,6 +10,7 @@ use postretro_entities::components::billboard_emitter::{BillboardEmitterComponen
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::components::weapon::WeaponComponent;
@@ -128,9 +129,11 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let range = effective.range;
         let pellet_count = effective.pellet_count as usize;
         let credit_source = effective.credit_source.to_string();
+        let resolution = effective.resolution;
+        let projectile = effective.projectile.cloned();
         let projectile_presentation = matches!(effective.resolution, ResolutionMode::Projectile)
             .then(|| {
-                let projectile = effective.projectile?.clone();
+                let projectile = projectile.clone()?;
                 let transform = registry.get_component::<Transform>(remote.pawn).ok()?;
                 let movement = registry
                     .get_component::<postretro_foundation::PlayerMovementComponent>(remote.pawn)
@@ -177,6 +180,31 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let Some(shot_id) = remote.shot_id else {
             continue;
         };
+        let (is_projectile, fire_origin, timeout_budget_ticks) = match resolution {
+            ResolutionMode::Hitscan => (false, Vec3::ZERO, crate::netcode::MAX_OPEN_SHOT_AGE_TICKS),
+            ResolutionMode::Projectile => {
+                let Some(projectile) = projectile.as_ref() else {
+                    log::warn!(
+                        "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
+                    );
+                    continue;
+                };
+                let Some(fire_origin) = remote_fire_origin(&registry, remote.pawn) else {
+                    log::warn!("[Net] remote projectile fire has no live pawn eye; dropping shot");
+                    continue;
+                };
+                (
+                    true,
+                    fire_origin,
+                    crate::netcode::projectile_timeout_budget_ticks(
+                        range,
+                        projectile.speed,
+                        projectile.lifetime_ms / 1000.0,
+                        tick_dt,
+                    ),
+                )
+            }
+        };
         authorized.push(OpenAuthorizedShot {
             shot: super::super::AuthorizedShot {
                 shot_id,
@@ -187,6 +215,9 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 range,
                 pellet_count,
                 credit_source,
+                is_projectile,
+                fire_origin,
+                timeout_budget_ticks,
             },
             owner_client_id: remote.owner_client_id,
         });
@@ -201,6 +232,14 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         reload_deliveries,
         weapon_events,
     )
+}
+
+fn remote_fire_origin(registry: &EntityRegistry, pawn: EntityId) -> Option<Vec3> {
+    let transform = registry.get_component::<Transform>(pawn).ok()?;
+    let movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()?;
+    Some(transform.position + Vec3::Y * movement.capsule.eye_height)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -346,7 +385,8 @@ pub(in crate::sim) fn run_local_weapon_command(
     let mut projectile_spawns = Vec::new();
     if let Some(pawn) = pawn {
         for launch in std::mem::take(&mut events.projectile_launches) {
-            if let Some(projectile_id) = spawn_projectile(&mut registry, pawn, weapon_id, launch) {
+            if let Some(projectile_id) = spawn_projectile(&mut registry, pawn, weapon_id, launch, 0)
+            {
                 events
                     .spawned
                     .push(weapon::ActivationOutcome::Spawned(projectile_id));
@@ -392,11 +432,12 @@ pub(in crate::sim) fn run_local_weapon_command(
     }
 }
 
-fn spawn_projectile(
+pub(crate) fn spawn_projectile(
     registry: &mut EntityRegistry,
     owner_pawn: EntityId,
     owner_weapon: EntityId,
     launch: weapon::ProjectileLaunch,
+    shot_id: u64,
 ) -> Option<EntityId> {
     let Some(projectile_id) = registry.try_spawn(
         Transform {
@@ -420,7 +461,7 @@ fn spawn_projectile(
         owner_pawn,
         owner_weapon,
         spawned: true,
-        shot_id: 0,
+        shot_id,
     };
     let _ = registry.set_component(projectile_id, component);
 
@@ -655,7 +696,7 @@ mod projectile_spawn_tests {
             }),
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual))
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), 0)
             .expect("projectile spawns");
         assert!(
             registry
@@ -690,7 +731,7 @@ mod projectile_spawn_tests {
             trail: None,
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual))
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), 0)
             .expect("projectile spawns");
         let mesh = registry
             .get_component::<MeshComponent>(projectile)

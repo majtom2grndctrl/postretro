@@ -66,6 +66,9 @@ pub(crate) struct LocalHitRecord {
 pub(crate) struct ClientFireResolution {
     pub(crate) client_tick: u32,
     pub(crate) hits: Vec<LocalHitRecord>,
+    /// A projectile launch is deferred to the connected client's post-loop
+    /// presentation path. It must not produce a same-frame hit declaration.
+    pub(crate) projectile_launch: Option<ProjectileLaunch>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +186,17 @@ impl ClientPredictedShots {
             record.status = PredictedShotStatus::Rejected;
         }
         self.shots.remove(&shot_id)
+    }
+
+    /// A predicted projectile only knows whether it hit after its later
+    /// frame-driven sweep. The verdict remains the authority that keeps or
+    /// clears this local presentation state.
+    pub(crate) fn mark_hitmarker(&mut self, shot_id: u64) {
+        if let Some(record) = self.shots.get_mut(&shot_id)
+            && record.status == PredictedShotStatus::Pending
+        {
+            record.hitmarker_visible = true;
+        }
     }
 
     #[cfg(test)]
@@ -504,7 +518,16 @@ pub(crate) fn resolve_client_fire(
     // roll this back: the next shell must use the next fan.
     let shell_counter = weapon.shells_fired;
     weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (cooldown_ms, pellet_count, spread_radians, range, resolution) = {
+    let (
+        cooldown_ms,
+        pellet_count,
+        spread_radians,
+        range,
+        resolution,
+        projectile,
+        damage,
+        credit_source,
+    ) = {
         let stats = weapon.effective();
         (
             stats.cooldown_ms,
@@ -512,25 +535,54 @@ pub(crate) fn resolve_client_fire(
             stats.spread_degrees.to_radians(),
             stats.range,
             stats.resolution,
+            stats.projectile.cloned(),
+            stats.damage,
+            stats.credit_source.to_string(),
         )
     };
     weapon.cooldown_remaining_ms = cooldown_ms;
-    let hits = resolve_client_hitscan(
-        aim_origin,
-        aim_direction,
-        collision_world,
-        registry,
-        hit_zone_store,
-        anim_time,
-        pellet_count,
-        spread_radians,
-        range,
-        resolution,
-        shell_counter,
-        pellet_salt_name,
-        active_slot,
-    );
-    Some(ClientFireResolution { client_tick, hits })
+    let (hits, projectile_launch) = match resolution {
+        ResolutionMode::Hitscan => (
+            resolve_client_hitscan(
+                aim_origin,
+                aim_direction,
+                collision_world,
+                registry,
+                hit_zone_store,
+                anim_time,
+                pellet_count,
+                spread_radians,
+                range,
+                resolution,
+                shell_counter,
+                pellet_salt_name,
+                active_slot,
+            ),
+            None,
+        ),
+        ResolutionMode::Projectile => {
+            let projectile = projectile?;
+            (
+                Vec::new(),
+                Some(ProjectileLaunch {
+                    origin: aim_origin,
+                    direction: aim_direction,
+                    speed: projectile.speed,
+                    radius: projectile.radius,
+                    range,
+                    lifetime: projectile.lifetime_ms / 1000.0,
+                    damage,
+                    credit_source,
+                    descriptor: projectile,
+                }),
+            )
+        }
+    };
+    Some(ClientFireResolution {
+        client_tick,
+        hits,
+        projectile_launch,
+    })
 }
 
 pub(crate) fn advance_client_fire_state(
@@ -1806,6 +1858,7 @@ pub(crate) mod tests {
                 point: Vec3::new(1.0, 2.0, 3.0),
                 zone: Some("head".to_string()),
             }],
+            projectile_launch: None,
         };
         let mut predicted = ClientPredictedShots::new();
 
@@ -1819,6 +1872,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn predicted_projectile_impact_marks_hitmarker_after_later_resolution() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: Vec::new(),
+            projectile_launch: None,
+        };
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, EntityId::from_raw(1), &resolution, 0.0, 100.0);
+
+        assert!(
+            !predicted
+                .get(0xA)
+                .expect("projectile fire is pending")
+                .hitmarker_visible
+        );
+        predicted.mark_hitmarker(0xA);
+        assert!(
+            predicted
+                .get(0xA)
+                .expect("projectile remains pending before verdict")
+                .hitmarker_visible
+        );
+    }
+
+    #[test]
     fn shot_verdict_accept_confirms_predicted_markers() {
         let resolution = ClientFireResolution {
             client_tick: 9,
@@ -1827,6 +1905,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1856,6 +1935,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1885,6 +1965,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1914,6 +1995,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
@@ -1947,6 +2029,7 @@ pub(crate) mod tests {
                 point: Vec3::ZERO,
                 zone: None,
             }],
+            projectile_launch: None,
         };
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);

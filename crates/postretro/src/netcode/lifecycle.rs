@@ -821,6 +821,9 @@ mod tests {
                 range: 64.0,
                 pellet_count: 1,
                 credit_source: "weapon.test.lifecycle".to_string(),
+                is_projectile: false,
+                fire_origin: glam::Vec3::ZERO,
+                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
             },
             CLIENT_A,
         );
@@ -1096,6 +1099,9 @@ mod tests {
                 range: 64.0,
                 pellet_count: 1,
                 credit_source: "weapon.test.lifecycle".to_string(),
+                is_projectile: false,
+                fire_origin: glam::Vec3::ZERO,
+                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
             },
             CLIENT_A,
         );

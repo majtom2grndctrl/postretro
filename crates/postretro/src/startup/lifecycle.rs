@@ -969,7 +969,7 @@ impl App {
                     continue;
                 }
                 let frames =
-                    postretro_render_cpu::smoke::load_collection_frames(&texture_root, &collection)
+                    postretro_render_cpu::smoke::load_sprite_frames(&texture_root, &collection)
                         .unwrap_or_else(|| {
                             vec![postretro_render_cpu::smoke::SpriteFrame {
                                 data: vec![255, 255, 255, 255],

@@ -397,6 +397,70 @@ fn projectile_trail_spin_animation_has_quickjs_luau_parity() {
 }
 
 #[test]
+fn projectile_trail_function_is_rejected_with_vm_parity() {
+    let js = r#"({ components: { weapon: {
+        damage: 12, range: 64, fireRateMs: 180,
+        fireMode: "semi", resolution: "projectile",
+        projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
+          body: { kind: "sprite", sprite: "sprites/bolt.png" },
+          trail: function () {}
+        } }
+    } } })"#;
+    let lua = r#"return { components = { weapon = {
+        damage = 12, range = 64, fireRateMs = 180,
+        fireMode = "semi", resolution = "projectile",
+        projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
+          body = { kind = "sprite", sprite = "sprites/bolt.png" },
+          trail = function() end
+        } }
+    } } }"#;
+
+    let js_error = eval_js(js, entity_descriptor_from_js)
+        .unwrap_err()
+        .to_string();
+    let lua_error = eval_lua(lua, entity_descriptor_from_lua)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(js_error, lua_error);
+    assert!(
+        js_error.contains("components.weapon.projectile.visual.trail"),
+        "{js_error}"
+    );
+}
+
+#[test]
+fn projectile_trail_spin_animation_function_is_rejected_with_vm_parity() {
+    let js = r#"({ components: { weapon: {
+        damage: 12, range: 64, fireRateMs: 180,
+        fireMode: "semi", resolution: "projectile",
+        projectile: { speed: 24, radius: 0.1, lifetimeMs: 1500, visual: {
+          body: { kind: "sprite", sprite: "sprites/bolt.png" },
+          trail: { sprite: "sprites/trail.png", spinAnimation: function () {} }
+        } }
+    } } })"#;
+    let lua = r#"return { components = { weapon = {
+        damage = 12, range = 64, fireRateMs = 180,
+        fireMode = "semi", resolution = "projectile",
+        projectile = { speed = 24, radius = 0.1, lifetimeMs = 1500, visual = {
+          body = { kind = "sprite", sprite = "sprites/bolt.png" },
+          trail = { sprite = "sprites/trail.png", spinAnimation = function() end }
+        } }
+    } } }"#;
+
+    let js_error = eval_js(js, entity_descriptor_from_js)
+        .unwrap_err()
+        .to_string();
+    let lua_error = eval_lua(lua, entity_descriptor_from_lua)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(js_error, lua_error);
+    assert!(
+        js_error.contains("components.weapon.projectile.visual.trail.spinAnimation"),
+        "{js_error}"
+    );
+}
+
+#[test]
 fn paired_weapon_pellet_spread_rejects_non_finite_values_at_the_conversion_boundary() {
     for (js_stats, lua_stats) in [
         (", spreadDegrees: Infinity", ", spreadDegrees = math.huge"),

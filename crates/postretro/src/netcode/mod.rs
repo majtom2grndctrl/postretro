@@ -513,16 +513,18 @@ pub(crate) fn projectile_timeout_budget_ticks(
         && tick_dt_seconds.is_finite()
         && tick_dt_seconds > 0.0
     {
-        (range / speed).min(lifetime_seconds)
+        (f64::from(range) / f64::from(speed)).min(f64::from(lifetime_seconds))
     } else {
         return MAX_OPEN_SHOT_AGE_TICKS;
     };
-    let travel_ticks = (travel_seconds / tick_dt_seconds).ceil();
-    if !travel_ticks.is_finite() || travel_ticks < 0.0 {
-        return MAX_OPEN_SHOT_AGE_TICKS;
-    }
     let max_budget = u32::MAX / 2;
-    let travel_ticks = travel_ticks.min((max_budget - PROJECTILE_RTT_MARGIN_TICKS) as f32) as u32;
+    // Promote before dividing. Finite f32 authoring bounds can overflow either
+    // division in f32 even though the corresponding duration is representable
+    // well enough to saturate this bounded host-side retention budget.
+    let travel_ticks = (travel_seconds / f64::from(tick_dt_seconds)).ceil();
+    let travel_ticks = travel_ticks
+        .min(f64::from(max_budget - PROJECTILE_RTT_MARGIN_TICKS))
+        .max(0.0) as u32;
     MAX_OPEN_SHOT_AGE_TICKS.max(travel_ticks.saturating_add(PROJECTILE_RTT_MARGIN_TICKS))
 }
 
@@ -636,16 +638,21 @@ impl PendingHitDeclarations {
         &mut self,
         command_queues: &HostCommandQueues,
         open_shots: &OpenAuthorizedShots,
+        current_tick: u32,
     ) -> Vec<PendingHitDeclaration> {
         let mut ready = Vec::new();
         let mut waiting = VecDeque::new();
         while let Some(pending) = self.declarations.pop_front() {
             let shot_id = ShotId::from_raw(pending.declaration.shot_id);
-            let shot_open = open_shots.get(shot_id).is_some();
+            let open_shot = open_shots.get(shot_id);
+            let shot_open = open_shot.is_some();
+            let projectile_waits_for_later_tick = open_shot.is_some_and(|open| {
+                open.shot.is_projectile && current_tick.wrapping_sub(open.shot.fire_tick) == 0
+            });
             let resolved_past_shot = command_queues
                 .resolved_cursor(pending.client_id)
                 .is_some_and(|cursor| prediction::client_tick_le(shot_id.client_tick(), cursor));
-            if shot_open || resolved_past_shot {
+            if !projectile_waits_for_later_tick && (shot_open || resolved_past_shot) {
                 ready.push(pending);
             } else {
                 waiting.push_back(pending);
@@ -972,7 +979,11 @@ pub(crate) fn client_receive_and_apply(
                 );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
-                entity_class: armed.entity_class.clone(),
+                entity_class: armed.entity_class.as_deref().map(|class| {
+                    descriptor_class::decode_replicated_descriptor_class(class)
+                        .canonical_name()
+                        .to_string()
+                }),
             });
         }
         // The local pawn's world body is shadow-only, but it still needs the same
@@ -996,12 +1007,17 @@ pub(crate) fn client_receive_and_apply(
         // Brain/Agent/Health/Weapon/PlayerMovement. They are idempotent and
         // unknown-class-tolerant, so failed presentation still interpolates transform.
         for remote in &outcome.remote_entities {
+            let representation =
+                descriptor_class::decode_replicated_descriptor_class(&remote.entity_class);
+            let entity_class = representation.canonical_name();
             replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
-            let descriptor = descriptors.iter().find(|descriptor| {
-                descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
-            });
-            let materialized = if matches!(descriptor, Some(descriptor) if descriptor.weapon.as_ref().and_then(|weapon| weapon.projectile.as_ref()).is_some())
-            {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class));
+            let materialized = if matches!(
+                representation,
+                descriptor_class::ReplicatedDescriptorClass::Projectile(_)
+            ) {
                 remote_materialize::materialize_armed_remote_projectile(
                     remote,
                     descriptors,
@@ -1736,7 +1752,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
 ) -> bool {
     open_shots.prune_stale(current_tick);
     let mut accepted_any_hit = false;
-    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots) {
+    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots, current_tick) {
         let result = ingest_hit_declaration(
             HostHitIngestContext {
                 registry: &mut *registry,
@@ -3413,6 +3429,21 @@ mod tests {
     }
 
     #[test]
+    fn projectile_open_shot_timeout_saturates_finite_f32_extremes() {
+        // Regression: f32 division overflowed to infinity and selected the
+        // short hitscan fallback, false-rejecting a still-live projectile.
+        assert_eq!(
+            projectile_timeout_budget_ticks(
+                f32::MAX,
+                f32::MIN_POSITIVE,
+                f32::MAX,
+                f32::MIN_POSITIVE,
+            ),
+            u32::MAX / 2,
+        );
+    }
+
+    #[test]
     fn projectile_open_shot_prune_uses_its_flight_budget_and_keeps_the_store_bounded() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
@@ -3526,7 +3557,7 @@ mod tests {
 
         assert!(
             pending
-                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots)
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100)
                 .is_empty(),
             "before FIRE authorization the declaration remains queued"
         );
@@ -3541,7 +3572,7 @@ mod tests {
             ),
             7,
         );
-        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots);
+        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].client_id, 7);
 
@@ -3549,6 +3580,41 @@ mod tests {
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
         assert_eq!(fixture.target_health().current, 90.0);
+    }
+
+    #[test]
+    fn pending_projectile_declaration_waits_until_after_its_fire_tick() {
+        // Regression: FIRE authorization and declaration drain shared one host
+        // tick, allowing an impossible zero-flight-time projectile impact.
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            100,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        fixture.open_shots.record(shot, 7);
+        let mut pending = PendingHitDeclarations::new();
+        pending.push(7, fixture.declaration(Vec::new()));
+
+        assert!(
+            pending
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100)
+                .is_empty(),
+            "a projectile declaration cannot resolve on its authorization tick"
+        );
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 101)
+                .len(),
+            1,
+            "the same declaration becomes eligible on the next host tick"
+        );
     }
 
     #[test]
@@ -4719,7 +4785,7 @@ mod tests {
         );
         assert_eq!(
             entity_class.as_deref(),
-            Some("player"),
+            Some("descriptor:player"),
             "the host boot pawn carries the descriptor class needed for remote presentation"
         );
 
@@ -4739,7 +4805,7 @@ mod tests {
             .remote_entities
             .first()
             .expect("host pawn baseline asks the client to materialize its remote presentation");
-        assert_eq!(remote.entity_class, "player");
+        assert_eq!(remote.entity_class, "descriptor:player");
         assert!(remote_materialize::materialize_armed_remote_player(
             remote,
             &[host_player_descriptor()],

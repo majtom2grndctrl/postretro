@@ -705,7 +705,10 @@ mod tests {
             .iter()
             .find(|snapshot| snapshot.network_id == initial_network_id.0)
             .expect("registered item has a baseline source");
-        assert_eq!(snapshot.entity_class.as_deref(), Some("reference_pistol"));
+        assert_eq!(
+            snapshot.entity_class.as_deref(),
+            Some("descriptor:reference_pistol")
+        );
         assert!(
             matches!(
                 snapshot.components.as_slice(),
@@ -847,7 +850,7 @@ mod tests {
             .expect("the registered enemy is produced");
         assert_eq!(
             snap.entity_class,
-            Some("grunt".to_string()),
+            Some("descriptor:grunt".to_string()),
             "the enemy's snapshot carries its descriptor class"
         );
         // It rides Transform + mesh animation state (no movement payload) and is unowned.

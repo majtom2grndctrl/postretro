@@ -703,6 +703,29 @@ pub(crate) fn nearest_entity_hit(
     range: f32,
     projectile_radius: f32,
 ) -> Option<EntityRayHit> {
+    nearest_entity_hit_ignoring(
+        registry,
+        store,
+        anim_time,
+        origin,
+        direction,
+        range,
+        projectile_radius,
+        |_| false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn nearest_entity_hit_ignoring(
+    registry: &EntityRegistry,
+    store: &HitZoneStore,
+    anim_time: f64,
+    origin: Vec3,
+    direction: Vec3,
+    range: f32,
+    projectile_radius: f32,
+    ignored: impl Fn(EntityId) -> bool,
+) -> Option<EntityRayHit> {
     // The facility assumes a unit-length ray direction (so `toi` is a distance).
     // A zero-length or non-finite direction poisons every slab/capsule test with
     // inf/NaN times, silently rejecting or accepting every entity — refuse it
@@ -723,6 +746,9 @@ pub(crate) fn nearest_entity_hit(
     let mut nearest: Option<EntityRayHit> = None;
 
     for_each_hittable_candidate(registry, |id| {
+        if ignored(id) {
+            return;
+        }
         let Ok(transform) = registry.get_component::<Transform>(id) else {
             return;
         };
@@ -2370,6 +2396,32 @@ mod tests {
         .expect("Mesh-only remote enemy should hit through its zone-bearing model");
 
         assert_eq!(hit.target, id);
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
+    }
+
+    #[test]
+    fn ignored_zone_bearing_mesh_does_not_hide_independent_mesh_target() {
+        // Regression: projectile model bodies and observer visuals are Mesh-only
+        // zone candidates; callers must be able to exclude them without removing
+        // intentional non-Health presentation targets from the shared query.
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+        let ignored = spawn_mesh_only_entity(&mut reg, "mob", Vec3::ZERO);
+        let target = spawn_mesh_only_entity(&mut reg, "mob", Vec3::NEG_Z * 2.0);
+
+        let hit = nearest_entity_hit_ignoring(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(5.0, 0.0, 10.0),
+            Vec3::NEG_Z,
+            100.0,
+            0.0,
+            |id| id == ignored,
+        )
+        .expect("the independent zone-bearing target remains hittable");
+
+        assert_eq!(hit.target, target);
         assert_eq!(hit.zone.as_deref(), Some("hand"));
     }
 

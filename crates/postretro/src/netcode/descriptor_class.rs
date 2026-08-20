@@ -6,6 +6,44 @@ use postretro_net::wire::ComponentPayload;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
+const DESCRIPTOR_CLASS_PREFIX: &str = "descriptor:";
+const PROJECTILE_CLASS_PREFIX: &str = "projectile:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReplicatedDescriptorClass<'a> {
+    Descriptor(&'a str),
+    Projectile(&'a str),
+}
+
+impl<'a> ReplicatedDescriptorClass<'a> {
+    pub(super) fn canonical_name(self) -> &'a str {
+        match self {
+            Self::Descriptor(name) | Self::Projectile(name) => name,
+        }
+    }
+}
+
+pub(super) fn decode_replicated_descriptor_class(value: &str) -> ReplicatedDescriptorClass<'_> {
+    if let Some(name) = value.strip_prefix(PROJECTILE_CLASS_PREFIX) {
+        ReplicatedDescriptorClass::Projectile(name)
+    } else if let Some(name) = value.strip_prefix(DESCRIPTOR_CLASS_PREFIX) {
+        ReplicatedDescriptorClass::Descriptor(name)
+    } else {
+        // Untagged values remain readable for local fixtures and older in-memory
+        // producers. Canonical-name consumers must always pass through this decoder;
+        // the replicated value is a presentation classifier, not a descriptor key.
+        ReplicatedDescriptorClass::Descriptor(value)
+    }
+}
+
+fn descriptor_class(name: &str) -> String {
+    format!("{DESCRIPTOR_CLASS_PREFIX}{name}")
+}
+
+fn projectile_class(name: &str) -> String {
+    format!("{PROJECTILE_CLASS_PREFIX}{name}")
+}
+
 /// Shared predicate: is `id` a descriptor AI enemy that the host owns as an
 /// authoritative networked entity (E10 — networked enemy authority)?
 ///
@@ -86,7 +124,7 @@ pub(super) fn descriptor_entity_class(
             DescriptorSpawnPath::NetworkSlot | DescriptorSpawnPath::PlayerSpawn
         )
     {
-        return Some(provenance.canonical_name.clone());
+        return Some(descriptor_class(&provenance.canonical_name));
     }
 
     // Projectile observer copies deliberately carry no gameplay component. Their
@@ -96,7 +134,7 @@ pub(super) fn descriptor_entity_class(
         provenance.spawn_path,
         DescriptorSpawnPath::ProjectilePresentation
     ) {
-        return Some(provenance.canonical_name.clone());
+        return Some(projectile_class(&provenance.canonical_name));
     }
 
     // A map-placed/runtime AI enemy or a live world item needs its descriptor class
@@ -107,7 +145,7 @@ pub(super) fn descriptor_entity_class(
             .has_component_kind(id, ComponentKind::Touchable)
             .unwrap_or(false)
     {
-        return Some(provenance.canonical_name.clone());
+        return Some(descriptor_class(&provenance.canonical_name));
     }
 
     None
@@ -119,6 +157,8 @@ mod tests {
     use std::collections::HashSet;
 
     use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::components::touchable::TouchableComponent;
+    use postretro_foundation::TouchMode;
     use postretro_net::wire::WireTransform;
 
     use crate::scripting::builtins::data_archetype::{
@@ -197,7 +237,7 @@ mod tests {
                     scale: [1.0, 1.0, 1.0],
                 })],
             ),
-            Some("grunt".to_string()),
+            Some("descriptor:grunt".to_string()),
             "a Transform-only runtime-spawn snapshot carries the canonical descriptor class"
         );
 
@@ -267,8 +307,67 @@ mod tests {
                     scale: [1.0, 1.0, 1.0],
                 })],
             ),
-            Some("plasma_rifle".to_string()),
+            Some("projectile:plasma_rifle".to_string()),
             "Transform-only projectile presentation records name the weapon descriptor"
+        );
+    }
+
+    #[test]
+    fn replicated_descriptor_class_distinguishes_world_item_from_projectile_capability() {
+        let world_item = decode_replicated_descriptor_class("descriptor:plasma_rifle");
+        let projectile = decode_replicated_descriptor_class("projectile:plasma_rifle");
+
+        assert_eq!(
+            world_item,
+            ReplicatedDescriptorClass::Descriptor("plasma_rifle")
+        );
+        assert_eq!(
+            projectile,
+            ReplicatedDescriptorClass::Projectile("plasma_rifle")
+        );
+    }
+
+    #[test]
+    fn touchable_projectile_capable_descriptor_stays_world_item_representation() {
+        // Regression: the client classified solely from the descriptor's weapon
+        // capability and rendered a replicated pickup as an in-flight projectile.
+        let mut registry = EntityRegistry::new();
+        let item = registry.spawn(postretro_entities::Transform::default());
+        registry
+            .set_component(
+                item,
+                DescriptorProvenance {
+                    canonical_name: "plasma_rifle".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .unwrap();
+        registry
+            .set_component(
+                item,
+                TouchableComponent {
+                    mode: TouchMode::Auto,
+                    radius: 1.0,
+                },
+            )
+            .unwrap();
+
+        let encoded = descriptor_entity_class(
+            &registry,
+            item,
+            &[ComponentPayload::Transform(WireTransform {
+                position: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            })],
+        )
+        .expect("world item carries its descriptor representation");
+        assert_eq!(encoded, "descriptor:plasma_rifle");
+        assert_eq!(
+            decode_replicated_descriptor_class(&encoded),
+            ReplicatedDescriptorClass::Descriptor("plasma_rifle"),
         );
     }
 }

@@ -110,6 +110,7 @@ pub fn entity_descriptor_from_lua(
                 if !matches!(raw, LuaValue::Nil) {
                     if let LuaValue::Table(weapon_table) = &raw {
                         validate_optional_weapon_model_paths_lua(weapon_table)?;
+                        validate_optional_projectile_shapes_lua(weapon_table)?;
                     }
                     let json = conv::lua_to_json(raw).map_err(lua_err)?;
                     let descriptor: WeaponDescriptor =
@@ -241,6 +242,58 @@ fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), Descri
         });
     }
     Ok(())
+}
+
+fn validate_optional_projectile_shapes_lua(weapon: &Table) -> Result<(), DescriptorError> {
+    let Some(projectile) =
+        optional_table_field_lua(weapon, "projectile", "components.weapon.projectile", false)?
+    else {
+        return Ok(());
+    };
+    let Some(visual) = optional_table_field_lua(
+        &projectile,
+        "visual",
+        "components.weapon.projectile.visual",
+        false,
+    )?
+    else {
+        return Ok(());
+    };
+    let Some(trail) = optional_table_field_lua(
+        &visual,
+        "trail",
+        "components.weapon.projectile.visual.trail",
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    optional_table_field_lua(
+        &trail,
+        "spinAnimation",
+        "components.weapon.projectile.visual.trail.spinAnimation",
+        true,
+    )?;
+    Ok(())
+}
+
+fn optional_table_field_lua(
+    parent: &Table,
+    field: &str,
+    path: &str,
+    reject_malformed: bool,
+) -> Result<Option<Table>, DescriptorError> {
+    if !parent.contains_key(field).map_err(lua_err)? {
+        return Ok(None);
+    }
+    match parent.get::<LuaValue>(field).map_err(lua_err)? {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(table) => Ok(Some(table)),
+        _ if !reject_malformed => Ok(None),
+        _ => Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}` must be an object when supplied"),
+        }),
+    }
 }
 
 /// Mirror of [`mesh_descriptor_from_js`] for Luau tables. Gathers raw fields

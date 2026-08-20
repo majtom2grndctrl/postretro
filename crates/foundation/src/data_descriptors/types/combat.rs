@@ -291,7 +291,12 @@ impl WeaponDescriptor {
                     reason: "`components.weapon.projectile` is required when `components.weapon.resolution` is `projectile`".to_string(),
                 });
             }
-            (ResolutionMode::Hitscan, _) => {}
+            (ResolutionMode::Hitscan, Some(_)) => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: "`components.weapon.projectile` must be omitted when `components.weapon.resolution` is `hitscan`".to_string(),
+                });
+            }
+            (ResolutionMode::Hitscan, None) => {}
         }
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
@@ -712,6 +717,21 @@ mod tests {
         };
         assert!(reason.contains("pelletCount"), "{reason}");
         assert!(reason.contains("exactly 1"), "{reason}");
+    }
+
+    #[test]
+    fn hitscan_resolution_rejects_projectile_settings() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.projectile = Some(projectile_descriptor());
+
+        let error = descriptor
+            .validate()
+            .expect_err("hitscan must not retain projectile-only settings");
+        let DescriptorError::InvalidShape { reason } = error else {
+            panic!("expected InvalidShape");
+        };
+        assert!(reason.contains("components.weapon.projectile"), "{reason}");
+        assert!(reason.contains("omitted"), "{reason}");
     }
 
     #[test]

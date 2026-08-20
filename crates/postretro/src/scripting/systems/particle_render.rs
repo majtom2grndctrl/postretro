@@ -81,7 +81,7 @@ impl ParticleRenderCollector {
     ///
     /// Cull granularity is the **particle**, not its emitter. Each billboard is
     /// gated by the cell of *its own* world position — the same
-    /// `transform.position` that `pack_particle_instance` writes into the GPU
+    /// `transform.position` that `pack_sprite_instance` writes into the GPU
     /// instance — so a smoke puff that has drifted into a portal-visible cell is
     /// drawn even when its emitter sits behind a wall, and a puff that drifted
     /// out is culled even when its emitter is on-screen. (A per-emitter decision

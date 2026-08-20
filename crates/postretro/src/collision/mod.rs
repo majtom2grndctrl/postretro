@@ -23,7 +23,7 @@ use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::{
     Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes, intersection_test,
 };
-use parry3d::shape::{Capsule, TriMesh};
+use parry3d::shape::{Ball, Capsule, TriMesh};
 
 use postretro_level_loader::LevelWorld;
 
@@ -264,6 +264,36 @@ pub(crate) fn cast_capsule(
         &pos1,
         &dir,
         capsule,
+        &world.isometry,
+        &vel2,
+        &world.mesh,
+        options,
+    )
+    .ok()
+    .flatten()
+}
+
+/// Sweep a sphere using its exact authored radius. Unlike movement capsule
+/// casts, projectile casts add no skin distance: proximity is not impact.
+pub(crate) fn cast_sphere_exact(
+    world: &CollisionWorld,
+    pos: Point<f32>,
+    radius: f32,
+    dir: Vector<f32>,
+    max_toi: f32,
+) -> Option<ShapeCastHit> {
+    let pos1 = Isometry::translation(pos.x, pos.y, pos.z);
+    let vel2 = Vector::zeros();
+    let options = ShapeCastOptions {
+        max_time_of_impact: max_toi,
+        target_distance: 0.0,
+        stop_at_penetration: false,
+        ..Default::default()
+    };
+    cast_shapes(
+        &pos1,
+        &dir,
+        &Ball::new(radius),
         &world.isometry,
         &vel2,
         &world.mesh,

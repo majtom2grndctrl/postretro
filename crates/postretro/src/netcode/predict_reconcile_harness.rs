@@ -1634,6 +1634,9 @@ impl LoopbackHarness {
                 self.prediction.arm(armed.network_id, armed.entity_id);
                 self.client_pawn = Some(armed.entity_id);
                 let entity_class = armed.entity_class.as_deref().unwrap_or("player");
+                let entity_class =
+                    super::descriptor_class::decode_replicated_descriptor_class(entity_class)
+                        .canonical_name();
                 crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component(
                     entity_class,
                     &self.descriptors,

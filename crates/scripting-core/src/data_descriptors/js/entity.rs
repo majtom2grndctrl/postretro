@@ -82,6 +82,7 @@ pub fn entity_descriptor_from_js<'js>(
                 if !raw.is_null() && !raw.is_undefined() {
                     if let Some(weapon_obj) = raw.as_object() {
                         validate_optional_weapon_model_paths_js(weapon_obj)?;
+                        validate_optional_projectile_shapes_js(weapon_obj)?;
                     }
                     let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
                     let descriptor: WeaponDescriptor =
@@ -218,6 +219,65 @@ fn validate_optional_weapon_model_paths_js<'js>(
         });
     }
     Ok(())
+}
+
+fn validate_optional_projectile_shapes_js<'js>(
+    weapon: &Object<'js>,
+) -> Result<(), DescriptorError> {
+    let Some(projectile) =
+        optional_object_field_js(weapon, "projectile", "components.weapon.projectile", false)?
+    else {
+        return Ok(());
+    };
+    let Some(visual) = optional_object_field_js(
+        &projectile,
+        "visual",
+        "components.weapon.projectile.visual",
+        false,
+    )?
+    else {
+        return Ok(());
+    };
+    let Some(trail) = optional_object_field_js(
+        &visual,
+        "trail",
+        "components.weapon.projectile.visual.trail",
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    optional_object_field_js(
+        &trail,
+        "spinAnimation",
+        "components.weapon.projectile.visual.trail.spinAnimation",
+        true,
+    )?;
+    Ok(())
+}
+
+fn optional_object_field_js<'js>(
+    parent: &Object<'js>,
+    field: &str,
+    path: &str,
+    reject_malformed: bool,
+) -> Result<Option<Object<'js>>, DescriptorError> {
+    if !parent.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = parent.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    if raw.type_of() != rquickjs::Type::Object {
+        if reject_malformed {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}` must be an object when supplied"),
+            });
+        }
+        return Ok(None);
+    }
+    Ok(raw.as_object().cloned())
 }
 
 /// Reject an object authored where the behavior block declares an array of

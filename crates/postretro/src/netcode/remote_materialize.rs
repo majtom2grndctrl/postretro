@@ -8,6 +8,7 @@ use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
 
 use super::client::{ArmedLocalPawn, RemoteEntityMaterialize};
+use super::descriptor_class::decode_replicated_descriptor_class;
 
 /// Reserved socket for the dynamic third-person active-weapon prop. Descriptor
 /// attachments on other sockets remain untouched when an active weapon changes.
@@ -150,6 +151,7 @@ pub(super) fn materialize_armed_local_pawn(
     rebuild_movement: bool,
 ) -> bool {
     let entity_class = armed.entity_class.as_deref().unwrap_or("player");
+    let entity_class = decode_replicated_descriptor_class(entity_class).canonical_name();
     let had_mesh = registry
         .has_component_kind(armed.entity_id, postretro_entities::ComponentKind::Mesh)
         .unwrap_or(false);
@@ -214,9 +216,10 @@ pub(super) fn materialize_armed_remote_player(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> bool {
+    let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
     let materialized =
         crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
-            &remote.entity_class,
+            entity_class,
             descriptors,
             registry,
             remote.entity_id,
@@ -224,7 +227,7 @@ pub(super) fn materialize_armed_remote_player(
         );
     if materialized {
         apply_player_viewer_role(
-            &remote.entity_class,
+            entity_class,
             descriptors,
             registry,
             remote.entity_id,
@@ -254,8 +257,9 @@ pub(super) fn materialize_armed_remote_enemy(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> bool {
+    let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
     crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
-        &remote.entity_class,
+        entity_class,
         descriptors,
         registry,
         remote.entity_id,
@@ -272,9 +276,10 @@ pub(super) fn materialize_armed_remote_projectile(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
 ) -> bool {
+    let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
     let Some(projectile) = descriptors
         .iter()
-        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(&remote.entity_class))
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
         .and_then(|descriptor| descriptor.weapon.as_ref())
         .and_then(|weapon| weapon.projectile.as_ref())
     else {
@@ -288,7 +293,7 @@ pub(super) fn materialize_armed_remote_projectile(
     let _ = registry.set_component(
         remote.entity_id,
         DescriptorProvenance {
-            canonical_name: remote.entity_class.clone(),
+            canonical_name: entity_class.to_string(),
             owned_components: Default::default(),
             map_overrides: Default::default(),
             spawn_path: DescriptorSpawnPath::ProjectilePresentation,
@@ -523,7 +528,9 @@ mod tests {
             &RemoteEntityMaterialize {
                 network_id: postretro_net::wire::NetworkId(7),
                 entity_id: id,
-                entity_class: "decraniated_mob".to_string(),
+                // Regression: semantic descriptor tags reached canonical lookup
+                // consumers verbatim and left replicated entities meshless.
+                entity_class: "descriptor:decraniated_mob".to_string(),
                 initial_animation_state: None,
                 active_weapon_archetype: None,
                 weapon_attachment_changed: false,
@@ -572,7 +579,7 @@ mod tests {
         let request = RemoteEntityMaterialize {
             network_id: postretro_net::wire::NetworkId(12),
             entity_id: id,
-            entity_class: "plasma_rifle".to_string(),
+            entity_class: "projectile:plasma_rifle".to_string(),
             initial_animation_state: None,
             active_weapon_archetype: None,
             weapon_attachment_changed: false,
@@ -599,6 +606,13 @@ mod tests {
             .expect("remote trail keeps descriptor spin animation");
         assert!((animation.duration - 0.5).abs() <= f32::EPSILON);
         assert_eq!(animation.rate_curve, [0.0, 1.0]);
+        assert_eq!(
+            reg.get_component::<DescriptorProvenance>(id)
+                .expect("projectile presentation keeps descriptor provenance")
+                .canonical_name,
+            "plasma_rifle",
+            "semantic representation must not leak into canonical provenance"
+        );
         for kind in [
             ComponentKind::Projectile,
             ComponentKind::Health,
@@ -845,7 +859,7 @@ mod tests {
             &ArmedLocalPawn {
                 network_id: postretro_net::wire::NetworkId(10),
                 entity_id: id,
-                entity_class: Some("co_op_avatar".to_string()),
+                entity_class: Some("descriptor:co_op_avatar".to_string()),
             },
             &descriptors,
             &mut reg,

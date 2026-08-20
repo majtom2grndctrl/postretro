@@ -23,6 +23,9 @@ use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::netcode::ShotId;
 use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
+use crate::scripting_systems::reaction_scheduler::{
+    ReactionScheduler, register_reaction_control_primitives,
+};
 use crate::scripting_systems::slot_accumulators::{
     SlotAccumulatorBindings, evaluate_slot_accumulators,
 };
@@ -55,14 +58,32 @@ use postretro_entities::{
     TriggerActivation, TriggerFireMode, TriggerPoolArm, TriggerPoolDescriptor,
     TriggerVolumeComponent,
 };
+use postretro_entities::{SequenceStep, SequenceTarget};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams, IrNode,
     IrValue, PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
     WeaponDescriptor,
 };
-use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+use postretro_scripting_core::reaction_dispatch::{
+    ProgressTracker, fire_named_event_with_sequences,
+};
+use postretro_scripting_core::reaction_registry::{
+    ReactionPrimitiveRegistry, SystemReactionRegistry,
+};
+use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
+
+/// Fixture selector for [`SimHarness::new`]. `Determinism` is the shipped
+/// trap-pool + crossing fixture; `LevelLoadWait` additionally installs and fires
+/// a `levelLoad` sequence `[note(presA), wait(ms), note(presB)]` for timed-
+/// reaction coverage (Task 1's O61; Task 5/7 extend this enum for multi-player
+/// plate rows).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SimFixture {
+    Determinism,
+    LevelLoadWait { duration_ms: f64 },
+}
 
 const TICK_COUNT: usize = 600;
 const DT: f32 = 1.0 / 60.0;
@@ -220,6 +241,10 @@ struct RecordedTick {
     authorized_shots: Vec<RecordedShot>,
     reload_deliveries: Vec<RecordedReload>,
     trigger_residuals: Vec<TriggerResidualHandle>,
+    /// This tick's paired-trigger Exit fires, projected onto spawn-order-stable
+    /// labels. Mirrors the production `TickEvents.trigger_exit_fires` the scheduler
+    /// consumes to cancel interruptible instances.
+    trigger_exit_fires: Vec<(EntityLabel, PlayerLabel)>,
     trigger_fires: Vec<RecordedTriggerFire>,
     trigger_command_fires: Vec<RecordedCommandFire>,
     predicate_crossing_fires: Vec<(String, bool)>,
@@ -265,10 +290,20 @@ struct SimHarness {
     enemy: EntityId,
     trigger_arm_target: EntityId,
     trap_pool_source_selected: bool,
+    // E18 timed-reaction wiring. Empty/no-op for the determinism fixture; the
+    // `LevelLoadWait` fixture enrolls a wait in `new` and lands it in `frame`.
+    scheduler: ReactionScheduler,
+    dispatch_data: DataRegistry,
+    dispatch_sequence_registry: SequencedPrimitiveRegistry,
+    dispatch_reaction_registry: ReactionPrimitiveRegistry,
+    dispatch_system_registry: SystemReactionRegistry,
+    /// Ordered log of `note` sequence-step labels — proves presA runs at install
+    /// and presB lands at the drain of the frame the countdown reaches zero in.
+    note_log: Rc<RefCell<Vec<String>>>,
 }
 
 impl SimHarness {
-    fn new(spawn_order: SpawnOrder) -> Self {
+    pub(crate) fn new(spawn_order: SpawnOrder, fixture: SimFixture) -> Self {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let mut role_ids = Vec::new();
         let (active_wieldable, enemy) = {
@@ -515,6 +550,78 @@ impl SimHarness {
         labels.insert(trigger_source, EntityLabel::TriggerSource);
         labels.insert(trigger_arm_target, EntityLabel::TriggerArmTarget);
 
+        // E18 timed-reaction wiring. Built for every fixture (cheap, no-op when no
+        // wait enrolls); the `LevelLoadWait` fixture installs and fires a
+        // `levelLoad` sequence so presA runs now and the wait enrolls its tail.
+        let note_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let scheduler = ReactionScheduler::default();
+        scheduler.set_enabled(true);
+        let mut dispatch_sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(&mut dispatch_sequence_registry, scheduler.clone());
+        {
+            let note_log = note_log.clone();
+            dispatch_sequence_registry.register("note", move |_id, args| {
+                if let Some(label) = args.get("label").and_then(serde_json::Value::as_str) {
+                    note_log.borrow_mut().push(label.to_string());
+                }
+                Ok(())
+            });
+        }
+        let dispatch_reaction_registry = ReactionPrimitiveRegistry::new();
+        let dispatch_system_registry = SystemReactionRegistry::new();
+        let mut dispatch_data = DataRegistry::new();
+        if let SimFixture::LevelLoadWait { duration_ms } = fixture {
+            let (pre, post) = {
+                let mut reg = trigger_script_ctx.registry.borrow_mut();
+                (
+                    reg.spawn(Transform::default()),
+                    reg.spawn(Transform::default()),
+                )
+            };
+            dispatch_data.populate_level(
+                vec![NamedReaction {
+                    name: "levelLoad".to_string(),
+                    descriptor: ReactionDescriptor::Sequence(vec![
+                        SequenceStep {
+                            id: SequenceTarget::Entity(pre),
+                            primitive: "note".to_string(),
+                            args: serde_json::json!({ "label": "presA" }),
+                        },
+                        SequenceStep {
+                            id: SequenceTarget::Wait,
+                            primitive: "wait".to_string(),
+                            args: serde_json::json!({
+                                "durationMs": duration_ms,
+                                "interruptible": false
+                            }),
+                        },
+                        SequenceStep {
+                            id: SequenceTarget::Entity(post),
+                            primitive: "note".to_string(),
+                            args: serde_json::json!({ "label": "presB" }),
+                        },
+                    ]),
+                }],
+                Vec::new(),
+                &[],
+            );
+            // Install-time fire: presA runs now; the wait enrolls its tail with the
+            // scheduler at frame counter 0 and stops the drain before presB.
+            let chained = fire_named_event_with_sequences(
+                "levelLoad",
+                &dispatch_data,
+                &dispatch_sequence_registry,
+                &dispatch_reaction_registry,
+                &dispatch_system_registry,
+                &trigger_script_ctx,
+                None,
+            );
+            debug_assert!(
+                chained.is_empty(),
+                "presentation-only levelLoad chains nothing"
+            );
+        }
+
         Self {
             registry,
             world: determinism_world(),
@@ -539,10 +646,16 @@ impl SimHarness {
             enemy,
             trigger_arm_target,
             trap_pool_source_selected,
+            scheduler,
+            dispatch_data,
+            dispatch_sequence_registry,
+            dispatch_reaction_registry,
+            dispatch_system_registry,
+            note_log,
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) -> RecordedTick {
+    pub(crate) fn tick(&mut self, command: RecordedCommand) -> RecordedTick {
         self.tick_index += 1;
         if self.tick_index == 301 {
             self.trigger_slots
@@ -597,6 +710,11 @@ impl SimHarness {
             |_| {},
         );
         evaluate_slot_accumulators(&mut self.slot_accumulator_bindings, DT);
+        // Advance timed-reaction countdowns for this tick, cancelling any
+        // interruptible instance whose paired Exit fired this tick before the
+        // countdown advances (O4). Empty (no-op) for the determinism fixture; the
+        // enrollment-frame stamp keeps a just-enrolled instance from advancing.
+        self.scheduler.evaluate(&events.trigger_exit_fires);
         let predicate_crossing_fires = self
             .crossing_detector
             .detect(&self.trigger_slots.borrow())
@@ -606,8 +724,83 @@ impl SimHarness {
         self.record(events, predicate_crossing_fires)
     }
 
+    /// Run one frame: one `tick` per supplied command, then the frame-end drain
+    /// (the scheduler landing queue resumed through the shipped residual path,
+    /// then the deferred hops). `begin_frame` advances the scheduler's monotonic
+    /// counter at the END of the frame, so the enrollment frame (counter 0) is
+    /// skipped and a 1-tick wait installed at level load lands at the SECOND
+    /// frame's drain — O61. A counter advanced only by window events would never
+    /// advance here and the instance would be skipped forever.
+    pub(crate) fn frame(&mut self, commands: &[RecordedCommand]) -> Vec<RecordedTick> {
+        let mut ticks = Vec::with_capacity(commands.len());
+        for command in commands {
+            ticks.push(self.tick(*command));
+        }
+        // Resume landings through the shipped residual path, one instance at a
+        // time with its own deferred-dispatch call and its own resume context —
+        // exactly as `main.rs` does, so depth attribution (O65) matches.
+        self.scheduler.drain_landings(
+            &self.dispatch_data,
+            &self.dispatch_sequence_registry,
+            &self.dispatch_reaction_registry,
+            &self.dispatch_system_registry,
+            &self.trigger_script_ctx,
+        );
+        self.scheduler.begin_frame();
+        ticks
+    }
+
+    /// Snapshot of the `note` step log — presA at install, presB once its tail
+    /// lands. Ascending call order proves the landing frame.
+    pub(crate) fn note_log(&self) -> Vec<String> {
+        self.note_log.borrow().clone()
+    }
+
+    /// E18 Task 7 (O25): enroll an instance directly, bypassing the
+    /// control-arm dispatch, with a one-step `note(address)` tail so its
+    /// landing is order-observable through `note_log`. Test-only.
+    ///
+    /// The `note` step's target must be an entity in `trigger_script_ctx`'s
+    /// registry — the scheduler's dispatch calls (`drain_landings`) resolve
+    /// steps against `self.trigger_script_ctx`, a SEPARATE `ScriptCtx` /
+    /// `EntityRegistry` from `self.registry` where `selected_player` and the
+    /// other gameplay entities live (see the `LevelLoadWait` fixture branch
+    /// above, which spawns its own `pre`/`post` entities into
+    /// `trigger_script_ctx.registry` for the same reason). Using
+    /// `selected_player` here would fail `dispatch_sequence`'s
+    /// `script_ctx.registry.borrow().exists(id)` guard and silently skip the
+    /// step with a warn.
+    #[cfg(test)]
+    pub(crate) fn enroll_for_test(
+        &self,
+        address: &str,
+        body_ordinal: usize,
+        origin: Option<(EntityId, PlayerId)>,
+        ticks: u32,
+    ) {
+        let target = self
+            .trigger_script_ctx
+            .registry
+            .borrow_mut()
+            .spawn(Transform::default());
+        let step = SequenceStep {
+            id: SequenceTarget::Entity(target),
+            primitive: "note".to_string(),
+            args: serde_json::json!({ "label": address }),
+        };
+        self.scheduler
+            .enroll(address, body_ordinal, origin, vec![step], ticks, false);
+    }
+
+    /// E18 Task 7 (O25): the `note_log` snapshot, named for its use as a
+    /// landing-order witness at this call site. Test-only.
+    #[cfg(test)]
+    pub(crate) fn landed_order_for_test(&self) -> Vec<String> {
+        self.note_log()
+    }
+
     /// Resolve every raw id a tick reports before it reaches the comparison.
-    fn record(
+    pub(crate) fn record(
         &self,
         events: TickEvents,
         predicate_crossing_fires: Vec<(String, bool)>,
@@ -641,7 +834,16 @@ impl SimHarness {
                     weapon: self.label(delivery.weapon),
                 })
                 .collect(),
-            trigger_residuals: events.trigger_residuals,
+            trigger_residuals: events
+                .trigger_residuals
+                .iter()
+                .map(|(handle, _, _)| *handle)
+                .collect(),
+            trigger_exit_fires: events
+                .trigger_exit_fires
+                .iter()
+                .map(|(trigger, player)| (self.label(*trigger), self.player_label(*player)))
+                .collect(),
             trigger_fires: events
                 .trigger_fires
                 .iter()
@@ -2781,7 +2983,7 @@ fn fixed_command_stream() -> Vec<RecordedCommand> {
 }
 
 fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
-    let mut harness = SimHarness::new(spawn_order);
+    let mut harness = SimHarness::new(spawn_order, SimFixture::Determinism);
     let mut events = Vec::with_capacity(commands.len());
     let mut ir_slot_timeline = Vec::with_capacity(commands.len());
     for command in commands {
@@ -2808,6 +3010,50 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         trap_pool_source_selected: harness.trap_pool_source_selected,
         events,
     }
+}
+
+// O61: headless frame stamping. `SimHarness` installs `levelLoad = [note(presA),
+// wait(5), note(presB)]`; presA runs at install, and `begin_frame()` in
+// `frame()` advances the scheduler's monotonic counter so presB lands at the
+// SECOND frame's drain. A counter advanced only by window events would never
+// advance here and the instance would be skipped forever.
+#[test]
+fn sim_harness_frame_stamping_lands_wait_at_second_frame_drain() {
+    let mut harness = SimHarness::new(
+        SpawnOrder::AlphaThenBeta,
+        SimFixture::LevelLoadWait { duration_ms: 5.0 },
+    );
+    let neutral = RecordedCommand {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: false,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+        fire_pressed: false,
+        fire_active: false,
+    };
+
+    // presA ran at install; the wait enrolled its tail at frame counter 0.
+    assert_eq!(harness.note_log(), vec!["presA".to_string()]);
+
+    // First frame is the enrollment frame (counter 0): its tick's `evaluate`
+    // skips the instance, so presB does not land.
+    harness.frame(&[neutral]);
+    assert_eq!(
+        harness.note_log(),
+        vec!["presA".to_string()],
+        "presB must not land in the enrollment frame"
+    );
+
+    // Second frame: `begin_frame` advanced the counter, the countdown reaches
+    // zero, and presB lands at this frame's drain.
+    harness.frame(&[neutral]);
+    assert_eq!(
+        harness.note_log(),
+        vec!["presA".to_string(), "presB".to_string()],
+        "presB lands at the second frame's drain"
+    );
 }
 
 fn assert_trigger_positive_anchors(run: &SimRun) {
@@ -3651,3 +3897,10 @@ proptest! {
         assert_runs_match(&reversed_spawn, &baseline);
     }
 }
+
+// E18 Task 7: tick/frame-timing-dependent Ordering rows, using `SimHarness`
+// through `frame()`. A child module (not a sibling file at the crate level) so
+// it can reach the private `SimHarness`/`SimFixture` construction surface the
+// same way this file's own tests do — see the `pub(crate) mod determinism_tests`
+// doc comment in `sim/mod.rs`.
+mod e18_task7_tick_ordering;

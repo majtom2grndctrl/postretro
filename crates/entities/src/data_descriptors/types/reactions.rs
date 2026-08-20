@@ -50,6 +50,13 @@ pub enum SequenceTarget {
     Entity(EntityId),
     Activators,
     FiredTrigger,
+    /// Control step: `wait`. Enrolls the remainder of the body with the host-only
+    /// reaction scheduler and stops the drain. Payload-free — `durationMs` and
+    /// `interruptible` ride in the step's `args`, keeping this enum `Copy`.
+    Wait,
+    /// Control step: `fire`. Dispatches a named reaction on the same app drain.
+    /// Payload-free — the target `event` name rides in the step's `args`.
+    Fire,
 }
 
 impl From<EntityId> for SequenceTarget {

@@ -283,8 +283,18 @@ pub(crate) struct TickEvents {
     /// The host drop path restores meshes outside spawn-context resolution, so it
     /// reports them here for clip binding in the same fixed tick, before rendering.
     pub(crate) dropped_item_meshes: Vec<EntityId>,
-    /// Bound trigger residuals drained app-side after every fixed tick this frame.
-    pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,
+    /// Bound trigger residuals drained app-side after every fixed tick this frame,
+    /// each carried with the `(trigger, player)` that fired it. The origin rides
+    /// alongside the opaque handle so the frame-end drain can key an enrolled
+    /// timed-reaction instance to its activator — two players entering one plate
+    /// push the same handle twice and must not collapse into one instance (O59).
+    pub(crate) trigger_residuals: Vec<(TriggerResidualHandle, EntityId, PlayerId)>,
+    /// This tick's paired-trigger Exit fires, as `(trigger, player)`. Production
+    /// reads them in the `RedrawRequested` arm to cancel matching interruptible
+    /// timed-reaction instances before their countdown advances (O4). Derived from
+    /// `TriggerEvent.fire` filtered by `edge == Exit`; a non-`cfg(test)` field
+    /// because the scheduler consumes it in release, unlike `trigger_fires`.
+    pub(crate) trigger_exit_fires: Vec<(EntityId, PlayerId)>,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
     /// keeping the detailed sequence out of non-test builds avoids a hot-path
     /// diagnostic allocation.
@@ -452,6 +462,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     }
 
     let mut trigger_residuals = Vec::new();
+    let mut trigger_exit_fires: Vec<(EntityId, PlayerId)> = Vec::new();
     #[cfg(test)]
     let mut trigger_fires = Vec::new();
     #[cfg(test)]
@@ -504,7 +515,14 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                         });
                     }
                     if let Some(handle) = execution.residual() {
-                        trigger_residuals.push(handle);
+                        // Carry the firing origin beside the handle so the
+                        // frame-end drain keys each enrolled instance to its
+                        // activator; one handle fired by two players yields two
+                        // origins, not one collapsed instance (O59).
+                        trigger_residuals.push((handle, event.fire.trigger, event.fire.player));
+                    }
+                    if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
+                        trigger_exit_fires.push((event.fire.trigger, event.fire.player));
                     }
                 },
             );
@@ -541,7 +559,14 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                         });
                     }
                     if let Some(handle) = execution.residual() {
-                        trigger_residuals.push(handle);
+                        // Carry the firing origin beside the handle so the
+                        // frame-end drain keys each enrolled instance to its
+                        // activator; one handle fired by two players yields two
+                        // origins, not one collapsed instance (O59).
+                        trigger_residuals.push((handle, event.fire.trigger, event.fire.player));
+                    }
+                    if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
+                        trigger_exit_fires.push((event.fire.trigger, event.fire.player));
                     }
                 },
             );
@@ -672,6 +697,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         repointed_pawns,
         dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,
+        trigger_exit_fires,
         #[cfg(test)]
         trigger_fires,
         #[cfg(test)]
@@ -1355,8 +1381,10 @@ pub(crate) use weapon_stage::apply_authorized_weapon_impact_damage;
 #[cfg(test)]
 pub(crate) use host_movement::run_host_movement_tick;
 
+// `pub(crate)` so Task 5/7's timed-reaction test modules (new sibling files) can
+// reach `SimHarness` and its `frame`/`new`/`tick`/`record` methods.
 #[cfg(test)]
-mod determinism_tests;
+pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
 #[cfg(any(test, feature = "dev-tools"))]
@@ -1479,7 +1507,9 @@ mod tests {
         SpeedParams, WeaponDescriptor, WeaponResource,
     };
     use postretro_net::wire::NetworkId;
-    use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
+    use postretro_scripting_core::reaction_dispatch::{
+        ResidualOrigin, fire_prepartitioned_reactions_with_sequences,
+    };
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
     use std::collections::{BTreeMap, HashMap};
 
@@ -2470,13 +2500,14 @@ mod tests {
         let reaction_registry = ReactionPrimitiveRegistry::new();
         let mut system_registry = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut system_registry);
-        let residual = bindings.residual(events.trigger_residuals[0]).unwrap();
+        let residual = bindings.residual(events.trigger_residuals[0].0).unwrap();
         let _ = fire_prepartitioned_reactions_with_sequences(
             residual.steps(),
             &sequence_registry,
             &reaction_registry,
             &system_registry,
             &script_ctx,
+            ResidualOrigin::TriggerBinding,
         );
         assert!(matches!(
             script_ctx.system_commands.take().as_slice(),

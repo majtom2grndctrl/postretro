@@ -94,6 +94,12 @@ impl App {
             session.scripting.auto_close_timers.clear();
             session.scripting.spawn_context.clear();
             session.scripting.slot_accumulator_bindings.clear();
+            // Timed-reaction instances hold level-A `EntityId`s and a snapshot of a
+            // body; a level change / suspend must not carry them into level B. This
+            // is also the suspend path (session may be present), so a suspend
+            // mid-wait drops parked instances with a `warn!` naming the count
+            // (O38, O39).
+            session.scripting.scheduler.clear();
             session.scripting.impact_policy_runtime.clear_level_events();
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();

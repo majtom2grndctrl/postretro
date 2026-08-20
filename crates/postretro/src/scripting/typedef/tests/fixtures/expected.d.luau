@@ -1292,9 +1292,31 @@ export type DisarmTriggerStep = {
   args: DisarmTriggerArgs,
 }
 
+--- Control-step payload for `WaitStep`. `interruptible` defaults to `false`
+--- when omitted by the author.
+export type WaitArgs = { durationMs: number, interruptible: boolean }
+--- Control-step payload for `FireStep`: the resolved reaction dispatch address.
+export type FireArgs = { event: string }
+
+--- Control step: enrolls the rest of the sequence body with the host
+--- scheduler and stops; the remaining steps resume after `durationMs`
+--- (rounded up to whole authoritative ticks).
+export type WaitStep = {
+  id: "@wait",
+  primitive: "wait",
+  args: WaitArgs,
+}
+
+--- Control step: dispatches a named reaction from inside a sequence body.
+export type FireStep = {
+  id: "@fire",
+  primitive: "fire",
+  args: FireArgs,
+}
+
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.
@@ -1538,6 +1560,17 @@ export type SpawnerHandle = {
 declare function spawner(filter: SpawnerFilter): SpawnerHandle
 declare function armTrigger(target: TriggerTarget): {SequenceStep}
 declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
+--- Enroll the rest of this sequence body with the host scheduler and stop;
+--- the remaining steps resume after `durationMs` (rounded up to whole
+--- authoritative ticks). `interruptible` (default `false`) lets the
+--- reaction's paired trigger Exit edge cancel the remaining steps while
+--- parked.
+declare function wait(durationMs: number, opts: { interruptible: boolean? }?): {SequenceStep}
+--- Dispatch a named reaction by handle or name from inside a sequence body,
+--- resolved exactly as `onTriggerEvent` resolves its `fire` entries. Luau
+--- has no phantom-typed scope gate; a scoped reaction fired this way is
+--- rejected at install (V4b), not at author time.
+declare function fire(reaction: Reaction<any> | string): {SequenceStep}
 
 --- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
@@ -2192,6 +2225,8 @@ export type PostretroModule = {
   spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),
   disarmTrigger: typeof(disarmTrigger),
+  wait: typeof(wait),
+  fire: typeof(fire),
   onTriggerEvent: typeof(onTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),

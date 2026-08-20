@@ -148,7 +148,7 @@ use postretro_entities::{
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
-    dispatch_deferred_named_events_with_sequences, fire_named_event,
+    ResidualOrigin, dispatch_deferred_named_events_with_sequences, fire_named_event,
     fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
 };
 use postretro_scripting_core::runtime::{
@@ -234,9 +234,10 @@ fn drain_mover_sound_events_with_sequences(
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
     system_registry: &postretro_scripting_core::reaction_registry::SystemReactionRegistry,
     script_ctx: &postretro_entities::ScriptCtx,
-) {
+) -> Vec<String> {
+    let mut chained = Vec::new();
     for event_name in event_names {
-        let _ = fire_named_event_with_sequences(
+        chained.extend(fire_named_event_with_sequences(
             event_name,
             data_registry,
             sequence_registry,
@@ -244,8 +245,9 @@ fn drain_mover_sound_events_with_sequences(
             system_registry,
             script_ctx,
             None,
-        );
+        ));
     }
+    chained
 }
 
 fn staged_ui_commit_payload(
@@ -2070,6 +2072,15 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
+                // Advance the timed-reaction scheduler's monotonic frame counter
+                // once per redraw, ahead of both the pre-loop UI activation (a
+                // focused button's `on_press` can enroll a wait) and the tick loop,
+                // so an enrollment this frame is stamped with this frame and cannot
+                // advance until the next. Distinct from `frame_timing.begin_frame`.
+                if let Some(session) = self.session.as_ref() {
+                    session.scripting.scheduler.begin_frame();
+                }
+
                 // Seat holds measure elapsed rendered time rather than fixed
                 // simulation time: Frontend and Loading keep polling a host even
                 // though neither runs the simulation loop. Advance exactly here,
@@ -2816,6 +2827,17 @@ impl ApplicationHandler for App {
                             }),
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
                         );
+                        // Advance timed-reaction countdowns for this tick. Position
+                        // relative to `evaluate_slot_accumulators` is not
+                        // behaviourally load-bearing: landings execute at the
+                        // frame-end drain, after every tick's accumulator pass. An
+                        // instance enrolled this frame is skipped via its stamp.
+                        // This tick's paired-trigger Exit fires cancel matching
+                        // interruptible instances before the countdown advances
+                        // (O4), so an Exit on the exact landing tick wins.
+                        scripting
+                            .scheduler
+                            .evaluate(&tick_events.trigger_exit_fires);
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -3001,20 +3023,22 @@ impl ApplicationHandler for App {
                 };
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
-                // would no-op under plain `fire_named_event`. Chained-event names
-                // are discarded (`let _ =`), matching the drains above.
+                // would no-op under plain `fire_named_event`.
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
-                    drain_mover_sound_events_with_sequences(
+                    // Capture the mover-sound and death drains' chained names into
+                    // the same follow-up batch — previously discarded, so a `fire`
+                    // step or `on_complete` in those reactions dispatched nothing.
+                    pending_trigger_follow_ups.extend(drain_mover_sound_events_with_sequences(
                         &pending_mover_event_names,
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
                         &session.scripting.system_registry,
                         &script_ctx,
-                    );
+                    ));
                     for event_name in &pending_death_events {
-                        let _ = fire_named_event_with_sequences(
+                        pending_trigger_follow_ups.extend(fire_named_event_with_sequences(
                             event_name,
                             &script_ctx.data_registry.borrow(),
                             &session.scripting.sequence_registry,
@@ -3022,15 +3046,33 @@ impl ApplicationHandler for App {
                             &session.scripting.system_registry,
                             &script_ctx,
                             None,
-                        );
+                        ));
                     }
-                    for handle in &pending_trigger_residuals {
+                    for (handle, trigger, player) in &pending_trigger_residuals {
                         let Some(residual) = self.trigger_bindings.residual(*handle) else {
                             log::warn!(
                                 "[Trigger] residual handle {handle:?} was not bound at install"
                             );
                             continue;
                         };
+                        // Scope the origin guard to THIS residual iteration only,
+                        // released before the deferred batch below (O54): a `wait`
+                        // reached synchronously here keys its instance to this
+                        // `(trigger, player)`, while a batch-seeded `fire` stays
+                        // sourceless. The paired-enter standing check (O52/O60)
+                        // reads the trigger system from the session the drain
+                        // already holds — an interruptible instance parks only
+                        // while its origin's enter is live, so a player who left
+                        // within the frame does not park an uncancellable beat.
+                        let paired_enter_standing = session
+                            .trigger_system
+                            .paired_enters()
+                            .contains(&(*trigger, *player));
+                        let _origin = session.scripting.scheduler.begin_origin(
+                            *trigger,
+                            *player,
+                            paired_enter_standing,
+                        );
                         pending_trigger_follow_ups.extend(
                             fire_prepartitioned_reactions_with_sequences(
                                 residual.steps(),
@@ -3038,6 +3080,7 @@ impl ApplicationHandler for App {
                                 &session.scripting.reaction_registry,
                                 &session.scripting.system_registry,
                                 &script_ctx,
+                                ResidualOrigin::TriggerBinding,
                             ),
                         );
                     }
@@ -3054,6 +3097,35 @@ impl ApplicationHandler for App {
                             &script_ctx,
                         );
                     }
+                    // Resume timed-reaction landings AFTER the trigger follow-up
+                    // dispatch and OUTSIDE any origin guard: a resumed tail runs
+                    // where a trigger residual runs, but each landing gets its own
+                    // deferred-dispatch call so a `fire`-seeded child's depth is
+                    // attributable per instance (O27, O65). The scheduler owns its
+                    // tails as `Vec<SequenceStep>` and never mints a
+                    // `TriggerResidualHandle`, so this never resolves through
+                    // `self.trigger_bindings` (O33). `take_landings` (inside
+                    // `drain_landings`) `mem::take`s the queue, so nothing borrows
+                    // it across the block — no need to move it onto `App`.
+                    //
+                    // Before draining, drop any interruptible instance whose keyed
+                    // trigger left the level mid-wait: `paired_enters` retains only
+                    // live triggers, so a surviving parked interruptible instance
+                    // absent from it has no Exit to ever cancel on and must not land
+                    // uncancelled (O63).
+                    session
+                        .scripting
+                        .scheduler
+                        .drop_orphaned_interruptible_instances(
+                            session.trigger_system.paired_enters(),
+                        );
+                    session.scripting.scheduler.drain_landings(
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    );
                 }
 
                 // System-reaction command drain — runs AFTER every post-tick
@@ -5194,15 +5266,31 @@ impl App {
                 UiButtonAction::QuitToMenu => self.return_to_frontend(),
                 UiButtonAction::NamedReaction => {
                     if let Some(session) = self.session.as_ref() {
-                        let _ = fire_named_event_with_sequences(
+                        let script_ctx = &session.scripting.script_ctx;
+                        // Capture chained names (a `fire` step's target or a fired
+                        // `Primitive`'s `on_complete`) and dispatch them, rather
+                        // than discarding as before. A `wait` step enrolls its tail
+                        // ahead of the tick loop; the frame-counter stamp keeps it
+                        // from advancing in this same redraw.
+                        let chained = fire_named_event_with_sequences(
                             &on_press,
-                            &session.scripting.script_ctx.data_registry.borrow(),
+                            &script_ctx.data_registry.borrow(),
                             &session.scripting.sequence_registry,
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
-                            &session.scripting.script_ctx,
+                            script_ctx,
                             None,
                         );
+                        if !chained.is_empty() {
+                            dispatch_deferred_named_events_with_sequences(
+                                chained,
+                                &script_ctx.data_registry.borrow(),
+                                &session.scripting.sequence_registry,
+                                &session.scripting.reaction_registry,
+                                &session.scripting.system_registry,
+                                script_ctx,
+                            );
+                        }
                     }
                 }
             }
@@ -5316,15 +5404,26 @@ impl App {
             .and_then(|session| session.modal_stack.active_on_commit().map(str::to_string));
         if let Some(on_commit) = on_commit {
             if let Some(session) = self.session.as_ref() {
-                let _ = fire_named_event_with_sequences(
+                let script_ctx = &session.scripting.script_ctx;
+                let chained = fire_named_event_with_sequences(
                     &on_commit,
-                    &session.scripting.script_ctx.data_registry.borrow(),
+                    &script_ctx.data_registry.borrow(),
                     &session.scripting.sequence_registry,
                     &session.scripting.reaction_registry,
                     &session.scripting.system_registry,
-                    &session.scripting.script_ctx,
+                    script_ctx,
                     None,
                 );
+                if !chained.is_empty() {
+                    dispatch_deferred_named_events_with_sequences(
+                        chained,
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        script_ctx,
+                    );
+                }
             }
         }
         if let Some(session) = self.session.as_mut() {

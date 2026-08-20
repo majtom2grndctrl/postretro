@@ -126,7 +126,7 @@
 "activation" "touch"
 "target_tag" ""
 "command" "start"
-"fire_mode" "once"
+"fire_mode" "multiple"
 "rearm_ms" "0"
 "enabled_on_spawn" "1"
 "_tags" "closet_reveal_plate"
@@ -197,4 +197,5 @@
 "_falloff_range" "400"
 "light" "350"
 "style" ""
+"_tags" "closet_alarm"
 }

@@ -1,5 +1,22 @@
 # E18 — Timed / Delayed Reaction Steps
 
+> **⚠ Post-ship corrections (retroactive).** Added after ship and review; deliberately not blended into
+> the design prose — an intentional exception to the usual seamless-edit rule, because this spec already
+> shipped. Read before trusting the affected passages.
+>
+> - **A — Install validation: corrected in place.** V2/V4b rejection rows run *before* `build_trigger_bindings`
+>   (reject-before-bind); the Install validation section below reflects it. The original design ran Pass B
+>   after the binder and "dropped" a reaction by emptying its `DataRegistry` body — a no-op once the binder
+>   had already extracted a trigger-bound reaction, so V2/V4b were silently ineffective. Fixed at ship.
+> - **B — Cycle breakers: the guidance below is wrong.** "Cap accounting" scopes `currently_resuming` to the
+>   same RAII guard as `current_enrollment_depth`. They must differ: `currently_resuming` drops *before* each
+>   instance's deferred dispatch; `current_enrollment_depth` spans it. One shared scope conflates a nested
+>   re-park with a self-`fire` child — depth never increments and a self-`fire` loop runs unbounded (O28).
+>   Marked inline.
+> - **C — O64: mechanism differs from as-built.** O64 and "Cap accounting" describe a slot held until an
+>   instance completes. As shipped the slot frees at expiry; the O64 outcome holds via cap-exemption of
+>   resume-context re-enrollments, not slot-holding. Outcome correct, mechanism differs. Marked inline.
+
 ## Goal
 
 Add `wait` and `fire` steps to the reaction sequence vocabulary so authored choreography can space
@@ -375,7 +392,7 @@ Pin the orderings a task agent must handle. The test tasks cite these rows rathe
 | O61 | Headless frame stamping | `SimHarness` installs `levelLoad = [presA, wait(5), presB]`, then calls `frame` twice, each supplying one command | `begin_frame()` advances the scheduler's counter once per `frame()`, so `presB` lands at the second frame's drain. A counter advanced only by `RedrawRequested` never advances here and the instance is skipped forever |
 | O62 | Resumed tail vs the residual assertion | the scheduler lands `[moverStart, fire(release)]` — a tail containing no `Wait` — in a debug build | no `debug_assert!` fires, because the exemption keys on `ResidualOrigin::ResumedTail`. A content-based rule exempting residuals that contain a `Wait` would still panic here, since a post-wait tail never contains one |
 | O63 | Trigger removed mid-wait | an interruptible instance is parked on `(T,P)`; `T` leaves `active_triggers` before the wait elapses | `paired_enters.retain` drops the pair and no Exit ever fires, so the instance would land uncancelled. The scheduler drops any instance whose keyed trigger is gone, with a `warn!` naming it — the install-time guarantee that an interruptible wait has a cancel source does not survive trigger removal on its own |
-| O64 | Cap holds a landing instance's slot | cap full; K instances expire on one tick; the residual drain then enrolls new trigger fires before the landing drain runs | an instance occupies its slot from enrollment until its final segment completes, so the freed-at-expiry slots are not available to that frame's new fires and every nested re-enrollment still lands. Freeing at expiry strands K tails |
+| O64 | Cap holds a landing instance's slot | cap full; K instances expire on one tick; the residual drain then enrolls new trigger fires before the landing drain runs | an instance occupies its slot from enrollment until its final segment completes, so the freed-at-expiry slots are not available to that frame's new fires and every nested re-enrollment still lands. Freeing at expiry strands K tails. **(⚠ correction C: as-built, the slot frees at expiry; the outcome holds via cap-exemption of resume-context re-enrollments, not slot-holding.)** |
 | O65 | Depth across a multi-landing batch | two instances at depths 3 and 7 land on one tick and each `fire`s a segmented reaction | each enrollment inherits its own parent's depth + 1 — 4 and 8 — because depth rides the instance and the step, not a batch-scoped cell. A per-batch value gives both the same wrong depth |
 
 ## Acceptance criteria
@@ -737,13 +754,26 @@ instance enrolled by a `fire` step in another instance's landing inherits depth 
 `MAX_REACTION_CHAIN_DEPTH = 256` the enrollment warns once and drops. Depth is carried only along the
 enrolled-by relation, so a fresh trigger fire starts at zero (O28b), and a **nested** re-enrollment keeps
 its instance's depth unchanged — a body with 300 sequential waits is not a chain (O19b).
+> **⚠ Post-ship correction (C):** The slot-hold model in this paragraph (and O64) is not as-built. As
+> shipped, an instance's slot frees at expiry; the O64 outcome — nested re-enrollments still land — holds
+> via cap-exemption of resume-context re-enrollments, not by holding the slot until completion. Outcome
+> correct, mechanism differs.
+
 **Cap accounting:** an instance occupies its slot from enrollment until its final segment completes, not
 until expiry — the residual drain runs before the landing drain in the same frame, so slots freed at expiry
 would be refilled by that frame's new trigger fires and the nested re-enrollment would then fail the cap,
 stranding every tail. Exempt a nested re-enrollment by rule rather than by "holds its slot" (O19b): the landing drain already
 runs per instance, so set a scheduler `currently_resuming` cell with the same RAII guard that scopes
 `current_origin` and `current_enrollment_depth`, and treat an enrollment made while it is live as a nested
-re-park. `ResidualOrigin` itself cannot serve — it is a parameter of
+re-park.
+
+> **⚠ Post-ship correction (B):** As shipped, `currently_resuming` is scoped *narrower* than
+> `current_enrollment_depth` — it drops before each instance's deferred dispatch, so a self-`fire` child
+> (which re-enters during that dispatch with the same key) is not misread as a nested re-park. The "same
+> RAII guard" wording above shipped the bug first: a self-`fire` loop never incremented depth and ran
+> unbounded (O28). Split the two cells.
+
+`ResidualOrigin` itself cannot serve — it is a parameter of
 `fire_prepartitioned_reactions_with_sequences` in `scripting-core`, and the control handler never sees it. Depth bounds causal chains — self-loops and mutual recursion — where the concurrency cap
 cannot, because a one-at-a-time loop never raises the instance count. Both mirror `MAX_BATCH_DISPATCH_HOPS`
 in `crates/scripting-core/src/reaction_dispatch.rs`: bound the runaway, warn, keep the level running. Note

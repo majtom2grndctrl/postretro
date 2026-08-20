@@ -172,6 +172,14 @@ impl App {
                 }
             }
             if committed && self.has_installed_level() {
+                // A parked tail is a snapshot of a body the author may have just
+                // edited away, so a hot reload drops every pending instance (O40) —
+                // with a `warn!` naming the count, matching the level-teardown
+                // clear. Its own session borrow, scoped tight like the recompose
+                // borrow below.
+                if let Some(session) = self.session.as_ref() {
+                    session.scripting.scheduler.clear();
+                }
                 if let Some(session) = self.session.as_ref() {
                     session
                         .scripting
@@ -180,9 +188,43 @@ impl App {
                         .borrow_mut()
                         .recompose_active_sets(&self.active_level_tags);
                 }
-                self.rebuild_active_reaction_subscribers();
+                // E18 validation re-runs after the recompose (which rebuilds
+                // `DataRegistry.reactions` from retained originals, erasing a
+                // prior in-place drop): Pass A, then Pass B's rejection rows.
+                // Both run BEFORE the subscriber and trigger-binder rebuilds so
+                // a rejected body is never bound — the binder copies bodies into
+                // owned commands/steps a later drop cannot reach — matching the
+                // install order in `install_world_cpu` (O40). The system-reaction
+                // binding rebuild moves ahead of the rejection rows because V4b
+                // reads its `required_dispatch_inputs`; that table binds only
+                // `Primitive` reactions, which no V-row drops, so validation
+                // cannot stale it.
                 self.rebuild_active_system_reaction_bindings();
+                if let Some(session) = self.session.as_ref() {
+                    let script_ctx = session.scripting.script_ctx.clone();
+                    crate::startup::reaction_validation::validate_reaction_bodies_pass_a(
+                        &script_ctx,
+                    );
+                    crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
+                        &script_ctx,
+                        &session.scripting.system_reaction_ir_bindings,
+                    );
+                }
+                self.rebuild_active_reaction_subscribers();
                 self.rebuild_active_trigger_bindings();
+                // E18 V5 re-derives Exit edges into the freshly-rebuilt
+                // `self.trigger_bindings` (a fresh table would lose an earlier
+                // insert). `mem::take` isolates the mutable `trigger_bindings`
+                // borrow from the shared session borrow the pass also needs.
+                let mut trigger_bindings = std::mem::take(&mut self.trigger_bindings);
+                if let Some(session) = self.session.as_ref() {
+                    let script_ctx = session.scripting.script_ctx.clone();
+                    crate::startup::reaction_validation::derive_interruptible_wait_exit_edges(
+                        &script_ctx,
+                        &mut trigger_bindings,
+                    );
+                }
+                self.trigger_bindings = trigger_bindings;
             }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile.

@@ -247,22 +247,36 @@ match on `InstanceKey`.
 
 ## Install validation
 
-Two read-only passes, because the inputs arrive at different times in `install_world_cpu`
-(`crates/postretro/src/startup/lifecycle_world_cpu.rs`), whose order is `rebuild_reaction_subscribers` →
-`slot_accumulator_bindings.rebuild` → `build_trigger_bindings` → `install_manifest_events` → the
-`levelLoad` fire:
+Two read-only passes. Every rejection row runs **before** the binder, because dropping a reaction after
+`build_trigger_bindings` is a no-op for trigger-bound content: `partition_direct_reaction` copies each
+matched body into owned `BoundTriggerCommand`s and `PrepartitionedReactionStep`s at bind time, and the
+runtime residual drain never re-reads the `DataRegistry` body — a post-bind drop would leave a V2 wait
+enrolling on Enter and a V4b pre-wait `fire` dispatching as a `DeferredEvent`. The install order in
+`install_world_cpu` (`crates/postretro/src/startup/lifecycle_world_cpu.rs`) is therefore: Pass A → Pass B
+rejections → `rebuild_reaction_subscribers` → `slot_accumulator_bindings.rebuild` →
+`build_trigger_bindings` → `install_manifest_events` → the V5 derivation → the `levelLoad` fire:
 
-- **Pass A — body validation** runs where `slot_accumulator_bindings.rebuild` sits. It needs only the
-  `DataRegistry`: walk every `Sequence` body, apply V1, V4a, and V6. It inspects; it does not rewrite.
-- **Pass B — trigger-coupled validation** (V2, V3, V4b, V5) runs **after** `install_manifest_events`, because
-  `build_trigger_bindings` and the manifest-declared `onTriggerEvent` bindings are both constructed after
-  Pass A's slot. V2, V3, and V5 need reaction-to-trigger provenance, which `TriggerBindingTable` does not
-  record — `bind_event` resolves a name to a `matched` Vec and immediately partitions it into anonymous
-  commands and steps, and `bound_edges` is a `HashSet<(EntityId, TriggerEventEdge)>`. Pass B therefore
-  reads its provenance from the sources the binder read: `TriggerVolumeComponent.on_fire` / `on_exit`
+- **Pass A — body validation** (V1, V4a, V6) needs only the `DataRegistry`: walk every `Sequence` body.
+  It inspects; it does not rewrite.
+- **Pass B — trigger-coupled rejections** (V2, V3, V4b) needs reaction-to-trigger provenance and the
+  bound system-`setState` programs, but **not** the trigger binding table. `TriggerBindingTable` does
+  not record provenance — `bind_event` resolves a name to a `matched` Vec and immediately partitions it
+  into anonymous commands and steps, and `bound_edges` is a `HashSet<(EntityId, TriggerEventEdge)>` —
+  so Pass B reads its provenance from the sources the binder reads: `TriggerVolumeComponent.on_fire`
   across `EntityRegistry` triggers, plus `data_registry.trigger_events` (tag → trigger ids ×
-  `descriptor.fire` names). Both passes must also run wherever `recompose_active_sets` is followed by a
-  binding rebuild, so a hot reload re-validates rather than inheriting a stale verdict.
+  `descriptor.fire` names). Those sources exist before the binder runs, which is what lets the
+  rejections precede it. V4b reads a `SystemReactionIrBindings` built fresh from the post-Pass-A
+  `DataRegistry` (that table binds only `Primitive` reactions, which no V-row drops).
+- **Pass B — the V5 Exit-edge derivation** is the one piece that must run **after**
+  `build_trigger_bindings` + `install_manifest_events`: it inserts into the freshly built table (an
+  earlier insert would be discarded with the previous table), and only edges for reactions that
+  survived the rejections are derived.
+
+Both passes and the derivation also run wherever `recompose_active_sets` is followed by a binding
+rebuild — the staged-manifest commit (`poll_staged_manifest_results`) uses the same relative order
+(recompose → system-binding rebuild → Pass A → Pass B rejections → subscriber rebuild → trigger-binding
+rebuild → V5) — so a hot reload re-validates rather than inheriting a stale verdict, and install and hot
+reload agree on what the subscriber rebuild observes for a dropped body (an inert `Sequence(vec![])`).
 
 Every rejection is a loud, non-fatal diagnostic: `log::error!` (or `warn!` where noted) naming the reaction
 and step index, the offending reaction dropped, the level and all other reactions unaffected — matching
@@ -276,7 +290,7 @@ vector. Hot reload inherits it: a bad edit costs one reaction and a console line
 | V2 | B | `interruptible` wait in a reaction Enter-bound to a trigger whose `TriggerVolumeComponent.fire_mode` is `TriggerFireMode::Once` | `error!`, drop the reaction. Cancelling a `once` fire destroys the set-piece permanently — `update_after_fire` sets `latched`, and `evaluate_trigger_activation` rejects `Once if latched` |
 | V3 | B | `interruptible` wait in a reaction with no trigger-Enter binding, counting **both** brush-KVP bindings and manifest `onTriggerEvent` bindings | `error!`, drop the reaction. The flag has no cancel source |
 | V4a | A | Any step after a `wait` carrying a `SequenceTarget::Activators`/`FiredTrigger` sentinel | `error!`, drop the reaction. No fire context survives a wait. This clause needs only the `DataRegistry`, so it belongs in Pass A |
-| V4b | B | Any `fire` step, at any position, whose target reaction's bound program reads a seeded dispatch input | `error!`, drop the reaction. A `fire` step dispatches on the app drain with no fire context regardless of position. **Pass B, not Pass A**: the predicate is over a `BoundProgram`, and none exists until `build_trigger_bindings` runs, after Pass A's slot. A post-wait *step* needs no equivalent check — the trigger binder's only `bind(...)` produces a `BoundStoreValue::Ir` for `setState`, and `bind_sequence_step` refuses `setState` outright, so a sequence step never yields a `BoundProgram` in any binder. The target of a `fire`, by contrast, may be exactly such a system-targeted `setState` `Primitive`, which is where `@rising` lives. Read it from `SystemReactionIrBindings`, whose `SystemSetStateBinding` carries `slot`, `value`, `program`, and `required_dispatch_inputs` but **no reaction identity**, with a private `bindings` field and no accessor: add the reaction name to that struct plus a `pub(crate)` accessor returning `(name, required_dispatch_inputs)`, and read that precomputed field rather than re-walking the tree — it already holds the answer, so the rule cannot go stale against a name list |
+| V4b | B | Any `fire` step, at any position, whose target reaction's bound program reads a seeded dispatch input | `error!`, drop the reaction. A `fire` step dispatches on the app drain with no fire context regardless of position. **Pass B, not Pass A**: the predicate is over a `BoundProgram`, which comes from `SystemReactionIrBindings` — a table built independently of the trigger binder, so the check runs before `build_trigger_bindings` like every other rejection row. A post-wait *step* needs no equivalent check — the trigger binder's only `bind(...)` produces a `BoundStoreValue::Ir` for `setState`, and `bind_sequence_step` refuses `setState` outright, so a sequence step never yields a `BoundProgram` in any binder. The target of a `fire`, by contrast, may be exactly such a system-targeted `setState` `Primitive`, which is where `@rising` lives. Read it from `SystemReactionIrBindings`, whose `SystemSetStateBinding` carries `slot`, `value`, `program`, and `required_dispatch_inputs` but **no reaction identity**, with a private `bindings` field and no accessor: add the reaction name to that struct plus a `pub(crate)` accessor returning `(name, required_dispatch_inputs)`, and read that precomputed field rather than re-walking the tree — it already holds the answer, so the rule cannot go stale against a name list |
 | V5 | B | `interruptible` wait on an Enter-bound reaction whose trigger emits no Exit edge | **derive it** — insert `(trigger, TriggerEventEdge::Exit)` into `bound_edges` via a new `bind_edge_only` method on `TriggerBindingTable`. `bind_event` cannot be reused: it returns early when `commands.is_empty() && steps.is_empty()`, before the `append_binding` call that is the only existing `bound_edges` inserter |
 | V6 | A | `fire` step naming a reaction absent from the registry | `warn!`, drop the step, keep the reaction (mirrors the unknown-event `warn!` in `dispatch_deferred_named_events_with_sequences`) |
 
@@ -332,7 +346,7 @@ Pin the orderings a task agent must handle. The test tasks cite these rows rathe
 | O33 | Landing residual identity | a landing's steps plus two trigger residuals in one frame | the scheduler owns its tails as `Vec<SequenceStep>` and never mints a `TriggerResidualHandle`; the drain never resolves scheduler tails through `trigger_bindings.residual()` and never executes another binding's steps |
 | O34 | Name-fired reaction containing a wait | `S = [x, fire(R)]` where `R = [alarm, wait(800), moverStart]`; S fires | `fire_named_event_with_sequences` on `R` runs `alarm`, hits the `@wait` arm, enrolls the tail, and breaks — the door does not open in the same frame. This holds at every hop depth, because the arm lives below `dispatch_deferred_named_events_with_sequences`, not beside it |
 | O35 | `setupLevel` validation admits control steps | a reaction containing `@wait`/`@fire` reaches `validate_sequence_primitives` | the reaction survives; no `names unknown primitive "wait"` error. `wait`/`fire` are registered names |
-| O36 | Install-pass ordering | `onTriggerEvent({tag}, "enter", [reveal])` — a manifest binding installed by `install_manifest_events` | V2/V3/V5 run in Pass B, after `install_manifest_events`; the consumer's reveal is not dropped by V3, and V5's `bound_edges` insert survives |
+| O36 | Install-pass ordering | `onTriggerEvent({tag}, "enter", [reveal])` — a manifest binding installed by `install_manifest_events` | V2/V3 count the manifest binding by reading `data_registry.trigger_events` directly (present before the binder), so the consumer's reveal is not dropped by V3; V5's derivation runs after `install_manifest_events`, so its `bound_edges` insert survives |
 | O37 | `fire` before a wait | `R = [fire(sting), wait(800), moverStart]` on a plate Enter | the `fire` arm pushes `sting` onto the dispatcher's returned chained list, so it reaches `dispatch_deferred_named_events_with_sequences` in the same frame's drain; it is never dropped by the `SequenceTarget::Entity` guard |
 | O37b | `fire` order within one body | `R = [fire(sting), playSound("hum"), wait(800), moverStart]` | `hum` is heard before `sting`: a `fire` name is collected and dispatched after the whole body's presentation, matching how `chained` already behaves for `on_complete`. Authored order between a `fire` and a presentation step is **not** preserved — stated, not corrected |
 | O38 | Teardown clears the scheduler | level unload with two instances parked | `clear_surface_lifetime_level_state` clears the scheduler's instance map and landing queue; no instance survives into level B holding level-A `EntityId`s |
@@ -453,8 +467,9 @@ Pin the orderings a task agent must handle. The test tasks cite these rows rathe
 - [ ] The scheduler never mints a `TriggerResidualHandle` (O33) — a grep gate over the scheduler module, not a runnable test.
 - [ ] Two sequences sharing one address, either containing a wait, park independent instances — neither body
   is lost and re-fire does not conflate them (O41).
-- [ ] V2/V3/V5 run after `install_manifest_events`: the consumer's manifest-bound reveal is not dropped by
-  V3, and its derived Exit edge survives (O36). A non-interruptible wait in a body with no pre-wait work
+- [ ] V2/V3 count manifest `onTriggerEvent` bindings (read from `data_registry.trigger_events`, before the
+  binder): the consumer's manifest-bound reveal is not dropped by V3, and its V5-derived Exit edge — inserted
+  after `install_manifest_events` — survives (O36). A non-interruptible wait in a body with no pre-wait work
   still dispatches its Enter edge (O46).
 - [ ] Parked-at-wait governs both cancel and re-fire: a re-fire while parked at a non-interruptible wait is
   ignored, and one while parked at an interruptible wait restarts from the top without reverting effects
@@ -700,8 +715,10 @@ stored tail is a snapshot of a body the author may have just edited (O40). That 
 order — `recompose_active_sets`, then `rebuild_active_reaction_subscribers`,
 `rebuild_active_system_reaction_bindings`, `rebuild_active_trigger_bindings` — and the third rebuilds the
 binder V4b's `fire`-target half reads, so it cannot drop out of the chain. Pin the insertion points: Pass A
-runs after `recompose_active_sets` and **before** `rebuild_active_trigger_bindings`, or the binder binds a
-body Pass A rejects; Pass B runs after both binder rebuilds. The `session` borrow there is scoped to the
+and Pass B's rejection rows run after `recompose_active_sets` (with the system-binding rebuild hoisted ahead
+of them for V4b) and **before** `rebuild_active_trigger_bindings`, or the binder binds a body a pass
+rejects — the binder copies bodies into owned steps a later drop cannot reach; only the V5 derivation runs
+after the trigger-binder rebuild. The `session` borrow there is scoped to the
 `recompose_active_sets` call, so the scheduler drop and each pass need their own. Leave the validation-pass re-run at that same
 point to Task 4, which owns both passes. `WorldInstallHandles` (`startup/lifecycle.rs`) gains a field if the
 scheduler is threaded through install — amend its **four** construction sites: three in
@@ -806,7 +823,7 @@ Also add the `paired_enters` accessor Task 5's enrollment check needs — the se
 `TriggerSystem` with no reader today, and the check runs from the frame-end drain, which holds the session
 and can borrow the system. V6:
 warn and drop a `fire` step naming an absent reaction, keeping the rest of the reaction. Both passes must
-also be reachable from Task 3's staged-commit re-run. Unit tests: one per row, O36 (V2/V3/V5 run after `install_manifest_events`), O46 (a body whose first step
+also be reachable from Task 3's staged-commit re-run. Unit tests: one per row, O36 (manifest provenance counts for V2/V3; V5's insert survives `install_manifest_events`), O46 (a body whose first step
 is the wait still binds its Enter edge), O29 (a malformed `durationMs` drops the reaction and the level
 continues), plus the V5
 end-to-end that cancellation works with no authored `on_exit` KVP. Depends on Task 1.

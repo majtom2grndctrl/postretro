@@ -753,6 +753,45 @@ impl SimHarness {
         self.note_log.borrow().clone()
     }
 
+    /// E18 Task 7 (O25): enroll an instance directly, bypassing the
+    /// control-arm dispatch, with a one-step `note(address)` tail so its
+    /// landing is order-observable through `note_log`. Test-only.
+    ///
+    /// The `note` step's target must be an entity in `trigger_script_ctx`'s
+    /// registry — the scheduler's dispatch calls (`drain_landings`) resolve
+    /// steps against `self.trigger_script_ctx`, a SEPARATE `ScriptCtx` /
+    /// `EntityRegistry` from `self.registry` where `selected_player` and the
+    /// other gameplay entities live (see the `LevelLoadWait` fixture branch
+    /// above, which spawns its own `pre`/`post` entities into
+    /// `trigger_script_ctx.registry` for the same reason). Using
+    /// `selected_player` here would fail `dispatch_sequence`'s
+    /// `script_ctx.registry.borrow().exists(id)` guard and silently skip the
+    /// step with a warn.
+    #[cfg(test)]
+    pub(crate) fn enroll_for_test(
+        &self,
+        address: &str,
+        body_ordinal: usize,
+        origin: Option<(EntityId, PlayerId)>,
+        ticks: u32,
+    ) {
+        let target = self.trigger_script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let step = SequenceStep {
+            id: SequenceTarget::Entity(target),
+            primitive: "note".to_string(),
+            args: serde_json::json!({ "label": address }),
+        };
+        self.scheduler
+            .enroll(address, body_ordinal, origin, vec![step], ticks, false);
+    }
+
+    /// E18 Task 7 (O25): the `note_log` snapshot, named for its use as a
+    /// landing-order witness at this call site. Test-only.
+    #[cfg(test)]
+    pub(crate) fn landed_order_for_test(&self) -> Vec<String> {
+        self.note_log()
+    }
+
     /// Resolve every raw id a tick reports before it reaches the comparison.
     pub(crate) fn record(
         &self,
@@ -3850,3 +3889,12 @@ proptest! {
         assert_runs_match(&reversed_spawn, &baseline);
     }
 }
+
+// E18 Task 7: tick/frame-timing-dependent Ordering rows, using `SimHarness`
+// through `frame()`. A child module (not a sibling file at the crate level) so
+// it can reach the private `SimHarness`/`SimFixture` construction surface the
+// same way this file's own tests do — see the `pub(crate) mod determinism_tests`
+// doc comment in `sim/mod.rs`. Landed as its own file per the testing guide's
+// "land new test modules as new files, not growing `determinism_tests.rs`"
+// rule.
+mod e18_task7_tick_ordering;

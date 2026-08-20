@@ -20,6 +20,8 @@ pub(crate) mod particle_render;
 pub(crate) mod particle_sim;
 pub(crate) mod presentation_cells;
 pub(crate) mod reaction_scheduler;
+#[cfg(test)]
+mod reaction_scheduler_ordering_tests;
 pub(crate) mod shake_decay;
 pub(crate) mod slot_accumulators;
 pub(crate) mod system_reactions;

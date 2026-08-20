@@ -23,6 +23,9 @@ use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::netcode::ShotId;
 use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
+use crate::scripting_systems::reaction_scheduler::{
+    ReactionScheduler, register_reaction_control_primitives,
+};
 use crate::scripting_systems::slot_accumulators::{
     SlotAccumulatorBindings, evaluate_slot_accumulators,
 };
@@ -55,6 +58,7 @@ use postretro_entities::{
     TriggerActivation, TriggerFireMode, TriggerPoolArm, TriggerPoolDescriptor,
     TriggerVolumeComponent,
 };
+use postretro_entities::{SequenceStep, SequenceTarget};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams, IrNode,
@@ -69,10 +73,6 @@ use postretro_scripting_core::reaction_registry::{
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
-use crate::scripting_systems::reaction_scheduler::{
-    ReactionScheduler, register_reaction_control_primitives,
-};
-use postretro_entities::{SequenceStep, SequenceTarget};
 
 /// Fixture selector for [`SimHarness::new`]. `Determinism` is the shipped
 /// trap-pool + crossing fixture; `LevelLoadWait` additionally installs and fires
@@ -616,7 +616,10 @@ impl SimHarness {
                 &trigger_script_ctx,
                 None,
             );
-            debug_assert!(chained.is_empty(), "presentation-only levelLoad chains nothing");
+            debug_assert!(
+                chained.is_empty(),
+                "presentation-only levelLoad chains nothing"
+            );
         }
 
         Self {
@@ -775,7 +778,11 @@ impl SimHarness {
         origin: Option<(EntityId, PlayerId)>,
         ticks: u32,
     ) {
-        let target = self.trigger_script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let target = self
+            .trigger_script_ctx
+            .registry
+            .borrow_mut()
+            .spawn(Transform::default());
         let step = SequenceStep {
             id: SequenceTarget::Entity(target),
             primitive: "note".to_string(),

@@ -257,9 +257,12 @@ impl SystemReactionIrBindings {
     /// app drain, so firing it from a sequence is malformed. Reads the precomputed
     /// `required_dispatch_inputs` rather than re-walking the IR.
     pub(crate) fn reaction_dispatch_inputs(&self) -> impl Iterator<Item = (&str, &[String])> {
-        self.bindings
-            .iter()
-            .map(|binding| (binding.name.as_str(), binding.required_dispatch_inputs.as_slice()))
+        self.bindings.iter().map(|binding| {
+            (
+                binding.name.as_str(),
+                binding.required_dispatch_inputs.as_slice(),
+            )
+        })
     }
 }
 

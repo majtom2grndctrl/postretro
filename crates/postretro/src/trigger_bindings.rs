@@ -558,9 +558,8 @@ fn partition_direct_reaction(
                     match step.args.get("event").and_then(serde_json::Value::as_str) {
                         Some(event) => {
                             warn_for_deferred_event(&reaction.name, event, data_registry);
-                            steps.push(PrepartitionedReactionStep::DeferredEvent(
-                                event.to_string(),
-                            ));
+                            steps
+                                .push(PrepartitionedReactionStep::DeferredEvent(event.to_string()));
                         }
                         None => log::warn!(
                             "[Trigger] fire sequence step on `{}` is missing its `event` name; not binding",
@@ -2452,7 +2451,11 @@ mod tests {
         let binding = table
             .binding(trigger, TriggerEventEdge::Enter)
             .expect("reveal binds its Enter edge");
-        assert_eq!(binding.commands.len(), 1, "moverStart runs in the fixed tick");
+        assert_eq!(
+            binding.commands.len(),
+            1,
+            "moverStart runs in the fixed tick"
+        );
         assert!(matches!(
             binding.commands[0],
             BoundTriggerCommand::Mover {

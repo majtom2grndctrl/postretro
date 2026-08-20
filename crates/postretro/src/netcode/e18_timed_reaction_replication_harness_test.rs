@@ -49,7 +49,9 @@ use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
 };
 use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::scripting_systems::reaction_scheduler::{ReactionScheduler, register_reaction_control_primitives};
+use crate::scripting_systems::reaction_scheduler::{
+    ReactionScheduler, register_reaction_control_primitives,
+};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::sim::{
     PostMovementCommand, RemotePawnCommand, SimCommand, TickEvents, TriggerTickContext,
@@ -132,7 +134,12 @@ fn alarm_replication_identity() -> ReplicatedSlotIdentity<'static> {
     )
 }
 
-fn primitive(name: &str, primitive: &str, tag: Option<&str>, args: serde_json::Value) -> NamedReaction {
+fn primitive(
+    name: &str,
+    primitive: &str,
+    tag: Option<&str>,
+    args: serde_json::Value,
+) -> NamedReaction {
     NamedReaction {
         name: name.to_string(),
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
@@ -169,7 +176,12 @@ fn fixture_reactions() -> Vec<NamedReaction> {
                 },
             ]),
         },
-        primitive(RAISE_ALARM, "setState", None, serde_json::json!({ "slot": ALARM_SLOT, "value": 1 })),
+        primitive(
+            RAISE_ALARM,
+            "setState",
+            None,
+            serde_json::json!({ "slot": ALARM_SLOT, "value": 1 }),
+        ),
         primitive(
             PRESENTATION_EVENT,
             "setFogDensity",
@@ -222,7 +234,10 @@ fn idle_command() -> SimCommand {
             use_pressed: false,
             drop_pressed: false,
         },
-        fire_button: FireButtonState { pressed: false, active: false },
+        fire_button: FireButtonState {
+            pressed: false,
+            active: false,
+        },
         reload: false,
         firing_slot: 0,
         select_slot: None,
@@ -233,14 +248,22 @@ fn idle_command() -> SimCommand {
 
 fn relay_pair() -> (NetServer, NetClient) {
     let origin = Duration::from_secs(1);
-    let server_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture server binds loopback socket");
+    let server_socket =
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture server binds loopback socket");
     let server_addr: SocketAddr = server_socket
         .local_addr()
         .expect("fixture server resolves loopback address");
-    let client_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture client binds loopback socket");
+    let client_socket =
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture client binds loopback socket");
     let static_fingerprint = [0x5a; 32];
-    let mut server = NetServer::new(server_socket, server_addr, 1, origin, Some(static_fingerprint))
-        .expect("fixture server transport constructs");
+    let mut server = NetServer::new(
+        server_socket,
+        server_addr,
+        1,
+        origin,
+        Some(static_fingerprint),
+    )
+    .expect("fixture server transport constructs");
     let mut client = NetClient::new(
         client_socket,
         server_addr,
@@ -316,11 +339,17 @@ impl TimedAlarmHarness {
 
         let (_host_trigger, host_bindings, host_trigger_bridge, host_remote_pawn, host_local_pawn) = {
             let mut registry = host_ctx.registry.borrow_mut();
-            let remote_pawn = registry.spawn(Transform { position: Vec3::new(0.0, 1.0, 0.0), ..Transform::default() });
+            let remote_pawn = registry.spawn(Transform {
+                position: Vec3::new(0.0, 1.0, 0.0),
+                ..Transform::default()
+            });
             registry
                 .set_component(remote_pawn, player_component())
                 .expect("fixture pawn accepts movement");
-            let local_pawn = registry.spawn(Transform { position: Vec3::new(20.0, 1.0, 0.0), ..Transform::default() });
+            let local_pawn = registry.spawn(Transform {
+                position: Vec3::new(20.0, 1.0, 0.0),
+                ..Transform::default()
+            });
             registry
                 .set_component(local_pawn, player_component())
                 .expect("fixture local pawn accepts movement");
@@ -345,8 +374,11 @@ impl TimedAlarmHarness {
                 )
                 .expect("fixture trigger accepts its component");
 
-            let bindings =
-                TriggerBindingTable::build_with_script_ctx(&registry, &host_ctx.data_registry.borrow(), &host_ctx);
+            let bindings = TriggerBindingTable::build_with_script_ctx(
+                &registry,
+                &host_ctx.data_registry.borrow(),
+                &host_ctx,
+            );
             let mut bridge = TriggerVolumeBridge::new();
             bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
             (trigger, bindings, bridge, remote_pawn, local_pawn)
@@ -366,7 +398,10 @@ impl TimedAlarmHarness {
         // the O24 mechanism.
         let client_scheduler = ReactionScheduler::default();
         let mut client_sequence_registry = SequencedPrimitiveRegistry::new();
-        register_reaction_control_primitives(&mut client_sequence_registry, client_scheduler.clone());
+        register_reaction_control_primitives(
+            &mut client_sequence_registry,
+            client_scheduler.clone(),
+        );
         let mut client_reaction_registry = ReactionPrimitiveRegistry::new();
         register_fog_reaction_primitives(&mut client_reaction_registry);
         let mut client_system_registry = SystemReactionRegistry::new();
@@ -427,7 +462,10 @@ impl TimedAlarmHarness {
     }
 
     fn install_client_level_before_network_baseline(&mut self) {
-        assert!(!self.client_level_installed, "fixture client installs one level before connecting");
+        assert!(
+            !self.client_level_installed,
+            "fixture client installs one level before connecting"
+        );
         install_fixture_level_script(&self.client_ctx);
         let fog = {
             let mut registry = self.client_ctx.registry.borrow_mut();
@@ -435,7 +473,9 @@ impl TimedAlarmHarness {
             registry
                 .set_tags(fog, vec![FOG_TAG.to_string()])
                 .expect("fixture fog accepts its presentation tag");
-            registry.set_component(fog, fog_volume()).expect("fixture fog accepts its component");
+            registry
+                .set_component(fog, fog_volume())
+                .expect("fixture fog accepts its component");
             fog
         };
         self.client_crossing_detector.initialize(
@@ -455,7 +495,11 @@ impl TimedAlarmHarness {
     /// the alarm slot is written host-side — no client machinery touched.
     fn fire_trigger_and_wait_for_alarm(&mut self) {
         let host_events = self.simulate_host_tick();
-        assert_eq!(host_events.trigger_residuals.len(), 1, "one Enter-bound residual fires");
+        assert_eq!(
+            host_events.trigger_residuals.len(),
+            1,
+            "one Enter-bound residual fires"
+        );
         let (handle, trigger, player) = host_events.trigger_residuals[0];
 
         {
@@ -478,11 +522,23 @@ impl TimedAlarmHarness {
                 &self.host_ctx,
                 ResidualOrigin::TriggerBinding,
             );
-            assert!(follow_ups.is_empty(), "the wait stops the drain before any fire collects");
+            assert!(
+                follow_ups.is_empty(),
+                "the wait stops the drain before any fire collects"
+            );
         }
-        assert_eq!(self.host_scheduler.pending_len(), 1, "the tail parked host-side");
+        assert_eq!(
+            self.host_scheduler.pending_len(),
+            1,
+            "the tail parked host-side"
+        );
         assert!(
-            self.host_ctx.slot_table.borrow().get(ALARM_SLOT).unwrap().value
+            self.host_ctx
+                .slot_table
+                .borrow()
+                .get(ALARM_SLOT)
+                .unwrap()
+                .value
                 == Some(SlotValue::Number(0.0)),
             "no write yet — the tail has not landed"
         );
@@ -510,8 +566,12 @@ impl TimedAlarmHarness {
         // literal-fallback path `dispatch_system_commands` uses in `main.rs`.
         for command in self.host_ctx.system_commands.take() {
             if let SystemReactionCommand::SetState { slot, value, .. } = command {
-                crate::scripting::primitives::store::write_state_slot_json(&self.host_ctx, &slot, &value)
-                    .expect("literal alarm write applies");
+                crate::scripting::primitives::store::write_state_slot_json(
+                    &self.host_ctx,
+                    &slot,
+                    &value,
+                )
+                .expect("literal alarm write applies");
             }
         }
     }
@@ -546,7 +606,10 @@ impl TimedAlarmHarness {
                 command: idle_command(),
             }],
             &idle_command(),
-            |_| PostMovementCommand { aim_origin: Vec3::ZERO, aim_direction: Vec3::NEG_Z },
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
             1.0 / 60.0,
             Some(TriggerTickContext {
                 system: &mut self.host_trigger_system,
@@ -562,14 +625,25 @@ impl TimedAlarmHarness {
     }
 
     fn enqueue_host_snapshot(&mut self) {
-        assert!(self.connected && self.server.is_participating(CLIENT_ID), "only an accepted client receives state");
+        assert!(
+            self.connected && self.server.is_participating(CLIENT_ID),
+            "only an accepted client receives state"
+        );
         let sequence = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
         let weapon_owners = WeaponOwners::new();
         let slots = self.host_ctx.slot_table.borrow();
         let registry = self.host_ctx.registry.borrow();
-        self.host_state.ingest_frame(&slots, &self.replication_identity, &registry, &self.host_owners, &weapon_owners);
-        let fingerprint = self.host_state.fingerprint(&slots, &self.replication_identity);
+        self.host_state.ingest_frame(
+            &slots,
+            &self.replication_identity,
+            &registry,
+            &self.host_owners,
+            &weapon_owners,
+        );
+        let fingerprint = self
+            .host_state
+            .fingerprint(&slots, &self.replication_identity);
         let records = self
             .host_state
             .produce_for_client(CLIENT_ID, sequence)
@@ -583,7 +657,8 @@ impl TimedAlarmHarness {
             state_records: records,
         };
         assert!(
-            self.server.send_snapshot(CLIENT_ID, wire::encode(&snapshot)),
+            self.server
+                .send_snapshot(CLIENT_ID, wire::encode(&snapshot)),
             "accepted fixture client receives the host snapshot through NetServer"
         );
     }
@@ -596,7 +671,10 @@ impl TimedAlarmHarness {
         let crossing_events = frame_order::run_crossing_stage(self, engine_frame, applied);
         self.relay_client_to_server();
         self.apply_client_control_messages();
-        ClientNetworkStep { crossing_events, accepted_snapshot: self.accepted_snapshot }
+        ClientNetworkStep {
+            crossing_events,
+            accepted_snapshot: self.accepted_snapshot,
+        }
     }
 
     fn replicate_until_client_applies_alarm(&mut self) -> Vec<String> {
@@ -621,11 +699,19 @@ impl TimedAlarmHarness {
     }
 
     fn host_alarm(&self) -> Option<SlotValue> {
-        self.host_ctx.slot_table.borrow().get(ALARM_SLOT).and_then(|r| r.value.clone())
+        self.host_ctx
+            .slot_table
+            .borrow()
+            .get(ALARM_SLOT)
+            .and_then(|r| r.value.clone())
     }
 
     fn client_alarm(&self) -> Option<SlotValue> {
-        self.client_ctx.slot_table.borrow().get(ALARM_SLOT).and_then(|r| r.value.clone())
+        self.client_ctx
+            .slot_table
+            .borrow()
+            .get(ALARM_SLOT)
+            .and_then(|r| r.value.clone())
     }
 
     fn client_fog_density(&self) -> f32 {
@@ -638,36 +724,46 @@ impl TimedAlarmHarness {
     }
 
     fn relay_client_to_server(&mut self) {
-        self.client.update_connections(Duration::from_millis(TICK_MS));
+        self.client
+            .update_connections(Duration::from_millis(TICK_MS));
         self.to_server.enqueue_all(self.client.packets_to_send());
         self.to_server.advance(TICK_MS);
         for packet in self.to_server.take_ready() {
             self.server.process_packet_from(&packet, CLIENT_ID);
         }
-        self.server.update_connections(Duration::from_millis(TICK_MS));
+        self.server
+            .update_connections(Duration::from_millis(TICK_MS));
         let _ = self.server.poll_handshakes();
     }
 
     fn relay_server_to_client(&mut self) {
-        self.server.update_connections(Duration::from_millis(TICK_MS));
-        self.to_client.enqueue_all(self.server.packets_to_send(CLIENT_ID));
+        self.server
+            .update_connections(Duration::from_millis(TICK_MS));
+        self.to_client
+            .enqueue_all(self.server.packets_to_send(CLIENT_ID));
         self.to_client.advance(TICK_MS);
         for packet in self.to_client.take_ready() {
             self.client.process_packet(&packet);
         }
-        self.client.update_connections(Duration::from_millis(TICK_MS));
+        self.client
+            .update_connections(Duration::from_millis(TICK_MS));
     }
 
     fn apply_client_control_messages(&mut self) {
         for bytes in self.server.drain_input(CLIENT_ID) {
-            let message = wire::decode::<ClientMessage>(&bytes).expect("fixture sends only real client control messages");
+            let message = wire::decode::<ClientMessage>(&bytes)
+                .expect("fixture sends only real client control messages");
             match message {
-                ClientMessage::Ack(ack) => {
-                    self.host_state.apply_ack(CLIENT_ID, ack.latest_snapshot_sequence, &ack.slot_baselines)
-                }
-                ClientMessage::StateBaselineRefresh(refresh) => {
-                    self.host_state.request_refresh(CLIENT_ID, refresh.slot_id, refresh.missing_baseline_ref)
-                }
+                ClientMessage::Ack(ack) => self.host_state.apply_ack(
+                    CLIENT_ID,
+                    ack.latest_snapshot_sequence,
+                    &ack.slot_baselines,
+                ),
+                ClientMessage::StateBaselineRefresh(refresh) => self.host_state.request_refresh(
+                    CLIENT_ID,
+                    refresh.slot_id,
+                    refresh.missing_baseline_ref,
+                ),
                 _ => {}
             }
         }
@@ -709,7 +805,8 @@ impl ReplicatedStateFrame for TimedAlarmHarness {
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;
         self.accepted_snapshot = accepted;
-        if accepted && matches!(self.client_alarm(), Some(SlotValue::Number(value)) if value == 1.0) {
+        if accepted && matches!(self.client_alarm(), Some(SlotValue::Number(value)) if value == 1.0)
+        {
             self.client_applied_alarm = true;
         }
     }
@@ -729,13 +826,19 @@ impl ReplicatedStateFrame for TimedAlarmHarness {
 
 fn assert_number_slot_near(value: Option<SlotValue>, expected: f32, context: &str) {
     match value {
-        Some(SlotValue::Number(actual)) => assert!((actual - expected).abs() <= 1e-6, "{context}: got {actual}, expected {expected}"),
+        Some(SlotValue::Number(actual)) => assert!(
+            (actual - expected).abs() <= 1e-6,
+            "{context}: got {actual}, expected {expected}"
+        ),
         other => panic!("{context}: expected Number slot value, got {other:?}"),
     }
 }
 
 fn assert_fog_density_near(actual: f32, expected: f32, context: &str) {
-    assert!((actual - expected).abs() <= 1e-6, "{context}: got {actual}, expected {expected}");
+    assert!(
+        (actual - expected).abs() <= 1e-6,
+        "{context}: got {actual}, expected {expected}"
+    );
 }
 
 /// The co-op replication AC and O42: a delayed `fire` step dispatching a
@@ -761,8 +864,15 @@ fn delayed_fire_of_system_setstate_replicates_and_drives_client_local_presentati
     );
 
     let client_crossings = harness.replicate_until_client_applies_alarm();
-    assert!(harness.client_applied_alarm, "the client slot value was written by ClientStateApply::apply_snapshot_state");
-    assert_number_slot_near(harness.client_alarm(), 1.0, "the client converges to the host's persistent shared state");
+    assert!(
+        harness.client_applied_alarm,
+        "the client slot value was written by ClientStateApply::apply_snapshot_state"
+    );
+    assert_number_slot_near(
+        harness.client_alarm(),
+        1.0,
+        "the client converges to the host's persistent shared state",
+    );
     assert_eq!(
         client_crossings,
         vec![PRESENTATION_EVENT.to_string()],

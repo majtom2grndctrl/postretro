@@ -20,7 +20,9 @@ use postretro_entities::{
 use postretro_scripting_core::reaction_dispatch::{
     ResidualOrigin, fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
 };
-use postretro_scripting_core::reaction_registry::{ReactionPrimitiveRegistry, SystemReactionRegistry};
+use postretro_scripting_core::reaction_registry::{
+    ReactionPrimitiveRegistry, SystemReactionRegistry,
+};
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_test_log_capture::LogCapture;
 
@@ -262,7 +264,10 @@ fn despawned_target_is_skipped_with_warn_and_the_rest_of_the_tail_runs() {
         "reveal",
         0,
         None,
-        vec![fx.note_step(gone, "gone"), fx.note_step(survivor, "survivor")],
+        vec![
+            fx.note_step(gone, "gone"),
+            fx.note_step(survivor, "survivor"),
+        ],
         1,
         false,
     );
@@ -385,7 +390,10 @@ fn self_retriggering_wait_terminates_at_max_chain_depth() {
         &fx.ctx,
         None,
     );
-    assert!(chained.is_empty(), "the wait stops the drain before any fire collects");
+    assert!(
+        chained.is_empty(),
+        "the wait stops the drain before any fire collects"
+    );
 
     // Advance frames well past MAX_REACTION_CHAIN_DEPTH (256) self-fire cycles.
     // Each cycle is a 1-tick wait: one `tick_and_frame` + `drain` per cycle.
@@ -397,13 +405,9 @@ fn self_retriggering_wait_terminates_at_max_chain_depth() {
         if fx.scheduler.pending_len() == 0 {
             // The chain stopped enrolling a fresh instance: either it was
             // dropped at the depth cap, or something else halted it.
-            depth_cap_warned = capture
-                .records()
-                .iter()
-                .any(|record| {
-                    record.level == log::Level::Warn
-                        && record.message.contains("enrolled-by chain cap")
-                });
+            depth_cap_warned = capture.records().iter().any(|record| {
+                record.level == log::Level::Warn && record.message.contains("enrolled-by chain cap")
+            });
             break;
         }
     }
@@ -435,7 +439,10 @@ fn suspend_path_clear_warns_with_the_dropped_count() {
 
     let capture = LogCapture::start();
     fx.scheduler.clear();
-    capture.assert_logged_once(log::Level::Warn, "dropping 3 pending timed-reaction instance");
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "dropping 3 pending timed-reaction instance",
+    );
     assert_eq!(fx.scheduler.pending_len(), 0);
 }
 
@@ -555,7 +562,14 @@ fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
     // Fill the REMAINING slots so the pool sits exactly at capacity with
     // multiWaitA/B occupying two of them.
     for ordinal in 0..(MAX_PENDING_REACTION_INSTANCES - 2) {
-        fx.enroll("filler", ordinal, None, vec![fx.note_step(target, "filler")], 1000, false);
+        fx.enroll(
+            "filler",
+            ordinal,
+            None,
+            vec![fx.note_step(target, "filler")],
+            1000,
+            false,
+        );
     }
     assert_eq!(fx.scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
 
@@ -566,8 +580,20 @@ fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
     // fresh enrollment.
     fx.tick_and_frame();
     fx.drain();
-    assert_eq!(fx.log().iter().filter(|s| s.as_str() == "multiWaitA:2").count(), 1);
-    assert_eq!(fx.log().iter().filter(|s| s.as_str() == "multiWaitB:2").count(), 1);
+    assert_eq!(
+        fx.log()
+            .iter()
+            .filter(|s| s.as_str() == "multiWaitA:2")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fx.log()
+            .iter()
+            .filter(|s| s.as_str() == "multiWaitB:2")
+            .count(),
+        1
+    );
     assert_eq!(
         fx.scheduler.pending_len(),
         MAX_PENDING_REACTION_INSTANCES,
@@ -580,8 +606,20 @@ fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
     // Both land again (second wait) and complete their bodies.
     fx.tick_and_frame();
     fx.drain();
-    assert_eq!(fx.log().iter().filter(|s| s.as_str() == "multiWaitA:3").count(), 1);
-    assert_eq!(fx.log().iter().filter(|s| s.as_str() == "multiWaitB:3").count(), 1);
+    assert_eq!(
+        fx.log()
+            .iter()
+            .filter(|s| s.as_str() == "multiWaitA:3")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fx.log()
+            .iter()
+            .filter(|s| s.as_str() == "multiWaitB:3")
+            .count(),
+        1
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -616,11 +654,13 @@ fn delayed_fire_of_a_system_reaction_dispatches_host_only_through_the_resumed_ta
     // `fire_prepartitioned_reactions_with_sequences` call, `ResumedTail`
     // origin, no `NetEndpoint`/client type anywhere in this call graph.
     let follow_ups = fire_prepartitioned_reactions_with_sequences(
-        &[postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep::Descriptor(
-            "reveal".to_string(),
-            0,
-            ReactionDescriptor::Sequence(vec![fx.fire_step("raiseAlarm")]),
-        )],
+        &[
+            postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep::Descriptor(
+                "reveal".to_string(),
+                0,
+                ReactionDescriptor::Sequence(vec![fx.fire_step("raiseAlarm")]),
+            ),
+        ],
         &fx.sequence_registry,
         &fx.reaction_registry,
         &fx.system_registry,
@@ -742,7 +782,11 @@ fn crossing_fired_reaction_containing_a_wait_enrolls_and_lands_later() {
     // alone (no `begin_frame`) models "still inside this frame".
     fx.scheduler.evaluate(&[]);
     fx.drain();
-    assert_eq!(fx.log(), vec!["pre".to_string()], "no advance in the enrollment frame");
+    assert_eq!(
+        fx.log(),
+        vec!["pre".to_string()],
+        "no advance in the enrollment frame"
+    );
     // The NEXT frame's ticks do advance it; a 17ms wait is 2 ticks.
     fx.tick_and_frame();
     fx.tick_and_frame();
@@ -792,15 +836,19 @@ fn intra_frame_round_trip_write_fires_no_crossing() {
     {
         let slot_table = fx.ctx.slot_table.clone();
         let watched_slot = watched_slot.clone();
-        fx.sequence_registry.register("writeSlot", move |_id, args| {
-            let value = args.get("value").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-            slot_table
-                .borrow_mut()
-                .get_mut(&watched_slot)
-                .expect("watched slot present")
-                .value = Some(postretro_entities::SlotValue::Number(value as f32));
-            Ok(())
-        });
+        fx.sequence_registry
+            .register("writeSlot", move |_id, args| {
+                let value = args
+                    .get("value")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
+                slot_table
+                    .borrow_mut()
+                    .get_mut(&watched_slot)
+                    .expect("watched slot present")
+                    .value = Some(postretro_entities::SlotValue::Number(value as f32));
+                Ok(())
+            });
     }
     fx.install(vec![]);
 
@@ -861,7 +909,9 @@ fn intra_frame_round_trip_write_fires_no_crossing() {
 // ---------------------------------------------------------------------------
 #[test]
 fn landed_write_is_invisible_to_the_same_ticks_accumulator_pass_and_rebases_the_next() {
-    use crate::scripting_systems::slot_accumulators::{SlotAccumulatorBindings, evaluate_slot_accumulators};
+    use crate::scripting_systems::slot_accumulators::{
+        SlotAccumulatorBindings, evaluate_slot_accumulators,
+    };
 
     let fx = Fixture::new();
     let slot = "encounter.progress".to_string();
@@ -881,8 +931,13 @@ fn landed_write_is_invisible_to_the_same_ticks_accumulator_pass_and_rebases_the_
                 per_owner: false,
                 // Accumulates `@dt * 10.0` per tick.
                 accumulate: Some(postretro_foundation::IrNode::Mul {
-                    a: Box::new(postretro_foundation::IrNode::Input { name: "@dt".to_string(), owner: None }),
-                    b: Box::new(postretro_foundation::IrNode::Const { value: postretro_foundation::IrValue::Number(10.0) }),
+                    a: Box::new(postretro_foundation::IrNode::Input {
+                        name: "@dt".to_string(),
+                        owner: None,
+                    }),
+                    b: Box::new(postretro_foundation::IrNode::Const {
+                        value: postretro_foundation::IrValue::Number(10.0),
+                    }),
                 }),
             }),
         )
@@ -1003,10 +1058,18 @@ fn crossing_fired_on_complete_chain_now_runs() {
     fx.data.populate_level(reactions, Vec::new(), &[]);
 
     let mut detector = postretro_scripting_core::state_crossings::CrossingDetector::new();
-    detector.initialize(&fx.ctx.data_registry.borrow(), &fx.ctx.slot_table.borrow(), &fx.ctx);
+    detector.initialize(
+        &fx.ctx.data_registry.borrow(),
+        &fx.ctx.slot_table.borrow(),
+        &fx.ctx,
+    );
 
-    fx.ctx.slot_table.borrow_mut().get_mut(&watched_slot).unwrap().value =
-        Some(postretro_entities::SlotValue::Number(1.0));
+    fx.ctx
+        .slot_table
+        .borrow_mut()
+        .get_mut(&watched_slot)
+        .unwrap()
+        .value = Some(postretro_entities::SlotValue::Number(1.0));
     let fired = crate::scripting::reactions::dispatch_state_crossings_with_sequences(
         &mut detector,
         &fx.ctx.slot_table.borrow(),
@@ -1019,7 +1082,10 @@ fn crossing_fired_on_complete_chain_now_runs() {
     assert_eq!(fired, vec!["primWithComplete".to_string()]);
     assert_eq!(
         fx.log(),
-        vec!["primWithComplete".to_string(), "chainedReaction".to_string()],
+        vec![
+            "primWithComplete".to_string(),
+            "chainedReaction".to_string()
+        ],
         "the fired reaction ran AND its on_complete chain reactivated — both would be \
          silently dropped if this call site still discarded the return value"
     );

@@ -89,7 +89,11 @@ fn multi_tick_frame_preserves_authored_order_across_a_short_wait() {
 // ---------------------------------------------------------------------------
 #[test]
 fn max_stall_frame_lands_a_countdown_that_expires_on_its_last_tick() {
-    assert_eq!(ticks_for(233.0), 14, "a 233ms wait is exactly the 14-tick stall ceiling");
+    assert_eq!(
+        ticks_for(233.0),
+        14,
+        "a 233ms wait is exactly the 14-tick stall ceiling"
+    );
     let mut harness = SimHarness::new(
         SpawnOrder::AlphaThenBeta,
         SimFixture::LevelLoadWait { duration_ms: 233.0 },
@@ -124,8 +128,7 @@ fn max_stall_frame_lands_a_countdown_that_expires_on_its_last_tick() {
 #[test]
 fn landing_order_is_deterministic_across_two_independent_runs() {
     fn run() -> Vec<String> {
-        let mut harness =
-            SimHarness::new(SpawnOrder::AlphaThenBeta, SimFixture::Determinism);
+        let mut harness = SimHarness::new(SpawnOrder::AlphaThenBeta, SimFixture::Determinism);
         // Enroll five instances directly (bypassing the control-arm dispatch,
         // exactly like `reaction_scheduler.rs`'s own unit tests), with names
         // that would sort differently by key than by enrollment order — "e"

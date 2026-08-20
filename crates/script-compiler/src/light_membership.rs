@@ -929,8 +929,10 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
             // mixes a wait with `setLightAnimation` steps still reserves its
             // light-bake slots (the caller skips the whole sequence on any invalid
             // step). Their args carry no light membership of their own.
-            matches!(target.as_str(), "@activators" | "@trigger" | "@wait" | "@fire")
-                && !(target == "@activators" && matches!(primitive, "armTrigger" | "disarmTrigger"))
+            matches!(
+                target.as_str(),
+                "@activators" | "@trigger" | "@wait" | "@fire"
+            ) && !(target == "@activators" && matches!(primitive, "armTrigger" | "disarmTrigger"))
         }
         Some(value) => value
             .as_u64()

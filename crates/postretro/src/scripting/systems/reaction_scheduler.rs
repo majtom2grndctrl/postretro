@@ -361,7 +361,8 @@ impl ReactionScheduler {
         // The phase — not the key — is what distinguishes a nested re-park from a
         // self-`fire` child, because a self-`fire` child computes the identical
         // key as the resuming instance yet re-enters one phase later (O28).
-        let (depth, cap_exempt) = match (&state.currently_resuming, state.current_enrollment_depth) {
+        let (depth, cap_exempt) = match (&state.currently_resuming, state.current_enrollment_depth)
+        {
             // A later wait in the SAME resumed body re-enrolls under the same key
             // WHILE its tail is still being dispatched: the instance continuing,
             // not a new chain link. Keep its depth and hold its slot — never
@@ -839,7 +840,11 @@ mod tests {
         let scheduler = enabled_scheduler();
         scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(50.0), false);
         scheduler.enroll("levelLoad", 1, None, vec![step(2)], ticks_for(50.0), false);
-        assert_eq!(scheduler.pending_len(), 2, "distinct ordinals, distinct keys");
+        assert_eq!(
+            scheduler.pending_len(),
+            2,
+            "distinct ordinals, distinct keys"
+        );
     }
 
     // Client / disabled scheduler refuses enrollment: no tail parks, no tail
@@ -926,7 +931,10 @@ mod tests {
         assert_eq!(scheduler.pending_len(), 0);
         scheduler.begin_frame();
         scheduler.evaluate(&[]);
-        assert!(scheduler.take_landings().is_empty(), "no cleared tail lands");
+        assert!(
+            scheduler.take_landings().is_empty(),
+            "no cleared tail lands"
+        );
     }
 
     // O28b: a fresh (non-resume) enrollment starts at chain depth zero.
@@ -1024,8 +1032,15 @@ mod tests {
         scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 5, true);
         scheduler.begin_frame();
         scheduler.evaluate(&[(t, p)]);
-        assert_eq!(scheduler.pending_len(), 0, "interruptible instance cancelled");
-        assert!(scheduler.take_landings().is_empty(), "no landing after cancel");
+        assert_eq!(
+            scheduler.pending_len(),
+            0,
+            "interruptible instance cancelled"
+        );
+        assert!(
+            scheduler.take_landings().is_empty(),
+            "no landing after cancel"
+        );
     }
 
     // O4: an Exit on the exact tick the countdown would reach zero still wins —
@@ -1054,7 +1069,11 @@ mod tests {
         scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 2, false);
         scheduler.begin_frame();
         scheduler.evaluate(&[(t, p)]); // Exit ignored; 2 -> 1
-        assert_eq!(scheduler.pending_len(), 1, "non-interruptible not cancelled");
+        assert_eq!(
+            scheduler.pending_len(),
+            1,
+            "non-interruptible not cancelled"
+        );
         scheduler.begin_frame();
         scheduler.evaluate(&[(t, p)]); // Exit ignored; 1 -> 0 lands
         assert_eq!(
@@ -1079,7 +1098,11 @@ mod tests {
         scheduler.evaluate(&[]); // 5 -> 3
         assert_eq!(scheduler.instance_remaining(&key), Some(3));
         scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 5, true);
-        assert_eq!(scheduler.pending_len(), 1, "still one instance under the key");
+        assert_eq!(
+            scheduler.pending_len(),
+            1,
+            "still one instance under the key"
+        );
         assert!(
             scheduler.instance_id(&key).unwrap() > first_id,
             "a fresh instance replaced the cancelled one"
@@ -1124,12 +1147,18 @@ mod tests {
         let (p1, p2) = (player(1), player(2));
         scheduler.enroll("reveal", 0, Some((t, p1)), vec![step(1)], 5, true);
         scheduler.enroll("reveal", 0, Some((t, p2)), vec![step(2)], 5, true);
-        assert_eq!(scheduler.pending_len(), 2, "one instance per (trigger, player)");
+        assert_eq!(
+            scheduler.pending_len(),
+            2,
+            "one instance per (trigger, player)"
+        );
         scheduler.begin_frame();
         scheduler.evaluate(&[(t, p1)]);
         assert_eq!(scheduler.pending_len(), 1, "only P1 cancelled");
         assert!(
-            scheduler.instance_id(&origin_key("reveal", 0, t, p2)).is_some(),
+            scheduler
+                .instance_id(&origin_key("reveal", 0, t, p2))
+                .is_some(),
             "P2's instance survives"
         );
     }
@@ -1199,7 +1228,11 @@ mod tests {
         let id = scheduler.instance_id(&key).unwrap();
         scheduler.begin_frame();
         scheduler.evaluate(&[(t, p)]);
-        assert_eq!(scheduler.pending_len(), 1, "non-interruptible wait ignores Exit");
+        assert_eq!(
+            scheduler.pending_len(),
+            1,
+            "non-interruptible wait ignores Exit"
+        );
         scheduler.enroll("body", 0, Some((t, p)), vec![step(8)], 5, false);
         assert_eq!(
             scheduler.instance_id(&key),
@@ -1233,7 +1266,14 @@ mod tests {
         let (t, p) = (trigger(1), player(1));
         let key = origin_key("body", 0, t, p);
         scheduler.enroll("body", 0, Some((t, p)), vec![step(1)], 5, true);
-        scheduler.enroll("body", 0, Some((t, p)), vec![step(1), step(2), step(3)], 5, true);
+        scheduler.enroll(
+            "body",
+            0,
+            Some((t, p)),
+            vec![step(1), step(2), step(3)],
+            5,
+            true,
+        );
         assert_eq!(
             scheduler.instance_tail_len(&key),
             Some(3),
@@ -1279,7 +1319,11 @@ mod tests {
             let resolved = scheduler.effective_origin("reveal", 0);
             scheduler.enroll("reveal", 0, resolved, vec![step(1)], 5, true);
         }
-        assert_eq!(scheduler.pending_len(), 0, "no uncancellable instance parks");
+        assert_eq!(
+            scheduler.pending_len(),
+            0,
+            "no uncancellable instance parks"
+        );
     }
 
     // O52 companion: a standing paired enter parks; a non-interruptible enrollment
@@ -1380,12 +1424,19 @@ mod tests {
         let (t, p) = (trigger(1), player(1));
         scheduler.enroll("levelLoad", 0, Some((t, p)), vec![step(1)], 5, true);
         scheduler.enroll("levelLoad", 1, Some((t, p)), vec![step(2)], 5, true);
-        let id0 = scheduler.instance_id(&origin_key("levelLoad", 0, t, p)).unwrap();
-        let id1 = scheduler.instance_id(&origin_key("levelLoad", 1, t, p)).unwrap();
+        let id0 = scheduler
+            .instance_id(&origin_key("levelLoad", 0, t, p))
+            .unwrap();
+        let id1 = scheduler
+            .instance_id(&origin_key("levelLoad", 1, t, p))
+            .unwrap();
         // Re-fire body 0: its same-key cancel must not touch body 1.
         scheduler.enroll("levelLoad", 0, Some((t, p)), vec![step(1)], 5, true);
         assert!(
-            scheduler.instance_id(&origin_key("levelLoad", 0, t, p)).unwrap() > id0,
+            scheduler
+                .instance_id(&origin_key("levelLoad", 0, t, p))
+                .unwrap()
+                > id0,
             "body 0 restarted"
         );
         assert_eq!(
@@ -1414,7 +1465,11 @@ mod tests {
         let _resume = scheduler.begin_resume(key.clone());
         // The nested wait's control arm resolves the origin from `currently_resuming`.
         let resolved = scheduler.effective_origin("R", 2);
-        assert_eq!(resolved, Some((t, p)), "nested wait inherits the instance origin");
+        assert_eq!(
+            resolved,
+            Some((t, p)),
+            "nested wait inherits the instance origin"
+        );
         scheduler.enroll("R", 2, resolved, vec![step(9)], 5, true);
         assert_eq!(
             scheduler.instance_interruptible(&key),
@@ -1473,11 +1528,15 @@ mod tests {
             scheduler.enroll("reveal", 0, resolved, vec![step(1)], 5, true);
         }
         assert!(
-            scheduler.instance_id(&origin_key("reveal", 0, t, p1)).is_none(),
+            scheduler
+                .instance_id(&origin_key("reveal", 0, t, p1))
+                .is_none(),
             "P1's enrollment refused"
         );
         assert!(
-            scheduler.instance_id(&origin_key("reveal", 0, t, p2)).is_some(),
+            scheduler
+                .instance_id(&origin_key("reveal", 0, t, p2))
+                .is_some(),
             "P2's standing instance is unaffected"
         );
     }
@@ -1495,19 +1554,24 @@ mod tests {
         scheduler.enroll("reveal", 0, Some((t, p2)), vec![step(2)], 50, false);
         scheduler.enroll("live", 0, Some((t_live, p_live)), vec![step(3)], 50, true);
         // Trigger T is gone from `paired_enters`; T_live's enter still stands.
-        let standing: BTreeSet<(EntityId, PlayerId)> =
-            BTreeSet::from([(t_live, p_live)]);
+        let standing: BTreeSet<(EntityId, PlayerId)> = BTreeSet::from([(t_live, p_live)]);
         scheduler.drop_orphaned_interruptible_instances(&standing);
         assert!(
-            scheduler.instance_id(&origin_key("reveal", 0, t, p)).is_none(),
+            scheduler
+                .instance_id(&origin_key("reveal", 0, t, p))
+                .is_none(),
             "interruptible instance on the removed trigger dropped"
         );
         assert!(
-            scheduler.instance_id(&origin_key("reveal", 0, t, p2)).is_some(),
+            scheduler
+                .instance_id(&origin_key("reveal", 0, t, p2))
+                .is_some(),
             "non-interruptible instance untouched"
         );
         assert!(
-            scheduler.instance_id(&origin_key("live", 0, t_live, p_live)).is_some(),
+            scheduler
+                .instance_id(&origin_key("live", 0, t_live, p_live))
+                .is_some(),
             "instance whose enter still stands is kept"
         );
     }

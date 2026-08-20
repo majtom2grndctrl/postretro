@@ -25,7 +25,9 @@ use std::collections::{HashMap, HashSet};
 use postretro_entities::{
     ComponentKind, EntityId, ScriptCtx, TriggerFireMode, TriggerVolumeComponent,
 };
-use postretro_scripting_core::data_descriptors::{ReactionDescriptor, SequenceStep, SequenceTarget};
+use postretro_scripting_core::data_descriptors::{
+    ReactionDescriptor, SequenceStep, SequenceTarget,
+};
 
 use crate::scripting_systems::system_reactions::SystemReactionIrBindings;
 use crate::trigger_bindings::TriggerBindingTable;
@@ -259,9 +261,9 @@ pub(crate) fn validate_trigger_coupled_pass_b(
             // V2: Enter-bound to a `once` trigger — the latch is spent on first
             // fire, so a cancel destroys the set-piece permanently.
             if enter.is_some_and(|triggers| {
-                triggers
-                    .iter()
-                    .any(|trigger| matches!(trigger_fire_mode.get(trigger), Some(TriggerFireMode::Once)))
+                triggers.iter().any(|trigger| {
+                    matches!(trigger_fire_mode.get(trigger), Some(TriggerFireMode::Once))
+                })
             }) {
                 log::error!(
                     "[Scripting] reaction `{name}` step {wait_index}: interruptible `wait` is Enter-bound to a `once` trigger whose spent latch a cancel cannot re-open; dropping the reaction (V2)"
@@ -389,7 +391,10 @@ mod tests {
                 SlotRecord::new(SlotSchema {
                     slot_type: SlotType::Number,
                     default: Some(SlotValue::Number(0.0)),
-                    range: Some(postretro_entities::NumericRange { min: 0.0, max: 100.0 }),
+                    range: Some(postretro_entities::NumericRange {
+                        min: 0.0,
+                        max: 100.0,
+                    }),
                     persist: false,
                     readonly: false,
                     ownership: SlotOwnership::Mod,
@@ -477,7 +482,10 @@ mod tests {
             let capture = LogCapture::start();
             validate_reaction_bodies_pass_a(&ctx);
             capture.assert_logged_once(log::Level::Error, "reaction `bad` step 0");
-            assert!(is_dropped(&ctx, "bad"), "malformed duration {bad} drops `bad`");
+            assert!(
+                is_dropped(&ctx, "bad"),
+                "malformed duration {bad} drops `bad`"
+            );
             assert!(
                 matches!(body(&ctx, "good"), ReactionDescriptor::Sequence(steps) if steps.len() == 1),
                 "the sibling reaction is untouched",
@@ -712,21 +720,23 @@ mod tests {
     #[test]
     fn o36_manifest_enter_binding_survives_v3_and_derives_v5_exit() {
         let ctx = ScriptCtx::new();
-        ctx.data_registry.borrow_mut().populate_level_with_trigger_events(
-            vec![sequence(
-                "reveal",
-                vec![wait_step(json!(800), true), entity_step(1)],
-            )],
-            Vec::new(),
-            vec![TriggerEventDescriptor {
-                tag: "closet_reveal_plate".to_string(),
-                event: "enter".to_string(),
-                fire: vec!["reveal".to_string()],
-                levels: Vec::new(),
-            }],
-            Vec::new(),
-            &[],
-        );
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![sequence(
+                    "reveal",
+                    vec![wait_step(json!(800), true), entity_step(1)],
+                )],
+                Vec::new(),
+                vec![TriggerEventDescriptor {
+                    tag: "closet_reveal_plate".to_string(),
+                    event: "enter".to_string(),
+                    fire: vec!["reveal".to_string()],
+                    levels: Vec::new(),
+                }],
+                Vec::new(),
+                &[],
+            );
         let trigger = spawn_trigger(
             &ctx,
             "",
@@ -757,21 +767,23 @@ mod tests {
     #[test]
     fn o46_first_step_wait_survives_validation() {
         let ctx = ScriptCtx::new();
-        ctx.data_registry.borrow_mut().populate_level_with_trigger_events(
-            vec![sequence(
-                "reveal",
-                vec![wait_step(json!(800), false), entity_step(1)],
-            )],
-            Vec::new(),
-            vec![TriggerEventDescriptor {
-                tag: "plate".to_string(),
-                event: "enter".to_string(),
-                fire: vec!["reveal".to_string()],
-                levels: Vec::new(),
-            }],
-            Vec::new(),
-            &[],
-        );
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![sequence(
+                    "reveal",
+                    vec![wait_step(json!(800), false), entity_step(1)],
+                )],
+                Vec::new(),
+                vec![TriggerEventDescriptor {
+                    tag: "plate".to_string(),
+                    event: "enter".to_string(),
+                    fire: vec!["reveal".to_string()],
+                    levels: Vec::new(),
+                }],
+                Vec::new(),
+                &[],
+            );
         spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
         validate_reaction_bodies_pass_a(&ctx);
         let mut table = empty_table();

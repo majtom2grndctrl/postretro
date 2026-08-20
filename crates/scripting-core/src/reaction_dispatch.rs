@@ -2133,7 +2133,11 @@ mod tests {
         ];
 
         let surviving = validate_sequence_primitives(reactions, &seq_reg);
-        assert_eq!(surviving.len(), 1, "only the unknown-action reaction is dropped");
+        assert_eq!(
+            surviving.len(),
+            1,
+            "only the unknown-action reaction is dropped"
+        );
         assert_eq!(surviving[0].name, "timedReveal");
     }
 

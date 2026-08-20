@@ -1,6 +1,7 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+mod projectile_stage;
 pub(crate) mod touch;
 
 use std::borrow::Cow;
@@ -613,6 +614,14 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_events);
+    projectile_stage::advance(
+        &registry,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        &mut on_impact,
+    );
     let death = run_death_sweep(&registry);
 
     let mut repointed_pawns = touch_events.repointed_pawns;
@@ -1543,6 +1552,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -1567,6 +1577,7 @@ mod tests {
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
+            projectile: None,
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,

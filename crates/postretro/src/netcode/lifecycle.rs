@@ -620,6 +620,7 @@ mod tests {
                 cooldown_ms: 120.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,

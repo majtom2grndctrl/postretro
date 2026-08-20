@@ -38,7 +38,7 @@ use postretro_entities::provenance::{
     parse_bool,
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
-use postretro_foundation::NavAgentParams;
+use postretro_foundation::{NavAgentParams, ProjectileBodyVisual};
 #[cfg(test)]
 use postretro_scripting_core::data_descriptors::WeaponResource;
 use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
@@ -443,6 +443,72 @@ pub(crate) fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -
         }
     }
     ordered
+}
+
+/// One projectile sprite collection that must be uploaded before a weapon can
+/// materialize its flight entity. The renderer owns the upload; this is only
+/// descriptor-driven level-install discovery.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectileSpriteCollection {
+    pub(crate) collection: String,
+    pub(crate) lifetime: f32,
+}
+
+/// Collect projectile body and trail presentation assets from the full weapon
+/// descriptor table. Projectile entities are spawned during gameplay, after
+/// the ordinary registry-based level sweep has completed, so their resources
+/// must be enrolled from descriptor data up front.
+pub(crate) fn projectile_presentation_assets(
+    descriptors: &[EntityTypeDescriptor],
+) -> (Vec<String>, Vec<ProjectileSpriteCollection>) {
+    let mut seen_models = HashSet::new();
+    let mut models = Vec::new();
+    let mut seen_sprites = HashSet::new();
+    let mut sprites = Vec::new();
+
+    for descriptor in descriptors {
+        let Some(projectile) = descriptor
+            .weapon
+            .as_ref()
+            .and_then(|weapon| weapon.projectile.as_ref())
+        else {
+            continue;
+        };
+
+        // Trails own animated-sheet timing, so give them the first collection
+        // registration when a body and trail intentionally share one sprite.
+        if let Some(trail) = projectile.visual.trail.as_ref()
+            && !trail.sprite.is_empty()
+            && seen_sprites.insert(trail.sprite.clone())
+        {
+            sprites.push(ProjectileSpriteCollection {
+                collection: trail.sprite.clone(),
+                lifetime: trail.lifetime,
+            });
+        }
+
+        match &projectile.visual.body {
+            ProjectileBodyVisual::Sprite { sprite, .. }
+                if !sprite.is_empty() && seen_sprites.insert(sprite.clone()) =>
+            {
+                sprites.push(ProjectileSpriteCollection {
+                    collection: sprite.clone(),
+                    // The body is a persistent billboard, not a simulated
+                    // particle. Its packed age is always zero, so this only
+                    // supplies the required sprite-pass collection metadata.
+                    lifetime: 1.0,
+                });
+            }
+            ProjectileBodyVisual::Model { model }
+                if !model.is_empty() && seen_models.insert(model.clone()) =>
+            {
+                models.push(model.clone());
+            }
+            _ => {}
+        }
+    }
+
+    (models, sprites)
 }
 
 /// Collect world-mesh models for wieldables that can later leave an inventory.
@@ -961,6 +1027,9 @@ pub(crate) fn spawn_from_player_starts_with_carried_loadout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_foundation::{
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
+    };
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
         PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
@@ -2069,6 +2138,7 @@ mod tests {
                 cooldown_ms: 180.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,
@@ -2858,6 +2928,87 @@ mod tests {
                 "models/rifle/model.gltf".to_string(),
             ],
             "declared weapon presentation models preserve descriptor order and dedupe paths"
+        );
+    }
+
+    #[test]
+    fn projectile_presentation_assets_preload_descriptor_body_and_trail_once() {
+        // Regression: flight entities materialize after the registry-based level
+        // sweep, so their models and sprite collections must come from descriptors.
+        let mut sprite = weapon_descriptor("plasma");
+        sprite.weapon.as_mut().unwrap().resolution = ResolutionMode::Projectile;
+        sprite.weapon.as_mut().unwrap().projectile = Some(ProjectileDescriptor {
+            speed: 40.0,
+            radius: 0.2,
+            lifetime_ms: 2_000.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/plasma.png".to_string(),
+                    size: 0.4,
+                    opacity: 0.9,
+                    rotation: 0.0,
+                    tint: [0.2, 0.8, 1.0],
+                },
+                trail: Some(ProjectileTrailVisual {
+                    sprite: "sprites/trail.png".to_string(),
+                    rate: 60.0,
+                    lifetime: 0.5,
+                    burst: None,
+                    spread: 0.0,
+                    velocity: [0.0, 0.0, 0.0],
+                    buoyancy: 0.0,
+                    drag: 0.0,
+                    size_over_lifetime: vec![0.2, 0.0],
+                    opacity_over_lifetime: vec![1.0, 0.0],
+                    color: [1.0, 1.0, 1.0],
+                    spin_rate: 0.0,
+                }),
+            },
+        });
+        let mut rocket = weapon_descriptor("rocket");
+        rocket.weapon.as_mut().unwrap().resolution = ResolutionMode::Projectile;
+        rocket.weapon.as_mut().unwrap().projectile = Some(ProjectileDescriptor {
+            speed: 25.0,
+            radius: 0.4,
+            lifetime_ms: 3_000.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Model {
+                    model: "models/rocket.gltf".to_string(),
+                },
+                // Deliberately shares the first weapon's trail collection: one
+                // renderer upload and the first descriptor's timing wins.
+                trail: Some(ProjectileTrailVisual {
+                    sprite: "sprites/trail.png".to_string(),
+                    rate: 20.0,
+                    lifetime: 0.75,
+                    burst: None,
+                    spread: 0.0,
+                    velocity: [0.0, 0.0, 0.0],
+                    buoyancy: 0.0,
+                    drag: 0.0,
+                    size_over_lifetime: vec![0.2, 0.0],
+                    opacity_over_lifetime: vec![1.0, 0.0],
+                    color: [1.0, 1.0, 1.0],
+                    spin_rate: 0.0,
+                }),
+            },
+        });
+
+        let (models, sprites) = projectile_presentation_assets(&[sprite, rocket]);
+
+        assert_eq!(models, vec!["models/rocket.gltf"]);
+        assert_eq!(
+            sprites,
+            vec![
+                ProjectileSpriteCollection {
+                    collection: "sprites/trail.png".to_string(),
+                    lifetime: 0.5,
+                },
+                ProjectileSpriteCollection {
+                    collection: "sprites/plasma.png".to_string(),
+                    lifetime: 1.0,
+                },
+            ]
         );
     }
 

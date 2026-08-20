@@ -266,6 +266,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 cooldown_ms: 80.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                projectile: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,

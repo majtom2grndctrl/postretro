@@ -265,9 +265,15 @@ impl TriggerBindingTable {
 
         let mut commands = Vec::new();
         let mut steps = Vec::new();
-        for reaction in &matched {
+        // `matched` filters to a single name, so this enumerate index is the
+        // reaction's `body_ordinal` among same-named matches — it agrees with the
+        // count `fire_named_event_with_sequences` derives from the same
+        // `data_registry.reactions` order, and rides on each residual step so a
+        // resumed wait tail re-enrolls under its own instance key.
+        for (body_ordinal, reaction) in matched.iter().enumerate() {
             partition_direct_reaction(
                 reaction,
+                body_ordinal,
                 data_registry,
                 slot_table,
                 script_ctx,
@@ -474,6 +480,7 @@ impl TriggerBindingTable {
 /// than flattening recursively at level install.
 fn partition_direct_reaction(
     reaction: &NamedReaction,
+    body_ordinal: usize,
     data_registry: &DataRegistry,
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
@@ -512,13 +519,45 @@ fn partition_direct_reaction(
                     warn_for_deferred_event(&reaction.name, on_complete, data_registry);
                 }
                 steps.push(PrepartitionedReactionStep::Descriptor(
+                    reaction.name.clone(),
+                    body_ordinal,
                     ReactionDescriptor::Primitive(primitive.clone()),
                 ));
             }
         }
         ReactionDescriptor::Sequence(sequence) => {
+            // Stop at the first `Wait`. Steps before it partition exactly as a
+            // trigger-bound body does today; the wait plus every step after it
+            // goes to the residual in authored order, UNFILTERED by class or
+            // target. The residual drains at frame end through `dispatch_sequence`,
+            // whose control arm meets the wait, enrolls the tail with the
+            // scheduler, and stops — restoring the funnel a trigger-bound body
+            // otherwise bypasses, and delivering the E18-A guarantee that a
+            // pre-wait consequential step still runs in-tick (O49, O50).
+            let wait_index = sequence
+                .iter()
+                .position(|step| matches!(step.id, SequenceTarget::Wait));
+            let pre_wait = &sequence[..wait_index.unwrap_or(sequence.len())];
             let mut residual_steps = Vec::new();
-            for step in sequence {
+            for step in pre_wait {
+                if matches!(step.id, SequenceTarget::Fire) {
+                    // A pre-wait `fire` lowers to a deferred event so it dispatches
+                    // in the firing frame's drain, never dropped as a non-`Entity`
+                    // sentinel target (O37).
+                    match step.args.get("event").and_then(serde_json::Value::as_str) {
+                        Some(event) => {
+                            warn_for_deferred_event(&reaction.name, event, data_registry);
+                            steps.push(PrepartitionedReactionStep::DeferredEvent(
+                                event.to_string(),
+                            ));
+                        }
+                        None => log::warn!(
+                            "[Trigger] fire sequence step on `{}` is missing its `event` name; not binding",
+                            reaction.name
+                        ),
+                    }
+                    continue;
+                }
                 if classify(&step.primitive) == PrimitiveClass::Consequential {
                     if let Some(command) = bind_sequence_step(step, slot_table, script_ctx) {
                         commands.push(command);
@@ -536,7 +575,17 @@ fn partition_direct_reaction(
             }
             if !residual_steps.is_empty() {
                 steps.push(PrepartitionedReactionStep::Descriptor(
+                    reaction.name.clone(),
+                    body_ordinal,
                     ReactionDescriptor::Sequence(residual_steps),
+                ));
+            }
+            if let Some(wait_index) = wait_index {
+                let tail = sequence[wait_index..].to_vec();
+                steps.push(PrepartitionedReactionStep::Descriptor(
+                    reaction.name.clone(),
+                    body_ordinal,
+                    ReactionDescriptor::Sequence(tail),
                 ));
             }
         }
@@ -2348,10 +2397,196 @@ mod tests {
             .unwrap();
         assert!(matches!(
             residual.steps(),
-            [PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Primitive(
+            [PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Primitive(
                 PrimitiveDescriptor { primitive, .. }
             ))] if primitive == "flashScreen"
         ));
+    }
+
+    // O50: a pre-wait consequential step stays in-tick; only the wait and the
+    // steps after it reach the residual. The E18-A guarantee the binder amendment
+    // delivers.
+    #[test]
+    fn pre_wait_consequential_step_binds_in_tick_and_wait_tail_goes_to_residual() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "reveal");
+        let door = registry.spawn(Transform::default());
+        let post = registry.spawn(Transform::default());
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "reveal".into(),
+                descriptor: ReactionDescriptor::Sequence(vec![
+                    SequenceStep {
+                        id: SequenceTarget::Entity(door),
+                        primitive: "moverStart".into(),
+                        args: serde_json::json!({}),
+                    },
+                    SequenceStep {
+                        id: SequenceTarget::Wait,
+                        primitive: "wait".into(),
+                        args: serde_json::json!({ "durationMs": 500, "interruptible": false }),
+                    },
+                    SequenceStep {
+                        id: SequenceTarget::Entity(post),
+                        primitive: "setLightAnimation".into(),
+                        args: serde_json::json!({}),
+                    },
+                ]),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        let binding = table
+            .binding(trigger, TriggerEventEdge::Enter)
+            .expect("reveal binds its Enter edge");
+        assert_eq!(binding.commands.len(), 1, "moverStart runs in the fixed tick");
+        assert!(matches!(
+            binding.commands[0],
+            BoundTriggerCommand::Mover {
+                command: MoverCommand::Start,
+                ..
+            }
+        ));
+        match table
+            .residual(binding.residual.expect("wait tail is a residual"))
+            .unwrap()
+            .steps()
+        {
+            [PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Sequence(tail))] => {
+                assert_eq!(tail.len(), 2, "wait plus the post-wait step");
+                assert!(matches!(tail[0].id, SequenceTarget::Wait));
+                assert_eq!(tail[1].primitive, "setLightAnimation");
+            }
+            other => panic!("expected a single wait-tail residual, got {other:?}"),
+        }
+    }
+
+    // O49: `[fire(alarm), wait, moverStart, fire(release)]` — the pre-wait `fire`
+    // lowers to a deferred event; the wait, `moverStart`, and the trailing `fire`
+    // all land in the residual in authored order; `moverStart` is NOT hoisted
+    // in-tick because it is past the wait.
+    #[test]
+    fn trigger_bound_wait_body_keeps_wait_and_tail_and_pre_wait_fire_defers() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "reveal");
+        let door = registry.spawn(Transform::default());
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                NamedReaction {
+                    name: "reveal".into(),
+                    descriptor: ReactionDescriptor::Sequence(vec![
+                        SequenceStep {
+                            id: SequenceTarget::Fire,
+                            primitive: "fire".into(),
+                            args: serde_json::json!({ "event": "alarm" }),
+                        },
+                        SequenceStep {
+                            id: SequenceTarget::Wait,
+                            primitive: "wait".into(),
+                            args: serde_json::json!({ "durationMs": 800, "interruptible": true }),
+                        },
+                        SequenceStep {
+                            id: SequenceTarget::Entity(door),
+                            primitive: "moverStart".into(),
+                            args: serde_json::json!({}),
+                        },
+                        SequenceStep {
+                            id: SequenceTarget::Fire,
+                            primitive: "fire".into(),
+                            args: serde_json::json!({ "event": "release" }),
+                        },
+                    ]),
+                },
+                primitive("alarm", "flashScreen", None, serde_json::json!({}), None),
+                primitive("release", "flashScreen", None, serde_json::json!({}), None),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        let binding = table
+            .binding(trigger, TriggerEventEdge::Enter)
+            .expect("reveal binds its Enter edge");
+        assert!(
+            binding.commands.is_empty(),
+            "no post-wait consequential step is hoisted into the fixed tick",
+        );
+        match table
+            .residual(binding.residual.expect("wait tail residual"))
+            .unwrap()
+            .steps()
+        {
+            [
+                PrepartitionedReactionStep::DeferredEvent(alarm),
+                PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Sequence(tail)),
+            ] => {
+                assert_eq!(
+                    alarm.as_str(),
+                    "alarm",
+                    "the pre-wait fire lowers to a deferred event"
+                );
+                assert_eq!(tail.len(), 3);
+                assert!(matches!(tail[0].id, SequenceTarget::Wait));
+                assert_eq!(tail[1].primitive, "moverStart");
+                assert!(matches!(tail[2].id, SequenceTarget::Fire));
+            }
+            other => panic!("unexpected residual composition: {other:?}"),
+        }
+    }
+
+    // O46: a body whose FIRST step is the wait still binds its Enter edge — the
+    // wait and its tail make `steps` non-empty, so `bind_event` does not early-
+    // return, and no `bind_edge_only` is needed for the Enter edge.
+    #[test]
+    fn wait_first_body_still_binds_its_enter_edge() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "reveal");
+        let door = registry.spawn(Transform::default());
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "reveal".into(),
+                descriptor: ReactionDescriptor::Sequence(vec![
+                    SequenceStep {
+                        id: SequenceTarget::Wait,
+                        primitive: "wait".into(),
+                        args: serde_json::json!({ "durationMs": 800, "interruptible": false }),
+                    },
+                    SequenceStep {
+                        id: SequenceTarget::Entity(door),
+                        primitive: "moverStart".into(),
+                        args: serde_json::json!({}),
+                    },
+                ]),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        let binding = table
+            .binding(trigger, TriggerEventEdge::Enter)
+            .expect("Enter edge binds even when the first step is the wait");
+        assert!(binding.commands.is_empty());
+        assert!(
+            table
+                .bound_edges()
+                .contains(&(trigger, TriggerEventEdge::Enter))
+        );
+        match table
+            .residual(binding.residual.expect("wait tail residual"))
+            .unwrap()
+            .steps()
+        {
+            [PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Sequence(tail))] => {
+                assert_eq!(tail.len(), 2);
+                assert!(matches!(tail[0].id, SequenceTarget::Wait));
+                assert_eq!(tail[1].primitive, "moverStart");
+            }
+            other => panic!("expected a single wait-tail residual, got {other:?}"),
+        }
     }
 
     #[test]

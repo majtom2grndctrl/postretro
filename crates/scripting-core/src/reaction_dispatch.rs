@@ -219,8 +219,30 @@ pub struct NamedEventDispatchContext<'a> {
 /// following a consequential step that ran in the fixed tick.
 #[derive(Debug, Clone)]
 pub enum PrepartitionedReactionStep {
-    Descriptor(ReactionDescriptor),
+    /// A resolved reaction descriptor plus the reaction `address` (name) and its
+    /// `body_ordinal` among same-named matches. That pair is the first two
+    /// components of a scheduler instance key and nothing downstream can
+    /// reconstruct it — a resumed `Sequence` tail whose `dispatch_sequence` hits a
+    /// nested wait re-enrolls under its own key from them. The `Primitive` and
+    /// `Progress` arms carry the pair without reading it (the shared variant is
+    /// not split); only the `Sequence` arm feeds it to `dispatch_sequence`.
+    Descriptor(String, usize, ReactionDescriptor),
     DeferredEvent(String),
+}
+
+/// Who is draining a prepartitioned residual. The two debug-only guards in
+/// [`fire_prepartitioned_reactions_with_sequences`] assert that no
+/// `is_trigger_consequential_primitive` reaches the app drain — the binder should
+/// have bound such work into the fixed tick. That holds for a `TriggerBinding`
+/// residual, but a `ResumedTail` is by construction everything *after* a wait: the
+/// binder deliberately deferred it, so consequential work draining app-side is
+/// legitimate. The exemption keys on the caller, not on the steps — a content rule
+/// ("exempt a residual that contains a `Wait`") would still panic on a post-wait
+/// tail, which never contains a wait (O62).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidualOrigin {
+    TriggerBinding,
+    ResumedTail,
 }
 
 /// Execute steps resolved and partitioned earlier, without a reaction-name
@@ -233,23 +255,38 @@ pub fn fire_prepartitioned_reactions_with_sequences(
     reaction_registry: &ReactionPrimitiveRegistry,
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
+    origin: ResidualOrigin,
 ) -> Vec<String> {
+    // `origin` gates the two debug-only residual guards below; it is inert in
+    // release. Keeping the parameter live in release (rather than `cfg`-gating it
+    // out of the signature) keeps every call site identical across build modes.
+    #[cfg(not(debug_assertions))]
+    let _ = origin;
     let mut chained = Vec::new();
     for step in steps {
         match step {
             PrepartitionedReactionStep::DeferredEvent(event_name) => {
                 chained.push(event_name.clone());
             }
-            PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Progress(_)) => {
+            PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Progress(_)) => {
                 // Tracked independently via ProgressTracker; no-op here prevents double-fire.
                 // The tracker owns the completion target and fires it once `killed/total >= at`.
                 // Pushing `progress.fire` here would fire that target immediately — with zero
                 // kills — and then again at the real threshold.
             }
-            PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Primitive(primitive)) => {
+            PrepartitionedReactionStep::Descriptor(
+                _,
+                _,
+                ReactionDescriptor::Primitive(primitive),
+            ) => {
+                // The guard catches consequential work draining app-side when the
+                // binder should have bound it in-tick. A resumed scheduler tail is
+                // exempt: it is everything AFTER a wait, so the binder legitimately
+                // deferred it (O62).
                 #[cfg(debug_assertions)]
                 debug_assert!(
-                    !is_trigger_consequential_primitive(&primitive.primitive),
+                    origin == ResidualOrigin::ResumedTail
+                        || !is_trigger_consequential_primitive(&primitive.primitive),
                     "trigger residual contains consequential primitive `{}`; binding must execute it in the fixed tick",
                     primitive.primitive,
                 );
@@ -258,22 +295,27 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                     chained.push(on_complete.clone());
                 }
             }
-            PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Sequence(steps)) => {
+            PrepartitionedReactionStep::Descriptor(
+                address,
+                body_ordinal,
+                ReactionDescriptor::Sequence(steps),
+            ) => {
+                // Same exemption rationale as the Primitive arm: a resumed tail
+                // may contain a consequential step the binder deferred past its wait.
                 #[cfg(debug_assertions)]
                 debug_assert!(
-                    steps
-                        .iter()
-                        .all(|step| !is_trigger_consequential_primitive(&step.primitive)),
+                    origin == ResidualOrigin::ResumedTail
+                        || steps
+                            .iter()
+                            .all(|step| !is_trigger_consequential_primitive(&step.primitive)),
                     "trigger residual contains a consequential sequence step; binding must execute it in the fixed tick",
                 );
-                // Address and ordinal ride on the step in Task 3, once
-                // `PrepartitionedReactionStep::Descriptor` is widened to carry
-                // them; until then this executor has no name in scope. A resumed
-                // tail is presentation-only past its wait, so the empty address /
-                // zero ordinal is unused for Task 1's landings.
+                // The address and ordinal ride on the step: a nested wait inside
+                // this tail re-enrolls under the reaction's own key, which nothing
+                // downstream can reconstruct.
                 chained.extend(dispatch_sequence(
-                    "",
-                    0,
+                    address,
+                    *body_ordinal,
                     steps,
                     sequence_registry,
                     script_ctx,
@@ -1329,12 +1371,15 @@ mod tests {
         let reaction_registry = ReactionPrimitiveRegistry::new();
         let follow_ups = fire_prepartitioned_reactions_with_sequences(
             &[PrepartitionedReactionStep::Descriptor(
+                String::new(),
+                0,
                 ReactionDescriptor::Progress(progress),
             )],
             &sequence_registry,
             &reaction_registry,
             &system_registry,
             &script_ctx,
+            ResidualOrigin::TriggerBinding,
         );
         assert!(
             follow_ups.is_empty(),
@@ -1556,6 +1601,71 @@ mod tests {
                 sound: "alarm".to_string(),
                 bus: Some("sfx".to_string()),
             }]
+        );
+    }
+
+    // O62: a resumed tail is everything AFTER a wait, so it may legitimately
+    // contain a consequential step the binder deferred. `ResidualOrigin::ResumedTail`
+    // exempts it from the residual consequential-primitive guard — no panic even in
+    // a debug build.
+    #[test]
+    fn resumed_tail_with_consequential_step_does_not_trip_residual_guard() {
+        let script_ctx = ScriptCtx::new();
+        let tail = vec![
+            SequenceStep {
+                id: EntityId::from_raw(1).into(),
+                primitive: "moverStart".into(),
+                args: serde_json::json!({}),
+            },
+            SequenceStep {
+                id: postretro_entities::SequenceTarget::Fire,
+                primitive: "fire".into(),
+                args: serde_json::json!({ "event": "release" }),
+            },
+        ];
+        let follow_ups = fire_prepartitioned_reactions_with_sequences(
+            &[PrepartitionedReactionStep::Descriptor(
+                "closet.timedReveal".into(),
+                0,
+                ReactionDescriptor::Sequence(tail),
+            )],
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            &script_ctx,
+            ResidualOrigin::ResumedTail,
+        );
+        assert_eq!(
+            follow_ups,
+            vec!["release".to_string()],
+            "the tail's fire name is collected and the consequential step does not panic",
+        );
+    }
+
+    // Companion to the row above: the SAME consequential tail draining as a
+    // `TriggerBinding` residual DOES trip the guard, so the exemption is keyed on
+    // the caller, not on the steps. Debug-only (the guard is `debug_assert!`).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "consequential sequence step")]
+    fn trigger_binding_residual_with_consequential_sequence_step_trips_guard() {
+        let script_ctx = ScriptCtx::new();
+        let steps = vec![SequenceStep {
+            id: EntityId::from_raw(1).into(),
+            primitive: "moverStart".into(),
+            args: serde_json::json!({}),
+        }];
+        let _ = fire_prepartitioned_reactions_with_sequences(
+            &[PrepartitionedReactionStep::Descriptor(
+                String::new(),
+                0,
+                ReactionDescriptor::Sequence(steps),
+            )],
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            &script_ctx,
+            ResidualOrigin::TriggerBinding,
         );
     }
 

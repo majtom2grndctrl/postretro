@@ -172,6 +172,15 @@ impl App {
                 }
             }
             if committed && self.has_installed_level() {
+                // A parked tail is a snapshot of a body the author may have just
+                // edited away, so a hot reload drops every pending instance (O40) —
+                // with a `warn!` naming the count, matching the level-teardown
+                // clear. Its own session borrow, scoped tight like the recompose
+                // borrow below. (Task 4 lands the Pass A / Pass B re-validation at
+                // this same commit point.)
+                if let Some(session) = self.session.as_ref() {
+                    session.scripting.scheduler.clear();
+                }
                 if let Some(session) = self.session.as_ref() {
                     session
                         .scripting

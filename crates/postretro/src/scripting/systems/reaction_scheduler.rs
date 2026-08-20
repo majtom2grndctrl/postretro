@@ -349,7 +349,29 @@ impl ReactionScheduler {
                 state.instances.remove(&key);
             }
             Some(false) => return,
-            None => {}
+            None => {
+                // The instance may have already expired out of `instances` into
+                // the landing queue, awaiting the frame-end drain. A same-key
+                // re-fire in that window must dedup against the queued landing
+                // exactly as it would a still-parked instance, or the landing's
+                // tail runs AND the fresh instance's tail runs — the tail lands
+                // twice (violates O6/O7). Mirrors how `evaluate` checks `landings`
+                // alongside `instances` for the Exit-cancel path (O53).
+                match state
+                    .landings
+                    .iter()
+                    .find(|(_, landing_key, _, _, _)| *landing_key == key)
+                    .map(|(_, _, _, interruptible, _)| *interruptible)
+                {
+                    Some(true) => {
+                        state
+                            .landings
+                            .retain(|(_, landing_key, ..)| *landing_key != key);
+                    }
+                    Some(false) => return,
+                    None => {}
+                }
+            }
         }
         // Depth and cap accounting depend on which phase of a landing's drain we
         // are in. `currently_resuming` is live ONLY while a tail is being

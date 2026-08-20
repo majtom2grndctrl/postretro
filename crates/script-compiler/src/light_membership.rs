@@ -1453,6 +1453,68 @@ mod tests {
         assert_eq!(quickjs_manifest.lights[0].index, 2);
     }
 
+    // A levelLoad sequence that mixes a `@wait`/`@fire` control step with a
+    // `setLightAnimation` step still reserves the light's bake slot in both hosts.
+    // `runtime_sequence_step_shape_is_valid` accepts `@wait`/`@fire`; if it were
+    // ever narrowed back to `@activators|@trigger`, the whole sequence would be
+    // skipped and this membership would silently vanish — this test fails loudly.
+    #[test]
+    fn wait_and_fire_mixed_sequence_still_reserves_light_membership_in_both_hosts() {
+        let quickjs = r#"
+            function setupLevel() {
+              const light = world.query({ component: "light", tag: "wave" })[0];
+              return { reactions: [
+                { name: "levelLoad", sequence: [
+                  { id: "@wait", primitive: "wait", args: { durationMs: 800, interruptible: true } },
+                  { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+                  { id: "@fire", primitive: "fire", args: { event: "raiseAlarm" } },
+                ] },
+              ] };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = world:query({ component = "light", tag = "wave" })[1]
+              return { reactions = {
+                { name = "levelLoad", sequence = {
+                  { id = "@wait", primitive = "wait", args = { durationMs = 800, interruptible = true } },
+                  { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+                  { id = "@fire", primitive = "fire", args = { event = "raiseAlarm" } },
+                } },
+              } }
+            end
+        "#;
+
+        let quickjs_manifest = emit_light_membership_manifest(
+            quickjs,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("QuickJS mixed wait/fire sequence evaluates");
+        let luau_manifest = emit_light_membership_manifest(
+            luau,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("Luau mixed wait/fire sequence evaluates");
+
+        assert_eq!(quickjs_manifest.lights, luau_manifest.lights);
+        assert_eq!(
+            quickjs_manifest.lights.len(),
+            1,
+            "the mixed sequence still reserves the setLightAnimation light's slot",
+        );
+        assert_eq!(quickjs_manifest.lights[0].index, 2);
+        assert_eq!(
+            quickjs_manifest.lights[0].start_active,
+            Some(false),
+            "the setLightAnimation step's levelLoad startActive was read through the mixed sequence",
+        );
+        assert!(!quickjs_manifest.lights[0].is_dynamic);
+    }
+
     #[test]
     fn luau_random_preserves_argument_forms_and_is_deterministic() {
         let source = r#"

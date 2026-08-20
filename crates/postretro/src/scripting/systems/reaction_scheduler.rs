@@ -1,17 +1,4 @@
 // Host-only scheduler for timed/delayed reaction steps (E18).
-//
-// A `wait` control step inside a `sequence` reaction body enrolls the remainder
-// of that body here and stops the synchronous drain. The scheduler counts
-// authoritative ticks and, on expiry, moves the stored tail into a landing queue
-// that the frame-end drain resumes through the shipped residual path.
-//
-// Shaped exactly like `MoverAutoCloseTimers`: `#[derive(Debug, Clone, Default)]`
-// over an `Rc<RefCell<_>>`, main-thread only, owned on the session beside
-// `slot_accumulator_bindings` and cloned into the control handler at
-// registration. It intentionally does not participate in snapshots, digests, or
-// the connected-client simulation — enrollment is refused host-side by the
-// `enabled` latch, so no tail ever parks or lands on a client.
-//
 // See: context/plans/in-progress/E18--timed-reaction-steps/index.md
 
 use std::cell::RefCell;
@@ -90,8 +77,9 @@ pub(crate) fn register_reaction_control_primitives(
 /// Convert authored milliseconds to a whole-tick countdown at enrollment.
 /// `ticks = max(1, ceil(durationMs * 1000 / 16_667))` in integer micros against
 /// `TICK_DURATION`. V1 (Task 4) is the sole rejection point for malformed
-/// durations; this clamp is defensive so a stray value can never yield a 0-tick
-/// or `u32::MAX` countdown before that pass lands.
+/// durations; this clamp is defensive so a stray value never yields a 0-tick
+/// countdown and clamps huge finite values to `u32::MAX` rather than overflowing
+/// the cast before that pass lands.
 fn ms_to_ticks(duration_ms: f64) -> u32 {
     let micros = crate::frame_timing::TICK_DURATION.as_micros() as f64;
     if !duration_ms.is_finite() || duration_ms <= 0.0 {
@@ -197,8 +185,17 @@ struct SchedulerState {
     current_enrollment_depth: Option<u32>,
 }
 
-/// Cloneable session-owned handle. `Rc<RefCell<_>>` is main-thread only, matching
-/// `MoverAutoCloseTimers`.
+/// Cloneable session-owned handle to the host-only timed-reaction scheduler. A
+/// `wait` control step inside a `sequence` reaction body enrolls the remainder of
+/// that body here and stops the synchronous drain; the scheduler counts
+/// authoritative ticks and, on expiry, moves the stored tail into a landing queue
+/// that the frame-end drain resumes through the shipped residual path.
+///
+/// Shaped exactly like `MoverAutoCloseTimers`: `Rc<RefCell<_>>`, main-thread only,
+/// owned on the session beside `slot_accumulator_bindings` and cloned into the
+/// control handler at registration. It does not participate in snapshots, digests,
+/// or the connected-client simulation — enrollment is refused host-side by the
+/// `enabled` latch, so no tail ever parks or lands on a client.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReactionScheduler {
     state: Rc<RefCell<SchedulerState>>,
@@ -361,18 +358,22 @@ impl ReactionScheduler {
         // The phase — not the key — is what distinguishes a nested re-park from a
         // self-`fire` child, because a self-`fire` child computes the identical
         // key as the resuming instance yet re-enters one phase later (O28).
+        // O64: a landing instance's slot is freed at expiry — `evaluate` removes it
+        // from `instances` before it lands — so a resume-context re-enrollment is
+        // NOT holding a slot to reuse. Cap-exemption of these re-enrollments is what
+        // lets every nested and `fire`-seeded tail still land in a frame whose new
+        // trigger fires already filled the cap.
         let (depth, cap_exempt) = match (&state.currently_resuming, state.current_enrollment_depth)
         {
             // A later wait in the SAME resumed body re-enrolls under the same key
             // WHILE its tail is still being dispatched: the instance continuing,
-            // not a new chain link. Keep its depth and hold its slot — never
-            // cap-tested, so a 300-wait body is not a chain and re-parks with the
-            // cap full (O19b, O57).
+            // not a new chain link. Keep its depth, cap-exempt, so a 300-wait body
+            // is not a chain and re-parks with the cap full (O19b, O57).
             (Some(resume_key), Some(resume_depth)) if *resume_key == key => (resume_depth, true),
             // A `fire`-seeded enrollment during this instance's deferred dispatch
             // (`currently_resuming` already dropped): a new causal link at
             // depth + 1. Cap-exempt too — depth, not the instance cap, bounds
-            // `fire` chains (O64, O65).
+            // `fire` chains (O65).
             (_, Some(parent_depth)) => (parent_depth.saturating_add(1), true),
             // A fresh trigger / levelLoad / named / crossing fire starts at depth
             // zero and is cap-tested (O28b).
@@ -407,8 +408,9 @@ impl ReactionScheduler {
     }
 
     /// Advance every parked instance by one tick, skipping any enrolled this very
-    /// frame. Expired instances move to the landing queue in ascending-id order.
-    /// Countdowns are whole ticks, so this takes no `dt`.
+    /// frame. Expired instances move to the landing queue, which `take_landings`
+    /// drains in ascending-id order (O8/O25). Countdowns are whole ticks, so this
+    /// takes no `dt`.
     ///
     /// `exit_fires` is this tick's paired-trigger Exit set (`(trigger, player)`).
     /// Cancels apply **before** the countdown advance so an Exit on the exact
@@ -454,7 +456,8 @@ impl ReactionScheduler {
                 ));
             }
         }
-        landed.sort_by_key(|(id, ..)| *id);
+        // No per-tick sort here: `take_landings` re-sorts the whole `landings` vec
+        // by id at drain time (O8/O25), so sorting this batch first is dead work.
         state.landings.extend(landed);
     }
 
@@ -486,6 +489,15 @@ impl ReactionScheduler {
                 );
             }
             !orphaned
+        });
+        // An instance that expired the same tick its keyed trigger was removed sits
+        // in the landing queue, not `instances`; sweep it under the same predicate
+        // so it does not land uncancelled (O63).
+        state.landings.retain(|(_, key, _, interruptible, _)| {
+            !(*interruptible
+                && key
+                    .2
+                    .is_some_and(|origin| !standing_enters.contains(&origin)))
         });
     }
 
@@ -584,7 +596,6 @@ impl ReactionScheduler {
 
     /// The current monotonic frame counter (test observability).
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn current_frame(&self) -> u64 {
         self.state.borrow().frame_counter
     }
@@ -865,15 +876,26 @@ mod tests {
     fn counter_must_advance_or_the_instance_is_skipped_forever() {
         let scheduler = enabled_scheduler();
         scheduler.begin_frame();
+        assert_eq!(
+            scheduler.current_frame(),
+            1,
+            "one begin_frame advanced it once"
+        );
         scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(5.0), false);
         // Counter frozen (begin_frame never called again): evaluate always skips.
         for _ in 0..10 {
             scheduler.evaluate(&[]);
             assert!(scheduler.take_landings().is_empty());
         }
+        assert_eq!(
+            scheduler.current_frame(),
+            1,
+            "evaluate never advances the counter"
+        );
         assert_eq!(scheduler.pending_len(), 1);
         // Advance the counter: now it lands.
         scheduler.begin_frame();
+        assert_eq!(scheduler.current_frame(), 2);
         scheduler.evaluate(&[]);
         assert_eq!(scheduler.take_landings().len(), 1);
     }
@@ -1367,6 +1389,59 @@ mod tests {
         assert!(
             scheduler.take_landings().is_empty(),
             "the queued-but-unrun landing is cancelled before the drain"
+        );
+    }
+
+    // Regression (O6/O7): a same-key re-fire that arrives after an instance
+    // expired into the landing queue but before the frame-end drain must dedup
+    // against the queued landing. Before the fix the re-fire path checked only
+    // `instances` (empty by then) and parked a fresh instance beside the queued
+    // landing, so the tail landed twice.
+    #[test]
+    fn refire_after_expiry_before_drain_does_not_double_land_non_interruptible() {
+        let scheduler = enabled_scheduler();
+        let (t, p) = (trigger(1), player(1));
+        scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 1, false);
+        scheduler.begin_frame();
+        scheduler.evaluate(&[]); // expires into the landing queue
+        assert_eq!(scheduler.pending_len(), 0, "no longer parked; it is queued");
+        // Re-fire the same key before the landing drains: a non-interruptible
+        // queued landing ignores the re-fire (O7), exactly as a parked one would.
+        scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 1, false);
+        assert_eq!(
+            scheduler.pending_len(),
+            0,
+            "the re-fire is ignored; no fresh instance parks beside the queued landing",
+        );
+        assert_eq!(
+            scheduler.take_landings().len(),
+            1,
+            "the tail lands exactly once, not twice",
+        );
+    }
+
+    // O6 companion of the row above: an interruptible re-fire in the same window
+    // cancels the queued landing and restarts fresh — the tail still lands once.
+    #[test]
+    fn refire_after_expiry_before_drain_cancels_queued_landing_interruptible() {
+        let scheduler = enabled_scheduler();
+        let (t, p) = (trigger(1), player(1));
+        scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 1, true);
+        scheduler.begin_frame();
+        scheduler.evaluate(&[]); // expires into the landing queue
+        assert_eq!(scheduler.pending_len(), 0, "no longer parked; it is queued");
+        // Re-fire the same key: the queued interruptible landing is cancelled and a
+        // fresh instance restarts from the top of the body (O6).
+        scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 5, true);
+        assert_eq!(
+            scheduler.take_landings().len(),
+            0,
+            "the queued landing was cancelled by the re-fire; it does not also land",
+        );
+        assert_eq!(
+            scheduler.pending_len(),
+            1,
+            "a fresh instance restarted from the top",
         );
     }
 

@@ -301,14 +301,21 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                 ReactionDescriptor::Sequence(steps),
             ) => {
                 // Same exemption rationale as the Primitive arm: a resumed tail
-                // may contain a consequential step the binder deferred past its wait.
+                // may contain a consequential step the binder deferred past its
+                // wait. Only the steps BEFORE the first `Wait` run synchronously
+                // in this drain — `dispatch_sequence` breaks at the leading wait —
+                // so a consequential step after the wait is legitimately deferred
+                // and only the pre-wait prefix is guarded.
                 #[cfg(debug_assertions)]
                 debug_assert!(
                     origin == ResidualOrigin::ResumedTail
                         || steps
                             .iter()
+                            .take_while(|step| {
+                                !matches!(step.id, postretro_entities::SequenceTarget::Wait)
+                            })
                             .all(|step| !is_trigger_consequential_primitive(&step.primitive)),
-                    "trigger residual contains a consequential sequence step; binding must execute it in the fixed tick",
+                    "trigger residual contains a consequential sequence step before its first wait; binding must execute it in the fixed tick",
                 );
                 // The address and ordinal ride on the step: a nested wait inside
                 // this tail re-enrolls under the reaction's own key, which nothing
@@ -1666,6 +1673,53 @@ mod tests {
             &SystemReactionRegistry::new(),
             &script_ctx,
             ResidualOrigin::TriggerBinding,
+        );
+    }
+
+    // Regression: a trigger-bound wait-tail residual `Sequence([wait, moverStart,
+    // fire])` panicked in debug — the guard inspected every step and tripped on the
+    // post-wait `moverStart`, even though `dispatch_sequence` breaks at the leading
+    // wait and never runs it synchronously. The guard now inspects only the pre-wait
+    // prefix, so a consequential step after the wait is legitimately deferred.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn trigger_binding_wait_tail_with_post_wait_consequential_step_does_not_panic() {
+        let script_ctx = ScriptCtx::new();
+        let steps = vec![
+            SequenceStep {
+                id: postretro_entities::SequenceTarget::Wait,
+                primitive: "wait".into(),
+                args: serde_json::json!({ "durationMs": 800 }),
+            },
+            SequenceStep {
+                id: EntityId::from_raw(1).into(),
+                primitive: "moverStart".into(),
+                args: serde_json::json!({}),
+            },
+            SequenceStep {
+                id: postretro_entities::SequenceTarget::Fire,
+                primitive: "fire".into(),
+                args: serde_json::json!({ "event": "release" }),
+            },
+        ];
+        // No `wait` control handler is registered, so `dispatch_sequence` logs and
+        // breaks at the leading wait; the point is that the residual guard does not
+        // trip on the deferred post-wait `moverStart`.
+        let follow_ups = fire_prepartitioned_reactions_with_sequences(
+            &[PrepartitionedReactionStep::Descriptor(
+                "closet.timedReveal".into(),
+                0,
+                ReactionDescriptor::Sequence(steps),
+            )],
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            &script_ctx,
+            ResidualOrigin::TriggerBinding,
+        );
+        assert!(
+            follow_ups.is_empty(),
+            "the drain breaks at the leading wait; the post-wait fire never runs synchronously",
         );
     }
 

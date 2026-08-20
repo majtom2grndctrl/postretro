@@ -3901,7 +3901,5 @@ proptest! {
 // through `frame()`. A child module (not a sibling file at the crate level) so
 // it can reach the private `SimHarness`/`SimFixture` construction surface the
 // same way this file's own tests do — see the `pub(crate) mod determinism_tests`
-// doc comment in `sim/mod.rs`. Landed as its own file per the testing guide's
-// "land new test modules as new files, not growing `determinism_tests.rs`"
-// rule.
+// doc comment in `sim/mod.rs`.
 mod e18_task7_tick_ordering;

@@ -3017,8 +3017,7 @@ impl ApplicationHandler for App {
                 };
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
-                // would no-op under plain `fire_named_event`. Chained-event names
-                // are discarded (`let _ =`), matching the drains above.
+                // would no-op under plain `fire_named_event`.
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
                     // Capture the mover-sound and death drains' chained names into

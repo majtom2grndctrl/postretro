@@ -1,9 +1,9 @@
 // E18 Task 7: cross-cutting ReactionScheduler ordering/lifecycle coverage that
 // does not need a tick-driven harness. Every test here drives `ReactionScheduler`
 // (Task 1/3/5, `reaction_scheduler.rs`) directly against a hand-built
-// `DataRegistry`/`ScriptCtx`, exactly like that module's own unit tests, but
-// lands in its own file per the testing guide's "land new test modules as new
-// files" rule.
+// `DataRegistry`/`ScriptCtx`, exactly like that module's own unit tests. It is a
+// separate file to keep these harness-free ordering rows apart from the
+// tick-driven ones, which need a different fixture.
 //
 // See: context/plans/in-progress/E18--timed-reaction-steps/index.md — Ordering
 // scenarios, Task 3 (deferred frame-shaped rows), Task 7.

@@ -382,18 +382,40 @@ fn validate_projectile_descriptor(
 
     if let Some(trail) = projectile.visual.trail.as_ref() {
         validate_projectile_asset_path("trail.sprite", &trail.sprite)?;
-        for (field, value, positive) in [
-            ("trail.rate", trail.rate, false),
-            ("trail.lifetime", trail.lifetime, true),
-            ("trail.spread", trail.spread, false),
-            ("trail.buoyancy", trail.buoyancy, false),
-            ("trail.drag", trail.drag, false),
-            ("trail.spinRate", trail.spin_rate, false),
+        // Keep the shared trail controls aligned with
+        // `BillboardEmitterComponentLit::validate_into`. This descriptor lives
+        // in foundation, below entities, so it mirrors that public contract
+        // rather than depending on the component type. In particular,
+        // buoyancy and spin rate are signed controls.
+        for (field, value, valid) in [
+            (
+                "trail.rate",
+                trail.rate,
+                trail.rate.is_finite() && trail.rate >= 0.0,
+            ),
+            (
+                "trail.lifetime",
+                trail.lifetime,
+                trail.lifetime.is_finite() && trail.lifetime > 0.0,
+            ),
+            (
+                "trail.spread",
+                trail.spread,
+                trail.spread.is_finite() && trail.spread >= 0.0,
+            ),
+            (
+                "trail.drag",
+                trail.drag,
+                trail.drag.is_finite() && trail.drag >= 0.0,
+            ),
+            ("trail.buoyancy", trail.buoyancy, trail.buoyancy.is_finite()),
+            (
+                "trail.spinRate",
+                trail.spin_rate,
+                trail.spin_rate.is_finite(),
+            ),
         ] {
-            if !value.is_finite()
-                || (positive && value <= 0.0)
-                || (!positive && field != "trail.buoyancy" && value < 0.0)
-            {
+            if !valid {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
                         "`components.weapon.projectile.visual.{field}` has an invalid value {value}"
@@ -401,22 +423,32 @@ fn validate_projectile_descriptor(
                 });
             }
         }
-        if !trail
-            .velocity
-            .iter()
-            .chain(trail.color.iter())
-            .all(|value| value.is_finite())
-            || trail.size_over_lifetime.is_empty()
-            || trail.opacity_over_lifetime.is_empty()
-            || !trail
-                .size_over_lifetime
-                .iter()
-                .chain(&trail.opacity_over_lifetime)
-                .all(|value| value.is_finite())
-        {
-            return Err(DescriptorError::InvalidShape {
-                reason: "`components.weapon.projectile.visual.trail` must contain finite vectors and non-empty finite curves".to_string(),
-            });
+        for (field, values) in [
+            ("trail.velocity", trail.velocity.as_slice()),
+            ("trail.color", trail.color.as_slice()),
+            (
+                "trail.sizeOverLifetime",
+                trail.size_over_lifetime.as_slice(),
+            ),
+            (
+                "trail.opacityOverLifetime",
+                trail.opacity_over_lifetime.as_slice(),
+            ),
+        ] {
+            if values.is_empty() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.{field}` must be non-empty"
+                    ),
+                });
+            }
+            if !values.iter().all(|value| value.is_finite()) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.{field}` must contain finite values"
+                    ),
+                });
+            }
         }
     }
     Ok(())
@@ -615,12 +647,118 @@ mod tests {
                 _ => unreachable!(),
             }
             let error = invalid.validate().unwrap_err();
-            assert!(error.to_string().contains(field), "{error}");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains(field), "{reason}");
         }
 
         descriptor.projectile = None;
         let error = descriptor.validate().unwrap_err();
-        assert!(error.to_string().contains("resolution"), "{error}");
+        let DescriptorError::InvalidShape { reason } = error else {
+            panic!("expected InvalidShape");
+        };
+        assert!(reason.contains("components.weapon.projectile"), "{reason}");
+    }
+
+    #[test]
+    fn projectile_visual_and_trail_validation_name_the_invalid_field() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        let invalid_shapes: [(&str, fn(&mut ProjectileDescriptor)); 7] = [
+            ("body.sprite", |projectile| {
+                let ProjectileBodyVisual::Sprite { sprite, .. } = &mut projectile.visual.body
+                else {
+                    unreachable!();
+                };
+                *sprite = "../outside.png".to_string();
+            }),
+            ("body.model", |projectile| {
+                projectile.visual.body = ProjectileBodyVisual::Model {
+                    model: "C:/outside.gltf".to_string(),
+                };
+            }),
+            ("trail.sprite", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    sprite: "../outside.png".to_string(),
+                    ..valid_projectile_trail()
+                });
+            }),
+            ("trail.rate", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    rate: -1.0,
+                    ..valid_projectile_trail()
+                });
+            }),
+            ("trail.lifetime", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    lifetime: 0.0,
+                    ..valid_projectile_trail()
+                });
+            }),
+            ("trail.sizeOverLifetime", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    size_over_lifetime: vec![],
+                    ..valid_projectile_trail()
+                });
+            }),
+            ("trail.velocity", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    velocity: [f32::NAN, 0.0, 0.0],
+                    ..valid_projectile_trail()
+                });
+            }),
+        ];
+
+        for (field, mutate) in invalid_shapes {
+            let mut invalid = descriptor.clone();
+            mutate(invalid.projectile.as_mut().expect("projectile is present"));
+            let error = invalid.validate().expect_err("projectile must be rejected");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains(field), "expected {field:?} in {reason:?}");
+        }
+    }
+
+    #[test]
+    fn projectile_trail_keeps_signed_emitter_controls_valid() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+        let projectile = descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present");
+        projectile.visual.body = ProjectileBodyVisual::Model {
+            model: "models/projectiles/rocket.gltf".to_string(),
+        };
+        projectile.visual.trail = Some(ProjectileTrailVisual {
+            buoyancy: -1.0,
+            spin_rate: -2.5,
+            ..valid_projectile_trail()
+        });
+
+        assert!(descriptor.validate().is_ok());
+    }
+
+    fn valid_projectile_trail() -> ProjectileTrailVisual {
+        ProjectileTrailVisual {
+            sprite: "sprites/projectiles/trail.png".to_string(),
+            rate: 30.0,
+            lifetime: 0.4,
+            burst: None,
+            spread: 0.0,
+            velocity: [0.0, 0.0, 0.0],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: vec![0.2, 0.0],
+            opacity_over_lifetime: vec![0.8, 0.0],
+            color: [1.0, 1.0, 1.0],
+            spin_rate: 0.0,
+        }
     }
 
     #[test]

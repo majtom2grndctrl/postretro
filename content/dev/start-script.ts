@@ -3,6 +3,10 @@ import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { referenceShotgunEntity } from "./scripts/reference-shotgun";
 import {
+  referencePlasmaBoltEntity,
+  referenceRocketEntity,
+} from "./scripts/reference-projectiles";
+import {
   wieldableFixtureAutoEntity,
   wieldableFixturePressEntity,
 } from "./scripts/wieldable-fixture-weapons";
@@ -89,6 +93,8 @@ export default defineMod({
     playerEntity,
     referencePistolEntity,
     referenceShotgunEntity,
+    referencePlasmaBoltEntity,
+    referenceRocketEntity,
     wieldableFixtureAutoEntity,
     wieldableFixturePressEntity,
     // DEMO: M10 skinned-animation grunt. Map-placeable via

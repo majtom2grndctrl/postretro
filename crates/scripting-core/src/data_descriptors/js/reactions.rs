@@ -286,6 +286,7 @@ pub fn sequence_steps_from_js<'js>(
         };
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
+        validate_control_step_pair(i, id, &primitive)?;
         if matches!(id, SequenceTarget::Activators)
             && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
         {
@@ -308,6 +309,36 @@ pub fn sequence_steps_from_js<'js>(
         });
     }
     Ok(out)
+}
+
+/// Control targets and primitive names form one canonical wire pair. Checking
+/// both directions prevents a sentinel from selecting an arbitrary handler and
+/// prevents an entity-targeted `wait`/`fire` from reaching an inert handler.
+fn validate_control_step_pair(
+    step_index: usize,
+    target: SequenceTarget,
+    primitive: &str,
+) -> Result<(), DescriptorError> {
+    let mismatch = match (target, primitive) {
+        (SequenceTarget::Wait, "wait") | (SequenceTarget::Fire, "fire") => None,
+        (SequenceTarget::Wait, _) => Some(format!(
+            "step {step_index} sentinel `@wait` requires primitive `wait`, got `{primitive}`"
+        )),
+        (SequenceTarget::Fire, _) => Some(format!(
+            "step {step_index} sentinel `@fire` requires primitive `fire`, got `{primitive}`"
+        )),
+        (_, "wait") => Some(format!(
+            "step {step_index} control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted"
+        )),
+        (_, "fire") => Some(format!(
+            "step {step_index} control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted"
+        )),
+        _ => None,
+    };
+    match mismatch {
+        Some(reason) => Err(DescriptorError::InvalidSequenceShape { reason }),
+        None => Ok(()),
+    }
 }
 
 pub fn get_required_u32_js<'js>(

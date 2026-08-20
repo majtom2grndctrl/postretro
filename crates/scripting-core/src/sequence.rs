@@ -1,12 +1,12 @@
 // Sequenced-primitive dispatch table.
 //
-// A `sequence` reaction is an ordered list of (entity, primitive, args)
-// triples that fire one after another when the reaction's named event is
-// dispatched. This is **separate** from the script-facing primitive registry
-// — sequenced primitives are Rust-only handlers keyed by name, invoked by the
-// reaction dispatcher rather than by scripts.
+// A `sequence` reaction mixes entity-targeted primitive steps with `wait` and
+// `fire` control steps. Entity steps run in order; `wait` parks the tail and
+// ends the current drain, while `fire` queues a named dispatch. This is
+// **separate** from the script-facing primitive registry — sequenced primitives
+// are Rust-only handlers keyed by name, invoked by the reaction dispatcher.
 //
-// See: context/lib/scripting.md §4 (primitives) and §5 (shared engine state).
+// See: context/lib/scripting.md §12 (Reaction Dispatch Model).
 
 use std::collections::HashMap;
 

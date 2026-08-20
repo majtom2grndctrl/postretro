@@ -5,7 +5,7 @@
 // separate file to keep these harness-free ordering rows apart from the
 // tick-driven ones, which need a different fixture.
 //
-// See: context/plans/in-progress/E18--timed-reaction-steps/index.md — Ordering
+// See: context/plans/done/E18--timed-reaction-steps/index.md — Ordering
 // scenarios, Task 3 (deferred frame-shaped rows), Task 7.
 
 #![cfg(test)]
@@ -118,6 +118,14 @@ impl Fixture {
             id: SequenceTarget::Fire,
             primitive: "fire".to_string(),
             args: serde_json::json!({ "event": event }),
+        }
+    }
+
+    fn wait_step(&self, interruptible: bool) -> SequenceStep {
+        SequenceStep {
+            id: SequenceTarget::Wait,
+            primitive: "wait".to_string(),
+            args: serde_json::json!({ "durationMs": 1.0, "interruptible": interruptible }),
         }
     }
 
@@ -457,13 +465,50 @@ fn client_local_reaction_with_wait_warns_once_and_parks_nothing() {
     let fx = Fixture::new();
     fx.scheduler.set_enabled(false);
     let capture = LogCapture::start();
-    fx.enroll("crossingPresentation", 0, None, vec![], 10, false);
-    capture.assert_logged_once(log::Level::Warn, "wait enrollment refused");
+    for _ in 0..3 {
+        fx.enroll("crossingPresentation", 0, None, vec![], 10, false);
+    }
+    fx.enroll("otherPresentation", 0, None, vec![], 10, false);
     capture.assert_logged_once(log::Level::Warn, "crossingPresentation");
+    capture.assert_logged_once(log::Level::Warn, "otherPresentation");
     assert_eq!(fx.scheduler.pending_len(), 0, "no tail parks client-side");
     fx.tick_and_frame();
     fx.drain();
     assert!(fx.log().is_empty(), "no tail ever runs client-side");
+
+    // Regression: the refusal used to warn for every enrollment. The latch is
+    // per reaction and resets with per-level scheduler lifecycle state.
+    capture.clear();
+    fx.scheduler.clear();
+    fx.enroll("crossingPresentation", 0, None, vec![], 10, false);
+    capture.assert_logged_once(log::Level::Warn, "crossingPresentation");
+}
+
+#[test]
+fn sourceless_interruptible_demotion_warns_once_per_reaction_and_resets_on_clear() {
+    let fx = Fixture::new();
+    let capture = LogCapture::start();
+    for _ in 0..3 {
+        fx.enroll("triggerOrFire", 0, None, vec![], 10, true);
+    }
+    fx.enroll("otherTriggerOrFire", 0, None, vec![], 10, true);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "reaction `triggerOrFire` enrolled sourceless",
+    );
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "reaction `otherTriggerOrFire` enrolled sourceless",
+    );
+
+    // Clearing a level drops both pending work and its diagnostic latches.
+    capture.clear();
+    fx.scheduler.clear();
+    fx.enroll("triggerOrFire", 0, None, vec![], 10, true);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "reaction `triggerOrFire` enrolled sourceless",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -496,24 +541,12 @@ fn landed_spawn_shaped_step_runs_at_the_drain() {
 }
 
 // ---------------------------------------------------------------------------
-// O64 (full): with the cap at capacity, an instance whose OWN landing
-// re-parks it at a nested second wait still succeeds, driven through the REAL
-// mechanism (`drain_landings`'s `resume_context`, not a hand-simulated
-// "already past the first wait" direct enrollment — an earlier draft of this
-// test enrolled the second-wait tail directly and wrongly expected cap
-// exemption; `enroll` only exempts a re-enrollment made WHILE `resume_context`
-// is live, i.e. from inside that instance's own `drain_landings` call).
-//
-// SCOPED DOWN from the row's full text: whether a *different*, freshly
-// residual-dispatched fire can steal a slot an expiring instance freed
-// between `evaluate` and `drain_landings` in the same real frame is NOT
-// asserted here — this harness calls `evaluate` and `drain_landings`
-// directly, one after the other, with no way to interleave a THIRD caller's
-// enrollment into that exact gap the way a real frame's residual dispatch
-// would. That narrower claim is unverified by this test; see the final report.
+// O64 correction: expiry frees the instance's slot. A later wait reached
+// synchronously while that same tail resumes is a continuation, so it may
+// re-park at a full cap without pretending the expired slot is still held.
 // ---------------------------------------------------------------------------
 #[test]
-fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
+fn nested_repark_bypasses_a_full_cap_without_holding_a_slot() {
     let mut fx = Fixture::new();
     let target = fx.spawn_entity();
 
@@ -573,12 +606,29 @@ fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
     }
     assert_eq!(fx.scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
 
-    // Both expire on this tick (their first wait was a 1-tick countdown) and
-    // land. Their OWN resumed tail runs `note(:2)`, then hits its SECOND
-    // wait — enrolled from INSIDE `drain_landings`'s `resume_context` for
-    // this exact instance, so it is a nested re-park (cap-exempt), not a
-    // fresh enrollment.
+    // Both expire on this tick, freeing two parked slots before the landing
+    // drain. Model the production residual-before-landing order by filling both
+    // slots with unrelated fresh work in the gap.
     fx.tick_and_frame();
+    assert_eq!(
+        fx.scheduler.pending_len(),
+        MAX_PENDING_REACTION_INSTANCES - 2
+    );
+    for ordinal in 0..2 {
+        fx.enroll(
+            "replacement",
+            ordinal,
+            None,
+            vec![fx.note_step(target, "replacement")],
+            1000,
+            false,
+        );
+    }
+    assert_eq!(fx.scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
+
+    // Each resumed tail runs `note(:2)`, then hits its second wait. This is a
+    // synchronous continuation of that exact landing instance, so it re-parks
+    // despite the unrelated work having filled the ordinary cap.
     fx.drain();
     assert_eq!(
         fx.log()
@@ -596,11 +646,8 @@ fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
     );
     assert_eq!(
         fx.scheduler.pending_len(),
-        MAX_PENDING_REACTION_INSTANCES,
-        "both nested re-parks at the second wait succeeded even though the pool was \
-         already at capacity going into this tick — a fresh (non-nested) enrollment at \
-         this same capacity is cap-tested and dropped (proven separately, above: \
-         `cap_drops_excess_enrollments_and_leaves_parked_instances_untouched`)"
+        MAX_PENDING_REACTION_INSTANCES + 2,
+        "both genuine nested re-parks continue even after unrelated residual work fills the freed slots"
     );
 
     // Both land again (second wait) and complete their bodies.
@@ -620,6 +667,46 @@ fn cap_holds_a_landing_instances_slot_across_the_same_frame_drain() {
             .count(),
         1
     );
+    assert_eq!(
+        fx.scheduler.pending_len(),
+        MAX_PENDING_REACTION_INSTANCES,
+        "completed continuations leave only the ordinary capped instances"
+    );
+}
+
+// Regression: a landing's `fire` fan-out inherited depth through the deferred
+// phase and accidentally inherited the nested-repark cap exemption too. One
+// fired address may match more than 256 bodies, so every child after the first
+// 256 must be dropped by the ordinary concurrent-instance cap.
+#[test]
+fn resumed_fire_fanout_over_256_is_capped_while_children_inherit_depth() {
+    let mut fx = Fixture::new();
+    let reactions = (0..=MAX_PENDING_REACTION_INSTANCES)
+        .map(|_| NamedReaction {
+            name: "fanoutChild".to_string(),
+            descriptor: ReactionDescriptor::Sequence(vec![fx.wait_step(false)]),
+        })
+        .collect();
+    fx.install(reactions);
+
+    fx.enroll(
+        "fanoutParent",
+        0,
+        None,
+        vec![fx.fire_step("fanoutChild")],
+        1,
+        false,
+    );
+    fx.tick_and_frame();
+
+    let capture = LogCapture::start();
+    fx.drain();
+    assert_eq!(
+        fx.scheduler.pending_len(),
+        MAX_PENDING_REACTION_INSTANCES,
+        "the 257th fire-seeded child is a new concurrent instance and must not bypass the cap",
+    );
+    capture.assert_logged_once(log::Level::Warn, "exceeds the per-level cap");
 }
 
 // ---------------------------------------------------------------------------

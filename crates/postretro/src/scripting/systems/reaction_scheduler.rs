@@ -1,5 +1,5 @@
 // Host-only scheduler for timed/delayed reaction steps (E18).
-// See: context/plans/in-progress/E18--timed-reaction-steps/index.md
+// See: context/plans/done/E18--timed-reaction-steps/index.md
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -178,11 +178,19 @@ struct SchedulerState {
     /// Chain depth of the landing instance currently being drained — set by the
     /// RAII `DepthGuard` for the WHOLE of that instance's drain, spanning both the
     /// tail resume and the per-instance deferred dispatch. A `fire`-seeded child
-    /// enrolls during that deferred dispatch and inherits this depth + 1 (O64,
-    /// O65); a nested re-park keeps it unchanged. Wider scope than
+    /// enrolls during that deferred dispatch and inherits this depth + 1 (O65);
+    /// a nested re-park keeps it unchanged. Wider scope than
     /// `currently_resuming` — depth attribution must reach the deferred phase,
     /// re-park detection must not.
     current_enrollment_depth: Option<u32>,
+    /// Per-level diagnostic latch for connected-client/disabled enrollment
+    /// refusal. A reaction can fire repeatedly in a frame, but the lost tail is
+    /// actionable only once per reaction until level lifecycle state clears.
+    warned_disabled_reactions: BTreeSet<(String, usize)>,
+    /// Per-level diagnostic latch for an interruptible wait reached without a
+    /// trigger origin. The wait is demoted on every enrollment, but the warning
+    /// is emitted once per reaction until level lifecycle state clears.
+    warned_sourceless_interruptible_reactions: BTreeSet<(String, usize)>,
 }
 
 /// Cloneable session-owned handle to the host-only timed-reaction scheduler. A
@@ -207,10 +215,15 @@ impl ReactionScheduler {
     /// long-lived sequence registry. Clearing on disable mirrors the precedent.
     pub(crate) fn set_enabled(&self, enabled: bool) {
         let mut state = self.state.borrow_mut();
+        let role_changed = state.enabled != enabled;
         state.enabled = enabled;
         if !enabled {
             state.instances.clear();
             state.landings.clear();
+        }
+        if role_changed {
+            state.warned_disabled_reactions.clear();
+            state.warned_sourceless_interruptible_reactions.clear();
         }
     }
 
@@ -230,6 +243,8 @@ impl ReactionScheduler {
         }
         state.instances.clear();
         state.landings.clear();
+        state.warned_disabled_reactions.clear();
+        state.warned_sourceless_interruptible_reactions.clear();
     }
 
     /// Advance the monotonic frame counter once per frame. Three call sites: the
@@ -303,9 +318,14 @@ impl ReactionScheduler {
         if !state.enabled {
             // O24/O43: a client (or any disabled scheduler) parks nothing. Host
             // consequences arrive by replication.
-            log::warn!(
-                "[Scheduler] wait enrollment refused for reaction `{address}` (scheduler disabled / non-host); the tail will not run here"
-            );
+            if state
+                .warned_disabled_reactions
+                .insert((address.to_string(), body_ordinal))
+            {
+                log::warn!(
+                    "[Scheduler] wait enrollment refused for reaction `{address}` (scheduler disabled / non-host); the tail will not run here"
+                );
+            }
             return;
         }
         let key: InstanceKey = (address.to_string(), body_ordinal, origin);
@@ -315,9 +335,14 @@ impl ReactionScheduler {
         // enrollment. V3 makes the install-time version of this decision; this is
         // the runtime path V3's rule already covers.
         let interruptible = if interruptible && origin.is_none() {
-            log::warn!(
-                "[Scheduler] reaction `{address}` enrolled sourceless (no paired trigger enter); its interruptible wait is treated as non-interruptible"
-            );
+            if state
+                .warned_sourceless_interruptible_reactions
+                .insert((address.to_string(), body_ordinal))
+            {
+                log::warn!(
+                    "[Scheduler] reaction `{address}` enrolled sourceless (no paired trigger enter); its interruptible wait is treated as non-interruptible"
+                );
+            }
             false
         } else {
             interruptible
@@ -380,11 +405,11 @@ impl ReactionScheduler {
         // The phase — not the key — is what distinguishes a nested re-park from a
         // self-`fire` child, because a self-`fire` child computes the identical
         // key as the resuming instance yet re-enters one phase later (O28).
-        // O64: a landing instance's slot is freed at expiry — `evaluate` removes it
-        // from `instances` before it lands — so a resume-context re-enrollment is
-        // NOT holding a slot to reuse. Cap-exemption of these re-enrollments is what
-        // lets every nested and `fire`-seeded tail still land in a frame whose new
-        // trigger fires already filled the cap.
+        // A landing instance's slot is freed at expiry — `evaluate` removes it
+        // from `instances` before it lands — so a genuine nested re-park is not
+        // holding a slot to reuse. Only that synchronous continuation is cap
+        // exempt. A `fire`-seeded child is a new instance and remains cap-tested,
+        // even though it inherits the landing parent's chain depth.
         let (depth, cap_exempt) = match (&state.currently_resuming, state.current_enrollment_depth)
         {
             // A later wait in the SAME resumed body re-enrolls under the same key
@@ -394,9 +419,8 @@ impl ReactionScheduler {
             (Some(resume_key), Some(resume_depth)) if *resume_key == key => (resume_depth, true),
             // A `fire`-seeded enrollment during this instance's deferred dispatch
             // (`currently_resuming` already dropped): a new causal link at
-            // depth + 1. Cap-exempt too — depth, not the instance cap, bounds
-            // `fire` chains (O65).
-            (_, Some(parent_depth)) => (parent_depth.saturating_add(1), true),
+            // depth + 1 and a new concurrent instance, so the cap still applies.
+            (_, Some(parent_depth)) => (parent_depth.saturating_add(1), false),
             // A fresh trigger / levelLoad / named / crossing fire starts at depth
             // zero and is cap-tested (O28b).
             (_, None) => (0, false),
@@ -551,7 +575,7 @@ impl ReactionScheduler {
     /// Set the chain depth attributed to enrollments made during one landing
     /// instance's drain, cleared on drop. Scoped to the WHOLE drain — both the
     /// tail resume and the per-instance deferred dispatch — so a `fire`-seeded
-    /// child enrolled in the deferred phase inherits this depth + 1 (O64, O65).
+    /// child enrolled in the deferred phase inherits this depth + 1 (O65).
     fn begin_enrollment_depth(&self, depth: u32) -> DepthGuard<'_> {
         self.state.borrow_mut().current_enrollment_depth = Some(depth);
         DepthGuard { scheduler: self }
@@ -575,10 +599,6 @@ impl ReactionScheduler {
         script_ctx: &ScriptCtx,
     ) {
         for landing in self.take_landings() {
-            // Depth attribution spans the WHOLE landing — the tail resume AND the
-            // per-instance deferred dispatch — so a `fire`-seeded child (which
-            // enrolls during the deferred dispatch) inherits this instance's
-            // depth + 1.
             let _depth = self.begin_enrollment_depth(landing.depth);
             let (address, body_ordinal, _origin) = landing.key.clone();
             let follow_ups = {
@@ -994,8 +1014,8 @@ mod tests {
 
     // O57 / O19b mechanism: a nested re-park (same key while a resume is live)
     // keeps the resuming instance's depth and is exempt from the cap. O65
-    // mechanism: a `fire`-seeded enrollment (a different key while a resume is
-    // live) inherits depth + 1, also cap-exempt.
+    // mechanism: a `fire`-seeded enrollment during deferred dispatch inherits
+    // depth + 1, but is a new instance and remains cap-tested.
     #[test]
     fn resume_context_governs_depth_and_cap_exemption() {
         let scheduler = enabled_scheduler();
@@ -1018,11 +1038,12 @@ mod tests {
             }
             // The tail dispatch is over; the deferred dispatch runs with only the
             // depth scope live. A different-key `fire`-seeded child here inherits
-            // depth + 1 = 4, cap-exempt.
+            // depth + 1 = 4, but the full pending cap drops the new instance.
             scheduler.enroll("child", 0, None, vec![step(3)], 5, false);
             assert_eq!(
                 scheduler.instance_depth(&("child".to_string(), 0, None)),
-                Some(4),
+                None,
+                "a fire-seeded child inherits depth for its chain check but remains cap-tested",
             );
         }
         // The guard released the resume context; a fresh enrollment is cap-tested

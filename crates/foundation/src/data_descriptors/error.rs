@@ -11,7 +11,7 @@ pub enum DescriptorError {
         "reaction has no recognizable shape (expected 'progress', 'primitive', or 'sequence' key)"
     )]
     UnknownShape,
-    #[error("'sequence' field must be an array of step objects")]
+    #[error("'sequence' field must be an array of step objects: {reason}")]
     InvalidSequenceShape { reason: String },
     #[error("'primitive' field must not be empty")]
     EmptyPrimitiveName,

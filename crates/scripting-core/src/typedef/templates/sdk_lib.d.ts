@@ -246,7 +246,7 @@
     | WaitStep
     | FireStep;
 
-  /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
+  /** Sequence reaction body: ordered entity-targeted primitive and control steps. Entity steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
     sequence: SequenceStep[];
   };
@@ -388,7 +388,8 @@
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
    * `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
    * `primitive` (named Rust primitive with optional entity `tag` and typed
-   * `args`), or `sequence` (ordered per-entity steps). `name` is optional; when
+   * `args`), or `sequence` (entity-targeted primitive plus `wait`/`fire` control
+   * steps). `name` is optional; when
    * omitted a deterministic, run-stable id is derived from the body. Use explicit
    * names when TS and Luau scripts must agree. The returned handle can be passed
    * to `Button.onPress` or crossing `fire` entries.

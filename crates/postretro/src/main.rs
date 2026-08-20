@@ -147,9 +147,11 @@ use postretro_entities::{
 };
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
+#[cfg(test)]
+use postretro_scripting_core::reaction_dispatch::fire_named_event;
 use postretro_scripting_core::reaction_dispatch::{
-    ResidualOrigin, dispatch_deferred_named_events_with_sequences, fire_named_event,
-    fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
+    ResidualOrigin, dispatch_deferred_named_events_with_sequences, fire_named_event_with_sequences,
+    fire_prepartitioned_reactions_with_sequences,
 };
 use postretro_scripting_core::runtime::{
     Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
@@ -224,21 +226,25 @@ fn mover_event_dispatch_addresses(
         .collect()
 }
 
-/// Execute the host-local mover sound-event drain. This deliberately uses the
-/// sequence-aware dispatcher: plain `fire_named_event` only collects chained
-/// names and would leave `playSound` reactions unexecuted.
-fn drain_mover_sound_events_with_sequences(
-    event_names: &[String],
+/// Execute a batch of post-tick named events through the sequence-aware path.
+/// Plain `fire_named_event` only collects primitive `on_complete` names; it does
+/// not execute primitive or sequence bodies.
+fn drain_named_events_with_sequences<I, S>(
+    event_names: I,
     data_registry: &postretro_entities::DataRegistry,
     sequence_registry: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
     system_registry: &postretro_scripting_core::reaction_registry::SystemReactionRegistry,
     script_ctx: &postretro_entities::ScriptCtx,
-) -> Vec<String> {
+) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut chained = Vec::new();
     for event_name in event_names {
         chained.extend(fire_named_event_with_sequences(
-            event_name,
+            event_name.as_ref(),
             data_registry,
             sequence_registry,
             reaction_registry,
@@ -2072,15 +2078,6 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
-                // Advance the timed-reaction scheduler's monotonic frame counter
-                // once per redraw, ahead of both the pre-loop UI activation (a
-                // focused button's `on_press` can enroll a wait) and the tick loop,
-                // so an enrollment this frame is stamped with this frame and cannot
-                // advance until the next. Distinct from `frame_timing.begin_frame`.
-                if let Some(session) = self.session.as_ref() {
-                    session.scripting.scheduler.begin_frame();
-                }
-
                 // Seat holds measure elapsed rendered time rather than fixed
                 // simulation time: Frontend and Loading keep polling a host even
                 // though neither runs the simulation loop. Advance exactly here,
@@ -2107,6 +2104,17 @@ impl ApplicationHandler for App {
 
                 if !self.drive_boot_state_for_redraw(event_loop, frame_dt) {
                     return;
+                }
+
+                // Advance the timed-reaction scheduler's monotonic frame counter
+                // after the boot/install boundary but before any same-frame UI
+                // dispatch or gameplay ticks. A `levelLoad` wait enrolled while a
+                // ready world installs above therefore advances on this redraw's
+                // first tick (O1/O2/O31). A UI wait enrolled below stamps the new
+                // counter and remains protected from this redraw's ticks (O51).
+                // Distinct from `frame_timing.begin_frame`.
+                if let Some(session) = self.session.as_ref() {
+                    session.scripting.scheduler.begin_frame();
                 }
 
                 if self.boot_state == BootState::Frontend {
@@ -2472,12 +2480,11 @@ impl ApplicationHandler for App {
                 let mut repointed_pawns = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 let mut host_snapshot_due = false;
-                // Death-event names accumulate here and drain through the
-                // sequence-aware dispatcher (a separate sibling loop below), so a
-                // `progress` reaction naming a sequence resolves — unlike the
-                // plain `fire_named_event` drains, which would no-op it. Frame-end
-                // removals append to the session buffer after this drain, so take
-                // that carryover now rather than running game logic during render.
+                // Death-event names accumulate here and join the sequence-aware
+                // post-tick batch below, so a `progress` reaction naming a sequence
+                // resolves. Frame-end removals append to the session buffer after
+                // this drain, so take that carryover now rather than running game
+                // logic during render.
                 let mut pending_death_events = std::mem::take(
                     &mut self
                         .session
@@ -3008,49 +3015,59 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Drain collected post-tick events after all ticks complete so
-                // reactions observe the final state of every entity.
-                for event_name in &pending_movement_events {
-                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
-                }
-                for event_name in &pending_ai_events {
-                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
-                }
-                for event in &pending_weapon_script_events {
-                    let _ =
-                        fire_named_event(event.event_name(), &script_ctx.data_registry.borrow());
-                }
                 let pending_mover_event_names = {
                     let registry = script_ctx.registry.borrow();
                     mover_event_dispatch_addresses(&pending_mover_events, &registry)
                 };
-                // Death events drain through the sequence-aware dispatcher in
-                // their OWN loop: a `progress` reaction that names a sequence
-                // would no-op under plain `fire_named_event`.
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
-                    // Capture the mover-sound and death drains' chained names into
-                    // the same follow-up batch — previously discarded, so a `fire`
-                    // step or `on_complete` in those reactions dispatched nothing.
-                    pending_trigger_follow_ups.extend(drain_mover_sound_events_with_sequences(
-                        &pending_mover_event_names,
+                    // Every post-tick named source uses the executing path, then
+                    // contributes `fire`/`on_complete` names to one bounded deferred
+                    // batch. This keeps movement, AI, weapon, mover, and death events
+                    // semantically aligned and lets waits enroll through the common
+                    // sequence control arm.
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_movement_events.iter().copied(),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
                         &session.scripting.system_registry,
                         &script_ctx,
                     ));
-                    for event_name in &pending_death_events {
-                        pending_trigger_follow_ups.extend(fire_named_event_with_sequences(
-                            event_name,
-                            &script_ctx.data_registry.borrow(),
-                            &session.scripting.sequence_registry,
-                            &session.scripting.reaction_registry,
-                            &session.scripting.system_registry,
-                            &script_ctx,
-                            None,
-                        ));
-                    }
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_ai_events.iter().map(|event| event.as_ref()),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_weapon_script_events
+                            .iter()
+                            .map(|event| event.event_name()),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_mover_event_names.iter(),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
+                    pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
+                        pending_death_events.iter(),
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    ));
                     for (handle, trigger, player) in &pending_trigger_residuals {
                         let Some(residual) = self.trigger_bindings.residual(*handle) else {
                             log::warn!(
@@ -6554,8 +6571,8 @@ impl App {
             );
             // Predict the muzzle FX on a gated local fire, mirroring the host/
             // single-player weapon-activation ("activate") event. It drains with the
-            // batch at the shared `fire_named_event` site; a host reject rolls this
-            // shot's `muzzle_fx_visible` state back in reconcile.
+            // shared sequence-aware named-event batch; a host reject rolls this shot's
+            // `muzzle_fx_visible` state back in reconcile.
             pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon("activate"));
             let projectile_spawned = projectile_launch.is_some_and(|launch| {
                 sim::spawn_projectile(
@@ -9297,8 +9314,8 @@ mod tests {
         assert!(fire_named_event("door.open", &data_registry).is_empty());
         assert!(script_ctx.system_commands.take().is_empty());
 
-        drain_mover_sound_events_with_sequences(
-            &event_names,
+        drain_named_events_with_sequences(
+            event_names.iter(),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -9312,6 +9329,118 @@ mod tests {
                 bus: Some("sfx".to_string()),
             }],
             "mover events must use the executing dispatch path so the audio drain receives playSound"
+        );
+    }
+
+    // Regression: movement, AI, and weapon event drains used the legacy named
+    // dispatcher, which did not execute Sequence bodies at all.
+    #[test]
+    fn post_tick_named_event_batch_executes_waits_and_returns_fire_chains() {
+        use crate::scripting_systems::reaction_scheduler::{
+            ReactionScheduler, register_reaction_control_primitives,
+        };
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
+            SequenceTarget,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let scheduler = ReactionScheduler::default();
+        scheduler.set_enabled(true);
+        let mut sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
+        let reaction_registry = ReactionPrimitiveRegistry::new();
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+
+        let source_reactions =
+            ["movementEvent", "aiEvent", "weaponEvent"]
+                .into_iter()
+                .map(|name| NamedReaction {
+                    name: name.to_string(),
+                    descriptor: ReactionDescriptor::Sequence(vec![
+                        SequenceStep {
+                            id: SequenceTarget::Fire,
+                            primitive: "fire".to_string(),
+                            args: serde_json::json!({ "event": "postTickTarget" }),
+                        },
+                        SequenceStep {
+                            id: SequenceTarget::Wait,
+                            primitive: "wait".to_string(),
+                            args: serde_json::json!({
+                                "durationMs": 17.0,
+                                "interruptible": false
+                            }),
+                        },
+                    ]),
+                });
+        let mut reactions: Vec<_> = source_reactions.collect();
+        reactions.push(NamedReaction {
+            name: "postTickTarget".to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "playSound".to_string(),
+                target: None,
+                tag: None,
+                on_complete: None,
+                args: serde_json::json!({ "sound": "event_chain", "bus": "sfx" }),
+            }),
+        });
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(reactions, Vec::new(), &[]);
+
+        let chained = drain_named_events_with_sequences(
+            ["movementEvent", "aiEvent", "weaponEvent"],
+            &data_registry,
+            &sequence_registry,
+            &reaction_registry,
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            scheduler.pending_len(),
+            3,
+            "all three named sources reach the shared wait enrollment arm"
+        );
+        assert_eq!(
+            chained,
+            vec![
+                "postTickTarget".to_string(),
+                "postTickTarget".to_string(),
+                "postTickTarget".to_string(),
+            ],
+            "each source contributes its fire target to the shared deferred batch"
+        );
+
+        dispatch_deferred_named_events_with_sequences(
+            chained,
+            &data_registry,
+            &sequence_registry,
+            &reaction_registry,
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![
+                SystemReactionCommand::PlaySound {
+                    sound: "event_chain".to_string(),
+                    bus: Some("sfx".to_string()),
+                },
+                SystemReactionCommand::PlaySound {
+                    sound: "event_chain".to_string(),
+                    bus: Some("sfx".to_string()),
+                },
+                SystemReactionCommand::PlaySound {
+                    sound: "event_chain".to_string(),
+                    bus: Some("sfx".to_string()),
+                },
+            ],
+            "the existing deferred dispatcher executes every chained target"
         );
     }
 

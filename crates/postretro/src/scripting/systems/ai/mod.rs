@@ -73,8 +73,8 @@ use targeting::{
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
-/// names it raised and the app drains them through `fire_named_event` after the
-/// tick loop settles.
+/// names it raised and the app drains them through the sequence-aware named
+/// dispatcher after the tick loop settles.
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 

@@ -349,8 +349,9 @@ export type FireStep = {
 --- extend this union.
 export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | WaitStep | FireStep
 
---- Sequence reaction body: ordered per-entity primitive invocations. Steps
---- run in array order at dispatch.
+--- Sequence reaction body: ordered entity-targeted primitive and control
+--- steps. Entity steps begin in array order; `fire` queues a named dispatch,
+--- while `wait` stops the current drain and resumes the remaining tail later.
 export type SequenceReactionDescriptor = {
   sequence: {SequenceStep},
 }
@@ -546,7 +547,8 @@ export type LevelManifest = {
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
 --- `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
 --- `primitive` (named Rust primitive with optional entity `tag` and typed
---- `args`), or `sequence` (ordered per-entity steps). `name` is optional; when
+--- `args`), or `sequence` (entity-targeted primitive plus `wait`/`fire` control
+--- steps). `name` is optional; when
 --- omitted a deterministic, run-stable id is derived from the body. Use explicit
 --- names when TS and Luau scripts must agree. The returned handle can be passed
 --- to button `onPress` or crossing `fire` entries.

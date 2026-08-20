@@ -195,10 +195,11 @@ impl App {
                 // a rejected body is never bound — the binder copies bodies into
                 // owned commands/steps a later drop cannot reach — matching the
                 // install order in `install_world_cpu` (O40). The system-reaction
-                // binding rebuild moves ahead of the rejection rows because V4b
-                // reads its `required_dispatch_inputs`; that table binds only
-                // `Primitive` reactions, which no V-row drops, so validation
-                // cannot stale it.
+                // binding rebuild moves ahead of the rejection rows because one
+                // V4b arm reads its runtime-IR input metadata. The other V4b
+                // arms inspect sentinel-scoped descriptors directly. The table
+                // binds only `Primitive` reactions, which no V-row drops, so
+                // validation cannot stale it.
                 self.rebuild_active_system_reaction_bindings();
                 if let Some(session) = self.session.as_ref() {
                     let script_ctx = session.scripting.script_ctx.clone();

@@ -724,14 +724,14 @@ impl SimHarness {
         self.record(events, predicate_crossing_fires)
     }
 
-    /// Run one frame: one `tick` per supplied command, then the frame-end drain
-    /// (the scheduler landing queue resumed through the shipped residual path,
-    /// then the deferred hops). `begin_frame` advances the scheduler's monotonic
-    /// counter at the END of the frame, so the enrollment frame (counter 0) is
-    /// skipped and a 1-tick wait installed at level load lands at the SECOND
-    /// frame's drain — O61. A counter advanced only by window events would never
-    /// advance here and the instance would be skipped forever.
+    /// Run one production-shaped frame: advance the scheduler after install but
+    /// before gameplay, run one `tick` per supplied command, then drain timed
+    /// landings through the shipped residual path. This matches the redraw order:
+    /// install-time `levelLoad` enrollments advance on the first post-install
+    /// tick, while later same-frame UI enrollments stamp the current frame and are
+    /// skipped until the next one.
     pub(crate) fn frame(&mut self, commands: &[RecordedCommand]) -> Vec<RecordedTick> {
+        self.scheduler.begin_frame();
         let mut ticks = Vec::with_capacity(commands.len());
         for command in commands {
             ticks.push(self.tick(*command));
@@ -746,7 +746,6 @@ impl SimHarness {
             &self.dispatch_system_registry,
             &self.trigger_script_ctx,
         );
-        self.scheduler.begin_frame();
         ticks
     }
 
@@ -3012,13 +3011,13 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
     }
 }
 
-// O61: headless frame stamping. `SimHarness` installs `levelLoad = [note(presA),
-// wait(5), note(presB)]`; presA runs at install, and `begin_frame()` in
-// `frame()` advances the scheduler's monotonic counter so presB lands at the
-// SECOND frame's drain. A counter advanced only by window events would never
-// advance here and the instance would be skipped forever.
+// O1/O2/O31/O61: `SimHarness` installs `levelLoad = [note(presA), wait(5),
+// note(presB)]`; presA runs at install. `frame()` advances the scheduler after
+// install and before its tick, so presB lands at the FIRST post-install frame's
+// drain. A counter advanced only by window events would never advance here and
+// the instance would be skipped forever.
 #[test]
-fn sim_harness_frame_stamping_lands_wait_at_second_frame_drain() {
+fn sim_harness_first_post_install_tick_advances_level_load_wait() {
     let mut harness = SimHarness::new(
         SpawnOrder::AlphaThenBeta,
         SimFixture::LevelLoadWait { duration_ms: 5.0 },
@@ -3037,22 +3036,13 @@ fn sim_harness_frame_stamping_lands_wait_at_second_frame_drain() {
     // presA ran at install; the wait enrolled its tail at frame counter 0.
     assert_eq!(harness.note_log(), vec!["presA".to_string()]);
 
-    // First frame is the enrollment frame (counter 0): its tick's `evaluate`
-    // skips the instance, so presB does not land.
-    harness.frame(&[neutral]);
-    assert_eq!(
-        harness.note_log(),
-        vec!["presA".to_string()],
-        "presB must not land in the enrollment frame"
-    );
-
-    // Second frame: `begin_frame` advanced the counter, the countdown reaches
-    // zero, and presB lands at this frame's drain.
+    // The first post-install frame advances the counter before its tick. The
+    // install-time enrollment is therefore old enough to advance and land.
     harness.frame(&[neutral]);
     assert_eq!(
         harness.note_log(),
         vec!["presA".to_string(), "presB".to_string()],
-        "presB lands at the second frame's drain"
+        "the first post-install tick advances and lands the levelLoad wait"
     );
 }
 

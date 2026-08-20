@@ -317,6 +317,7 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
         };
         let primitive = get_required_string_lua(&step_table, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
+        validate_control_step_pair(i, id, &primitive)?;
         if matches!(id, SequenceTarget::Activators)
             && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
         {
@@ -339,6 +340,35 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
         });
     }
     Ok(out)
+}
+
+/// Luau twin of the QuickJS canonical control-pair check. Keep the diagnostic
+/// wording aligned so malformed raw descriptors degrade the same way.
+fn validate_control_step_pair(
+    step_index: i64,
+    target: SequenceTarget,
+    primitive: &str,
+) -> Result<(), DescriptorError> {
+    let mismatch = match (target, primitive) {
+        (SequenceTarget::Wait, "wait") | (SequenceTarget::Fire, "fire") => None,
+        (SequenceTarget::Wait, _) => Some(format!(
+            "step {step_index} sentinel `@wait` requires primitive `wait`, got `{primitive}`"
+        )),
+        (SequenceTarget::Fire, _) => Some(format!(
+            "step {step_index} sentinel `@fire` requires primitive `fire`, got `{primitive}`"
+        )),
+        (_, "wait") => Some(format!(
+            "step {step_index} control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted"
+        )),
+        (_, "fire") => Some(format!(
+            "step {step_index} control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted"
+        )),
+        _ => None,
+    };
+    match mismatch {
+        Some(reason) => Err(DescriptorError::InvalidSequenceShape { reason }),
+        None => Ok(()),
+    }
 }
 
 pub fn get_required_u32_lua(table: &Table, field: &'static str) -> Result<u32, DescriptorError> {

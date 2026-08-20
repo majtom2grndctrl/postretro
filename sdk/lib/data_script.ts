@@ -98,7 +98,9 @@ export type SequenceStep =
   | WaitStep
   | FireStep;
 
-/** Ordered per-entity primitive invocations. Steps run in array order at dispatch time. */
+/** Ordered entity-targeted primitive and control steps. Entity steps begin in
+ * array order; `fire` queues a named dispatch, while `wait` stops the current
+ * drain and resumes the remaining tail after its delay. */
 export type SequenceReactionDescriptor = {
   sequence: SequenceStep[];
 };

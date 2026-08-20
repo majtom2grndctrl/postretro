@@ -62,8 +62,7 @@ use postretro_foundation::{
     WeaponDescriptor,
 };
 use postretro_scripting_core::reaction_dispatch::{
-    PrepartitionedReactionStep, ProgressTracker, dispatch_deferred_named_events_with_sequences,
-    fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
+    ProgressTracker, fire_named_event_with_sequences,
 };
 use postretro_scripting_core::reaction_registry::{
     ReactionPrimitiveRegistry, SystemReactionRegistry,
@@ -729,29 +728,16 @@ impl SimHarness {
         for command in commands {
             ticks.push(self.tick(*command));
         }
-        let landings = self.scheduler.take_landings();
-        let mut chained = Vec::new();
-        for tail in landings {
-            chained.extend(fire_prepartitioned_reactions_with_sequences(
-                &[PrepartitionedReactionStep::Descriptor(
-                    ReactionDescriptor::Sequence(tail),
-                )],
-                &self.dispatch_sequence_registry,
-                &self.dispatch_reaction_registry,
-                &self.dispatch_system_registry,
-                &self.trigger_script_ctx,
-            ));
-        }
-        if !chained.is_empty() {
-            dispatch_deferred_named_events_with_sequences(
-                chained,
-                &self.dispatch_data,
-                &self.dispatch_sequence_registry,
-                &self.dispatch_reaction_registry,
-                &self.dispatch_system_registry,
-                &self.trigger_script_ctx,
-            );
-        }
+        // Resume landings through the shipped residual path, one instance at a
+        // time with its own deferred-dispatch call and its own resume context —
+        // exactly as `main.rs` does, so depth attribution (O65) matches.
+        self.scheduler.drain_landings(
+            &self.dispatch_data,
+            &self.dispatch_sequence_registry,
+            &self.dispatch_reaction_registry,
+            &self.dispatch_system_registry,
+            &self.trigger_script_ctx,
+        );
         self.scheduler.begin_frame();
         ticks
     }

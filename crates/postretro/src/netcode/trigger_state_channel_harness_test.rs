@@ -858,7 +858,7 @@ fn persistent_atmosphere_trigger_replication_drives_client_local_presentation() 
             .residual(host_events.trigger_residuals[0])
             .expect("fixture presentation step stays bound as a residual")
             .steps(),
-        [PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Primitive(
+        [PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Primitive(
             PrimitiveDescriptor { primitive, .. }
         ))] if primitive == "setFogDensity"
     ));

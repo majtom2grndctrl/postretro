@@ -148,7 +148,7 @@ use postretro_entities::{
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
-    dispatch_deferred_named_events_with_sequences, fire_named_event,
+    ResidualOrigin, dispatch_deferred_named_events_with_sequences, fire_named_event,
     fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
 };
 use postretro_scripting_core::runtime::{
@@ -3052,6 +3052,7 @@ impl ApplicationHandler for App {
                                 &session.scripting.reaction_registry,
                                 &session.scripting.system_registry,
                                 &script_ctx,
+                                ResidualOrigin::TriggerBinding,
                             ),
                         );
                     }
@@ -3068,6 +3069,23 @@ impl ApplicationHandler for App {
                             &script_ctx,
                         );
                     }
+                    // Resume timed-reaction landings AFTER the trigger follow-up
+                    // dispatch and OUTSIDE any origin guard: a resumed tail runs
+                    // where a trigger residual runs, but each landing gets its own
+                    // deferred-dispatch call so a `fire`-seeded child's depth is
+                    // attributable per instance (O27, O65). The scheduler owns its
+                    // tails as `Vec<SequenceStep>` and never mints a
+                    // `TriggerResidualHandle`, so this never resolves through
+                    // `self.trigger_bindings` (O33). `take_landings` (inside
+                    // `drain_landings`) `mem::take`s the queue, so nothing borrows
+                    // it across the block — no need to move it onto `App`.
+                    session.scripting.scheduler.drain_landings(
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        &script_ctx,
+                    );
                 }
 
                 // System-reaction command drain — runs AFTER every post-tick

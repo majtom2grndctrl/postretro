@@ -1444,7 +1444,9 @@ mod tests {
         SpeedParams, WeaponDescriptor, WeaponResource,
     };
     use postretro_net::wire::NetworkId;
-    use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
+    use postretro_scripting_core::reaction_dispatch::{
+        ResidualOrigin, fire_prepartitioned_reactions_with_sequences,
+    };
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
     use std::collections::{BTreeMap, HashMap};
 
@@ -2440,6 +2442,7 @@ mod tests {
             &reaction_registry,
             &system_registry,
             &script_ctx,
+            ResidualOrigin::TriggerBinding,
         );
         assert!(matches!(
             script_ctx.system_commands.take().as_slice(),

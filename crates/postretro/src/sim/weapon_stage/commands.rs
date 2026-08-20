@@ -385,7 +385,8 @@ pub(in crate::sim) fn run_local_weapon_command(
     let mut projectile_spawns = Vec::new();
     if let Some(pawn) = pawn {
         for launch in std::mem::take(&mut events.projectile_launches) {
-            if let Some(projectile_id) = spawn_projectile(&mut registry, pawn, weapon_id, launch, 0)
+            if let Some(projectile_id) =
+                spawn_projectile(&mut registry, pawn, weapon_id, launch, None)
             {
                 events
                     .spawned
@@ -437,7 +438,7 @@ pub(crate) fn spawn_projectile(
     owner_pawn: EntityId,
     owner_weapon: EntityId,
     launch: weapon::ProjectileLaunch,
-    shot_id: u64,
+    predicted_shot_id: Option<u64>,
 ) -> Option<EntityId> {
     let Some(projectile_id) = registry.try_spawn(
         Transform {
@@ -461,7 +462,7 @@ pub(crate) fn spawn_projectile(
         owner_pawn,
         owner_weapon,
         spawned: true,
-        shot_id,
+        predicted_shot_id,
     };
     let _ = registry.set_component(projectile_id, component);
 
@@ -504,7 +505,12 @@ pub(crate) fn spawn_projectile(
                 color: trail.color,
                 sprite: trail.sprite,
                 spin_rate: trail.spin_rate,
-                spin_animation: None,
+                spin_animation: trail.spin_animation.map(|animation| {
+                    postretro_entities::components::billboard_emitter::SpinAnimation {
+                        duration: animation.duration,
+                        rate_curve: animation.rate_curve,
+                    }
+                }),
             },
         );
     }
@@ -645,7 +651,8 @@ pub(crate) fn refuse_local_switch(
 mod projectile_spawn_tests {
     use super::*;
     use postretro_foundation::{
-        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailSpinAnimation,
+        ProjectileTrailVisual, ProjectileVisual,
     };
 
     fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
@@ -693,10 +700,14 @@ mod projectile_spawn_tests {
                 opacity_over_lifetime: vec![1.0, 0.0],
                 color: [1.0, 1.0, 1.0],
                 spin_rate: 0.0,
+                spin_animation: Some(ProjectileTrailSpinAnimation {
+                    duration: 0.75,
+                    rate_curve: vec![0.0, 2.0, -1.0],
+                }),
             }),
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), 0)
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
             .expect("projectile spawns");
         assert!(
             registry
@@ -710,13 +721,16 @@ mod projectile_spawn_tests {
                 .sprite,
             "sprites/plasma.png"
         );
-        assert_eq!(
-            registry
-                .get_component::<BillboardEmitterComponent>(projectile)
-                .expect("trail emitter attaches")
-                .sprite,
-            "sprites/trail.png"
-        );
+        let trail = registry
+            .get_component::<BillboardEmitterComponent>(projectile)
+            .expect("trail emitter attaches");
+        assert_eq!(trail.sprite, "sprites/trail.png");
+        let animation = trail
+            .spin_animation
+            .as_ref()
+            .expect("trail spin animation materializes locally");
+        assert!((animation.duration - 0.75).abs() <= f32::EPSILON);
+        assert_eq!(animation.rate_curve, [0.0, 2.0, -1.0]);
     }
 
     #[test]
@@ -731,7 +745,7 @@ mod projectile_spawn_tests {
             trail: None,
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), 0)
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
             .expect("projectile spawns");
         let mesh = registry
             .get_component::<MeshComponent>(projectile)

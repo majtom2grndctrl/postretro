@@ -216,7 +216,7 @@ defineEntity({
 | Field | Type | Description |
 |-------|------|-------------|
 | `max` | `number` | Hit-point ceiling. Must be finite and `>= 1.0` — otherwise the descriptor is rejected at load with a descriptive error. The component materializes with `current == max` at spawn. |
-| `hitbox` | `{ halfExtents, offset? }` (optional) | One world-aligned AABB. **Present ⇒ the entity is hitscan-targetable** (a weapon ray can hit it and route damage through the chokepoint). **Absent ⇒ it cannot be ray-targeted at all.** Fixed per archetype. |
+| `hitbox` | `{ halfExtents, offset? }` (optional) | One world-aligned direct-impact AABB. **Present ⇒ both hitscan rays and swept projectiles can target it** through the shared hit-zone query (projectile radius expands the tested shape). **Absent ⇒ a zone-bearing skinned model can still be targeted; otherwise it cannot.** Fixed per archetype. |
 | `hitbox.halfExtents` | `[x, y, z]` | Box half-size on each axis, in meters. The engine is Y-up, so the middle component is the vertical half-height. Each element must be finite and `> 0`. |
 | `hitbox.offset` | `[x, y, z]` (optional) | Shifts the box center from the entity's transform origin. Each element must be finite. A common use is lifting the box up by its half-height (e.g. `offset: [0, 0.9, 0]` for a `0.9` vertical half-extent) so it rises from a foot-level origin to span the body. |
 
@@ -279,7 +279,9 @@ defineEntity({
 Projectile tuning belongs entirely to the weapon descriptor. Do not add map
 KVPs for speed, radius, lifetime, body, or trail. A projectile advances in a
 straight line, resolves damage only when it later contacts something, and ends
-at whichever arrives first: `range` distance or `lifetimeMs` time.
+at whichever arrives first: `range` distance or `lifetimeMs` time. Projectile
+weapons require `pelletCount: 1`; multi-pellet resolution remains a hitscan
+feature.
 
 ```typescript
 weapon: {
@@ -321,10 +323,12 @@ no parent traversal. Sprite bodies additionally accept `size`, `opacity`,
 `visual.trail` is optional. Its `sprite` follows the same texture-relative path
 rule. It accepts the billboard-emitter controls `rate`, `lifetime`, `burst`,
 `spread`, `velocity`, `buoyancy`, `drag`, `sizeOverLifetime`,
-`opacityOverLifetime`, `color`, and `spinRate`; omitted fields use the
-descriptor defaults. `rate`, `spread`, and `drag` are finite and non-negative;
-`lifetime` is finite and positive; the two curves must be non-empty and finite.
-`buoyancy` and `spinRate` are finite signed controls.
+`opacityOverLifetime`, `color`, `spinRate`, and `spinAnimation`; omitted fields
+use the descriptor defaults. `rate`, `spread`, and `drag` are finite and
+non-negative; `lifetime` is finite and positive; the lifetime curves must be
+non-empty and finite. `buoyancy` and `spinRate` are finite signed controls.
+When present, `spinAnimation` has a finite positive `duration` and a non-empty,
+`rateCurve` of signed spin rates.
 
 The body and trail are presentation only. They make the flight visible but
 never decide whether a projectile contacts a target or applies damage.

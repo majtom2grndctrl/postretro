@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use postretro_entities::components::sprite_visual::SpriteVisual;
+use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
@@ -137,14 +138,40 @@ impl ParticleRenderCollector {
             );
         }
 
-        // A travelling projectile has `SpriteVisual` but deliberately no
+        // A local travelling projectile has `SpriteVisual` but deliberately no
         // `ParticleState`: its visual is persistent until collision/expiry, not
-        // a simulated smoke puff. Pack it at age zero into the existing sprite
-        // pass so descriptor-authored projectile bodies need no renderer path.
+        // a simulated smoke puff. Pack it at age zero into the existing pass.
         for (id, value) in registry.iter_with_kind(ComponentKind::Projectile) {
             let ComponentValue::Projectile(_) = value else {
                 continue;
             };
+            let Ok(transform) = registry.get_component::<Transform>(id) else {
+                continue;
+            };
+            let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
+                continue;
+            };
+            self.collect_sprite(transform, visual, 0.0, world, visible_cells.as_ref());
+        }
+
+        // A host-replicated observer copy intentionally carries no gameplay
+        // ProjectileComponent. Its provenance marks the exact visual-only
+        // projectile shape, preventing this path from broadening into a generic
+        // renderer for every entity that happens to carry SpriteVisual.
+        for (id, value) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
+            let ComponentValue::DescriptorProvenance(provenance) = value else {
+                continue;
+            };
+            if provenance.spawn_path != DescriptorSpawnPath::ProjectilePresentation
+                || registry
+                    .has_component_kind(id, ComponentKind::Projectile)
+                    .unwrap_or(false)
+                || registry
+                    .has_component_kind(id, ComponentKind::ParticleState)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             let Ok(transform) = registry.get_component::<Transform>(id) else {
                 continue;
             };
@@ -450,7 +477,7 @@ mod tests {
                     owner_pawn: EntityId::from_raw(1),
                     owner_weapon: EntityId::from_raw(2),
                     spawned: false,
-                    shot_id: 0,
+                    predicted_shot_id: None,
                 },
             )
             .unwrap();
@@ -524,7 +551,34 @@ mod tests {
         let px = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
         let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert!((px - 1.0).abs() < 1e-6);
-        assert_eq!(age, 0.0, "persistent projectile bodies use frame zero");
+        assert!(
+            age.abs() <= f32::EPSILON,
+            "persistent projectile bodies use frame zero"
+        );
+    }
+
+    #[test]
+    fn collect_does_not_broaden_bare_sprite_visual_into_projectile_rendering() {
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                SpriteVisual {
+                    sprite: "sprites/decorative.png".to_string(),
+                    size: 1.0,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0; 3],
+                },
+            )
+            .unwrap();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("sprites/decorative.png");
+
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+
+        assert_eq!(collector.iter_collections().count(), 0);
     }
 
     #[test]

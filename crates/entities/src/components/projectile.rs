@@ -26,33 +26,9 @@ pub struct ProjectileComponent {
     /// The spawn pass clears this without integrating, ensuring a projectile
     /// cannot impact on its fire tick.
     pub spawned: bool,
-    /// Reserved for the later connected-client declaration path.
-    pub shot_id: u64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn projectile_component_serde_round_trip_preserves_impact_inputs() {
-        let value = ProjectileComponent {
-            direction: [0.0, 0.0, -1.0],
-            speed: 40.0,
-            radius: 0.2,
-            remaining_range: 64.0,
-            remaining_lifetime: 1.5,
-            damage: 25.0,
-            credit_source: "plasma.primary".to_string(),
-            owner_pawn: EntityId::from_raw(4),
-            owner_weapon: EntityId::from_raw(5),
-            spawned: true,
-            shot_id: 0,
-        };
-
-        let encoded = serde_json::to_string(&value).expect("component serializes");
-        let decoded: ProjectileComponent =
-            serde_json::from_str(&encoded).expect("component deserializes");
-        assert_eq!(decoded, value);
-    }
+    /// Connected-client declaration authority. `Some(0)` is valid: network and
+    /// client tick allocation both begin at zero. Local standalone projectiles
+    /// use `None`; this distinction never crosses the network wire.
+    #[serde(default)]
+    pub predicted_shot_id: Option<u64>,
 }

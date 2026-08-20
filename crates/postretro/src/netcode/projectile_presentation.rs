@@ -1,5 +1,5 @@
 // Host-owned replicated projectile-flight presentation and descriptor materialization.
-// See: context/plans/in-progress/E16--projectile-resolution/index.md Task 4
+// See: context/lib/networking.md §Game-logic-owned apply invariant, §Phase boundaries
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -302,7 +302,12 @@ pub(super) fn attach_projectile_visual_components(
                 color: trail.color,
                 sprite: trail.sprite.clone(),
                 spin_rate: trail.spin_rate,
-                spin_animation: None,
+                spin_animation: trail.spin_animation.as_ref().map(|animation| {
+                    postretro_entities::components::billboard_emitter::SpinAnimation {
+                        duration: animation.duration,
+                        rate_curve: animation.rate_curve.clone(),
+                    }
+                }),
             },
         );
     }
@@ -502,6 +507,29 @@ mod tests {
                 "observer projectile is visual-only and carries no {kind:?} gameplay state"
             );
         }
+        let provenance = observer_registry
+            .get_component::<DescriptorProvenance>(observer_visual)
+            .expect("remote materialization marks the exact projectile-presentation shape");
+        assert_eq!(
+            provenance.spawn_path,
+            DescriptorSpawnPath::ProjectilePresentation
+        );
+        let mut collector =
+            crate::scripting_systems::particle_render::ParticleRenderCollector::new();
+        collector.register_sprite("sprites/projectiles/remote-bolt.png");
+        collector.collect(
+            &observer_registry,
+            None,
+            &postretro_visibility::VisibleCells::DrawAll,
+        );
+        let collected = collector.iter_collections().collect::<Vec<_>>();
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, "sprites/projectiles/remote-bolt.png");
+        assert_eq!(
+            collected[0].1.len(),
+            postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE,
+            "visual-only remote materialization is eligible for the sprite collector"
+        );
         let observer_ack = observer_outcome
             .ack
             .expect("applied observer baseline produces an ack");

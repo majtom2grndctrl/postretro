@@ -2139,7 +2139,7 @@ mod tests {
             client_pawn,
             client_weapon,
             launch,
-            shot_id.raw(),
+            Some(shot_id.raw()),
         )
         .expect("connected client has space for its predicted projectile");
         assert!(client_registry.borrow().exists(client_projectile));

@@ -359,6 +359,13 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("opacityOverLifetime?", "Vec<f32>", "Non-empty finite opacity curve; defaults to a short fade-out curve.")
         .field("color?", "[f32; 3]", "Linear RGB particle tint. Each value must be finite; defaults to white.")
         .field("spinRate?", "f32", "Signed particle rotation rate. Must be finite; defaults to 0.")
+        .field("spinAnimation?", "ProjectileTrailSpinAnimation", "Optional spin-rate tween. Duration must be finite and > 0; rateCurve must be non-empty.")
+        .finish();
+    registry
+        .register_type("ProjectileTrailSpinAnimation")
+        .doc("Spin-rate tween copied into the projectile trail's billboard emitter when the projectile materializes.")
+        .field("duration", "f32", "Tween duration in seconds. Must be finite and > 0.")
+        .field("rateCurve", "Vec<f32>", "Non-empty curve of spin rates in radians per second, sampled evenly across duration.")
         .finish();
     registry
         .register_enum("ReloadStyle")
@@ -384,8 +391,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
-        .field("damage", "f32", "Base damage payload per pellet; a shell's total is damage × pelletCount. Must be finite and ≥ 0.")
-        .field("pelletCount?", "u32", "Pellets resolved per shell. Range: 1..=32; defaults to 1.")
+        .field("damage", "f32", "Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.")
+        .field("pelletCount?", "u32", "Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.")
         .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
         .field("range", "f32", "Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0.")
         .field("fireRateMs", "f32", "Minimum interval between shots in milliseconds. Must be finite and > 0.")
@@ -408,15 +415,15 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("HitboxDescriptor")
-        .doc("One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.")
+        .doc("One world-aligned direct-impact AABB. Hitscan rays and swept projectiles share this target query; projectile radius expands the tested shape. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.")
         .field("halfExtents", "[f32; 3]", "Box half-size on each axis, in metres. Each element must be finite and > 0.")
         .field("offset?", "[f32; 3]", "Center offset from the entity's transform position, in metres. Each element must be finite. Optional; defaults to [0, 0, 0].")
         .finish();
     registry
         .register_type("HealthDescriptor")
-        .doc("Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn.")
+        .doc("Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling. The optional `hitbox` supplies a world-aligned AABB to the shared hitscan/projectile target query; a zone-bearing skinned model can supply target shapes without it. Materializes into a Health component with `current == max` at spawn.")
         .field("max", "f32", "Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.")
-        .field("hitbox?", "HitboxDescriptor", "Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.")
+        .field("hitbox?", "HitboxDescriptor", "Optional direct-impact AABB. Present participates in the shared hitscan/projectile query; absent requires usable model hit zones for targetability.")
         .field("zoneMultipliers?", "ZoneMultipliers", "Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.")
         .finish();
     registry

@@ -241,6 +241,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 |-------|--------|
 | Level load | Parse PRL `TextureNames` and `TextureCacheKeys`. Open each `.prm` sidecar, upload mip chains to GPU. During model upload, resolve each glTF-derived content key, load only the diffuse slot from its `.prm`, and bind neutral specular and normal placeholders. Build sampler pool. Distribute handles. |
 | Gameplay | Handles are stable. No allocation or deallocation during gameplay. |
+| Debug descriptor reload | Visual asset path additions or changes stay deferred in the installed descriptor snapshot. The latest authored snapshot promotes before the next level install preload. Gameplay never uploads a model or sprite collection. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 
 Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
@@ -262,7 +263,7 @@ Renderer uses handles to bind textures and buffers during draw calls. If a handl
 - **Import-time model normalization.** Models render at their authored glTF scale — no fit-to-size, unit conversion, or auto-rescale at load. Author geometry at final world size (§7).
 - **WAD file support.** All textures are PNGs. No Quake/Half-Life WAD import or export.
 - **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras.
-- **Hot-reload.** Textures are loaded once per level. No file-watching or live refresh during gameplay.
+- **GPU asset hot-reload.** Textures and models are loaded once per level. Descriptor tuning may refresh, but visual asset path changes wait for the next level install.
 - **Procedural textures.** No noise-based or shader-generated textures. All surfaces use authored PNGs.
 - **Texture streaming / virtual textures.** All textures for a level are loaded upfront. No partial or on-demand loading.
 - **Cubemap bake tool.** The entity format and runtime consumption path are defined. The offline bake tool is deferred.

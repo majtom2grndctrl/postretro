@@ -6461,7 +6461,7 @@ impl App {
                     local_pawn,
                     weapon_id,
                     launch,
-                    shot_id,
+                    Some(shot_id),
                 )
                 .is_some()
             });

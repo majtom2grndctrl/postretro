@@ -111,8 +111,9 @@ pub(crate) fn advance(
 }
 
 /// Advance only locally-predicted connected-client projectiles. Their collision
-/// result is a declaration, never a local Health mutation. Presentation-only
-/// projectiles reserve `shot_id == 0` so they cannot enter this authority path.
+/// result is a declaration, never a local Health mutation. Standalone gameplay
+/// projectiles carry no prediction authority, while every `Some(shot_id)` is
+/// valid, including the first client's first shot (`0`).
 pub(crate) fn advance_predicted(
     registry: &Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
@@ -127,18 +128,22 @@ pub(crate) fn advance_predicted(
         hit_zone_store,
         anim_time,
         dt,
-        |component| component.shot_id != 0,
+        |component| component.predicted_shot_id.is_some(),
         |registry, resolution| match resolution {
             ProjectileResolution::Impact { component, impact } => {
                 weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
                 on_resolution(PredictedProjectileResolution::Impact {
-                    shot_id: component.shot_id,
+                    shot_id: component
+                        .predicted_shot_id
+                        .expect("predicted advance filters to declaration-authorized projectiles"),
                     impact: impact.clone(),
                 });
             }
             ProjectileResolution::Expire { component } => {
                 on_resolution(PredictedProjectileResolution::Expired {
-                    shot_id: component.shot_id,
+                    shot_id: component
+                        .predicted_shot_id
+                        .expect("predicted advance filters to declaration-authorized projectiles"),
                 });
             }
         },
@@ -425,7 +430,7 @@ mod tests {
                     owner_pawn,
                     owner_weapon,
                     spawned: true,
-                    shot_id: 0,
+                    predicted_shot_id: None,
                 },
             )
             .expect("projectile component attaches");
@@ -463,25 +468,25 @@ mod tests {
         let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
 
         advance_once(&registry, 1.0);
-        assert_eq!(
-            registry
-                .borrow()
-                .get_component::<HealthComponent>(target)
-                .expect("target remains live")
-                .current,
-            20.0,
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!(
+            (current - 20.0).abs() <= f32::EPSILON,
             "the spawned marker forbids a fire-pass impact"
         );
         assert!(registry.borrow().exists(projectile));
 
         advance_once(&registry, 1.0);
-        assert_eq!(
-            registry
-                .borrow()
-                .get_component::<HealthComponent>(target)
-                .expect("target remains live")
-                .current,
-            15.0,
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!(
+            (current - 15.0).abs() <= f32::EPSILON,
             "damage lands only on the later impact pass"
         );
         assert!(!registry.borrow().exists(projectile));
@@ -511,14 +516,12 @@ mod tests {
         advance_once(&registry, 1.0);
         advance_once(&registry, 1.0);
 
-        assert_eq!(
-            registry
-                .borrow()
-                .get_component::<HealthComponent>(target)
-                .expect("target remains live")
-                .current,
-            20.0
-        );
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!((current - 20.0).abs() <= f32::EPSILON);
         assert!(!registry.borrow().exists(projectile));
     }
 
@@ -535,13 +538,13 @@ mod tests {
         advance_once(&registry, 1.0);
         advance_once(&registry, 1.0);
 
-        assert_eq!(
-            registry
-                .borrow()
-                .get_component::<HealthComponent>(target)
-                .expect("target remains live")
-                .current,
-            15.0,
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!(
+            (current - 15.0).abs() <= f32::EPSILON,
             "the swept width should reach the expanded hitbox"
         );
         assert!(!registry.borrow().exists(projectile));
@@ -701,7 +704,7 @@ mod tests {
             .get_component::<ProjectileComponent>(projectile)
             .expect("projectile component attaches")
             .clone();
-        component.shot_id = 77;
+        component.predicted_shot_id = Some(0);
         registry
             .borrow_mut()
             .set_component(projectile, component)
@@ -725,20 +728,20 @@ mod tests {
         assert_eq!(resolutions.len(), 1);
         match &resolutions[0] {
             PredictedProjectileResolution::Impact { shot_id, impact } => {
-                assert_eq!(*shot_id, 77);
+                assert_eq!(*shot_id, 0);
                 assert_eq!(impact.target, Some(target));
             }
             PredictedProjectileResolution::Expired { .. } => {
                 panic!("the target contact must declare an impact, not expiry")
             }
         }
-        assert_eq!(
-            registry
-                .borrow()
-                .get_component::<HealthComponent>(target)
-                .expect("target remains live")
-                .current,
-            20.0,
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!(
+            (current - 20.0).abs() <= f32::EPSILON,
             "connected-client prediction declares the hit; it never writes enemy Health"
         );
     }

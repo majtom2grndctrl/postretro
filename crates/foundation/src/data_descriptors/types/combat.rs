@@ -101,6 +101,18 @@ pub struct ProjectileTrailVisual {
     pub color: [f32; 3],
     #[serde(default)]
     pub spin_rate: f32,
+    #[serde(default)]
+    pub spin_animation: Option<ProjectileTrailSpinAnimation>,
+}
+
+/// Optional spin-rate tween for a projectile trail emitter. Projectile
+/// descriptors use camelCase authoring while the stored emitter component uses
+/// the equivalent engine-side shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileTrailSpinAnimation {
+    pub duration: f32,
+    pub rate_curve: Vec<f32>,
 }
 
 const fn default_projectile_sprite_size() -> f32 {
@@ -264,6 +276,14 @@ impl WeaponDescriptor {
         }
         match (self.resolution, self.projectile.as_ref()) {
             (ResolutionMode::Projectile, Some(projectile)) => {
+                if self.pellet_count != 1 {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.weapon.pelletCount` must be exactly 1 when `components.weapon.resolution` is `projectile`, got {}",
+                            self.pellet_count
+                        ),
+                    });
+                }
                 validate_projectile_descriptor(projectile)?;
             }
             (ResolutionMode::Projectile, None) => {
@@ -450,6 +470,21 @@ fn validate_projectile_descriptor(
                 });
             }
         }
+        if let Some(animation) = trail.spin_animation.as_ref() {
+            if !animation.duration.is_finite() || animation.duration <= 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.trail.spinAnimation.duration` must be a finite value > 0.0, got {}",
+                        animation.duration
+                    ),
+                });
+            }
+            if animation.rate_curve.is_empty() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: "`components.weapon.projectile.visual.trail.spinAnimation.rateCurve` must be non-empty".to_string(),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -512,7 +547,8 @@ fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
 
 /// Authored health component preset attached to an entity type descriptor.
 /// `max` is the entity's hit-point ceiling; the optional `hitbox` makes the
-/// entity hitscan-targetable (one world-aligned AABB, fixed per archetype).
+/// entity a hitscan and swept-projectile target (one world-aligned AABB, fixed
+/// per archetype).
 /// Wire keys are camelCase. Runtime data-archetype spawn materializes this into
 /// a health component with `current == max`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -662,12 +698,29 @@ mod tests {
     }
 
     #[test]
+    fn projectile_resolution_requires_exactly_one_pellet() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+        descriptor.pellet_count = 2;
+
+        let error = descriptor
+            .validate()
+            .expect_err("projectiles resolve one direct impact");
+        let DescriptorError::InvalidShape { reason } = error else {
+            panic!("expected InvalidShape");
+        };
+        assert!(reason.contains("pelletCount"), "{reason}");
+        assert!(reason.contains("exactly 1"), "{reason}");
+    }
+
+    #[test]
     fn projectile_visual_and_trail_validation_name_the_invalid_field() {
         let mut descriptor = weapon_descriptor(None);
         descriptor.resolution = ResolutionMode::Projectile;
         descriptor.projectile = Some(projectile_descriptor());
 
-        let invalid_shapes: [(&str, fn(&mut ProjectileDescriptor)); 7] = [
+        let invalid_shapes: [(&str, fn(&mut ProjectileDescriptor)); 9] = [
             ("body.sprite", |projectile| {
                 let ProjectileBodyVisual::Sprite { sprite, .. } = &mut projectile.visual.body
                 else {
@@ -710,6 +763,24 @@ mod tests {
                     ..valid_projectile_trail()
                 });
             }),
+            ("spinAnimation.duration", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    spin_animation: Some(ProjectileTrailSpinAnimation {
+                        duration: 0.0,
+                        rate_curve: vec![0.0, 1.0],
+                    }),
+                    ..valid_projectile_trail()
+                });
+            }),
+            ("spinAnimation.rateCurve", |projectile| {
+                projectile.visual.trail = Some(ProjectileTrailVisual {
+                    spin_animation: Some(ProjectileTrailSpinAnimation {
+                        duration: 1.0,
+                        rate_curve: Vec::new(),
+                    }),
+                    ..valid_projectile_trail()
+                });
+            }),
         ];
 
         for (field, mutate) in invalid_shapes {
@@ -744,6 +815,22 @@ mod tests {
         assert!(descriptor.validate().is_ok());
     }
 
+    #[test]
+    fn projectile_trail_accepts_spin_animation_shape() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+        descriptor.projectile.as_mut().unwrap().visual.trail = Some(ProjectileTrailVisual {
+            spin_animation: Some(ProjectileTrailSpinAnimation {
+                duration: 0.75,
+                rate_curve: vec![0.0, 2.0, -1.0],
+            }),
+            ..valid_projectile_trail()
+        });
+
+        assert!(descriptor.validate().is_ok());
+    }
+
     fn valid_projectile_trail() -> ProjectileTrailVisual {
         ProjectileTrailVisual {
             sprite: "sprites/projectiles/trail.png".to_string(),
@@ -758,6 +845,7 @@ mod tests {
             opacity_over_lifetime: vec![0.8, 0.0],
             color: [1.0, 1.0, 1.0],
             spin_rate: 0.0,
+            spin_animation: None,
         }
     }
 

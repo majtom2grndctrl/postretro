@@ -658,10 +658,9 @@ fn resolve_client_hitscan(
             }
             hits
         }
-        // Connected-client projectile prediction is deliberately deferred to
-        // the later authority task. The local/host path materializes through
-        // the mutable weapon stage above; this existing hitscan-only path must
-        // not invent a same-frame hit declaration.
+        // Projectile flight is materialized by the connected client's mutable
+        // post-loop path. This ray-resolution helper emits no same-frame hit;
+        // the projectile declares its later collision or expiry instead.
         ResolutionMode::Projectile => Vec::new(),
     }
 }

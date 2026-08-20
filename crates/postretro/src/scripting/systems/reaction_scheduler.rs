@@ -72,7 +72,7 @@ pub(crate) fn register_reaction_control_primitives(
         // The real origin comes from the scheduler's scoped state, never from the
         // control arm (which has no `(trigger, player)` in scope): the trigger
         // residual drain sets `current_origin` per iteration; a nested wait in a
-        // resumed tail inherits its instance's origin from `resume_context`; every
+        // resumed tail inherits its instance's origin from `currently_resuming`; every
         // other fire (levelLoad / named / crossing / `fire`-seeded batch) resolves
         // sourceless. Re-deriving here would be wrong — see O54/O55/O57.
         let origin = scheduler.effective_origin(address, body_ordinal);
@@ -170,13 +170,31 @@ struct SchedulerState {
     /// interruptible instance may park only while it is — a player who entered and
     /// left within one frame produced a cancel before anything parked (O52/O60).
     current_origin_standing: bool,
-    /// Set while one landing instance's tail is being resumed and its `fire`
-    /// follow-ups dispatched (the RAII `ResumeGuard`). While live, an enrollment
-    /// under the resuming key is a nested re-park (keep depth, cap-exempt) and any
-    /// other enrollment is a `fire`-seeded child (depth + 1, cap-exempt). Carries
-    /// the resuming instance's key and depth. Mirrors how Task 5 scopes
-    /// `current_origin`.
-    resume_context: Option<(InstanceKey, u32)>,
+    /// Key of the landing instance whose resumed TAIL is currently being
+    /// dispatched — set by the RAII `ResumeGuard` and cleared before that
+    /// instance's per-instance deferred dispatch begins. A `wait` reached while it
+    /// is live is a nested re-park of the SAME instance (same key: keep depth,
+    /// cap-exempt — O19b/O57), and `effective_origin` reads it so a nested wait
+    /// inherits the instance's origin.
+    ///
+    /// Scoped NARROWER than `current_enrollment_depth` on purpose. A nested wait
+    /// re-enters synchronously through the control arm *while the tail is being
+    /// dispatched*, so this cell is live for it. A self-`fire` child re-enters
+    /// through the *deferred* dispatch, which runs AFTER the tail dispatch
+    /// completes and this cell has dropped — so it is a fresh fire-seeded child,
+    /// not a re-park. Holding this cell across the deferred dispatch too (its
+    /// original, wider scope) misread a self-`fire` body — whose child computes
+    /// the identical key as the resuming instance — as a re-park, so depth never
+    /// incremented and a self-fire loop ran unbounded (O28).
+    currently_resuming: Option<InstanceKey>,
+    /// Chain depth of the landing instance currently being drained — set by the
+    /// RAII `DepthGuard` for the WHOLE of that instance's drain, spanning both the
+    /// tail resume and the per-instance deferred dispatch. A `fire`-seeded child
+    /// enrolls during that deferred dispatch and inherits this depth + 1 (O64,
+    /// O65); a nested re-park keeps it unchanged. Wider scope than
+    /// `currently_resuming` — depth attribution must reach the deferred phase,
+    /// re-park detection must not.
+    current_enrollment_depth: Option<u32>,
 }
 
 /// Cloneable session-owned handle. `Rc<RefCell<_>>` is main-thread only, matching
@@ -246,12 +264,13 @@ impl ReactionScheduler {
     }
 
     /// Resolve the origin a `wait` enrollment should carry. During the residual
-    /// drain `current_origin` is set and wins. During a resumed tail's landing
-    /// drain `current_origin` is clear: a nested wait in the SAME body inherits
-    /// its instance's origin from `resume_context` (so its key matches and it
-    /// stays interruptible — O57), while a `fire`-seeded child under a different
-    /// address is sourceless. Everywhere else (levelLoad / named / crossing /
-    /// deferred batch) there is nothing set and the result is `None`.
+    /// drain `current_origin` is set and wins. While a resumed tail is being
+    /// dispatched `current_origin` is clear: a nested wait in the SAME body
+    /// inherits its instance's origin from `currently_resuming` (so its key
+    /// matches and it stays interruptible — O57). A `fire`-seeded child re-enters
+    /// through the later deferred dispatch, after `currently_resuming` has
+    /// dropped, so it resolves sourceless. Everywhere else (levelLoad / named /
+    /// crossing / deferred batch) there is nothing set and the result is `None`.
     pub(crate) fn effective_origin(
         &self,
         address: &str,
@@ -261,7 +280,7 @@ impl ReactionScheduler {
         if state.current_origin.is_some() {
             return state.current_origin;
         }
-        if let Some((resume_key, _)) = &state.resume_context {
+        if let Some(resume_key) = &state.currently_resuming {
             if resume_key.0 == address && resume_key.1 == body_ordinal {
                 return resume_key.2;
             }
@@ -335,27 +354,28 @@ impl ReactionScheduler {
             Some(false) => return,
             None => {}
         }
-        // Depth and cap accounting depend on whether we are inside a landing
-        // instance's resume drain (`resume_context` is set by `ResumeGuard`).
-        let (depth, cap_exempt) = match &state.resume_context {
-            Some((resume_key, resume_depth)) => {
-                if *resume_key == key {
-                    // A later wait in the SAME resumed body re-enrolls under the
-                    // same key: the instance continuing, not a new chain link.
-                    // Keep its depth and hold its slot — never cap-tested, so a
-                    // 300-wait body is not a chain and re-parks with the cap full
-                    // (O19b, O57).
-                    (*resume_depth, true)
-                } else {
-                    // A `fire`-seeded enrollment inside this instance's landing: a
-                    // new causal link at depth + 1. Cap-exempt too — depth, not
-                    // the instance cap, bounds `fire` chains (O64, O65).
-                    (resume_depth.saturating_add(1), true)
-                }
-            }
+        // Depth and cap accounting depend on which phase of a landing's drain we
+        // are in. `currently_resuming` is live ONLY while a tail is being
+        // dispatched (re-park detection); `current_enrollment_depth` is live for
+        // the whole landing including its deferred dispatch (depth attribution).
+        // The phase — not the key — is what distinguishes a nested re-park from a
+        // self-`fire` child, because a self-`fire` child computes the identical
+        // key as the resuming instance yet re-enters one phase later (O28).
+        let (depth, cap_exempt) = match (&state.currently_resuming, state.current_enrollment_depth) {
+            // A later wait in the SAME resumed body re-enrolls under the same key
+            // WHILE its tail is still being dispatched: the instance continuing,
+            // not a new chain link. Keep its depth and hold its slot — never
+            // cap-tested, so a 300-wait body is not a chain and re-parks with the
+            // cap full (O19b, O57).
+            (Some(resume_key), Some(resume_depth)) if *resume_key == key => (resume_depth, true),
+            // A `fire`-seeded enrollment during this instance's deferred dispatch
+            // (`currently_resuming` already dropped): a new causal link at
+            // depth + 1. Cap-exempt too — depth, not the instance cap, bounds
+            // `fire` chains (O64, O65).
+            (_, Some(parent_depth)) => (parent_depth.saturating_add(1), true),
             // A fresh trigger / levelLoad / named / crossing fire starts at depth
             // zero and is cap-tested (O28b).
-            None => (0, false),
+            (_, None) => (0, false),
         };
         if depth > MAX_REACTION_CHAIN_DEPTH {
             log::warn!(
@@ -482,13 +502,24 @@ impl ReactionScheduler {
             .collect()
     }
 
-    /// Set the resume context for one landing instance's drain, cleared on drop.
-    /// While it is live, `enroll` treats a same-key enrollment as a nested re-park
-    /// (keep depth, cap-exempt) and any other as a `fire`-seeded child at
-    /// depth + 1. Mirrors how Task 5 scopes `current_origin`.
-    fn begin_resume(&self, key: InstanceKey, depth: u32) -> ResumeGuard<'_> {
-        self.state.borrow_mut().resume_context = Some((key, depth));
+    /// Mark the instance whose resumed TAIL is being dispatched, cleared on drop.
+    /// Scoped to the tail dispatch ONLY (dropped before the deferred dispatch), so
+    /// `enroll` treats a same-key enrollment reached synchronously here as a
+    /// nested re-park (keep depth, cap-exempt) and `effective_origin` lets a
+    /// nested wait inherit the instance's origin. Mirrors how Task 5 scopes
+    /// `current_origin`.
+    fn begin_resume(&self, key: InstanceKey) -> ResumeGuard<'_> {
+        self.state.borrow_mut().currently_resuming = Some(key);
         ResumeGuard { scheduler: self }
+    }
+
+    /// Set the chain depth attributed to enrollments made during one landing
+    /// instance's drain, cleared on drop. Scoped to the WHOLE drain — both the
+    /// tail resume and the per-instance deferred dispatch — so a `fire`-seeded
+    /// child enrolled in the deferred phase inherits this depth + 1 (O64, O65).
+    fn begin_enrollment_depth(&self, depth: u32) -> DepthGuard<'_> {
+        self.state.borrow_mut().current_enrollment_depth = Some(depth);
+        DepthGuard { scheduler: self }
     }
 
     /// Resume every landing this frame through the shipped residual path — one
@@ -509,23 +540,36 @@ impl ReactionScheduler {
         script_ctx: &ScriptCtx,
     ) {
         for landing in self.take_landings() {
-            // The guard spans BOTH the tail's resume and its per-instance deferred
-            // dispatch, so a nested re-park and a `fire`-seeded child both see this
-            // instance's resume context.
-            let _resume = self.begin_resume(landing.key.clone(), landing.depth);
-            let (address, body_ordinal, _origin) = landing.key;
-            let follow_ups = fire_prepartitioned_reactions_with_sequences(
-                &[PrepartitionedReactionStep::Descriptor(
-                    address,
-                    body_ordinal,
-                    ReactionDescriptor::Sequence(landing.tail),
-                )],
-                sequence_registry,
-                reaction_registry,
-                system_registry,
-                script_ctx,
-                ResidualOrigin::ResumedTail,
-            );
+            // Depth attribution spans the WHOLE landing — the tail resume AND the
+            // per-instance deferred dispatch — so a `fire`-seeded child (which
+            // enrolls during the deferred dispatch) inherits this instance's
+            // depth + 1.
+            let _depth = self.begin_enrollment_depth(landing.depth);
+            let (address, body_ordinal, _origin) = landing.key.clone();
+            let follow_ups = {
+                // Re-park detection spans ONLY the tail resume. A nested `wait`
+                // re-enters synchronously here and is the same instance continuing
+                // (same key: keep depth, cap-exempt). This guard MUST drop before
+                // the deferred dispatch below: a body that `fire`s its own name
+                // re-enters during that dispatch with the identical key, and would
+                // be misread as a nested re-park — depth would never increment and
+                // a self-fire loop would run unbounded (O28). The narrower scope
+                // for re-park than for depth is the whole point of the split; see
+                // the `currently_resuming` field doc.
+                let _resume = self.begin_resume(landing.key);
+                fire_prepartitioned_reactions_with_sequences(
+                    &[PrepartitionedReactionStep::Descriptor(
+                        address,
+                        body_ordinal,
+                        ReactionDescriptor::Sequence(landing.tail),
+                    )],
+                    sequence_registry,
+                    reaction_registry,
+                    system_registry,
+                    script_ctx,
+                    ResidualOrigin::ResumedTail,
+                )
+            };
             dispatch_deferred_named_events_with_sequences(
                 follow_ups,
                 data_registry,
@@ -603,17 +647,32 @@ impl ReactionScheduler {
     }
 }
 
-/// Clears the scheduler's `resume_context` when one landing instance's drain
-/// finishes, exactly as Task 5 scopes `current_origin`. Holds a borrow of the
-/// scheduler struct (not a `RefCell` borrow), so `enroll` may freely borrow the
-/// interior state while the guard is alive.
+/// Clears the scheduler's `currently_resuming` cell when one landing instance's
+/// tail dispatch finishes — narrower than `DepthGuard`, so it drops before the
+/// deferred dispatch. Holds a borrow of the scheduler struct (not a `RefCell`
+/// borrow), so `enroll` may freely borrow the interior state while it is alive.
 struct ResumeGuard<'a> {
     scheduler: &'a ReactionScheduler,
 }
 
 impl Drop for ResumeGuard<'_> {
     fn drop(&mut self) {
-        self.scheduler.state.borrow_mut().resume_context = None;
+        self.scheduler.state.borrow_mut().currently_resuming = None;
+    }
+}
+
+/// Clears the scheduler's `current_enrollment_depth` cell when one landing
+/// instance's whole drain finishes — wider than `ResumeGuard`, spanning the tail
+/// resume and the per-instance deferred dispatch. Holds a borrow of the scheduler
+/// struct (not a `RefCell` borrow), so `enroll` may freely borrow the interior
+/// state while it is alive.
+struct DepthGuard<'a> {
+    scheduler: &'a ReactionScheduler,
+}
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        self.scheduler.state.borrow_mut().current_enrollment_depth = None;
     }
 }
 
@@ -895,11 +954,19 @@ mod tests {
         }
         assert_eq!(scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
         {
-            let _resume = scheduler.begin_resume(resuming_key.clone(), 3);
-            // Same key: nested re-park — depth stays 3, cap-exempt.
-            scheduler.enroll("body", 0, None, vec![step(2)], 5, false);
-            assert_eq!(scheduler.instance_depth(&resuming_key), Some(3));
-            // Different key: fire-seeded child at depth 4, cap-exempt.
+            // Depth attribution spans the whole landing drain.
+            let _depth = scheduler.begin_enrollment_depth(3);
+            {
+                // Re-park detection is live only during the tail dispatch. A
+                // same-key enrollment here is a nested re-park — depth stays 3,
+                // cap-exempt.
+                let _resume = scheduler.begin_resume(resuming_key.clone());
+                scheduler.enroll("body", 0, None, vec![step(2)], 5, false);
+                assert_eq!(scheduler.instance_depth(&resuming_key), Some(3));
+            }
+            // The tail dispatch is over; the deferred dispatch runs with only the
+            // depth scope live. A different-key `fire`-seeded child here inherits
+            // depth + 1 = 4, cap-exempt.
             scheduler.enroll("child", 0, None, vec![step(3)], 5, false);
             assert_eq!(
                 scheduler.instance_depth(&("child".to_string(), 0, None)),
@@ -922,9 +989,10 @@ mod tests {
     #[test]
     fn fire_seeded_child_past_max_chain_depth_is_dropped() {
         let scheduler = enabled_scheduler();
-        let _resume =
-            scheduler.begin_resume(("loop".to_string(), 0, None), MAX_REACTION_CHAIN_DEPTH);
-        // A different key at depth + 1 = MAX + 1 > MAX: dropped.
+        // A `fire`-seeded child enrolls during the deferred dispatch, when only
+        // the depth scope is live (the re-park guard has dropped).
+        let _depth = scheduler.begin_enrollment_depth(MAX_REACTION_CHAIN_DEPTH);
+        // depth + 1 = MAX + 1 > MAX: dropped.
         scheduler.enroll("child", 0, None, vec![step(1)], 5, false);
         assert_eq!(
             scheduler.instance_depth(&("child".to_string(), 0, None)),
@@ -1340,9 +1408,11 @@ mod tests {
         for ordinal in 0..MAX_PENDING_REACTION_INSTANCES {
             scheduler.enroll("filler", ordinal, None, vec![step(1)], 5, false);
         }
-        // The instance keyed (R, 2, (t,p)) at depth 4 is resuming.
-        let _resume = scheduler.begin_resume(key.clone(), 4);
-        // The nested wait's control arm resolves the origin from the resume context.
+        // The instance keyed (R, 2, (t,p)) at depth 4 is resuming its tail: both
+        // scopes are live during the tail dispatch, where a nested wait re-enters.
+        let _depth = scheduler.begin_enrollment_depth(4);
+        let _resume = scheduler.begin_resume(key.clone());
+        // The nested wait's control arm resolves the origin from `currently_resuming`.
         let resolved = scheduler.effective_origin("R", 2);
         assert_eq!(resolved, Some((t, p)), "nested wait inherits the instance origin");
         scheduler.enroll("R", 2, resolved, vec![step(9)], 5, true);
@@ -1365,12 +1435,14 @@ mod tests {
     fn body_ordinal_survives_landing() {
         let scheduler = enabled_scheduler();
         {
-            let _resume = scheduler.begin_resume(("S".to_string(), 0, None), 0);
+            let _depth = scheduler.begin_enrollment_depth(0);
+            let _resume = scheduler.begin_resume(("S".to_string(), 0, None));
             let resolved = scheduler.effective_origin("S", 0);
             scheduler.enroll("S", 0, resolved, vec![step(1)], 5, false);
         }
         {
-            let _resume = scheduler.begin_resume(("S".to_string(), 1, None), 0);
+            let _depth = scheduler.begin_enrollment_depth(0);
+            let _resume = scheduler.begin_resume(("S".to_string(), 1, None));
             let resolved = scheduler.effective_origin("S", 1);
             scheduler.enroll("S", 1, resolved, vec![step(2)], 5, false);
         }

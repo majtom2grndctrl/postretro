@@ -345,30 +345,18 @@ fn each_landing_gets_its_own_independent_hop_budget() {
 // O28: a self-retriggering wait `R = [x, wait(N), fire(R)]` must terminate at
 // `MAX_REACTION_CHAIN_DEPTH` with a single warning naming the reaction.
 //
-// PRODUCTION BUG (confirmed by running this test — see the final report for
-// the full writeup): it does not terminate. `ReactionScheduler::effective_origin`
-// and `enroll`'s depth/cap-exemption logic key the "is this a nested wait in
-// the SAME resumed body" test purely on `(address, body_ordinal)` matching
-// `resume_context`. For a body that `fire()`s ITS OWN name, the re-entrant
-// dispatch (reached via `dispatch_deferred_named_events_with_sequences` while
-// the landing's `resume_context` is still live) computes the IDENTICAL
-// `(address, body_ordinal)` as the instance that just landed, so it is
-// misclassified as a continuation of that SAME instance rather than a fresh
-// `fire`-seeded child — depth never increments and the chain runs unbounded.
-// Verified empirically: past 276 self-fire cycles with no depth-cap warning
-// ever logged (see the removed `#[ignore]` reason below to reproduce).
-// Implicated: `crates/postretro/src/scripting/systems/reaction_scheduler.rs`,
-// `ReactionScheduler::effective_origin` and the `resume_key == key` branch in
-// `ReactionScheduler::enroll`. Not fixed here — Task 7 does not edit
-// production/scheduler logic; reported to the coordinator instead.
+// Regression: the scheduler once held one `resume_context` cell across BOTH a
+// landing's tail dispatch AND its per-instance deferred dispatch, and classified
+// a nested re-park vs a `fire`-seeded child by matching `(address, body_ordinal)`
+// against it. A body that `fire()`s its own name re-enters during the deferred
+// dispatch with the IDENTICAL key as the resuming instance, so it was misread as
+// a nested same-body re-park (depth kept, cap-exempt) rather than a fresh
+// fire-seeded child — depth never incremented and the loop ran unbounded. The fix
+// split the cell in two, scoping re-park detection (`currently_resuming`) to the
+// tail dispatch only while depth attribution (`current_enrollment_depth`) spans
+// both, so a self-`fire` child re-entering one phase later is correctly a child.
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "confirmed production bug: a literal self-fire (`R = [.., wait, fire(R)]`) shares \
-            its resumed instance's (address, body_ordinal) with resume_context, so it is \
-            misclassified as a nested same-body wait instead of a fire-seeded child — depth \
-            never increments and MAX_REACTION_CHAIN_DEPTH is never reached. Un-ignore once \
-            ReactionScheduler::effective_origin/enroll distinguish the two cases. See the E18 \
-            Task 7 report for the full trace."]
 fn self_retriggering_wait_terminates_at_max_chain_depth() {
     let mut fx = Fixture::new();
     let target = fx.spawn_entity();

@@ -464,6 +464,8 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         "spawner",
         "armTrigger",
         "disarmTrigger",
+        "wait",
+        "fire",
         "scopeReactions",
         "defineEntity",
         "defineMod",

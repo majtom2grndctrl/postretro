@@ -373,6 +373,17 @@ impl TriggerBindingTable {
         &self.bound_edges
     }
 
+    /// Register `(trigger, edge)` as a bound edge without adding any command or
+    /// residual work. E18 V5 uses this to derive the paired Exit edge for an
+    /// interruptible wait whose trigger authored no `on_exit` KVP: without the
+    /// edge in `bound_edges`, the Exit arm of `run_authoritative_tick_with_dispatch`
+    /// `continue`s past it and the wait's cancel source is silently consumed.
+    /// `bind_event` cannot serve — it returns early when there is no command or
+    /// step work, before the only other `bound_edges` inserter runs.
+    pub(crate) fn bind_edge_only(&mut self, trigger: EntityId, edge: TriggerEventEdge) {
+        self.bound_edges.insert((trigger, edge));
+    }
+
     pub(crate) fn execute(
         &self,
         trigger: EntityId,

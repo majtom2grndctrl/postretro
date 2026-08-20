@@ -46,6 +46,11 @@ const APP_DRAIN_DISPATCH_INPUTS: [(&str, IrType); 1] = [("@rising", IrType::Bool
 /// serializing its JSON on every fire.
 #[derive(Debug)]
 struct SystemSetStateBinding {
+    /// The reaction name this binding was composed from. Carried so install-time
+    /// validation (E18 V4b) can answer "does the reaction a `fire` step targets
+    /// read a seeded dispatch input" from this precomputed table rather than
+    /// re-walking `BoundProgram.root` against a name list that can go stale.
+    name: String,
     slot: String,
     value: serde_json::Value,
     program: Option<BoundProgram<DispatchScope>>,
@@ -115,6 +120,7 @@ impl SystemReactionIrBindings {
                 );
                 if is_ir_node(&args.value) {
                     self.bindings.push(SystemSetStateBinding {
+                        name: reaction.name.clone(),
                         slot: args.slot,
                         value: args.value,
                         program: None,
@@ -136,6 +142,7 @@ impl SystemReactionIrBindings {
             // identity is known-invalid, while a missing entry is genuinely
             // unknown or stale and remains worth diagnosing at the drain.
             let mut binding = SystemSetStateBinding {
+                name: reaction.name.clone(),
                 slot: args.slot,
                 value: args.value,
                 program: None,
@@ -241,6 +248,18 @@ impl SystemReactionIrBindings {
         self.rejected_literals
             .iter()
             .any(|binding| binding.slot == slot && binding.value.eq(value))
+    }
+
+    /// Each `setState` binding's reaction name paired with the dispatch inputs its
+    /// bound program reads. E18 install validation (V4b) consumes this to reject a
+    /// `fire` step whose target is a system-targeted `setState` that reads a seeded
+    /// dispatch input (e.g. `@rising`) — such a target has no fire context on the
+    /// app drain, so firing it from a sequence is malformed. Reads the precomputed
+    /// `required_dispatch_inputs` rather than re-walking the IR.
+    pub(crate) fn reaction_dispatch_inputs(&self) -> impl Iterator<Item = (&str, &[String])> {
+        self.bindings
+            .iter()
+            .map(|binding| (binding.name.as_str(), binding.required_dispatch_inputs.as_slice()))
     }
 }
 

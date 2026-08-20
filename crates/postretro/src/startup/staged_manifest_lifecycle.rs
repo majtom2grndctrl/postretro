@@ -189,9 +189,34 @@ impl App {
                         .borrow_mut()
                         .recompose_active_sets(&self.active_level_tags);
                 }
+                // E18 Pass A re-runs after the recompose (which rebuilds
+                // `DataRegistry.reactions` from retained originals, erasing a
+                // prior in-place drop) and BEFORE the trigger binder rebuild, so
+                // a body Pass A rejects is not bound below (O40).
+                if let Some(session) = self.session.as_ref() {
+                    let script_ctx = session.scripting.script_ctx.clone();
+                    crate::startup::reaction_validation::validate_reaction_bodies_pass_a(
+                        &script_ctx,
+                    );
+                }
                 self.rebuild_active_reaction_subscribers();
                 self.rebuild_active_system_reaction_bindings();
                 self.rebuild_active_trigger_bindings();
+                // E18 Pass B re-runs after BOTH binder rebuilds: it reads the
+                // freshly-rebuilt system-reaction bindings (V4b) and derives Exit
+                // edges (V5) into the freshly-rebuilt `self.trigger_bindings`.
+                // `mem::take` isolates the mutable `trigger_bindings` borrow from
+                // the shared session borrow the pass also needs.
+                let mut trigger_bindings = std::mem::take(&mut self.trigger_bindings);
+                if let Some(session) = self.session.as_ref() {
+                    let script_ctx = session.scripting.script_ctx.clone();
+                    crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
+                        &script_ctx,
+                        &mut trigger_bindings,
+                        &session.scripting.system_reaction_ir_bindings,
+                    );
+                }
+                self.trigger_bindings = trigger_bindings;
             }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile.

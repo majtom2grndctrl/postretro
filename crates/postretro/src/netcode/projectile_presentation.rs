@@ -175,10 +175,7 @@ fn local_projectile_presentation_source(
     registry: &EntityRegistry,
     projectile_id: EntityId,
 ) -> Option<(Transform, String)> {
-    let transform = registry
-        .get_component::<Transform>(projectile_id)
-        .ok()?
-        .clone();
+    let transform = *registry.get_component::<Transform>(projectile_id).ok()?;
     let projectile = registry
         .get_component::<ProjectileComponent>(projectile_id)
         .ok()?;

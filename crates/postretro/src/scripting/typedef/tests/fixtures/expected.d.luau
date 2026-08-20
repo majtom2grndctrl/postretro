@@ -244,10 +244,87 @@ export type TouchMode =
   --- Require an explicit use press while overlapping before touch policy can take the item.
   | "press"
 
---- Valid values: `hitscan`.
+--- Valid values: `hitscan`, `projectile`.
 export type ResolutionMode =
   --- Resolve instantly against the static-world collision ray.
   "hitscan"
+  --- Launch a straight-line projectile that resolves a direct impact on a later simulation pass.
+  | "projectile"
+
+--- Descriptor-owned tuning for a straight-line direct-impact projectile. Required on a weapon whose `resolution` is `projectile`; these fields are never FGD KVP overrides.
+export type ProjectileDescriptor = {
+  --- Launch speed in metres per second. Must be finite and > 0.
+  speed: number,
+  --- Swept-sphere collision radius in metres. Must be finite and >= 0.
+  radius: number,
+  --- Maximum flight time in milliseconds. Must be finite and > 0; weapon range remains a second travel cap.
+  lifetimeMs: number,
+  --- Required presentation-only body and optional trail. It never gates impact resolution.
+  visual: ProjectileVisual,
+}
+
+--- Presentation attached when a projectile launches. A body is required; the optional trail is cosmetic.
+export type ProjectileVisual = {
+  --- Required discriminated projectile body.
+  body: ProjectileBodyVisual,
+  --- Optional billboard-emitter trail configuration.
+  trail: ProjectileTrailVisual?,
+}
+
+--- Sprite-body payload for `ProjectileBodyVisual`.
+export type ProjectileSpriteBodyVisual = {
+  --- Content-relative sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.
+  sprite: string,
+  --- Billboard size in metres. Must be finite and > 0; defaults to 0.35.
+  size: number?,
+  --- Billboard opacity. Must be finite; defaults to 1.
+  opacity: number?,
+  --- Billboard rotation in radians. Must be finite; defaults to 0.
+  rotation: number?,
+  --- Linear RGB tint. Each value must be finite; defaults to white.
+  tint: {number}?,
+}
+
+--- Rigid model-body payload for `ProjectileBodyVisual`.
+export type ProjectileModelBodyVisual = {
+  --- Content-relative glTF model path. Must be non-empty, use forward slashes, and contain no parent traversal.
+  model: string,
+}
+
+--- Required projectile body. `kind` selects exactly one presentation form.
+export type ProjectileBodyVisual =
+  --- Billboard sprite body.
+  (ProjectileSpriteBodyVisual & { kind: "sprite" })
+  --- Rigid glTF model body.
+  | (ProjectileModelBodyVisual & { kind: "model" })
+
+--- Optional billboard-emitter trail attached to a projectile. It is presentation-only and uses the emitter component's authored bounds.
+export type ProjectileTrailVisual = {
+  --- Content-relative trail sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.
+  sprite: string,
+  --- Continuous particle spawn rate per second. Must be finite and >= 0; defaults to 30.
+  rate: number?,
+  --- Particle lifetime in seconds. Must be finite and > 0; defaults to 0.4.
+  lifetime: number?,
+  --- Optional one-time particle count emitted when the projectile spawns.
+  burst: number?,
+  --- Random angular spread in radians. Must be finite and >= 0; defaults to 0.
+  spread: number?,
+  --- Initial particle velocity in metres per second. Each value must be finite; defaults to zero.
+  velocity: {number}?,
+  --- Signed gravity multiplier control. Must be finite; defaults to 0.
+  buoyancy: number?,
+  --- Particle drag. Must be finite and >= 0; defaults to 0.
+  drag: number?,
+  --- Non-empty finite billboard-size curve; defaults to a short fade-out curve.
+  sizeOverLifetime: {number}?,
+  --- Non-empty finite opacity curve; defaults to a short fade-out curve.
+  opacityOverLifetime: {number}?,
+  --- Linear RGB particle tint. Each value must be finite; defaults to white.
+  color: {number}?,
+  --- Signed particle rotation rate. Must be finite; defaults to 0.
+  spinRate: number?,
+}
 
 --- Valid values: `magazine`, `perShell`.
 export type ReloadStyle =
@@ -285,14 +362,16 @@ export type WeaponDescriptor = {
   pelletCount: number?,
   --- Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).
   spreadDegrees: number?,
-  --- Maximum hitscan distance in metres. Must be finite and > 0.
+  --- Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0.
   range: number,
   --- Minimum interval between shots in milliseconds. Must be finite and > 0.
   fireRateMs: number,
   --- Semi or automatic input gate.
   fireMode: FireMode,
-  --- Shot resolution mode. Currently supports hitscan only.
+  --- Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block.
   resolution: ResolutionMode,
+  --- Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.
+  projectile: ProjectileDescriptor?,
   --- Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.
   creditSource: string?,
   --- Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.

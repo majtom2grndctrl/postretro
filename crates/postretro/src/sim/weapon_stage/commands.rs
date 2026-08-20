@@ -14,10 +14,14 @@ use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::ProjectileBodyVisual;
+use postretro_foundation::{ProjectileBodyVisual, ResolutionMode};
 
-use super::super::{OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand};
+use super::super::{
+    OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand,
+    RemoteProjectilePresentationLaunch,
+};
 use super::impact::apply_authorized_weapon_impact_damage;
 use super::machine::tick_weapon_machine;
 use super::state::{
@@ -29,6 +33,7 @@ pub(in crate::sim) struct LocalWeaponCommandResult {
     pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
     pub(in crate::sim) weapon_events: Vec<&'static str>,
     pub(in crate::sim) repointed_pawn: Option<EntityId>,
+    pub(in crate::sim) projectile_spawns: Vec<EntityId>,
     #[cfg(test)]
     pub(in crate::sim) weapon_impact_points: Vec<Vec3>,
 }
@@ -76,11 +81,13 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     tick_dt: f32,
 ) -> (
     Vec<OpenAuthorizedShot>,
+    Vec<RemoteProjectilePresentationLaunch>,
     Vec<ReloadDelivery>,
     Vec<&'static str>,
 ) {
     let mut registry = registry.borrow_mut();
     let mut authorized = Vec::new();
+    let mut projectile_presentations = Vec::new();
     let mut reload_deliveries = Vec::new();
     let mut weapon_events = Vec::new();
 
@@ -121,6 +128,43 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let range = effective.range;
         let pellet_count = effective.pellet_count as usize;
         let credit_source = effective.credit_source.to_string();
+        let projectile_presentation = matches!(effective.resolution, ResolutionMode::Projectile)
+            .then(|| {
+                let projectile = effective.projectile?.clone();
+                let transform = registry.get_component::<Transform>(remote.pawn).ok()?;
+                let movement = registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(remote.pawn)
+                    .ok()?;
+                let yaw = remote.command.movement.facing_yaw;
+                let pitch = remote.aim_pitch;
+                if !yaw.is_finite() || !pitch.is_finite() {
+                    return None;
+                }
+                let direction = Vec3::new(
+                    -yaw.sin() * pitch.cos(),
+                    pitch.sin(),
+                    -yaw.cos() * pitch.cos(),
+                );
+                let length_squared = direction.length_squared();
+                if !length_squared.is_finite() || length_squared <= 1.0e-12 {
+                    return None;
+                }
+                let descriptor_class = registry
+                    .get_component::<DescriptorProvenance>(weapon)
+                    .ok()?
+                    .canonical_name
+                    .clone();
+                (!descriptor_class.is_empty()).then_some(RemoteProjectilePresentationLaunch {
+                    owner_client_id: remote.owner_client_id,
+                    shot_id: remote.shot_id?,
+                    origin: transform.position + Vec3::Y * movement.capsule.eye_height,
+                    direction: direction / length_squared.sqrt(),
+                    range,
+                    descriptor_class,
+                    projectile,
+                })
+            })
+            .flatten();
         let _ = registry.set_component(weapon, weapon_component);
         match machine.authorization {
             WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
@@ -146,9 +190,17 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             },
             owner_client_id: remote.owner_client_id,
         });
+        if let Some(presentation) = projectile_presentation {
+            projectile_presentations.push(presentation);
+        }
     }
 
-    (authorized, reload_deliveries, weapon_events)
+    (
+        authorized,
+        projectile_presentations,
+        reload_deliveries,
+        weapon_events,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -291,12 +343,14 @@ pub(in crate::sim) fn run_local_weapon_command(
         }
     }
     let _ = registry.set_component(weapon_id, weapon_component);
+    let mut projectile_spawns = Vec::new();
     if let Some(pawn) = pawn {
         for launch in std::mem::take(&mut events.projectile_launches) {
             if let Some(projectile_id) = spawn_projectile(&mut registry, pawn, weapon_id, launch) {
                 events
                     .spawned
                     .push(weapon::ActivationOutcome::Spawned(projectile_id));
+                projectile_spawns.push(projectile_id);
             }
         }
     }
@@ -332,6 +386,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         reload_deliveries: machine.deliveries,
         weapon_events: events.event_names(),
         repointed_pawn,
+        projectile_spawns,
         #[cfg(test)]
         weapon_impact_points,
     }

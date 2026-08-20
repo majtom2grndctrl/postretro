@@ -69,6 +69,9 @@ pub(crate) enum NetEndpoint {
         /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
         /// and retires entries from this store.
         open_shots: OpenAuthorizedShots,
+        /// Presentation-only projectile copies for remote observers. Their flight
+        /// state is host-local; clients receive only Transform + descriptor class.
+        projectile_presentations: projectile_presentation::HostProjectilePresentations,
         /// E16 client HIT declarations received before the matching fixed-sim FIRE
         /// authorization has opened its shot. Flushed after host weapon simulation
         /// records authorized shots, so same-frame Input(FIRE)+HitDeclaration can
@@ -631,6 +634,8 @@ impl NetEndpoint {
                     owners: MovementOwners::new(),
                     weapon_owners: WeaponOwners::new(),
                     open_shots: OpenAuthorizedShots::new(),
+                    projectile_presentations:
+                        projectile_presentation::HostProjectilePresentations::default(),
                     pending_hit_declarations: PendingHitDeclarations::new(),
                     weaponless_fire_logged: std::collections::HashSet::new(),
                     host_pawn: None,
@@ -806,6 +811,7 @@ impl NetEndpoint {
             owners,
             weapon_owners,
             open_shots,
+            projectile_presentations,
             pending_hit_declarations,
             weaponless_fire_logged,
             host_pawn,
@@ -829,6 +835,7 @@ impl NetEndpoint {
         *owners = MovementOwners::new();
         *weapon_owners = WeaponOwners::new();
         *open_shots = OpenAuthorizedShots::new();
+        *projectile_presentations = projectile_presentation::HostProjectilePresentations::default();
         *pending_hit_declarations = PendingHitDeclarations::new();
         weaponless_fire_logged.clear();
         *host_pawn = None;

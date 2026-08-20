@@ -262,6 +262,31 @@ pub(super) fn materialize_armed_remote_enemy(
     )
 }
 
+/// Materialize a host-replicated projectile observer copy from the shared firing
+/// weapon descriptor. This attaches only the body and optional trail presentation;
+/// in particular it never creates a `ProjectileComponent`, `Health`, or weapon state
+/// on a connected client.
+pub(super) fn materialize_armed_remote_projectile(
+    remote: &RemoteEntityMaterialize,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+) -> bool {
+    let Some(projectile) = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(&remote.entity_class))
+        .and_then(|descriptor| descriptor.weapon.as_ref())
+        .and_then(|weapon| weapon.projectile.as_ref())
+    else {
+        return false;
+    };
+    super::projectile_presentation::attach_projectile_visual_components(
+        registry,
+        remote.entity_id,
+        projectile,
+    );
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,7 +297,8 @@ mod tests {
     use postretro_entities::{ComponentKind, EntityId, MeshDescriptor, Transform};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, FireMode, GroundParams, NavAgentParams,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+        PlayerMovementDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
+        ProjectileTrailVisual, ProjectileVisual, ResolutionMode, SpeedParams, WeaponDescriptor,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -378,6 +404,56 @@ mod tests {
         descriptor
     }
 
+    fn projectile_weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
+        let mut descriptor = enemy_mesh_descriptor(classname);
+        descriptor.mesh = None;
+        descriptor.weapon = Some(WeaponDescriptor {
+            damage: 1.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
+            range: 16.0,
+            cooldown_ms: 1.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Projectile,
+            projectile: Some(ProjectileDescriptor {
+                speed: 8.0,
+                radius: 0.1,
+                lifetime_ms: 1_000.0,
+                visual: ProjectileVisual {
+                    body: ProjectileBodyVisual::Sprite {
+                        sprite: "sprites/projectiles/bolt.png".to_string(),
+                        size: 0.4,
+                        opacity: 1.0,
+                        rotation: 0.0,
+                        tint: [0.2, 0.8, 1.0],
+                    },
+                    trail: Some(ProjectileTrailVisual {
+                        sprite: "sprites/projectiles/trail.png".to_string(),
+                        rate: 20.0,
+                        lifetime: 0.3,
+                        burst: None,
+                        spread: 0.0,
+                        velocity: [0.0; 3],
+                        buoyancy: 0.0,
+                        drag: 0.0,
+                        size_over_lifetime: vec![0.2, 0.0],
+                        opacity_over_lifetime: vec![1.0, 0.0],
+                        color: [1.0; 3],
+                        spin_rate: 0.0,
+                    }),
+                },
+            }),
+            credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
+            resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
+        });
+        descriptor
+    }
+
     fn test_hit_zones(
         sockets: HashMap<String, postretro_model::gltf_loader::SocketBinding>,
     ) -> crate::scripting_systems::hit_zones::ModelHitZones {
@@ -470,6 +546,47 @@ mod tests {
                 Ok(false),
                 "remote enemy presentation must not attach {kind:?}"
             );
+        }
+    }
+
+    #[test]
+    fn materialize_armed_remote_projectile_attaches_visuals_without_gameplay_state() {
+        let descriptors = vec![projectile_weapon_descriptor("plasma_rifle")];
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+        let request = RemoteEntityMaterialize {
+            network_id: postretro_net::wire::NetworkId(12),
+            entity_id: id,
+            entity_class: "plasma_rifle".to_string(),
+            initial_animation_state: None,
+            active_weapon_archetype: None,
+            weapon_attachment_changed: false,
+        };
+
+        assert!(materialize_armed_remote_projectile(
+            &request,
+            &descriptors,
+            &mut reg,
+        ));
+        assert_eq!(
+            reg.get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(id)
+                .unwrap()
+                .sprite,
+            "sprites/projectiles/bolt.png"
+        );
+        assert_eq!(
+            reg.get_component::<postretro_entities::components::billboard_emitter::BillboardEmitterComponent>(id)
+                .unwrap()
+                .sprite,
+            "sprites/projectiles/trail.png"
+        );
+        for kind in [
+            ComponentKind::Projectile,
+            ComponentKind::Health,
+            ComponentKind::Weapon,
+            ComponentKind::PlayerMovement,
+        ] {
+            assert_eq!(reg.has_component_kind(id, kind), Ok(false));
         }
     }
 

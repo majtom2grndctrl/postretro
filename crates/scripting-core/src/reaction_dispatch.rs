@@ -1,5 +1,5 @@
 // Reaction dispatch: named events and per-tag kill progress.
-// See: context/lib/scripting.md §10
+// See: context/lib/scripting.md §12 (Reaction Dispatch Model)
 
 use std::collections::{HashMap, VecDeque};
 

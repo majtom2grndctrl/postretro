@@ -1,21 +1,5 @@
-// E18 closet-reveal set piece — timed, interruptible reveal (Task 6).
-//
-// The plate's enter edge dispatches one sequence: raise the alarm now (a
-// dispatched, system-targeted setState — never inlined as a sequence step,
-// since `bind_sequence_step` refuses `setState` outright), hold for 800ms
-// (interruptible — leaving the plate mid-wait cancels the door and the
-// enemies), then slam the door and release the enemies together. The release
-// stays a dispatched, tag-targeted Primitive reaction (E18-C: tag-targeted
-// primitives ride the Primitive path, never a sequence step), and delaying it
-// is load-bearing — the aggro gate *is* the containment, so releasing at the
-// enter edge would let enemies aggro through a still-closed door.
-//
-// The alarm write rides a `network: "shared"` store slot (closet-store.ts,
-// registered mod-globally in start-script.ts) so every connected client sees
-// the cue: each client's crossing watcher below turns the replicated write
-// into a local `setLightAnimation` pulse on the closet_alarm light, per
-// E18-A's atmosphere channel — a host-local presentation step would leave
-// remote players watching a door open with no cue.
+// Timed, interruptible closet reveal with a replicated alarm cue.
+// See: context/lib/scripting.md §12
 
 import { defineReaction, enemies, onTriggerEvent, world, fire, wait } from "postretro";
 import type { NamedReactionDescriptor } from "postretro";

@@ -31,13 +31,15 @@ pub enum TriggerPoolArm {
 pub enum ReactionDescriptor {
     Progress(ProgressDescriptor),
     Primitive(PrimitiveDescriptor),
-    /// Ordered list of (entity, sequenced-primitive, args) steps. Steps fire
-    /// in order at dispatch time; failures and stale entity IDs are logged as
-    /// warnings rather than aborting the sequence.
+    /// Ordered reaction steps. Entity-targeted primitive steps run in order;
+    /// `fire` queues a named dispatch, while `wait` parks the remaining tail and
+    /// ends the current drain. Primitive failures and stale entity IDs warn
+    /// without aborting later steps in the same segment.
     Sequence(Vec<SequenceStep>),
 }
 
-/// One step in a `sequence` reaction.
+/// One entity-targeted primitive step or `wait`/`fire` control step in a
+/// `sequence` reaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceStep {
     pub id: SequenceTarget,

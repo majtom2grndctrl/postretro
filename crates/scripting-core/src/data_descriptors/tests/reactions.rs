@@ -202,6 +202,56 @@ fn js_sequence_step_missing_args_defaults_to_null() {
     }
 }
 
+// Regression: QuickJS accepted control sentinels with arbitrary primitive
+// names, and an entity-targeted `wait`/`fire` reached the wrong dispatch arm.
+#[test]
+fn js_sequence_control_steps_require_canonical_target_primitive_pairs() {
+    let cases = [
+        (
+            r#"({ name: "bad", sequence: [{ id: "@wait", primitive: "ping", args: {} }] })"#,
+            "sentinel `@wait` requires primitive `wait`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: "@fire", primitive: "ping", args: {} }] })"#,
+            "sentinel `@fire` requires primitive `fire`",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: 65536, primitive: "wait", args: {} }] })"#,
+            "control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted",
+        ),
+        (
+            r#"({ name: "bad", sequence: [{ id: 65536, primitive: "fire", args: {} }] })"#,
+            "control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let error = eval_js(source, |ctx, value| {
+            named_reaction_from_js(ctx, value).unwrap_err()
+        });
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected QuickJS diagnostic for {source}: {error}",
+        );
+    }
+}
+
+#[test]
+fn js_sequence_control_steps_accept_only_the_canonical_pairs() {
+    let reaction = eval_js(
+        r#"({ name: "ok", sequence: [
+            { id: "@wait", primitive: "wait", args: { durationMs: 1 } },
+            { id: "@fire", primitive: "fire", args: { event: "next" } }
+        ] })"#,
+        |ctx, value| named_reaction_from_js(ctx, value).unwrap(),
+    );
+    let ReactionDescriptor::Sequence(steps) = reaction.descriptor else {
+        panic!("expected sequence");
+    };
+    assert!(matches!(steps[0].id, SequenceTarget::Wait));
+    assert!(matches!(steps[1].id, SequenceTarget::Fire));
+}
+
 #[test]
 fn js_empty_arrays_yield_empty_manifest() {
     let src = "({ reactions: [] })";
@@ -357,6 +407,54 @@ fn lua_sequence_reaction_deserializes() {
         }
         other => panic!("expected sequence, got {other:?}"),
     }
+}
+
+// Regression: Luau must enforce the same canonical control descriptor pairs as
+// QuickJS, including rejecting entity-targeted control primitives.
+#[test]
+fn lua_sequence_control_steps_require_canonical_target_primitive_pairs() {
+    let cases = [
+        (
+            r#"return { name = "bad", sequence = { { id = "@wait", primitive = "ping", args = {} } } }"#,
+            "sentinel `@wait` requires primitive `wait`",
+        ),
+        (
+            r#"return { name = "bad", sequence = { { id = "@fire", primitive = "ping", args = {} } } }"#,
+            "sentinel `@fire` requires primitive `fire`",
+        ),
+        (
+            r#"return { name = "bad", sequence = { { id = 65536, primitive = "wait", args = {} } } }"#,
+            "control primitive `wait` requires sentinel `@wait`; it cannot be entity-targeted",
+        ),
+        (
+            r#"return { name = "bad", sequence = { { id = 65536, primitive = "fire", args = {} } } }"#,
+            "control primitive `fire` requires sentinel `@fire`; it cannot be entity-targeted",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let error = eval_lua(source, |value| named_reaction_from_lua(value).unwrap_err());
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected Luau diagnostic for {source}: {error}",
+        );
+    }
+}
+
+#[test]
+fn lua_sequence_control_steps_accept_only_the_canonical_pairs() {
+    let reaction = eval_lua(
+        r#"return { name = "ok", sequence = {
+            { id = "@wait", primitive = "wait", args = { durationMs = 1 } },
+            { id = "@fire", primitive = "fire", args = { event = "next" } },
+        } }"#,
+        |value| named_reaction_from_lua(value).unwrap(),
+    );
+    let ReactionDescriptor::Sequence(steps) = reaction.descriptor else {
+        panic!("expected sequence");
+    };
+    assert!(matches!(steps[0].id, SequenceTarget::Wait));
+    assert!(matches!(steps[1].id, SequenceTarget::Fire));
 }
 
 #[test]

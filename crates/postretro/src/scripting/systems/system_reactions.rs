@@ -47,9 +47,9 @@ const APP_DRAIN_DISPATCH_INPUTS: [(&str, IrType); 1] = [("@rising", IrType::Bool
 #[derive(Debug)]
 struct SystemSetStateBinding {
     /// The reaction name this binding was composed from. Carried so install-time
-    /// validation (E18 V4b) can answer "does the reaction a `fire` step targets
-    /// read a seeded dispatch input" from this precomputed table rather than
-    /// re-walking `BoundProgram.root` against a name list that can go stale.
+    /// validation (E18 V4b) can include system-setState IR in its broader
+    /// descriptor-scope analysis without re-walking `BoundProgram.root` against
+    /// a name list that can go stale.
     name: String,
     slot: String,
     value: serde_json::Value,
@@ -251,10 +251,9 @@ impl SystemReactionIrBindings {
     }
 
     /// Each `setState` binding's reaction name paired with the dispatch inputs its
-    /// bound program reads. E18 install validation (V4b) consumes this to reject a
-    /// `fire` step whose target is a system-targeted `setState` that reads a seeded
-    /// dispatch input (e.g. `@rising`) — such a target has no fire context on the
-    /// app drain, so firing it from a sequence is malformed. Reads the precomputed
+    /// bound program reads. E18 install validation (V4b) combines this with
+    /// descriptor-level sentinel requirements when deciding whether a `fire`
+    /// target needs unavailable trigger-fire scope. Reads the precomputed
     /// `required_dispatch_inputs` rather than re-walking the IR.
     pub(crate) fn reaction_dispatch_inputs(&self) -> impl Iterator<Item = (&str, &[String])> {
         self.bindings.iter().map(|binding| {

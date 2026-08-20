@@ -1,6 +1,6 @@
 // E18 install-time validation of `wait`/`fire` reaction bodies (V1–V6) and the
 // V5 interruptible-wait Exit-edge derivation.
-// See: context/plans/in-progress/E18--timed-reaction-steps/index.md §Install validation
+// See: context/plans/done/E18--timed-reaction-steps/index.md §Install validation
 
 use std::collections::{HashMap, HashSet};
 
@@ -196,6 +196,61 @@ fn collect_enter_provenance(script_ctx: &ScriptCtx) -> EnterBindingProvenance {
     }
 }
 
+/// Collect reaction addresses that cannot be dispatched without a trigger-fire
+/// scope. The runtime descriptor graph is authoritative here: Luau and raw
+/// descriptor authors can bypass TypeScript's `Reaction<{}>` gate, and a
+/// string-valued `fire` target carries no static scope information.
+fn scoped_fire_targets(
+    script_ctx: &ScriptCtx,
+    system_bindings: &SystemReactionIrBindings,
+) -> HashMap<String, String> {
+    let mut targets = HashMap::new();
+
+    let data_registry = script_ctx.data_registry.borrow();
+    for reaction in &data_registry.reactions {
+        let requirement = match &reaction.descriptor {
+            ReactionDescriptor::Primitive(primitive) => primitive
+                .target
+                .as_deref()
+                .map(|target| format!("primitive target sentinel `{target}`")),
+            ReactionDescriptor::Sequence(steps) => {
+                steps
+                    .iter()
+                    .enumerate()
+                    .find_map(|(step_index, step)| match step.id {
+                        SequenceTarget::Activators => Some(format!(
+                            "sequence step {step_index} target sentinel `@activators`"
+                        )),
+                        SequenceTarget::FiredTrigger => Some(format!(
+                            "sequence step {step_index} target sentinel `@trigger`"
+                        )),
+                        SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire => {
+                            None
+                        }
+                    })
+            }
+            ReactionDescriptor::Progress(_) => None,
+        };
+        if let Some(requirement) = requirement {
+            targets.entry(reaction.name.clone()).or_insert(requirement);
+        }
+    }
+    drop(data_registry);
+
+    // Runtime setState IR is the remaining scoped descriptor shape. Reuse the
+    // binding table's precomputed input names so this analysis cannot drift from
+    // the evaluator's accepted IR tree.
+    for (name, inputs) in system_bindings.reaction_dispatch_inputs() {
+        if !inputs.is_empty() {
+            targets
+                .entry(name.to_string())
+                .or_insert_with(|| format!("runtime dispatch inputs {inputs:?}"));
+        }
+    }
+
+    targets
+}
+
 /// Pass B — trigger-coupled rejection rows (V2, V3, V4b). Like Pass A, this
 /// MUST run BEFORE `build_trigger_bindings`: dropping a reaction after the
 /// binder has run is a no-op for trigger-bound content, because
@@ -206,22 +261,17 @@ fn collect_enter_provenance(script_ctx: &ScriptCtx) -> EnterBindingProvenance {
 /// means the binder matches an inert `Sequence(vec![])` and binds nothing.
 /// Nothing here needs the built table: provenance comes from the same raw
 /// sources the binder reads (see [`collect_enter_provenance`]), and V4b reads
-/// the precomputed `required_dispatch_inputs` from `system_bindings`, which is
-/// built from the `DataRegistry` alone. Only the V5 derivation
+/// every scope-dependent descriptor shape plus precomputed system-IR dispatch
+/// inputs before any body is copied into a binding. Only the V5 derivation
 /// ([`derive_interruptible_wait_exit_edges`]) must follow the binder, because
 /// it inserts into the freshly built table.
 pub(crate) fn validate_trigger_coupled_pass_b(
     script_ctx: &ScriptCtx,
     system_bindings: &SystemReactionIrBindings,
 ) {
-    // Reactions whose bound system-`setState` program reads a seeded dispatch
-    // input (e.g. `@rising`). A `fire` step targeting one has no fire context on
-    // the app drain, so V4b rejects the reaction that fires it (at any position).
-    let scoped_fire_targets: HashSet<String> = system_bindings
-        .reaction_dispatch_inputs()
-        .filter(|(_, inputs)| !inputs.is_empty())
-        .map(|(name, _)| name.to_string())
-        .collect();
+    // A `fire` step runs from a contextless app drain. Its target therefore may
+    // not require either trigger target sentinels or seeded runtime inputs.
+    let scoped_fire_targets = scoped_fire_targets(script_ctx, system_bindings);
 
     let provenance = collect_enter_provenance(script_ctx);
 
@@ -234,17 +284,21 @@ pub(crate) fn validate_trigger_coupled_pass_b(
             };
             let name = &reaction.name;
 
-            // V4b: any `fire` step whose target reads a seeded dispatch input.
-            if let Some(step_index) = steps.iter().position(|step| {
-                matches!(step.id, SequenceTarget::Fire)
-                    && step
-                        .args
-                        .get("event")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|event| scoped_fire_targets.contains(event))
-            }) {
+            // V4b: any `fire` step whose target needs a dispatch scope. Find the
+            // exact target as well as the index so the diagnostic explains the
+            // descriptor shape that made a raw/string call invalid.
+            if let Some((step_index, event, requirement)) =
+                steps.iter().enumerate().find_map(|(step_index, step)| {
+                    if !matches!(step.id, SequenceTarget::Fire) {
+                        return None;
+                    }
+                    let event = step.args.get("event")?.as_str()?;
+                    let requirement = scoped_fire_targets.get(event)?;
+                    Some((step_index, event, requirement))
+                })
+            {
                 log::error!(
-                    "[Scripting] reaction `{name}` step {step_index}: `fire` targets a system reaction that reads fire-time dispatch context, which no resumed step has; dropping the reaction (V4b)"
+                    "[Scripting] reaction `{name}` step {step_index}: `fire` targets reaction `{event}`, which requires trigger-fire dispatch scope ({requirement}); a `fire` control step dispatches without that scope, so the reaction is dropped (V4b)"
                 );
                 rejects.push(index);
                 continue;
@@ -405,6 +459,19 @@ mod tests {
                 tag: None,
                 on_complete: None,
                 args: json!({ "slot": slot, "value": value }),
+            }),
+        }
+    }
+
+    fn activator_primitive(name: &str) -> NamedReaction {
+        NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "applyDamage".to_string(),
+                target: Some("@activators".to_string()),
+                tag: None,
+                on_complete: None,
+                args: json!({ "amount": 5.0 }),
             }),
         }
     }
@@ -737,6 +804,51 @@ mod tests {
         assert!(!is_dropped(&ctx, "reveal"));
     }
 
+    // Regression: V4b once considered only bound system-setState IR. A raw or
+    // Luau `fire("damageActivators")` then installed successfully and merely
+    // warn-skipped its primitive at the contextless app drain.
+    #[test]
+    fn v4b_drops_fire_of_primitive_sentinel_target() {
+        let ctx = ctx_with_reactions(vec![
+            activator_primitive("damageActivators"),
+            sequence("reveal", vec![fire_step("damageActivators")]),
+        ]);
+        let capture = LogCapture::start();
+        run_pass_b(&ctx);
+        capture.assert_logged_once(
+            log::Level::Error,
+            "requires trigger-fire dispatch scope (primitive target sentinel `@activators`)",
+        );
+        assert!(is_dropped(&ctx, "reveal"));
+    }
+
+    // Regression: a `fire` target can itself be a sequence whose entity-like
+    // target is supplied only by a trigger fire. Cover both opaque sequence
+    // target variants; neither may survive as a contextless nested dispatch.
+    #[test]
+    fn v4b_drops_fire_of_sequence_sentinel_target() {
+        for (sentinel, spelling) in [
+            (SequenceTarget::Activators, "@activators"),
+            (SequenceTarget::FiredTrigger, "@trigger"),
+        ] {
+            let ctx = ctx_with_reactions(vec![
+                sequence("scoped", vec![sentinel_step(sentinel)]),
+                sequence("reveal", vec![fire_step("scoped")]),
+            ]);
+            let capture = LogCapture::start();
+            run_pass_b(&ctx);
+            capture.assert_logged_once(
+                log::Level::Error,
+                &format!("sequence step 0 target sentinel `{spelling}`"),
+            );
+            assert!(is_dropped(&ctx, "reveal"));
+            assert!(
+                !is_dropped(&ctx, "scoped"),
+                "the scoped target remains valid for a direct trigger binding",
+            );
+        }
+    }
+
     // --- V5 (Pass B) --------------------------------------------------------
 
     // V5 end-to-end: an interruptible wait on an Enter-bound reaction derives the
@@ -1047,6 +1159,32 @@ mod tests {
         );
     }
 
+    // Regression: sentinel-scoped fire targets must be rejected before the
+    // trigger binder copies the pre-wait fire into a DeferredEvent.
+    #[test]
+    fn v4b_rejected_sentinel_fire_never_reaches_the_enter_residual() {
+        let ctx = ctx_with_reactions(vec![
+            activator_primitive("damageActivators"),
+            sequence(
+                "reveal",
+                vec![
+                    fire_step("damageActivators"),
+                    wait_step(json!(800), false),
+                    entity_step(1),
+                ],
+            ),
+        ]);
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+        let (commands, steps) = enter_execution(&table, &ctx, trigger);
+        assert_eq!(commands, 0);
+        assert!(
+            steps.is_none(),
+            "the scoped sentinel target cannot survive into a contextless DeferredEvent",
+        );
+    }
+
     // V4b's merged-residual variant, driven through the real drain: the
     // rejected reaction's `DeferredEvent` must be absent, so the drain chains
     // no `raiseAlarm` dispatch, while the innocent sibling still runs.
@@ -1141,6 +1279,32 @@ mod tests {
         assert!(
             steps.is_none(),
             "the rebuilt table is inert for the offender"
+        );
+    }
+
+    // Regression: staged recompose restores raw descriptor bodies, so the
+    // broadened V4b descriptor-scope analysis must rerun before the fresh
+    // binder just like the system-IR analysis does.
+    #[test]
+    fn staged_recompose_rejects_sentinel_scoped_fire_before_rebinding() {
+        let ctx = ctx_with_reactions(vec![
+            activator_primitive("damageActivators"),
+            sequence("reveal", vec![fire_step("damageActivators")]),
+        ]);
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
+
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+        assert!(enter_execution(&table, &ctx, trigger).1.is_none());
+
+        ctx.data_registry.borrow_mut().recompose_active_sets(&[]);
+        assert!(!is_dropped(&ctx, "reveal"));
+
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+        assert!(
+            enter_execution(&table, &ctx, trigger).1.is_none(),
+            "the staged binder never receives the restored scoped fire",
         );
     }
 }

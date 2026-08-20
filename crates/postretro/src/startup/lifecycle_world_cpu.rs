@@ -217,10 +217,11 @@ pub(crate) fn install_world_cpu(
         // commands/steps the drain never re-reads. Matches the staged-commit
         // order in `poll_staged_manifest_results`, so install and hot reload
         // agree on what the subscriber rebuild observes for a dropped body.
-        // V4b validates against a freshly-built `SystemReactionIrBindings`
-        // because the session's table is not rebuilt until after this installer
-        // returns; that later rebuild recomputes `required_dispatch_inputs`
-        // identically.
+        // V4b reads sentinel-scoped targets directly from the composed
+        // descriptors and runtime-IR inputs from a freshly built
+        // `SystemReactionIrBindings`. The session's table is not rebuilt until
+        // after this installer returns; that later rebuild recomputes the IR
+        // input metadata identically.
         crate::startup::reaction_validation::validate_reaction_bodies_pass_a(script_ctx);
         {
             let mut system_reaction_bindings =

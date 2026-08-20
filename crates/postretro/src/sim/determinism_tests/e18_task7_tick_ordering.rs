@@ -8,7 +8,7 @@
 // (`[note(presA), wait(ms), note(presB)]`, fired at install). Seeded at a fixed
 // `1.0/60.0` DT (`super::DT`), matching the harness's own tick length.
 //
-// See: context/plans/in-progress/E18--timed-reaction-steps/index.md — Ordering
+// See: context/plans/done/E18--timed-reaction-steps/index.md — Ordering
 // scenarios O13, O15, O25.
 
 use super::{SimFixture, SimHarness, SpawnOrder};
@@ -41,9 +41,8 @@ fn ticks_for(duration_ms: f64) -> u32 {
 // ---------------------------------------------------------------------------
 // O13: multi-tick frame, short wait. `[note(presA), wait(17), note(presB)]`
 // fired at install: presA runs in the install-time drain (before frame 1
-// exists); the tail lands no earlier than frame 2's drain, so authored order
-// across the wait always holds even though frame 2 delivers more ticks than
-// the wait needs.
+// exists); the tail lands at frame 1's drain after its second tick, so authored
+// order across the wait holds even when the first frame delivers multiple ticks.
 // ---------------------------------------------------------------------------
 #[test]
 fn multi_tick_frame_preserves_authored_order_across_a_short_wait() {
@@ -58,24 +57,13 @@ fn multi_tick_frame_preserves_authored_order_across_a_short_wait() {
         "presA already ran at install, before any frame"
     );
 
-    // Frame 1: three ticks. The instance was enrolled at frame-counter 0, and
-    // `frame()`'s `begin_frame()` runs at the END of the frame, so frame 1's
-    // own ticks still see counter 0 — the enrollment frame is skipped in full,
-    // however many ticks it delivers.
-    harness.frame(&[neutral(), neutral(), neutral()]);
-    assert_eq!(
-        harness.note_log(),
-        vec!["presA".to_string()],
-        "no advance during the enrollment frame, regardless of its tick count"
-    );
-
-    // Frame 2: three ticks, a 2-tick wait — lands mid-frame, not needing a
-    // third frame.
+    // Frame 1: `begin_frame()` runs after install and before these three ticks.
+    // The 2-tick wait expires mid-frame and lands at this frame's drain.
     harness.frame(&[neutral(), neutral(), neutral()]);
     assert_eq!(
         harness.note_log(),
         vec!["presA".to_string(), "presB".to_string()],
-        "the tail lands at frame 2's drain; authored order (presA before presB) holds"
+        "the tail lands at frame 1's drain; authored order (presA before presB) holds"
     );
 }
 
@@ -100,16 +88,9 @@ fn max_stall_frame_lands_a_countdown_that_expires_on_its_last_tick() {
     );
     assert_eq!(harness.note_log(), vec!["presA".to_string()]);
 
-    // Frame 1: skipped in full (enrollment frame), any tick count works —
-    // use the same 14-tick ceiling to also prove a max-size frame is not
-    // itself special-cased for the skip.
+    // The first post-install frame advances before its ticks. A full 14-tick
+    // stall frame expires the countdown on its last tick and lands at its drain.
     let max_stall_ticks: Vec<super::RecordedCommand> = (0..14).map(|_| neutral()).collect();
-    harness.frame(&max_stall_ticks);
-    assert_eq!(harness.note_log(), vec!["presA".to_string()]);
-
-    // Frame 2: a full 14-tick stall frame. The 14-tick countdown expires on
-    // the LAST tick of this frame and still lands at ITS drain — not
-    // stranded to a third frame.
     harness.frame(&max_stall_ticks);
     assert_eq!(
         harness.note_log(),
@@ -139,11 +120,8 @@ fn landing_order_is_deterministic_across_two_independent_runs() {
         for name in ["e", "d", "c", "b", "a"] {
             harness.enroll_for_test(name, 0, None, 1);
         }
-        // Frame 1 is skipped in full (enrolled at frame-counter 0, and
-        // `begin_frame()` runs at frame()'s END — see O61/O12); frame 2's
-        // single tick decrements the 1-tick countdown to zero and its drain
-        // resumes all five in one landing batch.
-        harness.frame(&[neutral()]);
+        // Frame 1 begins after these install-shaped enrollments; its single tick
+        // expires all five and its drain resumes them in one landing batch.
         harness.frame(&[neutral()]);
         harness.landed_order_for_test()
     }

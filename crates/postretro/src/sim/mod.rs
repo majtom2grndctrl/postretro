@@ -225,7 +225,7 @@ pub(crate) struct RemotePawnCommand {
 /// A host-only presentation launch for an accepted connected-client projectile
 /// fire. The authoritative hit remains client-declared; this is only the data the
 /// host needs to show that flight to observers through the existing snapshot path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RemoteProjectilePresentationLaunch {
     pub(crate) owner_client_id: u64,
     pub(crate) shot_id: ShotId,

@@ -266,12 +266,68 @@ defineEntity({
 | Field | Type | Description |
 |-------|------|-------------|
 | `damage` | `number` | Base damage payload per resolved shot. Must be finite and `>= 0.0`. |
-| `range` | `number` | Maximum hitscan distance in meters. Must be finite and `> 0.0`. |
+| `range` | `number` | Maximum hitscan distance in meters, or the second travel cap for a projectile. Must be finite and `> 0.0`. |
 | `fireRateMs` | `number` | Minimum interval between shots in milliseconds. Must be finite and `> 0.0`. |
 | `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
-| `resolution` | `"hitscan"` | Shot resolution mode. Hitscan is the supported mode today. |
+| `resolution` | `"hitscan" \| "projectile"` | Shot resolution mode. A projectile requires the descriptor-owned `projectile` block below. |
+| `projectile` | `ProjectileDescriptor` (conditional) | Required exactly when `resolution` is `"projectile"`; omit it for hitscan. This is descriptor-owned tuning, never an FGD KVP. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
 | `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1`; `reloadMs` defaults to `1000`; and `reloadStyle` defaults to `"magazine"`. With `"magazine"`, `reloadMs` times the complete reload; with `"perShell"`, it times one shell step. Omit the block for unlimited fire. |
+
+### Projectile weapons
+
+Projectile tuning belongs entirely to the weapon descriptor. Do not add map
+KVPs for speed, radius, lifetime, body, or trail. A projectile advances in a
+straight line, resolves damage only when it later contacts something, and ends
+at whichever arrives first: `range` distance or `lifetimeMs` time.
+
+```typescript
+weapon: {
+  damage: 36,
+  range: 128,
+  fireRateMs: 750,
+  fireMode: "semi",
+  resolution: "projectile",
+  projectile: {
+    speed: 40,          // metres/sec; finite and > 0
+    radius: 0.25,       // swept-sphere radius in metres; finite and >= 0
+    lifetimeMs: 4000,   // finite and > 0
+    visual: {
+      body: { kind: "model", model: "models/smg/model.gltf" },
+      trail: {
+        sprite: "smoke_puff/smoke_puff_00.png",
+        rate: 36,
+        lifetime: 0.6,
+        spread: 0.08,
+        velocity: [0, 0.2, 0],
+        buoyancy: 0.15,
+        drag: 0.4,
+        sizeOverLifetime: [0.18, 0.28, 0],
+        opacityOverLifetime: [0.65, 0.25, 0],
+      },
+    },
+  },
+}
+```
+
+`visual.body` is a required discriminated union. Use either a sprite body,
+`{ kind: "sprite", sprite: "projectiles/plasma_blue_orb.png" }`, or a rigid
+glTF body, `{ kind: "model", model: "models/rocket.gltf" }`. Sprite paths
+are relative to the mod's `textures/` directory; model paths are relative to
+the mod content root. Both must be non-empty portable forward-slash paths with
+no parent traversal. Sprite bodies additionally accept `size`, `opacity`,
+`rotation`, and `tint`; all have sensible defaults.
+
+`visual.trail` is optional. Its `sprite` follows the same texture-relative path
+rule. It accepts the billboard-emitter controls `rate`, `lifetime`, `burst`,
+`spread`, `velocity`, `buoyancy`, `drag`, `sizeOverLifetime`,
+`opacityOverLifetime`, `color`, and `spinRate`; omitted fields use the
+descriptor defaults. `rate`, `spread`, and `drag` are finite and non-negative;
+`lifetime` is finite and positive; the two curves must be non-empty and finite.
+`buoyancy` and `spinRate` are finite signed controls.
+
+The body and trail are presentation only. They make the flight visible but
+never decide whether a projectile contacts a target or applies damage.
 
 The authored `reloadMs` is the duration of one reload step: the whole reload
 under `"magazine"`, or one shell under `"perShell"`. Runtime systems read it

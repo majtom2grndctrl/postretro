@@ -1,6 +1,10 @@
 import { defineEntity, runtime } from "postretro";
 import { referencePistolEntity } from "./reference-pistol";
 import { referenceShotgunEntity } from "./reference-shotgun";
+import {
+  referencePlasmaBoltEntity,
+  referenceRocketEntity,
+} from "./reference-projectiles";
 
 export const playerEntity = defineEntity({
   canonicalName: "player",
@@ -14,7 +18,14 @@ export const playerEntity = defineEntity({
     // silently no-op. `max: 100` is the conventional full-health baseline.
     health: { max: 100 },
     inventory: {
-      loadout: [referenceShotgunEntity, referencePistolEntity],
+      // Projectile references live in the standard dev loadout, so any dev
+      // map can fire both the sprite-bolt and model-plus-trail variants.
+      loadout: [
+        referenceShotgunEntity,
+        referencePistolEntity,
+        referencePlasmaBoltEntity,
+        referenceRocketEntity,
+      ],
     },
     mesh: {
       model: "models/exo_red/model.gltf",

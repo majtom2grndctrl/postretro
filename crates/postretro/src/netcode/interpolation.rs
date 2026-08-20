@@ -599,6 +599,19 @@ impl RemoteInterpolationBuffer {
         self.buffers.get(&network_id)?.sample_at(target_tick)
     }
 
+    /// Newest recorded authoritative transform for `network_id`, if any sample
+    /// exists. The host-side delayed-presentation path (`netcode::host_presentation`)
+    /// reads this to restore a client pawn's authoritative pose before each fixed
+    /// tick, since the per-frame presentation write leaves the registry holding the
+    /// delayed pose (which the authoritative movement/serialize reads must not see).
+    pub(crate) fn newest_transform(&self, network_id: NetworkId) -> Option<Transform> {
+        self.buffers
+            .get(&network_id)?
+            .samples
+            .back()
+            .map(|sample| sample.transform)
+    }
+
     /// Newest finite pitch for a pre-time-sync held presentation. No render tick
     /// is required because the visible transform is still the newest applied pose.
     pub(crate) fn newest_aim_pitch(&self, network_id: NetworkId) -> Option<f32> {

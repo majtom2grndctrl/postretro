@@ -132,6 +132,13 @@ pub(crate) enum NetEndpoint {
         /// owns this buffer because applying a seed requires the slot registry.
         join_seeds: HostJoinSeeds,
         missing_identity_warned: bool,
+        /// Fix B: delay-buffered presentation of connected-client pawns, keyed by
+        /// `NetworkId` — the same buffer type and key the client uses for remotes.
+        /// The host records each client pawn's authoritative `Transform` per fixed
+        /// tick and, per render frame, samples a delayed fractional target to present
+        /// the pawn smoothly (see `netcode::host_presentation`). Registry-blind of the
+        /// wire: it holds engine `Transform`s, not wire mirrors.
+        client_pawn_presentation: RemoteInterpolationBuffer,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
@@ -635,6 +642,7 @@ impl NetEndpoint {
                     last_sent_tuning: HashMap::new(),
                     join_seeds: HostJoinSeeds::default(),
                     missing_identity_warned: false,
+                    client_pawn_presentation: RemoteInterpolationBuffer::default(),
                 }))
             }
             NetRole::Connect { addr } => {
@@ -807,6 +815,7 @@ impl NetEndpoint {
             demo_mover,
             state_slots,
             last_sent_tuning,
+            client_pawn_presentation,
             ..
         } = self
         else {
@@ -829,6 +838,9 @@ impl NetEndpoint {
         *demo_mover = DemoMoverState::from_env();
         state_slots.reset_schema();
         last_sent_tuning.clear();
+        // The old level's client-pawn EntityIds/NetworkIds are retired; drop their
+        // buffered presentation history so a reloaded pawn starts from a fresh buffer.
+        *client_pawn_presentation = RemoteInterpolationBuffer::default();
     }
 
     pub(crate) fn reset_state_slot_schema(&mut self) {

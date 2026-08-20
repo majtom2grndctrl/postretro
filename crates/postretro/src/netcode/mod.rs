@@ -15,6 +15,9 @@ mod endpoint;
 // headless co-op harness cannot each invent their own sequencing.
 pub(crate) mod frame_order;
 mod host;
+// Fix B: host-side delay-buffered presentation of connected-client pawns. New logic
+// lives here; `main.rs`/`interpolation.rs`/`endpoint.rs` carry only thin wiring.
+mod host_presentation;
 mod interpolation;
 mod join_seed;
 mod lifecycle;
@@ -78,9 +81,16 @@ pub(crate) use host::{
     host_handle_transport_disconnect, host_register_own_pawn, host_replicate,
     host_unregister_own_pawn,
 };
+pub(crate) use host_presentation::{
+    present_client_pawns as host_present_client_pawns,
+    record_client_pawn_poses as host_record_client_pawn_poses,
+    restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
+};
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
-pub(crate) use interpolation::{DemoMover, InterpolationDelayState, MAX_DELAY_MICROS};
+pub(crate) use interpolation::{
+    DemoMover, InterpolationDelayState, MAX_DELAY_MICROS, RemoteInterpolationBuffer,
+};
 pub(crate) use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,

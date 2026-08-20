@@ -345,23 +345,42 @@ fn duplicate_input_at_drain_seam_is_inert() {
             ClientMessage::Input(dup),
         );
     }
-
-    // A second, unrelated client's queue is untouched by the flood.
-    const OTHER: u64 = 99;
+    // Fix A (playout buildup): the buildup latch withholds the first real command until
+    // the pending queue reaches INPUT_BUFFER_TARGET, so a second distinct tick is queued
+    // to disarm the latch and let the de-duplicated tick 0 resolve. The flood still
+    // collapses to ONE tick-0 command — proven by the cursor advancing to exactly 0 (not
+    // past it) on the first resolve.
     host_handle_client_message(
         &mut h.server,
         &mut h.server_replication,
         &mut h.server_state,
         &mut h.command_queues,
-        OTHER,
+        CLIENT_ID,
         0,
         0,
-        ClientMessage::Input(input_at(0, -1.0)),
+        ClientMessage::Input(input_at(1, 1.0)),
     );
+
+    // A second, unrelated client's queue is untouched by the flood. It likewise needs
+    // INPUT_BUFFER_TARGET depth before its first command resolves.
+    const OTHER: u64 = 99;
+    for wish_tick in [(0u32, -1.0_f32), (1, -1.0)] {
+        host_handle_client_message(
+            &mut h.server,
+            &mut h.server_replication,
+            &mut h.server_state,
+            &mut h.command_queues,
+            OTHER,
+            0,
+            0,
+            ClientMessage::Input(input_at(wish_tick.0, wish_tick.1)),
+        );
+    }
 
     // The duplicated tick resolves exactly once with the first-arrival intent.
     let resolved = h.command_queues.resolved_cursor(CLIENT_ID);
-    // Resolve the single queued command and confirm the cursor advances by one.
+    // Resolve the single de-duplicated command and confirm the cursor advances to
+    // exactly tick 0 (the collapse held — the flood did not queue three ticks).
     let r = run_resolve(&mut h, CLIENT_ID);
     assert!(r.is_some(), "the single de-duplicated command resolves");
     assert_eq!(

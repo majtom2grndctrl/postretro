@@ -166,10 +166,26 @@ pub(crate) fn on_slot_accepted(
     Some((pawn, net_id))
 }
 
+/// The result of closing a slot: the despawned pawn plus the `NetworkId` its
+/// remote-presentation buffer was keyed by.
+///
+/// The caller uses `network_id` to forget the pawn's entry in the host's
+/// `client_pawn_presentation` interpolation buffer, mirroring the client's
+/// per-despawn buffer forget. `network_id` is `None` only when the closed pawn had
+/// never been stamped (no id was allocated, so nothing is buffered under it).
+pub(crate) struct ClosedSlotPawn {
+    /// The despawned pawn entity.
+    pub(crate) pawn: EntityId,
+    /// The pawn's stable `NetworkId`, captured BEFORE `allocator.forget` removed the
+    /// mapping. `None` when the pawn was never stamped.
+    pub(crate) network_id: Option<NetworkId>,
+}
+
 /// Close a slot and clean up its pawn, replication state, and slot mapping.
 ///
-/// Returns the despawned pawn's `EntityId`, or `None` when the slot never owned
-/// a pawn. The pawn leaves the next snapshot, which emits a despawn tombstone.
+/// Returns the despawned pawn's `EntityId` and its `NetworkId`, or `None` when the
+/// slot never owned a pawn. The pawn leaves the next snapshot, which emits a despawn
+/// tombstone.
 ///
 /// Suspend demotes peers before the next transport poll. The durable seat map
 /// outlives that reset and can still name the old pawn, so disconnect cleanup
@@ -183,7 +199,7 @@ pub(crate) fn on_slot_closed_with_fallback(
     replication: &mut ServerReplication,
     client_id: u64,
     fallback_pawn: Option<EntityId>,
-) -> Option<EntityId> {
+) -> Option<ClosedSlotPawn> {
     // Drop the closed client's per-client replication state regardless of whether it
     // owned a pawn: it will never ack again.
     replication.remove_client(client_id);
@@ -201,6 +217,9 @@ pub(crate) fn on_slot_closed_with_fallback(
         .ok()
         .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
         .unwrap_or(retained_wieldables);
+    // Resolve the pawn's NetworkId BEFORE `allocator.forget(pawn)` below removes the
+    // mapping. The caller forgets this id from the host's remote-presentation buffer.
+    let network_id = allocator.network_id_for_entity(pawn);
     // Remove from the replicable set FIRST so the next ingest sees the entity gone
     // and emits the despawn tombstone; then despawn through game logic. (Order does
     // not matter for correctness here since both run before the next ingest, but
@@ -217,7 +236,7 @@ pub(crate) fn on_slot_closed_with_fallback(
     // despawned it. Either way the post-state is "gone", so the error is swallowed.
     let _ = registry.despawn(pawn);
     log::info!("[Net] slot {client_id} closed: despawned remote pawn {pawn:?}");
-    Some(pawn)
+    Some(ClosedSlotPawn { pawn, network_id })
 }
 
 #[cfg(test)]
@@ -377,7 +396,7 @@ mod tests {
             CLIENT_A,
             None,
         );
-        assert_eq!(despawned, Some(pawn_a));
+        assert_eq!(despawned.map(|closed| closed.pawn), Some(pawn_a));
         assert!(!registry.exists(pawn_a), "pawn A despawned");
         assert!(
             !replicable.contains(pawn_a),
@@ -480,7 +499,7 @@ mod tests {
             CLIENT_A,
             None,
         );
-        assert_eq!(despawned, None, "no pawn to clean up");
+        assert!(despawned.is_none(), "no pawn to clean up");
     }
 
     // Re-accepting an already-accepted slot does not spawn a duplicate pawn.
@@ -1002,7 +1021,8 @@ mod tests {
                 &mut replication,
                 CLIENT_A,
                 None,
-            ),
+            )
+            .map(|closed| closed.pawn),
             Some(pawn)
         );
         assert!(

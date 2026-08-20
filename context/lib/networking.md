@@ -296,27 +296,79 @@ exactly one command per owned pawn per 60 Hz fixed tick, advancing a per-pawn re
 cursor (`last_processed_client_tick`, stamped into snapshot authority metadata). Two
 policies govern resolution:
 
-- **Hold-then-neutral gap policy.** When the exact next tick is missing, the host holds
-  the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap of
-  dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
-  cannot coast on stale intent). Neutralization clears movement, use, and fire but
-  retains the latest finite aim pitch and facing yaw for remote-avatar presentation. A client that
-  has never sent a command resolves to nothing — its pawn holds its authoritative pose.
+- **Hold-then-neutral gap policy, frontier-gated.** When the exact next tick is missing, the
+  host holds the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap
+  of dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
+  cannot coast on stale intent). Whether a held command **advances the resolved cursor**
+  depends on whether newer data is buffered behind the hole. A held command freezes the
+  cursor (no advance) **only while the buffer is EMPTY** (`pending.is_empty()` — the awaited
+  tick is at the buffer *frontier*): nothing newer has arrived, so this is a genuine
+  near-term late arrival (the clean-link sub-tick phase offset) worth waiting for, and the
+  real command arriving within the hold grace resolves `Real` rather than being drop-staled.
+  If **any** command is buffered past the hole (`!pending.is_empty()`), the stream already
+  continued — the missing tick was lost or reordered — so the host **advances** instead (the
+  "deep-buffer yield"): it repeats the last intent (`Held`) and moves the cursor +1, so the
+  cursor tracks the backlog rather than stalling the ack behind a lost tick (which would
+  drive the client's reconcile lead unbounded, and on a deep buffer overflow into the
+  catch-up trim). The deep-yield **counts toward the grace**, so a *sustained* non-empty gap
+  (a lone far-future command, a multi-tick hole) gives up after `INPUT_HOLD_TICKS` and
+  neutral-walks rather than `Held`-walking unbounded toward a distant command; an isolated
+  loss is followed by a `Real` that resets the count, so isolated losses never accumulate.
+  The give-up after the grace and the post-give-up neutral-walk (the coast toward a stream
+  that resumed at a far-future tick) advance the cursor with synthesized neutral input.
+  Neutralization clears movement, use, and fire but retains the latest finite aim pitch and
+  facing yaw for remote-avatar presentation. A client that has never sent a command resolves
+  to nothing — its pawn holds its authoritative pose. Clean loopback reaches the empty
+  frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
+  data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's
+  stale-drop and intake's stale-check guarantee `pending` holds only commands newer than the
+  awaited tick, so `pending.is_empty()` is precisely "nothing buffered ahead of the hole".)
 
-- **Bounded playout buffer with depth-keyed catch-up.** Drain-rate equals produce-rate
-  (both 60 Hz) and the cursor advances +1 per tick, so any backlog in the pending queue
-  would become *permanent* latency. Two backlogs arise: a client streams input on
-  connect before the host can drain its pawn (the accept/spawn handshake window), and a
-  mid-session host frame hitch stalls the drain while commands keep arriving. To
-  self-correct, when the pending queue's depth exceeds `INPUT_BUFFER_MAX` (~8 ticks ≈
-  133 ms), the host fast-forwards: it keeps only the newest `INPUT_BUFFER_TARGET`
-  (~2 ticks ≈ 33 ms) commands and reseats the cursor on the new oldest, so the resolved
-  cursor never sits more than a small bounded buffer behind the newest received command.
-  The trigger is **pending-queue depth (count of buffered commands), not tick-distance
-  to the newest command** — a client that went silent then resumed at a far-future tick
-  holds a single command far ahead (depth 1), which must NOT catch up; the
-  hold→neutral→real resume path stays intact. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET`
-  gives hysteresis so catch-up does not thrash.
+- **Bounded playout buffer: standing floor + depth-keyed catch-up.** The two 60 Hz
+  clocks free-run ~1 tick out of phase, so on a clean link the awaited command is usually
+  not-yet-arrived when its tick resolves. A **one-shot buildup latch** establishes a
+  standing playout floor proactively: armed at stream begin and after any give-up that
+  empties the pending queue, it withholds the first `Real` — holding without consuming or
+  advancing — until pending depth first reaches `INPUT_BUFFER_TARGET` (~2 ticks ≈ 33 ms),
+  then disarms. After the first consume drops one command, the resolved cursor trails the
+  newest received tick by ~`INPUT_BUFFER_TARGET − 1` ticks (≈ 1 tick / 16 ms in steady
+  state — the signed `cursor_lead` diagnostic reads a small **negative** value, not the
+  pre-fix 0). This margin absorbs the sub-tick phase offset that otherwise drop-staled the
+  majority of a client's input. The latch is depth-keyed on pending count alone — a client
+  that went silent then resumed at a far-future tick holds a single command far ahead
+  (depth 1), which keeps the latch armed rather than reading as "buffer full", so the
+  resume path stays intact. The standing invariant `INPUT_BUFFER_TARGET < INPUT_HOLD_TICKS`
+  guarantees a normal buildup completes before the hold grace can give up on it (and a
+  client that sends one command then goes silent still neutralizes — the latch cannot pin
+  the pawn armed forever).
+
+  A separate **catch-up** path handles deep backlogs, which would become *permanent*
+  latency because drain-rate equals produce-rate. Two backlogs arise: a client streams
+  input on connect before the host can drain its pawn (the accept/spawn handshake window),
+  and a mid-session host frame hitch stalls the drain while commands keep arriving. When
+  the pending queue's depth exceeds `INPUT_BUFFER_MAX` (~8 ticks ≈ 133 ms), the host
+  fast-forwards: it keeps only the newest `INPUT_BUFFER_TARGET` commands and reseats the
+  cursor on the new oldest. The trigger is **pending-queue depth (count of buffered
+  commands), not tick-distance to the newest command** — the same depth-keying the buildup
+  latch uses, and for the same reason. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET` gives
+  hysteresis so catch-up does not thrash.
+
+  **Freeze and trim reconcile on depth.** The gap-policy freeze and the catch-up trim are
+  ordered so they never fight: the freeze fires only when `pending.is_empty()` (the frontier),
+  the trim only when `pending > INPUT_BUFFER_MAX`. A freeze therefore cannot grow the buffer
+  into the trim a fortiori — it fires at depth 0, and in the gap-resolution phase every
+  *non-empty* missing tick advances (the deep-buffer yield) rather than freezing, so a lossy
+  backlog drains toward the frontier instead of piling into the trim; only genuine backlogs
+  (handshake window, host hitch) reach it. The buildup-withhold above is a separate armed
+  phase: it holds without advancing even though `pending` is non-empty, until depth first
+  reaches `INPUT_BUFFER_TARGET`. This is what closes the divergence a count-blind freeze
+  introduced: keying the freeze on a *count* (`pending.len() <= INPUT_BUFFER_TARGET`) still
+  froze a lost tick whenever `pending` dipped to that count under jitter, stalling the ack
+  and driving the reconcile error up; the **frontier** gate distinguishes a genuine late
+  arrival (buffer empty → wait) from a lost tick with the stream continued (buffer non-empty
+  → advance), so the ack never stalls behind buffered data.
+  `INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX` still bounds the buildup latch's
+  standing depth well below the trim.
 
 Reload uses a reliable edge lane beside command playout. Host intake observes reload
 rising edges before stale-drop and backlog trimming, then delivers each due edge once on
@@ -333,6 +385,30 @@ at once.
 All tick comparisons (stale-drop, duplicate-collapse, fast-forward cursor reseat) use
 the wrap-aware serial-number predicate (`client_tick_le`), correct across the u32
 `client_tick` wrap.
+
+## Host-side remote-pawn presentation
+
+The host presents each connected-client pawn through the **same** delay-buffered playout
+the client uses for remotes, closing the presentation asymmetry where the host saw a
+client's motion less smoothly than the client saw the host's. Each fixed tick the host
+records the client pawn's authoritative `Transform` into a `RemoteInterpolationBuffer`
+keyed by `NetworkId` (the client's key); each render frame it samples a **delayed
+fractional** target — `newest_recorded_tick − INPUT_BUFFER_TARGET + alpha`, where `alpha`
+is the render sub-tick accumulator — and writes the position-lerp/rotation-slerp result
+through `EntityRegistry::set_presentation_transform`. The clock is the host's own
+authoritative tick (the host *is* the clock — no `ClientTimeSync` estimate), and the
+fractional target is load-bearing: sampling at an integer tick would step the pose once
+per 60 Hz tick and reproduce the choppiness at the host's much higher render rate.
+
+Authority is untouched. The host *simulates* the client's pawn, so `run_host_movement_tick`
+and snapshot serialization must read the authoritative pose, never the delayed one. The
+buffer holds the authoritative history; the registry `Transform` carries the delayed pose
+only during the render-collect window. Per frame: **record** after each tick's movement,
+**restore** the authoritative pose from the buffer before the tick loop (and thus before
+serialization), and **present** the delayed pose after serialization. The path runs only
+on `NetEndpoint::Host` and only for pawns in `MovementOwners` — the host's own pawn is not
+an owner, so it keeps its live single-tick presentation. Engine glue lives in
+`netcode::host_presentation`; the buffer is owned by the `Host` endpoint.
 
 ## Combat authority: FIRE vs HIT
 

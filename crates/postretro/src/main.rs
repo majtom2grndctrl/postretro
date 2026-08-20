@@ -2475,6 +2475,13 @@ impl ApplicationHandler for App {
                         .pending_death_events,
                 );
 
+                // Fix B: restore connected-client pawns to their authoritative poses
+                // before any fixed tick and before snapshot serialization (`net_serialize_and_send`
+                // below) read them, undoing the previous frame's delayed presentation write.
+                // Unconditional so it runs even on zero-tick / no-gameplay-snapshot frames —
+                // serialization never ingests a delayed pose. A no-op off the host path.
+                self.host_restore_client_pawn_authoritative_poses();
+
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
                     // `player_options` is session-owned; copy the crouch mode out
                     // before the `&mut self.crouch_toggle_active` borrow.
@@ -2853,6 +2860,10 @@ impl ApplicationHandler for App {
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
+                        // Fix B: capture each connected-client pawn's authoritative pose
+                        // for this tick before the tick stamp advances, so the buffered
+                        // sample is keyed to the tick whose end-of-tick pose it carries.
+                        self.host_record_client_pawn_poses();
                         self.host_advance_fixed_sim_tick(&mut host_snapshot_due);
                         // Unconditional per-tick registration sweeps, not gated on "did a spawn
                         // happen this tick": they catch runtime enemies and component-driven
@@ -3149,6 +3160,13 @@ impl ApplicationHandler for App {
                 // authoritative snapshot cannot carry an entity already reaped
                 // this frame. No-op for the client and single-player.
                 let owner_projected_weapons = self.net_serialize_and_send(host_snapshot_due);
+
+                // Fix B: present connected-client pawns from the delay buffer at a delayed
+                // fractional target, AFTER serialization read the authoritative poses and
+                // BEFORE the render collectors read entities. Clocked off the host's own
+                // authoritative tick plus the render sub-tick `alpha`, so the presented
+                // pose varies smoothly per render frame instead of stepping at 60 Hz.
+                self.host_present_client_pawns(frame_result.alpha);
 
                 // Advance each reload-endpoint consumer only after it sampled
                 // this frame. Catch-up endpoints remain queued in tick order.
@@ -4328,6 +4346,7 @@ impl App {
                 weaponless_fire_logged,
                 last_sent_tuning,
                 join_seeds: join_seed_state,
+                client_pawn_presentation,
                 ..
             }) = session.net_endpoint.as_mut()
             else {
@@ -4339,7 +4358,7 @@ impl App {
                 let durable_pawn = seat_table
                     .as_deref()
                     .and_then(|seats| seats.pawn_for_client(*client_id));
-                netcode::host_handle_transport_disconnect(
+                let forgotten_net_id = netcode::host_handle_transport_disconnect(
                     &mut registry,
                     allocator,
                     replicable,
@@ -4357,6 +4376,12 @@ impl App {
                     *client_id,
                     durable_pawn,
                 );
+                // Mirror the client's per-despawn buffer forget: drop the disconnected
+                // pawn's delayed presentation samples so they do not leak across the
+                // session (a per-level sample leak otherwise).
+                if let Some(net_id) = forgotten_net_id {
+                    client_pawn_presentation.forget(net_id);
+                }
                 if let Some(seats) = seat_table.as_deref_mut() {
                     seats.hold_disconnected_client(&mut registry, *client_id);
                 }
@@ -4420,7 +4445,7 @@ impl App {
                 }
             }
             for event in &host_poll.lifecycle {
-                netcode::host_handle_lifecycle(
+                let forgotten_net_ids = netcode::host_handle_lifecycle(
                     &mut registry,
                     allocator,
                     replicable,
@@ -4437,6 +4462,12 @@ impl App {
                     seat_table.as_deref_mut(),
                     std::slice::from_ref(event),
                 );
+                // Mirror the client's per-despawn buffer forget: drop each closed
+                // pawn's delayed presentation samples so they do not leak across the
+                // session (a per-level sample leak otherwise).
+                for net_id in forgotten_net_ids {
+                    client_pawn_presentation.forget(net_id);
+                }
                 match event {
                     postretro_net::slots::SlotEvent::Closed { client_id, .. } => {
                         join_seed_state.remove_client(*client_id);
@@ -5730,6 +5761,7 @@ impl App {
                 last_sent_tuning,
                 join_seeds: join_seed_state,
                 missing_identity_warned: _,
+                client_pawn_presentation,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -5758,7 +5790,7 @@ impl App {
                                 let durable_pawn = seat_table
                                     .as_deref()
                                     .and_then(|seats| seats.pawn_for_client(*client_id));
-                                netcode::host_handle_transport_disconnect(
+                                let forgotten_net_id = netcode::host_handle_transport_disconnect(
                                     &mut registry,
                                     allocator,
                                     replicable,
@@ -5776,6 +5808,13 @@ impl App {
                                     *client_id,
                                     durable_pawn,
                                 );
+                                // Mirror the client's per-despawn buffer forget: drop
+                                // the disconnected pawn's delayed presentation samples
+                                // so they do not leak across the session (a per-level
+                                // sample leak otherwise).
+                                if let Some(net_id) = forgotten_net_id {
+                                    client_pawn_presentation.forget(net_id);
+                                }
                                 if let Some(seats) = seat_table.as_deref_mut() {
                                     seats.hold_disconnected_client(&mut registry, *client_id);
                                 }
@@ -5857,7 +5896,7 @@ impl App {
                             // by demotion; batch-cleaning every exit before batch-spawning
                             // every entry would leave a pawn for a finally-admitted slot.
                             for event in &poll.lifecycle {
-                                netcode::host_handle_lifecycle(
+                                let forgotten_net_ids = netcode::host_handle_lifecycle(
                                     &mut registry,
                                     allocator,
                                     replicable,
@@ -5874,6 +5913,13 @@ impl App {
                                     seat_table.as_deref_mut(),
                                     std::slice::from_ref(event),
                                 );
+                                // Mirror the client's per-despawn buffer forget: drop
+                                // each closed pawn's delayed presentation samples so
+                                // they do not leak across the session (a per-level
+                                // sample leak otherwise).
+                                for net_id in forgotten_net_ids {
+                                    client_pawn_presentation.forget(net_id);
+                                }
                                 match event {
                                     postretro_net::slots::SlotEvent::Closed {
                                         client_id, ..
@@ -6448,6 +6494,7 @@ impl App {
             last_sent_tuning: _,
             join_seeds: _,
             missing_identity_warned: _,
+            client_pawn_presentation: _,
         }) = session.net_endpoint.as_mut()
         else {
             return Vec::new();
@@ -6636,6 +6683,116 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Client { .. })
         )
+    }
+
+    /// Fix B — restore each connected-client pawn's authoritative `Transform` from the
+    /// host presentation buffer before the fixed-tick loop, undoing the previous frame's
+    /// delayed presentation write so movement and snapshot serialization read the true
+    /// authoritative pose. Thin delegation to `netcode::host_presentation`; a no-op for
+    /// single-player, the client, and a host with no connected-client pawns.
+    fn host_restore_client_pawn_authoritative_poses(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            client_pawn_presentation,
+            owners,
+            allocator,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let mut registry = script_ctx.registry.borrow_mut();
+        netcode::host_restore_client_pawn_authoritative_poses(
+            client_pawn_presentation,
+            owners,
+            allocator,
+            &mut registry,
+        );
+    }
+
+    /// Fix B — record each connected-client pawn's authoritative `Transform` for the
+    /// current fixed tick into the host presentation buffer. Called after the tick's
+    /// movement has written the authoritative pose and before the tick stamp advances,
+    /// so the sample carries the correct end-of-tick pose. Thin delegation.
+    fn host_record_client_pawn_poses(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            client_pawn_presentation,
+            owners,
+            allocator,
+            tick,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let current_tick = *tick;
+        let registry = script_ctx.registry.borrow();
+        netcode::host_record_client_pawn_poses(
+            client_pawn_presentation,
+            owners,
+            allocator,
+            &registry,
+            current_tick,
+        );
+    }
+
+    /// Fix B — sample each connected-client pawn's buffer at a delayed fractional target
+    /// (`current_tick − 1 − delay + alpha`) and write the smoothed pose through the
+    /// registry's presentation helper. Called once per render frame after snapshot
+    /// serialization (which reads the authoritative pose) and before the render collectors
+    /// read entities. `alpha` is the render sub-tick accumulator, so the presented pose
+    /// varies smoothly per render frame rather than stepping once per 60 Hz tick. Thin
+    /// delegation; a no-op for single-player and the client.
+    fn host_present_client_pawns(&mut self, alpha: f32) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            client_pawn_presentation,
+            owners,
+            allocator,
+            tick,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let current_tick = *tick;
+        let mut registry = script_ctx.registry.borrow_mut();
+        netcode::host_present_client_pawns(
+            client_pawn_presentation,
+            owners,
+            allocator,
+            &mut registry,
+            current_tick,
+            alpha,
+        );
     }
 
     /// Host authoritative remote-pawn command resolution. Resolves one full command
@@ -9141,6 +9298,37 @@ mod tests {
         );
     }
 
+    /// Prime a host command queue past Fix A's buildup latch by ingesting a later no-fire tick,
+    /// bringing the pending buffer to `INPUT_BUFFER_TARGET` depth so a lone earlier command
+    /// resolves `Real` instead of being withheld during buildup. Needed because Fix A's
+    /// one-shot latch withholds the first command until the pending buffer reaches that
+    /// depth, so a single ingested fire would not otherwise resolve immediately.
+    fn prime_remote_buildup(queues: &mut netcode::HostCommandQueues, client_id: u64, tick: u32) {
+        queues.ingest(
+            client_id,
+            &postretro_net::wire::InputCommand {
+                client_tick: tick,
+                movement: postretro_net::wire::WireMovementInput {
+                    wish_dir: [0.0, 0.0],
+                    jump_pressed: false,
+                    dash_pressed: false,
+                    running: false,
+                    crouch_intent: false,
+                    facing_yaw: 0.0,
+                    use_pressed: false,
+                    drop_pressed: false,
+                    aim_pitch: 0.0,
+                    firing_slot: 0,
+                },
+                fire_button: postretro_net::wire::WireFireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                reload: false,
+            },
+        );
+    }
+
     #[test]
     fn o27_unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
@@ -9174,6 +9362,7 @@ mod tests {
                 reload: false,
             },
         );
+        prime_remote_buildup(&mut queues, 7, 34);
         let resolved = netcode::host_resolve_remote_commands(&owners, &mut queues);
         let resolved = resolved.first().expect("weaponless fire command resolves");
 
@@ -9255,6 +9444,7 @@ mod tests {
                 reload: false,
             },
         );
+        prime_remote_buildup(&mut queues, 7, 34);
         let resolved = netcode::host_resolve_remote_commands(&owners, &mut queues);
         let resolved = resolved.first().expect("remote command resolves");
 

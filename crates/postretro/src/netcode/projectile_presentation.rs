@@ -310,3 +310,256 @@ pub(super) fn attach_projectile_visual_components(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::netcode::replication::produce_owned_snapshots;
+    use crate::netcode::{AuthorizedShot, ClientReplication, HostCommandQueues, MovementOwners};
+    use postretro_entities::{ComponentKind, EntityTypeDescriptor};
+    use postretro_foundation::{
+        FireMode, ProjectileBodyVisual, ProjectileVisual, ResolutionMode, WeaponDescriptor,
+    };
+
+    const FIRING_CLIENT: u64 = 7;
+    const OBSERVING_CLIENT: u64 = 8;
+
+    fn descriptor() -> ProjectileDescriptor {
+        ProjectileDescriptor {
+            speed: 4.0,
+            radius: 0.1,
+            lifetime_ms: 1_000.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/projectiles/remote-bolt.png".to_string(),
+                    size: 0.2,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [0.4, 0.8, 1.0],
+                },
+                trail: None,
+            },
+        }
+    }
+
+    fn projectile_visual_descriptor() -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some("test_remote_projectile".to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
+                range: 12.0,
+                cooldown_ms: 1.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Projectile,
+                projectile: Some(descriptor()),
+                credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
+                resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
+            }),
+            touchable: None,
+            mesh: None,
+            health: None,
+            behavior: None,
+        }
+    }
+
+    #[test]
+    fn remote_projectile_visual_is_hidden_from_firer_visible_to_observer_and_retires() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 19);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(
+            AuthorizedShot {
+                shot_id,
+                pawn,
+                weapon,
+                fire_tick: 1,
+                damage: 10.0,
+                range: 12.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.remote".to_string(),
+                is_projectile: true,
+                fire_origin: Vec3::ZERO,
+                timeout_budget_ticks: 180,
+            },
+            FIRING_CLIENT,
+        );
+        let launch = RemoteProjectilePresentationLaunch {
+            owner_client_id: FIRING_CLIENT,
+            shot_id,
+            origin: Vec3::new(1.0, 2.0, 3.0),
+            direction: Vec3::NEG_Z,
+            range: 12.0,
+            descriptor_class: "test_remote_projectile".to_string(),
+            projectile: descriptor(),
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(FIRING_CLIENT);
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+
+        presentations.spawn_remote(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &launch,
+        );
+
+        let visuals = presentations.flights.keys().copied().collect::<Vec<_>>();
+        let [visual] = visuals.as_slice() else {
+            panic!("remote projectile fire creates one presentation entity");
+        };
+        let visual = *visual;
+        let visual_network_id = allocator
+            .network_id_for_entity(visual)
+            .expect("presentation entity is stamped for replication");
+        assert!(replicable.contains(visual));
+        assert_eq!(
+            registry
+                .get_component::<SpriteVisual>(visual)
+                .expect("host presentation carries its descriptor sprite")
+                .sprite,
+            "sprites/projectiles/remote-bolt.png"
+        );
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        replication.ingest_tick(snapshots);
+        let sequence = replication.begin_batch();
+        let firer_snapshot = replication
+            .encode_in_batch(FIRING_CLIENT, 1, sequence)
+            .expect("firing recipient is registered");
+        assert!(
+            firer_snapshot
+                .records
+                .iter()
+                .all(|record| record.network_id != visual_network_id.0),
+            "the firing client keeps its predicted projectile and receives no duplicate baseline"
+        );
+        let observer_snapshot = replication
+            .encode_in_batch(OBSERVING_CLIENT, 1, sequence)
+            .expect("observing recipient is registered");
+        assert!(
+            observer_snapshot
+                .records
+                .iter()
+                .any(|record| record.network_id == visual_network_id.0),
+            "other peers receive the Transform plus entity-class visual"
+        );
+
+        let observer_snapshot = observer_snapshot
+            .validate()
+            .expect("host observer snapshot is structurally valid");
+        let mut observer_registry = EntityRegistry::new();
+        let mut observer_replication = ClientReplication::new();
+        let observer_outcome =
+            observer_replication.apply_snapshot(&mut observer_registry, &observer_snapshot);
+        let observer_visual = {
+            let [remote] = observer_outcome.remote_entities.as_slice() else {
+                panic!("observer baseline requests one descriptor-backed materialization");
+            };
+            assert_eq!(remote.network_id, visual_network_id);
+            assert!(
+                super::super::remote_materialize::materialize_armed_remote_projectile(
+                    remote,
+                    &[projectile_visual_descriptor()],
+                    &mut observer_registry,
+                )
+            );
+            remote.entity_id
+        };
+        assert!(observer_registry.exists(observer_visual));
+        assert!(
+            observer_registry
+                .get_component::<SpriteVisual>(observer_visual)
+                .is_ok()
+        );
+        for kind in [
+            ComponentKind::Projectile,
+            ComponentKind::Health,
+            ComponentKind::Weapon,
+            ComponentKind::PlayerMovement,
+        ] {
+            assert_eq!(
+                observer_registry.has_component_kind(observer_visual, kind),
+                Ok(false),
+                "observer projectile is visual-only and carries no {kind:?} gameplay state"
+            );
+        }
+        let observer_ack = observer_outcome
+            .ack
+            .expect("applied observer baseline produces an ack");
+        replication.apply_ack(
+            OBSERVING_CLIENT,
+            observer_ack.latest_snapshot_sequence,
+            &observer_ack.entity_baselines,
+            &observer_ack.despawn_tombstones,
+        );
+
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            1.0 / 60.0,
+        );
+        assert!(
+            registry.exists(visual),
+            "the launch pass does not retire the visual"
+        );
+        open_shots.retire(shot_id);
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            1.0 / 60.0,
+        );
+        assert!(!registry.exists(visual));
+        assert!(!replicable.contains(visual));
+        assert!(!allocator.maps_entity(visual));
+
+        replication.ingest_tick(Vec::new());
+        let despawn_sequence = replication.begin_batch();
+        let observer_despawn = replication
+            .encode_in_batch(OBSERVING_CLIENT, 2, despawn_sequence)
+            .expect("observer remains registered for projectile retirement");
+        let observer_despawn = observer_despawn
+            .validate()
+            .expect("host projectile retirement snapshot is structurally valid");
+        let observer_despawn_outcome =
+            observer_replication.apply_snapshot(&mut observer_registry, &observer_despawn);
+        assert!(
+            !observer_registry.exists(observer_visual),
+            "the observer applies the replicated retirement and removes its visual"
+        );
+        assert!(
+            observer_despawn_outcome
+                .ack
+                .expect("applied despawn produces an ack")
+                .despawn_tombstones
+                .iter()
+                .any(|(network_id, _)| *network_id == visual_network_id.0),
+            "client acknowledges the remote projectile tombstone"
+        );
+    }
+}

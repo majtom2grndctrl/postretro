@@ -1892,6 +1892,34 @@ fn ingest_hit_declaration(
     }
 }
 
+/// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
+/// same ingester through [`host_flush_pending_hit_declarations`]; this keeps tests from
+/// duplicating its authorization and damage rules just to observe the result.
+#[cfg(test)]
+pub(crate) fn ingest_hit_declaration_for_test(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    owners: &MovementOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    client_id: u64,
+    declaration: &wire::HitDeclaration,
+) -> (bool, bool) {
+    let result = ingest_hit_declaration(
+        HostHitIngestContext {
+            registry,
+            collision_world,
+            allocator,
+            owners,
+            open_shots,
+        },
+        client_id,
+        declaration,
+        |_| {},
+    );
+    (result.fire_accepted, result.hit_accepted)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_valid_hit_record(
     registry: &mut EntityRegistry,
@@ -3377,6 +3405,45 @@ mod tests {
     }
 
     #[test]
+    fn projectile_open_shot_prune_uses_its_flight_budget_and_keeps_the_store_bounded() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let kept_id = ShotId::from_parts(NetworkId(12), 10);
+        let expired_id = ShotId::from_parts(NetworkId(12), 11);
+        let timeout = projectile_timeout_budget_ticks(128.0, 80.0, 4.0, 1.0 / 60.0);
+        let mut kept = authorized_test_shot(kept_id, pawn, weapon, 10, 10.0, 128.0);
+        kept.is_projectile = true;
+        kept.timeout_budget_ticks = timeout;
+        let mut expired = authorized_test_shot(expired_id, pawn, weapon, 11, 10.0, 128.0);
+        expired.is_projectile = true;
+        expired.timeout_budget_ticks = timeout;
+        let mut shots = OpenAuthorizedShots::new();
+        shots.record(kept, 7);
+        shots.record(expired, 7);
+
+        shots.prune_stale(10 + timeout);
+        assert!(
+            shots.get(kept_id).is_some(),
+            "the budget is inclusive at its final tick"
+        );
+        assert!(shots.get(expired_id).is_some());
+
+        shots.prune_stale(11 + timeout);
+        assert!(shots.get(kept_id).is_none());
+        assert!(
+            shots.get(expired_id).is_some(),
+            "the later shot retains its own budget"
+        );
+        shots.prune_stale(12 + timeout);
+        assert_eq!(
+            shots.len(),
+            0,
+            "unreported projectiles cannot accumulate indefinitely"
+        );
+    }
+
+    #[test]
     fn pending_hit_declarations_are_bounded_per_client_and_cleanable() {
         let mut pending = PendingHitDeclarations::new();
         for tick in 0..=MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT {
@@ -3507,6 +3574,34 @@ mod tests {
         let entry = health.contributor_ledger.entries().first().unwrap();
         assert_eq!(entry.last_attacker, Some(fixture.pawn));
         assert_eq!(entry.last_weapon, Some(fixture.weapon));
+    }
+
+    #[test]
+    fn empty_projectile_declaration_retires_the_authorized_shot_without_damage() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.is_projectile = true;
+        shot.fire_origin = Vec3::new(0.0, 0.5, 0.0);
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(Vec::new());
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert!((fixture.target_health().current - 100.0).abs() <= f32::EPSILON);
+        assert!(
+            fixture.open_shots.get(fixture.shot_id).is_none(),
+            "the client's expiry declaration retires flight immediately instead of waiting for prune"
+        );
     }
 
     // Regression: remote HIT validation rejected persistent zero-HP targets,
@@ -3666,6 +3761,38 @@ mod tests {
     }
 
     #[test]
+    fn hitscan_and_pellet_declarations_keep_live_eye_world_los_validation() {
+        for pellet_count in [1, 8] {
+            let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
+            fixture.open_shots.retire(fixture.shot_id);
+            let mut shot = authorized_test_shot(
+                fixture.shot_id,
+                fixture.pawn,
+                fixture.weapon,
+                99,
+                10.0,
+                10.0,
+            );
+            shot.pellet_count = pellet_count;
+            fixture.open_shots.record(shot, 7);
+            let declaration =
+                fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+            let result = fixture.ingest_result(7, &declaration);
+
+            assert!(
+                result.fire_accepted,
+                "authorized shell {pellet_count} binds first"
+            );
+            assert!(
+                !result.hit_accepted,
+                "hitscan/pellet shell {pellet_count} keeps its live-eye wall check"
+            );
+            assert!((fixture.target_health().current - 100.0).abs() <= f32::EPSILON);
+        }
+    }
+
+    #[test]
     fn projectile_declaration_uses_fire_origin_and_skips_late_world_los() {
         let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
         fixture
@@ -3701,6 +3828,34 @@ mod tests {
             "later cover and current pose cannot reject a projectile"
         );
         assert_eq!(fixture.target_health().current, 90.0);
+        let health = fixture.target_health();
+        let credit = health
+            .contributor_ledger
+            .entries()
+            .first()
+            .expect("later projectile damage preserves the authorized credit path");
+        assert_eq!(credit.last_attacker, Some(fixture.pawn));
+        assert_eq!(credit.last_weapon, Some(fixture.weapon));
+        assert_eq!(credit.source_id, "weapon.test.net");
+    }
+
+    #[test]
+    fn projectile_authority_reuses_the_existing_wire_versions() {
+        assert_eq!(
+            postretro_net::handshake::PROTOCOL_ID,
+            0x_5052_4C37,
+            "projectile authority adds no application message vocabulary"
+        );
+        assert_eq!(
+            postretro_net::handshake::WIRE_VERSION,
+            19,
+            "the fire-time snapshot and declaration reuse are host-internal"
+        );
+        assert_eq!(
+            postretro_net::wire::SNAPSHOT_VERSION,
+            13,
+            "projectile presentation reuses Transform plus entity_class snapshots"
+        );
     }
 
     #[test]

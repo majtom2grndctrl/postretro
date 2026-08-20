@@ -1164,7 +1164,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn client_zero_spread_pellets_emit_one_entity_record_per_pellet() {
+    fn client_zero_radius_pellets_keep_the_legacy_entity_query_results() {
         let mut registry = EntityRegistry::new();
         let target = spawn_hitbox_entity(
             &mut registry,
@@ -1175,6 +1175,16 @@ pub(crate) mod tests {
         let mut weapon = weapon_component(FireMode::Auto, 100.0);
         weapon.pellet_count = 8;
         weapon.spread_degrees = 0.0;
+        let legacy = nearest_entity_hit(
+            &registry,
+            &HitZoneStore::new(),
+            0.0,
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            10.0,
+            0.0,
+        )
+        .expect("the legacy r = 0 entity ray has a target");
 
         let resolution = resolve_client_fire(
             &mut weapon,
@@ -1199,6 +1209,8 @@ pub(crate) mod tests {
         for hit in resolution.hits {
             assert_eq!(hit.target, target);
             assert_vec3_approx(hit.point, Vec3::new(0.0, 0.0, -4.5));
+            assert_vec3_bits_eq(hit.point, legacy.point);
+            assert_eq!(hit.zone, legacy.zone);
         }
         assert_eq!(weapon.shells_fired, 1);
     }

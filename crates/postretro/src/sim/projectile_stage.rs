@@ -373,6 +373,8 @@ fn nearest_projectile_hit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parry3d::math::Isometry;
+    use parry3d::shape::TriMesh;
     use postretro_entities::components::health::Hitbox;
 
     fn spawn_target(registry: &mut EntityRegistry, position: Vec3, half_extents: Vec3) -> EntityId {
@@ -437,6 +439,19 @@ mod tests {
         advance(registry, &world, &zones, 0.0, dt, &mut ignore_impact);
     }
 
+    fn wall_at_z(z: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(-1.0, -1.0, z),
+            Point::new(1.0, -1.0, z),
+            Point::new(1.0, 1.0, z),
+            Point::new(-1.0, 1.0, z),
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
+            isometry: Isometry::identity(),
+        }
+    }
+
     #[test]
     fn spawned_projectile_skips_fire_pass_then_damages_on_later_impact_pass() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -470,6 +485,17 @@ mod tests {
             "damage lands only on the later impact pass"
         );
         assert!(!registry.borrow().exists(projectile));
+        let health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .clone();
+        let credit = health
+            .contributor_ledger
+            .entries()
+            .first()
+            .expect("projectile damage uses the shared credit ledger");
+        assert_eq!(credit.source_id, "test.projectile");
     }
 
     #[test]
@@ -518,6 +544,146 @@ mod tests {
             15.0,
             "the swept width should reach the expanded hitbox"
         );
+        assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn independent_projectiles_resolve_their_own_later_tick_impacts() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target_a = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let target_b = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile_a = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let projectile_b = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 7.0);
+        registry
+            .borrow_mut()
+            .set_component(
+                projectile_b,
+                Transform {
+                    position: Vec3::X,
+                    ..Transform::default()
+                },
+            )
+            .expect("second projectile starts on its own lane");
+
+        advance_once(&registry, 1.0);
+        for target in [target_a, target_b] {
+            let current = registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current;
+            assert!((current - 20.0).abs() <= f32::EPSILON);
+        }
+
+        advance_once(&registry, 1.0);
+        let health_a = registry
+            .borrow()
+            .get_component::<HealthComponent>(target_a)
+            .expect("first target remains live")
+            .current;
+        assert!((health_a - 15.0).abs() <= f32::EPSILON);
+        let health_b = registry
+            .borrow()
+            .get_component::<HealthComponent>(target_b)
+            .expect("second target remains live")
+            .current;
+        assert!((health_b - 13.0).abs() <= f32::EPSILON);
+        assert!(!registry.borrow().exists(projectile_a));
+        assert!(!registry.borrow().exists(projectile_b));
+    }
+
+    #[test]
+    fn projectile_contact_at_final_range_boundary_wins_over_expiry() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.6),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 0.5, 0.0, 5.0);
+
+        advance_once(&registry, 1.0);
+        advance_once(&registry, 1.0);
+
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!(
+            (current - 15.0).abs() <= f32::EPSILON,
+            "the final swept segment resolves its contact before expiring"
+        );
+        assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn projectile_world_contact_wins_when_world_and_entity_tois_are_equal() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.5),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 1.0, 0.0, 5.0);
+        let world = wall_at_z(-0.4);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live")
+            .current;
+        assert!(
+            (current - 20.0).abs() <= f32::EPSILON,
+            "world wins the equal-TOI tie, so the entity takes no damage"
+        );
+        assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn projectile_skips_damage_when_target_dies_between_fire_and_impact() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+
+        advance_once(&registry, 1.0);
+        let mut health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target remains live before its independent death")
+            .clone();
+        health.current = 0.0;
+        registry
+            .borrow_mut()
+            .set_component(target, health)
+            .expect("other damage source can kill the target during flight");
+
+        advance_once(&registry, 1.0);
+
+        let health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target entity persists for the liveness check")
+            .clone();
+        assert!(health.current.abs() <= f32::EPSILON);
+        assert!(health.contributor_ledger.entries().is_empty());
         assert!(!registry.borrow().exists(projectile));
     }
 

@@ -19,6 +19,7 @@ pub(crate) mod mesh_render;
 pub(crate) mod particle_render;
 pub(crate) mod particle_sim;
 pub(crate) mod presentation_cells;
+pub(crate) mod reaction_scheduler;
 pub(crate) mod shake_decay;
 pub(crate) mod slot_accumulators;
 pub(crate) mod system_reactions;

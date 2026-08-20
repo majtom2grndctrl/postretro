@@ -1318,8 +1318,10 @@ pub(crate) use weapon_stage::apply_authorized_weapon_impact_damage;
 #[cfg(test)]
 pub(crate) use host_movement::run_host_movement_tick;
 
+// `pub(crate)` so Task 5/7's timed-reaction test modules (new sibling files) can
+// reach `SimHarness` and its `frame`/`new`/`tick`/`record` methods.
 #[cfg(test)]
-mod determinism_tests;
+pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
 #[cfg(any(test, feature = "dev-tools"))]

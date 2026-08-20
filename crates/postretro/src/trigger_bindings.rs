@@ -685,10 +685,18 @@ fn bind_sequence_step(
         );
         return None;
     }
+    // Control steps never bind to an in-tick command: `BoundTarget` has no
+    // analogue for them. The amended `partition_direct_reaction` (Task 3) routes
+    // a `Fire` to a `DeferredEvent` and a `Wait` plus its tail to the residual
+    // before reaching here, so this early return is the belt-and-braces guard.
+    if matches!(step.id, SequenceTarget::Wait | SequenceTarget::Fire) {
+        return None;
+    }
     let target = Some(match step.id {
         SequenceTarget::Entity(id) => BoundTarget::Entity(id),
         SequenceTarget::Activators => BoundTarget::Activators,
         SequenceTarget::FiredTrigger => BoundTarget::FiredTrigger,
+        SequenceTarget::Wait | SequenceTarget::Fire => return None,
     });
     bind_command(&step.primitive, target, &step.args, slot_table, script_ctx)
 }

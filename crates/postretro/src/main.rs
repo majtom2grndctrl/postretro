@@ -234,9 +234,10 @@ fn drain_mover_sound_events_with_sequences(
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
     system_registry: &postretro_scripting_core::reaction_registry::SystemReactionRegistry,
     script_ctx: &postretro_entities::ScriptCtx,
-) {
+) -> Vec<String> {
+    let mut chained = Vec::new();
     for event_name in event_names {
-        let _ = fire_named_event_with_sequences(
+        chained.extend(fire_named_event_with_sequences(
             event_name,
             data_registry,
             sequence_registry,
@@ -244,8 +245,9 @@ fn drain_mover_sound_events_with_sequences(
             system_registry,
             script_ctx,
             None,
-        );
+        ));
     }
+    chained
 }
 
 fn staged_ui_commit_payload(
@@ -2070,6 +2072,15 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
+                // Advance the timed-reaction scheduler's monotonic frame counter
+                // once per redraw, ahead of both the pre-loop UI activation (a
+                // focused button's `on_press` can enroll a wait) and the tick loop,
+                // so an enrollment this frame is stamped with this frame and cannot
+                // advance until the next. Distinct from `frame_timing.begin_frame`.
+                if let Some(session) = self.session.as_ref() {
+                    session.scripting.scheduler.begin_frame();
+                }
+
                 // Seat holds measure elapsed rendered time rather than fixed
                 // simulation time: Frontend and Loading keep polling a host even
                 // though neither runs the simulation loop. Advance exactly here,
@@ -2816,6 +2827,12 @@ impl ApplicationHandler for App {
                             }),
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
                         );
+                        // Advance timed-reaction countdowns for this tick. Position
+                        // relative to `evaluate_slot_accumulators` is not
+                        // behaviourally load-bearing: landings execute at the
+                        // frame-end drain, after every tick's accumulator pass. An
+                        // instance enrolled this frame is skipped via its stamp.
+                        scripting.scheduler.evaluate();
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -2999,16 +3016,19 @@ impl ApplicationHandler for App {
                 // are discarded (`let _ =`), matching the drains above.
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
-                    drain_mover_sound_events_with_sequences(
+                    // Capture the mover-sound and death drains' chained names into
+                    // the same follow-up batch — previously discarded, so a `fire`
+                    // step or `on_complete` in those reactions dispatched nothing.
+                    pending_trigger_follow_ups.extend(drain_mover_sound_events_with_sequences(
                         &pending_mover_event_names,
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
                         &session.scripting.system_registry,
                         &script_ctx,
-                    );
+                    ));
                     for event_name in &pending_death_events {
-                        let _ = fire_named_event_with_sequences(
+                        pending_trigger_follow_ups.extend(fire_named_event_with_sequences(
                             event_name,
                             &script_ctx.data_registry.borrow(),
                             &session.scripting.sequence_registry,
@@ -3016,7 +3036,7 @@ impl ApplicationHandler for App {
                             &session.scripting.system_registry,
                             &script_ctx,
                             None,
-                        );
+                        ));
                     }
                     for handle in &pending_trigger_residuals {
                         let Some(residual) = self.trigger_bindings.residual(*handle) else {
@@ -5188,15 +5208,31 @@ impl App {
                 UiButtonAction::QuitToMenu => self.return_to_frontend(),
                 UiButtonAction::NamedReaction => {
                     if let Some(session) = self.session.as_ref() {
-                        let _ = fire_named_event_with_sequences(
+                        let script_ctx = &session.scripting.script_ctx;
+                        // Capture chained names (a `fire` step's target or a fired
+                        // `Primitive`'s `on_complete`) and dispatch them, rather
+                        // than discarding as before. A `wait` step enrolls its tail
+                        // ahead of the tick loop; the frame-counter stamp keeps it
+                        // from advancing in this same redraw.
+                        let chained = fire_named_event_with_sequences(
                             &on_press,
-                            &session.scripting.script_ctx.data_registry.borrow(),
+                            &script_ctx.data_registry.borrow(),
                             &session.scripting.sequence_registry,
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
-                            &session.scripting.script_ctx,
+                            script_ctx,
                             None,
                         );
+                        if !chained.is_empty() {
+                            dispatch_deferred_named_events_with_sequences(
+                                chained,
+                                &script_ctx.data_registry.borrow(),
+                                &session.scripting.sequence_registry,
+                                &session.scripting.reaction_registry,
+                                &session.scripting.system_registry,
+                                script_ctx,
+                            );
+                        }
                     }
                 }
             }
@@ -5310,15 +5346,26 @@ impl App {
             .and_then(|session| session.modal_stack.active_on_commit().map(str::to_string));
         if let Some(on_commit) = on_commit {
             if let Some(session) = self.session.as_ref() {
-                let _ = fire_named_event_with_sequences(
+                let script_ctx = &session.scripting.script_ctx;
+                let chained = fire_named_event_with_sequences(
                     &on_commit,
-                    &session.scripting.script_ctx.data_registry.borrow(),
+                    &script_ctx.data_registry.borrow(),
                     &session.scripting.sequence_registry,
                     &session.scripting.reaction_registry,
                     &session.scripting.system_registry,
-                    &session.scripting.script_ctx,
+                    script_ctx,
                     None,
                 );
+                if !chained.is_empty() {
+                    dispatch_deferred_named_events_with_sequences(
+                        chained,
+                        &script_ctx.data_registry.borrow(),
+                        &session.scripting.sequence_registry,
+                        &session.scripting.reaction_registry,
+                        &session.scripting.system_registry,
+                        script_ctx,
+                    );
+                }
             }
         }
         if let Some(session) = self.session.as_mut() {

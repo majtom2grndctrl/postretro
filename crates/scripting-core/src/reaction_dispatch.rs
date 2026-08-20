@@ -162,6 +162,13 @@ pub fn fire_named_event_with_sequences(
         .system_commands
         .replace_fire_context(postretro_entities::SystemCommandFireContext { source, values });
     let mut chained = Vec::new();
+    // Ordinal of this body among same-named matches. It is the second component
+    // of a scheduler instance key and cannot be reconstructed downstream — the
+    // resume path has no `matched` loop — so the enrolling dispatch supplies it.
+    // Counts EVERY same-named match (any descriptor kind), matching the index the
+    // trigger binder derives from `matched.iter().enumerate()` over the same
+    // `data_registry.reactions` order.
+    let mut body_ordinal = 0;
     for named in &data_registry.reactions {
         if named.name != event_name {
             continue;
@@ -173,6 +180,7 @@ pub fn fire_named_event_with_sequences(
                     log::warn!(
                         "[Scripting] named dispatch `{event_name}` has no trigger fire context for sentinel target; skipping primitive"
                     );
+                    body_ordinal += 1;
                     continue;
                 }
                 dispatch_primitive(p, reaction_registry, system_registry, script_ctx);
@@ -181,9 +189,16 @@ pub fn fire_named_event_with_sequences(
                 }
             }
             ReactionDescriptor::Sequence(steps) => {
-                dispatch_sequence(steps, sequence_registry, script_ctx);
+                chained.extend(dispatch_sequence(
+                    &named.name,
+                    body_ordinal,
+                    steps,
+                    sequence_registry,
+                    script_ctx,
+                ));
             }
         }
+        body_ordinal += 1;
     }
     script_ctx
         .system_commands
@@ -251,7 +266,18 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                         .all(|step| !is_trigger_consequential_primitive(&step.primitive)),
                     "trigger residual contains a consequential sequence step; binding must execute it in the fixed tick",
                 );
-                dispatch_sequence(steps, sequence_registry, script_ctx);
+                // Address and ordinal ride on the step in Task 3, once
+                // `PrepartitionedReactionStep::Descriptor` is widened to carry
+                // them; until then this executor has no name in scope. A resumed
+                // tail is presentation-only past its wait, so the empty address /
+                // zero ordinal is unused for Task 1's landings.
+                chained.extend(dispatch_sequence(
+                    "",
+                    0,
+                    steps,
+                    sequence_registry,
+                    script_ctx,
+                ));
             }
         }
     }
@@ -545,17 +571,54 @@ fn dispatch_system_primitive(
     }
 }
 
+/// Dispatch a `sequence` body. Returns the `fire`-step event names collected
+/// while walking the body (in authored order), which callers extend into their
+/// `chained` list for the app-side deferred dispatch hop.
+///
+/// The control arm sits **ahead of** the entity-target guard: on a `@wait` step
+/// it hands the remaining steps, the wait's args, the reaction `address`, and the
+/// `body_ordinal` (the first two components of a scheduler instance key, which
+/// nothing downstream can reconstruct) to the registered control handler, then
+/// `break`s — no step past a wait runs in this drain. On a `@fire` step it
+/// collects the target `event` name.
 fn dispatch_sequence(
+    address: &str,
+    body_ordinal: usize,
     steps: &[SequenceStep],
     sequence_registry: &SequencedPrimitiveRegistry,
     script_ctx: &ScriptCtx,
-) {
+) -> Vec<String> {
+    let mut fired = Vec::new();
     for (i, step) in steps.iter().enumerate() {
-        let postretro_entities::SequenceTarget::Entity(id) = step.id else {
-            log::warn!(
-                "[Scripting] sequence step {i}: sentinel target has no trigger fire context; skipping"
-            );
-            continue;
+        let id = match step.id {
+            postretro_entities::SequenceTarget::Wait => {
+                if let Some(control) = sequence_registry.get_control(&step.primitive) {
+                    control(address, body_ordinal, &steps[i + 1..], &step.args);
+                } else {
+                    log::error!(
+                        "[Scripting] sequence step {i}: control primitive '{}' has no registered handler; the tail will not run",
+                        step.primitive
+                    );
+                }
+                break;
+            }
+            postretro_entities::SequenceTarget::Fire => {
+                match step.args.get("event").and_then(serde_json::Value::as_str) {
+                    Some(event) => fired.push(event.to_string()),
+                    None => log::warn!(
+                        "[Scripting] sequence step {i}: fire step is missing its `event` name; skipping"
+                    ),
+                }
+                continue;
+            }
+            postretro_entities::SequenceTarget::Entity(id) => id,
+            postretro_entities::SequenceTarget::Activators
+            | postretro_entities::SequenceTarget::FiredTrigger => {
+                log::warn!(
+                    "[Scripting] sequence step {i}: sentinel target has no trigger fire context; skipping"
+                );
+                continue;
+            }
         };
         if !script_ctx.registry.borrow().exists(id) {
             log::warn!(
@@ -580,6 +643,7 @@ fn dispatch_sequence(
             );
         }
     }
+    fired
 }
 
 /// Called at `setupLevel()` time, before reactions land in [`DataRegistry`].
@@ -1913,5 +1977,159 @@ mod tests {
         assert_eq!(surviving[0].levels, vec!["campaign"]);
         assert_eq!(surviving[1].reaction.name, "valid_sequence");
         assert_eq!(surviving[1].levels, vec!["campaign", "boss"]);
+    }
+
+    // O35: a reaction containing `@wait`/`@fire` control steps survives
+    // `setupLevel` validation (`wait`/`fire` are registered names), while a
+    // sequence naming an unknown *action* primitive is still dropped.
+    #[test]
+    fn wait_and_fire_survive_sequence_validation_but_unknown_action_is_dropped() {
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        // Inert admission entries, as the binary registers them.
+        seq_reg.register("wait", |_id, _args| Ok(()));
+        seq_reg.register("fire", |_id, _args| Ok(()));
+        seq_reg.register("setLightAnimation", |_id, _args| Ok(()));
+
+        let bogus_id = EntityId::from_raw(0x0001_0000);
+        let reactions = vec![
+            sequence_reaction(
+                "timedReveal",
+                vec![
+                    SequenceStep {
+                        id: postretro_entities::SequenceTarget::Fire,
+                        primitive: "fire".into(),
+                        args: serde_json::json!({ "event": "raiseAlarm" }),
+                    },
+                    SequenceStep {
+                        id: postretro_entities::SequenceTarget::Wait,
+                        primitive: "wait".into(),
+                        args: serde_json::json!({ "durationMs": 800, "interruptible": true }),
+                    },
+                    SequenceStep {
+                        id: bogus_id.into(),
+                        primitive: "setLightAnimation".into(),
+                        args: serde_json::Value::Null,
+                    },
+                ],
+            ),
+            sequence_reaction(
+                "bogusAction",
+                vec![SequenceStep {
+                    id: bogus_id.into(),
+                    primitive: "notARegisteredPrimitive".into(),
+                    args: serde_json::Value::Null,
+                }],
+            ),
+        ];
+
+        let surviving = validate_sequence_primitives(reactions, &seq_reg);
+        assert_eq!(surviving.len(), 1, "only the unknown-action reaction is dropped");
+        assert_eq!(surviving[0].name, "timedReveal");
+    }
+
+    // O34: firing a named body that contains a wait runs only up to that wait,
+    // including at hop depth >= 1 inside a deferred batch. `S = [x, fire(R)]`,
+    // `R = [alarm, wait(800), moverStart]`; firing S dispatches R via the
+    // deferred hop, R runs `alarm`, hits the `@wait` arm, enrolls the tail, and
+    // breaks — `moverStart` never runs in the same drain.
+    #[test]
+    fn name_fired_body_runs_only_up_to_its_wait_across_a_deferred_hop() {
+        let script_ctx = ScriptCtx::new();
+        let x = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let alarm = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let mover = script_ctx.registry.borrow_mut().spawn(Transform::default());
+
+        let ran: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let enrolled_tail_len: Arc<std::sync::Mutex<Option<usize>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("wait", |_id, _args| Ok(()));
+        seq_reg.register("fire", |_id, _args| Ok(()));
+        let ran_note = Arc::clone(&ran);
+        seq_reg.register("note", move |_id, args| {
+            let label = args
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            ran_note.lock().unwrap().push(label);
+            Ok(())
+        });
+        let captured = Arc::clone(&enrolled_tail_len);
+        seq_reg.register_control("wait", move |_address, _ordinal, tail, _args| {
+            // Model enrollment: record the tail length; do NOT run it.
+            *captured.lock().unwrap() = Some(tail.len());
+        });
+
+        let note = |label: &str, id: EntityId| SequenceStep {
+            id: id.into(),
+            primitive: "note".into(),
+            args: serde_json::json!({ "label": label }),
+        };
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                sequence_reaction(
+                    "S",
+                    vec![
+                        note("x", x),
+                        SequenceStep {
+                            id: postretro_entities::SequenceTarget::Fire,
+                            primitive: "fire".into(),
+                            args: serde_json::json!({ "event": "R" }),
+                        },
+                    ],
+                ),
+                sequence_reaction(
+                    "R",
+                    vec![
+                        note("alarm", alarm),
+                        SequenceStep {
+                            id: postretro_entities::SequenceTarget::Wait,
+                            primitive: "wait".into(),
+                            args: serde_json::json!({ "durationMs": 800 }),
+                        },
+                        note("moverStart", mover),
+                    ],
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        let system_reg = SystemReactionRegistry::new();
+        // Fire S: it runs `x`, then its `fire(R)` step is collected as a chained
+        // name and dispatched through the deferred batch (hop depth 1).
+        let chained = fire_named_event_with_sequences(
+            "S",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+            None,
+        );
+        assert_eq!(chained, vec!["R".to_string()], "the fire step collects R");
+        dispatch_deferred_named_events_with_sequences(
+            chained,
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+        );
+
+        assert_eq!(
+            ran.lock().unwrap().as_slice(),
+            ["x".to_string(), "alarm".to_string()],
+            "the body runs only up to the wait; moverStart never runs in this drain"
+        );
+        assert_eq!(
+            *enrolled_tail_len.lock().unwrap(),
+            Some(1),
+            "the enrolled tail is exactly [moverStart]"
+        );
     }
 }

@@ -9,7 +9,9 @@ use crate::scripting::builtins::{
     touchable_wieldable_world_models, weapon_presentation_models,
 };
 use postretro_scripting_core::data_descriptors::LevelManifest;
-use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
+use postretro_scripting_core::reaction_dispatch::{
+    dispatch_deferred_named_events_with_sequences, fire_named_event_with_sequences,
+};
 
 /// Attach the descriptor-authored `player.health` validation range before either
 /// network role builds its replicated-state schema. The selected descriptor matches
@@ -420,7 +422,11 @@ pub(crate) fn install_world_cpu(
     // this function returns — so a `levelLoad` reaction that spawns a dynamic
     // light or emitter is enrolled and renders (previously dropped). Intentional,
     // accepted improvement.
-    fire_named_event_with_sequences(
+    // Capture the returned chained names (a `fire` step's target, or a fired
+    // `Primitive`'s `on_complete`) and feed them into the deferred dispatcher —
+    // previously discarded here, so a `fire` step in `levelLoad` dispatched
+    // nothing. A `wait` step enrolls its tail and returns before this point.
+    let level_load_chained = fire_named_event_with_sequences(
         "levelLoad",
         &script_ctx.data_registry.borrow(),
         sequence_registry,
@@ -429,6 +435,16 @@ pub(crate) fn install_world_cpu(
         script_ctx,
         None,
     );
+    if !level_load_chained.is_empty() {
+        dispatch_deferred_named_events_with_sequences(
+            level_load_chained,
+            &script_ctx.data_registry.borrow(),
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            script_ctx,
+        );
+    }
     // `levelLoad` may itself fire a spawner reaction after the install sweep.
     // Its archetype's table already exists above; fill only the newly attached
     // meshes before the first render rather than rebuilding or uploading.

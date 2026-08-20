@@ -214,6 +214,12 @@ fn run_headless_inner(
     let mut pending_death_events: Vec<String> = Vec::new();
 
     for tick in 0..runspec.ticks {
+        // Headless has no frame concept, so the scheduler's monotonic frame
+        // counter advances once per tick. Install-time enrollment stamps counter
+        // 0, so a 1-tick wait first advances on this (the first) tick — a defined
+        // offset, not incidental. This driver has no frame-end drain, so it only
+        // proves the counter/evaluate half; landings are exercised by SimHarness.
+        session.scripting.scheduler.begin_frame();
         let mut death_events_for_tick = std::mem::take(&mut pending_death_events);
         // Sparse command timeline: the active entry is the last one whose tick has
         // arrived; the effective aim is the most recent aim among arrived entries
@@ -289,6 +295,7 @@ fn run_headless_inner(
             None,
             |registry| session.scripting.evaluate_pending_in_tick_impacts(registry),
         );
+        session.scripting.scheduler.evaluate();
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,

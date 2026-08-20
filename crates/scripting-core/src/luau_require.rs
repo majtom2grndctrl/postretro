@@ -439,6 +439,8 @@ mod tests {
                 "spawner",
                 "armTrigger",
                 "disarmTrigger",
+                "wait",
+                "fire",
                 "scopeReactions",
                 "defineEntity",
                 "defineMod",

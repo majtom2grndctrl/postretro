@@ -59,6 +59,8 @@ mod state_slot_loss_harness_test;
 // It shares production ordering; trigger events remain local and never cross the wire.
 #[cfg(test)]
 mod trigger_state_channel_harness_test;
+#[cfg(test)]
+mod e18_timed_reaction_replication_harness_test;
 // E10 (Networked Enemy Authority Baseline) Task 7: the integration harness proving the
 // whole host→client enemy path end to end (host registration → wire → conditioned link
 // → client remote-presentation materialization → interpolation → despawn cleanup →

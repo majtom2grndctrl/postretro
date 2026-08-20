@@ -199,3 +199,11 @@
 "style" ""
 "_tags" "closet_alarm"
 }
+// entity 9
+{
+"classname" "light_spot"
+"origin" "40 248 8"
+"_falloff_range" "8"
+"light" "010"
+"angles" "0 0 0"
+}

@@ -5768,6 +5768,7 @@ impl App {
                 join_seeds: join_seed_state,
                 missing_identity_warned: _,
                 client_pawn_presentation,
+                projectile_presentations: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -6593,6 +6594,7 @@ impl App {
             join_seeds: _,
             missing_identity_warned: _,
             client_pawn_presentation: _,
+            projectile_presentations: _,
         }) = session.net_endpoint.as_mut()
         else {
             return Vec::new();

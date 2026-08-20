@@ -236,6 +236,15 @@ pub(crate) struct RemoteProjectilePresentationLaunch {
     pub(crate) projectile: postretro_foundation::ProjectileDescriptor,
 }
 
+/// Host-resolved projectile FIRE refusal. It reuses the existing owner-private
+/// ShotVerdict wire fact so the client can stop its matching predicted flight
+/// without waiting for a later impact or expiry declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteProjectileFireRejection {
+    pub(crate) owner_client_id: u64,
+    pub(crate) shot_id: ShotId,
+}
+
 /// Host-only inputs for the trigger stage. The system itself consumes the
 /// per-player map, never an action snapshot; local and remote use edges are
 /// keyed by `PlayerId` at this boundary.
@@ -272,6 +281,9 @@ pub(crate) struct TickEvents {
     /// Host-only remote-fire visual launches. No component here is gameplay
     /// authoritative and nothing in this event crosses the wire directly.
     pub(crate) remote_projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
+    /// Prompt owner-private corrections for projectile FIRE attempts rejected by
+    /// the host weapon gate. Accepted hitscan and pellet verdict timing is unchanged.
+    pub(crate) rejected_remote_projectile_fires: Vec<RemoteProjectileFireRejection>,
     /// Locally simulated projectiles that a listen host mirrors for remote observers.
     /// The host's renderer suppresses the mirror and continues to draw this source.
     pub(crate) local_projectile_spawns: Vec<EntityId>,
@@ -634,12 +646,8 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         );
     }
 
-    let (
-        authorized_shots,
-        remote_projectile_presentation_launches,
-        mut reload_deliveries,
-        remote_weapon_events,
-    ) = weapon_stage::run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
+    let remote_weapon_result =
+        weapon_stage::run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
     let own_pawn = {
         let registry = registry.borrow();
         registry.local_player_movement_pawn()
@@ -659,12 +667,13 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             tick_dt,
             &mut on_impact,
         );
+    let mut reload_deliveries = remote_weapon_result.reload_deliveries;
     reload_deliveries.extend(local_result.reload_deliveries);
     let mut weapon = local_result.weapon_events;
     let repointed_pawn = local_result.repointed_pawn;
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
-    weapon.extend(remote_weapon_events);
+    weapon.extend(remote_weapon_result.weapon_events);
     projectile_stage::advance(
         &registry,
         collision_world,
@@ -690,8 +699,10 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         weapon_impact_points,
         mover: mover_events,
         death,
-        authorized_shots,
-        remote_projectile_presentation_launches,
+        authorized_shots: remote_weapon_result.authorized_shots,
+        remote_projectile_presentation_launches: remote_weapon_result
+            .projectile_presentation_launches,
+        rejected_remote_projectile_fires: remote_weapon_result.rejected_projectile_fires,
         local_projectile_spawns: local_result.projectile_spawns,
         reload_deliveries,
         repointed_pawns,

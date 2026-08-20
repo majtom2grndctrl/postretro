@@ -1836,7 +1836,7 @@ fn host_handle_client_message_inner(
     }
 }
 
-fn send_shot_verdict(
+pub(crate) fn send_shot_verdict(
     server: &mut NetServer,
     client_id: u64,
     shot_id: u64,

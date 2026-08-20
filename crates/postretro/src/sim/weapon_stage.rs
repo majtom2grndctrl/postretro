@@ -1824,6 +1824,10 @@ mod tests {
         assert_eq!(events.authorized_shots[0].shot.fire_tick, 33);
         assert_eq!(events.authorized_shots[0].shot.pellet_count, 8);
         assert_eq!(events.authorized_shots[0].owner_client_id, 7);
+        assert!(
+            events.rejected_remote_projectile_fires.is_empty(),
+            "accepted hitscan/pellet FIRE keeps its existing declaration-time verdict path"
+        );
         assert_eq!(events.weapon, vec!["activate"]);
         let registry = registry.borrow();
         let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
@@ -1951,6 +1955,14 @@ mod tests {
 
         assert!(events.authorized_shots.is_empty());
         assert!(events.remote_projectile_presentation_launches.is_empty());
+        assert_eq!(
+            events.rejected_remote_projectile_fires,
+            vec![crate::sim::RemoteProjectileFireRejection {
+                owner_client_id: 7,
+                shot_id: ShotId::from_parts(NetworkId(42), 9),
+            }],
+            "the host emits an immediate owner-private correction instead of waiting for flight expiry"
+        );
         assert!(events.weapon.is_empty());
     }
 
@@ -1981,6 +1993,8 @@ mod tests {
             events.authorized_shots.is_empty(),
             "cooldown rejection mints no authority for the declared shot"
         );
+        assert_eq!(events.rejected_remote_projectile_fires.len(), 1);
+        assert_eq!(events.rejected_remote_projectile_fires[0].shot_id, shot_id);
 
         let mut allocator = NetworkIdAllocator::new();
         allocator.stamp(pawn);

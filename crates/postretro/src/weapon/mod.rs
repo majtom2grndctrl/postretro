@@ -7,7 +7,7 @@ use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
-use postretro_entities::registry::{EntityId, EntityRegistry};
+use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ProjectileDescriptor, ResolutionMode};
 
 use crate::collision::{CollisionWorld, cast_ray};
@@ -184,6 +184,22 @@ impl ClientPredictedShots {
             record.muzzle_fx_visible = false;
             record.hitmarker_visible = false;
             record.status = PredictedShotStatus::Rejected;
+
+            // A rejected FIRE has no host authority to resolve later. Remove only
+            // this client's matching predicted flight; remote observer entities
+            // carry no ProjectileComponent and other local shots keep their ids.
+            let rejected_projectiles = registry
+                .iter_with_kind(ComponentKind::Projectile)
+                .filter_map(|(id, value)| {
+                    let ComponentValue::Projectile(projectile) = value else {
+                        return None;
+                    };
+                    (projectile.predicted_shot_id == Some(shot_id)).then_some(id)
+                })
+                .collect::<Vec<_>>();
+            for projectile in rejected_projectiles {
+                let _ = registry.despawn(projectile);
+            }
         }
         self.shots.remove(&shot_id)
     }
@@ -776,6 +792,7 @@ pub(crate) mod tests {
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
+    use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::registry::{ComponentKind, Transform};
     use postretro_foundation::{AmmoResource, ReloadStyle, WeaponDescriptor, WeaponResource};
     use winit::event::MouseButton;
@@ -1994,6 +2011,78 @@ pub(crate) mod tests {
         assert!(
             predicted.get(0xA).is_none(),
             "a terminal verdict prunes the record"
+        );
+    }
+
+    // Regression: a host-rejected projectile kept flying locally until its later
+    // impact/expiry declaration, despite FIRE already having no authority.
+    #[test]
+    fn shot_verdict_reject_removes_only_matching_predicted_projectile() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: Vec::new(),
+            projectile_launch: None,
+        };
+        let (mut registry, weapon) = client_weapon_registry();
+        let owner = registry.spawn(Transform::default());
+        let remote_target = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                remote_target,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("remote target health attaches");
+        let spawn_predicted = |registry: &mut EntityRegistry, shot_id| {
+            let projectile = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    projectile,
+                    ProjectileComponent {
+                        direction: Vec3::NEG_Z.to_array(),
+                        speed: 10.0,
+                        radius: 0.1,
+                        remaining_range: 100.0,
+                        remaining_lifetime: 10.0,
+                        damage: 25.0,
+                        credit_source: "weapon.test.projectile".to_string(),
+                        owner_pawn: owner,
+                        owner_weapon: weapon,
+                        spawned: false,
+                        predicted_shot_id: Some(shot_id),
+                    },
+                )
+                .expect("predicted projectile state attaches");
+            projectile
+        };
+        let rejected = spawn_predicted(&mut registry, 0xA);
+        let other = spawn_predicted(&mut registry, 0xB);
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+
+        let record = predicted
+            .apply_verdict(&mut registry, 0xA, false, false)
+            .expect("prompt rejection matches the predicted fire");
+
+        assert_eq!(record.status, PredictedShotStatus::Rejected);
+        assert!(!registry.exists(rejected));
+        assert!(
+            registry.exists(other),
+            "a different local shot identity keeps flying"
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(remote_target)
+                .expect("remote health remains host-owned")
+                .current,
+            100.0
         );
     }
 

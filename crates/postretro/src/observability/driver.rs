@@ -295,7 +295,9 @@ fn run_headless_inner(
             None,
             |registry| session.scripting.evaluate_pending_in_tick_impacts(registry),
         );
-        session.scripting.scheduler.evaluate();
+        // No trigger context here, so no Exit fires are ever produced; the empty
+        // set means nothing is cancelled and the countdown simply advances.
+        session.scripting.scheduler.evaluate(&[]);
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,

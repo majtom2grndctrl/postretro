@@ -145,7 +145,6 @@ impl TriggerSystem {
     /// borrows this from the frame-end drain: an interruptible wait may park only
     /// while its origin's paired enter is live, otherwise a player who entered and
     /// left within one frame would park an uncancellable instance (O52, O60).
-    #[allow(dead_code)] // Consumed by Task 5's frame-end enrollment check.
     pub(crate) fn paired_enters(&self) -> &BTreeSet<(EntityId, PlayerId)> {
         &self.paired_enters
     }

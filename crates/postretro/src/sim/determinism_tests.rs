@@ -241,6 +241,10 @@ struct RecordedTick {
     authorized_shots: Vec<RecordedShot>,
     reload_deliveries: Vec<RecordedReload>,
     trigger_residuals: Vec<TriggerResidualHandle>,
+    /// This tick's paired-trigger Exit fires, projected onto spawn-order-stable
+    /// labels. Mirrors the production `TickEvents.trigger_exit_fires` the scheduler
+    /// consumes to cancel interruptible instances.
+    trigger_exit_fires: Vec<(EntityLabel, PlayerLabel)>,
     trigger_fires: Vec<RecordedTriggerFire>,
     trigger_command_fires: Vec<RecordedCommandFire>,
     predicate_crossing_fires: Vec<(String, bool)>,
@@ -703,10 +707,11 @@ impl SimHarness {
             |_| {},
         );
         evaluate_slot_accumulators(&mut self.slot_accumulator_bindings, DT);
-        // Advance timed-reaction countdowns for this tick. Empty (no-op) for the
-        // determinism fixture; the enrollment-frame stamp keeps a just-enrolled
-        // instance from advancing.
-        self.scheduler.evaluate();
+        // Advance timed-reaction countdowns for this tick, cancelling any
+        // interruptible instance whose paired Exit fired this tick before the
+        // countdown advances (O4). Empty (no-op) for the determinism fixture; the
+        // enrollment-frame stamp keeps a just-enrolled instance from advancing.
+        self.scheduler.evaluate(&events.trigger_exit_fires);
         let predicate_crossing_fires = self
             .crossing_detector
             .detect(&self.trigger_slots.borrow())
@@ -783,7 +788,16 @@ impl SimHarness {
                     weapon: self.label(delivery.weapon),
                 })
                 .collect(),
-            trigger_residuals: events.trigger_residuals,
+            trigger_residuals: events
+                .trigger_residuals
+                .iter()
+                .map(|(handle, _, _)| *handle)
+                .collect(),
+            trigger_exit_fires: events
+                .trigger_exit_fires
+                .iter()
+                .map(|(trigger, player)| (self.label(*trigger), self.player_label(*player)))
+                .collect(),
             trigger_fires: events
                 .trigger_fires
                 .iter()

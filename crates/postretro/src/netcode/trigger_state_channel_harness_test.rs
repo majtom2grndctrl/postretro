@@ -855,7 +855,7 @@ fn persistent_atmosphere_trigger_replication_drives_client_local_presentation() 
     assert!(matches!(
         harness
             .host_bindings
-            .residual(host_events.trigger_residuals[0])
+            .residual(host_events.trigger_residuals[0].0)
             .expect("fixture presentation step stays bound as a residual")
             .steps(),
         [PrepartitionedReactionStep::Descriptor(_, _, ReactionDescriptor::Primitive(

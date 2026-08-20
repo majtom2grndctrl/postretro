@@ -2832,7 +2832,12 @@ impl ApplicationHandler for App {
                         // behaviourally load-bearing: landings execute at the
                         // frame-end drain, after every tick's accumulator pass. An
                         // instance enrolled this frame is skipped via its stamp.
-                        scripting.scheduler.evaluate();
+                        // This tick's paired-trigger Exit fires cancel matching
+                        // interruptible instances before the countdown advances
+                        // (O4), so an Exit on the exact landing tick wins.
+                        scripting
+                            .scheduler
+                            .evaluate(&tick_events.trigger_exit_fires);
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -3038,13 +3043,31 @@ impl ApplicationHandler for App {
                             None,
                         ));
                     }
-                    for handle in &pending_trigger_residuals {
+                    for (handle, trigger, player) in &pending_trigger_residuals {
                         let Some(residual) = self.trigger_bindings.residual(*handle) else {
                             log::warn!(
                                 "[Trigger] residual handle {handle:?} was not bound at install"
                             );
                             continue;
                         };
+                        // Scope the origin guard to THIS residual iteration only,
+                        // released before the deferred batch below (O54): a `wait`
+                        // reached synchronously here keys its instance to this
+                        // `(trigger, player)`, while a batch-seeded `fire` stays
+                        // sourceless. The paired-enter standing check (O52/O60)
+                        // reads the trigger system from the session the drain
+                        // already holds — an interruptible instance parks only
+                        // while its origin's enter is live, so a player who left
+                        // within the frame does not park an uncancellable beat.
+                        let paired_enter_standing = session
+                            .trigger_system
+                            .paired_enters()
+                            .contains(&(*trigger, *player));
+                        let _origin = session.scripting.scheduler.begin_origin(
+                            *trigger,
+                            *player,
+                            paired_enter_standing,
+                        );
                         pending_trigger_follow_ups.extend(
                             fire_prepartitioned_reactions_with_sequences(
                                 residual.steps(),
@@ -3079,6 +3102,18 @@ impl ApplicationHandler for App {
                     // `self.trigger_bindings` (O33). `take_landings` (inside
                     // `drain_landings`) `mem::take`s the queue, so nothing borrows
                     // it across the block — no need to move it onto `App`.
+                    //
+                    // Before draining, drop any interruptible instance whose keyed
+                    // trigger left the level mid-wait: `paired_enters` retains only
+                    // live triggers, so a surviving parked interruptible instance
+                    // absent from it has no Exit to ever cancel on and must not land
+                    // uncancelled (O63).
+                    session
+                        .scripting
+                        .scheduler
+                        .drop_orphaned_interruptible_instances(
+                            session.trigger_system.paired_enters(),
+                        );
                     session.scripting.scheduler.drain_landings(
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,

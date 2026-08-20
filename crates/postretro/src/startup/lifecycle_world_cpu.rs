@@ -206,6 +206,30 @@ pub(crate) fn install_world_cpu(
                 manifest.trigger_pools,
                 active_level_tags,
             );
+        // E18 validation — Pass A (V1, V4a, V6), then Pass B's rejection rows
+        // (V2, V3, V4b). Both run BEFORE every consumer of the composed
+        // reaction set: the subscriber/accumulator rebuilds below and
+        // `build_trigger_bindings` all read the post-validation `DataRegistry`,
+        // so a rejected reaction is an inert `Sequence(vec![])` before anything
+        // binds or subscribes to it. Dropping after the binder would be a no-op
+        // for trigger-bound content — the binder copies bodies into owned
+        // commands/steps the drain never re-reads. Matches the staged-commit
+        // order in `poll_staged_manifest_results`, so install and hot reload
+        // agree on what the subscriber rebuild observes for a dropped body.
+        // V4b validates against a freshly-built `SystemReactionIrBindings`
+        // because the session's table is not rebuilt until after this installer
+        // returns; that later rebuild recomputes `required_dispatch_inputs`
+        // identically.
+        crate::startup::reaction_validation::validate_reaction_bodies_pass_a(script_ctx);
+        {
+            let mut system_reaction_bindings =
+                crate::scripting_systems::system_reactions::SystemReactionIrBindings::default();
+            system_reaction_bindings.rebuild(&script_ctx.data_registry.borrow(), script_ctx);
+            crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
+                script_ctx,
+                &system_reaction_bindings,
+            );
+        }
         // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this
         // level's local slot defaults before any connected-client network baseline is
         // applied. A late join then observes the host's persistent state as one real
@@ -213,11 +237,6 @@ pub(crate) fn install_world_cpu(
         // Network baseline application begins only after world install returns.
         rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
         slot_accumulator_bindings.rebuild(script_ctx);
-        // E18 Pass A — body-only `wait`/`fire` validation (V1, V4a, V6). Runs here
-        // (the `slot_accumulator_bindings.rebuild` slot) so a rejected body is an
-        // inert `Sequence(vec![])` BEFORE `build_trigger_bindings` below can bind
-        // it. Reads/mutates only the `DataRegistry`.
-        crate::startup::reaction_validation::validate_reaction_bodies_pass_a(script_ctx);
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
@@ -231,24 +250,15 @@ pub(crate) fn install_world_cpu(
         let data_registry = script_ctx.data_registry.borrow();
         trigger_bindings.install_manifest_events(&registry, &data_registry, script_ctx);
     }
-    // E18 Pass B — trigger-coupled validation (V2, V3, V4b) and the V5 Exit-edge
-    // derivation. Runs AFTER `install_manifest_events` (so a manifest-bound
-    // reveal is not dropped by V3 and V5's derived edge survives — O36) and
-    // BEFORE the `levelLoad` fire (so a rejected `levelLoad` body cannot fire).
-    // V4b reads the bound system-`setState` programs; the session's binding table
-    // is not rebuilt until after this installer returns, so validate against a
-    // freshly-built table for this level. It reads `required_dispatch_inputs`,
-    // which the session's later rebuild recomputes identically.
-    {
-        let mut system_reaction_bindings =
-            crate::scripting_systems::system_reactions::SystemReactionIrBindings::default();
-        system_reaction_bindings.rebuild(&script_ctx.data_registry.borrow(), script_ctx);
-        crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
-            script_ctx,
-            &mut trigger_bindings,
-            &system_reaction_bindings,
-        );
-    }
+    // E18 V5 — derive the paired Exit edge for every surviving
+    // interruptible-wait reaction. Runs AFTER `install_manifest_events` so a
+    // manifest-bound Enter binding derives its edge too and the insert lands in
+    // the final table (O36). The rejection rows already ran before the binder,
+    // so a dropped body derives nothing here.
+    crate::startup::reaction_validation::derive_interruptible_wait_exit_edges(
+        script_ctx,
+        &mut trigger_bindings,
+    );
     timings.record("data_script");
 
     // Data-archetype sweep: materialize every matching map placement the built-in

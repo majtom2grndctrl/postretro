@@ -1,24 +1,6 @@
-// E18 install-time validation for timed/delayed reaction steps.
-//
-// Two read-only passes reject malformed and context-dependent `wait`/`fire`
-// bodies before any frame runs, and derive the paired Exit edge an interruptible
-// wait needs as its cancel source. Neither pass rewrites a body: a rejected
-// reaction is replaced in place with an inert `Sequence(vec![])` so no later pass
-// or index observes a shifted vector, and the level installs with every other
-// reaction unaffected — matching how `validate_sequence_primitives` already drops
-// one whole reaction for one bad step.
-//
-// The passes run at two points in `install_world_cpu` because their inputs
-// arrive at different times, and again in the staged-manifest commit block so a
-// hot reload re-validates rather than inheriting a stale verdict:
-//   * Pass A (V1, V4a, V6) needs only the `DataRegistry`, and runs where
-//     `slot_accumulator_bindings.rebuild` sits, before any body is bound.
-//   * Pass B (V2, V3, V4b, V5) needs reaction-to-trigger provenance and the
-//     bound system-reaction programs, so it runs after `install_manifest_events`
-//     (install) / after both binder rebuilds (staged commit).
-//
-// See: context/plans/in-progress/E18--timed-reaction-steps/index.md — Install
-// validation.
+// E18 install-time validation of `wait`/`fire` reaction bodies (V1–V6) and the
+// V5 interruptible-wait Exit-edge derivation.
+// See: context/plans/in-progress/E18--timed-reaction-steps/index.md §Install validation
 
 use std::collections::{HashMap, HashSet};
 
@@ -150,16 +132,86 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
     }
 }
 
-/// Pass B — trigger-coupled validation (V2, V3, V4b) and the V5 Exit-edge
-/// derivation. Provenance is read from the sources the binder read — never from
-/// `TriggerBindingTable`, which discards reaction identity: brush-KVP
-/// `TriggerVolumeComponent.on_fire`/`on_exit` across `EntityRegistry` triggers,
-/// plus manifest `data_registry.trigger_events`. V4b reads the precomputed
-/// `required_dispatch_inputs` from `system_bindings`. V5 derives the paired Exit
-/// edge on `trigger_bindings` via `bind_edge_only`.
+/// Enter-binding provenance for Pass B, read from the sources the binder reads —
+/// never from `TriggerBindingTable`, which discards reaction identity:
+/// brush-KVP `TriggerVolumeComponent.on_fire` across `EntityRegistry` triggers,
+/// plus manifest `data_registry.trigger_events` (tag × "enter" × fire names).
+struct EnterBindingProvenance {
+    /// Reaction name → triggers it is Enter-bound to.
+    enter_triggers: HashMap<String, Vec<EntityId>>,
+    /// Per-trigger `fire_mode`, for V2.
+    trigger_fire_mode: HashMap<EntityId, TriggerFireMode>,
+}
+
+fn collect_enter_provenance(script_ctx: &ScriptCtx) -> EnterBindingProvenance {
+    let mut enter_triggers: HashMap<String, Vec<EntityId>> = HashMap::new();
+    let mut trigger_fire_mode: HashMap<EntityId, TriggerFireMode> = HashMap::new();
+    let registry = script_ctx.registry.borrow();
+    let mut trigger_ids: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::TriggerVolume)
+        .map(|(id, _)| id)
+        .collect();
+    trigger_ids.sort_unstable();
+    for trigger in trigger_ids {
+        let Ok(component) = registry
+            .get_component::<TriggerVolumeComponent>(trigger)
+            .cloned()
+        else {
+            continue;
+        };
+        trigger_fire_mode.insert(trigger, component.fire_mode);
+        // Brush KVP: `on_fire` is the Enter reaction (the binder reads the
+        // same field for `TriggerEventEdge::Enter`).
+        if !component.on_fire.is_empty() {
+            enter_triggers
+                .entry(component.on_fire.clone())
+                .or_default()
+                .push(trigger);
+        }
+    }
+
+    // Manifest `onTriggerEvent` bindings: (tag, "enter", fire names).
+    let trigger_events = script_ctx.data_registry.borrow().trigger_events.clone();
+    for descriptor in &trigger_events {
+        if descriptor.event != "enter" {
+            continue;
+        }
+        let mut triggers: Vec<EntityId> = registry
+            .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&descriptor.tag))
+            .map(|(id, _)| id)
+            .collect();
+        triggers.sort_unstable();
+        for event_name in &descriptor.fire {
+            for &trigger in &triggers {
+                enter_triggers
+                    .entry(event_name.clone())
+                    .or_default()
+                    .push(trigger);
+            }
+        }
+    }
+    EnterBindingProvenance {
+        enter_triggers,
+        trigger_fire_mode,
+    }
+}
+
+/// Pass B — trigger-coupled rejection rows (V2, V3, V4b). Like Pass A, this
+/// MUST run BEFORE `build_trigger_bindings`: dropping a reaction after the
+/// binder has run is a no-op for trigger-bound content, because
+/// `partition_direct_reaction` copies the body into owned in-tick commands and
+/// residual steps at bind time and the runtime drain never re-reads the
+/// `DataRegistry` body — a post-bind drop leaves a V2 wait enrolling on Enter
+/// and a V4b pre-wait `fire` dispatching as a `DeferredEvent`. Rejecting first
+/// means the binder matches an inert `Sequence(vec![])` and binds nothing.
+/// Nothing here needs the built table: provenance comes from the same raw
+/// sources the binder reads (see [`collect_enter_provenance`]), and V4b reads
+/// the precomputed `required_dispatch_inputs` from `system_bindings`, which is
+/// built from the `DataRegistry` alone. Only the V5 derivation
+/// ([`derive_interruptible_wait_exit_edges`]) must follow the binder, because
+/// it inserts into the freshly built table.
 pub(crate) fn validate_trigger_coupled_pass_b(
     script_ctx: &ScriptCtx,
-    trigger_bindings: &mut TriggerBindingTable,
     system_bindings: &SystemReactionIrBindings,
 ) {
     // Reactions whose bound system-`setState` program reads a seeded dispatch
@@ -171,61 +223,9 @@ pub(crate) fn validate_trigger_coupled_pass_b(
         .map(|(name, _)| name.to_string())
         .collect();
 
-    // Enter-binding provenance: reaction name → triggers it is Enter-bound to,
-    // plus per-trigger `fire_mode` for V2.
-    let mut enter_triggers: HashMap<String, Vec<EntityId>> = HashMap::new();
-    let mut trigger_fire_mode: HashMap<EntityId, TriggerFireMode> = HashMap::new();
-    {
-        let registry = script_ctx.registry.borrow();
-        let mut trigger_ids: Vec<EntityId> = registry
-            .iter_with_kind(ComponentKind::TriggerVolume)
-            .map(|(id, _)| id)
-            .collect();
-        trigger_ids.sort_unstable();
-        for trigger in trigger_ids {
-            let Ok(component) = registry
-                .get_component::<TriggerVolumeComponent>(trigger)
-                .cloned()
-            else {
-                continue;
-            };
-            trigger_fire_mode.insert(trigger, component.fire_mode);
-            // Brush KVP: `on_fire` is the Enter reaction (the binder reads the
-            // same field for `TriggerEventEdge::Enter`).
-            if !component.on_fire.is_empty() {
-                enter_triggers
-                    .entry(component.on_fire.clone())
-                    .or_default()
-                    .push(trigger);
-            }
-        }
-
-        // Manifest `onTriggerEvent` bindings: (tag, "enter", fire names).
-        let trigger_events = script_ctx.data_registry.borrow().trigger_events.clone();
-        for descriptor in &trigger_events {
-            if descriptor.event != "enter" {
-                continue;
-            }
-            let mut triggers: Vec<EntityId> = registry
-                .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&descriptor.tag))
-                .map(|(id, _)| id)
-                .collect();
-            triggers.sort_unstable();
-            for event_name in &descriptor.fire {
-                for &trigger in &triggers {
-                    enter_triggers
-                        .entry(event_name.clone())
-                        .or_default()
-                        .push(trigger);
-                }
-            }
-        }
-    }
+    let provenance = collect_enter_provenance(script_ctx);
 
     let mut rejects: Vec<usize> = Vec::new();
-    // Every Enter trigger of a surviving interruptible-wait reaction gets its
-    // paired Exit edge derived (V5), deduplicated below.
-    let mut exit_derivations: Vec<EntityId> = Vec::new();
     {
         let data_registry = script_ctx.data_registry.borrow();
         for (index, reaction) in data_registry.reactions.iter().enumerate() {
@@ -256,13 +256,16 @@ pub(crate) fn validate_trigger_coupled_pass_b(
             }) else {
                 continue;
             };
-            let enter = enter_triggers.get(name);
+            let enter = provenance.enter_triggers.get(name);
 
             // V2: Enter-bound to a `once` trigger — the latch is spent on first
             // fire, so a cancel destroys the set-piece permanently.
             if enter.is_some_and(|triggers| {
                 triggers.iter().any(|trigger| {
-                    matches!(trigger_fire_mode.get(trigger), Some(TriggerFireMode::Once))
+                    matches!(
+                        provenance.trigger_fire_mode.get(trigger),
+                        Some(TriggerFireMode::Once)
+                    )
                 })
             }) {
                 log::error!(
@@ -282,13 +285,6 @@ pub(crate) fn validate_trigger_coupled_pass_b(
                 rejects.push(index);
                 continue;
             }
-
-            // V5: derive the paired Exit edge for every Enter trigger, so an
-            // interruptible wait always has a live cancel source even with no
-            // authored `on_exit` KVP.
-            if let Some(triggers) = enter {
-                exit_derivations.extend(triggers.iter().copied());
-            }
         }
     }
 
@@ -298,14 +294,41 @@ pub(crate) fn validate_trigger_coupled_pass_b(
             data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
         }
     }
+}
 
+/// Pass B — the V5 Exit-edge derivation. Runs AFTER `build_trigger_bindings` +
+/// `install_manifest_events` (the table is built from scratch there, so an
+/// earlier insert would be lost) and after the rejection rows above (a dropped
+/// reaction is `Sequence(vec![])` by now, so it derives nothing). Every Enter
+/// trigger of a surviving interruptible-wait reaction gets its paired
+/// `(trigger, Exit)` edge inserted into `bound_edges`, so cancellation has a
+/// live source even with no authored `on_exit` KVP.
+pub(crate) fn derive_interruptible_wait_exit_edges(
+    script_ctx: &ScriptCtx,
+    trigger_bindings: &mut TriggerBindingTable,
+) {
+    let provenance = collect_enter_provenance(script_ctx);
     // Deduplicate: a reaction Enter-bound to two triggers, or two reactions
     // sharing a trigger, must not insert the same edge twice (the insert is
     // idempotent anyway, this only avoids redundant work).
     let mut derived: HashSet<EntityId> = HashSet::new();
-    for trigger in exit_derivations {
-        if derived.insert(trigger) {
-            trigger_bindings.bind_edge_only(trigger, TriggerEventEdge::Exit);
+    let data_registry = script_ctx.data_registry.borrow();
+    for reaction in &data_registry.reactions {
+        let ReactionDescriptor::Sequence(steps) = &reaction.descriptor else {
+            continue;
+        };
+        if !steps.iter().any(|step| {
+            matches!(step.id, SequenceTarget::Wait) && wait_is_interruptible(&step.args)
+        }) {
+            continue;
+        }
+        let Some(triggers) = provenance.enter_triggers.get(&reaction.name) else {
+            continue;
+        };
+        for &trigger in triggers {
+            if derived.insert(trigger) {
+                trigger_bindings.bind_edge_only(trigger, TriggerEventEdge::Exit);
+            }
         }
     }
 }
@@ -318,8 +341,19 @@ mod tests {
         SlotType, SlotValue, Transform, TriggerActivation, TriggerEventDescriptor,
         TriggerVolumeComponent,
     };
+    use postretro_scripting_core::reaction_dispatch::{
+        PrepartitionedReactionStep, ResidualOrigin, fire_prepartitioned_reactions_with_sequences,
+    };
+    use postretro_scripting_core::reaction_registry::{
+        ReactionPrimitiveRegistry, SystemReactionRegistry,
+    };
+    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
     use postretro_test_log_capture::LogCapture;
     use serde_json::json;
+
+    use crate::scripting_systems::reaction_scheduler::{
+        ReactionScheduler, register_reaction_control_primitives,
+    };
 
     // --- fixture builders ---------------------------------------------------
 
@@ -459,13 +493,59 @@ mod tests {
         bindings
     }
 
-    fn empty_table() -> TriggerBindingTable {
-        TriggerBindingTable::default()
+    fn run_pass_b(ctx: &ScriptCtx) {
+        let bindings = built_system_bindings(ctx);
+        validate_trigger_coupled_pass_b(ctx, &bindings);
     }
 
-    fn run_pass_b(ctx: &ScriptCtx, table: &mut TriggerBindingTable) {
-        let bindings = built_system_bindings(ctx);
-        validate_trigger_coupled_pass_b(ctx, table, &bindings);
+    /// Mirror the production install/staged-commit order exactly
+    /// (`install_world_cpu` / `poll_staged_manifest_results`): Pass A → Pass B
+    /// rejection rows → binder build + manifest events → V5 Exit-edge
+    /// derivation. Tests that assert what a trigger-bound reaction can do at
+    /// runtime must go through this, never a hand-ordered variant — an
+    /// empty-table shortcut is exactly the blind spot that shipped the
+    /// bind-before-drop bug.
+    fn validated_bindings(ctx: &ScriptCtx) -> TriggerBindingTable {
+        validate_reaction_bodies_pass_a(ctx);
+        run_pass_b(ctx);
+        let mut table = {
+            let registry = ctx.registry.borrow();
+            let data_registry = ctx.data_registry.borrow();
+            TriggerBindingTable::build_with_script_ctx(&registry, &data_registry, ctx)
+        };
+        {
+            let registry = ctx.registry.borrow();
+            let data_registry = ctx.data_registry.borrow();
+            table.install_manifest_events(&registry, &data_registry, ctx);
+        }
+        derive_interruptible_wait_exit_edges(ctx, &mut table);
+        table
+    }
+
+    /// Fire the trigger's Enter binding exactly as `simulate_tick` does and
+    /// return what runtime work exists for it: the in-tick command count and
+    /// the residual steps the frame-end drain would receive. `(0, None)` means
+    /// the edge is runtime-inert — nothing can run or enroll from it.
+    fn enter_execution(
+        table: &TriggerBindingTable,
+        ctx: &ScriptCtx,
+        trigger: EntityId,
+    ) -> (usize, Option<Vec<PrepartitionedReactionStep>>) {
+        let mut registry = ctx.registry.borrow_mut();
+        let mut slot_table = ctx.slot_table.borrow_mut();
+        let execution = table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut slot_table,
+            &crate::trigger_commands::TriggerFireContext::default(),
+        );
+        let command_count = execution.commands.len();
+        let steps = execution
+            .residual()
+            .and_then(|handle| table.residual(handle))
+            .map(|residual| residual.steps().to_vec());
+        (command_count, steps)
     }
 
     // --- V1 (Pass A) --------------------------------------------------------
@@ -576,8 +656,7 @@ mod tests {
         )]);
         spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Once, &[]);
         let capture = LogCapture::start();
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         capture.assert_logged_once(log::Level::Error, "reaction `reveal` step 0");
         assert!(is_dropped(&ctx, "reveal"));
     }
@@ -590,8 +669,7 @@ mod tests {
             vec![wait_step(json!(800), true), entity_step(1)],
         )]);
         spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         assert!(!is_dropped(&ctx, "reveal"));
     }
 
@@ -605,8 +683,7 @@ mod tests {
             vec![wait_step(json!(800), true), entity_step(1)],
         )]);
         let capture = LogCapture::start();
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         capture.assert_logged_once(log::Level::Error, "reaction `levelLoad` step 0");
         assert!(is_dropped(&ctx, "levelLoad"));
     }
@@ -619,8 +696,7 @@ mod tests {
             "levelLoad",
             vec![wait_step(json!(800), false), entity_step(1)],
         )]);
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         assert!(!is_dropped(&ctx, "levelLoad"));
     }
 
@@ -642,8 +718,7 @@ mod tests {
         ]);
         insert_writable_number(&ctx, "puzzle.target");
         let capture = LogCapture::start();
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         capture.assert_logged_once(log::Level::Error, "reaction `reveal` step 1");
         assert!(is_dropped(&ctx, "reveal"));
     }
@@ -658,8 +733,7 @@ mod tests {
             sequence("reveal", vec![entity_step(1), fire_step("raiseAlarm")]),
         ]);
         insert_writable_number(&ctx, "puzzle.target");
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         assert!(!is_dropped(&ctx, "reveal"));
     }
 
@@ -676,14 +750,7 @@ mod tests {
         )]);
         // `on_exit` is empty — no authored Exit KVP.
         let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
-        let mut table = empty_table();
-        assert!(
-            !table
-                .bound_edges()
-                .contains(&(trigger, TriggerEventEdge::Exit)),
-            "no Exit edge before Pass B",
-        );
-        run_pass_b(&ctx, &mut table);
+        let table = validated_bindings(&ctx);
         assert!(!is_dropped(&ctx, "reveal"));
         assert!(
             table
@@ -702,8 +769,7 @@ mod tests {
             vec![wait_step(json!(800), false), entity_step(1)],
         )]);
         let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        let table = validated_bindings(&ctx);
         assert!(
             !table
                 .bound_edges()
@@ -744,8 +810,7 @@ mod tests {
             TriggerFireMode::Multiple,
             &["closet_reveal_plate"],
         );
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        let table = validated_bindings(&ctx);
         assert!(
             !is_dropped(&ctx, "reveal"),
             "a manifest-bound reveal is not dropped by V3 (O36)",
@@ -784,11 +849,15 @@ mod tests {
                 Vec::new(),
                 &[],
             );
-        spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
-        validate_reaction_bodies_pass_a(&ctx);
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        let trigger = spawn_trigger(&ctx, "", "", TriggerFireMode::Multiple, &["plate"]);
+        let table = validated_bindings(&ctx);
         assert!(!is_dropped(&ctx, "reveal"));
+        assert!(
+            table
+                .bound_edges()
+                .contains(&(trigger, TriggerEventEdge::Enter)),
+            "a wait-first residual is non-empty, so the Enter edge binds (O46)",
+        );
     }
 
     // A reaction that is both Enter-bound and a `fire` target keeps its Enter
@@ -802,8 +871,276 @@ mod tests {
             vec![wait_step(json!(800), true), entity_step(1)],
         )]);
         spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
-        let mut table = empty_table();
-        run_pass_b(&ctx, &mut table);
+        run_pass_b(&ctx);
         assert!(!is_dropped(&ctx, "reveal"));
+    }
+
+    // --- Production-order rejection ↔ binder tests --------------------------
+    //
+    // Regression: Pass B once ran AFTER `build_trigger_bindings`, so emptying a
+    // rejected reaction's `DataRegistry` body was a no-op for trigger-bound
+    // content — the binder had already copied the body into owned commands and
+    // residual steps the runtime drain iterates. A V2-rejected interruptible
+    // wait still enrolled on Enter (and a paired Exit spent the `once` latch
+    // permanently), and a V4b-rejected pre-wait `fire` still dispatched as a
+    // `DeferredEvent`. These tests go through `validated_bindings` (the real
+    // production order) and assert runtime inertness, never just the registry
+    // drop.
+
+    /// An Entity-targeted presentation step on a freshly spawned entity, using
+    /// the registered-at-drain `note` primitive so the residual drain can
+    /// dispatch it without warns.
+    fn note_step(ctx: &ScriptCtx) -> SequenceStep {
+        let id = ctx.registry.borrow_mut().spawn(Transform::default());
+        SequenceStep {
+            id: SequenceTarget::Entity(id),
+            primitive: "note".to_string(),
+            args: json!({}),
+        }
+    }
+
+    /// Drain residual steps exactly as the frame-end drain does — a live
+    /// scheduler with `wait`/`fire` registered — and report the chained names
+    /// plus how many instances enrolled.
+    fn drain_trigger_residual(
+        ctx: &ScriptCtx,
+        steps: &[PrepartitionedReactionStep],
+    ) -> (Vec<String>, usize) {
+        let scheduler = ReactionScheduler::default();
+        scheduler.set_enabled(true);
+        let mut sequence_registry = SequencedPrimitiveRegistry::new();
+        register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
+        sequence_registry.register("note", |_id, _args| Ok(()));
+        let follow_ups = fire_prepartitioned_reactions_with_sequences(
+            steps,
+            &sequence_registry,
+            &ReactionPrimitiveRegistry::new(),
+            &SystemReactionRegistry::new(),
+            ctx,
+            ResidualOrigin::TriggerBinding,
+        );
+        (follow_ups, scheduler.pending_len())
+    }
+
+    // V2 with the binder in the loop: the rejected reaction is never bound, so
+    // its Enter fire yields no in-tick command and no residual — nothing can
+    // enroll, and no Exit cancel can ever spend the `once` latch. Covered both
+    // without and with an authored `on_exit` (the authored Exit binding belongs
+    // to its own reaction and must survive).
+    #[test]
+    fn v2_rejected_once_reaction_is_never_bound_and_cannot_enroll() {
+        for on_exit in ["", "exitCue"] {
+            let ctx = ctx_with_reactions(vec![
+                sequence("reveal", vec![wait_step(json!(800), true), entity_step(1)]),
+                sequence("exitCue", vec![entity_step(2)]),
+            ]);
+            let trigger = spawn_trigger(&ctx, "reveal", on_exit, TriggerFireMode::Once, &[]);
+            let capture = LogCapture::start();
+            let table = validated_bindings(&ctx);
+            capture.assert_logged_once(log::Level::Error, "reaction `reveal` step 0");
+            assert!(is_dropped(&ctx, "reveal"));
+            let (commands, steps) = enter_execution(&table, &ctx, trigger);
+            assert_eq!(commands, 0, "no in-tick command for the dropped reaction");
+            assert!(
+                steps.is_none(),
+                "no Enter residual: the dropped reaction cannot enroll at runtime \
+                 (authored on_exit: `{on_exit}`)",
+            );
+            assert!(
+                !table
+                    .bound_edges()
+                    .contains(&(trigger, TriggerEventEdge::Enter)),
+                "the Enter edge is not even registered",
+            );
+            let exit_bound = table
+                .bound_edges()
+                .contains(&(trigger, TriggerEventEdge::Exit));
+            if on_exit.is_empty() {
+                assert!(!exit_bound, "V5 derives nothing for a dropped reaction");
+            } else {
+                assert!(exit_bound, "the authored `exitCue` Exit binding survives");
+            }
+        }
+    }
+
+    // V2 against the merged-residual reality: `bind_event` merges every
+    // reaction matched on one `(trigger, edge)` into a single residual. The
+    // innocent manifest-bound sibling keeps its steps; the rejected reaction
+    // contributes none; and the REAL frame-end drain enrolls nothing.
+    #[test]
+    fn v2_rejection_leaves_sibling_in_merged_residual_and_nothing_enrolls() {
+        let ctx = ScriptCtx::new();
+        let innocent_body = vec![note_step(&ctx)];
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![
+                    sequence("reveal", vec![wait_step(json!(800), true), entity_step(1)]),
+                    sequence("innocent", innocent_body),
+                ],
+                Vec::new(),
+                vec![TriggerEventDescriptor {
+                    tag: "plate".to_string(),
+                    event: "enter".to_string(),
+                    fire: vec!["innocent".to_string()],
+                    levels: Vec::new(),
+                }],
+                Vec::new(),
+                &[],
+            );
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Once, &["plate"]);
+
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+        assert!(!is_dropped(&ctx, "innocent"));
+
+        let (commands, steps) = enter_execution(&table, &ctx, trigger);
+        assert_eq!(commands, 0);
+        let steps = steps.expect("the innocent sibling keeps the Enter residual");
+        assert!(
+            steps.iter().all(|step| matches!(
+                step,
+                PrepartitionedReactionStep::Descriptor(name, _, _) if name == "innocent"
+            )),
+            "the merged residual holds only the innocent sibling's steps: {steps:?}",
+        );
+
+        let (follow_ups, pending) = drain_trigger_residual(&ctx, &steps);
+        assert!(follow_ups.is_empty());
+        assert_eq!(
+            pending, 0,
+            "no instance parks for the rejected reaction's wait",
+        );
+    }
+
+    // V4b with the binder in the loop: the pre-wait `fire` of a scoped
+    // `setState` is never lowered to a `DeferredEvent`, because the reaction is
+    // dropped before the binder runs.
+    #[test]
+    fn v4b_rejected_pre_wait_fire_never_reaches_the_enter_residual() {
+        let scoped_value = json!({
+            "op": "select",
+            "cond": { "op": "input", "name": "@rising" },
+            "a": { "op": "const", "value": 1.0 },
+            "b": { "op": "const", "value": 0.0 }
+        });
+        let ctx = ctx_with_reactions(vec![
+            set_state("raiseAlarm", "puzzle.target", scoped_value),
+            sequence(
+                "reveal",
+                vec![
+                    fire_step("raiseAlarm"),
+                    wait_step(json!(800), false),
+                    entity_step(1),
+                ],
+            ),
+        ]);
+        insert_writable_number(&ctx, "puzzle.target");
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &[]);
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+        let (commands, steps) = enter_execution(&table, &ctx, trigger);
+        assert_eq!(commands, 0);
+        assert!(
+            steps.is_none(),
+            "no Enter residual: the scoped `fire` can never dispatch contextless",
+        );
+    }
+
+    // V4b's merged-residual variant, driven through the real drain: the
+    // rejected reaction's `DeferredEvent` must be absent, so the drain chains
+    // no `raiseAlarm` dispatch, while the innocent sibling still runs.
+    #[test]
+    fn v4b_rejection_strips_deferred_event_from_merged_residual_drain() {
+        let scoped_value = json!({
+            "op": "select",
+            "cond": { "op": "input", "name": "@rising" },
+            "a": { "op": "const", "value": 1.0 },
+            "b": { "op": "const", "value": 0.0 }
+        });
+        let ctx = ScriptCtx::new();
+        let innocent_body = vec![note_step(&ctx)];
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                vec![
+                    set_state("raiseAlarm", "puzzle.target", scoped_value),
+                    sequence(
+                        "reveal",
+                        vec![
+                            fire_step("raiseAlarm"),
+                            wait_step(json!(800), false),
+                            entity_step(1),
+                        ],
+                    ),
+                    sequence("innocent", innocent_body),
+                ],
+                Vec::new(),
+                vec![TriggerEventDescriptor {
+                    tag: "plate".to_string(),
+                    event: "enter".to_string(),
+                    fire: vec!["innocent".to_string()],
+                    levels: Vec::new(),
+                }],
+                Vec::new(),
+                &[],
+            );
+        insert_writable_number(&ctx, "puzzle.target");
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Multiple, &["plate"]);
+
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+
+        let (commands, steps) = enter_execution(&table, &ctx, trigger);
+        assert_eq!(commands, 0);
+        let steps = steps.expect("the innocent sibling keeps the Enter residual");
+        assert!(
+            steps
+                .iter()
+                .all(|step| !matches!(step, PrepartitionedReactionStep::DeferredEvent(_))),
+            "no `DeferredEvent` survives from the rejected pre-wait `fire`: {steps:?}",
+        );
+
+        let (follow_ups, pending) = drain_trigger_residual(&ctx, &steps);
+        assert!(
+            follow_ups.is_empty(),
+            "the drain chains no contextless `raiseAlarm` dispatch",
+        );
+        assert_eq!(pending, 0);
+    }
+
+    // O40's validation half at the seam level: `recompose_active_sets` rebuilds
+    // `DataRegistry.reactions` from retained originals, erasing the in-place
+    // drop — the staged commit must re-validate and rebind, not inherit the
+    // stale verdict, and the rebuilt table must again bind nothing for the
+    // offender.
+    #[test]
+    fn staged_recompose_revalidates_and_rebinds_without_stale_bindings() {
+        let ctx = ctx_with_reactions(vec![sequence(
+            "reveal",
+            vec![wait_step(json!(800), true), entity_step(1)],
+        )]);
+        let trigger = spawn_trigger(&ctx, "reveal", "", TriggerFireMode::Once, &[]);
+
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"));
+        assert!(enter_execution(&table, &ctx, trigger).1.is_none());
+
+        // Hot reload: the recompose restores the authored body...
+        ctx.data_registry.borrow_mut().recompose_active_sets(&[]);
+        assert!(
+            !is_dropped(&ctx, "reveal"),
+            "recompose restores the authored body from retained originals",
+        );
+
+        // ...and the staged-commit sequence re-runs validation before rebinding.
+        let table = validated_bindings(&ctx);
+        assert!(is_dropped(&ctx, "reveal"), "the verdict is re-derived");
+        let (commands, steps) = enter_execution(&table, &ctx, trigger);
+        assert_eq!(commands, 0);
+        assert!(
+            steps.is_none(),
+            "the rebuilt table is inert for the offender"
+        );
     }
 }

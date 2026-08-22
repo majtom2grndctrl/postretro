@@ -32,13 +32,13 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
-    BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-    BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
-    BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
-    BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
-    bind,
+    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
+    BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
+    BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
+    BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
+    BehaviorGraphEnvelope, BindingScope, BoundProgram, CANDIDATE_DIED_INPUT,
+    CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, GuardedRow, ImpactEventDescriptor, IrNode,
+    IrValue, MotionVerb, PatrolDescriptor, PatrolMode, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -477,6 +477,7 @@ fn step_graph(
             distance_from_anchor: 0.0,
             target_hostile: true,
             target_reachable: true,
+            attacks_fired_in_activity: 0,
         },
     );
 
@@ -1965,6 +1966,86 @@ fn attack_applies_configured_damage_once_per_entry_and_respects_cooldown() {
         assert_eq!(entries[0].last_hit_damage, 8.0);
         assert_eq!(entries[0].last_attacker, Some(enemy));
     }
+}
+
+#[test]
+fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire() {
+    let graph = test_behavior_graph!({
+        initial: "attack".to_string(),
+        states: BTreeMap::from([
+            (
+                "attack".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("attack".to_string())),
+                    vec![edge(
+                        "rest",
+                        IrNode::Ge {
+                            a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(1.0),
+                            }),
+                        },
+                    )],
+                ),
+            ),
+            (
+                "rest".to_string(),
+                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        candidate_filter: Some(candidate_is_alive_within(TEST_AGGRO_RANGE)),
+        patrol: None,
+        attacks: BTreeMap::from([(
+            "attack".to_string(),
+            AttackParams {
+                damage: TEST_ATTACK_DAMAGE,
+                max_range: TEST_ATTACK_RANGE,
+                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                engagement_radius: None,
+            },
+        )]),
+        engagement_radius: Some(TEST_ATTACK_RANGE),
+        move_speed: TEST_MOVE_SPEED,
+    });
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(brain.state_name(), Some("attack"));
+    assert_eq!(
+        brain.activity_attack_count(0),
+        Some(1),
+        "the successful entry fire advances the counter after guard refresh"
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert!(
+        events.is_empty(),
+        "the second tick rotates instead of re-firing"
+    );
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.state_name(),
+        Some("rest"),
+        "the counter is visible to the transition planner only on the following tick"
+    );
+    assert_eq!(
+        brain.activity_attack_count(0),
+        Some(0),
+        "the entry into rest resets its activity-local counter"
+    );
 }
 
 #[test]

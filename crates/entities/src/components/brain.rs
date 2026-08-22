@@ -131,6 +131,12 @@ pub struct BrainComponent {
     /// that envelope's rows.
     #[serde(default = "default_activity_timers")]
     pub time_in_activity_ms: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Successful attack fires observed while the matching active activity has
+    /// been active. The evaluator re-points
+    /// `@brain.attacksFiredInActivity` at one entry before it walks that
+    /// envelope's rows. This host-only state does not alter snapshot payloads.
+    #[serde(default = "default_activity_attack_counts")]
+    pub attacks_fired_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
     /// An initial descent, transition, gate reset, or graph reseat seats a path
     /// atomically and marks its active leaf for one edge-triggered entry pass.
     /// This is consumed by the AI tick after timers are zeroed.
@@ -158,6 +164,7 @@ impl BrainComponent {
             active_activity_path: default_active_activity_path(),
             active_activity_path_len: 0,
             time_in_activity_ms: default_activity_timers(),
+            attacks_fired_in_activity: default_activity_attack_counts(),
             entry_pending: false,
         };
         brain.reseat_to_initial();
@@ -204,11 +211,27 @@ impl BrainComponent {
         (depth < self.active_activity_path_len).then_some(self.time_in_activity_ms[depth])
     }
 
+    /// Successful attack fires observed since the activity active at `depth`
+    /// was entered. Parent activities include fires from active descendants.
+    pub fn activity_attack_count(&self, depth: usize) -> Option<u32> {
+        (depth < self.active_activity_path_len).then_some(self.attacks_fired_in_activity[depth])
+    }
+
     /// Increment every observable active activity clock. Inactive descendants
     /// remain reset/frozen because entry always collapses the suffix first.
     pub fn tick_activity_timers(&mut self, dt_ms: f32) {
         for timer in self.time_in_activity_ms[..self.active_activity_path_len].iter_mut() {
             *timer += dt_ms;
+        }
+    }
+
+    /// Record one successful edge-triggered attack fire for every active
+    /// activity scope. The AI tick calls this only after the range, cooldown,
+    /// and live-target gates succeed, so a skipped entry never advances a
+    /// counter and one enemy can advance each scope at most once per tick.
+    pub fn record_successful_attack_fire(&mut self) {
+        for count in self.attacks_fired_in_activity[..self.active_activity_path_len].iter_mut() {
+            *count = count.saturating_add(1);
         }
     }
 
@@ -257,7 +280,8 @@ impl BrainComponent {
     }
 
     /// Enter `target_index` in the envelope at `depth`, discard all inactive
-    /// descendants, zero their timers, then atomically descend nested initials.
+    /// descendants, zero their timers and attack counters, then atomically
+    /// descend nested initials.
     /// A parser-validated graph cannot fail this; `false` is the safe answer for
     /// malformed hand-built/restored data.
     pub fn enter_activity_at(&mut self, mut depth: usize, mut target_index: usize) -> bool {
@@ -267,6 +291,9 @@ impl BrainComponent {
         self.active_activity_path_len = depth;
         for timer in self.time_in_activity_ms[depth..].iter_mut() {
             *timer = 0.0;
+        }
+        for count in self.attacks_fired_in_activity[depth..].iter_mut() {
+            *count = 0;
         }
 
         loop {
@@ -286,6 +313,7 @@ impl BrainComponent {
             });
             self.active_activity_path[depth] = target_index;
             self.time_in_activity_ms[depth] = 0.0;
+            self.attacks_fired_in_activity[depth] = 0;
             self.active_activity_path_len = depth + 1;
 
             let Some(initial) = child_initial else {
@@ -341,6 +369,10 @@ const fn default_active_activity_path() -> [usize; MAX_BEHAVIOR_NESTING_DEPTH] {
 
 const fn default_activity_timers() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
     [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_activity_attack_counts() -> [u32; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [0; MAX_BEHAVIOR_NESTING_DEPTH]
 }
 
 /// The index of `name` in the root envelope's activity map, or `None` when the
@@ -637,6 +669,7 @@ mod tests {
             "the seeded index addresses `initial` in the resolved state list"
         );
         assert_eq!(brain.activity_timer(0), Some(0.0));
+        assert_eq!(brain.activity_attack_count(0), Some(0));
         assert_eq!(brain.home_anchor, Vec3::ZERO);
         assert!(
             brain.attack_cooldown_remaining_ms.is_empty(),
@@ -648,6 +681,28 @@ mod tests {
             BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS,
             "an attacks-only graph without `engagementRadius` uses the graph-level default"
         );
+    }
+
+    #[test]
+    fn successful_attack_counts_follow_active_scopes_and_reset_on_entry() {
+        let graph = authored_graph();
+        let mut brain = BrainComponent::from_graph(&graph);
+
+        brain.record_successful_attack_fire();
+        assert_eq!(brain.activity_attack_count(0), Some(1));
+
+        assert!(brain.enter_activity_at(
+            0,
+            graph_activity_index(&graph, "charge").expect("charge is declared"),
+        ));
+        assert_eq!(
+            brain.activity_attack_count(0),
+            Some(0),
+            "the shared entry routine clears the newly entered activity before its edge fire"
+        );
+
+        brain.record_successful_attack_fire();
+        assert_eq!(brain.activity_attack_count(0), Some(1));
     }
 
     #[test]

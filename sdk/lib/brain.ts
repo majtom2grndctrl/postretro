@@ -34,6 +34,10 @@ export interface BrainInputs {
   /** Milliseconds since the brain entered its current state. A commitment
    * window is a guard over this, not an engine mechanism (number). */
   readonly timeInActivityMs: RuntimeGuardNode;
+  /** Successful attack fires since the currently-evaluated activity was
+   * entered. It is scope-relative and a fire becomes visible on the next tick's
+   * guard refresh (number). */
+  readonly attacksFiredInActivity: RuntimeGuardNode;
   /** Milliseconds remaining on the current state's named attack timer; zero for
    * a non-attack state or missing attack-map entry. Guard reads are
    * pre-transition (number). */
@@ -83,6 +87,7 @@ export const brain: BrainInputs = Object.freeze({
   hasTarget: input("@brain.hasTarget"),
   targetDistance: input("@brain.targetDistance"),
   timeInActivityMs: input("@brain.timeInActivityMs"),
+  attacksFiredInActivity: input("@brain.attacksFiredInActivity"),
   attackCooldownMs: input("@brain.attackCooldownMs"),
   acquisitionDue: input("@brain.acquisitionDue"),
   health: input("@brain.health"),

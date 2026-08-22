@@ -614,6 +614,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
             let attack_cooldown_ms = programs
@@ -636,6 +637,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
             prior_engagement_radius = programs
@@ -725,6 +727,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             brain
                 .attack_cooldown_remaining_ms
                 .insert(attack_name.clone(), attack.cooldown_ms);
+            brain.record_successful_attack_fire();
         }
 
         let state_changed = graph_reseated || transitioned || entered;

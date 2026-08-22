@@ -40,6 +40,7 @@ pub(super) fn select_transition_path(
         };
         scope.repoint_scope_relative(ScopeRelativeValues {
             time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
+            attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
         });
 
         let wildcard = envelope
@@ -164,6 +165,7 @@ fn selector_motion(
     let (entries, programs) = selector_layer(bound, brain, depth, activity, "move")?;
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
+        attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
     });
     for (entry, program) in entries.iter().zip(programs) {
         match entry {
@@ -191,6 +193,7 @@ fn selector_action<'a>(
     let (entries, programs) = selector_layer(bound, brain, depth, activity, "offense")?;
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
+        attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
     });
     entries
         .iter()

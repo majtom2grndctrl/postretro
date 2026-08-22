@@ -34,7 +34,11 @@ attacks, all authored content on the new substrate.
   the layered form are one model. A selector `move` layer is evaluated first-match per tick to yield
   the tick's `MotionVerb` for steering and **requires a trailing motion fallback** (locomotion is
   never undefined); a selector `offense` layer yields an attack handle and may have no match (no
-  attack this tick). Nested-graph layers are walked by `select_transition` (below).
+  attack this tick). A nested-graph layer is walked by `select_transition` (below). **A composite
+  carries at most one nested-graph (stateful) layer** — selector layers are unlimited and orthogonal,
+  but the active state is a single linear path, so a second stateful region has nowhere to live and is
+  a parse-time error (AC18). Multiple parallel stateful regions (Harel AND-states) are a foreclosed
+  future extension: reviving them means a per-region active-path forest and is additive.
 - **Animation source, single-name collapse.** Leaf activities carry `animation` as today; a composite
   **may** carry an optional locomotion `animation` (the clip shown while it moves). The host resolves
   a layered entity's animation to **one** mesh `current_state` name per tick by precedence: the
@@ -261,6 +265,10 @@ is already drawn.
   fallback), driving steering — verified by the reference enemy's `engage.move` chasing the target
   and holding at range, and by at most one attack firing per enemy per tick when the active path
   carries more than one action (offense-layer precedence).
+- [ ] **AC18 — One stateful region per composite.** A composite declaring two or more nested-graph
+  layers is a pathed parse-time error in both runtimes; a composite with one nested-graph layer plus
+  any number of selector layers parses. This is the single-active-path contract Task 2's fixed-capacity
+  path depends on.
 
 ## Tasks
 
@@ -287,7 +295,8 @@ rejection — the shipped const-generic asymmetry). Retire the flat inner-`trans
 `interrupts` shapes — both become parse errors. Validation (all pathed, wire-cased): membership
 authority (every row key and target resolves to a declared activity at its own level — cross-level
 targets rejected, Invariants table), duplicate-name rejection, empty-`activities` rejection,
-`"*"`-self-target rejection, motion-fallback presence, and nesting depth ≤
+`"*"`-self-target rejection, motion-fallback presence, **at most one nested-graph layer per composite**
+(selector layers unlimited — the single-active-path contract, AC18), and nesting depth ≤
 `MAX_BEHAVIOR_NESTING_DEPTH` (a new small constant — AC16 — the contract that lets Task 2 keep the
 active path a fixed-capacity array); plus an "unreachable activity" lint in `behavior_lints`. Both
 twin parsers funnel through the shared serde path
@@ -495,6 +504,7 @@ fact (4). The integration payoff; verifies AC14/AC15 end to end.
 | `select_transition` stays the sole transition-ordering seam (a planner replaces it whole); it re-points only the two scope-relative fact slots per level, ordering stays inside | Task 2 (recursive walk + per-level re-point live inside it) | Ordering logic leaking into the tick would fork the seam | AC7, AC8, AC10 |
 | Outer scope beats inner: a committed inner phase won't self-route out, but an outer `"*"`/sibling-exit/death preempts it | Task 2 (level-ordered evaluation) | Evaluating inner rows before outer would let a commit ignore stand-down | AC10 |
 | Nesting depth ≤ `MAX_BEHAVIOR_NESTING_DEPTH` | Task 1 (parse-time cap) | Task 2 relies on the cap for a fixed-capacity path; an unbounded graph forces a dynamic per-tick allocation | AC16 |
+| At most one nested-graph (stateful) layer per composite; selector layers unlimited | Task 1 (parse-time rejection) | Task 2's single linear active path cannot represent sibling nested graphs; the animation-collapse precedence assumes one offense stateful region | AC18 |
 | Per-tick guard refresh, per-level slot re-pointing, and evaluation allocate zero heap | Task 2 (bind-time-flattened programs; fixed-capacity path via Task 1's depth cap) | A per-tick `Vec`/`HashMap` over the path, or a heap re-refresh, would allocate | AC13, AC16 |
 | Attack fires at most once per `commit` entry (edge-triggered), cooldown-gated | Task 2 (edge-fire seam), Task 4 (counter increment on the same edge) | The flat per-tick cooldown fire would double-fire a long commit or zero-fire a re-entry | AC7 |
 | A layered entity's animation is exactly one mesh `current_state` name; no replicated wire-mirror struct changes | Task 2 (offense-active precedence resolver) | A layer writing a second animation identity has nowhere to replicate | AC12 |

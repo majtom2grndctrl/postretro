@@ -18,8 +18,8 @@ use std::cell::RefCell;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent};
 use postretro_foundation::{
-    BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, BRAIN_INPUTS, BRAIN_NO_TARGET_DISTANCE, BindingScope,
-    BrainInputRef, IrType, IrValue, ResolvedInput, ResolvedOutput, resolve_brain_input,
+    BRAIN_INPUTS, BRAIN_NO_TARGET_DISTANCE, BindingScope, BrainInputRef, IrType, IrValue,
+    ResolvedInput, ResolvedOutput, resolve_brain_input,
 };
 
 /// The engine-computed facts for one enemy's guard evaluation this tick.

@@ -80,10 +80,14 @@ pub(crate) struct LightBridgeUpdate {
 /// holds component data.
 pub(crate) struct LightBridge {
     /// Authored map-light prefix followed by runtime-spawned dynamic lights.
-    /// Authored indices stay stable; runtime entries append until the renderer's
-    /// reserved capacity is full. Despawned entries remain as tombstone slots.
+    /// Authored indices stay stable. Despawned runtime entries remain as
+    /// tombstones until a later spawn reuses their slot.
     entity_ids: Vec<EntityId>,
     authored_light_count: usize,
+    /// Reclaimed runtime tombstone indices available for reuse. Keeping the
+    /// slots themselves preserves their one-frame forward/compose tombstones
+    /// and the retained GPU packing high-water mark.
+    free_slots: Vec<usize>,
     /// Dirty-tracking snapshots. `None` for an entry means the slot has never
     /// been snapshotted — treated as unconditionally dirty on first visit so
     /// the initial upload lands.
@@ -125,6 +129,9 @@ struct MapLightShape {
     /// `setLightAnimation` writes to the animated-compose descriptor buffer
     /// without re-querying the source.
     animated_slot: Option<u32>,
+    /// Runtime tombstones are reclaimed exactly once after their entity
+    /// disappears. Reuse resets this marker for the new entity.
+    reclaimed: bool,
 }
 
 impl LightBridge {
@@ -132,6 +139,7 @@ impl LightBridge {
         Self {
             entity_ids: Vec::new(),
             authored_light_count: 0,
+            free_slots: Vec::new(),
             snapshots: HashMap::new(),
             preserve_baked_descriptors: HashSet::new(),
             shape: Vec::new(),
@@ -148,6 +156,7 @@ impl LightBridge {
     pub(crate) fn clear(&mut self) {
         self.entity_ids.clear();
         self.authored_light_count = 0;
+        self.free_slots.clear();
         self.snapshots.clear();
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
@@ -239,6 +248,7 @@ impl LightBridge {
     ) {
         self.entity_ids.clear();
         self.authored_light_count = 0;
+        self.free_slots.clear();
         self.snapshots.clear();
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
@@ -276,6 +286,7 @@ impl LightBridge {
                 is_dynamic: light.is_dynamic,
                 cell_index: light.cell_index,
                 animated_slot: light.animated_slot,
+                reclaimed: false,
             });
             self.cached_origins_f64.push(light.origin);
             self.cached_influences.push(
@@ -342,11 +353,9 @@ impl LightBridge {
                 continue;
             }
 
-            let runtime_count = self
-                .entity_ids
-                .len()
-                .saturating_sub(self.authored_light_count);
-            if runtime_count >= RUNTIME_DYNAMIC_LIGHT_RESERVE {
+            let live_runtime_count =
+                self.entity_ids.len() - self.authored_light_count - self.free_slots.len();
+            if live_runtime_count >= RUNTIME_DYNAMIC_LIGHT_RESERVE {
                 if !self.runtime_capacity_warned {
                     self.runtime_capacity_warned = true;
                     log::warn!(
@@ -373,16 +382,25 @@ impl LightBridge {
                 Err(_) => continue,
             };
 
-            self.entity_ids.push(id);
-            self.shape.push(MapLightShape {
+            let runtime_shape = MapLightShape {
                 is_dynamic: true,
                 cell_index: u32::MAX,
                 // Script-spawned dynamic lights have no baked slot; the
                 // bridge routes them via the legacy forward path.
                 animated_slot: None,
-            });
-            self.cached_origins_f64.push(origin_f64);
-            self.cached_influences.push(influence);
+                reclaimed: false,
+            };
+            if let Some(slot) = self.free_slots.pop() {
+                self.entity_ids[slot] = id;
+                self.shape[slot] = runtime_shape;
+                self.cached_origins_f64[slot] = origin_f64;
+                self.cached_influences[slot] = influence;
+            } else {
+                self.entity_ids.push(id);
+                self.shape.push(runtime_shape);
+                self.cached_origins_f64.push(origin_f64);
+                self.cached_influences.push(influence);
+            }
             absorbed_any = true;
         }
 
@@ -421,6 +439,11 @@ impl LightBridge {
             let Ok(current) = registry.get_component::<LightComponent>(id) else {
                 // A tracked light that disappears must force one tombstone
                 // upload; otherwise its last forward or compose record stays live.
+                if map_idx >= self.authored_light_count && !self.shape[map_idx].reclaimed {
+                    self.shape[map_idx].reclaimed = true;
+                    self.free_slots.push(map_idx);
+                    self.dirty = true;
+                }
                 if self.snapshots.remove(&id).is_some() {
                     self.dirty = true;
                 }
@@ -1123,6 +1146,32 @@ mod tests {
             color: None,
             direction: None,
         }
+    }
+
+    fn runtime_component(
+        origin: [f32; 3],
+        falloff_range: f32,
+        animation: Option<LightAnimation>,
+    ) -> LightComponent {
+        let mut component = map_light_to_component(&sample_dynamic_point_light(), None);
+        component.origin = origin;
+        component.falloff_range = falloff_range;
+        component.animation = animation;
+        component
+    }
+
+    fn spawn_runtime_light(registry: &mut EntityRegistry, component: LightComponent) -> EntityId {
+        let id = registry
+            .try_spawn(Default::default(), &[])
+            .expect("test registry has capacity");
+        registry
+            .set_component(id, component)
+            .expect("fresh entity accepts light component");
+        id
+    }
+
+    fn live_runtime_count(bridge: &LightBridge) -> usize {
+        bridge.entity_ids.len() - bridge.authored_light_count - bridge.free_slots.len()
     }
 
     #[test]
@@ -2093,5 +2142,448 @@ mod tests {
             1
         );
         assert!((f32::from_ne_bytes(cleared_desc[16..20].try_into().unwrap()) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn runtime_light_churn_far_past_reserve_reuses_peak_concurrent_slots() {
+        const CONCURRENT_LIGHTS: usize = 3;
+        assert!(CONCURRENT_LIGHTS < RUNTIME_DYNAMIC_LIGHT_RESERVE);
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        for cycle in 0..(RUNTIME_DYNAMIC_LIGHT_RESERVE * 2) {
+            let ids: Vec<_> = (0..CONCURRENT_LIGHTS)
+                .map(|offset| {
+                    spawn_runtime_light(
+                        &mut registry,
+                        runtime_component([cycle as f32, offset as f32, 0.0], 8.0, None),
+                    )
+                })
+                .collect();
+            bridge.absorb_dynamic_lights(&registry);
+            assert_eq!(live_runtime_count(&bridge), CONCURRENT_LIGHTS);
+
+            let live = bridge.update(&mut registry, cycle as f32 + 0.1).unwrap();
+            assert_eq!(live.lights_bytes.len(), CONCURRENT_LIGHTS * GPU_LIGHT_SIZE);
+
+            for id in ids {
+                registry.despawn(id).unwrap();
+            }
+            let tombstones = bridge.update(&mut registry, cycle as f32 + 0.2).unwrap();
+            assert_eq!(
+                tombstones.lights_bytes.len(),
+                CONCURRENT_LIGHTS * GPU_LIGHT_SIZE
+            );
+            assert!(tombstones.lights_bytes.iter().all(|&byte| byte == 0));
+            assert_eq!(bridge.free_slots.len(), CONCURRENT_LIGHTS);
+        }
+
+        assert_eq!(
+            bridge.entity_ids.len(),
+            bridge.authored_light_count + CONCURRENT_LIGHTS
+        );
+    }
+
+    #[test]
+    fn zero_duration_unsnapshotted_runtime_despawn_reclaims_and_tombstones() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let mut zero_duration = sample_animation();
+        zero_duration.period_ms = 0.0;
+        zero_duration.play_count = Some(1);
+        let id = spawn_runtime_light(
+            &mut registry,
+            runtime_component([7.0, 8.0, 9.0], 10.0, Some(zero_duration)),
+        );
+        bridge.absorb_dynamic_lights(&registry);
+        let runtime_slot = bridge.authored_light_count;
+
+        registry.despawn(id).unwrap();
+        let update = bridge.update(&mut registry, 0.1).unwrap();
+
+        assert!(update.has_dirty_data);
+        assert_eq!(update.lights_bytes, vec![0; GPU_LIGHT_SIZE]);
+        assert_eq!(update.descriptor_bytes, vec![0; ANIMATION_DESCRIPTOR_SIZE]);
+        assert_eq!(bridge.free_slots, vec![runtime_slot]);
+        assert!(bridge.shape[runtime_slot].reclaimed);
+    }
+
+    #[test]
+    fn disappeared_runtime_light_emits_forward_tombstone_in_its_reclaim_frame() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let id = spawn_runtime_light(&mut registry, runtime_component([1.0, 2.0, 3.0], 9.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.1);
+
+        registry.despawn(id).unwrap();
+        let disappeared = bridge.update(&mut registry, 0.2).unwrap();
+        assert_eq!(disappeared.lights_bytes, vec![0; GPU_LIGHT_SIZE]);
+        assert_eq!(
+            disappeared.descriptor_bytes,
+            vec![0; ANIMATION_DESCRIPTOR_SIZE]
+        );
+        assert_eq!(disappeared.effective_brightness, vec![0.0]);
+        assert!(bridge.shape[bridge.authored_light_count].is_dynamic);
+        assert!(bridge.shape[bridge.authored_light_count].reclaimed);
+    }
+
+    #[test]
+    fn disappeared_slot_bearing_dynamic_light_keeps_forward_and_compose_tombstones() {
+        let mut slot_bearing = sample_dynamic_point_light();
+        slot_bearing.animated_slot = Some(6);
+        let survivor = sample_dynamic_point_light();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[slot_bearing, survivor], &mut registry, 0);
+        let missing_id = bridge.entity_for_map_index(0).unwrap();
+        let survivor_id = bridge.entity_for_map_index(1).unwrap();
+        let _ = bridge.update(&mut registry, 0.0);
+
+        registry.despawn(missing_id).unwrap();
+        let disappeared = bridge.update(&mut registry, 0.1).unwrap();
+        assert_eq!(
+            &disappeared.lights_bytes[..GPU_LIGHT_SIZE],
+            &[0; GPU_LIGHT_SIZE]
+        );
+        assert_eq!(
+            disappeared.compose_descriptor_writes,
+            vec![(6, [0u8; ANIMATION_DESCRIPTOR_SIZE])]
+        );
+
+        let mut survivor_component = registry
+            .get_component::<LightComponent>(survivor_id)
+            .unwrap()
+            .clone();
+        survivor_component.intensity = 3.0;
+        registry
+            .set_component(survivor_id, survivor_component)
+            .unwrap();
+        let repacked = bridge.update(&mut registry, 0.2).unwrap();
+        assert_eq!(
+            &repacked.lights_bytes[..GPU_LIGHT_SIZE],
+            &[0; GPU_LIGHT_SIZE]
+        );
+        assert_eq!(
+            repacked.compose_descriptor_writes,
+            vec![(6, [0u8; ANIMATION_DESCRIPTOR_SIZE])]
+        );
+    }
+
+    #[test]
+    fn runtime_reclamation_leaves_authored_forward_and_compose_output_unchanged() {
+        let mut static_slot_light = sample_point_light();
+        static_slot_light.animated_slot = Some(4);
+        let authored_dynamic = sample_dynamic_point_light();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[authored_dynamic, static_slot_light], &mut registry, 0);
+        let initial = bridge.update(&mut registry, 0.0).unwrap();
+        let authored_forward = initial.lights_bytes.clone();
+        let authored_compose = initial.compose_descriptor_writes.clone();
+
+        let first =
+            spawn_runtime_light(&mut registry, runtime_component([4.0, 5.0, 6.0], 7.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        let with_runtime = bridge.update(&mut registry, 0.1).unwrap();
+        assert_eq!(
+            &with_runtime.lights_bytes[..GPU_LIGHT_SIZE],
+            authored_forward.as_slice()
+        );
+        assert_eq!(with_runtime.compose_descriptor_writes, authored_compose);
+
+        registry.despawn(first).unwrap();
+        let tombstone = bridge.update(&mut registry, 0.2).unwrap();
+        assert_eq!(
+            &tombstone.lights_bytes[..GPU_LIGHT_SIZE],
+            authored_forward.as_slice()
+        );
+        assert_eq!(tombstone.compose_descriptor_writes, authored_compose);
+
+        let second = spawn_runtime_light(
+            &mut registry,
+            runtime_component([6.0, 5.0, 4.0], 11.0, None),
+        );
+        bridge.absorb_dynamic_lights(&registry);
+        let reused = bridge.update(&mut registry, 0.3).unwrap();
+        assert_eq!(
+            &reused.lights_bytes[..GPU_LIGHT_SIZE],
+            authored_forward.as_slice()
+        );
+        assert_eq!(reused.compose_descriptor_writes, authored_compose);
+        assert_eq!(
+            bridge.entity_for_map_index(bridge.authored_light_count),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn reused_runtime_slot_overwrites_origin_influence_and_script_samples() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let old = spawn_runtime_light(
+            &mut registry,
+            runtime_component([1.0, 2.0, 3.0], 19.0, Some(sample_animation())),
+        );
+        bridge.absorb_dynamic_lights(&registry);
+        let populated = bridge.update(&mut registry, 0.1).unwrap();
+        assert!(populated.samples_bytes.iter().any(|&byte| byte != 0));
+
+        registry.despawn(old).unwrap();
+        let _ = bridge.update(&mut registry, 0.2);
+
+        let new_component = runtime_component([-4.0, 5.0, -6.0], 3.5, None);
+        let new = spawn_runtime_light(&mut registry, new_component.clone());
+        bridge.absorb_dynamic_lights(&registry);
+        let reused = bridge.update(&mut registry, 0.3).unwrap();
+        let runtime_slot = bridge.authored_light_count;
+
+        assert_eq!(bridge.entity_ids[runtime_slot], new);
+        for (actual, expected) in bridge.cached_origins_f64[runtime_slot]
+            .iter()
+            .zip([-4.0, 5.0, -6.0])
+        {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        assert!(
+            (bridge.cached_influences[runtime_slot].center - glam::Vec3::new(-4.0, 5.0, -6.0))
+                .length()
+                < 1e-6
+        );
+        assert!((bridge.cached_influences[runtime_slot].radius - 3.5).abs() < 1e-6);
+        let expected = component_to_map_light(&new_component, [-4.0, 5.0, -6.0], true, u32::MAX);
+        assert_eq!(reused.lights_bytes, pack_light(&expected).to_vec());
+        assert_eq!(
+            reused.influence_bytes,
+            postretro_lighting::influence::pack_influence(&[component_to_influence(
+                &new_component
+            )])
+        );
+        assert!(reused.samples_bytes.iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn runtime_reserve_counts_live_slots_and_accepts_reclaimed_boundary_slot() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let ids: Vec<_> = (0..RUNTIME_DYNAMIC_LIGHT_RESERVE)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        let _ = bridge.update(&mut registry, 0.1);
+
+        let overflow = spawn_runtime_light(
+            &mut registry,
+            runtime_component([999.0, 0.0, 0.0], 4.0, None),
+        );
+        bridge.absorb_dynamic_lights(&registry);
+        assert!(!bridge.entity_ids.contains(&overflow));
+
+        registry.despawn(ids[0]).unwrap();
+        let _ = bridge.update(&mut registry, 0.2);
+        assert_eq!(
+            live_runtime_count(&bridge),
+            RUNTIME_DYNAMIC_LIGHT_RESERVE - 1
+        );
+        assert_eq!(bridge.free_slots.len(), 1);
+
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        assert!(bridge.entity_ids.contains(&overflow));
+    }
+
+    #[test]
+    fn reserve_full_same_frame_despawn_and_spawn_reuses_slot_after_next_update() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let ids: Vec<_> = (0..RUNTIME_DYNAMIC_LIGHT_RESERVE)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.1);
+
+        registry.despawn(ids[0]).unwrap();
+        let replacement = spawn_runtime_light(
+            &mut registry,
+            runtime_component([777.0, 0.0, 0.0], 4.0, None),
+        );
+        bridge.absorb_dynamic_lights(&registry);
+        assert!(!bridge.entity_ids.contains(&replacement));
+
+        let _ = bridge.update(&mut registry, 0.2);
+        assert_eq!(bridge.free_slots.len(), 1);
+
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(bridge.entity_ids[bridge.authored_light_count], replacement);
+        assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+    }
+
+    #[test]
+    fn batched_runtime_absorb_reuses_three_slots_then_appends_two() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let first_batch: Vec<_> = (0..3)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.1);
+        for id in first_batch {
+            registry.despawn(id).unwrap();
+        }
+        let _ = bridge.update(&mut registry, 0.2);
+        let prior_len = bridge.entity_ids.len();
+        assert_eq!(bridge.free_slots.len(), 3);
+
+        let second_batch: Vec<_> = (0..5)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([10.0 + index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+        bridge.absorb_dynamic_lights(&registry);
+
+        assert!(bridge.free_slots.is_empty());
+        assert_eq!(bridge.entity_ids.len(), prior_len + 2);
+        assert_eq!(live_runtime_count(&bridge), 5);
+        for id in second_batch {
+            assert!(bridge.entity_ids.contains(&id));
+        }
+    }
+
+    #[test]
+    fn reused_runtime_slot_reclaims_exactly_once_after_second_despawn() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let first =
+            spawn_runtime_light(&mut registry, runtime_component([1.0, 0.0, 0.0], 4.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.1);
+        registry.despawn(first).unwrap();
+        let _ = bridge.update(&mut registry, 0.2);
+
+        let reused =
+            spawn_runtime_light(&mut registry, runtime_component([2.0, 0.0, 0.0], 4.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.3);
+        registry.despawn(reused).unwrap();
+        let _ = bridge.update(&mut registry, 0.4);
+        assert_eq!(bridge.free_slots.len(), 1);
+
+        let idle = bridge.update(&mut registry, 0.5).unwrap();
+        assert!(!idle.has_dirty_data);
+        assert_eq!(bridge.free_slots.len(), 1);
+    }
+
+    #[test]
+    fn retained_gpu_packing_stays_at_high_water_while_live_collection_filters_tombstones() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let runtime_ids: Vec<_> = (0..3)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.1);
+
+        registry.despawn(runtime_ids[0]).unwrap();
+        registry.despawn(runtime_ids[1]).unwrap();
+        let update = bridge.update(&mut registry, 0.2).unwrap();
+        assert_eq!(update.lights_bytes.len(), 3 * GPU_LIGHT_SIZE);
+        assert_eq!(update.effective_brightness.len(), 3);
+        assert_eq!(bridge.collect_all_as_map_lights(&registry, 0.2).len(), 2);
+    }
+
+    #[test]
+    fn clear_and_populate_reset_free_slots_before_a_new_authored_prefix() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+        let runtime =
+            spawn_runtime_light(&mut registry, runtime_component([1.0, 0.0, 0.0], 4.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.1);
+        registry.despawn(runtime).unwrap();
+        let _ = bridge.update(&mut registry, 0.2);
+        assert_eq!(bridge.free_slots.len(), 1);
+
+        bridge.clear();
+        assert!(bridge.free_slots.is_empty());
+
+        let mut next_registry = EntityRegistry::new();
+        let next_lights = [sample_point_light(), sample_spot_light()];
+        bridge.populate_from_level(&next_lights, &mut next_registry, 0);
+        assert!(bridge.free_slots.is_empty());
+        assert_eq!(bridge.authored_light_count, next_lights.len());
+        assert_eq!(bridge.entity_ids.len(), next_lights.len());
+
+        let next_runtime = spawn_runtime_light(
+            &mut next_registry,
+            runtime_component([2.0, 0.0, 0.0], 4.0, None),
+        );
+        bridge.absorb_dynamic_lights(&next_registry);
+        let _ = bridge.update(&mut next_registry, 0.3);
+        next_registry.despawn(next_runtime).unwrap();
+        let _ = bridge.update(&mut next_registry, 0.4);
+        assert_eq!(bridge.free_slots.len(), 1);
+
+        let mut replacement_registry = EntityRegistry::new();
+        bridge.populate_from_level(
+            &[sample_dynamic_point_light()],
+            &mut replacement_registry,
+            0,
+        );
+        assert!(bridge.free_slots.is_empty());
+        assert_eq!(bridge.authored_light_count, 1);
+        assert_eq!(bridge.entity_ids.len(), 1);
     }
 }

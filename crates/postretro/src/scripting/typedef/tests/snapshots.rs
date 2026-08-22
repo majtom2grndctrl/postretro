@@ -180,8 +180,8 @@ fn rust_to_ts_known_types() {
         "RuntimeValue"
     );
     assert_eq!(
-        rust_to_ts("BehaviorStates"),
-        "{ readonly [state: string]: BehaviorStateDescriptor }"
+        rust_to_ts("BehaviorActivities"),
+        "{ readonly [activity: string]: BehaviorActivityDescriptor }"
     );
 }
 
@@ -207,8 +207,8 @@ fn rust_to_luau_known_types() {
         "RuntimeValue"
     );
     assert_eq!(
-        rust_to_luau("BehaviorStates"),
-        "{ [string]: BehaviorStateDescriptor }"
+        rust_to_luau("BehaviorActivities"),
+        "{ [string]: BehaviorActivityDescriptor }"
     );
 }
 

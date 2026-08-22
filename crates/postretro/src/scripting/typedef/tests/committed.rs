@@ -167,7 +167,10 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
             "PatrolMode",
             "moveToAnchor",
             "pingPong",
-            "retained-target stand-down",
+            "BehaviorGraphEnvelope",
+            "BehaviorActivityDescriptor",
+            "BehaviorLayers",
+            "GuardedRow",
         ] {
             assert!(
                 generated.contains(needle),
@@ -183,6 +186,9 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
             "AiStateNames",
             "leashRange",
             "components.ai",
+            "BehaviorStateDescriptor",
+            "TransitionDescriptor",
+            "interrupts",
         ] {
             assert!(
                 !generated.contains(legacy),

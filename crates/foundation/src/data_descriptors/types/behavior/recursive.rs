@@ -1,0 +1,712 @@
+//! Recursive behavior-statechart descriptors.
+//!
+//! The root graph and every nested graph layer share `BehaviorGraphEnvelope`.
+//! Root-only tuning intentionally lives on `BehaviorGraphDescriptor`, never on
+//! the envelope, so a nested layer cannot accidentally acquire navigation or
+//! target-selection policy.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+
+use super::{ActionVerb, AttackParams, MotionVerb, PatrolDescriptor};
+use crate::brain::bind_brain_guard;
+use crate::candidate::bind_candidate_filter;
+use crate::data_descriptors::DescriptorError;
+use crate::data_descriptors::types::behavior_lints;
+use crate::ir::{IrNode, IrType};
+
+/// Maximum number of nested behavior envelopes, including the root envelope.
+/// This gives the evaluator a fixed-capacity active path.
+pub const MAX_BEHAVIOR_NESTING_DEPTH: usize = 8;
+
+/// The source-keyed adjacency row shared by every behavior envelope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardedRow {
+    pub when: IrNode,
+    pub to: String,
+}
+
+/// A recursive graph envelope with no graph-wide gameplay fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BehaviorGraphEnvelope {
+    pub initial: String,
+    #[serde(deserialize_with = "deserialize_activities")]
+    pub activities: BTreeMap<String, BehaviorActivityDescriptor>,
+    pub transitions: BTreeMap<String, Vec<GuardedRow>>,
+}
+
+/// A leaf (animation plus optional motion/action sugar) or a composite
+/// (layers plus optional locomotion animation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BehaviorActivityDescriptor {
+    #[serde(default)]
+    pub animation: Option<String>,
+    #[serde(default)]
+    pub motion: Option<MotionVerb>,
+    #[serde(default)]
+    pub action: Option<ActionVerb>,
+    #[serde(default)]
+    pub on_enter: Option<String>,
+    #[serde(default)]
+    pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
+}
+
+/// A stateless selector list or another recursive envelope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BehaviorLayerDescriptor {
+    Selector(Vec<BehaviorSelectorEntry>),
+    Graph(BehaviorGraphEnvelope),
+}
+
+/// A selector item. A bare motion is the final fallback in a `move` selector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BehaviorSelectorEntry {
+    Row(BehaviorSelectorRow),
+    Motion(MotionVerb),
+}
+
+/// A conditional selector row. `when` is optional only for the internal
+/// single-entry `action:` sugar shape, which is unconditional by construction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BehaviorSelectorRow {
+    #[serde(default)]
+    pub when: Option<IrNode>,
+    #[serde(default)]
+    pub motion: Option<MotionVerb>,
+    #[serde(default)]
+    pub action: Option<ActionVerb>,
+}
+
+impl BehaviorActivityDescriptor {
+    /// Return this activity's canonical layer model.
+    ///
+    /// Leaf `motion` and `action` are wire sugar, not a second evaluator
+    /// representation: a binder calls this once when it builds its derived
+    /// program, where the clone/allocation is outside the tick path. A direct
+    /// motion is the sole `move` fallback; a direct action is an unconditional
+    /// single-entry `offense` selector.
+    pub fn desugared_layers(&self) -> BTreeMap<String, BehaviorLayerDescriptor> {
+        let mut layers = self.layers.clone();
+        if let Some(motion) = self.motion {
+            layers.insert(
+                "move".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Motion(motion)]),
+            );
+        }
+        if let Some(action) = self.action.clone() {
+            layers.insert(
+                "offense".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(
+                    BehaviorSelectorRow {
+                        when: None,
+                        motion: None,
+                        action: Some(action),
+                    },
+                )]),
+            );
+        }
+        layers
+    }
+}
+
+/// The root envelope plus root-only behavior policy and tuning.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorGraphDescriptor {
+    #[serde(flatten)]
+    pub envelope: BehaviorGraphEnvelope,
+    #[serde(default)]
+    pub candidate_filter: Option<IrNode>,
+    #[serde(default)]
+    pub patrol: Option<PatrolDescriptor>,
+    #[serde(default)]
+    pub attacks: BTreeMap<String, AttackParams>,
+    #[serde(default)]
+    pub engagement_radius: Option<f32>,
+    pub move_speed: f32,
+}
+
+/// `flatten` and `deny_unknown_fields` cannot be combined in serde. Use a
+/// strict wire-shaped helper so retired `states` / `interrupts` spellings are
+/// errors rather than silently ignored.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawBehaviorGraphDescriptor {
+    initial: String,
+    #[serde(deserialize_with = "deserialize_activities")]
+    activities: BTreeMap<String, BehaviorActivityDescriptor>,
+    transitions: BTreeMap<String, Vec<GuardedRow>>,
+    #[serde(default)]
+    candidate_filter: Option<IrNode>,
+    #[serde(default)]
+    patrol: Option<PatrolDescriptor>,
+    #[serde(default)]
+    attacks: BTreeMap<String, AttackParams>,
+    #[serde(default)]
+    engagement_radius: Option<f32>,
+    move_speed: f32,
+}
+
+impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawBehaviorGraphDescriptor::deserialize(deserializer)?;
+        Ok(Self {
+            envelope: BehaviorGraphEnvelope {
+                initial: raw.initial,
+                activities: raw.activities,
+                transitions: raw.transitions,
+            },
+            candidate_filter: raw.candidate_filter,
+            patrol: raw.patrol,
+            attacks: raw.attacks,
+            engagement_radius: raw.engagement_radius,
+            move_speed: raw.move_speed,
+        })
+    }
+}
+
+/// Reject duplicate activity keys in raw JSON instead of silently accepting a
+/// final writer. The JS and Luau object bridges already collapse duplicates.
+fn deserialize_activities<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, BehaviorActivityDescriptor>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ActivitiesVisitor;
+
+    impl<'de> Visitor<'de> for ActivitiesVisitor {
+        type Value = BTreeMap<String, BehaviorActivityDescriptor>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of activity name to behavior activity")
+        }
+
+        fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            let mut activities = BTreeMap::new();
+            while let Some((name, activity)) =
+                access.next_entry::<String, BehaviorActivityDescriptor>()?
+            {
+                if activities.contains_key(&name) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate activity name `{name}`"
+                    )));
+                }
+                activities.insert(name, activity);
+            }
+            Ok(activities)
+        }
+    }
+
+    deserializer.deserialize_map(ActivitiesVisitor)
+}
+
+impl BehaviorGraphDescriptor {
+    pub const DEFAULT_ENGAGEMENT_RADIUS: f32 = 2.0;
+
+    pub fn engagement_radius(&self) -> f32 {
+        self.engagement_radius
+            .unwrap_or(Self::DEFAULT_ENGAGEMENT_RADIUS)
+    }
+
+    /// Root attack data stays authoritative even when an action appears under
+    /// a nested graph layer.
+    pub fn engagement_radius_for_action(&self, action: Option<&ActionVerb>) -> f32 {
+        match action {
+            Some(ActionVerb::Attack(name)) => self
+                .attacks
+                .get(name)
+                .map(|attack| attack.engagement_radius.unwrap_or(attack.max_range))
+                .unwrap_or_else(|| self.engagement_radius()),
+            None => self.engagement_radius(),
+        }
+    }
+
+    /// Shared validation used after both JS and Luau conversion paths.
+    pub fn validate(mut self) -> Result<Self, DescriptorError> {
+        validate_positive("moveSpeed", self.move_speed)?;
+        if let Some(radius) = self.engagement_radius {
+            validate_positive("engagementRadius", radius)?;
+        }
+        validate_attacks(&self.attacks)?;
+        validate_patrol(self.patrol.as_ref())?;
+
+        if let Some(filter) = self.candidate_filter.as_ref() {
+            let program =
+                bind_candidate_filter(filter).map_err(|error| DescriptorError::InvalidShape {
+                    reason: format!("`components.behavior.candidateFilter` is invalid: {error}"),
+                })?;
+            if program.root_type != IrType::Bool {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.candidateFilter` must produce a boolean, but its root produces {:?}",
+                        program.root_type
+                    ),
+                });
+            }
+        }
+
+        validate_envelope(
+            &mut self.envelope,
+            "components.behavior",
+            1,
+            &self.attacks,
+            self.patrol.as_ref(),
+        )?;
+
+        for lint in behavior_lints::inspect(&self) {
+            match lint.kind {
+                behavior_lints::BehaviorLintKind::UnreachableActivity => log::warn!(
+                    "components.behavior: activities [{}] are unreachable at `{}`",
+                    lint.activities.join(", "),
+                    lint.envelope_path,
+                ),
+            }
+        }
+        Ok(self)
+    }
+}
+
+fn validate_envelope(
+    envelope: &mut BehaviorGraphEnvelope,
+    path: &str,
+    depth: usize,
+    attacks: &BTreeMap<String, AttackParams>,
+    patrol: Option<&PatrolDescriptor>,
+) -> Result<(), DescriptorError> {
+    if depth > MAX_BEHAVIOR_NESTING_DEPTH {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}` exceeds MAX_BEHAVIOR_NESTING_DEPTH ({MAX_BEHAVIOR_NESTING_DEPTH})"
+            ),
+        });
+    }
+    if envelope.activities.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.activities` must declare at least one activity"),
+        });
+    }
+    if !envelope.activities.contains_key(&envelope.initial) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.initial` (\"{}\") does not name a declared activity",
+                envelope.initial
+            ),
+        });
+    }
+    if envelope.activities.contains_key("*") {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.activities.*` is reserved for the scope-all transitions key"),
+        });
+    }
+
+    for (source, rows) in &envelope.transitions {
+        if source != "*" && !envelope.activities.contains_key(source) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}.transitions.{source}` does not name a declared activity"),
+            });
+        }
+        for (index, row) in rows.iter().enumerate() {
+            let row_path = format!("{path}.transitions.{source}[{index}]");
+            if source == "*" && row.to == "*" {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("`{row_path}.to` cannot target the `*` scope-all key"),
+                });
+            }
+            if !envelope.activities.contains_key(&row.to) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`{row_path}.to` (\"{}\") does not name a declared activity at this level",
+                        row.to
+                    ),
+                });
+            }
+            if source != "*" && source == &row.to {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`{row_path}.to` (\"{}\") names the activity that declares it; a source-keyed transition cannot target itself",
+                        row.to
+                    ),
+                });
+            }
+            validate_guard(&row.when, &format!("{row_path}.when"))?;
+        }
+    }
+
+    for (name, activity) in &mut envelope.activities {
+        validate_activity(
+            activity,
+            &format!("{path}.activities.{name}"),
+            depth,
+            attacks,
+            patrol,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_activity(
+    activity: &mut BehaviorActivityDescriptor,
+    path: &str,
+    depth: usize,
+    attacks: &BTreeMap<String, AttackParams>,
+    patrol: Option<&PatrolDescriptor>,
+) -> Result<(), DescriptorError> {
+    if !activity.layers.is_empty() {
+        if activity.motion.is_some() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}.motion` belongs to a leaf; composites author `layers`"),
+            });
+        }
+        if activity.action.is_some() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{path}.action` belongs to a leaf; composites author an `offense` layer"
+                ),
+            });
+        }
+        if activity.on_enter.is_some() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}.onEnter` belongs to a leaf activity"),
+            });
+        }
+        if activity.animation.as_ref().is_some_and(String::is_empty) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}.animation` must be a non-empty string when supplied"),
+            });
+        }
+        for (name, layer) in &mut activity.layers {
+            validate_layer(
+                layer,
+                &format!("{path}.layers.{name}"),
+                name,
+                depth,
+                attacks,
+                patrol,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if activity.animation.as_ref().is_none_or(String::is_empty) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.animation` must be a non-empty string for a leaf activity"),
+        });
+    }
+    if let Some(motion) = activity.motion {
+        validate_motion(motion, &format!("{path}.motion"), patrol)?;
+        if matches!(motion, MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+            && activity.action.is_some()
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{path}.action` must be omitted when `{path}.motion` is a position-goal verb; position-goal activities are non-engaged"
+                ),
+            });
+        }
+    }
+    if let Some(action) = activity.action.as_ref() {
+        validate_action(action, &format!("{path}.action"), attacks)?;
+    }
+    Ok(())
+}
+
+fn validate_layer(
+    layer: &mut BehaviorLayerDescriptor,
+    path: &str,
+    layer_name: &str,
+    depth: usize,
+    attacks: &BTreeMap<String, AttackParams>,
+    patrol: Option<&PatrolDescriptor>,
+) -> Result<(), DescriptorError> {
+    match layer {
+        BehaviorLayerDescriptor::Graph(envelope) => {
+            if layer_name == "move" {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("`{path}` must be a move selector list, not a nested graph"),
+                });
+            }
+            validate_envelope(envelope, path, depth + 1, attacks, patrol)
+        }
+        BehaviorLayerDescriptor::Selector(entries) => {
+            if layer_name == "move" {
+                validate_move_selector(entries, path, patrol)
+            } else if layer_name == "offense" {
+                validate_offense_selector(entries, path, attacks)
+            } else {
+                Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`{path}` has an unknown selector layer name `{layer_name}`; selector layers are `move` or `offense`"
+                    ),
+                })
+            }
+        }
+    }
+}
+
+fn validate_move_selector(
+    entries: &[BehaviorSelectorEntry],
+    path: &str,
+    patrol: Option<&PatrolDescriptor>,
+) -> Result<(), DescriptorError> {
+    let Some((fallback, rows)) = entries.split_last() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}` must end with a MotionVerb fallback"),
+        });
+    };
+    let BehaviorSelectorEntry::Motion(motion) = fallback else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}` must end with a MotionVerb fallback"),
+        });
+    };
+    validate_motion(*motion, &format!("{path}[{}]", entries.len() - 1), patrol)?;
+    for (index, entry) in rows.iter().enumerate() {
+        let BehaviorSelectorEntry::Row(row) = entry else {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}[{index}]` must be a guarded move row before the fallback"),
+            });
+        };
+        if row.when.is_none() || row.motion.is_none() || row.action.is_some() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}[{index}]` must contain exactly `when` and `motion`"),
+            });
+        }
+        validate_guard(
+            row.when.as_ref().expect("checked above"),
+            &format!("{path}[{index}].when"),
+        )?;
+        validate_motion(
+            row.motion.expect("checked above"),
+            &format!("{path}[{index}].motion"),
+            patrol,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_offense_selector(
+    entries: &[BehaviorSelectorEntry],
+    path: &str,
+    attacks: &BTreeMap<String, AttackParams>,
+) -> Result<(), DescriptorError> {
+    for (index, entry) in entries.iter().enumerate() {
+        let BehaviorSelectorEntry::Row(row) = entry else {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}[{index}]` must be a guarded offense row"),
+            });
+        };
+        if row.action.is_none() || row.motion.is_some() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}[{index}]` must contain `action` and no `motion`"),
+            });
+        }
+        if let Some(when) = row.when.as_ref() {
+            validate_guard(when, &format!("{path}[{index}].when"))?;
+        }
+        validate_action(
+            row.action.as_ref().expect("checked above"),
+            &format!("{path}[{index}].action"),
+            attacks,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_guard(when: &IrNode, path: &str) -> Result<(), DescriptorError> {
+    let program = bind_brain_guard(when).map_err(|error| DescriptorError::InvalidShape {
+        reason: format!("`{path}` guard is invalid: {error}"),
+    })?;
+    if program.root_type != IrType::Bool {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}` guard must produce a boolean, but its root produces {:?}",
+                program.root_type
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_action(
+    action: &ActionVerb,
+    path: &str,
+    attacks: &BTreeMap<String, AttackParams>,
+) -> Result<(), DescriptorError> {
+    match action {
+        ActionVerb::Attack(name) if attacks.contains_key(name) => Ok(()),
+        ActionVerb::Attack(name) if attacks.is_empty() => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.attack` names \"{name}\", so `components.behavior.attacks` must declare at least one entry"
+            ),
+        }),
+        ActionVerb::Attack(name) => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.attack` names \"{name}\", which is not declared in `components.behavior.attacks`"
+            ),
+        }),
+    }
+}
+
+fn validate_motion(
+    motion: MotionVerb,
+    path: &str,
+    patrol: Option<&PatrolDescriptor>,
+) -> Result<(), DescriptorError> {
+    if motion == MotionVerb::Patrol {
+        match patrol {
+            Some(patrol) if !patrol.points.is_empty() => Ok(()),
+            Some(_) => Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{path}` is \"patrol\", so `components.behavior.patrol.points` must declare at least one point"
+                ),
+            }),
+            None => Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{path}` is \"patrol\", so `components.behavior.patrol` is required"
+                ),
+            }),
+        }
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), DescriptorError> {
+    for (name, attack) in attacks {
+        if !attack.damage.is_finite() || attack.damage < 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.behavior.attacks.{name}.damage` must be a finite value >= 0.0, got {}",
+                    attack.damage
+                ),
+            });
+        }
+        validate_positive(&format!("attacks.{name}.maxRange"), attack.max_range)?;
+        validate_positive(&format!("attacks.{name}.cooldownMs"), attack.cooldown_ms)?;
+        if let Some(radius) = attack.engagement_radius {
+            validate_positive(&format!("attacks.{name}.engagementRadius"), radius)?;
+            if radius > attack.max_range {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.attacks.{name}.engagementRadius` must be <= `components.behavior.attacks.{name}.maxRange` ({}), got {radius}",
+                        attack.max_range
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_patrol(patrol: Option<&PatrolDescriptor>) -> Result<(), DescriptorError> {
+    if let Some(patrol) = patrol {
+        for (index, point) in patrol.points.iter().enumerate() {
+            if !point[0].is_finite() || !point[1].is_finite() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.patrol.points[{index}]` must contain finite x/z components, got {point:?}"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_positive(field: &str, value: f32) -> Result<(), DescriptorError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.behavior.{field}` must be a finite value > 0.0, got {value}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Activities declared in this envelope but not referenced by its `initial` or
+/// by any incoming row. This is advisory, not a structural parse error.
+pub(crate) fn unreachable_activities(envelope: &BehaviorGraphEnvelope) -> Vec<String> {
+    let mut reachable = BTreeSet::from([envelope.initial.as_str()]);
+    for rows in envelope.transitions.values() {
+        for row in rows {
+            reachable.insert(&row.to);
+        }
+    }
+    envelope
+        .activities
+        .keys()
+        .filter(|name| !reachable.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_graph_and_selector_wire_shapes_deserialize() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle", "moveSpeed": 3.0,
+            "activities": {
+                "idle": { "animation": "idle" },
+                "engage": { "layers": {
+                    "move": ["hold"],
+                    "offense": {
+                        "initial": "windup",
+                        "activities": { "windup": { "animation": "windup" } },
+                        "transitions": {}
+                    }
+                }}
+            },
+            "transitions": {}
+        }))
+        .unwrap();
+        assert!(matches!(
+            graph.envelope.activities["engage"].layers["offense"],
+            BehaviorLayerDescriptor::Graph(_)
+        ));
+    }
+
+    #[test]
+    fn leaf_motion_and_action_sugar_lower_to_the_canonical_layers() {
+        let activity = BehaviorActivityDescriptor {
+            animation: Some("slam".to_string()),
+            motion: Some(MotionVerb::ChaseTarget),
+            action: Some(ActionVerb::Attack("slam".to_string())),
+            on_enter: None,
+            layers: BTreeMap::new(),
+        };
+        let layers = activity.desugared_layers();
+        assert!(matches!(
+            layers["move"],
+            BehaviorLayerDescriptor::Selector(ref rows)
+                if rows == &vec![BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget)]
+        ));
+        assert!(matches!(
+            layers["offense"],
+            BehaviorLayerDescriptor::Selector(ref rows)
+                if matches!(rows.as_slice(), [BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+                    when: None,
+                    motion: None,
+                    action: Some(ActionVerb::Attack(name)),
+                })] if name == "slam")
+        ));
+    }
+}

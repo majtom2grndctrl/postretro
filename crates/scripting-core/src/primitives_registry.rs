@@ -102,6 +102,12 @@ pub enum TypeShape {
         type_param: &'static str,
         underlying: &'static str,
     },
+    /// A language-specific structural alias. Used when a wire shape is a
+    /// tuple, map, or untagged union rather than a nominal Rust struct.
+    Alias {
+        typescript: &'static str,
+        luau: &'static str,
+    },
     /// Object type with named fields.
     Struct { fields: Vec<FieldInfo> },
     /// String-literal union (enum with no data).
@@ -274,6 +280,10 @@ enum TypeBuilderKind {
         type_param: &'static str,
         underlying: &'static str,
     },
+    Alias {
+        typescript: &'static str,
+        luau: &'static str,
+    },
     Struct {
         fields: Vec<FieldInfo>,
     },
@@ -318,6 +328,19 @@ impl<'r> TypeBuilder<'r> {
         self
     }
 
+    /// Set a plain type alias whose target spelling differs between the SDK
+    /// languages. This keeps map/tuple/untagged-union descriptor contracts in
+    /// the same registry that emits every other script type.
+    pub fn alias(mut self, typescript: &'static str, luau: &'static str) -> Self {
+        debug_assert!(
+            matches!(self.kind, TypeBuilderKind::Unset),
+            "type `{}`: `.alias()` conflicts with a prior shape selection",
+            self.name
+        );
+        self.kind = TypeBuilderKind::Alias { typescript, luau };
+        self
+    }
+
     /// Add a struct field. Must not be combined with a brand shape.
     pub fn field(mut self, name: &'static str, ty_name: &'static str, doc: &'static str) -> Self {
         match &mut self.kind {
@@ -341,6 +364,12 @@ impl<'r> TypeBuilder<'r> {
                     self.name
                 );
             }
+            TypeBuilderKind::Alias { .. } => {
+                panic!(
+                    "type `{}`: `.field()` after `.alias()` is not permitted",
+                    self.name
+                );
+            }
         }
         self
     }
@@ -361,6 +390,7 @@ impl<'r> TypeBuilder<'r> {
                 type_param,
                 underlying,
             },
+            TypeBuilderKind::Alias { typescript, luau } => TypeShape::Alias { typescript, luau },
             TypeBuilderKind::Struct { fields } => TypeShape::Struct { fields },
         };
         self.registry.types.push(RegisteredType {

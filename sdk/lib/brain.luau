@@ -26,7 +26,8 @@ local BrainSdk = {}
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace:
 --- `hasTarget` (boolean; the only authoritative target-presence test),
 --- `targetDistance` (number; `1e9` with no target),
---- `timeInActivityMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
+--- `timeInActivityMs` (number; scope-relative to the activity whose rows are
+--- being evaluated), `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
 --- `maxHealth`, `targetHealth` and `targetMaxHealth` (zero with no target or
 --- health component), `targetDied` (boolean; false with no target), and
 --- `distanceFromAnchor` (number; the enemy's XZ distance from its spawn-time

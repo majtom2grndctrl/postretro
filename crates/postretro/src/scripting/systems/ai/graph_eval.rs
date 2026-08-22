@@ -12,6 +12,11 @@ use super::brain_programs::{BoundLayer, BrainEntityPrograms};
 use super::brain_scope::{BrainScope, ScopeRelativeValues};
 use super::engine_floor::SteeringIntent;
 
+type SelectorLayer<'a> = (
+    &'a [BehaviorSelectorEntry],
+    &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
+);
+
 /// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
 /// before the active activity's own rows. A winning edge seats its target and
 /// complete initial descent immediately, then ends this pass so an entered
@@ -236,10 +241,7 @@ fn selector_layer<'a>(
     depth: usize,
     activity: &'a BehaviorActivityDescriptor,
     name: &str,
-) -> Option<(
-    &'a [BehaviorSelectorEntry],
-    &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
-)> {
+) -> Option<SelectorLayer<'a>> {
     let mut envelope_index = 0;
     for prior_depth in 0..depth {
         let active_index = brain.active_activity_index(prior_depth)?;
@@ -270,21 +272,15 @@ fn selector_layer<'a>(
         })
 }
 
-/// One mesh animation state is resolved from the active path. An active action
-/// leaf wins, otherwise a composite locomotion animation wins, then the active
-/// leaf's ordinary animation provides the degenerate flat-graph fallback.
-pub(super) fn animation_for_path<'a>(
-    bound: &BrainEntityPrograms,
-    scope: &mut BrainScope,
-    brain: &'a BrainComponent,
-    moving: bool,
-) -> Option<&'a str> {
-    if action_for_path(bound, scope, brain).is_some() {
-        for depth in (0..brain.active_depth()).rev() {
-            let (_, activity) = brain.activity_at_depth(depth)?;
-            if activity.action.is_some() {
-                return activity.animation.as_deref();
-            }
+/// Resolve the one mesh animation state driven by the active path. A nested
+/// phase's clip wins even when that phase has no action (windup/recover), then
+/// the active composite supplies locomotion, and a root leaf supplies the
+/// degenerate one-level fallback.
+pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option<&str> {
+    if brain.active_depth() > 1 {
+        let (_, leaf) = brain.activity_at_depth(brain.active_depth() - 1)?;
+        if leaf.animation.is_some() {
+            return leaf.animation.as_deref();
         }
     }
     for depth in (0..brain.active_depth()).rev() {
@@ -566,6 +562,11 @@ mod statechart_tests {
             Some(0.0),
             "AC9: descendant timer resets before entry work"
         );
+        assert_eq!(
+            animation_for_path(&brain, true),
+            Some("windup"),
+            "AC12: a non-action offense windup drives the replicated animation"
+        );
         assert!(
             brain.take_entry_pending(),
             "AC7: initial descent has one entry edge"
@@ -623,10 +624,16 @@ mod statechart_tests {
             Some(&ActionVerb::Attack("slam".to_string())),
             "AC7/AC17: the active offense leaf supplies the one edge-fired action"
         );
+        let snapshot = AllocSnapshot::arm();
         assert_eq!(
-            animation_for_path(&programs, &mut scope, &brain, true),
+            animation_for_path(&brain, true),
             Some("commit"),
             "AC12: offense leaf collapses to one animation name"
+        );
+        assert_eq!(
+            snapshot.allocs_since(),
+            0,
+            "AC13: animation collapse borrows the graph without allocating"
         );
 
         assert!(
@@ -639,6 +646,11 @@ mod statechart_tests {
             brain.active_path_names(),
             ["engage", "recover"],
             "AC7: commit exits only after its own window"
+        );
+        assert_eq!(
+            animation_for_path(&brain, true),
+            Some("recover"),
+            "AC12: a non-action offense recovery drives the replicated animation"
         );
 
         let escape_graph = nested_fixture(true);

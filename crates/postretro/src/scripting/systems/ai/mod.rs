@@ -256,11 +256,6 @@ pub(super) struct EnemyOutcome {
     /// transition. Combat slots are path-relative, not root-graph-relative.
     pub(super) prior_engagement_radius: f32,
     pub(super) engagement_radius: f32,
-    /// The host-resolved animation names for either locomotion outcome. The
-    /// apply pass chooses one from the actual path velocity without a second
-    /// guard evaluation, and still writes exactly one mesh state string.
-    animation_moving: Option<String>,
-    animation_stopped: Option<String>,
     /// The entered state's authored `on_enter` address, present only on the tick
     /// the brain entered it.
     on_enter: Option<String>,
@@ -334,20 +329,16 @@ impl Default for AiRuntime {
 /// happens once per state ENTRY, never per tick.
 ///
 /// Ordering inside the tick, PER enemy:
-/// 1. Tick the attack cooldown and the time-in-state down/up (every tick).
-/// 2. Evaluate the graph's guards — interrupts first, then the current state's
-///    transitions, declaration order, first true wins. Every guard is evaluated
-///    every armed tick, target or not: nothing latches evaluation off, so a
-///    commitment window is an authored `@brain.timeInActivityMs` guard rather than
-///    an engine rule. A CLOSED aggro gate is the sole exception — it stands the
-///    brain down to its `initial` state and skips evaluation entirely.
-/// 3. On entering a state, reset the time-in-state and raise its `on_enter`.
-/// 4. When the selected state names an attack, that attack's cooldown has
-///    elapsed, and the selected target is inside its `maxRange`, apply that
-///    entry's damage to the selected pawn through the chokepoint and raise the
-///    attack event.
-/// 5. On a state CHANGE or locomotion stop/resume, request the selected
-///    animation state.
+/// 1. Tick cooldowns and every active activity clock.
+/// 2. Evaluate outer-to-inner transition rows, `"*"` before source-keyed rows,
+///    declaration order, first true wins. A newly seated path skips this step
+///    for its entry tick, so every phase is observable for at least one tick.
+///    A closed aggro gate is the other exception: it stands the brain down to
+///    `initial` and skips evaluation entirely.
+/// 3. On entry, reset the entered path suffix and raise its leaf `onEnter`.
+/// 4. Edge-fire an entered action after its cooldown, range, and target gates.
+/// 5. On an activity change or locomotion stop/resume, request the one animation
+///    state resolved from the active nested path.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_ai_tick(
     registry: &mut EntityRegistry,
@@ -572,9 +563,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // rather than deferring to the resting state's motion verb. Clearing
             // the destination sends the agent through steering's destination-less
             // idle-settle path, which has no separation push.
-            let transitioned = (!brain.is_seated_at_initial())
-                .then(|| brain.reseat_to_initial())
-                .unwrap_or(false);
+            let transitioned = if !brain.is_seated_at_initial() {
+                brain.reseat_to_initial()
+            } else {
+                false
+            };
             (transitioned, SteeringIntent::Clear)
         } else {
             // A restored hand-written path cannot be evaluated safely. Reseat
@@ -647,11 +640,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 })
                 .flatten()
                 .unwrap_or_else(|| brain.graph.engagement_radius());
-            let transitioned = programs
-                .with_entry_scope(snap.id, |bound, scope| {
-                    select_transition_path(bound, scope, &mut brain)
-                })
-                .unwrap_or(false);
+            let transitioned = if brain.entry_pending {
+                false
+            } else {
+                programs
+                    .with_entry_scope(snap.id, |bound, scope| {
+                        select_transition_path(bound, scope, &mut brain)
+                    })
+                    .unwrap_or(false)
+            };
             let motion = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     motion_for_path(bound, scope, &brain)
@@ -747,17 +744,6 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             })
             .flatten()
             .unwrap_or_else(|| brain.graph.engagement_radius());
-        let animation_moving = programs
-            .with_entry_scope(snap.id, |bound, scope| {
-                animation_for_path(bound, scope, &brain, true).map(str::to_owned)
-            })
-            .flatten();
-        let animation_stopped = programs
-            .with_entry_scope(snap.id, |bound, scope| {
-                animation_for_path(bound, scope, &brain, false).map(str::to_owned)
-            })
-            .flatten();
-
         outcomes.push(EnemyOutcome {
             id: snap.id,
             position: snap.position,
@@ -769,8 +755,6 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             attack_damage,
             prior_engagement_radius,
             engagement_radius,
-            animation_moving,
-            animation_stopped,
             on_enter,
             steering,
             engaged,
@@ -959,11 +943,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
         ) {
-            let animation_name = if locomotion_intent.moving {
-                outcome.animation_moving.as_deref()
-            } else {
-                outcome.animation_stopped.as_deref()
-            };
+            let animation_name = animation_for_path(&outcome.brain, locomotion_intent.moving);
             if let Some(name) = animation_name {
                 match switch_animation_state(registry, outcome.id, name) {
                     SwitchResult::Switched | SwitchResult::AlreadyInState => {}

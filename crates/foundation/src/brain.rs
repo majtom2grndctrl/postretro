@@ -35,7 +35,8 @@ pub const BRAIN_TARGET_DISTANCE_INPUT: &str = "@brain.targetDistance";
 /// Nested behavior envelopes evaluate their own rows against their own clock,
 /// so this slot is re-pointed by the statechart evaluator before every level.
 pub const BRAIN_TIME_IN_ACTIVITY_MS_INPUT: &str = "@brain.timeInActivityMs";
-/// Milliseconds remaining on the attack cooldown; `0.0` once it has elapsed.
+/// Milliseconds remaining on the selected offense action's cooldown; `0.0`
+/// with no selected action or once it has elapsed.
 pub const BRAIN_ATTACK_COOLDOWN_MS_INPUT: &str = "@brain.attackCooldownMs";
 /// `true` on the think-stride ticks where the engine re-evaluates acquisition.
 pub const BRAIN_ACQUISITION_DUE_INPUT: &str = "@brain.acquisitionDue";
@@ -93,7 +94,7 @@ pub const BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT: &str = "@brain.attacksFiredInAc
 /// its travel animation for one of those ticks) when its last target
 /// despawned. A disengagement edge that must be robust to target loss has to
 /// gate on [`BRAIN_HAS_TARGET_INPUT`] directly, or be authored as an
-/// any-state interrupt that stands the brain down when `hasTarget` is false.
+/// root wildcard row that stands the brain down when `hasTarget` is false.
 /// Use the explicit `not` opcode for inversion. The older
 /// `select(cond, false, true)` spelling remains equivalent.
 pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;

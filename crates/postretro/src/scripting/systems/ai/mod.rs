@@ -50,8 +50,8 @@ use combat_slots::resolve_combat_slots;
 use engine_floor::{POSITION_GOAL_ARRIVAL_EPSILON, SteeringIntent};
 use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use graph_eval::{
-    action_for_path, animation_for_path, engages_active, engages_path, motion_for_path,
-    select_transition_path, steering_for,
+    action_for_entry_path, action_for_path, animation_for_path, engages_active, engages_path,
+    motion_for_path, select_transition_path, steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use postretro_entities::components::brain::BrainComponent;
@@ -241,8 +241,9 @@ pub(super) struct EnemyOutcome {
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
     pub(super) prior_acquired_target: Option<EntityId>,
-    /// A replacement graph was reconciled this tick. Its state identity was
-    /// resolved by name even when the resulting numeric index stayed equal.
+    /// A replacement graph or invalid restored path was reseated this tick.
+    /// Its state identity was resolved by name even when the resulting numeric
+    /// index stayed equal.
     pub(super) graph_reseated: bool,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
@@ -321,8 +322,9 @@ impl Default for AiRuntime {
 
 /// Drive every enemy brain one tick. Returns the event addresses raised this
 /// tick — one [`ENEMY_ATTACK_EVENT`] per enemy that attacked, plus each entered
-/// state's authored `on_enter` — for the app's post-tick event drain. `tick_dt`
-/// is the fixed tick delta in seconds.
+/// state's authored `on_enter` after a transition/reseat — for the app's
+/// post-tick event drain. Fresh initial seating is event-silent. `tick_dt` is
+/// the fixed tick delta in seconds.
 ///
 /// The return is `Cow` so the static attack event costs nothing to raise while
 /// an authored address still travels as an owned `String`; the owning clone
@@ -335,7 +337,8 @@ impl Default for AiRuntime {
 ///    for its entry tick, so every phase is observable for at least one tick.
 ///    A closed aggro gate is the other exception: it stands the brain down to
 ///    `initial` and skips evaluation entirely.
-/// 3. On entry, reset the entered path suffix and raise its leaf `onEnter`.
+/// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
+///    this is the fresh spawn's initial seating.
 /// 4. Edge-fire an entered action after its cooldown, range, and target gates.
 /// 5. On an activity change or locomotion stop/resume, request the one animation
 ///    state resolved from the active nested path.
@@ -431,9 +434,24 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
-        let graph_reseated = programs.take_reseat(snap.id);
+        let mut graph_reseated = programs.take_reseat(snap.id);
         if graph_reseated {
             brain.reseat_to_initial();
+        }
+        // Validate the complete restored path before any consumer walks it.
+        // Checking only the root misses a stale child index or a descendant
+        // retained beneath a leaf; trusting an over-cap length also panics in
+        // timer/counter slice operations.
+        if !brain.has_valid_active_path() {
+            if reseat_warned.insert(snap.id) {
+                log::warn!(
+                    "[AI] enemy {} carried an invalid behavior activity path; re-seating it \
+                     to `{}`. Warned once per enemy.",
+                    snap.id,
+                    brain.graph.envelope.initial,
+                );
+            }
+            graph_reseated |= brain.reseat_to_initial();
         }
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
@@ -570,20 +588,6 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             };
             (transitioned, SteeringIntent::Clear)
         } else {
-            // A restored hand-written path cannot be evaluated safely. Reseat
-            // the full initial descent rather than retaining a stale root index.
-            if brain.activity_at_depth(0).is_none() {
-                if reseat_warned.insert(snap.id) {
-                    log::warn!(
-                        "[AI] enemy {} carried an invalid behavior activity path; re-seating it \
-                         to `{}`. Warned once per enemy.",
-                        snap.id,
-                        brain.graph.envelope.initial,
-                    );
-                }
-                brain.reseat_to_initial();
-            }
-
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
             // divisor, and reaches the guards as `@brain.acquisitionDue` for the
@@ -696,18 +700,20 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         let entered = brain.take_entry_pending();
         let mut attacked = false;
         let mut attack_damage = None;
-        if entered
+        if let Some(entry_start_depth) = entered
             && let (Some(target), Some(distance)) = (target, selected_distance)
             && let Some((attack_name, attack)) = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    action_for_path(bound, scope, &brain).and_then(|action| match action {
-                        ActionVerb::Attack(name) => brain
-                            .graph
-                            .attacks
-                            .get(name)
-                            .copied()
-                            .map(|attack| (name.clone(), attack)),
-                    })
+                    action_for_entry_path(bound, scope, &brain, entry_start_depth).and_then(
+                        |action| match action {
+                            ActionVerb::Attack(name) => brain
+                                .graph
+                                .attacks
+                                .get(name)
+                                .copied()
+                                .map(|attack| (name.clone(), attack)),
+                        },
+                    )
                 })
                 .flatten()
             && distance <= attack.max_range
@@ -727,8 +733,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             brain.record_successful_attack_fire();
         }
 
-        let state_changed = graph_reseated || transitioned || entered;
-        let on_enter = if state_changed {
+        let state_changed = graph_reseated || transitioned || entered.is_some();
+        let announce_entry = brain.take_entry_event_pending() && entered.is_some();
+        let on_enter = if announce_entry {
             brain
                 .active_depth()
                 .checked_sub(1)

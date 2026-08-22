@@ -19,6 +19,7 @@ fn js_behavior(root_extra: &str) -> String {
                 idle: {{ animation: "idle", motion: "hold" }},
                 engage: {{ animation: "walk", layers: {{
                     move: [{{ when: {JS_GUARD}, motion: "hold" }}, "chaseTarget"],
+                    presentation: [{{ when: {JS_GUARD} }}, "hold"],
                     offense: {{
                         initial: "windup",
                         activities: {{
@@ -45,6 +46,7 @@ fn lua_behavior(root_extra: &str) -> String {
                 idle = {{ animation = "idle", motion = "hold" }},
                 engage = {{ animation = "walk", layers = {{
                     move = {{ {{ when = {LUA_GUARD}, motion = "hold" }}, "chaseTarget" }},
+                    presentation = {{ {{ when = {LUA_GUARD} }}, "hold" }},
                     offense = {{
                         initial = "windup",
                         activities = {{
@@ -100,6 +102,10 @@ fn recursive_descriptor_parses_identically_in_both_runtimes() {
     assert!(matches!(
         entries.last(),
         Some(BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget))
+    ));
+    assert!(matches!(
+        engage.layers["presentation"],
+        BehaviorLayerDescriptor::Selector(_)
     ));
 }
 

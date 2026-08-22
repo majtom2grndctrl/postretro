@@ -86,38 +86,6 @@ pub struct BehaviorSelectorRow {
     pub action: Option<ActionVerb>,
 }
 
-impl BehaviorActivityDescriptor {
-    /// Return this activity's canonical layer model.
-    ///
-    /// Leaf `motion` and `action` are wire sugar, not a second evaluator
-    /// representation: a binder calls this once when it builds its derived
-    /// program, where the clone/allocation is outside the tick path. A direct
-    /// motion is the sole `move` fallback; a direct action is an unconditional
-    /// single-entry `offense` selector.
-    pub fn desugared_layers(&self) -> BTreeMap<String, BehaviorLayerDescriptor> {
-        let mut layers = self.layers.clone();
-        if let Some(motion) = self.motion {
-            layers.insert(
-                "move".to_string(),
-                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Motion(motion)]),
-            );
-        }
-        if let Some(action) = self.action.clone() {
-            layers.insert(
-                "offense".to_string(),
-                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(
-                    BehaviorSelectorRow {
-                        when: None,
-                        motion: None,
-                        action: Some(action),
-                    },
-                )]),
-            );
-        }
-        layers
-    }
-}
-
 /// The root envelope plus root-only behavior policy and tuning.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -466,14 +434,40 @@ fn validate_layer(
             } else if layer_name == "offense" {
                 validate_offense_selector(entries, path, attacks)
             } else {
-                Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`{path}` has an unknown selector layer name `{layer_name}`; selector layers are `move` or `offense`"
-                    ),
-                })
+                validate_unconsumed_selector(entries, path, attacks, patrol)
             }
         }
     }
+}
+
+/// Preserve selector layers owned by future or external consumers. The AI
+/// evaluator only assigns meaning to `move` and `offense`, but every selector
+/// still validates the shared guard and closed verb vocabulary at load time.
+fn validate_unconsumed_selector(
+    entries: &[BehaviorSelectorEntry],
+    path: &str,
+    attacks: &BTreeMap<String, AttackParams>,
+    patrol: Option<&PatrolDescriptor>,
+) -> Result<(), DescriptorError> {
+    for (index, entry) in entries.iter().enumerate() {
+        match entry {
+            BehaviorSelectorEntry::Motion(motion) => {
+                validate_motion(*motion, &format!("{path}[{index}]"), patrol)?;
+            }
+            BehaviorSelectorEntry::Row(row) => {
+                if let Some(when) = row.when.as_ref() {
+                    validate_guard(when, &format!("{path}[{index}].when"))?;
+                }
+                if let Some(motion) = row.motion {
+                    validate_motion(motion, &format!("{path}[{index}].motion"), patrol)?;
+                }
+                if let Some(action) = row.action.as_ref() {
+                    validate_action(action, &format!("{path}[{index}].action"), attacks)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_move_selector(
@@ -702,6 +696,34 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_selector_layer_names_validate_but_remain_unconsumed() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "engage", "moveSpeed": 3.0,
+            "activities": {
+                "engage": {
+                    "animation": "idle",
+                    "layers": {
+                        "presentation": [
+                            { "when": { "op": "const", "value": true } },
+                            "hold"
+                        ]
+                    }
+                }
+            },
+            "transitions": {}
+        }))
+        .unwrap();
+
+        let graph = graph
+            .validate()
+            .expect("selector names outside move/offense are reserved for other consumers");
+        assert!(matches!(
+            graph.envelope.activities["engage"].layers["presentation"],
+            BehaviorLayerDescriptor::Selector(_)
+        ));
+    }
+
+    #[test]
     fn duplicate_activity_keys_in_raw_json_are_rejected_at_every_envelope() {
         // JS objects and Luau tables collapse duplicate keys before their
         // bridges run. Raw JSON is the boundary where last-writer-wins would
@@ -758,31 +780,5 @@ mod tests {
             serde_json::from_str::<BehaviorGraphDescriptor>(nested_graph).is_err(),
             "a duplicate inside a nested graph layer must reject the whole descriptor"
         );
-    }
-
-    #[test]
-    fn leaf_motion_and_action_sugar_lower_to_the_canonical_layers() {
-        let activity = BehaviorActivityDescriptor {
-            animation: Some("slam".to_string()),
-            motion: Some(MotionVerb::ChaseTarget),
-            action: Some(ActionVerb::Attack("slam".to_string())),
-            on_enter: None,
-            layers: BTreeMap::new(),
-        };
-        let layers = activity.desugared_layers();
-        assert!(matches!(
-            layers["move"],
-            BehaviorLayerDescriptor::Selector(ref rows)
-                if rows == &vec![BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget)]
-        ));
-        assert!(matches!(
-            layers["offense"],
-            BehaviorLayerDescriptor::Selector(ref rows)
-                if matches!(rows.as_slice(), [BehaviorSelectorEntry::Row(BehaviorSelectorRow {
-                    when: None,
-                    motion: None,
-                    action: Some(ActionVerb::Attack(name)),
-                })] if name == "slam")
-        ));
     }
 }

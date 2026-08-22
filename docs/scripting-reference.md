@@ -157,7 +157,7 @@ across all levels.
 | `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
-| `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior graph — named states, motion/action verbs, candidate eligibility, and ordered transition guards. It owns acquisition and stand-down policy. See [`components.behavior`](#componentsbehavior). |
+| `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior statechart — hierarchical activities, motion/action verbs, candidate eligibility, and ordered transition guards. It owns acquisition and stand-down policy. See [`components.behavior`](#componentsbehavior). |
 
 **Manifest commit:** returned descriptors validate as a group after
 the mod manifest succeeds. A failed mod init changes neither the entity registry nor
@@ -649,7 +649,7 @@ defineEntity({
 | Field | Type | Description |
 |-------|------|-------------|
 | `initial` | `string` | Activity entered at spawn and when the aggro gate closes. Must name root `activities`. |
-| `activities` | `{ [name]: Activity }` | Non-empty named activities. Duplicate names are rejected. |
+| `activities` | `{ [name]: Activity }` | Non-empty named activities. Raw JSON with duplicate keys is rejected. TypeScript reports duplicate object-literal keys (`ts1117`); JavaScript and Luau maps retain the last value before the descriptor bridge. |
 | `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
@@ -665,7 +665,7 @@ An activity is either a leaf or a composite:
 | `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
 | `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires on entry. |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
-| `onEnter` | `string` (optional) | Named event fired when an activity is entered by a transition. |
+| `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 
 A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary

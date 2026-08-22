@@ -138,10 +138,19 @@ pub struct BrainComponent {
     #[serde(default = "default_activity_attack_counts")]
     pub attacks_fired_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
     /// An initial descent, transition, gate reset, or graph reseat seats a path
-    /// atomically and marks its active leaf for one edge-triggered entry pass.
-    /// This is consumed by the AI tick after timers are zeroed.
+    /// atomically and marks its newly entered suffix for one edge-triggered
+    /// entry pass. This is consumed by the AI tick after timers are zeroed.
     #[serde(default)]
     pub entry_pending: bool,
+    /// First depth entered by the pending edge. An inner transition must not
+    /// re-fire an action selected by a still-active outer activity.
+    #[serde(default)]
+    pub entry_pending_start_depth: usize,
+    /// Whether the pending entry should emit the entered leaf's `onEnter`.
+    /// Fresh construction seats the full initial path without announcing an
+    /// event; transitions and later reseats announce their entry.
+    #[serde(default)]
+    pub entry_event_pending: bool,
 }
 
 impl BrainComponent {
@@ -166,8 +175,10 @@ impl BrainComponent {
             time_in_activity_ms: default_activity_timers(),
             attacks_fired_in_activity: default_activity_attack_counts(),
             entry_pending: false,
+            entry_pending_start_depth: 0,
+            entry_event_pending: false,
         };
-        brain.reseat_to_initial();
+        brain.reseat_to_initial_without_event();
         brain
     }
 
@@ -180,7 +191,7 @@ impl BrainComponent {
     /// Resolve the activity active in `depth`'s envelope. `None` means a
     /// hand-written/restored brain carries an invalid path and must be reseated.
     pub fn activity_at_depth(&self, depth: usize) -> Option<(&str, &BehaviorActivityDescriptor)> {
-        if depth >= self.active_activity_path_len {
+        if depth >= self.active_depth() {
             return None;
         }
         let envelope = self.envelope_at_depth(depth)?;
@@ -194,33 +205,47 @@ impl BrainComponent {
     /// Names in root-to-leaf order for diagnostics. This presentation helper is
     /// intentionally outside the AI tick's allocation-free evaluator path.
     pub fn active_path_names(&self) -> Vec<&str> {
-        (0..self.active_activity_path_len)
+        (0..self.active_depth())
             .filter_map(|depth| self.activity_at_depth(depth).map(|(name, _)| name))
             .collect()
     }
 
     pub fn active_activity_index(&self, depth: usize) -> Option<usize> {
-        (depth < self.active_activity_path_len).then_some(self.active_activity_path[depth])
+        if depth < self.active_depth() {
+            Some(self.active_activity_path[depth])
+        } else {
+            None
+        }
     }
 
     pub fn active_depth(&self) -> usize {
         self.active_activity_path_len
+            .min(MAX_BEHAVIOR_NESTING_DEPTH)
     }
 
     pub fn activity_timer(&self, depth: usize) -> Option<f32> {
-        (depth < self.active_activity_path_len).then_some(self.time_in_activity_ms[depth])
+        if depth < self.active_depth() {
+            Some(self.time_in_activity_ms[depth])
+        } else {
+            None
+        }
     }
 
     /// Successful attack fires observed since the activity active at `depth`
     /// was entered. Parent activities include fires from active descendants.
     pub fn activity_attack_count(&self, depth: usize) -> Option<u32> {
-        (depth < self.active_activity_path_len).then_some(self.attacks_fired_in_activity[depth])
+        if depth < self.active_depth() {
+            Some(self.attacks_fired_in_activity[depth])
+        } else {
+            None
+        }
     }
 
     /// Increment every observable active activity clock. Inactive descendants
     /// remain reset/frozen because entry always collapses the suffix first.
     pub fn tick_activity_timers(&mut self, dt_ms: f32) {
-        for timer in self.time_in_activity_ms[..self.active_activity_path_len].iter_mut() {
+        let active_depth = self.active_depth();
+        for timer in self.time_in_activity_ms[..active_depth].iter_mut() {
             *timer += dt_ms;
         }
     }
@@ -230,7 +255,8 @@ impl BrainComponent {
     /// and live-target gates succeed, so a skipped entry never advances a
     /// counter and one enemy can advance each scope at most once per tick.
     pub fn record_successful_attack_fire(&mut self) {
-        for count in self.attacks_fired_in_activity[..self.active_activity_path_len].iter_mut() {
+        let active_depth = self.active_depth();
+        for count in self.attacks_fired_in_activity[..active_depth].iter_mut() {
             *count = count.saturating_add(1);
         }
     }
@@ -238,13 +264,52 @@ impl BrainComponent {
     /// Seat the root initial activity and every nested initial descent. Shared
     /// by construction, gate-close, graph reseat, and transition entry.
     pub fn reseat_to_initial(&mut self) -> bool {
+        self.reseat_to_initial_with_event(true)
+    }
+
+    fn reseat_to_initial_without_event(&mut self) -> bool {
+        self.reseat_to_initial_with_event(false)
+    }
+
+    fn reseat_to_initial_with_event(&mut self, emit_event: bool) -> bool {
         let initial_index = self
             .graph
             .envelope
             .activities
             .keys()
             .position(|name| name == &self.graph.envelope.initial);
-        initial_index.is_some_and(|index| self.enter_activity_at(0, index))
+        initial_index.is_some_and(|index| self.enter_activity_at_inner(0, index, emit_event))
+    }
+
+    /// Whether every live path slot resolves through the retained graph and
+    /// the path ends exactly at a leaf. Restored paths that are too long,
+    /// contain a stale index, omit a nested initial, or retain a descendant
+    /// beneath a leaf are invalid and must be reseated before evaluation.
+    pub fn has_valid_active_path(&self) -> bool {
+        if self.active_activity_path_len == 0
+            || self.active_activity_path_len > MAX_BEHAVIOR_NESTING_DEPTH
+            || (self.entry_pending
+                && self.entry_pending_start_depth >= self.active_activity_path_len)
+        {
+            return false;
+        }
+
+        let mut envelope = &self.graph.envelope;
+        for depth in 0..self.active_activity_path_len {
+            let Some(activity) = envelope
+                .activities
+                .values()
+                .nth(self.active_activity_path[depth])
+            else {
+                return false;
+            };
+            match nested_graph(activity) {
+                Some(child) if depth + 1 < self.active_activity_path_len => envelope = child,
+                Some(_) => return false,
+                None => return depth + 1 == self.active_activity_path_len,
+            }
+        }
+        false
     }
 
     /// Whether the whole active path is already seated at every envelope's
@@ -284,10 +349,22 @@ impl BrainComponent {
     /// descend nested initials.
     /// A parser-validated graph cannot fail this; `false` is the safe answer for
     /// malformed hand-built/restored data.
-    pub fn enter_activity_at(&mut self, mut depth: usize, mut target_index: usize) -> bool {
+    pub fn enter_activity_at(&mut self, depth: usize, target_index: usize) -> bool {
+        self.enter_activity_at_inner(depth, target_index, true)
+    }
+
+    fn enter_activity_at_inner(
+        &mut self,
+        mut depth: usize,
+        mut target_index: usize,
+        emit_event: bool,
+    ) -> bool {
         if depth >= MAX_BEHAVIOR_NESTING_DEPTH {
             return false;
         }
+        let entry_start_depth = depth;
+        self.entry_pending = false;
+        self.entry_event_pending = false;
         self.active_activity_path_len = depth;
         for timer in self.time_in_activity_ms[depth..].iter_mut() {
             *timer = 0.0;
@@ -327,15 +404,28 @@ impl BrainComponent {
             target_index = initial;
         }
         self.entry_pending = true;
+        self.entry_pending_start_depth = entry_start_depth;
+        self.entry_event_pending = emit_event;
         true
     }
 
     /// Consume the atomic-entry latch after the tick has considered exactly one
     /// action edge. A newly seated path is therefore never re-fired by a long
     /// hold in its action activity.
-    pub fn take_entry_pending(&mut self) -> bool {
-        let pending = self.entry_pending;
+    pub fn take_entry_pending(&mut self) -> Option<usize> {
+        let pending = self
+            .entry_pending
+            .then_some(self.entry_pending_start_depth.min(self.active_depth()));
         self.entry_pending = false;
+        pending
+    }
+
+    /// Consume the event half of entry bookkeeping. Entry animation and action
+    /// work remain independent so a fresh spawn can seat and fire without
+    /// publishing an authored transition event.
+    pub fn take_entry_event_pending(&mut self) -> bool {
+        let pending = self.entry_event_pending;
+        self.entry_event_pending = false;
         pending
     }
 
@@ -661,7 +751,7 @@ mod tests {
     #[test]
     fn from_graph_seats_the_initial_activity_path_and_retains_the_graph() {
         let graph = authored_graph();
-        let brain = BrainComponent::from_graph(&graph);
+        let mut brain = BrainComponent::from_graph(&graph);
         assert_eq!(brain.state_name(), Some("rest"));
         assert_eq!(
             brain.active_activity_index(0).unwrap(),
@@ -681,6 +771,67 @@ mod tests {
             BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS,
             "an attacks-only graph without `engagementRadius` uses the graph-level default"
         );
+        assert_eq!(
+            brain.take_entry_pending(),
+            Some(0),
+            "fresh construction still exposes its initial animation/action entry edge"
+        );
+        assert!(
+            !brain.take_entry_event_pending(),
+            "fresh construction does not publish the initial activity's onEnter"
+        );
+        assert!(brain.has_valid_active_path());
+    }
+
+    // Regression: a persisted path length above the fixed array capacity
+    // panicked when timer and attack-counter slices trusted it.
+    #[test]
+    fn malformed_restored_activity_paths_are_bounded_and_reseat_fully() {
+        let graph = authored_graph();
+        let brain = BrainComponent::from_graph(&graph);
+        let mut serialized = serde_json::to_value(brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain is an object")
+            .insert(
+                "active_activity_path_len".to_string(),
+                serde_json::json!(usize::MAX),
+            );
+        let mut restored: BrainComponent =
+            serde_json::from_value(serialized).expect("malformed path still decodes safely");
+
+        assert!(!restored.has_valid_active_path());
+        assert_eq!(restored.active_depth(), MAX_BEHAVIOR_NESTING_DEPTH);
+        assert_eq!(
+            restored.active_activity_index(MAX_BEHAVIOR_NESTING_DEPTH),
+            None
+        );
+        assert_eq!(restored.activity_timer(MAX_BEHAVIOR_NESTING_DEPTH), None);
+        assert_eq!(
+            restored.activity_attack_count(MAX_BEHAVIOR_NESTING_DEPTH),
+            None
+        );
+        assert_eq!(
+            restored.active_path_names(),
+            ["rest"],
+            "diagnostics stop walking when the malformed suffix cannot resolve"
+        );
+        restored.tick_activity_timers(16.0);
+        restored.record_successful_attack_fire();
+
+        // A stale nested suffix beneath the root leaf is also invalid even
+        // though the root index itself still resolves.
+        restored.active_activity_path_len = 2;
+        restored.active_activity_path[0] = graph_activity_index(&graph, "rest").unwrap();
+        restored.active_activity_path[1] = 0;
+        assert_eq!(restored.state_name(), Some("rest"));
+        assert!(!restored.has_valid_active_path());
+
+        assert!(restored.reseat_to_initial());
+        assert!(restored.has_valid_active_path());
+        assert_eq!(restored.active_depth(), 1);
+        assert_eq!(restored.active_path_names(), ["rest"]);
+        assert!(restored.take_entry_event_pending());
     }
 
     #[test]

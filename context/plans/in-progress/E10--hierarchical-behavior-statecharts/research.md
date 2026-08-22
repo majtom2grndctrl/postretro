@@ -255,6 +255,14 @@ restarts `offense` at `windup` (restart-at-initial; no history). The attack fire
   type-test, and document the residual `&&`/`||` hazard in `docs/scripting-reference.md`. AC6 became a
   fluent-emission test + a type-test + a doc gate, not a lint assertion. A scope reduction forced by
   the toolchain, not a design change.
+- **One stateful region per composite (AC18; orchestration-time defect).** The descriptor as first
+  promoted permitted any number of nested-graph layers per composite, but Task 2's single fixed-capacity
+  active path (and the animation-collapse precedence, which names one offense stateful region) can only
+  represent one. Resolution: a composite carries at most one nested-graph layer; selector layers stay
+  unlimited and orthogonal; a second nested graph is a parse-time error. This makes explicit a
+  constraint the rest of the spec already assumed, and matches the leanness stance (bounded, not a
+  general-purpose statechart engine). Multiple parallel stateful regions (Harel AND-states) are a
+  foreclosed additive future extension — a per-region active-path forest — with no near-term consumer.
 - **AC7/AC15 decomposed into named sub-assertions** (verifiability), and the counter-stall authoring
   hazard surfaced from Scope into Task 5 so the reference-enemy author sets `cooldownMs ≤` the
   phase-cycle sum deliberately. Task 2 was kept whole (the falsifying thin slice) per the draft-plan

@@ -115,7 +115,7 @@ pub struct BrainComponent {
     /// pointer test correctly rebinds after a load.
     pub graph: Arc<BehaviorGraphDescriptor>,
     /// The current graph state, as an index into the graph's resolved state list
-    /// (`graph.states` in its `BTreeMap` iteration order). An index rather than a
+    /// (`graph.envelope.activities` in its `BTreeMap` iteration order). An index rather than a
     /// name so per-tick evaluation neither allocates nor compares strings; it is
     /// stable because the graph is retained alongside it.
     pub state_index: usize,
@@ -144,7 +144,7 @@ impl BrainComponent {
             // A validated graph always declares `initial`; an unvalidated one
             // falls back to the first resolved state rather than an index the
             // state list cannot answer.
-            state_index: graph_state_index(graph, &graph.initial).unwrap_or(0),
+            state_index: graph_state_index(graph, &graph.envelope.initial).unwrap_or(0),
             graph: Arc::new(graph.clone()),
             time_in_state_ms: 0.0,
         }
@@ -155,7 +155,8 @@ impl BrainComponent {
     /// both constructors seed a valid index).
     pub fn state_name(&self) -> Option<&str> {
         self.graph
-            .states
+            .envelope
+            .activities
             .keys()
             .nth(self.state_index)
             .map(String::as_str)
@@ -163,11 +164,15 @@ impl BrainComponent {
 }
 
 /// The index of `name` in `graph`'s resolved state list, or `None` when the
-/// graph declares no such state. The resolved list is `graph.states` in its
+/// graph declares no such activity. The resolved list is `graph.envelope.activities` in its
 /// `BTreeMap` iteration order (lexicographic by state name) — the single
 /// definition of the index every `state_index` is measured against.
 pub fn graph_state_index(graph: &BehaviorGraphDescriptor, name: &str) -> Option<usize> {
-    graph.states.keys().position(|state| state == name)
+    graph
+        .envelope
+        .activities
+        .keys()
+        .position(|activity| activity == name)
 }
 
 #[derive(Deserialize)]
@@ -266,16 +271,19 @@ pub fn validate_brain_animation_states(
     let declared: Option<&MeshComponent> = registry.get_component::<MeshComponent>(entity).ok();
 
     let mut unmapped = Vec::new();
-    for (name, state) in &brain.graph.states {
+    for (name, activity) in &brain.graph.envelope.activities {
+        let Some(animation_name) = activity.animation.as_ref() else {
+            continue;
+        };
         let is_declared = declared
             .and_then(|m| m.animation.as_ref())
-            .is_some_and(|a| a.states.contains_key(&state.animation));
+            .is_some_and(|a| a.states.contains_key(animation_name));
         if !is_declared {
             log::warn!(
-                "[AI] brain state `{name}` maps to animation state `{anim}`, \
+                "[AI] brain activity `{name}` maps to animation state `{anim}`, \
                  which is not declared on the entity's mesh; this state will not switch \
                  animation (the prior animation is kept)",
-                anim = state.animation,
+                anim = animation_name,
             );
             unmapped.push(name.clone());
         }
@@ -284,13 +292,14 @@ pub fn validate_brain_animation_states(
     // The graph's rest animation vs. the clip the mesh actually starts in.
     let rest_animation = brain
         .graph
-        .states
-        .get(&brain.graph.initial)
-        .map(|state| state.animation.clone());
+        .envelope
+        .activities
+        .get(&brain.graph.envelope.initial)
+        .and_then(|activity| activity.animation.clone());
     let current_animation = declared
         .and_then(|mesh| mesh.animation.as_ref())
         .map(|animation| animation.current_state.clone());
-    let rest_is_declared = !unmapped.contains(&brain.graph.initial);
+    let rest_is_declared = !unmapped.contains(&brain.graph.envelope.initial);
     let seed = match (rest_animation, current_animation) {
         (Some(rest), Some(current)) if rest != current && rest_is_declared => Some((rest, current)),
         _ => None,
@@ -333,46 +342,51 @@ mod tests {
 
     fn authored_graph() -> BehaviorGraphDescriptor {
         use crate::data_descriptors::{
-            AttackParams, BehaviorStateDescriptor, MotionVerb, TransitionDescriptor,
+            AttackParams, BehaviorActivityDescriptor, BehaviorGraphEnvelope, GuardedRow, MotionVerb,
         };
         use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 
         BehaviorGraphDescriptor {
-            initial: "rest".to_string(),
-            states: std::collections::BTreeMap::from([
-                (
+            envelope: BehaviorGraphEnvelope {
+                initial: "rest".to_string(),
+                activities: std::collections::BTreeMap::from([
+                    (
+                        "rest".to_string(),
+                        BehaviorActivityDescriptor {
+                            animation: Some("idle".to_string()),
+                            motion: Some(MotionVerb::Hold),
+                            action: None,
+                            on_enter: None,
+                            layers: std::collections::BTreeMap::new(),
+                        },
+                    ),
+                    (
+                        "charge".to_string(),
+                        BehaviorActivityDescriptor {
+                            animation: Some("walk".to_string()),
+                            motion: Some(MotionVerb::ChaseTarget),
+                            action: None,
+                            on_enter: None,
+                            layers: std::collections::BTreeMap::new(),
+                        },
+                    ),
+                ]),
+                transitions: std::collections::BTreeMap::from([(
                     "rest".to_string(),
-                    BehaviorStateDescriptor {
-                        animation: "idle".to_string(),
-                        motion: MotionVerb::Hold,
-                        action: None,
-                        transitions: vec![TransitionDescriptor {
-                            to: "charge".to_string(),
-                            when: IrNode::Le {
-                                a: Box::new(IrNode::Input {
-                                    name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
-                                    owner: None,
-                                }),
-                                b: Box::new(IrNode::Const {
-                                    value: IrValue::Number(16.0),
-                                }),
-                            },
-                        }],
-                        on_enter: None,
-                    },
-                ),
-                (
-                    "charge".to_string(),
-                    BehaviorStateDescriptor {
-                        animation: "walk".to_string(),
-                        motion: MotionVerb::ChaseTarget,
-                        action: None,
-                        transitions: Vec::new(),
-                        on_enter: None,
-                    },
-                ),
-            ]),
-            interrupts: Vec::new(),
+                    vec![GuardedRow {
+                        to: "charge".to_string(),
+                        when: IrNode::Le {
+                            a: Box::new(IrNode::Input {
+                                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                                owner: None,
+                            }),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(16.0),
+                            }),
+                        },
+                    }],
+                )]),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: std::collections::BTreeMap::from([(

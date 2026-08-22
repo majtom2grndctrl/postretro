@@ -220,7 +220,7 @@ export type EntityTypeComponents = {
   mesh: MeshDescriptor?,
   --- Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.
   health: HealthDescriptor?,
-  --- Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards.
+  --- Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.
   behavior: BehaviorGraphDescriptor?,
 }
 
@@ -424,7 +424,7 @@ export type HealthDescriptor = {
   zoneMultipliers: { [string]: number }?,
 }
 
---- What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`.
+--- What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`.
 export type MotionVerb =
   --- Steer toward the selected target's combat slot.
   "chaseTarget"
@@ -437,9 +437,9 @@ export type MotionVerb =
   --- Touch neither destination nor steering — terminal presentation.
   | "freeze"
 
---- What a behavior-graph state does besides moving. Omit the key for a state that takes no action.
+--- What a behavior activity does besides moving. Omit the key for an activity with no action.
 export type ActionVerb = {
-  --- Name of the graph-wide contact attack this state fires.
+  --- Name of the root graph contact attack this activity fires.
   attack: string,
 }
 
@@ -470,41 +470,70 @@ export type PatrolDescriptor = {
   mode: PatrolMode,
 }
 
---- One authored graph edge: a destination state plus the guard that selects it. Guards are evaluated every tick — nothing a state is doing ever blocks evaluation — and the first true guard in declaration order wins.
-export type TransitionDescriptor = {
-  --- Destination state name. Must name a state declared in the same `states` map.
+--- One source-keyed adjacency row: a destination activity plus the guard that selects it. Rows are evaluated in declaration order; the first true row wins.
+export type GuardedRow = {
+  --- Destination activity name. Must name an activity declared in the same envelope.
   to: string,
   --- Guard expression, built with the `runtime` builders over `brain.*` inputs and `state("name")` leaves. Must produce a boolean; validated at parse.
   when: RuntimeValue,
 }
 
---- One authored graph state: the animation it requests, what it does with motion and actions, and its ordered outgoing transitions.
-export type BehaviorStateDescriptor = {
-  --- Mesh animation-state name requested while this state is current. Must name a state declared in `components.mesh.animations`; resolved at spawn, where an unknown name warns and the prior animation is kept.
-  animation: string,
-  --- What this state does with steering.
-  motion: MotionVerb,
-  --- Optional action performed while this state is current. `{ attack: "name" }` must name an entry in the graph's `attacks` map. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged.
+--- One selector row. In a `move` layer it supplies `when` and `motion`; in an `offense` layer it supplies `when` and `action`.
+export type BehaviorSelectorRow = {
+  --- Optional boolean guard. `action:` leaf sugar lowers to one unconditional offense row; authored selector rows supply a guard.
+  when: RuntimeValue?,
+  --- Motion selected when this row wins in a `move` layer.
+  motion: MotionVerb?,
+  --- Root-attack action selected when this row wins in an `offense` layer.
   action: ActionVerb?,
-  --- State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.
-  transitions: {TransitionDescriptor}?,
-  --- Optional named-event address fired through the post-tick drain when a transition changes the brain into this state. Initial spawn does not fire it.
-  onEnter: string?,
 }
 
---- Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns the offered-target set, ranking and retention, steering, damage, and determinism; the graph owns candidate eligibility, fresh-acquisition policy, its states, and ordered guards, including retained-target stand-down.
-export type BehaviorGraphDescriptor = {
-  --- State entered at spawn. Must name a declared state. It is also forced when the aggro gate closes, so it should be rest-appropriate. Having no target does not force this state; guards still evaluate.
+--- Activities declared by one behavior envelope, keyed by author-chosen name.
+export type BehaviorActivities = { [string]: BehaviorActivityDescriptor }
+--- Source-keyed adjacency rows. The `"*"` key applies while the enclosing composite is active.
+export type BehaviorTransitions = { [string]: {GuardedRow} }
+--- A layer is either a selector list or a nested behavior envelope.
+export type BehaviorLayerDescriptor = {BehaviorSelectorRow | MotionVerb} | BehaviorGraphEnvelope
+--- Orthogonal layers owned by a composite activity. A move selector is statically required to end in its MotionVerb fallback.
+export type BehaviorLayers = { [string]: BehaviorLayerDescriptor }
+
+--- A behavior activity. A leaf supplies a required animation plus optional `motion`/`action` sugar; a composite supplies `layers` and may carry a locomotion animation.
+export type BehaviorActivityDescriptor = {
+  --- Leaf animation (required when no layers) or optional composite locomotion animation. Mesh names resolve at spawn.
+  animation: string?,
+  --- Leaf sugar for a single-entry `move` layer.
+  motion: MotionVerb?,
+  --- Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map.
+  action: ActionVerb?,
+  --- Optional named event fired when a leaf activity is entered.
+  onEnter: string?,
+  --- Composite-only orthogonal layers.
+  layers: BehaviorLayers?,
+}
+
+--- Recursive behavior graph envelope used by the root brain and nested graph layers. It carries no graph-wide gameplay fields.
+export type BehaviorGraphEnvelope = {
+  --- Initial activity name. Must resolve in this envelope's `activities` map.
   initial: string,
-  --- Declared states keyed by author-chosen name. Must be non-empty.
-  states: { [string]: BehaviorStateDescriptor },
-  --- Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.
-  interrupts: {TransitionDescriptor}?,
+  --- Declared same-level activities. Must be non-empty.
+  activities: BehaviorActivities,
+  --- Source-keyed ordered adjacency rows; `"*"` is the enclosing scope-all key.
+  transitions: BehaviorTransitions,
+}
+
+--- Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy.
+export type BehaviorGraphDescriptor = {
+  --- Root initial activity. It is also forced when the aggro gate closes.
+  initial: string,
+  --- Root activities, keyed by author-chosen name. Must be non-empty.
+  activities: BehaviorActivities,
+  --- Root source-keyed ordered adjacency rows. `"*"` applies at root scope.
+  transitions: BehaviorTransitions,
   --- Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.
   candidateFilter: RuntimeValue?,
-  --- Optional anchor-relative patrol route. Required with at least one point when any state uses `"patrol"` motion.
+  --- Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion.
   patrol: PatrolDescriptor?,
-  --- Named contact-attack vocabulary. A state action `{ attack: "name" }` must name one of these entries; omit for an attackless graph.
+  --- Named contact-attack vocabulary. Any leaf or offense-layer action `{ attack: "name" }` must name one of these entries; omit for an attackless graph.
   attacks: { [string]: AttackParams }?,
   --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,

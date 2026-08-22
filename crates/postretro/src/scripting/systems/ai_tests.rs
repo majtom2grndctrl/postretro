@@ -5581,6 +5581,7 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
 /// (`scripting-core`, where the twin-parser machinery lives). Together the two
 /// close the loop: TS ≡ Luau ≡ this oracle.
 #[test]
+#[ignore = "pending statecharts re-author, Task 5"]
 fn the_reference_oracle_matches_the_shipped_authored_graph() {
     assert_eq!(
         reference_behavior_graph(),

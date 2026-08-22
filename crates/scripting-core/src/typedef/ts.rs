@@ -55,6 +55,9 @@ pub(super) fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
                 .unwrap();
             }
         }
+        TypeShape::Alias { typescript, .. } => {
+            writeln!(out, "{TS_INDENT}export type {} = {typescript};", ty.name).unwrap();
+        }
         TypeShape::Struct { fields } => {
             let any_doc = fields.iter().any(|f| !f.doc.is_empty());
             if !any_doc {

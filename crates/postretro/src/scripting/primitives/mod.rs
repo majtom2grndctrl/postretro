@@ -273,7 +273,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("touchable?", "Option<TouchableDescriptor>", "Host-authoritative touch interaction tuning. Its presence makes a descriptor directly map-placeable and permits its weapon component to attach to that world instance.")
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
-        .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards.")
+        .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.")
         .finish();
     registry
         .register_type("InventoryDescriptor")
@@ -428,7 +428,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_enum("MotionVerb")
-        .doc("What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode.")
+        .doc("What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode.")
         .variant(
             "chaseTarget",
             "Steer toward the selected target's combat slot.",
@@ -449,8 +449,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ActionVerb")
-        .doc("What a behavior-graph state does besides moving. Omit the key for a state that takes no action.")
-        .field("attack", "String", "Name of the graph-wide contact attack this state fires.")
+        .doc("What a behavior activity does besides moving. Omit the key for an activity with no action.")
+        .field("attack", "String", "Name of the root graph contact attack this activity fires.")
         .finish();
     registry
         .register_type("AttackParams")
@@ -476,29 +476,75 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("mode", "PatrolMode", "Endpoint behavior for the route.")
         .finish();
     registry
-        .register_type("TransitionDescriptor")
-        .doc("One authored graph edge: a destination state plus the guard that selects it. Guards are evaluated every tick — nothing a state is doing ever blocks evaluation — and the first true guard in declaration order wins.")
-        .field("to", "String", "Destination state name. Must name a state declared in the same `states` map.")
+        .register_type("GuardedRow")
+        .doc("One source-keyed adjacency row: a destination activity plus the guard that selects it. Rows are evaluated in declaration order; the first true row wins.")
+        .field("to", "String", "Destination activity name. Must name an activity declared in the same envelope.")
         .field("when", "IrNode", "Guard expression, built with the `runtime` builders over `brain.*` inputs and `state(\"name\")` leaves. Must produce a boolean; validated at parse.")
         .finish();
     registry
-        .register_type("BehaviorStateDescriptor")
-        .doc("One authored graph state: the animation it requests, what it does with motion and actions, and its ordered outgoing transitions.")
-        .field("animation", "String", "Mesh animation-state name requested while this state is current. Must name a state declared in `components.mesh.animations`; resolved at spawn, where an unknown name warns and the prior animation is kept.")
-        .field("motion", "MotionVerb", "What this state does with steering.")
-        .field("action?", "ActionVerb", "Optional action performed while this state is current. `{ attack: \"name\" }` must name an entry in the graph's `attacks` map. Must be omitted when `motion` is `\"moveToAnchor\"` or `\"patrol\"`; position goals are non-engaged.")
-        .field("transitions?", "Vec<TransitionDescriptor>", "State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.")
-        .field("onEnter?", "String", "Optional named-event address fired through the post-tick drain when a transition changes the brain into this state. Initial spawn does not fire it.")
+        .register_type("BehaviorSelectorRow")
+        .doc("One selector row. In a `move` layer it supplies `when` and `motion`; in an `offense` layer it supplies `when` and `action`.")
+        .field("when?", "IrNode", "Optional boolean guard. `action:` leaf sugar lowers to one unconditional offense row; authored selector rows supply a guard.")
+        .field("motion?", "MotionVerb", "Motion selected when this row wins in a `move` layer.")
+        .field("action?", "ActionVerb", "Root-attack action selected when this row wins in an `offense` layer.")
+        .finish();
+    registry
+        .register_type("BehaviorActivities")
+        .doc("Activities declared by one behavior envelope, keyed by author-chosen name.")
+        .alias(
+            "{ readonly [activity: string]: BehaviorActivityDescriptor }",
+            "{ [string]: BehaviorActivityDescriptor }",
+        )
+        .finish();
+    registry
+        .register_type("BehaviorTransitions")
+        .doc("Source-keyed adjacency rows. The `\"*\"` key applies while the enclosing composite is active.")
+        .alias(
+            "{ readonly [source: string]: ReadonlyArray<GuardedRow> }",
+            "{ [string]: {GuardedRow} }",
+        )
+        .finish();
+    registry
+        .register_type("BehaviorLayerDescriptor")
+        .doc("A layer is either a selector list or a nested behavior envelope.")
+        .alias(
+            "ReadonlyArray<BehaviorSelectorRow | MotionVerb> | BehaviorGraphEnvelope",
+            "{BehaviorSelectorRow | MotionVerb} | BehaviorGraphEnvelope",
+        )
+        .finish();
+    registry
+        .register_type("BehaviorLayers")
+        .doc("Orthogonal layers owned by a composite activity. A move selector is statically required to end in its MotionVerb fallback.")
+        .alias(
+            "{ readonly move?: readonly [...BehaviorSelectorRow[], MotionVerb]; readonly offense?: ReadonlyArray<BehaviorSelectorRow> | BehaviorGraphEnvelope; readonly [layer: string]: BehaviorLayerDescriptor | undefined }",
+            "{ [string]: BehaviorLayerDescriptor }",
+        )
+        .finish();
+    registry
+        .register_type("BehaviorActivityDescriptor")
+        .doc("A behavior activity. A leaf supplies a required animation plus optional `motion`/`action` sugar; a composite supplies `layers` and may carry a locomotion animation.")
+        .field("animation?", "String", "Leaf animation (required when no layers) or optional composite locomotion animation. Mesh names resolve at spawn.")
+        .field("motion?", "MotionVerb", "Leaf sugar for a single-entry `move` layer.")
+        .field("action?", "ActionVerb", "Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map.")
+        .field("onEnter?", "String", "Optional named event fired when a leaf activity is entered.")
+        .field("layers?", "BehaviorLayers", "Composite-only orthogonal layers.")
+        .finish();
+    registry
+        .register_type("BehaviorGraphEnvelope")
+        .doc("Recursive behavior graph envelope used by the root brain and nested graph layers. It carries no graph-wide gameplay fields.")
+        .field("initial", "String", "Initial activity name. Must resolve in this envelope's `activities` map.")
+        .field("activities", "BehaviorActivities", "Declared same-level activities. Must be non-empty.")
+        .field("transitions", "BehaviorTransitions", "Source-keyed ordered adjacency rows; `\"*\"` is the enclosing scope-all key.")
         .finish();
     registry
         .register_type("BehaviorGraphDescriptor")
-        .doc("Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns the offered-target set, ranking and retention, steering, damage, and determinism; the graph owns candidate eligibility, fresh-acquisition policy, its states, and ordered guards, including retained-target stand-down.")
-        .field("initial", "String", "State entered at spawn. Must name a declared state. It is also forced when the aggro gate closes, so it should be rest-appropriate. Having no target does not force this state; guards still evaluate.")
-        .field("states", "BehaviorStates", "Declared states keyed by author-chosen name. Must be non-empty.")
-        .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")
+        .doc("Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy.")
+        .field("initial", "String", "Root initial activity. It is also forced when the aggro gate closes.")
+        .field("activities", "BehaviorActivities", "Root activities, keyed by author-chosen name. Must be non-empty.")
+        .field("transitions", "BehaviorTransitions", "Root source-keyed ordered adjacency rows. `\"*\"` applies at root scope.")
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
-        .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any state uses `\"patrol\"` motion.")
-        .field("attacks?", "BehaviorAttacks", "Named contact-attack vocabulary. A state action `{ attack: \"name\" }` must name one of these entries; omit for an attackless graph.")
+        .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `\"patrol\"` motion.")
+        .field("attacks?", "BehaviorAttacks", "Named contact-attack vocabulary. Any leaf or offense-layer action `{ attack: \"name\" }` must name one of these entries; omit for an attackless graph.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default.")
         .finish();

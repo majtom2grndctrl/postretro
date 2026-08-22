@@ -165,7 +165,8 @@ struct ClientCommandState {
     /// commands; `resolve_tick`'s catch-up bounds it back down whenever a handshake or
     /// hitch backlog pushes it past [`INPUT_BUFFER_MAX`]), so a `Vec` with binary-search
     /// insert beats a heap's overhead and keeps stale-drop / duplicate-collapse trivial
-    /// to reason about. The fast-forward drains the stale prefix in one `drain` call.
+    /// to reason about. Catch-up retains the serially newest commands without changing
+    /// this raw order.
     pending: Vec<InputCommand>,
     /// The latest client command tick this pawn has *resolved* (consumed a real
     /// command for, held the previous through, or synthesized neutral for). `None`
@@ -294,6 +295,29 @@ impl ClientCommandState {
     fn drop_stale(&mut self, cursor: u32) {
         self.pending
             .retain(|c| !client_tick_le(c.client_tick, cursor));
+    }
+
+    /// Raw indices of the serially-oldest and serially-newest queued commands.
+    ///
+    /// `pending` remains raw-`u32` sorted for exact-key binary searches, so serial order
+    /// is computed explicitly at the reads that need it. Pending ticks span less than half
+    /// the serial-number space, making these pairwise reductions a total order.
+    fn serial_bounds(&self) -> Option<(usize, usize)> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let mut oldest = 0;
+        let mut newest = 0;
+
+        for (index, command) in self.pending.iter().enumerate().skip(1) {
+            if client_tick_le(command.client_tick, self.pending[oldest].client_tick) {
+                oldest = index;
+            }
+            if !client_tick_le(command.client_tick, self.pending[newest].client_tick) {
+                newest = index;
+            }
+        }
+        Some((oldest, newest))
     }
 }
 
@@ -429,23 +453,45 @@ impl HostCommandQueues {
 
         // Catch-up fast-forward: a deep pending queue means real commands are stacking
         // up faster than the +1-per-tick cursor consumes them — a startup-handshake or
-        // hitch backlog. Drop all but the newest INPUT_BUFFER_TARGET so the resolved
+        // hitch backlog. Drop all but the serially newest INPUT_BUFFER_TARGET so the resolved
         // cursor never sits more than a small bounded buffer behind the newest received
         // command. Reload edges from the discarded prefix remain in their independent
         // recovery lane. Wrap-aware throughout: the new oldest's `client_tick - 1`
         // (serial arithmetic) is the cursor the normal exact-tick path then consumes as
         // `Real`.
         if state.pending.len() > INPUT_BUFFER_MAX {
-            let drop_count = state.pending.len() - INPUT_BUFFER_TARGET;
             diag_trims = 1;
-            diag_trimmed_jump = state.pending[0..drop_count]
+            let (_, newest_index) = state
+                .serial_bounds()
+                .expect("a deep pending queue is non-empty");
+            let newest_tick = state.pending[newest_index].client_tick;
+            let mut serial_ranks: Vec<(usize, u32)> = state
+                .pending
                 .iter()
-                .filter(|c| c.movement.jump_pressed)
+                .enumerate()
+                .map(|(index, command)| (index, newest_tick.wrapping_sub(command.client_tick)))
+                .collect();
+            serial_ranks.sort_unstable_by_key(|(_, distance)| *distance);
+
+            let mut survivors = vec![false; state.pending.len()];
+            for &(index, _) in serial_ranks.iter().take(INPUT_BUFFER_TARGET) {
+                survivors[index] = true;
+            }
+            let oldest_survivor = serial_ranks[INPUT_BUFFER_TARGET - 1].0;
+            let oldest_survivor_tick = state.pending[oldest_survivor].client_tick;
+            diag_trimmed_jump = state
+                .pending
+                .iter()
+                .enumerate()
+                .filter(|(index, command)| !survivors[*index] && command.movement.jump_pressed)
                 .count() as u32;
-            state.pending.drain(0..drop_count);
-            // `pending` is non-empty here (INPUT_BUFFER_TARGET >= 1), so `first()` holds.
-            let new_first = state.pending[0].client_tick;
-            state.resolved_cursor = Some(new_first.wrapping_sub(1));
+            let mut index = 0;
+            state.pending.retain(|_| {
+                let keep = survivors[index];
+                index += 1;
+                keep
+            });
+            state.resolved_cursor = Some(oldest_survivor_tick.wrapping_sub(1));
             // The trajectory jumped; any held intent is stale. Reset the hold so the
             // upcoming exact-tick hit resolves cleanly as the new `Real` baseline.
             state.held_ticks = 0;
@@ -458,7 +504,8 @@ impl HostCommandQueues {
             // the stream-begin path: arm the one-shot buildup latch so the first real
             // command is withheld until a small playout depth accumulates.
             None => {
-                let first = state.pending.first().map(|c| c.client_tick)?;
+                let (oldest, _) = state.serial_bounds()?;
+                let first = state.pending[oldest].client_tick;
                 state.building_playout = true;
                 first
             }
@@ -1879,6 +1926,109 @@ mod tests {
             !queues.ingest(CLIENT, &command(u32::MAX, 0.0)),
             "a pre-wrap command below the post-wrap cursor is stale"
         );
+    }
+
+    // Regression: raw-u32 queue order put post-wrap commands before the serially older
+    // pre-wrap prefix, so trim retained the wrong end of a straddling backlog.
+    #[test]
+    fn straddling_backlog_trim_keeps_serially_newest_commands() {
+        let mut queues = HostCommandQueues::new();
+        let oldest = u32::MAX - 4;
+        let ticks: Vec<u32> = (0..=(INPUT_BUFFER_MAX as u32))
+            .map(|offset| oldest.wrapping_add(offset))
+            .collect();
+
+        for &tick in &ticks {
+            assert!(queues.ingest(CLIENT, &command(tick, 1.0)));
+        }
+
+        let first = queues
+            .resolve_tick(CLIENT)
+            .expect("trim resolves a real command");
+        assert_eq!(first.source, ResolutionSource::Real);
+        assert_eq!(
+            first.client_tick, 2,
+            "the serially-oldest survivor resolves first"
+        );
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(2));
+        assert_eq!(
+            queues.clients[&CLIENT]
+                .pending
+                .iter()
+                .map(|command| command.client_tick)
+                .collect::<Vec<_>>(),
+            vec![3],
+            "trim retained only the serially-newest two commands before consuming one"
+        );
+        for &dropped in &ticks[..ticks.len() - INPUT_BUFFER_TARGET] {
+            assert!(
+                client_tick_le(dropped, queues.resolved_cursor(CLIENT).unwrap()),
+                "the reseated cursor is at or ahead of every serially dropped tick"
+            );
+        }
+
+        let second = queues
+            .resolve_tick(CLIENT)
+            .expect("second survivor resolves");
+        assert_eq!(second.source, ResolutionSource::Real);
+        assert_eq!(second.client_tick, 3);
+
+        assert!(
+            queues.ingest(CLIENT, &command(4, 1.0)),
+            "post-trim enqueue still accepts the next serial command"
+        );
+        let next = queues
+            .resolve_tick(CLIENT)
+            .expect("post-trim command resolves");
+        assert_eq!(next.source, ResolutionSource::Real);
+        assert_eq!(next.client_tick, 4);
+    }
+
+    // Regression: the first-resolution path read raw position and began a straddling
+    // stream at post-wrap ticks, drop-staling the serially oldest prefix.
+    #[test]
+    fn straddling_first_resolution_starts_at_serially_oldest_command() {
+        for depth in 2..=INPUT_BUFFER_MAX {
+            let mut queues = HostCommandQueues::new();
+            let ticks: Vec<u32> = (0..depth)
+                .map(|offset| u32::MAX.wrapping_add(offset as u32))
+                .collect();
+
+            for &tick in &ticks {
+                assert!(queues.ingest(CLIENT, &command(tick, 1.0)));
+            }
+
+            for &tick in &ticks {
+                let resolved = queues
+                    .resolve_tick(CLIENT)
+                    .expect("buffered command resolves");
+                assert_eq!(resolved.source, ResolutionSource::Real);
+                assert_eq!(resolved.client_tick, tick);
+            }
+        }
+    }
+
+    // Regression: a trim must disarm an already armed shallow buildup latch in the same
+    // call, so its reseated survivor resolves Real rather than being withheld neutral.
+    #[test]
+    fn armed_buildup_latch_trim_resolves_reseated_command_real() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.ingest(CLIENT, &command(100, 1.0)));
+        let withheld = queues
+            .resolve_tick(CLIENT)
+            .expect("shallow buildup withholds");
+        assert_eq!(withheld.source, ResolutionSource::Neutral);
+        assert_eq!(queues.resolved_cursor(CLIENT), None);
+
+        for tick in 101..=109 {
+            assert!(queues.ingest(CLIENT, &command(tick, 1.0)));
+        }
+        let resolved = queues
+            .resolve_tick(CLIENT)
+            .expect("trim resolves immediately");
+        assert_eq!(resolved.source, ResolutionSource::Real);
+        assert_eq!(resolved.client_tick, 108);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(108));
     }
 
     // === Reload recovery lane (logic unchanged; call sites re-threaded off the hold path) ===

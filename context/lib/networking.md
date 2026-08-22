@@ -383,9 +383,18 @@ safe for client reconciliation: the client prunes predicted history monotonicall
 the acked tick, so a forward jump simply discards a larger span of settled predictions
 at once.
 
-All tick comparisons (stale-drop, duplicate-collapse, serial-order fast-forward target
-selection and cursor reseat, and first-resolution tick selection) use the wrap-aware
-serial-number predicate (`client_tick_le`), correct across the u32 `client_tick` wrap.
+Before a command has resolved, intake anchors the stream at its first accepted tick.
+Later input must remain less than `2^31` ticks forward of that anchor; input at or beyond
+that distance is rejected before queue or reload-edge observation. This establishes the
+serial-number half-range invariant before ordering reads the unresolved queue. Once a
+resolved cursor exists, ordinary stale admission applies. The guard is not an arbitrary
+smaller future-tick cap: normal `u32` tick wrapping remains valid.
+
+All tick ordering is wrap-aware under the serial-number half-range invariant.
+Stale-drop, duplicate-collapse, and first-resolution tick selection use
+`client_tick_le`; catch-up finds its serial-newest anchor with that predicate, then
+ranks commands by wrap-aware serial distance to select survivors and reseat the cursor.
+This remains correct across the u32 `client_tick` wrap.
 
 ## Host-side remote-pawn presentation
 

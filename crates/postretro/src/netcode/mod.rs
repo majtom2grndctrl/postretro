@@ -1817,8 +1817,9 @@ fn host_handle_client_message_inner(
             );
         }
         // M15 Phase 3 Task 4: sanitize + queue the input command for this client.
-        // `ingest` rejects non-finite commands, drops stale/duplicate ones, and never
-        // mutates any other client's queue. The movement stage resolves them per tick.
+        // `ingest` rejects non-finite and out-of-window bootstrap commands, drops
+        // stale/duplicate ones, and never mutates any other client's queue. The movement
+        // stage resolves them per tick.
         wire::ClientMessage::Input(input) => {
             command_queues.ingest(client_id, &input);
         }

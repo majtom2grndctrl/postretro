@@ -52,7 +52,7 @@ use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub(crate) use projectile_stage::{PredictedProjectileResolution, advance_predicted};
-pub(crate) use weapon_stage::spawn_projectile;
+pub(crate) use weapon_stage::{projectile_model_body_rotation, spawn_projectile};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SimCommand {

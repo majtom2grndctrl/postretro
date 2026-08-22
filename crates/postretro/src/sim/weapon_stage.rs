@@ -7,11 +7,11 @@ mod impact;
 mod machine;
 mod state;
 
-pub(crate) use commands::spawn_projectile;
 pub(super) use commands::{
     LocalWeaponCommandResult, normalize_all_inventory_liveness, normalize_inventory_liveness,
     refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
 };
+pub(crate) use commands::{projectile_model_body_rotation, spawn_projectile};
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
 pub(crate) use state::transition_to_idle;
 

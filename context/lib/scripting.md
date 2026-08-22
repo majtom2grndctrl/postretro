@@ -201,6 +201,8 @@ generated declaration file. Luau exposes the same split through literal
 
 In debug builds, the runtime also emits these files at startup as a convenience for developers (so the working tree stays current while the engine is running). For CI and pre-commit checks, a drift-detection test in `cargo test` fails if the committed files do not match the current registry, catching stale type definitions. Scripts written against the SDK get IDE completions and type checking.
 
+**Hover documentation.** Every author-facing scripting API addition or change includes short hover documentation in both SDK type surfaces. State what the API does and, where relevant, accepted value shape, units, defaults, and constraints. Descriptor builders preserve that context so hovering an individual key shows its description.
+
 ### SDK library globals
 
 Higher-level vocabulary (`world`, `timeline`, `sequence`, etc.) is provided by the SDK library, evaluated as a prelude in every scripting context before user scripts load.

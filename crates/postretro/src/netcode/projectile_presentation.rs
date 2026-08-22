@@ -13,7 +13,7 @@ use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{ProjectileBodyVisual, ProjectileDescriptor};
 use postretro_net::replication::ServerReplication;
 
-use crate::sim::RemoteProjectilePresentationLaunch;
+use crate::sim::{RemoteProjectilePresentationLaunch, projectile_model_body_rotation};
 
 use super::{NetworkIdAllocator, OpenAuthorizedShots, ReplicableSet, ShotId};
 
@@ -57,7 +57,14 @@ impl HostProjectilePresentations {
     ) {
         let Some(id) = spawn_presentation_entity(
             registry,
-            launch.origin,
+            Transform {
+                position: launch.origin,
+                rotation: projectile_model_body_rotation(
+                    &launch.projectile.visual.body,
+                    launch.direction,
+                ),
+                ..Transform::default()
+            },
             &launch.descriptor_class,
             Some(&launch.projectile),
         ) else {
@@ -97,8 +104,7 @@ impl HostProjectilePresentations {
         else {
             return;
         };
-        let Some(id) =
-            spawn_presentation_entity(registry, transform.position, &descriptor_class, None)
+        let Some(id) = spawn_presentation_entity(registry, transform, &descriptor_class, None)
         else {
             return;
         };
@@ -256,17 +262,11 @@ fn advance_straight_line_visual(
 
 fn spawn_presentation_entity(
     registry: &mut EntityRegistry,
-    origin: Vec3,
+    transform: Transform,
     descriptor_class: &str,
     visual: Option<&ProjectileDescriptor>,
 ) -> Option<EntityId> {
-    let Some(id) = registry.try_spawn(
-        Transform {
-            position: origin,
-            ..Transform::default()
-        },
-        &[],
-    ) else {
+    let Some(id) = registry.try_spawn(transform, &[]) else {
         log::warn!("[Net] entity registry exhausted; dropping projectile presentation");
         return None;
     };
@@ -374,6 +374,14 @@ mod tests {
         }
     }
 
+    fn model_descriptor() -> ProjectileDescriptor {
+        let mut descriptor = descriptor();
+        descriptor.visual.body = ProjectileBodyVisual::Model {
+            model: "models/projectiles/rocket.gltf".to_string(),
+        };
+        descriptor
+    }
+
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             canonical_name: Some("test_remote_projectile".to_string()),
@@ -403,6 +411,141 @@ mod tests {
             health: None,
             behavior: None,
         }
+    }
+
+    fn model_projectile_visual_descriptor() -> EntityTypeDescriptor {
+        let mut descriptor = projectile_visual_descriptor();
+        descriptor
+            .weapon
+            .as_mut()
+            .expect("test descriptor declares its projectile weapon")
+            .projectile = Some(model_descriptor());
+        descriptor
+    }
+
+    // Regression: remote projectile presentations started with an identity
+    // transform, so rigid projectile models did not face their replicated aim.
+    #[test]
+    fn remote_model_projectile_presentation_preserves_aim_orientation_through_replication() {
+        let mut registry = EntityRegistry::new();
+        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 31);
+        let direction = Vec3::new(2.0, 1.0, -3.0).normalize();
+        let origin = Vec3::new(1.0, 2.0, 3.0);
+        let launch = RemoteProjectilePresentationLaunch {
+            owner_client_id: FIRING_CLIENT,
+            shot_id,
+            origin,
+            direction,
+            range: 12.0,
+            descriptor_class: "test_remote_projectile".to_string(),
+            projectile: model_descriptor(),
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+
+        presentations.spawn_remote(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &launch,
+        );
+        let visual = *presentations
+            .flights
+            .keys()
+            .next()
+            .expect("remote fire creates one presentation entity");
+        let initial = *registry
+            .get_component::<Transform>(visual)
+            .expect("presentation has a transform");
+        assert!(
+            (initial.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
+            "the host presentation aims its model along the remote launch direction"
+        );
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(visual)
+                .expect("host presentation materializes the model body")
+                .model,
+            "models/projectiles/rocket.gltf"
+        );
+
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(
+            AuthorizedShot {
+                shot_id,
+                pawn: EntityId::from_raw(1),
+                weapon: EntityId::from_raw(2),
+                fire_tick: 1,
+                damage: 10.0,
+                range: 12.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.remote".to_string(),
+                is_projectile: true,
+                fire_origin: origin,
+                timeout_budget_ticks: 180,
+            },
+            FIRING_CLIENT,
+        );
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            0.25,
+        );
+        let advanced = *registry
+            .get_component::<Transform>(visual)
+            .expect("presentation remains live after a flight step");
+        assert!(
+            advanced.position.distance(origin + direction) <= 1.0e-6,
+            "the observer presentation advances along the same direction it renders"
+        );
+        assert!(
+            (advanced.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
+            "straight-line presentation retains its launch orientation while flying"
+        );
+
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        replication.ingest_tick(snapshots);
+        let sequence = replication.begin_batch();
+        let observer_snapshot = replication
+            .encode_in_batch(OBSERVING_CLIENT, 1, sequence)
+            .expect("observer is registered")
+            .validate()
+            .expect("observer snapshot is valid");
+        let mut observer_registry = EntityRegistry::new();
+        let mut observer_replication = ClientReplication::new();
+        let outcome =
+            observer_replication.apply_snapshot(&mut observer_registry, &observer_snapshot);
+        let remote = outcome
+            .remote_entities
+            .into_iter()
+            .next()
+            .expect("observer materializes the presentation descriptor");
+        assert!(
+            super::super::remote_materialize::materialize_armed_remote_projectile(
+                &remote,
+                &[model_projectile_visual_descriptor()],
+                &mut observer_registry,
+            )
+        );
+        let observer_transform = observer_registry
+            .get_component::<Transform>(remote.entity_id)
+            .expect("observer applies the host transform");
+        assert!(
+            (observer_transform.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
+            "the replicated visual keeps the model aligned with the firing aim"
+        );
     }
 
     #[test]

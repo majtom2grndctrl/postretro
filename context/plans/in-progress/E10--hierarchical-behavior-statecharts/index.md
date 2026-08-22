@@ -174,8 +174,14 @@ is already drawn.
   (`initial`, `activities`, source-keyed `transitions` incl. a `"*"` key, a composite with `layers`,
   the retained top-level `moveSpeed`/`attacks`/etc.) parses to an identical descriptor in QuickJS and
   Luau. Pathed, wire-cased rejections in both: a `transitions` key or row target naming no declared
-  activity at its level; a duplicate activity name; empty `activities`; a `"*"` row that self-targets
-  its own composite; a `move` selector layer with no trailing motion fallback.
+  activity at its level; empty `activities`; a `"*"` row that self-targets
+  its own composite; a `move` selector layer with no trailing motion fallback. **Duplicate activity
+  names** are rejected on the **raw-JSON boundary only** — `activities` stays an object-map and reuses
+  the shipped `deserialize_states` pattern (its `a_duplicate_state_key_in_raw_json_is_rejected` test is
+  the precedent). Both script runtimes collapse duplicate object/table keys before the bridge, so the
+  JS/Luau authoring path cannot present one (TypeScript additionally flags it at author time, `ts1117`);
+  this is the accepted, documented limitation every descriptor map (`states`, `attacks`,
+  `mesh.animations`) already carries — `activities` is **not** switched to an ordered list.
 - [ ] **AC2 — Single spelling; flat retired.** The retired flat shape — a state carrying its own
   inline `transitions`, or a top-level `interrupts` list — fails to parse in both runtimes with a
   pathed error, not a silent drop. No graph anywhere authors the flat shape, and no evaluator-side
@@ -294,7 +300,10 @@ it) — an `action:` verb / `offense` layer resolves against the root `attacks` 
 rejection — the shipped const-generic asymmetry). Retire the flat inner-`transitions` and top-level
 `interrupts` shapes — both become parse errors. Validation (all pathed, wire-cased): membership
 authority (every row key and target resolves to a declared activity at its own level — cross-level
-targets rejected, Invariants table), duplicate-name rejection, empty-`activities` rejection,
+targets rejected, Invariants table), duplicate-activity-name rejection on the raw-JSON boundary
+(`activities` stays an object-map; port the shipped `deserialize_states` pattern — both runtimes
+collapse duplicate keys before the bridge, so do **not** switch to an ordered list), empty-`activities`
+rejection,
 `"*"`-self-target rejection, motion-fallback presence, **at most one nested-graph layer per composite**
 (selector layers unlimited — the single-active-path contract, AC18), and nesting depth ≤
 `MAX_BEHAVIOR_NESTING_DEPTH` (a new small constant — AC16 — the contract that lets Task 2 keep the

@@ -96,6 +96,7 @@ fn eval_node<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> Ir
         BoundNode::Ne(a, b) => {
             IrValue::Bool(!values_equal(eval_node(a, scope), eval_node(b, scope)))
         }
+        BoundNode::Not(x) => IrValue::Bool(!eval_bool(x, scope)),
 
         BoundNode::Select { cond, a, b } => {
             if eval_bool(cond, scope) {
@@ -340,6 +341,11 @@ mod tests {
                 b: num(2.0),
             }),
             1.0,
+        );
+        assert_eq!(
+            eval_root(IrNode::Not { x: boolean(false) }),
+            IrValue::Bool(true),
+            "not inverts a bound boolean"
         );
         assert_number(
             eval_root(IrNode::Select {

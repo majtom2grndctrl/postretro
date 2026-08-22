@@ -176,6 +176,9 @@ pub enum IrNode {
         a: Box<IrNode>,
         b: Box<IrNode>,
     },
+    Not {
+        x: Box<IrNode>,
+    },
 
     Select {
         cond: Box<IrNode>,
@@ -217,6 +220,7 @@ impl IrNode {
                     walk(a, names);
                     walk(b, names);
                 }
+                IrNode::Not { x } => walk(x, names),
                 IrNode::Clamp { x, lo, hi } => {
                     walk(x, names);
                     walk(lo, names);
@@ -490,6 +494,18 @@ mod wire_format_tests {
                 b: num(2.0),
             },
             r#"{"op":"select","cond":{"op":"const","value":true},"a":{"op":"const","value":1.0},"b":{"op":"const","value":2.0}}"#,
+        );
+    }
+
+    #[test]
+    fn not_round_trips_in_its_canonical_unary_shape() {
+        assert_round_trip(
+            &IrNode::Not {
+                x: Box::new(IrNode::Const {
+                    value: IrValue::Bool(false),
+                }),
+            },
+            r#"{"op":"not","x":{"op":"const","value":false}}"#,
         );
     }
 

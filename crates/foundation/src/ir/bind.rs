@@ -103,6 +103,7 @@ pub enum BoundNode<H> {
 
     Eq(Box<BoundNode<H>>, Box<BoundNode<H>>),
     Ne(Box<BoundNode<H>>, Box<BoundNode<H>>),
+    Not(Box<BoundNode<H>>),
 
     Select {
         cond: Box<BoundNode<H>>,
@@ -254,6 +255,10 @@ fn bind_node<S: BindingScope>(
 
         IrNode::Eq { a, b } => bind_equality(scope, a, b, "eq", BoundNode::Eq),
         IrNode::Ne { a, b } => bind_equality(scope, a, b, "ne", BoundNode::Ne),
+        IrNode::Not { x } => Ok((
+            BoundNode::Not(Box::new(bind_expect(scope, x, IrType::Bool, "not.x")?)),
+            IrType::Bool,
+        )),
 
         IrNode::Select { cond, a, b } => {
             let cond = bind_expect(scope, cond, IrType::Bool, "select.cond")?;
@@ -560,6 +565,20 @@ mod tests {
             bind(&baked, &scope).unwrap_err(),
             BindError::TypeMismatch {
                 context: "select.cond",
+                expected: "boolean",
+                found: "number",
+            }
+        );
+    }
+
+    #[test]
+    fn bind_rejects_numeric_not_operand() {
+        let scope = StubScope::new();
+        let baked = read_only(IrNode::Not { x: num(1.0) });
+        assert_eq!(
+            bind(&baked, &scope).unwrap_err(),
+            BindError::TypeMismatch {
+                context: "not.x",
                 expected: "boolean",
                 found: "number",
             }

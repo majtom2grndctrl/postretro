@@ -390,6 +390,19 @@ fn validate_activity(
                 reason: format!("`{path}.animation` must be a non-empty string when supplied"),
             });
         }
+        let stateful_layers = activity
+            .layers
+            .values()
+            .filter(|layer| matches!(layer, BehaviorLayerDescriptor::Graph(_)))
+            .count();
+        if stateful_layers > 1 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{path}.layers` may contain at most one nested-graph (stateful) layer; \
+                     selector layers remain unlimited"
+                ),
+            });
+        }
         for (name, layer) in &mut activity.layers {
             validate_layer(
                 layer,

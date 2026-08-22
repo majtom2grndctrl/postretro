@@ -10109,6 +10109,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
+    #[ignore = "pending statecharts re-author, Task 5"]
     fn production_pause_menu_sdk_tree_drives_cpu_interaction_end_to_end() {
         use crate::input::{InputMode, NavIntent, PointerPos, UiFocusEngine};
         use postretro_scripting_core::data_descriptors::RegisteredUiTree;

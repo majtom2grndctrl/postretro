@@ -1311,7 +1311,7 @@ export type BrainInputs = {
   --- Distance to the selected target in metres, or `1e9` with no target -- so a bare `le(targetDistance, r)` reads false untargeted (number).
   targetDistance: RuntimeRead,
   --- Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number).
-  timeInStateMs: RuntimeRead,
+  timeInActivityMs: RuntimeRead,
   --- Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number).
   attackCooldownMs: RuntimeRead,
   --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).

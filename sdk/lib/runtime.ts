@@ -72,10 +72,18 @@ function wrap(value: Operand): RuntimeValue {
   return value;
 }
 
-/** Attach the fluent methods as inherited, non-wire behavior. Every runtime
- * builder passes through here before its node can become a frozen brain leaf. */
+/** Attach fluent methods as non-enumerable, non-wire behavior. Keeping the
+ * normal object prototype means descriptor builders that require plain object
+ * data can clone a runtime node and retain only its IR fields. */
 function node<T extends RuntimeValue>(value: T): T {
-  Object.setPrototypeOf(value, GUARD_METHODS);
+  for (const [name, method] of Object.entries(GUARD_METHODS)) {
+    Object.defineProperty(value, name, {
+      value: method,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
   return value;
 }
 

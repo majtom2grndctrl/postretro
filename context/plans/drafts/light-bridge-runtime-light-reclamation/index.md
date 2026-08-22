@@ -133,19 +133,24 @@ removes no capability.
 - [ ] A despawned runtime light still zeroes its GPU forward/compose slot on the
   frame it disappears (tombstone zeroing preserved), and re-zeroes it every dirty
   frame until the slot is reused; no stale light lingers.
-- [ ] The authored map-light prefix is unaffected: authored indices, their
-  snapshots, and their packed order are identical before and after the change.
+- [ ] The authored map-light prefix is unaffected: authored indices, their packed
+  GPU order, and their compose-descriptor writes are identical before and after the
+  change. (`snapshots` is a private field with no test accessor; assert its effect
+  through the packed output, not the field directly.)
 - [ ] Reclaiming and reusing a slot does not mis-attribute state: a new light in a
   reused slot renders from its own component (origin, influence, animation samples)
   with no contribution from the prior occupant — guaranteed by overwrite-on-reuse of
   the index-parallel arrays plus the existing per-dirty-frame
   `scripted_sample_buf.fill(0.0)`.
-- [ ] After the churn cycles, the per-frame emitted light buffer and
-  effective-brightness lengths — the forward pass's per-fragment `full.light_count`,
-  and the byte count uploaded each dirty frame — track **peak-concurrent** runtime
-  lights (the level's high-water mark), not cumulative spawns; and the
-  `collect_all_as_map_lights` scan length is likewise bounded by the peak. (Reused
-  slots hold the peak steady; they do not shrink it — see Scope non-goals.)
+- [ ] After the churn cycles, `update`'s emitted `lights_bytes.len()` and
+  `effective_brightness.len()` track **peak-concurrent** runtime lights (the level's
+  high-water mark), not cumulative spawns. These CPU-side lengths are the unit-test
+  proxy for the forward pass's per-fragment `full.light_count`, which is
+  renderer-side and asserted review-only, not in a unit test.
+  `collect_all_as_map_lights` **returns the live count** (it filters dead ids), so
+  do not assert its returned length equals the peak; its internal scan *cost* is
+  peak-bounded because it walks `entity_ids` (review-only). Reused slots hold the
+  peak steady; they do not shrink it — see Scope non-goals.
 - [ ] A level reload with a different `authored_light_count` never hands a runtime
   light an authored-prefix slot: `free_slots` is reset on `clear` /
   `populate_from_level_with_influences`, so no stale index survives teardown; the
@@ -157,8 +162,11 @@ removes no capability.
 
 ### Task 1: Reclaim runtime-light slots
 
-Implement the **Chosen mechanism** above in
-`crates/postretro/src/scripting/systems/light_bridge.rs`:
+Implement runtime-slot reclamation in
+`crates/postretro/src/scripting/systems/light_bridge.rs` via a `free_slots` list of
+reusable runtime slot indices plus a `reclaimed: bool` on `MapLightShape` (keep the
+marker on the shape, not a separate set: the index gives O(1) access, reuse clears
+it for free, and `clear`/`populate_*` rebuild `shape` wholesale):
 
 - Add `free_slots` and the per-slot reclaimed marker to `LightBridge` /
   `MapLightShape`.
@@ -178,9 +186,16 @@ Implement the **Chosen mechanism** above in
 - Leave `update`'s **pass 2** (the dirty-gated pack loop) unchanged: it already
   emits the forward/compose tombstone zero for any is-dynamic slot whose
   `get_component` fails, which now includes reclaimed-but-not-yet-reused slots.
-- In `absorb_dynamic_lights`, before the `push` path, pop a `free_slots` index and
-  overwrite all index-parallel arrays at that index; change the reserve-exhaustion
-  check to the derived live-count formula.
+- In `absorb_dynamic_lights`, prefer reuse over append: if `free_slots` is
+  non-empty, pop an index `i` and **overwrite** the four index-parallel arrays at
+  `i` — `entity_ids[i]`, `cached_origins_f64[i]`, `cached_influences[i]`, and
+  `shape[i]` (assign a **fresh `MapLightShape`** so `reclaimed` resets to `false`) —
+  and set `absorbed_any`; append a new slot only when `free_slots` is empty. Change
+  the reserve-exhaustion check to the derived live count
+  `entity_ids.len() - authored_light_count - free_slots.len()`, rejecting a new
+  absorb when it is `≥ RUNTIME_DYNAMIC_LIGHT_RESERVE`. (Reuse never trips the bound:
+  a free slot exists only when the live count is below the peak, hence below the
+  reserve, so the single check covers both paths.)
 - **Cross-level reset:** clear `free_slots` in `clear()` and
   `populate_from_level_with_influences` alongside the arrays they already reset — a
   free index carried into a level with a different `authored_light_count` would hand
@@ -191,15 +206,39 @@ Implement the **Chosen mechanism** above in
   `get_component(id).ok()?` filter already skips reclaimed slots (their dead id
   fails the lookup), so a tombstone never surfaces as a fog map-light.
 
-Add the deterministic tests, one per row of the **Pin table** below. At minimum:
-the churn test (AC 1), a **disappear-frame** tombstone assertion (AC 2 — a
-despawned runtime light zeroes its forward/compose slot the frame it vanishes),
-an authored-prefix-unchanged regression (AC 3), a reused-slot-no-residue assertion
-(AC 4), a **buffer-length** assertion that after churn `update`'s emitted
-`lights_bytes.len()` / `effective_brightness.len()` (hence the forward pass's
-per-fragment `full.light_count`) track peak-concurrent, not cumulative (AC 5), and
-a **cross-level-reset** assertion that a reload with a different authored count
-never reuses a stale free index into the authored prefix (AC 6).
+Add the deterministic tests below — each drives the bridge directly
+(`absorb_dynamic_lights(&registry)` then `update(&mut registry, t)` in sequence,
+despawning via `registry.despawn`), no `main.rs` loop required. The **Pin table**
+gives the concrete event ordering for each; this list is the authoritative,
+self-contained set (do not rely on seeing the Pin table to enumerate it):
+
+- **Churn** (AC 1, P1, P2, P5): N spawn→despawn cycles, N ≫ reserve, ≤ K < reserve
+  alive at once, one frame between a despawn and the reusing spawn; assert every
+  cycle's light packs a non-zero record at its slot. `free_slots` holds a freed
+  index exactly once; the reusing absorb pops it once.
+- **Disappear-frame tombstone** (AC 2, P3): a despawned runtime light packs a zero
+  `GpuLight` at its slot the frame it vanishes; `is_dynamic` stays set.
+- **Authored-prefix-unchanged** (AC 3): authored region of the packed output and
+  compose-descriptor writes identical before and after runtime churn.
+- **Reused-slot-no-residue** (AC 4, P8): after reuse, the packed `GpuLight`,
+  influence, and sample region at the reused index reflect the new light's
+  component, with the prior occupant's values absent.
+- **Live-count formula** (AC 1, P7): for (N despawn, M absorb) across (0, 0),
+  M ≤ N, and M > N, the live count is `entity_ids.len() - authored_light_count -
+  free_slots.len()` and the reserve check fires only when it is `≥` the reserve.
+- **Batched reuse** (P9): despawn 3 then absorb 5 → 3 reuse + 2 append; no index
+  reused twice; `absorbed_any` set.
+- **Reuse-then-re-despawn** (P12): reuse a freed slot for a new light, then despawn
+  that light; the slot is re-reclaimed and re-appears in `free_slots` exactly once
+  (proves the `reclaimed` marker reset on reuse); the derived live count does not
+  inflate.
+- **Buffer-length / peak** (AC 5, P11): after peak-then-drop, `update`'s emitted
+  `lights_bytes.len()` / `effective_brightness.len()` equal the peak (not live, not
+  cumulative). Do **not** assert `collect_all_as_map_lights(...).len() == peak` — it
+  returns the live count.
+- **Cross-level reset** (AC 6, P10): reload with a different `authored_light_count`;
+  a newly absorbed runtime light lands at an index `≥` the new
+  `authored_light_count`, and authored lights pack unchanged.
 
 ## Pin table
 
@@ -219,7 +258,7 @@ restate them in prose.
 | P8 | Parallel-array alignment on reuse | Reuse slot `i` for new light B; then `collect_all_as_map_lights` reads it. | `entity_ids[i]`, `shape[i]`, `cached_origins_f64[i]`, `cached_influences[i]` all reflect **B**; fog reads B's origin/influence, not the prior occupant's. |
 | P9 | Batched reuse ordering | F: despawn 3 (`free_slots = [a, b, c]`). F+1: absorb 5. | 3 reuse a/b/c + 2 append; buffer emits 5 live entries; new peak = prior peak + 2 appended; no index reused twice; `absorbed_any = true`. |
 | P10 | Cross-level reset | Level A leaves `free_slots` populated; reload to level B with smaller `authored_light_count`. | `clear()` and `populate_from_level_with_influences` both empty `free_slots`; no stale index lands a level-B runtime light in level B's authored prefix. |
-| P11 | Buffer length after peak-then-drop | Spawn 10 concurrent, despawn 5, churn. | Emitted forward buffer / `full.light_count` **and** the `collect_all_as_map_lights` scan length = **peak (10)**, held by retained tombstone zeros, not the current live count (5) and not cumulative — pin peak semantics and assert it. |
+| P11 | Buffer length after peak-then-drop | Spawn 10 concurrent, despawn 5, churn. | `update`'s emitted `lights_bytes.len()` / `effective_brightness.len()` = **peak (10)**, held by retained tombstone zeros, not the current live count (5) and not cumulative — assert these CPU lengths. `collect_all_as_map_lights(...)` **returns 5** (live; dead ids filtered); its scan cost is peak-bounded but review-only, not asserted. `full.light_count` is renderer-side (review-only). |
 | P12 | Reuse then re-despawn (marker reset) | F: despawn L (reclaim `i`). F+1: reuse `i` for B. F+1 later tick: despawn B. F+1 `update`: pass 1. | Slot `i` is **re-reclaimed** and re-appears in `free_slots` exactly once (the reclaimed marker was reset when `shape[i]` was overwritten on reuse); the derived live count does not inflate. |
 
 ## Invariants

@@ -26,7 +26,9 @@ pub(crate) struct BoundEnvelope {
 pub(crate) struct BoundActivity {
     pub(crate) rows: Vec<Option<BoundProgram<BrainScope>>>,
     /// Parallel to the descriptor activity's `layers` BTreeMap. Selector guards
-    /// bind here; a nested graph stores its flattened child-envelope index.
+    /// bind here for the AI-owned `move`/`offense` names; other selectors keep
+    /// `None` slots for alignment. A nested graph stores its flattened
+    /// child-envelope index.
     pub(crate) layers: Vec<BoundLayer>,
 }
 
@@ -193,20 +195,27 @@ fn bind_envelope(
             warned,
         );
         let mut layers = Vec::with_capacity(activity.layers.len());
-        for layer in activity.layers.values() {
+        for (layer_name, layer) in &activity.layers {
             match layer {
-                BehaviorLayerDescriptor::Selector(entries) => layers.push(BoundLayer::Selector(
-                    entries
-                        .iter()
-                        .map(|entry| match entry {
-                            BehaviorSelectorEntry::Row(row) => row
-                                .when
-                                .as_ref()
-                                .and_then(|when| bind_guard(scope, when, warned)),
-                            BehaviorSelectorEntry::Motion(_) => None,
-                        })
-                        .collect(),
-                )),
+                BehaviorLayerDescriptor::Selector(entries) => {
+                    let programs = if matches!(layer_name.as_str(), "move" | "offense") {
+                        entries
+                            .iter()
+                            .map(|entry| match entry {
+                                BehaviorSelectorEntry::Row(row) => row
+                                    .when
+                                    .as_ref()
+                                    .and_then(|when| bind_guard(scope, when, warned)),
+                                BehaviorSelectorEntry::Motion(_) => None,
+                            })
+                            .collect()
+                    } else {
+                        let mut programs = Vec::with_capacity(entries.len());
+                        programs.resize_with(entries.len(), || None);
+                        programs
+                    };
+                    layers.push(BoundLayer::Selector(programs));
+                }
                 BehaviorLayerDescriptor::Graph(child) => {
                     layers.push(BoundLayer::Graph(bind_envelope(
                         scope, child, envelopes, warned,

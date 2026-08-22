@@ -121,7 +121,28 @@ pub(super) fn action_for_path<'a>(
     scope: &mut BrainScope,
     brain: &'a BrainComponent,
 ) -> Option<&'a ActionVerb> {
-    for depth in (0..brain.active_depth()).rev() {
+    action_for_path_from_depth(bound, scope, brain, 0)
+}
+
+/// Resolve an action only from the suffix entered by the current edge. A
+/// transition inside a nested graph leaves its parent active, so a selector on
+/// that parent is not an entry action and must not fire again.
+pub(super) fn action_for_entry_path<'a>(
+    bound: &'a BrainEntityPrograms,
+    scope: &mut BrainScope,
+    brain: &'a BrainComponent,
+    entry_start_depth: usize,
+) -> Option<&'a ActionVerb> {
+    action_for_path_from_depth(bound, scope, brain, entry_start_depth)
+}
+
+fn action_for_path_from_depth<'a>(
+    bound: &'a BrainEntityPrograms,
+    scope: &mut BrainScope,
+    brain: &'a BrainComponent,
+    start_depth: usize,
+) -> Option<&'a ActionVerb> {
+    for depth in (start_depth.min(brain.active_depth())..brain.active_depth()).rev() {
         let (_, activity) = brain.activity_at_depth(depth)?;
         if let Some(action) = activity.action.as_ref()
             && !matches!(
@@ -161,22 +182,35 @@ pub(super) fn engages_active(brain: &BrainComponent) -> bool {
 }
 
 /// Retention runs before selector guards are refreshed for the tick, so it
-/// cannot resolve a selector's current row here. A selector that can chase or
-/// attack is nevertheless an engaged activity: when it holds at combat range,
-/// releasing the target would make the next tick's fallback unable to chase.
+/// cannot resolve a selector's current row here. A `move`/`offense` selector
+/// that can chase or attack is nevertheless an engaged activity: when it holds
+/// at combat range, releasing the target would make the next tick's fallback
+/// unable to chase. Other selector names are not AI consumers.
 fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
     matches!(activity.motion, Some(MotionVerb::ChaseTarget))
         || activity.action.is_some()
-        || activity.layers.values().any(|layer| match layer {
-            BehaviorLayerDescriptor::Selector(entries) => entries.iter().any(|entry| match entry {
+        || activity
+            .layers
+            .iter()
+            .any(|(name, layer)| selector_can_engage(name, layer))
+}
+
+fn selector_can_engage(name: &str, layer: &BehaviorLayerDescriptor) -> bool {
+    match (name, layer) {
+        ("move", BehaviorLayerDescriptor::Selector(entries)) => {
+            entries.iter().any(|entry| match entry {
                 BehaviorSelectorEntry::Row(row) => {
-                    matches!(row.motion, Some(MotionVerb::ChaseTarget)) || row.action.is_some()
+                    matches!(row.motion, Some(MotionVerb::ChaseTarget))
                 }
                 BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget) => true,
                 BehaviorSelectorEntry::Motion(_) => false,
-            }),
-            BehaviorLayerDescriptor::Graph(_) => false,
-        })
+            })
+        }
+        ("offense", BehaviorLayerDescriptor::Selector(entries)) => entries
+            .iter()
+            .any(|entry| matches!(entry, BehaviorSelectorEntry::Row(row) if row.action.is_some())),
+        _ => false,
+    }
 }
 
 fn selector_motion(
@@ -317,7 +351,14 @@ pub(crate) fn locomotion_animation(graph: &BehaviorGraphDescriptor) -> Option<&s
         .envelope
         .activities
         .values()
-        .find(|activity| is_locomotion_activity(activity))
+        .find(|activity| {
+            activity.animation.is_some()
+                && (is_locomotion_activity(activity)
+                    || matches!(
+                        activity.layers.get("move"),
+                        Some(BehaviorLayerDescriptor::Selector(_))
+                    ))
+        })
         .and_then(|activity| activity.animation.as_deref())
 }
 
@@ -567,8 +608,9 @@ mod statechart_tests {
             Some("windup"),
             "AC12: a non-action offense windup drives the replicated animation"
         );
-        assert!(
+        assert_eq!(
             brain.take_entry_pending(),
+            Some(0),
             "AC7: initial descent has one entry edge"
         );
         assert_eq!(
@@ -615,8 +657,9 @@ mod statechart_tests {
             Some(0.0),
             "AC9: entered child timer resets atomically"
         );
-        assert!(
+        assert_eq!(
             brain.take_entry_pending(),
+            Some(1),
             "AC7: commit produces exactly one attack-entry edge"
         );
         assert_eq!(
@@ -665,6 +708,30 @@ mod statechart_tests {
             escaping.active_path_names(),
             ["rest"],
             "AC10: outer wildcard preempts the inner phase"
+        );
+    }
+
+    #[test]
+    fn arbitrary_selector_layers_are_not_ai_motion_or_action_consumers() {
+        let custom = activity(
+            "idle",
+            None,
+            None,
+            BTreeMap::from([(
+                "presentation".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(
+                    BehaviorSelectorRow {
+                        when: None,
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: Some(ActionVerb::Attack("slam".to_string())),
+                    },
+                )]),
+            )]),
+        );
+
+        assert!(
+            !activity_can_engage(&custom),
+            "only selectors named move/offense feed AI engagement semantics"
         );
     }
 }

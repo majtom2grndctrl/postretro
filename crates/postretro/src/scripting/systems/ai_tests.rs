@@ -5096,16 +5096,30 @@ fn enemy_time_in_activity(reg: &EntityRegistry, enemy: EntityId) -> f32 {
 fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
-    let graph = pursuit_graph();
+    let mut graph = pursuit_graph();
+    graph
+        .envelope
+        .activities
+        .get_mut("rest")
+        .expect("rest is declared")
+        .on_enter = Some("initialRest".to_string());
 
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
-    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
 
     // Regression: a newly seated initial activity is observable for its entry
     // tick even when its first transition guard is already true.
     let first = run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "rest");
-    assert!(first.is_empty(), "the initial activity announces nothing");
+    assert!(
+        first.is_empty(),
+        "initial seating drives presentation but does not emit onEnter"
+    );
     assert_eq!(enemy_animation(&reg, enemy), "idle");
 
     let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
@@ -5137,6 +5151,186 @@ fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
         fourth.is_empty(),
         "no re-entry, no event, no in-cooldown swing"
     );
+}
+
+#[test]
+fn an_aggro_gate_reseat_emits_the_initial_leaf_on_enter() {
+    let mut graph = pursuit_graph();
+    graph
+        .envelope
+        .activities
+        .get_mut("rest")
+        .expect("rest is declared")
+        .on_enter = Some("stoodDown".to_string());
+    let mut brain = authored_brain(&graph, "charge");
+    let _ = brain.take_entry_pending();
+    let _ = brain.take_entry_event_pending();
+    brain.aggro_armed = false;
+
+    let mut reg = EntityRegistry::new();
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    let events = run_ai_tick(&mut reg, &mut AiRuntime::new(), 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), "rest");
+    assert_eq!(events, vec![Cow::Owned("stoodDown".to_string())]);
+}
+
+// Regression: entering a child phase re-resolved the whole active path's
+// action and re-fired a still-active parent offense selector.
+#[test]
+fn a_child_transition_does_not_refire_its_parent_selector_action() {
+    let phase = BehaviorGraphEnvelope {
+        initial: "first".to_string(),
+        activities: BTreeMap::from([
+            (
+                "first".to_string(),
+                BehaviorActivityDescriptor {
+                    animation: Some("idle".to_string()),
+                    motion: None,
+                    action: None,
+                    on_enter: None,
+                    layers: BTreeMap::new(),
+                },
+            ),
+            (
+                "second".to_string(),
+                BehaviorActivityDescriptor {
+                    animation: Some("idle".to_string()),
+                    motion: None,
+                    action: None,
+                    on_enter: None,
+                    layers: BTreeMap::new(),
+                },
+            ),
+        ]),
+        transitions: BTreeMap::from([(
+            "first".to_string(),
+            vec![edge(
+                "second",
+                IrNode::Const {
+                    value: IrValue::Bool(true),
+                },
+            )],
+        )]),
+    };
+    let offense =
+        BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+            when: None,
+            motion: None,
+            action: Some(ActionVerb::Attack("attack".to_string())),
+        })]);
+    let graph = test_behavior_graph!({
+        initial: "engage".to_string(),
+        activities: BTreeMap::from([(
+            "engage".to_string(),
+            BehaviorActivityDescriptor {
+                animation: Some("idle".to_string()),
+                motion: None,
+                action: None,
+                on_enter: None,
+                layers: BTreeMap::from([
+                    ("offense".to_string(), offense),
+                    ("phase".to_string(), BehaviorLayerDescriptor::Graph(phase)),
+                ]),
+            },
+        )]),
+        transitions: BTreeMap::new(),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::from([(
+            "attack".to_string(),
+            AttackParams {
+                damage: 8.0,
+                max_range: 2.0,
+                cooldown_ms: 0.0,
+                engagement_radius: None,
+            },
+        )]),
+        engagement_radius: None,
+        move_speed: 3.5,
+    });
+
+    let mut reg = EntityRegistry::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let mut runtime = AiRuntime::new();
+
+    let first = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(first, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+    assert_eq!(enemy_state_path(&reg, enemy), "engage/first");
+
+    let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert!(second.is_empty());
+    assert_eq!(enemy_state_path(&reg, enemy), "engage/second");
+    assert_eq!(
+        player_hp(&reg, pawn),
+        92.0,
+        "the child entry does not count as re-entering the parent offense selector"
+    );
+}
+
+// Regression: restored paths were checked only at the root, so an over-cap
+// length could panic and a stale child beneath a root leaf survived until a
+// later walker failed.
+#[test]
+fn malformed_restored_paths_reseat_before_any_ai_consumer_walks_them() {
+    fn restored_with_path(
+        graph: &BehaviorGraphDescriptor,
+        len: usize,
+        path: [usize; postretro_foundation::MAX_BEHAVIOR_NESTING_DEPTH],
+    ) -> BrainComponent {
+        let mut value = serde_json::to_value(BrainComponent::from_graph(graph)).unwrap();
+        let object = value
+            .as_object_mut()
+            .expect("brain serializes as an object");
+        object.insert(
+            "active_activity_path_len".to_string(),
+            serde_json::json!(len),
+        );
+        object.insert(
+            "active_activity_path".to_string(),
+            serde_json::to_value(path).unwrap(),
+        );
+        object.insert("entry_pending".to_string(), serde_json::json!(false));
+        object.insert("entry_event_pending".to_string(), serde_json::json!(false));
+        serde_json::from_value(value).expect("host-only persisted brain decodes")
+    }
+
+    let graph = pursuit_graph();
+    let rest = graph_activity_index(&graph, "rest").unwrap();
+    let mut stale_nested = [0; postretro_foundation::MAX_BEHAVIOR_NESTING_DEPTH];
+    stale_nested[0] = rest;
+    stale_nested[1] = 0;
+
+    let mut reg = EntityRegistry::new();
+    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let too_long = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        restored_with_path(&graph, usize::MAX, stale_nested),
+        50.0,
+    );
+    let stale_child = spawn_enemy(
+        &mut reg,
+        Vec3::new(0.0, 0.0, 1.0),
+        restored_with_path(&graph, 2, stale_nested),
+        50.0,
+    );
+
+    run_ai_tick(&mut reg, &mut AiRuntime::new(), 0.016);
+
+    for enemy in [too_long, stale_child] {
+        let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+        assert!(brain.has_valid_active_path());
+        assert_eq!(brain.active_path_names(), ["rest"]);
+        assert_eq!(brain.activity_timer(0), Some(0.0));
+    }
 }
 
 #[test]
@@ -7182,6 +7376,22 @@ fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
         );
         assert_eq!(locomotion_animation(&graph), Some("locomotion"));
     }
+}
+
+#[test]
+fn a_composite_move_selector_supplies_the_shared_locomotion_animation() {
+    let graph = reference_behavior_graph();
+    let engage = &graph.envelope.activities["engage"];
+    assert!(matches!(
+        engage.layers.get("move"),
+        Some(BehaviorLayerDescriptor::Selector(_))
+    ));
+    assert_eq!(engage.animation.as_deref(), Some("walk"));
+    assert_eq!(
+        locomotion_animation(&graph),
+        Some("walk"),
+        "host playback scaling and remote animation caching share the composite move clip"
+    );
 }
 
 // Regression: an action on a position goal made the evaluator retain targets

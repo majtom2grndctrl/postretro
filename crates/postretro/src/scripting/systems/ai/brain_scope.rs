@@ -38,8 +38,6 @@ pub(crate) struct BrainFacts {
     /// [`BRAIN_NO_TARGET_DISTANCE`]), and the target health facts resolve its
     /// entity. They therefore cannot disagree about whether a target exists.
     pub target: Option<(EntityId, f32)>,
-    /// Milliseconds since the brain entered its current graph state.
-    pub time_in_state_ms: f32,
     /// Milliseconds remaining on the attack cooldown.
     pub attack_cooldown_ms: f32,
     /// `true` on the think-stride ticks where acquisition is re-evaluated.
@@ -65,6 +63,31 @@ pub(crate) enum BrainInputHandle {
     /// Index into the interned `@state.*` snapshot.
     State(usize),
 }
+
+/// Values whose meaning changes with the activity level currently being
+/// evaluated. New scope-relative facts append one field and one registration;
+/// the per-level planner remains unchanged.
+#[derive(Clone, Copy)]
+pub(crate) struct ScopeRelativeValues {
+    pub(crate) time_in_activity_ms: f32,
+}
+
+#[derive(Clone, Copy)]
+struct ScopeRelativeSlot {
+    fixed_index: usize,
+    project: fn(ScopeRelativeValues) -> IrValue,
+}
+
+const fn activity_timer(values: ScopeRelativeValues) -> IrValue {
+    IrValue::Number(values.time_in_activity_ms)
+}
+
+// Task 4 appends its counter slot to this list. The evaluator only iterates
+// registered fixed slots, so re-pointing stays allocation-free.
+const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 1] = [ScopeRelativeSlot {
+    fixed_index: 2,
+    project: activity_timer,
+}];
 
 /// The live brain namespace an authored guard binds against once at spawn and
 /// reads on every tick.
@@ -134,7 +157,9 @@ impl BrainScope {
                     .target
                     .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
             ),
-            IrValue::Number(facts.time_in_state_ms),
+            // This slot is scope-relative and is immediately re-pointed by
+            // `select_transition` before any guard at a level evaluates.
+            IrValue::Number(0.0),
             IrValue::Number(facts.attack_cooldown_ms),
             IrValue::Bool(facts.acquisition_due),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
@@ -152,6 +177,15 @@ impl BrainScope {
         let mut values = self.state_values.borrow_mut();
         for (slot, name) in values.iter_mut().zip(names.iter()) {
             *slot = state.map_or(0.0, |state| state.get(name));
+        }
+    }
+
+    /// Re-point all registered scope-relative inputs to one active activity's
+    /// fixed-path values. This mutates only pre-existing array slots and makes
+    /// no heap allocation.
+    pub(crate) fn repoint_scope_relative(&mut self, values: ScopeRelativeValues) {
+        for slot in SCOPE_RELATIVE_SLOTS {
+            self.fixed[slot.fixed_index] = (slot.project)(values);
         }
     }
 
@@ -220,7 +254,7 @@ mod tests {
         BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
         BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
         BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
-        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BindError,
+        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BindError,
         BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard,
         eval_value,
     };
@@ -292,7 +326,6 @@ mod tests {
     fn engaged_facts(target: EntityId) -> BrainFacts {
         BrainFacts {
             target: Some((target, 7.5)),
-            time_in_state_ms: 250.0,
             attack_cooldown_ms: 400.0,
             acquisition_due: true,
             distance_from_anchor: 12.5,
@@ -390,7 +423,7 @@ mod tests {
                     .target
                     .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
             ),
-            BRAIN_TIME_IN_STATE_MS_INPUT => IrValue::Number(facts.time_in_state_ms),
+            BRAIN_TIME_IN_ACTIVITY_MS_INPUT => IrValue::Number(0.0),
             BRAIN_ATTACK_COOLDOWN_MS_INPUT => IrValue::Number(facts.attack_cooldown_ms),
             BRAIN_ACQUISITION_DUE_INPUT => IrValue::Bool(facts.acquisition_due),
             BRAIN_HEALTH_INPUT => IrValue::Number(health.current),

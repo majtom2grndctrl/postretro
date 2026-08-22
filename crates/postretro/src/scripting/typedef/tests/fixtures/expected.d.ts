@@ -491,10 +491,13 @@ declare module "postretro" {
 
   /** Activities declared by one behavior envelope, keyed by author-chosen name. */
   export type BehaviorActivities = { readonly [activity: string]: BehaviorActivityDescriptor };
+
   /** Source-keyed adjacency rows. The `"*"` key applies while the enclosing composite is active. */
   export type BehaviorTransitions = { readonly [source: string]: ReadonlyArray<GuardedRow> };
+
   /** A layer is either a selector list or a nested behavior envelope. */
   export type BehaviorLayerDescriptor = ReadonlyArray<BehaviorSelectorRow | MotionVerb> | BehaviorGraphEnvelope;
+
   /** Orthogonal layers owned by a composite activity. A move selector is statically required to end in its MotionVerb fallback. */
   export type BehaviorLayers = { readonly move?: readonly [...BehaviorSelectorRow[], MotionVerb]; readonly offense?: ReadonlyArray<BehaviorSelectorRow> | BehaviorGraphEnvelope; readonly [layer: string]: BehaviorLayerDescriptor | undefined };
 
@@ -517,9 +520,9 @@ declare module "postretro" {
     /** Initial activity name. Must resolve in this envelope's `activities` map. */
     initial: string;
     /** Declared same-level activities. Must be non-empty. */
-    activities: BehaviorActivities;
+    activities: { readonly [activity: string]: BehaviorActivityDescriptor };
     /** Source-keyed ordered adjacency rows; `"*"` is the enclosing scope-all key. */
-    transitions: BehaviorTransitions;
+    transitions: { readonly [source: string]: ReadonlyArray<GuardedRow> };
   };
 
   /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
@@ -527,9 +530,9 @@ declare module "postretro" {
     /** Root initial activity. It is also forced when the aggro gate closes. */
     initial: string;
     /** Root activities, keyed by author-chosen name. Must be non-empty. */
-    activities: BehaviorActivities;
+    activities: { readonly [activity: string]: BehaviorActivityDescriptor };
     /** Root source-keyed ordered adjacency rows. `"*"` applies at root scope. */
-    transitions: BehaviorTransitions;
+    transitions: { readonly [source: string]: ReadonlyArray<GuardedRow> };
     /** Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target. */
     candidateFilter?: RuntimeValue;
     /** Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion. */
@@ -1746,7 +1749,7 @@ declare module "postretro" {
     /** Distance to the selected target in metres, or `1e9` with no target — so a bare `le(targetDistance, r)` reads false untargeted (number). */
     readonly targetDistance: RuntimeRead;
     /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
-    readonly timeInStateMs: RuntimeRead;
+    readonly timeInActivityMs: RuntimeRead;
     /** Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeRead;
     /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */

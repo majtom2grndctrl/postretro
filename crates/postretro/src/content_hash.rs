@@ -115,6 +115,12 @@ pub(crate) fn hash_ir_node(hasher: &mut blake3::Hasher, node: &IrNode) {
             hash_ir_node(hasher, a);
             hash_ir_node(hasher, b);
         }
+        IrNode::Not { x } => {
+            // Append-only canonical tag: existing tags 0..14 are persisted in
+            // mod compatibility digests and must not be repurposed.
+            hasher.update(&[15]);
+            hash_ir_node(hasher, x);
+        }
         IrNode::Select { cond, a, b } => {
             hasher.update(&[14]);
             hash_ir_node(hasher, cond);

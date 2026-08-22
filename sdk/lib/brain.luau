@@ -26,7 +26,7 @@ local BrainSdk = {}
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace:
 --- `hasTarget` (boolean; the only authoritative target-presence test),
 --- `targetDistance` (number; `1e9` with no target),
---- `timeInStateMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
+--- `timeInActivityMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
 --- `maxHealth`, `targetHealth` and `targetMaxHealth` (zero with no target or
 --- health component), `targetDied` (boolean; false with no target), and
 --- `distanceFromAnchor` (number; the enemy's XZ distance from its spawn-time
@@ -37,7 +37,7 @@ local BrainSdk = {}
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
-  timeInStateMs = input("@brain.timeInStateMs"),
+  timeInActivityMs = input("@brain.timeInActivityMs"),
   attackCooldownMs = input("@brain.attackCooldownMs"),
   acquisitionDue = input("@brain.acquisitionDue"),
   health = input("@brain.health"),

@@ -183,26 +183,29 @@ mod tests {
     use postretro_entities::registry::Transform;
     use postretro_foundation::DamagePayload;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams, FallParams,
-        GroundParams, HealthDescriptor, MotionVerb, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+        CapsuleParams, FallParams, GroundParams, HealthDescriptor, MotionVerb,
+        PlayerMovementDescriptor, SpeedParams,
     };
 
     /// Attach a Brain component, marking the entity as brain-bearing for the
     /// sweep. Mirrors `make_player`: the sweep branches on component *presence*.
     fn make_brain(registry: &mut EntityRegistry, id: EntityId) {
         let graph = BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states: std::collections::BTreeMap::from([(
-                "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            )]),
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: std::collections::BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: std::collections::BTreeMap::new(),
+                    },
+                )]),
+                transitions: std::collections::BTreeMap::new(),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: Default::default(),

@@ -30,8 +30,11 @@ pub const BRAIN_INPUT_PREFIX: &str = "@brain.";
 pub const BRAIN_HAS_TARGET_INPUT: &str = "@brain.hasTarget";
 /// Distance to the selected target, or [`BRAIN_NO_TARGET_DISTANCE`] with none.
 pub const BRAIN_TARGET_DISTANCE_INPUT: &str = "@brain.targetDistance";
-/// Milliseconds since the brain entered its current graph state.
-pub const BRAIN_TIME_IN_STATE_MS_INPUT: &str = "@brain.timeInStateMs";
+/// Milliseconds since the currently-evaluated activity was entered.
+///
+/// Nested behavior envelopes evaluate their own rows against their own clock,
+/// so this slot is re-pointed by the statechart evaluator before every level.
+pub const BRAIN_TIME_IN_ACTIVITY_MS_INPUT: &str = "@brain.timeInActivityMs";
 /// Milliseconds remaining on the attack cooldown; `0.0` once it has elapsed.
 pub const BRAIN_ATTACK_COOLDOWN_MS_INPUT: &str = "@brain.attackCooldownMs";
 /// `true` on the think-stride ticks where the engine re-evaluates acquisition.
@@ -84,7 +87,8 @@ pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 /// despawned. A disengagement edge that must be robust to target loss has to
 /// gate on [`BRAIN_HAS_TARGET_INPUT`] directly, or be authored as an
 /// any-state interrupt that stands the brain down when `hasTarget` is false.
-/// The IR has no `not` opcode; negate with `select(cond, false, true)`.
+/// Use the explicit `not` opcode for inversion. The older
+/// `select(cond, false, true)` spelling remains equivalent.
 pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 
 /// The fixed brain input namespace, in handle order. Each entry is a
@@ -98,7 +102,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 pub const BRAIN_INPUTS: [(&str, IrType); 13] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
-    (BRAIN_TIME_IN_STATE_MS_INPUT, IrType::Number),
+    (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
     (BRAIN_ATTACK_COOLDOWN_MS_INPUT, IrType::Number),
     (BRAIN_ACQUISITION_DUE_INPUT, IrType::Bool),
     (BRAIN_HEALTH_INPUT, IrType::Number),

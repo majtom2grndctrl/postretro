@@ -93,18 +93,20 @@ mod tests {
             .set_component(
                 brain,
                 BrainComponent::from_graph(&postretro_foundation::BehaviorGraphDescriptor {
-                    initial: "idle".to_string(),
-                    states: std::collections::BTreeMap::from([(
-                        "idle".to_string(),
-                        postretro_foundation::BehaviorStateDescriptor {
-                            animation: "idle".to_string(),
-                            motion: postretro_foundation::MotionVerb::Hold,
-                            action: None,
-                            transitions: Vec::new(),
-                            on_enter: None,
-                        },
-                    )]),
-                    interrupts: Vec::new(),
+                    envelope: postretro_foundation::BehaviorGraphEnvelope {
+                        initial: "idle".to_string(),
+                        activities: std::collections::BTreeMap::from([(
+                            "idle".to_string(),
+                            postretro_foundation::BehaviorActivityDescriptor {
+                                animation: Some("idle".to_string()),
+                                motion: Some(postretro_foundation::MotionVerb::Hold),
+                                action: None,
+                                on_enter: None,
+                                layers: Default::default(),
+                            },
+                        )]),
+                        transitions: Default::default(),
+                    },
                     candidate_filter: None,
                     patrol: None,
                     attacks: Default::default(),

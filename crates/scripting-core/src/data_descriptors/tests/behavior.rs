@@ -250,6 +250,49 @@ fn both_runtimes_enforce_the_shared_nesting_cap() {
     }
 }
 
+#[test]
+fn both_runtimes_allow_selectors_but_reject_two_stateful_layers_with_paths() {
+    // `js_behavior` / `lua_behavior` are the positive fixture: one nested
+    // offense graph plus a move selector must remain legal.
+    assert!(
+        eval_js(&js_behavior(""), |ctx, value| entity_descriptor_from_js(
+            ctx, value
+        ))
+        .is_ok()
+    );
+    assert!(eval_lua(&lua_behavior(""), entity_descriptor_from_lua).is_ok());
+
+    let js = js_error(
+        r#"({ components: { behavior: {
+            initial: "engage", moveSpeed: 3,
+            activities: { engage: { animation: "walk", layers: {
+                move: ["hold"],
+                offense: { initial: "windup", activities: { windup: { animation: "windup" } }, transitions: {} },
+                stance: { initial: "ready", activities: { ready: { animation: "ready" } }, transitions: {} }
+            } } },
+            transitions: {}
+        } } })"#,
+    );
+    let lua = lua_error(
+        r#"return { components = { behavior = {
+            initial = "engage", moveSpeed = 3,
+            activities = { engage = { animation = "walk", layers = {
+                move = { "hold" },
+                offense = { initial = "windup", activities = { windup = { animation = "windup" } }, transitions = {} },
+                stance = { initial = "ready", activities = { ready = { animation = "ready" } }, transitions = {} }
+            } } },
+            transitions = {}
+        } } }"#,
+    );
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("components.behavior.activities.engage.layers"),
+            "{error}"
+        );
+        assert!(error.contains("at most one nested-graph"), "{error}");
+    }
+}
+
 // Task 5 re-authors these still-flat shipped fixtures. Keep their production
 // parse paths alive, but park the oracles until then rather than teaching the
 // recursive parser to accept the retired shape.

@@ -671,8 +671,9 @@ mod tests {
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, ScriptCtx,
     };
     use postretro_foundation::{
-        AirParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams, FallParams,
-        GroundParams, MotionVerb, PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+        CapsuleParams, FallParams, GroundParams, MotionVerb, PlayerMovementComponent,
+        PlayerMovementDescriptor, SpeedParams,
     };
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TriggerEventDescriptor,
@@ -1593,18 +1594,20 @@ mod tests {
             .set_tags(enemy, vec!["closet_enemies".into()])
             .expect("tag closet enemy");
         let graph = BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states: std::collections::BTreeMap::from([(
-                "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            )]),
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: std::collections::BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: Default::default(),
+                    },
+                )]),
+                transitions: Default::default(),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: Default::default(),

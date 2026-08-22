@@ -433,7 +433,7 @@ mod tests {
     };
     use postretro_entities::components::touchable::TouchableComponent;
     use postretro_entities::data_descriptors::{
-        BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+        BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, MotionVerb,
     };
     use postretro_entities::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
@@ -445,18 +445,20 @@ mod tests {
     // present, but a real `BrainComponent` keeps the fixture honest.
     fn brain() -> BrainComponent {
         BrainComponent::from_graph(&BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states: std::collections::BTreeMap::from([(
-                "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            )]),
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: std::collections::BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: std::collections::BTreeMap::new(),
+                    },
+                )]),
+                transitions: std::collections::BTreeMap::new(),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: Default::default(),

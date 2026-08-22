@@ -435,8 +435,9 @@ impl HostCommandQueues {
     ///
     /// Bounded playout + catch-up: BEFORE picking the expected tick, if the pending
     /// queue has grown past [`INPUT_BUFFER_MAX`] real buffered commands, fast-forward —
-    /// keep only the newest [`INPUT_BUFFER_TARGET`] and reseat the cursor on the new
-    /// oldest. Because drain-rate == produce-rate (both 60 Hz), a backlog that builds
+    /// keep only the serially-newest [`INPUT_BUFFER_TARGET`] and reseat the cursor one
+    /// serial tick behind the serially-oldest survivor, wrap-correct. Because drain-rate
+    /// == produce-rate (both 60 Hz), a backlog that builds
     /// during the accept/spawn handshake window (the client streams on connect before
     /// the host can drain) or a mid-session host hitch would otherwise become permanent
     /// latency; this single path drains it back to a small buffer and keeps it there. It
@@ -1967,16 +1968,15 @@ mod tests {
             );
         }
 
+        assert!(
+            queues.ingest(CLIENT, &command(4, 1.0)),
+            "post-trim enqueue accepts the next serial command alongside a raw-low survivor"
+        );
         let second = queues
             .resolve_tick(CLIENT)
             .expect("second survivor resolves");
         assert_eq!(second.source, ResolutionSource::Real);
         assert_eq!(second.client_tick, 3);
-
-        assert!(
-            queues.ingest(CLIENT, &command(4, 1.0)),
-            "post-trim enqueue still accepts the next serial command"
-        );
         let next = queues
             .resolve_tick(CLIENT)
             .expect("post-trim command resolves");

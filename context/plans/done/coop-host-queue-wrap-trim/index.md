@@ -18,6 +18,10 @@ raw-sorted, restoring the wrap-safety invariant the netcode contract already ass
   cursor to the serially-oldest survivor.
 - The first-resolution path in `resolve_tick` (the `resolved_cursor == None` arm): pick
   the serially-oldest buffered command as the expected tick.
+- Unresolved-stream bootstrap admission: first accepted tick anchors the stream; before a
+  cursor exists, reject later ticks at a forward serial distance of `2³¹` or more before
+  they enter `pending` or feed a serial ordering decision. Forward gaps below that limit
+  remain valid. After resolution, cursor-based stale admission governs intake.
 - An `Option`-returning serial-bounds helper on `ClientCommandState`, reusing `client_tick_le`.
 - Two deterministic regression tests: a straddling-`u32::MAX` backlog of exactly
   `INPUT_BUFFER_MAX + 1` through the trim, and a first-resolution buffer straddling `u32::MAX`
@@ -27,9 +31,9 @@ raw-sorted, restoring the wrap-safety invariant the netcode contract already ass
 
 ### Out of scope
 
-- Reordering `pending` storage or changing `enqueue`/`take_exact` off raw `binary_search`.
-  Those sites do exact-key search and duplicate detection, which are correct on any
-  consistent ordering — raw-`u32` is valid and stays. (This is alternative (b); see
+- Reordering `pending` storage or changing its raw-`u32` exact-key binary-search behavior.
+  Intake and exact retrieval remain correct on that consistent ordering; raw-`u32` is valid
+  and stays. (This is alternative (b); see
   Direction.)
 - The reload recovery lane (which already routes its ordering decisions through
   `client_tick_le`), and the gap-policy freeze / deep-buffer-yield / buildup-latch logic
@@ -49,9 +53,13 @@ trim predate that plan).
 "correct across the u32 client_tick wrap," and the `coop-client-movement-feel` plan carries
 a wrap-safety row. The trim and first-resolution reads diverge from that documented
 invariant — the fix restores it rather than introducing new behavior. It also extends the
-module's own discipline: every ordering *decision* in the queue already routes through
-`client_tick_le` (the `enqueue` stale-check, `drop_stale`, the reload observers); the trim
-and first-resolution are the two position-as-rank outliers, brought into line here.
+module's wrap-aware ordering discipline: the `enqueue` stale-check, `drop_stale`, and reload
+observers use `client_tick_le`; unresolved intake anchors the first accepted tick and rejects
+an opposite-half-range tick before a serial reduction can see it; trim selects a
+`client_tick_le` serial-newest anchor, then
+ranks candidates by wrapping serial distance; first-resolution selects the serial-oldest
+command from predicate-derived bounds. The trim and first-resolution are the two
+position-as-rank outliers, brought into line here.
 
 **Alternatives rejected.** (b) Make `pending` itself serially ordered via a cursor-anchored
 comparator, switching `enqueue`/`take_exact` off raw `binary_search`. Rejected: those two
@@ -102,6 +110,10 @@ tests; reverting is trivial, and storage representation is unchanged.
 - [ ] The `diag_trimmed_jump` diagnostic counts pressed jumps among the commands the trim
       actually drops (the serially-oldest set), captured before removal — not a raw-position
       prefix. Verified by code inspection (the counter feeds `netdiag` and has no test getter).
+- [ ] Before first resolution, the first accepted tick anchors bootstrap admission. A later
+      tick at a forward serial distance of `2³¹` or more is rejected before it reaches a
+      serial reduction; valid forward gaps below `2³¹` remain accepted. After resolution,
+      cursor-based stale admission governs intake.
 - [ ] `networking.md` §"Host input command queue" states the trim keeps the serially-newest
       commands and reseats the cursor forward across the wrap, and its tick-comparison
       summary covers first-resolution tick selection.
@@ -115,10 +127,11 @@ helper on `ClientCommandState` — over the current `pending` set, the raw index
 serially-oldest and serially-newest commands via `client_tick_le` pairwise reduction (fold
 tracking the element for which `client_tick_le(c, acc)` holds / fails). It returns `None` on
 an empty `pending` (the first-resolution site relies on that; see below). This is sound
-because `pending` spans « 2³¹ ticks — it holds only ticks serially ahead of the cursor
-(`enqueue`'s stale-check and `drop_stale` prune everything `≤ cursor`) and behind the newest
-received, and the cursor drains every non-empty tick, so a near tick and one 2³¹ ahead cannot
-coexist; a `client_tick_le` reduction over the set is therefore a valid total order. Then fix
+because unresolved intake anchors its first accepted tick and rejects any later tick at a
+forward distance of `2³¹` or more before it reaches `pending`; valid forward gaps below that
+limit remain allowed. After resolution, cursor-based stale admission and playout retain only
+ticks ahead of the cursor and prevent a near tick and one `2³¹` ahead from coexisting. A
+`client_tick_le` reduction over the set is therefore a valid total order. Then fix
 the two position-as-rank reads in `resolve_tick`:
 
 1. **Catch-up trim** (the `state.pending.len() > INPUT_BUFFER_MAX` block, currently
@@ -154,8 +167,8 @@ unresolved; (c) drive the armed-latch → same-call-trim path: ingest one comman
 `Real` at the reseated survivor tick — not the withheld `Neutral` — proving the disarm fired in
 the same call as the trim (non-wrap ticks suffice). Reuse the module's
 `command`/`ingest`/`resolve_tick` test helpers. Neither the
-helper nor the fixes may alter `enqueue`, `take_exact`, `drop_stale`, or the
-gap-policy/buildup/reload logic. Behavior on non-straddling inputs must be identical to today
+serial-order fixes leave `take_exact`, `drop_stale`, and the gap-policy/buildup logic
+unchanged. Behavior on non-straddling inputs must be identical to today
 (serial order equals raw order there); confirm by keeping the existing queue tests green
 (`backlog_trim_preserves_reload_press_from_dropped_prefix`,
 `startup_backlog_converges_and_stays_bounded`, `mid_session_hitch_catches_up`, and the
@@ -206,8 +219,8 @@ files and carry no code dependency.)
 | After a trim the cursor is at or ahead of every dropped tick, never serially behind one | Task 1 (trim reseat to serial-oldest survivor − 1) | The trim block; threatened by any raw-position reseat | AC 2 |
 | Playout begins at the serially-oldest buffered command | Task 1 (first-resolution serial-oldest) | The `resolved_cursor == None` arm | AC 4 |
 | `pending` stays raw-`u32`-sorted, so `enqueue`/`take_exact` exact-key binary search stays valid | Task 1 (order-preserving removal in trim; first-resolution is read-only) | Trim removal; threatened by any reorder | AC 6 |
-| Every queue ordering decision routes through `client_tick_le` (now including trim selection and first-resolution) | Task 1 | Trim + first-resolution; the rest of the module already complies | AC 1, 4 |
-| `pending` span < 2³¹, so `client_tick_le` is a valid total order over the set — every path leaving ≥ 2 elements buffered advances the cursor; the non-advancing paths (buildup withhold, frontier freeze) run only at depth ≤ 1 / empty, where no far pair can coexist. Combined with monotonic 60 Hz emission, a near tick and one ≥ 2³¹ ahead cannot coexist | Existing playout loop; relied on by Task 1's helper | The serial-bounds fold | Design-established (drain/emission); fold exercised by AC 1 |
+| Every serial queue ordering decision is wrap-aware: direct comparisons use `client_tick_le`; trim uses serial-distance ranking from a predicate-selected anchor; first-resolution uses predicate-derived bounds | Task 1 | Trim + first-resolution; direct-comparison sites already use `client_tick_le` | AC 1, 4 |
+| `pending` span < 2³¹, so `client_tick_le` is a valid total order over the set — unresolved intake anchors the first accepted tick and rejects later ticks at a forward distance of ≥ 2³¹ before any serial reduction. Valid forward gaps inside that half-range remain allowed. After resolution, cursor-based stale admission and playout preserve the span: every path leaving ≥ 2 elements buffered advances the cursor; the non-advancing paths (buildup withhold, frontier freeze) run only at depth ≤ 1 / empty, where no far pair can coexist. | Bootstrap admission + existing playout loop; relied on by Task 1's helper | Bootstrap intake; the serial-bounds fold | Bootstrap regression coverage; design-established drain/emission; fold exercised by AC 1 |
 | The trim leaves exactly `INPUT_BUFFER_TARGET` survivors, so a buildup latch left armed by a prior first-resolution disarms in the same `resolve_tick` call (`pending.len() >= INPUT_BUFFER_TARGET`) and the reseated command resolves `Real` — the trim never strands a `Real` behind an armed latch | Task 1 (trim survivor count) + existing disarm check | Trim → disarm → `take_exact` handoff in one call | AC 3 (armed-latch same-call `Real`) |
 
 ## Orderings
@@ -219,6 +232,7 @@ files and carry no code dependency.)
 | First resolution, no wrap | raw-first = serial-min | `expected` = serial-oldest — unchanged from today |
 | First resolution straddling `u32::MAX`, sized `2..=INPUT_BUFFER_MAX` | serial-min is raw-highest (pre-wrap) | `expected` = the pre-wrap (serial-oldest) tick; post-wrap survivors not drop-staled; buildup latch arms then disarms same-call to a `Real` |
 | First resolution, `pending` empty (`resolved_cursor == None`, client sent nothing) | n/a | Helper returns `None`; the `?` early-returns; `resolve_tick` returns `None`; no panic |
+| Bootstrap intake, no resolved cursor | first accepted tick anchors the serial window | Later ticks at a forward distance of ≥ `2³¹` are rejected before serial ordering; smaller forward gaps remain valid |
 | First "buffer" `> INPUT_BUFFER_MAX` (`resolved_cursor == None`, never previously armed) | trim runs before the `None` arm | Trim handles it (sets the cursor); the `None` arm and buildup latch are never reached |
 | Buildup latch armed by a prior shallow first-resolution, then `pending > INPUT_BUFFER_MAX` | one `resolve_tick`: trim reseats + leaves exactly `INPUT_BUFFER_TARGET` → disarm fires post-trim → `take_exact` | Reseated survivor resolves `Real` in the same call — not the withheld `Neutral`; the trim never strands a `Real` behind the armed latch |
 | `drop_stale` after a trim `Real` | survivors `{oldest S, newer N}` | `take_exact(S)` → `Real`; `drop_stale(S)` retains `N` (`client_tick_le(N, S)` false) — no survivor dropped |

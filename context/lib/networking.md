@@ -347,11 +347,12 @@ policies govern resolution:
   input on connect before the host can drain its pawn (the accept/spawn handshake window),
   and a mid-session host frame hitch stalls the drain while commands keep arriving. When
   the pending queue's depth exceeds `INPUT_BUFFER_MAX` (~8 ticks ≈ 133 ms), the host
-  fast-forwards: it keeps only the newest `INPUT_BUFFER_TARGET` commands and reseats the
-  cursor on the new oldest. The trigger is **pending-queue depth (count of buffered
-  commands), not tick-distance to the newest command** — the same depth-keying the buildup
-  latch uses, and for the same reason. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET` gives
-  hysteresis so catch-up does not thrash.
+  fast-forwards: it keeps only the serially-newest `INPUT_BUFFER_TARGET` commands and
+  reseats the cursor one serial tick behind the serially-oldest survivor, correct across
+  the `u32` wrap. The trigger is **pending-queue depth (count of buffered commands), not
+  tick-distance to the newest command** — the same depth-keying the buildup latch uses, and
+  for the same reason. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET` gives hysteresis so catch-up
+  does not thrash.
 
   **Freeze and trim reconcile on depth.** The gap-policy freeze and the catch-up trim are
   ordered so they never fight: the freeze fires only when `pending.is_empty()` (the frontier),
@@ -382,9 +383,18 @@ safe for client reconciliation: the client prunes predicted history monotonicall
 the acked tick, so a forward jump simply discards a larger span of settled predictions
 at once.
 
-All tick comparisons (stale-drop, duplicate-collapse, fast-forward cursor reseat) use
-the wrap-aware serial-number predicate (`client_tick_le`), correct across the u32
-`client_tick` wrap.
+Before a command has resolved, intake anchors the stream at its first accepted tick.
+Later input must remain less than `2^31` ticks forward of that anchor; input at or beyond
+that distance is rejected before queue or reload-edge observation. This establishes the
+serial-number half-range invariant before ordering reads the unresolved queue. Once a
+resolved cursor exists, ordinary stale admission applies. The guard is not an arbitrary
+smaller future-tick cap: normal `u32` tick wrapping remains valid.
+
+All tick ordering is wrap-aware under the serial-number half-range invariant.
+Stale-drop, duplicate-collapse, and first-resolution tick selection use
+`client_tick_le`; catch-up finds its serial-newest anchor with that predicate, then
+ranks commands by wrap-aware serial distance to select survivors and reseat the cursor.
+This remains correct across the u32 `client_tick` wrap.
 
 ## Host-side remote-pawn presentation
 

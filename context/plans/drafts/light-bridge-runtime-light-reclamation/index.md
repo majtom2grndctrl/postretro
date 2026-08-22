@@ -84,6 +84,15 @@ removes no capability.
 - [ ] Reclaiming and reusing a slot does not mis-attribute animation state: a new
   light in a reused slot starts from its own component state, not the prior
   occupant's snapshot/`scripted_sample_buf` residue.
+- [ ] After the churn cycles, the per-frame emitted light buffer and
+  effective-brightness lengths — the forward pass's per-fragment `full.light_count`,
+  and the byte count uploaded each dirty frame — track **peak-concurrent** runtime
+  lights, not cumulative spawns (the bounded-frame-cost payoff; also bounds the
+  per-frame `effective_brightness` and `collect_all_as_map_lights` scans).
+- [ ] A level reload with a different `authored_light_count` never hands a runtime
+  light an authored-prefix slot (the free-list is reset on `clear` /
+  `populate_from_level_with_influences`); the authored map lights render unchanged
+  after reload.
 - [ ] No new `unsafe` (grep gate). No wire-format or GPU-layout change (CPU
   accounting only).
 
@@ -103,9 +112,22 @@ before appending a new one, and change the reserve-exhaustion check to count
 **live** runtime slots (occupied, non-reclaimable, `≥ authored_light_count`)
 rather than `entity_ids.len() - authored_light_count`. Keep the authored prefix and
 its indices untouched. Preserve the tombstone GPU zeroing for the disappear frame.
-Add the deterministic churn test (N cycles, bounded live count, post-exhaustion
-light still renders) plus an authored-prefix-unchanged regression and a
-reused-slot-no-residue assertion.
+**Borrow-split (implementation pin):** collect reclaimed indices *during* the
+`entity_ids.iter()` diff loop and apply the `shape`/`cached_*`/`scripted_sample_buf`
+residue clears *after* the loop — mirroring the existing `settled: Vec<(EntityId,
+LightComponent)>` write-back — since mutating `self.shape[idx]` inside
+`self.entity_ids.iter()` will not compile. **Cross-level reset:** clear /
+reinitialize the free-list in `clear()` and `populate_from_level_with_influences`
+alongside the arrays they already reset — a free index carried into a level with a
+different `authored_light_count` would hand a new runtime light an **authored-prefix**
+slot and silently corrupt a map light. Add the deterministic churn test (N cycles,
+bounded live count, post-exhaustion light still renders) plus: an
+authored-prefix-unchanged regression; a reused-slot-no-residue assertion; a
+**buffer-length** assertion that after churn `update`'s emitted `lights_bytes.len()`
+/ `effective_brightness.len()` (hence the forward pass's per-fragment
+`full.light_count`) track peak-concurrent, not cumulative — the bounded-frame-cost
+payoff; and a **cross-level-reset** assertion that a reload with a different
+authored count never reuses a stale free index into the authored prefix.
 
 ## Invariants
 
@@ -115,6 +137,8 @@ reused-slot-no-residue assertion.
 | **Tombstone zeroing preserved** — a vanished light zeroes its slot the frame it disappears | Task 1 (reclamation is additive to the existing zeroing) | reclaiming before the zeroing upload, leaving a stale GPU slot | AC 2; disappear-frame test |
 | **Authored prefix untouched** — authored indices, snapshots, packed order stable | Task 1 (free-list confined to `≥ authored_light_count`) | compaction shifting authored or runtime indices | AC 3; authored-prefix regression |
 | **Reused slot carries no residue** — a new occupant starts from its own state | Task 1 (clear parallel arrays + `scripted_sample_buf` region on reclaim) | a reused slot inheriting the prior light's snapshot/samples | AC 4; reused-slot test |
+| **Bounded frame cost** — emitted buffer + per-fragment `light_count` + per-frame scans track peak-concurrent, not cumulative | Task 1 (live-bounded `entity_ids`) | a compaction/refactor silently regrowing the emitted count; the shrink asserted only implicitly | AC 5; buffer-length assertion |
+| **Free-list reset across levels** — no stale index into a new level's authored prefix | Task 1 (reset in `clear`/`populate_from_level_with_influences`) | a free index surviving teardown → a runtime light overwriting an authored map light next level | AC 6; cross-level-reset assertion |
 
 ## Rough sketch
 
@@ -126,3 +150,10 @@ branch on a failed `get_component`), all in
 `RUNTIME_DYNAMIC_LIGHT_RESERVE` in `postretro_renderer` (`renderer_types.rs`).
 Also audit `collect_all_as_map_lights` (run each frame for fog), which scans
 `entity_ids` — a free-list keeps its length bounded by live lights too.
+
+No generational-id hazard to add: `EntityId` carries a generation, and both
+`absorb_dynamic_lights`'s `entity_ids.contains(&id)` membership and `update`'s
+`get_component` tombstone detection key on the full id, so a reused slot's
+dead-generation id never false-matches a live one. `snapshots` (keyed by id) is
+already removed on despawn, so it does not leak — only the index-parallel arrays do,
+which is exactly what the free-list reclaims.

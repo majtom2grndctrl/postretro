@@ -1780,8 +1780,6 @@ declare module "postretro" {
     readonly targetDistance: RuntimeGuardNode;
     /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
     readonly timeInActivityMs: RuntimeGuardNode;
-    /** Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number). */
-    readonly attacksFiredInActivity: RuntimeGuardNode;
     /** Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeGuardNode;
     /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
@@ -1802,6 +1800,8 @@ declare module "postretro" {
     readonly targetHostile: RuntimeGuardNode;
     /** `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean). */
     readonly targetReachable: RuntimeGuardNode;
+    /** Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number). */
+    readonly attacksFiredInActivity: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

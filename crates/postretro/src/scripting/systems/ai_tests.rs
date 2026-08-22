@@ -12,6 +12,7 @@ use glam::Vec3;
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
+use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
 
 use super::candidate_scope::CandidateScope;
 use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
@@ -36,9 +37,10 @@ use postretro_foundation::{
     BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
     BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
     BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
-    BehaviorGraphEnvelope, BindingScope, BoundProgram, CANDIDATE_DIED_INPUT,
-    CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, GuardedRow, ImpactEventDescriptor, IrNode,
-    IrValue, MotionVerb, PatrolDescriptor, PatrolMode, bind,
+    BehaviorGraphEnvelope, BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow,
+    BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
+    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
+    bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -343,6 +345,26 @@ fn enemy_state_name(reg: &EntityRegistry, enemy: EntityId) -> String {
         .state_name()
         .expect("the brain sits in a declared state")
         .to_string()
+}
+
+fn enemy_state_path(reg: &EntityRegistry, enemy: EntityId) -> String {
+    let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+    let mut segments = Vec::with_capacity(brain.active_depth().saturating_mul(2));
+    for depth in 0..brain.active_depth() {
+        let (name, activity) = brain
+            .activity_at_depth(depth)
+            .expect("the brain path names declared activities");
+        segments.push(name.to_string());
+        if depth + 1 < brain.active_depth()
+            && let Some((layer_name, _)) = activity
+                .layers
+                .iter()
+                .find(|(_, layer)| matches!(layer, BehaviorLayerDescriptor::Graph(_)))
+        {
+            segments.push(layer_name.clone());
+        }
+    }
+    segments.join("/")
 }
 
 /// Overwrite an entity's current HP (the recovery tests heal a dead enemy back
@@ -3102,7 +3124,7 @@ fn combat_slots_use_the_committed_attack_standoff_or_the_nonattack_default() {
     let slam_enemy = spawn_enemy(
         &mut attack_registry,
         Vec3::new(17.0, chaser_rest_y(), 20.0),
-        authored_brain(&reference_behavior_graph(), "alert"),
+        authored_brain(&legacy_reference_behavior_graph(), "alert"),
         50.0,
     );
     run_ai_tick_with_navigation(
@@ -3164,7 +3186,7 @@ fn combat_slot_state_switch_reassigns_when_attack_standoff_changes() {
     let mut runtime = AiRuntime::new();
     let player = spawn_player(&mut reg, player_pos);
     let stale_slam_slot = player_pos + Vec3::new(3.5, 0.0, 0.0);
-    let mut brain = authored_brain(&reference_behavior_graph(), "attack_slam");
+    let mut brain = authored_brain(&legacy_reference_behavior_graph(), "attack_slam");
     brain.acquired_target = Some(player);
     brain.combat_slot = Some(stale_slam_slot);
     brain.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
@@ -3200,7 +3222,7 @@ fn graph_reseat_by_name_reassigns_a_same_index_short_attack_slot() {
     let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
     let enemy_pos = player_pos - Vec3::new(3.0, 0.0, 0.0);
 
-    let original = reference_behavior_graph();
+    let original = legacy_reference_behavior_graph();
     let old_index = graph_activity_index(&original, "attack_slam").unwrap();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
@@ -3217,7 +3239,7 @@ fn graph_reseat_by_name_reassigns_a_same_index_short_attack_slot() {
     assert_eq!(enemy_state_name(&reg, enemy), "attack_slam");
 
     let stale_slam_slot = player_pos + Vec3::new(3.5, 0.0, 0.0);
-    let mut replacement = reference_behavior_graph();
+    let mut replacement = legacy_reference_behavior_graph();
     let short_attack = replacement
         .envelope
         .activities
@@ -5582,7 +5604,7 @@ fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
 /// nothing —
 /// [`the_reference_oracle_matches_the_shipped_authored_graph`] pins it against
 /// the shipped Luau source so the drift cannot happen silently.
-fn reference_behavior_graph() -> BehaviorGraphDescriptor {
+fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
     const DETECTION_RANGE: f32 = 16.0;
     const JAB_RANGE: f32 = 2.0;
     const SLAM_RANGE: f32 = 3.5;
@@ -5706,7 +5728,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
 /// shipped graph above has a slam too; removing it here keeps the new attack
 /// from accidentally changing the original jab's numeric trace.
 fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
-    let mut graph = reference_behavior_graph();
+    let mut graph = legacy_reference_behavior_graph();
     graph.attacks.remove("slam");
     graph.envelope.activities.remove("attack_slam");
     graph.envelope.transitions.insert(
@@ -5719,8 +5741,217 @@ fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
     graph
 }
 
+/// The recursive dev reference enemy, hand-transcribed from
+/// `content/dev/scripts/reference-enemy.{ts,luau}`. The twin parser guard and
+/// the Luau oracle below keep this executable fixture honest.
+fn reference_behavior_graph() -> BehaviorGraphDescriptor {
+    const DETECTION_RANGE: f32 = 16.0;
+    const JAB_RANGE: f32 = 2.0;
+    const SLAM_RANGE: f32 = 3.5;
+    const LEASH_RANGE: f32 = 100.0;
+    const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
+    const SLAM_WINDUP_MS: f32 = 250.0;
+    const SLAM_COMMIT_MS: f32 = 150.0;
+    const SLAM_RECOVER_MS: f32 = 1450.0;
+
+    let leaf = |animation: &str, action: Option<ActionVerb>| BehaviorActivityDescriptor {
+        animation: Some(animation.to_string()),
+        motion: None,
+        action,
+        on_enter: None,
+        layers: BTreeMap::new(),
+    };
+    let move_selector = BehaviorLayerDescriptor::Selector(vec![
+        BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+            when: Some(target_within(SLAM_RANGE)),
+            motion: Some(MotionVerb::Hold),
+            action: None,
+        }),
+        BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget),
+    ]);
+    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "approach".to_string(),
+        activities: BTreeMap::from([
+            ("approach".to_string(), leaf("walk", None)),
+            (
+                "jab".to_string(),
+                leaf("attack_jab", Some(ActionVerb::Attack("jab".to_string()))),
+            ),
+            ("windup".to_string(), leaf("attack_slam", None)),
+            (
+                "commit".to_string(),
+                leaf("attack_slam", Some(ActionVerb::Attack("slam".to_string()))),
+            ),
+            ("recover".to_string(), leaf("attack_slam", None)),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "approach".to_string(),
+                vec![
+                    edge("jab", target_within(JAB_RANGE)),
+                    edge("windup", target_within(SLAM_RANGE)),
+                ],
+            ),
+            (
+                "jab".to_string(),
+                vec![edge(
+                    "windup",
+                    IrNode::Ge {
+                        a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(1.0),
+                        }),
+                    },
+                )],
+            ),
+            (
+                "windup".to_string(),
+                vec![edge(
+                    "commit",
+                    IrNode::Ge {
+                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(SLAM_WINDUP_MS),
+                        }),
+                    },
+                )],
+            ),
+            (
+                "commit".to_string(),
+                vec![edge(
+                    "recover",
+                    IrNode::Ge {
+                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(SLAM_COMMIT_MS),
+                        }),
+                    },
+                )],
+            ),
+            (
+                "recover".to_string(),
+                vec![edge(
+                    "approach",
+                    IrNode::Ge {
+                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(SLAM_RECOVER_MS),
+                        }),
+                    },
+                )],
+            ),
+        ]),
+    });
+
+    BehaviorGraphDescriptor {
+        envelope: BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: BTreeMap::from([
+                (
+                    "idle".to_string(),
+                    authored_state("idle", MotionVerb::Hold, None, Vec::new()).activity,
+                ),
+                (
+                    "patrol".to_string(),
+                    authored_state("walk", MotionVerb::Patrol, None, Vec::new()).activity,
+                ),
+                (
+                    "engage".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("walk".to_string()),
+                        motion: None,
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::from([
+                            ("move".to_string(), move_selector),
+                            ("offense".to_string(), offense),
+                        ]),
+                    },
+                ),
+                (
+                    "retreat".to_string(),
+                    authored_state("walk", MotionVerb::MoveToAnchor, None, Vec::new()).activity,
+                ),
+            ]),
+            transitions: BTreeMap::from([
+                (
+                    "*".to_string(),
+                    vec![
+                        edge(
+                            "patrol",
+                            IrNode::Not {
+                                x: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                            },
+                        ),
+                        edge(
+                            "patrol",
+                            IrNode::Not {
+                                x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                            },
+                        ),
+                    ],
+                ),
+                (
+                    "idle".to_string(),
+                    vec![edge(
+                        "patrol",
+                        IrNode::Const {
+                            value: IrValue::Bool(true),
+                        },
+                    )],
+                ),
+                (
+                    "patrol".to_string(),
+                    vec![edge(
+                        "engage",
+                        IrNode::And {
+                            a: Box::new(brain_input(BRAIN_ACQUISITION_DUE_INPUT)),
+                            b: Box::new(target_within(DETECTION_RANGE)),
+                        },
+                    )],
+                ),
+                (
+                    "engage".to_string(),
+                    vec![edge("retreat", anchor_beyond(LEASH_RANGE))],
+                ),
+                (
+                    "retreat".to_string(),
+                    vec![edge("patrol", anchor_within(RETURN_ARRIVAL_EPSILON))],
+                ),
+            ]),
+        },
+        candidate_filter: None,
+        patrol: Some(PatrolDescriptor {
+            points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
+            mode: PatrolMode::PingPong,
+        }),
+        attacks: BTreeMap::from([
+            (
+                "jab".to_string(),
+                AttackParams {
+                    damage: 8.0,
+                    max_range: JAB_RANGE,
+                    cooldown_ms: 1200.0,
+                    engagement_radius: None,
+                },
+            ),
+            (
+                "slam".to_string(),
+                AttackParams {
+                    damage: 14.0,
+                    max_range: SLAM_RANGE,
+                    cooldown_ms: 1800.0,
+                    engagement_radius: Some(SLAM_RANGE),
+                },
+            ),
+        ]),
+        engagement_radius: Some(JAB_RANGE),
+        move_speed: 3.0,
+    }
+}
+
 /// The reference enemy's `components.behavior` block as the SHIPPED
-/// `sdk/behaviors/reference/entities.luau` actually authors it.
+/// `content/dev/scripts/reference-enemy.luau` actually authors it.
 ///
 /// The module is evaluated verbatim against the same SDK helper modules the
 /// engine's Luau prelude installs (`sdk/lib/runtime.luau` for the IR builders,
@@ -5734,7 +5965,7 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     const RUNTIME_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/runtime.luau");
     const BRAIN_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/brain.luau");
     const ENTITIES_LUAU_SRC: &str =
-        include_str!("../../../../../sdk/behaviors/reference/entities.luau");
+        include_str!("../../../../../content/dev/scripts/reference-enemy.luau");
 
     let lua = mlua::Lua::new();
     let runtime: mlua::Table = lua
@@ -5742,6 +5973,8 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
         .set_name("sdk/lib/runtime.luau")
         .eval()
         .expect("runtime.luau evaluates");
+    let globals = lua.globals();
+    globals.set("runtime", runtime).unwrap();
     let brain_sdk: mlua::Table = lua
         .load(BRAIN_LUAU_SRC)
         .set_name("sdk/lib/brain.luau")
@@ -5754,15 +5987,13 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     let define_entity = lua
         .create_function(|_, descriptor: mlua::Table| Ok(descriptor))
         .expect("stub defineEntity");
-    let globals = lua.globals();
-    globals.set("runtime", runtime).unwrap();
     globals.set("brain", brain).unwrap();
     globals.set("candidate", candidate).unwrap();
     globals.set("defineEntity", define_entity).unwrap();
 
     let module: mlua::Table = lua
         .load(ENTITIES_LUAU_SRC)
-        .set_name("sdk/behaviors/reference/entities.luau")
+        .set_name("content/dev/scripts/reference-enemy.luau")
         .eval()
         .expect("the shipped reference entities module evaluates");
     let entity: mlua::Table = module
@@ -5788,18 +6019,31 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
 /// (`scripting-core`, where the twin-parser machinery lives). Together the two
 /// close the loop: TS ≡ Luau ≡ this oracle.
 #[test]
-#[ignore = "pending statecharts re-author, Task 5"]
 fn the_reference_oracle_matches_the_shipped_authored_graph() {
     assert_eq!(
         reference_behavior_graph(),
         shipped_reference_behavior_graph(),
-        "the Rust oracle has drifted from `sdk/behaviors/reference/entities.luau`",
+        "the Rust oracle has drifted from `content/dev/scripts/reference-enemy.luau`",
     );
 }
 
-/// One tick of observable brain output: the state it settled in, the damage it
-/// had dealt by then, the animation it is requesting, and whether it is steering
-/// anywhere.
+/// AC12 review gate: statecharts remain host-only and may resolve only the one
+/// replicated mesh-state string. Constructing and destructuring without `..`
+/// makes any extra wire-mirror field a compile-time review failure.
+#[test]
+fn statecharts_keep_the_wire_animation_mirror_as_one_current_state_string() {
+    let payload = ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+        current_state: "engage/offense/commit".to_string(),
+    });
+    let ComponentPayload::MeshAnimationState(WireMeshAnimationState { current_state }) = payload
+    else {
+        panic!("the mesh animation payload keeps its established wire variant");
+    };
+    assert_eq!(current_state, "engage/offense/commit");
+}
+
+/// One tick of observable brain output: its full root-to-leaf activity path,
+/// damage, animation, and steering state.
 #[derive(Debug, Clone, PartialEq)]
 struct BrainTrace {
     state: String,
@@ -5840,7 +6084,7 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
             run_ai_tick(&mut reg, &mut runtime, 0.016);
 
             BrainTrace {
-                state: enemy_state_name(&reg, enemy),
+                state: enemy_state_path(&reg, enemy),
                 player_hp: player_hp(&reg, pawn),
                 animation: enemy_animation(&reg, enemy),
                 has_destination: agent_steering::path_state(&reg, enemy)
@@ -5868,12 +6112,11 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
 }
 
 #[test]
-#[ignore = "pending statecharts re-author, Task 5"]
-fn the_single_attack_reference_trace_preserves_jab_cadence() {
-    let authored =
-        trace_reference_fixture(BrainComponent::from_graph(&reference_single_attack_graph()));
+fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
+    let authored = trace_reference_fixture(BrainComponent::from_graph(&reference_behavior_graph()));
 
-    // The fixture has to actually exercise the loop, or "identical" is vacuous.
+    // The fixture has to visit the nested phases, or the full-path assertion is
+    // vacuous. A committed slam appears after the counter-driven jab rotation.
     let states: Vec<&str> = authored
         .iter()
         .map(|row| row.state.as_str())
@@ -5882,8 +6125,15 @@ fn the_single_attack_reference_trace_preserves_jab_cadence() {
         .collect();
     assert_eq!(
         states,
-        vec!["alert", "attack_jab", "patrol"],
-        "the approach must visit active rest, pursuit, and contact"
+        vec![
+            "engage/offense/approach",
+            "engage/offense/commit",
+            "engage/offense/jab",
+            "engage/offense/recover",
+            "engage/offense/windup",
+            "patrol",
+        ],
+        "the trace must record the root-to-leaf activity path for every nested phase"
     );
     let damage_ticks: Vec<usize> = authored
         .windows(2)
@@ -5893,44 +6143,30 @@ fn the_single_attack_reference_trace_preserves_jab_cadence() {
         .collect();
     assert!(
         damage_ticks.len() >= 2,
-        "the fixture must span more than one attack cooldown: {damage_ticks:?}"
+        "the jab and committed slam must both fire: {damage_ticks:?}"
     );
     assert!(
         authored.iter().any(|row| row.animation == "attack_jab")
-            && authored.iter().any(|row| row.animation == "idle"),
-        "the fixture must switch between its distinct rest and attack animations"
+            && authored.iter().any(|row| row.animation == "attack_slam"),
+        "the fixture must switch from the jab to the committed slam clip"
     );
-    for tick in &damage_ticks {
-        let before = &authored[*tick - 1];
-        let after = &authored[*tick];
-        assert_approx_distance(
-            after.connect_distance,
-            1.5,
-            "the preserved jab connects at the fixture's contact distance",
-        );
-        assert_approx_distance(
-            before.player_hp - after.player_hp,
-            8.0,
-            "each preserved jab deals its authored damage",
-        );
-        assert_approx_distance(
-            after.jab_cooldown_ms,
-            1200.0,
-            "each preserved jab re-arms its authored cooldown",
-        );
-    }
-    for interval in damage_ticks.windows(2) {
-        assert_eq!(
-            interval[1] - interval[0],
-            75,
-            "the 1200 ms jab cadence is exactly 75 deterministic 16 ms ticks"
-        );
-    }
+    assert!(
+        authored
+            .iter()
+            .any(|row| row.state == "engage/offense/approach" && row.has_destination),
+        "the engage.move fallback chases while the target is outside the slam standoff"
+    );
+    assert!(
+        authored
+            .iter()
+            .any(|row| row.state == "engage/offense/jab" && !row.has_destination),
+        "the engage.move selector holds at the authored combat range"
+    );
 }
 
 #[test]
 fn reference_enemy_routes_slam_only_and_jab_ranges_to_their_named_attacks() {
-    let graph = reference_behavior_graph();
+    let graph = legacy_reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
@@ -5965,7 +6201,7 @@ fn reference_enemy_routes_slam_only_and_jab_ranges_to_their_named_attacks() {
 
 #[test]
 fn named_attack_cooldowns_decrement_independently_across_a_state_switch() {
-    let graph = reference_behavior_graph();
+    let graph = legacy_reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
@@ -6023,7 +6259,7 @@ fn named_attack_cooldowns_decrement_independently_across_a_state_switch() {
 
 #[test]
 fn named_attack_cooldowns_keep_decrementing_while_aggro_is_closed() {
-    let graph = reference_behavior_graph();
+    let graph = legacy_reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let mut brain = authored_brain(&graph, "attack_jab");
@@ -6056,7 +6292,7 @@ fn named_attack_cooldowns_keep_decrementing_while_aggro_is_closed() {
 
 #[test]
 fn graph_reseat_preserves_same_name_and_dead_cooldown_entries() {
-    let original = reference_behavior_graph();
+    let original = legacy_reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let enemy = spawn_enemy(
@@ -6267,7 +6503,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
 /// rather than walking `attack_jab` through an unrelated local exit first.
 #[test]
 fn reference_graph_stands_down_from_attack_in_one_tick_when_the_target_is_lost() {
-    let graph = reference_behavior_graph();
+    let graph = legacy_reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     // No player pawn is spawned at all — the disconnect / level-transition /
@@ -6306,7 +6542,7 @@ fn reference_graph_stands_down_from_attack_in_one_tick_when_the_target_is_lost()
 #[test]
 fn reference_graph_enters_retreat_from_chase_and_either_attack_beyond_its_authored_leash() {
     for state in ["alert", "attack_jab", "attack_slam"] {
-        let graph = reference_behavior_graph();
+        let graph = legacy_reference_behavior_graph();
         let mut reg = EntityRegistry::new();
         let mut runtime = AiRuntime::new();
         let target = spawn_player(&mut reg, Vec3::new(105.0, 0.0, 0.0));
@@ -6334,7 +6570,7 @@ fn reference_graph_enters_retreat_from_chase_and_either_attack_beyond_its_author
 
 #[test]
 fn reference_alert_prioritizes_leash_retreat_when_attack_range_is_also_true() {
-    let graph = reference_behavior_graph();
+    let graph = legacy_reference_behavior_graph();
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let target = spawn_player(&mut reg, Vec3::new(101.5, 0.0, 0.0));

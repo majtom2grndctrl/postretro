@@ -165,7 +165,7 @@ pub fn entity_descriptor_from_lua(
                 let raw: LuaValue = components_table.get("behavior").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
                     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
-                    normalize_behavior_arrays(&mut json)?;
+                    normalize_behavior_selectors(&mut json)?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
                             reason: format!("`components.behavior` invalid: {e}"),
@@ -470,57 +470,59 @@ pub fn raw_animation_state_from_lua(
     })
 }
 
-/// Re-seat the behavior block's array-valued fields after Lua→JSON conversion.
-///
-/// An empty Luau table is ambiguous — `{}` is both the empty array and the
-/// empty map — and [`conv::lua_to_json`] has to resolve that ambiguity without
-/// knowing the target type, so it yields a JSON OBJECT. That makes
-/// `interrupts = {}` and `transitions = {}` fail to deserialize into `Vec`,
-/// while the JS twin's `interrupts: []` is accepted: a twin-parity break in a
-/// spelling authors reach for whenever a graph declares no interrupts.
-///
-/// Only the empty object is rewritten, and only where an array is the declared
-/// shape. A NON-empty object in one of these positions is a genuine authoring
-/// error (a map where a list belongs), so it reports with its path rather than
-/// being silently coerced — `serde`'s own message would name neither the field
-/// nor the state.
-///
-/// Mirrors `impact_policy_entry_from_lua`'s post-conversion re-seating of the
-/// group `do` array (`lua/manifest.rs`), the same ambiguity in the same place.
-fn normalize_behavior_arrays(json: &mut serde_json::Value) -> Result<(), DescriptorError> {
-    fn reseat(
-        parent: &mut serde_json::Value,
-        field: &str,
-        path: &str,
-    ) -> Result<(), DescriptorError> {
-        let Some(value) = parent.get_mut(field) else {
-            return Ok(());
-        };
-        let Some(map) = value.as_object() else {
-            return Ok(());
-        };
-        if !map.is_empty() {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`{path}` must be an array of transitions; found a table with named keys \
-                     ({keys}). Author it as a list: `{{ {{ to = \"...\", when = ... }} }}`",
-                    keys = map.keys().cloned().collect::<Vec<_>>().join(", "),
-                ),
-            });
+/// Re-seat empty Luau tables only where the recursive descriptor declares an
+/// array. The `transitions` container is now an adjacency map, but every one
+/// of its VALUES is an ordered row list; the map itself remains an object.
+fn normalize_behavior_selectors(json: &mut serde_json::Value) -> Result<(), DescriptorError> {
+    fn visit(envelope: &mut serde_json::Value, path: &str) -> Result<(), DescriptorError> {
+        if let Some(transitions) = envelope
+            .get_mut("transitions")
+            .and_then(|value| value.as_object_mut())
+        {
+            for (source, rows) in transitions.iter_mut() {
+                let rows_path = format!("{path}.transitions.{source}");
+                let Some(map) = rows.as_object() else {
+                    continue;
+                };
+                if !map.is_empty() {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`{rows_path}` must be an ordered array of guarded rows; found a table with named keys ({})",
+                            map.keys().cloned().collect::<Vec<_>>().join(", "),
+                        ),
+                    });
+                }
+                *rows = serde_json::Value::Array(Vec::new());
+            }
         }
-        *value = serde_json::Value::Array(Vec::new());
+        let Some(activities) = envelope
+            .get_mut("activities")
+            .and_then(|value| value.as_object_mut())
+        else {
+            return Ok(());
+        };
+        for (activity_name, activity) in activities.iter_mut() {
+            let activity_path = format!("{path}.activities.{activity_name}");
+            let Some(layers) = activity
+                .get_mut("layers")
+                .and_then(|value| value.as_object_mut())
+            else {
+                continue;
+            };
+            for (layer_name, layer) in layers.iter_mut() {
+                let layer_path = format!("{activity_path}.layers.{layer_name}");
+                let empty_table = layer.as_object().is_some_and(|map| map.is_empty());
+                if empty_table && matches!(layer_name.as_str(), "move" | "offense") {
+                    *layer = serde_json::Value::Array(Vec::new());
+                    continue;
+                }
+                if layer.is_object() {
+                    visit(layer, &layer_path)?;
+                }
+            }
+        }
         Ok(())
     }
 
-    reseat(json, "interrupts", "components.behavior.interrupts")?;
-    if let Some(states) = json.get_mut("states").and_then(|s| s.as_object_mut()) {
-        for (name, state) in states.iter_mut() {
-            reseat(
-                state,
-                "transitions",
-                &format!("components.behavior.states.{name}.transitions"),
-            )?;
-        }
-    }
-    Ok(())
+    visit(json, "components.behavior")
 }

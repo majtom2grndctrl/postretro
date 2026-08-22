@@ -3241,7 +3241,7 @@ mod tests {
             .expect("behavior descriptor materializes a Brain");
         let brain = reg.get_component::<BrainComponent>(id).unwrap();
         assert_eq!(*brain.graph, authored, "the authored graph is retained");
-        assert_eq!(brain.state_name(), Some(authored.initial.as_str()));
+        assert_eq!(brain.state_name(), Some(authored.envelope.initial.as_str()));
         assert_eq!(
             brain.home_anchor,
             reg.get_component::<Transform>(id)

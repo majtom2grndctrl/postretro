@@ -49,8 +49,8 @@ export default defineMod({
   // `resolution` to `quarter`/`eighth` to also exercise the resolution wire.)
   render: {
     bloom: {
-      resolution: "half",
-      pixelated: true,
+      resolution: "quarter",
+      pixelated: false,
     },
   },
   frontend: {

@@ -144,33 +144,33 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("BillboardEmitterComponent")
-        .doc("Engine-managed billboard-particle emitter preset. Field names are snake_case on the script surface. Prefer the SDK `emitter()` builder or a preset such as `smokeEmitter()` when defaults are suitable.")
-        .field("rate", "f32", "Continuous spawn rate in particles/sec. Must be finite and ≥ 0; 0 disables continuous spawning.")
-        .field("burst", "Option<u32>", "Optional one-time particle count emitted when the component is materialized. null disables the burst.")
-        .field("spread", "f32", "Random angular spread around `velocity`, in radians. Must be finite and ≥ 0; 0 emits in one direction.")
-        .field("lifetime", "f32", "Lifetime of each particle in seconds. Must be finite and > 0.")
-        .field("velocity", "Vec3", "Initial particle velocity vector in metres/sec before random spread is applied.")
-        .field("buoyancy", "f32", "Unitless gravity multiplier using `verticalAcceleration = worldGravity * -buoyancy`: -1 falls at normal gravity, 0 floats, values between -1 and 0 sink more slowly, and positive values rise.")
-        .field("drag", "f32", "Velocity damping coefficient in 1/sec. Must be finite and ≥ 0; 0 preserves velocity apart from buoyancy.")
-        .field("size_over_lifetime", "Vec<f32>", "Non-empty normalized-lifetime curve of billboard size multipliers. Samples are evenly spaced from spawn to death.")
-        .field("opacity_over_lifetime", "Vec<f32>", "Non-empty normalized-lifetime curve of opacity multipliers. Samples are evenly spaced from spawn to death.")
-        .field("color", "Vec3", "RGB multiplier applied to every emitted particle. Components are conventionally in [0, 1], with values above 1 available for HDR tinting.")
-        .field("sprite", "String", "Non-empty sprite/material identifier resolved by the billboard renderer.")
-        .field("spin_rate", "f32", "Initial billboard angular velocity in radians/sec. Positive and negative values rotate in opposite directions.")
-        .field("spin_animation", "Option<SpinAnimation>", "Optional spin-rate tween. null keeps `spin_rate` constant.")
+        .doc("Engine-managed particle emitter. It creates camera-facing sprite particles; prefer the SDK `emitter()` builder or presets such as `smokeEmitter()` so their defaults and validation are applied.")
+        .field("rate", "f32", "How many particles start each second. Must be a finite number ≥ 0; use 0 to stop the steady stream. A `burst` is separate.")
+        .field("burst", "Option<u32>", "Optional one-time particle count. The engine emits it once when this component is materialized, then clears it; null means no one-off puff.")
+        .field("spread", "f32", "How widely directions vary around `velocity`, in radians. Must be finite and ≥ 0; 0 keeps the exact direction.")
+        .field("lifetime", "f32", "How long every particle remains alive, in seconds. Must be finite and greater than 0; 0.5 means half a second.")
+        .field("velocity", "Vec3", "Starting particle movement in metres per second. Its x, y, and z values set direction and speed before `spread`; y is up.")
+        .field("buoyancy", "f32", "How gravity affects particles: -1 falls at normal gravity, 0 floats, positive values rise, and values below -1 fall faster. Must be finite.")
+        .field("drag", "f32", "How quickly particle movement slows, in 1/seconds. Must be finite and ≥ 0; 0 keeps speed except for gravity.")
+        .field("size_over_lifetime", "Vec<f32>", "One or more finite size multipliers, sampled evenly from particle birth to death. For example, [0.2, 1] grows over time.")
+        .field("opacity_over_lifetime", "Vec<f32>", "One or more finite opacity multipliers, sampled evenly from particle birth to death. For example, [1, 0] fades out.")
+        .field("color", "Vec3", "RGB tint multiplied into every particle. [1, 1, 1] keeps the sprite's normal color; values above 1 are available for intentionally bright HDR tints.")
+        .field("sprite", "String", "Non-empty sprite or material identifier for the particle image, such as `smoke` or `spark`.")
+        .field("spin_rate", "f32", "Billboard rotation speed in radians per second. 0 does not rotate; positive and negative values turn opposite ways.")
+        .field("spin_animation", "Option<SpinAnimation>", "Optional change to `spin_rate` over time. null keeps the chosen spin rate constant.")
         .finish();
     registry
         .register_type("SpinAnimation")
-        .doc("Spin-rate tween carried by a billboard emitter and consumed by the billboard-emitter reaction primitive `setSpinRate`.")
+        .doc("A timed change to a billboard emitter's rotation speed. The engine samples the supplied curve evenly during the duration.")
         .field(
             "duration",
             "f32",
-            "Tween duration in seconds. Must be finite and > 0.",
+            "How long the rotation-speed change lasts, in seconds. Must be finite and greater than 0.",
         )
         .field(
             "rate_curve",
             "Vec<f32>",
-            "Non-empty curve of spin rates in radians/sec, sampled evenly across `duration`.",
+            "One or more rotation speeds in radians per second, sampled evenly from the start to the end of `duration`. Positive and negative values turn opposite ways.",
         )
         .finish();
     registry
@@ -303,69 +303,69 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ProjectileDescriptor")
-        .doc("Descriptor-owned tuning for a straight-line direct-impact projectile. Required on a weapon whose `resolution` is `projectile`; these fields are never FGD KVP overrides.")
-        .field("speed", "f32", "Launch speed in metres per second. Must be finite and > 0.")
-        .field("radius", "f32", "Swept-sphere collision radius in metres. Must be finite and >= 0.")
-        .field("lifetimeMs", "f32", "Maximum flight time in milliseconds. Must be finite and > 0; weapon range remains a second travel cap.")
-        .field("visual", "ProjectileVisual", "Required presentation-only body and optional trail. It never gates impact resolution.")
+        .doc("Settings for a projectile that travels in a straight line and hits later. This block is required when the weapon's `resolution` is `projectile`; it controls the projectile itself, not map placement.")
+        .field("speed", "f32", "How fast the projectile travels, in metres per second. For example, `40` travels about 40 metres in one second. Use a finite number greater than 0.")
+        .field("radius", "f32", "How wide the projectile's hit area is, in metres, measured outward from its flight path. `0` is allowed for a point-sized path; larger values are easier to hit with. Use a finite number of 0 or greater.")
+        .field("lifetimeMs", "f32", "The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner.")
+        .field("visual", "ProjectileVisual", "What players see while the projectile flies: one required body and an optional cosmetic trail. These settings do not change damage or hit detection.")
         .finish();
     registry
         .register_type("ProjectileVisual")
-        .doc("Presentation attached when a projectile launches. A body is required; the optional trail is cosmetic.")
-        .field("body", "ProjectileBodyVisual", "Required discriminated projectile body.")
-        .field("trail?", "ProjectileTrailVisual", "Optional billboard-emitter trail configuration.")
+        .doc("The visible parts of a flying projectile. A body is required; the optional trail is extra smoke, sparks, or similar particles.")
+        .field("body", "ProjectileBodyVisual", "The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.")
+        .field("trail?", "ProjectileTrailVisual", "Optional small sprite particles that follow the projectile, such as smoke or sparks. Leave it out when the projectile should have no trail.")
         .finish();
     registry
         .register_type("ProjectileSpriteBodyVisual")
-        .doc("Sprite-body payload for `ProjectileBodyVisual`.")
-        .field("sprite", "String", "Content-relative sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.")
-        .field("size?", "f32", "Billboard size in metres. Must be finite and > 0; defaults to 0.35.")
-        .field("opacity?", "f32", "Billboard opacity. Must be finite; defaults to 1.")
-        .field("rotation?", "f32", "Billboard rotation in radians. Must be finite; defaults to 0.")
-        .field("tint?", "[f32; 3]", "Linear RGB tint. Each value must be finite; defaults to white.")
+        .doc("The settings used when `body.kind` is `sprite`. A sprite is a flat image that always turns to face the camera.")
+        .field("sprite", "String", "The image to draw, as a non-empty path relative to the mod's content textures, such as `projectiles/plasma_blue_orb.png`. Use forward slashes and do not use `..` to go up folders.")
+        .field("size?", "f32", "The sprite's width and height in metres. The default is `0.35`. Use a finite number greater than 0.")
+        .field("opacity?", "f32", "How transparent the sprite is: `1` is fully visible and `0` is invisible. The default is `1`. Any finite number is accepted.")
+        .field("rotation?", "f32", "How far to turn the flat sprite, in radians. `0` leaves it upright; about `1.57` is a quarter turn. The default is `0`; use a finite number.")
+        .field("tint?", "[f32; 3]", "A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. Each number must be finite. This value is stored today but the billboard renderer does not yet apply sprite tint visibly.")
         .finish();
     registry
         .register_type("ProjectileModelBodyVisual")
-        .doc("Rigid model-body payload for `ProjectileBodyVisual`.")
-        .field("model", "String", "Content-relative glTF model path. Must be non-empty, use forward slashes, and contain no parent traversal.")
+        .doc("The settings used when `body.kind` is `model`. The model is a rigid 3D object: it does not play an animation while flying.")
+        .field("model", "String", "The glTF model to draw, as a non-empty path relative to the mod's content, such as `models/projectiles/rocket.gltf`. Use forward slashes and do not use `..` to go up folders. Author the front of the model along local `+Z`; the engine turns that front toward the firing aim.")
         .finish();
     registry
         .register_tagged_union("ProjectileBodyVisual")
         .flat()
-        .doc("Required projectile body. `kind` selects exactly one presentation form.")
+        .doc("Required projectile body. Set `kind` to exactly one of the two values below; that choice decides which other keys are allowed.")
         .variant(
             "sprite",
             "ProjectileSpriteBodyVisual",
-            "Billboard sprite body.",
+            "A flat image that always faces the camera. Use this for an orb, bolt, or other simple effect.",
         )
         .variant(
             "model",
             "ProjectileModelBodyVisual",
-            "Rigid glTF model body.",
+            "A rigid 3D glTF model that turns to face the direction fired. Use this for a rocket or other shaped projectile.",
         )
         .finish();
     registry
         .register_type("ProjectileTrailVisual")
-        .doc("Optional billboard-emitter trail attached to a projectile. It is presentation-only and uses the emitter component's authored bounds.")
-        .field("sprite", "String", "Content-relative trail sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.")
-        .field("rate?", "f32", "Continuous particle spawn rate per second. Must be finite and >= 0; defaults to 30.")
-        .field("lifetime?", "f32", "Particle lifetime in seconds. Must be finite and > 0; defaults to 0.4.")
-        .field("burst?", "Option<u32>", "Optional one-time particle count emitted when the projectile spawns.")
-        .field("spread?", "f32", "Random angular spread in radians. Must be finite and >= 0; defaults to 0.")
-        .field("velocity?", "[f32; 3]", "Initial particle velocity in metres per second. Each value must be finite; defaults to zero.")
-        .field("buoyancy?", "f32", "Signed gravity multiplier control. Must be finite; defaults to 0.")
-        .field("drag?", "f32", "Particle drag. Must be finite and >= 0; defaults to 0.")
-        .field("sizeOverLifetime?", "Vec<f32>", "Non-empty finite billboard-size curve; defaults to a short fade-out curve.")
-        .field("opacityOverLifetime?", "Vec<f32>", "Non-empty finite opacity curve; defaults to a short fade-out curve.")
-        .field("color?", "[f32; 3]", "Linear RGB particle tint. Each value must be finite; defaults to white.")
-        .field("spinRate?", "f32", "Signed particle rotation rate. Must be finite; defaults to 0.")
-        .field("spinAnimation?", "ProjectileTrailSpinAnimation", "Optional spin-rate tween. Duration must be finite and > 0; rateCurve must be non-empty.")
+        .doc("Optional sprite-particle trail that follows a projectile, such as smoke or sparks. It is visual only: changing it never changes the projectile's damage or collision.")
+        .field("sprite", "String", "The image used for every trail particle, as a non-empty path relative to the mod's content textures, such as `smoke_puff/smoke_puff_00.png`. Use forward slashes and do not use `..` to go up folders.")
+        .field("rate?", "f32", "How many new particles to make every second. For example, `30` makes about 30 particles per second. The default is `30`; use `0` to stop the continuous trail. Use a finite number of 0 or greater.")
+        .field("lifetime?", "f32", "How long each trail particle stays on screen, in seconds. For example, `0.4` is just under half a second. The default is `0.4`; use a finite number greater than 0.")
+        .field("burst?", "Option<u32>", "An optional one-time number of particles to make when the projectile appears. Use a whole number of 0 or greater, such as `8` for an opening puff. Leave it out when you do not want that one-off burst.")
+        .field("spread?", "f32", "How much to randomize each particle's starting direction around `velocity`, measured in radians. `0` keeps the exact direction. The default is `0`; use a finite number of 0 or greater.")
+        .field("velocity?", "[f32; 3]", "The particle's starting movement as exactly three numbers: `[x, y, z]` metres per second. `x` moves right/left, `y` moves up/down, and `z` moves forward/back in world space. For example, `[0, 0.2, 0]` starts each puff moving upward. A single number is not accepted. The default is `[0, 0, 0]`; all three numbers must be finite.")
+        .field("buoyancy?", "f32", "How gravity affects trail particles: `-1` falls normally, `0` floats, positive values rise, and values below `-1` fall faster. The default is `0`; use a finite number.")
+        .field("drag?", "f32", "How quickly each particle slows down, in 1/seconds. `0` keeps its starting speed except for gravity; larger numbers make it slow sooner. The default is `0`; use a finite number of 0 or greater.")
+        .field("sizeOverLifetime?", "Vec<f32>", "One or more size values in an array, sampled evenly from particle birth to death. For example, `[1, 0]` shrinks a particle to nothing. A single number is not accepted. The default is `[0.2, 0.12, 0]`; every value must be finite.")
+        .field("opacityOverLifetime?", "Vec<f32>", "One or more transparency values in an array, sampled evenly from particle birth to death. For example, `[1, 0]` fades from fully visible to invisible. A single number is not accepted. The default is `[0.8, 0.45, 0]`; every value must be finite.")
+        .field("color?", "[f32; 3]", "A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. A single number is not accepted; each number must be finite. This value is stored today but the billboard renderer does not yet apply particle tint visibly.")
+        .field("spinRate?", "f32", "How quickly each flat particle turns, in radians per second. `0` means no turning; positive and negative values turn in opposite directions. The default is `0`; use a finite number.")
+        .field("spinAnimation?", "ProjectileTrailSpinAnimation", "Optional instructions for changing `spinRate` over time. Leave it out to keep a constant rotation speed.")
         .finish();
     registry
         .register_type("ProjectileTrailSpinAnimation")
-        .doc("Spin-rate tween copied into the projectile trail's billboard emitter when the projectile materializes.")
-        .field("duration", "f32", "Tween duration in seconds. Must be finite and > 0.")
-        .field("rateCurve", "Vec<f32>", "Non-empty curve of spin rates in radians per second, sampled evenly across duration.")
+        .doc("A timed change to the rotation speed of each trail particle. The engine moves evenly through the numbers in `rateCurve` over `duration`.")
+        .field("duration", "f32", "How long the rotation-speed change lasts, in seconds. For example, `0.5` changes it over half a second. Use a finite number greater than 0.")
+        .field("rateCurve", "Vec<f32>", "One or more rotation speeds in an array, in radians per second. The first number is the starting speed and the last is the ending speed; for example, `[0, 8]` speeds up. A single number is not accepted. Positive and negative values turn in opposite directions.")
         .finish();
     registry
         .register_enum("ReloadStyle")

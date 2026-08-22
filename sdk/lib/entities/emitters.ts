@@ -25,17 +25,29 @@ export type SpinAnimation = {
  * `classname "billboard_emitter"` natively.
  */
 export type BillboardEmitter = {
+  /** Starts this many particles every second. Use `0` to stop the steady stream; `burst` is separate. Must be a finite number ≥ 0. */
   rate?: number;
+  /** Starts this many particles once, then clears itself. Use a whole number ≥ 0 for a one-off puff or explosion. */
   burst?: number;
+  /** Widens particle directions around `velocity`, in radians. `0` keeps the exact direction; finite values ≥ 0 only. */
   spread?: number;
+  /** How long each particle remains alive, in seconds. Must be a finite number greater than `0`; `0.5` is half a second. */
   lifetime?: number;
+  /** Starting movement as `[x, y, z]` metres per second (`y` is up). All three numbers must be finite. */
   velocity?: [number, number, number];
+  /** How gravity affects particles: `-1` falls normally, `0` floats, positive values rise, and values below `-1` fall faster. */
   buoyancy?: number;
+  /** How quickly motion slows, in 1/seconds. `0` keeps its speed except for gravity; finite values ≥ 0 only. */
   drag?: number;
+  /** One or more finite size multipliers, sampled evenly from particle birth to death. For example, `[0.2, 1]` grows over time. */
   size_over_lifetime?: number[];
+  /** One or more finite opacity multipliers, sampled evenly from particle birth to death. `[1, 0]` fades out. */
   opacity_over_lifetime?: number[];
+  /** RGB tint as `[red, green, blue]`, with each value from `0` to `1`. `[1, 1, 1]` leaves the sprite's colors unchanged. */
   color?: [number, number, number];
+  /** Non-empty sprite or material name for the particle image, such as `"smoke"` or `"spark"`. */
   sprite?: string;
+  /** Billboard rotation speed in radians per second. `0` does not rotate; positive and negative values turn opposite ways. */
   spin_rate?: number;
 };
 
@@ -45,17 +57,29 @@ export type BillboardEmitter = {
  * defaults inside `emitter()`.
  */
 export type EmitterProps = {
+  /** Starts this many particles every second. Omit for the default `0`; use `burst` for a one-off puff. Must be finite and ≥ 0. */
   rate?: number;
+  /** Starts this many particles once, then clears itself. Use a whole number ≥ 0 for a one-off puff or explosion. */
   burst?: number;
+  /** Widens particle directions around `velocity`, in radians. `0` keeps the exact direction; finite values ≥ 0 only. Default: `0.2` (about 11°). */
   spread?: number;
+  /** How long each particle remains alive, in seconds. Must be finite and greater than `0`; `0.5` is half a second. */
   lifetime: number;
+  /** Starting movement as `[x, y, z]` metres per second (`y` is up). All three numbers must be finite. A zero-length vector leaves particles still until gravity moves them. */
   velocity: [number, number, number];
+  /** How gravity affects particles: `-1` falls normally, `0` floats, positive values rise, and values below `-1` fall faster. Default: `0.5`. */
   buoyancy?: number;
+  /** How quickly motion slows, in 1/seconds. `0` keeps its speed except for gravity; finite values ≥ 0 only. Default: `0.5`. */
   drag?: number;
+  /** One or more finite size multipliers, sampled evenly from particle birth to death. For example, `[0.2, 1]` grows over time. Default: `[1]`. */
   size_over_lifetime?: number[];
+  /** One or more finite opacity multipliers, sampled evenly from particle birth to death. `[1, 0]` fades out. Default: `[1, 1, 0.8, 0]`. */
   opacity_over_lifetime?: number[];
+  /** RGB tint as `[red, green, blue]`, with each value from `0` to `1`. `[1, 1, 1]` leaves the sprite's colors unchanged. Default: white. */
   color?: [number, number, number];
+  /** Non-empty sprite or material name for the particle image, such as `"smoke"` or `"spark"`. */
   sprite: string;
+  /** Billboard rotation speed in radians per second. `0` does not rotate; positive and negative values turn opposite ways. Default: `0`. */
   spin_rate?: number;
 };
 

@@ -819,8 +819,8 @@ function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescri
   }
 }
 
-export function defineEntity<T extends import("postretro").EntityTypeDescriptor>(
-  descriptor: T,
+export function defineEntity<T>(
+  descriptor: T & import("postretro").EntityTypeDescriptor,
 ): T {
   lowerLoadoutReferences(descriptor);
   return descriptor;

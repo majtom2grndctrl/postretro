@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::HitZoneStore;
@@ -479,6 +479,10 @@ pub(crate) fn spawn_projectile(
     let Some(projectile_id) = registry.try_spawn(
         Transform {
             position: launch.origin,
+            rotation: projectile_model_body_rotation(
+                &launch.descriptor.visual.body,
+                launch.direction,
+            ),
             ..Transform::default()
         },
         &[],
@@ -552,6 +556,23 @@ pub(crate) fn spawn_projectile(
     }
 
     Some(projectile_id)
+}
+
+/// The renderer applies entity rotation directly to rigid glTF geometry. Projectile
+/// models therefore use the same authored mesh-forward convention as other meshes:
+/// local `+Z` faces their travel direction. Sprite bodies remain camera-facing and
+/// intentionally retain the identity transform rotation.
+pub(crate) fn projectile_model_body_rotation(body: &ProjectileBodyVisual, direction: Vec3) -> Quat {
+    if !matches!(body, ProjectileBodyVisual::Model { .. }) || !direction.is_finite() {
+        return Quat::IDENTITY;
+    }
+
+    let length_squared = direction.length_squared();
+    if !length_squared.is_finite() || length_squared <= 1.0e-12 {
+        return Quat::IDENTITY;
+    }
+
+    Quat::from_rotation_arc(Vec3::Z, direction / length_squared.sqrt())
 }
 
 pub(crate) fn normalize_inventory_liveness(
@@ -780,13 +801,44 @@ mod projectile_spawn_tests {
             },
             trail: None,
         };
+        let mut launch = launch(visual);
+        launch.direction = Vec3::new(3.0, 2.0, -4.0).normalize();
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch.clone(), None)
             .expect("projectile spawns");
         let mesh = registry
             .get_component::<MeshComponent>(projectile)
             .expect("rigid mesh body attaches");
         assert_eq!(mesh.model, "models/rocket.gltf");
         assert!(mesh.animation.is_none(), "projectile mesh is rigid");
+        let transform = registry
+            .get_component::<Transform>(projectile)
+            .expect("projectile carries its launch transform");
+        let rendered_forward = transform.rotation * Vec3::Z;
+        assert!(
+            rendered_forward.distance(launch.direction) <= 1.0e-6,
+            "a rigid projectile model faces the aim direction captured at fire time"
+        );
+    }
+
+    #[test]
+    fn projectile_model_rotation_handles_vertical_and_invalid_directions() {
+        let body = ProjectileBodyVisual::Model {
+            model: "models/rocket.gltf".to_string(),
+        };
+        let vertical = projectile_model_body_rotation(&body, Vec3::Y);
+        assert!(vertical.is_finite());
+        assert!(
+            (vertical * Vec3::Z).distance(Vec3::Y) <= 1.0e-6,
+            "vertical aim remains a valid model orientation"
+        );
+
+        for invalid in [Vec3::ZERO, Vec3::new(f32::NAN, 0.0, 1.0)] {
+            assert_eq!(
+                projectile_model_body_rotation(&body, invalid),
+                Quat::IDENTITY,
+                "invalid launch direction preserves the safe identity fallback"
+            );
+        }
     }
 }

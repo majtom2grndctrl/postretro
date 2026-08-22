@@ -79,41 +79,41 @@ export type EntityTypeDescriptor = {
   components: EntityTypeComponents?,
 }
 
---- Engine-managed billboard-particle emitter preset. Field names are snake_case on the script surface. Prefer the SDK `emitter()` builder or a preset such as `smokeEmitter()` when defaults are suitable.
+--- Engine-managed particle emitter. It creates camera-facing sprite particles; prefer the SDK `emitter()` builder or presets such as `smokeEmitter()` so their defaults and validation are applied.
 export type BillboardEmitterComponent = {
-  --- Continuous spawn rate in particles/sec. Must be finite and ≥ 0; 0 disables continuous spawning.
+  --- How many particles start each second. Must be a finite number ≥ 0; use 0 to stop the steady stream. A `burst` is separate.
   rate: number,
-  --- Optional one-time particle count emitted when the component is materialized. null disables the burst.
+  --- Optional one-time particle count. The engine emits it once when this component is materialized, then clears it; null means no one-off puff.
   burst: number?,
-  --- Random angular spread around `velocity`, in radians. Must be finite and ≥ 0; 0 emits in one direction.
+  --- How widely directions vary around `velocity`, in radians. Must be finite and ≥ 0; 0 keeps the exact direction.
   spread: number,
-  --- Lifetime of each particle in seconds. Must be finite and > 0.
+  --- How long every particle remains alive, in seconds. Must be finite and greater than 0; 0.5 means half a second.
   lifetime: number,
-  --- Initial particle velocity vector in metres/sec before random spread is applied.
+  --- Starting particle movement in metres per second. Its x, y, and z values set direction and speed before `spread`; y is up.
   velocity: Vec3,
-  --- Unitless gravity multiplier using `verticalAcceleration = worldGravity * -buoyancy`: -1 falls at normal gravity, 0 floats, values between -1 and 0 sink more slowly, and positive values rise.
+  --- How gravity affects particles: -1 falls at normal gravity, 0 floats, positive values rise, and values below -1 fall faster. Must be finite.
   buoyancy: number,
-  --- Velocity damping coefficient in 1/sec. Must be finite and ≥ 0; 0 preserves velocity apart from buoyancy.
+  --- How quickly particle movement slows, in 1/seconds. Must be finite and ≥ 0; 0 keeps speed except for gravity.
   drag: number,
-  --- Non-empty normalized-lifetime curve of billboard size multipliers. Samples are evenly spaced from spawn to death.
+  --- One or more finite size multipliers, sampled evenly from particle birth to death. For example, [0.2, 1] grows over time.
   size_over_lifetime: {number},
-  --- Non-empty normalized-lifetime curve of opacity multipliers. Samples are evenly spaced from spawn to death.
+  --- One or more finite opacity multipliers, sampled evenly from particle birth to death. For example, [1, 0] fades out.
   opacity_over_lifetime: {number},
-  --- RGB multiplier applied to every emitted particle. Components are conventionally in [0, 1], with values above 1 available for HDR tinting.
+  --- RGB tint multiplied into every particle. [1, 1, 1] keeps the sprite's normal color; values above 1 are available for intentionally bright HDR tints.
   color: Vec3,
-  --- Non-empty sprite/material identifier resolved by the billboard renderer.
+  --- Non-empty sprite or material identifier for the particle image, such as `smoke` or `spark`.
   sprite: string,
-  --- Initial billboard angular velocity in radians/sec. Positive and negative values rotate in opposite directions.
+  --- Billboard rotation speed in radians per second. 0 does not rotate; positive and negative values turn opposite ways.
   spin_rate: number,
-  --- Optional spin-rate tween. null keeps `spin_rate` constant.
+  --- Optional change to `spin_rate` over time. null keeps the chosen spin rate constant.
   spin_animation: SpinAnimation?,
 }
 
---- Spin-rate tween carried by a billboard emitter and consumed by the billboard-emitter reaction primitive `setSpinRate`.
+--- A timed change to a billboard emitter's rotation speed. The engine samples the supplied curve evenly during the duration.
 export type SpinAnimation = {
-  --- Tween duration in seconds. Must be finite and > 0.
+  --- How long the rotation-speed change lasts, in seconds. Must be finite and greater than 0.
   duration: number,
-  --- Non-empty curve of spin rates in radians/sec, sampled evenly across `duration`.
+  --- One or more rotation speeds in radians per second, sampled evenly from the start to the end of `duration`. Positive and negative values turn opposite ways.
   rate_curve: {number},
 }
 
@@ -251,88 +251,88 @@ export type ResolutionMode =
   --- Launch a straight-line projectile that resolves a direct impact on a later simulation pass.
   | "projectile"
 
---- Descriptor-owned tuning for a straight-line direct-impact projectile. Required on a weapon whose `resolution` is `projectile`; these fields are never FGD KVP overrides.
+--- Settings for a projectile that travels in a straight line and hits later. This block is required when the weapon's `resolution` is `projectile`; it controls the projectile itself, not map placement.
 export type ProjectileDescriptor = {
-  --- Launch speed in metres per second. Must be finite and > 0.
+  --- How fast the projectile travels, in metres per second. For example, `40` travels about 40 metres in one second. Use a finite number greater than 0.
   speed: number,
-  --- Swept-sphere collision radius in metres. Must be finite and >= 0.
+  --- How wide the projectile's hit area is, in metres, measured outward from its flight path. `0` is allowed for a point-sized path; larger values are easier to hit with. Use a finite number of 0 or greater.
   radius: number,
-  --- Maximum flight time in milliseconds. Must be finite and > 0; weapon range remains a second travel cap.
+  --- The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner.
   lifetimeMs: number,
-  --- Required presentation-only body and optional trail. It never gates impact resolution.
+  --- What players see while the projectile flies: one required body and an optional cosmetic trail. These settings do not change damage or hit detection.
   visual: ProjectileVisual,
 }
 
---- Presentation attached when a projectile launches. A body is required; the optional trail is cosmetic.
+--- The visible parts of a flying projectile. A body is required; the optional trail is extra smoke, sparks, or similar particles.
 export type ProjectileVisual = {
-  --- Required discriminated projectile body.
+  --- The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.
   body: ProjectileBodyVisual,
-  --- Optional billboard-emitter trail configuration.
+  --- Optional small sprite particles that follow the projectile, such as smoke or sparks. Leave it out when the projectile should have no trail.
   trail: ProjectileTrailVisual?,
 }
 
---- Sprite-body payload for `ProjectileBodyVisual`.
+--- The settings used when `body.kind` is `sprite`. A sprite is a flat image that always turns to face the camera.
 export type ProjectileSpriteBodyVisual = {
-  --- Content-relative sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.
+  --- The image to draw, as a non-empty path relative to the mod's content textures, such as `projectiles/plasma_blue_orb.png`. Use forward slashes and do not use `..` to go up folders.
   sprite: string,
-  --- Billboard size in metres. Must be finite and > 0; defaults to 0.35.
+  --- The sprite's width and height in metres. The default is `0.35`. Use a finite number greater than 0.
   size: number?,
-  --- Billboard opacity. Must be finite; defaults to 1.
+  --- How transparent the sprite is: `1` is fully visible and `0` is invisible. The default is `1`. Any finite number is accepted.
   opacity: number?,
-  --- Billboard rotation in radians. Must be finite; defaults to 0.
+  --- How far to turn the flat sprite, in radians. `0` leaves it upright; about `1.57` is a quarter turn. The default is `0`; use a finite number.
   rotation: number?,
-  --- Linear RGB tint. Each value must be finite; defaults to white.
+  --- A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. Each number must be finite. This value is stored today but the billboard renderer does not yet apply sprite tint visibly.
   tint: {number}?,
 }
 
---- Rigid model-body payload for `ProjectileBodyVisual`.
+--- The settings used when `body.kind` is `model`. The model is a rigid 3D object: it does not play an animation while flying.
 export type ProjectileModelBodyVisual = {
-  --- Content-relative glTF model path. Must be non-empty, use forward slashes, and contain no parent traversal.
+  --- The glTF model to draw, as a non-empty path relative to the mod's content, such as `models/projectiles/rocket.gltf`. Use forward slashes and do not use `..` to go up folders. Author the front of the model along local `+Z`; the engine turns that front toward the firing aim.
   model: string,
 }
 
---- Required projectile body. `kind` selects exactly one presentation form.
+--- Required projectile body. Set `kind` to exactly one of the two values below; that choice decides which other keys are allowed.
 export type ProjectileBodyVisual =
-  --- Billboard sprite body.
+  --- A flat image that always faces the camera. Use this for an orb, bolt, or other simple effect.
   (ProjectileSpriteBodyVisual & { kind: "sprite" })
-  --- Rigid glTF model body.
+  --- A rigid 3D glTF model that turns to face the direction fired. Use this for a rocket or other shaped projectile.
   | (ProjectileModelBodyVisual & { kind: "model" })
 
---- Optional billboard-emitter trail attached to a projectile. It is presentation-only and uses the emitter component's authored bounds.
+--- Optional sprite-particle trail that follows a projectile, such as smoke or sparks. It is visual only: changing it never changes the projectile's damage or collision.
 export type ProjectileTrailVisual = {
-  --- Content-relative trail sprite path under the content texture root. Must be non-empty, use forward slashes, and contain no parent traversal.
+  --- The image used for every trail particle, as a non-empty path relative to the mod's content textures, such as `smoke_puff/smoke_puff_00.png`. Use forward slashes and do not use `..` to go up folders.
   sprite: string,
-  --- Continuous particle spawn rate per second. Must be finite and >= 0; defaults to 30.
+  --- How many new particles to make every second. For example, `30` makes about 30 particles per second. The default is `30`; use `0` to stop the continuous trail. Use a finite number of 0 or greater.
   rate: number?,
-  --- Particle lifetime in seconds. Must be finite and > 0; defaults to 0.4.
+  --- How long each trail particle stays on screen, in seconds. For example, `0.4` is just under half a second. The default is `0.4`; use a finite number greater than 0.
   lifetime: number?,
-  --- Optional one-time particle count emitted when the projectile spawns.
+  --- An optional one-time number of particles to make when the projectile appears. Use a whole number of 0 or greater, such as `8` for an opening puff. Leave it out when you do not want that one-off burst.
   burst: number?,
-  --- Random angular spread in radians. Must be finite and >= 0; defaults to 0.
+  --- How much to randomize each particle's starting direction around `velocity`, measured in radians. `0` keeps the exact direction. The default is `0`; use a finite number of 0 or greater.
   spread: number?,
-  --- Initial particle velocity in metres per second. Each value must be finite; defaults to zero.
+  --- The particle's starting movement as exactly three numbers: `[x, y, z]` metres per second. `x` moves right/left, `y` moves up/down, and `z` moves forward/back in world space. For example, `[0, 0.2, 0]` starts each puff moving upward. A single number is not accepted. The default is `[0, 0, 0]`; all three numbers must be finite.
   velocity: {number}?,
-  --- Signed gravity multiplier control. Must be finite; defaults to 0.
+  --- How gravity affects trail particles: `-1` falls normally, `0` floats, positive values rise, and values below `-1` fall faster. The default is `0`; use a finite number.
   buoyancy: number?,
-  --- Particle drag. Must be finite and >= 0; defaults to 0.
+  --- How quickly each particle slows down, in 1/seconds. `0` keeps its starting speed except for gravity; larger numbers make it slow sooner. The default is `0`; use a finite number of 0 or greater.
   drag: number?,
-  --- Non-empty finite billboard-size curve; defaults to a short fade-out curve.
+  --- One or more size values in an array, sampled evenly from particle birth to death. For example, `[1, 0]` shrinks a particle to nothing. A single number is not accepted. The default is `[0.2, 0.12, 0]`; every value must be finite.
   sizeOverLifetime: {number}?,
-  --- Non-empty finite opacity curve; defaults to a short fade-out curve.
+  --- One or more transparency values in an array, sampled evenly from particle birth to death. For example, `[1, 0]` fades from fully visible to invisible. A single number is not accepted. The default is `[0.8, 0.45, 0]`; every value must be finite.
   opacityOverLifetime: {number}?,
-  --- Linear RGB particle tint. Each value must be finite; defaults to white.
+  --- A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. A single number is not accepted; each number must be finite. This value is stored today but the billboard renderer does not yet apply particle tint visibly.
   color: {number}?,
-  --- Signed particle rotation rate. Must be finite; defaults to 0.
+  --- How quickly each flat particle turns, in radians per second. `0` means no turning; positive and negative values turn in opposite directions. The default is `0`; use a finite number.
   spinRate: number?,
-  --- Optional spin-rate tween. Duration must be finite and > 0; rateCurve must be non-empty.
+  --- Optional instructions for changing `spinRate` over time. Leave it out to keep a constant rotation speed.
   spinAnimation: ProjectileTrailSpinAnimation?,
 }
 
---- Spin-rate tween copied into the projectile trail's billboard emitter when the projectile materializes.
+--- A timed change to the rotation speed of each trail particle. The engine moves evenly through the numbers in `rateCurve` over `duration`.
 export type ProjectileTrailSpinAnimation = {
-  --- Tween duration in seconds. Must be finite and > 0.
+  --- How long the rotation-speed change lasts, in seconds. For example, `0.5` changes it over half a second. Use a finite number greater than 0.
   duration: number,
-  --- Non-empty curve of spin rates in radians per second, sampled evenly across duration.
+  --- One or more rotation speeds in an array, in radians per second. The first number is the starting speed and the last is the ending speed; for example, `[0, 8]` speeds up. A single number is not accepted. Positive and negative values turn in opposite directions.
   rateCurve: {number},
 }
 
@@ -1107,33 +1107,82 @@ declare function sequence(keyframes: {Keyframe}): {Keyframe}
 --- Input shape for `emitter()`. Required: `lifetime`, `velocity`, and `sprite`.
 --- Other fields fall back to the documented emitter defaults.
 export type EmitterProps = {
+  --- Starts this many particles every second. Omit for the default `0`; use
+  --- `burst` for a one-off puff. Must be finite and >= 0.
   rate: number?,
+  --- Starts this many particles once, then clears itself. Use a whole number >= 0
+  --- for a one-off puff or explosion.
   burst: number?,
+  --- Widens particle directions around `velocity`, in radians. `0` keeps the exact
+  --- direction; finite values >= 0 only. Default: `0.2` (about 11 degrees).
   spread: number?,
+  --- How long each particle remains alive, in seconds. Must be finite and greater
+  --- than `0`; `0.5` is half a second.
   lifetime: number,
+  --- Starting movement as `{x, y, z}` metres per second (`y` is up). All three
+  --- numbers must be finite. A zero-length vector leaves particles still until
+  --- gravity moves them.
   velocity: {number},
+  --- How gravity affects particles: `-1` falls normally, `0` floats, positive
+  --- values rise, and values below `-1` fall faster. Default: `0.5`.
   buoyancy: number?,
+  --- How quickly motion slows, in 1/seconds. `0` keeps its speed except for
+  --- gravity; finite values >= 0 only. Default: `0.5`.
   drag: number?,
+  --- One or more finite size multipliers, sampled evenly from particle birth to
+  --- death. For example, `{0.2, 1}` grows over time. Default: `{1}`.
   size_over_lifetime: {number}?,
+  --- One or more finite opacity multipliers, sampled evenly from particle birth
+  --- to death. `{1, 0}` fades out. Default: `{1, 1, 0.8, 0}`.
   opacity_over_lifetime: {number}?,
+  --- RGB tint as `{red, green, blue}`, with each value from `0` to `1`.
+  --- `{1, 1, 1}` leaves the sprite's colors unchanged. Default: white.
   color: {number}?,
+  --- Non-empty sprite or material name for the particle image, such as `"smoke"`
+  --- or `"spark"`.
   sprite: string,
+  --- Billboard rotation speed in radians per second. `0` does not rotate;
+  --- positive and negative values turn opposite ways. Default: `0`.
   spin_rate: number?,
 }
 
 --- Optional override shape accepted by emitter presets.
 export type EmitterOverrides = {
+  --- Starts this many particles every second. Use `0` to stop the steady stream;
+  --- `burst` is separate. Must be finite and >= 0.
   rate: number?,
+  --- Starts this many particles once, then clears itself. Use a whole number >= 0
+  --- for a one-off puff or explosion.
   burst: number?,
+  --- Widens particle directions around `velocity`, in radians. `0` keeps the exact
+  --- direction; finite values >= 0 only.
   spread: number?,
+  --- How long each particle remains alive, in seconds. Must be finite and greater
+  --- than `0`; `0.5` is half a second.
   lifetime: number?,
+  --- Starting movement as `{x, y, z}` metres per second (`y` is up). All three
+  --- numbers must be finite.
   velocity: {number}?,
+  --- How gravity affects particles: `-1` falls normally, `0` floats, positive
+  --- values rise, and values below `-1` fall faster.
   buoyancy: number?,
+  --- How quickly motion slows, in 1/seconds. `0` keeps its speed except for
+  --- gravity; finite values >= 0 only.
   drag: number?,
+  --- One or more finite size multipliers, sampled evenly from particle birth to
+  --- death. For example, `{0.2, 1}` grows over time.
   size_over_lifetime: {number}?,
+  --- One or more finite opacity multipliers, sampled evenly from particle birth
+  --- to death. `{1, 0}` fades out.
   opacity_over_lifetime: {number}?,
+  --- RGB tint as `{red, green, blue}`, with each value from `0` to `1`.
+  --- `{1, 1, 1}` leaves the sprite's colors unchanged.
   color: {number}?,
+  --- Non-empty sprite or material name for the particle image, such as `"smoke"`
+  --- or `"spark"`.
   sprite: string?,
+  --- Billboard rotation speed in radians per second. `0` does not rotate;
+  --- positive and negative values turn opposite ways.
   spin_rate: number?,
 }
 

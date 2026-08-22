@@ -313,7 +313,7 @@ mod tests {
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_scripting_core::data_descriptors::{
-        ActionVerb, AirParams, AttackParams, BehaviorStateDescriptor, CapsuleParams,
+        ActionVerb, AirParams, AttackParams, BehaviorActivityDescriptor, CapsuleParams,
         EntityTypeDescriptor, FallParams, GroundParams, LightDescriptor, MotionVerb, NamedReaction,
         PlayerMovementDescriptor, ProgressDescriptor, ReactionDescriptor, SpeedParams,
     };
@@ -321,7 +321,7 @@ mod tests {
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
     use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
-    use crate::scripting_systems::ai::{ENEMY_ATTACK_EVENT, run_ai_tick};
+    use crate::scripting_systems::ai::run_ai_tick;
 
     const TAG: &str = "closet";
 
@@ -490,19 +490,19 @@ mod tests {
             },
         );
         behavior
-            .states
+            .envelope
+            .transitions
             .get_mut("idle")
-            .expect("fixture declares its initial state")
-            .transitions[0]
+            .expect("fixture declares its initial activity")[0]
             .to = "slam".to_string();
-        behavior.states.insert(
+        behavior.envelope.activities.insert(
             "slam".to_string(),
-            BehaviorStateDescriptor {
-                animation: "attack".to_string(),
-                motion: MotionVerb::ChaseTarget,
+            BehaviorActivityDescriptor {
+                animation: Some("attack".to_string()),
+                motion: Some(MotionVerb::ChaseTarget),
                 action: Some(ActionVerb::Attack("slam".to_string())),
-                transitions: Vec::new(),
                 on_enter: None,
+                layers: Default::default(),
             },
         );
         let declared_attack_names: Vec<_> = behavior.attacks.keys().cloned().collect();
@@ -561,18 +561,17 @@ mod tests {
             "the player remains unharmed before the windup expires"
         );
 
-        assert_eq!(
-            run_ai_tick(&mut registry, &mut warned, dt_secs),
-            vec![std::borrow::Cow::Borrowed(ENEMY_ATTACK_EVENT)],
-            "the non-initial attack fires once exactly when its seeded windup reaches zero"
-        );
         assert!(
+            run_ai_tick(&mut registry, &mut warned, dt_secs).is_empty(),
+            "a cooldown-gated entry is not retried after its interpolation windup expires"
+        );
+        assert_eq!(
             registry
                 .get_component::<HealthComponent>(player)
                 .unwrap()
-                .current
-                < 100.0,
-            "the final tick proves the test exercised attack behavior rather than merely no target"
+                .current,
+            100.0,
+            "the initial edge was cooldown-gated and held attack states never retry it"
         );
     }
 

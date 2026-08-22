@@ -37,7 +37,7 @@ use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
 use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{BrainComponent, graph_state_index};
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::{
@@ -46,7 +46,8 @@ use postretro_entities::components::mesh::{
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::data_descriptors::{
-    ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    ActionVerb, AttackParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
+    BehaviorGraphEnvelope, MotionVerb,
 };
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
@@ -1358,57 +1359,69 @@ fn open_floor_nav_graph() -> NavGraph {
 /// A direct-graph brain staged directly into one of its declared states.
 fn brain_in_state(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponent {
     let mut brain = BrainComponent::from_graph(graph);
-    brain.state_index =
-        graph_state_index(&brain.graph, state).expect("the graph declares the state");
+    assert!(
+        brain.enter_activity_at(
+            0,
+            brain
+                .graph
+                .envelope
+                .activities
+                .keys()
+                .position(|name| name == state)
+                .expect("the graph declares the activity"),
+        )
+    );
     brain
 }
 
 fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
-        initial: "idle".to_string(),
-        states: std::collections::BTreeMap::from([
-            (
-                "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            ),
-            (
-                ALERT_STATE.to_string(),
-                BehaviorStateDescriptor {
-                    animation: locomotion_animation.to_string(),
-                    motion: MotionVerb::ChaseTarget,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            ),
-            (
-                ATTACK_STATE.to_string(),
-                BehaviorStateDescriptor {
-                    animation: "attack".to_string(),
-                    motion: MotionVerb::ChaseTarget,
-                    action: Some(ActionVerb::Attack("attack".to_string())),
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            ),
-            (
-                "death".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "death".to_string(),
-                    motion: MotionVerb::Freeze,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            ),
-        ]),
-        interrupts: Vec::new(),
+        envelope: BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: std::collections::BTreeMap::from([
+                (
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                ),
+                (
+                    ALERT_STATE.to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some(locomotion_animation.to_string()),
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                ),
+                (
+                    ATTACK_STATE.to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("attack".to_string()),
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: Some(ActionVerb::Attack("attack".to_string())),
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                ),
+                (
+                    "death".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("death".to_string()),
+                        motion: Some(MotionVerb::Freeze),
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                ),
+            ]),
+            transitions: BTreeMap::new(),
+        },
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::from([(
@@ -1659,6 +1672,11 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     else {
         return;
     };
+    // This is a separate registry whose entity ids begin again at the same
+    // values as the non-walk setup above. A runtime cache is registry-scoped,
+    // so use a fresh one rather than intentionally treating this new entity as
+    // a hot graph replacement.
+    ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
@@ -1713,7 +1731,6 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         &mut ai_runtime,
         &mut mover_states,
     );
-
     {
         let registry = registry.borrow();
         let agent = registry
@@ -2096,15 +2113,16 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
         .behavior
         .as_mut()
         .expect("behavior enemy fixture declares a graph")
-        .states
+        .envelope
+        .activities
         .insert(
             "walk".to_string(),
-            BehaviorStateDescriptor {
-                animation: "walk".to_string(),
-                motion: MotionVerb::ChaseTarget,
+            BehaviorActivityDescriptor {
+                animation: Some("walk".to_string()),
+                motion: Some(MotionVerb::ChaseTarget),
                 action: None,
-                transitions: Vec::new(),
                 on_enter: None,
+                layers: BTreeMap::new(),
             },
         );
 

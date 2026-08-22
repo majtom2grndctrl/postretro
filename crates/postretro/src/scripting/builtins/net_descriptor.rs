@@ -445,10 +445,10 @@ mod tests {
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, AmmoResource, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams,
-        FallParams, FireMode, GroundParams, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
-        ReloadStyle, ResolutionMode, SpeedParams, TouchMode, TouchableDescriptor, WeaponDescriptor,
-        WeaponResource,
+        AirParams, AmmoResource, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
+        BehaviorGraphEnvelope, CapsuleParams, FallParams, FireMode, GroundParams, MeshDescriptor,
+        MotionVerb, PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, TouchMode,
+        TouchableDescriptor, WeaponDescriptor, WeaponResource,
     };
     use postretro_test_log_capture::LogCapture;
     use std::collections::HashMap;
@@ -596,18 +596,20 @@ mod tests {
     fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
         let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
         descriptor.behavior = Some(BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states: std::collections::BTreeMap::from([(
-                "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            )]),
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: std::collections::BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: std::collections::BTreeMap::new(),
+                    },
+                )]),
+                transitions: std::collections::BTreeMap::new(),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: Default::default(),

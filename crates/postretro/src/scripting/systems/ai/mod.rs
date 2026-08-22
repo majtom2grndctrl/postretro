@@ -50,17 +50,15 @@ use combat_slots::resolve_combat_slots;
 use engine_floor::{POSITION_GOAL_ARRIVAL_EPSILON, SteeringIntent};
 use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use graph_eval::{
-    action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
-    steering_for,
+    action_for_entry_path, action_for_path, animation_for_path, engages_active, engages_path,
+    motion_for_path, select_transition_path, steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
 };
-use postretro_entities::components::mesh::{
-    SwitchResult, restart_animation_clip, switch_animation_state,
-};
+use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
     EntityRegistry, EntityStateComponent, Transform,
@@ -243,18 +241,22 @@ pub(super) struct EnemyOutcome {
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
     pub(super) prior_acquired_target: Option<EntityId>,
-    /// State occupied before this tick's transition. Combat-slot retention
-    /// compares its effective standoff with the committed state's standoff so
-    /// a state change cannot preserve a slot on the wrong engagement ring.
-    pub(super) prior_state_index: usize,
-    /// A replacement graph was reconciled this tick. Its state identity was
-    /// resolved by name even when the resulting numeric index stayed equal.
+    /// A replacement graph or invalid restored path was reseated this tick.
+    /// Its state identity was resolved by name even when the resulting numeric
+    /// index stayed equal.
     pub(super) graph_reseated: bool,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
+    /// Damage already resolved at the one edge-fire seam. The apply pass never
+    /// re-derives an action from a potentially changed path.
+    attack_damage: Option<f32>,
+    /// The selected offense action's standoff before and after this tick's
+    /// transition. Combat slots are path-relative, not root-graph-relative.
+    pub(super) prior_engagement_radius: f32,
+    pub(super) engagement_radius: f32,
     /// The entered state's authored `on_enter` address, present only on the tick
     /// the brain entered it.
     on_enter: Option<String>,
@@ -320,28 +322,26 @@ impl Default for AiRuntime {
 
 /// Drive every enemy brain one tick. Returns the event addresses raised this
 /// tick — one [`ENEMY_ATTACK_EVENT`] per enemy that attacked, plus each entered
-/// state's authored `on_enter` — for the app's post-tick event drain. `tick_dt`
-/// is the fixed tick delta in seconds.
+/// state's authored `on_enter` after a transition/reseat — for the app's
+/// post-tick event drain. Fresh initial seating is event-silent. `tick_dt` is
+/// the fixed tick delta in seconds.
 ///
 /// The return is `Cow` so the static attack event costs nothing to raise while
 /// an authored address still travels as an owned `String`; the owning clone
 /// happens once per state ENTRY, never per tick.
 ///
 /// Ordering inside the tick, PER enemy:
-/// 1. Tick the attack cooldown and the time-in-state down/up (every tick).
-/// 2. Evaluate the graph's guards — interrupts first, then the current state's
-///    transitions, declaration order, first true wins. Every guard is evaluated
-///    every armed tick, target or not: nothing latches evaluation off, so a
-///    commitment window is an authored `@brain.timeInStateMs` guard rather than
-///    an engine rule. A CLOSED aggro gate is the sole exception — it stands the
-///    brain down to its `initial` state and skips evaluation entirely.
-/// 3. On entering a state, reset the time-in-state and raise its `on_enter`.
-/// 4. When the selected state names an attack, that attack's cooldown has
-///    elapsed, and the selected target is inside its `maxRange`, apply that
-///    entry's damage to the selected pawn through the chokepoint and raise the
-///    attack event.
-/// 5. On a state CHANGE or locomotion stop/resume, request the selected
-///    animation state.
+/// 1. Tick cooldowns and every active activity clock.
+/// 2. Evaluate outer-to-inner transition rows, `"*"` before source-keyed rows,
+///    declaration order, first true wins. A newly seated path skips this step
+///    for its entry tick, so every phase is observable for at least one tick.
+///    A closed aggro gate is the other exception: it stands the brain down to
+///    `initial` and skips evaluation entirely.
+/// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
+///    this is the fresh spawn's initial seating.
+/// 4. Edge-fire an entered action after its cooldown, range, and target gates.
+/// 5. On an activity change or locomotion stop/resume, request the one animation
+///    state resolved from the active nested path.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_ai_tick(
     registry: &mut EntityRegistry,
@@ -434,10 +434,25 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
         let mut brain = snap.brain;
-        let graph_reseat_index = programs.take_reseat(snap.id);
-        let graph_reseated = graph_reseat_index.is_some();
-        let persisted_state_index = brain.state_index;
-        let prior_state_index = graph_reseat_index.unwrap_or(persisted_state_index);
+        let mut graph_reseated = programs.take_reseat(snap.id);
+        if graph_reseated {
+            brain.reseat_to_initial();
+        }
+        // Validate the complete restored path before any consumer walks it.
+        // Checking only the root misses a stale child index or a descendant
+        // retained beneath a leaf; trusting an over-cap length also panics in
+        // timer/counter slice operations.
+        if !brain.has_valid_active_path() {
+            if reseat_warned.insert(snap.id) {
+                log::warn!(
+                    "[AI] enemy {} carried an invalid behavior activity path; re-seating it \
+                     to `{}`. Warned once per enemy.",
+                    snap.id,
+                    brain.graph.envelope.initial,
+                );
+            }
+            graph_reseated |= brain.reseat_to_initial();
+        }
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -452,7 +467,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // A target is retained across ticks only while the brain is engaged
             // — chasing one, or acting on one. A resting brain re-ranks
             // candidates instead of honoring a stale acquired id.
-            let retained_target = engages(&brain.graph, prior_state_index)
+            let retained_target = engages_active(&brain)
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
@@ -516,16 +531,18 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         for remaining_ms in brain.attack_cooldown_remaining_ms.values_mut() {
             *remaining_ms = (*remaining_ms - dt_ms).max(0.0);
         }
-        brain.time_in_state_ms += dt_ms;
+        // An entry edge observes a freshly zeroed activity clock. Once it has
+        // been consumed, subsequent ticks advance the active clocks before
+        // evaluating their transition rows. A transition later in this pass
+        // resets its new suffix again, so no newly entered activity inherits a
+        // fraction of its predecessor's tick.
+        if !brain.entry_pending {
+            brain.tick_activity_timers(dt_ms);
+        }
 
         // Stride bookkeeping advances every tick so the gate is deterministic.
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
 
-        let mut attacked = false;
-        // Forcing the graph's `initial` state is the engine floor's stand-down,
-        // and its re-seat: an unvalidated graph whose `initial` names nothing
-        // simply stays put rather than being pushed to an arbitrary state.
-        let resting_index = initial_index(&brain.graph).unwrap_or(prior_state_index);
         // The FINALLY selected pawn's identity and distance, or `None` with no
         // target. This one binding feeds the guard facts and attack range gate,
         // so neither can disagree about which target they describe.
@@ -556,36 +573,21 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             }
         };
         let selected_distance = selected_target.map(|(_, distance)| distance);
-        let (next_index, steering) = if !brain.aggro_armed {
+        let mut prior_engagement_radius = brain.graph.engagement_radius();
+        let (transitioned, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
             // selection nor its guards, and standing down clears steering outright
             // rather than deferring to the resting state's motion verb. Clearing
             // the destination sends the agent through steering's destination-less
             // idle-settle path, which has no separation push.
-            (resting_index, SteeringIntent::Clear)
-        } else {
-            // Re-seat a brain whose index addresses no declared state (a graph
-            // swapped under a persisted `state_index`, or a hand-seeded one)
-            // instead of leaving it wedged: `select_transition` walks from the
-            // current state, so an unaddressable one would answer "stay put"
-            // forever. The graph's `initial` is the same state the gate stands
-            // brains down to.
-            let current_index = if state_at(&brain.graph, prior_state_index).is_some() {
-                prior_state_index
+            let transitioned = if !brain.is_seated_at_initial() {
+                brain.reseat_to_initial()
             } else {
-                if reseat_warned.insert(snap.id) {
-                    log::warn!(
-                        "[AI] enemy {} sat in behavior state index {} which its graph does not \
-                         declare; re-seating it to `{}`. Warned once per enemy.",
-                        snap.id,
-                        persisted_state_index,
-                        brain.graph.initial,
-                    );
-                }
-                resting_index
+                false
             };
-
+            (transitioned, SteeringIntent::Clear)
+        } else {
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
             // divisor, and reaches the guards as `@brain.acquisitionDue` for the
@@ -594,33 +596,69 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // armed brain evaluates its whole guard set whether or not it has a
             // pawn: that is how an interrupt reaches an enemy nobody is standing
             // in front of.
-            let attack_cooldown_ms = action_for_state(&brain.graph, current_index)
-                .and_then(|action| match action {
-                    ActionVerb::Attack(name) => brain.attack_cooldown_remaining_ms.get(name),
+            // Selector guards may choose the current action, but their input
+            // snapshot has not yet been refreshed for this enemy. Seed a
+            // type-correct zero cooldown first, resolve that action without
+            // cloning it, then refresh the one action-relative cooldown fact
+            // the transition planner is allowed to observe.
+            programs.scope_mut().refresh(
+                registry,
+                snap.id,
+                BrainFacts {
+                    target: selected_target,
+                    attack_cooldown_ms: 0.0,
+                    acquisition_due: evaluate_acquisition,
+                    distance_from_anchor,
+                    target_hostile,
+                    target_reachable,
+                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                },
+            );
+            let attack_cooldown_ms = programs
+                .with_entry_scope(snap.id, |bound, scope| {
+                    action_for_path(bound, scope, &brain).and_then(|action| match action {
+                        ActionVerb::Attack(name) => {
+                            brain.attack_cooldown_remaining_ms.get(name).copied()
+                        }
+                    })
                 })
-                .copied()
+                .flatten()
                 .unwrap_or(0.0);
             programs.scope_mut().refresh(
                 registry,
                 snap.id,
                 BrainFacts {
                     target: selected_target,
-                    time_in_state_ms: brain.time_in_state_ms,
                     attack_cooldown_ms,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
-            let next_index = programs
-                .get(snap.id)
-                .and_then(|bound| {
-                    select_transition(&brain.graph, bound, programs.scope(), current_index)
+            prior_engagement_radius = programs
+                .with_entry_scope(snap.id, |bound, scope| {
+                    action_for_path(bound, scope, &brain)
+                        .map(|action| brain.graph.engagement_radius_for_action(Some(action)))
                 })
-                .unwrap_or(current_index);
-            let steering = state_at(&brain.graph, next_index)
-                .map(|state| state.motion)
+                .flatten()
+                .unwrap_or_else(|| brain.graph.engagement_radius());
+            let transitioned = if brain.entry_pending {
+                false
+            } else {
+                programs
+                    .with_entry_scope(snap.id, |bound, scope| {
+                        select_transition_path(bound, scope, &mut brain)
+                    })
+                    .unwrap_or(false)
+            };
+            let motion = programs
+                .with_entry_scope(snap.id, |bound, scope| {
+                    motion_for_path(bound, scope, &brain)
+                })
+                .flatten();
+            let steering = motion
                 .map(|motion| position_goal_steering(motion, &mut brain, snap.position))
                 .unwrap_or(SteeringIntent::Clear);
             // A chase with nothing to chase degrades to a stand-down: with no
@@ -631,15 +669,19 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
-            (next_index, steering)
+            (transitioned, steering)
         };
 
         // The acquired id is the "this brain is engaged" marker the next tick's
         // retention reads, so it is set by ENGAGEMENT (chasing or acting), not by
         // the steering intent — a state that stands still and swings keeps its
         // pawn.
+        let engaged = target.is_some()
+            && programs
+                .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
+                .unwrap_or(false);
         brain.acquired_target = match target {
-            Some(target) if engages(&brain.graph, next_index) => Some(target.entity),
+            Some(target) if engaged => Some(target.entity),
             _ => None,
         };
 
@@ -655,45 +697,71 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // Gating on the selected target's Health stops attack/event spam against
         // an already-dead but still-present pawn and prevents damaging a
         // different co-op pawn than the one this enemy chose.
-        if let (Some(target), Some(distance)) = (target, selected_distance) {
-            if let Some(ActionVerb::Attack(attack_name)) =
-                action_for_state(&brain.graph, next_index)
-                && let Some(attack) = brain.graph.attacks.get(attack_name).copied()
-                && distance <= attack.max_range
-                && brain
-                    .attack_cooldown_remaining_ms
-                    .get(attack_name)
-                    .copied()
-                    .unwrap_or(0.0)
-                    <= 0.0
-                && selected_target_alive(registry, target.entity)
-            {
-                attacked = true;
-                brain
-                    .attack_cooldown_remaining_ms
-                    .insert(attack_name.clone(), attack.cooldown_ms);
-            }
+        let entered = brain.take_entry_pending();
+        let mut attacked = false;
+        let mut attack_damage = None;
+        if let Some(entry_start_depth) = entered
+            && let (Some(target), Some(distance)) = (target, selected_distance)
+            && let Some((attack_name, attack)) = programs
+                .with_entry_scope(snap.id, |bound, scope| {
+                    action_for_entry_path(bound, scope, &brain, entry_start_depth).and_then(
+                        |action| match action {
+                            ActionVerb::Attack(name) => brain
+                                .graph
+                                .attacks
+                                .get(name)
+                                .copied()
+                                .map(|attack| (name.clone(), attack)),
+                        },
+                    )
+                })
+                .flatten()
+            && distance <= attack.max_range
+            && brain
+                .attack_cooldown_remaining_ms
+                .get(&attack_name)
+                .copied()
+                .unwrap_or(0.0)
+                <= 0.0
+            && selected_target_alive(registry, target.entity)
+        {
+            attacked = true;
+            attack_damage = Some(attack.damage);
+            brain
+                .attack_cooldown_remaining_ms
+                .insert(attack_name.clone(), attack.cooldown_ms);
+            brain.record_successful_attack_fire();
         }
 
-        let state_changed = graph_reseated || next_index != prior_state_index;
-        let engaged = target.is_some() && engages(&brain.graph, next_index);
-        brain.state_index = next_index;
-        let on_enter = if state_changed {
-            brain.time_in_state_ms = 0.0;
-            state_at(&brain.graph, next_index).and_then(|state| state.on_enter.clone())
+        let state_changed = graph_reseated || transitioned || entered.is_some();
+        let announce_entry = brain.take_entry_event_pending() && entered.is_some();
+        let on_enter = if announce_entry {
+            brain
+                .active_depth()
+                .checked_sub(1)
+                .and_then(|depth| brain.activity_at_depth(depth))
+                .and_then(|(_, activity)| activity.on_enter.clone())
         } else {
             None
         };
-
+        let engagement_radius = programs
+            .with_entry_scope(snap.id, |bound, scope| {
+                action_for_path(bound, scope, &brain)
+                    .map(|action| brain.graph.engagement_radius_for_action(Some(action)))
+            })
+            .flatten()
+            .unwrap_or_else(|| brain.graph.engagement_radius());
         outcomes.push(EnemyOutcome {
             id: snap.id,
             position: snap.position,
             target,
             prior_acquired_target,
-            prior_state_index,
             graph_reseated,
             state_changed,
             attacked,
+            attack_damage,
+            prior_engagement_radius,
+            engagement_radius,
             on_enter,
             steering,
             engaged,
@@ -856,11 +924,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     registry,
                     target.entity,
                     &DamagePayload {
-                        amount: action_for_state(&outcome.brain.graph, outcome.brain.state_index)
-                            .and_then(|action| match action {
-                                ActionVerb::Attack(name) => outcome.brain.graph.attacks.get(name),
-                            })
-                            .map_or(0.0, |attack| attack.damage),
+                        amount: outcome.attack_damage.unwrap_or(0.0),
                     },
                     DamageContext {
                         source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),
@@ -873,29 +937,6 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 on_impact(registry);
             }
             events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
-
-            // Replay the attack clip on every IN-STATE swing. The attack clip is
-            // one-shot (`loop:false`) and animation is otherwise switched only on
-            // `state_changed`, so a repeated cooldown-gated swing while the enemy
-            // STAYS in its attacking state would leave the clip clamped on its
-            // last frame — the player cannot tell they are being hit. Restarting
-            // it from frame 0 re-fires the swing visually. This is purely
-            // cosmetic: damage stays cooldown-gated above (NOT frame-synced).
-            //
-            // Guard on `!state_changed`: on the entry tick the `state_changed`
-            // switch below already plays the clip from zero, so a restart here
-            // would double-fire (it would be a harmless re-stamp of a
-            // just-stamped pending clip, but skipping it keeps the seam explicit:
-            // first swing via the switch, every later in-state swing via restart).
-            //
-            // An attacking state declares an action, so it is never a locomotion
-            // state — its own animation is what plays, never the rest
-            // substitution.
-            if !outcome.state_changed {
-                if let Some(state) = state_at(&outcome.brain.graph, outcome.brain.state_index) {
-                    let _ = restart_animation_clip(registry, outcome.id, &state.animation);
-                }
-            }
         }
 
         // Animation: on a state change or locomotion stop/resume, request the
@@ -909,11 +950,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
         ) {
-            if let Some(name) = animation_for_state(
-                &outcome.brain.graph,
-                outcome.brain.state_index,
-                locomotion_intent.moving,
-            ) {
+            let animation_name = animation_for_path(&outcome.brain, locomotion_intent.moving);
+            if let Some(name) = animation_name {
                 match switch_animation_state(registry, outcome.id, name) {
                     SwitchResult::Switched | SwitchResult::AlreadyInState => {}
                     SwitchResult::UnknownState | SwitchResult::NotAnimated => {

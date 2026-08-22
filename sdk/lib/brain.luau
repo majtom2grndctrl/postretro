@@ -4,8 +4,8 @@
 -- builder.
 --
 -- Pure SDK sugar: a leaf is plain data (`{ op = "input", name = ... }`), the
--- same value `runtime.read(name)` returns. Constructed literally here so this
--- module has no prelude-evaluation-order dependency on the `runtime` global.
+-- same value `runtime.read(name)` returns. `runtime.read` attaches the fluent
+-- guard metatable before this module freezes the reusable leaf.
 -- Frozen because the `runtime` builders never mutate their operands, so one
 -- shared leaf per input is safe across every guard that reads it.
 --
@@ -17,8 +17,8 @@
 -- they agree.
 -- See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
-local function input(name: string): RuntimeRead
-  return table.freeze({ op = "input", name = name })
+local function input(name: string): RuntimeGuardNode
+  return table.freeze(runtime.read(name)) :: RuntimeGuardNode
 end
 
 local BrainSdk = {}
@@ -26,18 +26,21 @@ local BrainSdk = {}
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace:
 --- `hasTarget` (boolean; the only authoritative target-presence test),
 --- `targetDistance` (number; `1e9` with no target),
---- `timeInStateMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
+--- `timeInActivityMs` (number; scope-relative to the activity whose rows are
+--- being evaluated), `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
 --- `maxHealth`, `targetHealth` and `targetMaxHealth` (zero with no target or
 --- health component), `targetDied` (boolean; false with no target), and
 --- `distanceFromAnchor` (number; the enemy's XZ distance from its spawn-time
 --- home anchor, including untargeted), and `targetHostile` (boolean; true
 --- when the selected target's faction differs, false with no target), and
 --- `targetReachable` (boolean; false with no target or no navmesh;
---- the pathfinder's cached verdict rather than ground-truth reachability).
+--- the pathfinder's cached verdict rather than ground-truth reachability), and
+--- `attacksFiredInActivity` (number; successful fires since the current
+--- activity entered, visible to guards on the next refresh).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
-  timeInStateMs = input("@brain.timeInStateMs"),
+  timeInActivityMs = input("@brain.timeInActivityMs"),
   attackCooldownMs = input("@brain.attackCooldownMs"),
   acquisitionDue = input("@brain.acquisitionDue"),
   health = input("@brain.health"),
@@ -48,6 +51,7 @@ BrainSdk.brain = table.freeze({
   distanceFromAnchor = input("@brain.distanceFromAnchor"),
   targetHostile = input("@brain.targetHostile"),
   targetReachable = input("@brain.targetReachable"),
+  attacksFiredInActivity = input("@brain.attacksFiredInActivity"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.
@@ -61,7 +65,7 @@ BrainSdk.candidate = table.freeze({
 --- Read a per-entity state field as a guard input: `state("staggered")` is the
 --- `@state.staggered` leaf. Unset fields read as `0`. Impact policies and
 --- reactions write these; guards only read them.
-function BrainSdk.state(name: string): RuntimeRead
+function BrainSdk.state(name: string): RuntimeGuardNode
   return input("@state." .. name)
 end
 

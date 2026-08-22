@@ -38,8 +38,6 @@ pub(crate) struct BrainFacts {
     /// [`BRAIN_NO_TARGET_DISTANCE`]), and the target health facts resolve its
     /// entity. They therefore cannot disagree about whether a target exists.
     pub target: Option<(EntityId, f32)>,
-    /// Milliseconds since the brain entered its current graph state.
-    pub time_in_state_ms: f32,
     /// Milliseconds remaining on the attack cooldown.
     pub attack_cooldown_ms: f32,
     /// `true` on the think-stride ticks where acquisition is re-evaluated.
@@ -55,6 +53,10 @@ pub(crate) struct BrainFacts {
     /// Whether the selected target is routeable by the nav floor's pathfinder.
     /// `false` without a target or when the map has no navmesh.
     pub target_reachable: bool,
+    /// Successful attack fires since the root activity was entered. The
+    /// statechart evaluator re-points this scope-relative snapshot to each
+    /// active depth before evaluating that envelope's rows.
+    pub attacks_fired_in_activity: u32,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -65,6 +67,43 @@ pub(crate) enum BrainInputHandle {
     /// Index into the interned `@state.*` snapshot.
     State(usize),
 }
+
+/// Values whose meaning changes with the activity level currently being
+/// evaluated. New scope-relative facts append one field and one registration;
+/// the per-level planner remains unchanged.
+#[derive(Clone, Copy)]
+pub(crate) struct ScopeRelativeValues {
+    pub(crate) time_in_activity_ms: f32,
+    pub(crate) attacks_fired_in_activity: u32,
+}
+
+#[derive(Clone, Copy)]
+struct ScopeRelativeSlot {
+    fixed_index: usize,
+    project: fn(ScopeRelativeValues) -> IrValue,
+}
+
+const fn activity_timer(values: ScopeRelativeValues) -> IrValue {
+    IrValue::Number(values.time_in_activity_ms)
+}
+
+const fn attacks_fired_in_activity(values: ScopeRelativeValues) -> IrValue {
+    IrValue::Number(values.attacks_fired_in_activity as f32)
+}
+
+// The evaluator only iterates registered fixed slots, so adding a
+// scope-relative fact leaves its ordering algorithm unchanged and re-pointing
+// stays allocation-free.
+const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 2] = [
+    ScopeRelativeSlot {
+        fixed_index: 2,
+        project: activity_timer,
+    },
+    ScopeRelativeSlot {
+        fixed_index: 13,
+        project: attacks_fired_in_activity,
+    },
+];
 
 /// The live brain namespace an authored guard binds against once at spawn and
 /// reads on every tick.
@@ -134,7 +173,9 @@ impl BrainScope {
                     .target
                     .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
             ),
-            IrValue::Number(facts.time_in_state_ms),
+            // This slot is scope-relative and is immediately re-pointed by
+            // `select_transition` before any guard at a level evaluates.
+            IrValue::Number(0.0),
             IrValue::Number(facts.attack_cooldown_ms),
             IrValue::Bool(facts.acquisition_due),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
@@ -145,6 +186,9 @@ impl BrainScope {
             IrValue::Number(facts.distance_from_anchor),
             IrValue::Bool(facts.target_hostile),
             IrValue::Bool(facts.target_reachable),
+            // This slot is scope-relative and is immediately re-pointed by
+            // `select_transition` before any guard at a level evaluates.
+            IrValue::Number(facts.attacks_fired_in_activity as f32),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -152,6 +196,15 @@ impl BrainScope {
         let mut values = self.state_values.borrow_mut();
         for (slot, name) in values.iter_mut().zip(names.iter()) {
             *slot = state.map_or(0.0, |state| state.get(name));
+        }
+    }
+
+    /// Re-point all registered scope-relative inputs to one active activity's
+    /// fixed-path values. This mutates only pre-existing array slots and makes
+    /// no heap allocation.
+    pub(crate) fn repoint_scope_relative(&mut self, values: ScopeRelativeValues) {
+        for slot in SCOPE_RELATIVE_SLOTS {
+            self.fixed[slot.fixed_index] = (slot.project)(values);
         }
     }
 
@@ -217,12 +270,12 @@ mod tests {
     use postretro_entities::Transform;
     use postretro_foundation::{
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
-        BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
-        BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-        BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
-        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BindError,
-        BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard,
-        eval_value,
+        BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
+        BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT,
+        BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT,
+        BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
+        BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
+        CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -292,12 +345,12 @@ mod tests {
     fn engaged_facts(target: EntityId) -> BrainFacts {
         BrainFacts {
             target: Some((target, 7.5)),
-            time_in_state_ms: 250.0,
             attack_cooldown_ms: 400.0,
             acquisition_due: true,
             distance_from_anchor: 12.5,
             target_hostile: true,
             target_reachable: true,
+            attacks_fired_in_activity: 3,
         }
     }
 
@@ -370,6 +423,21 @@ mod tests {
         assert_number(eval_value(&program, &scope), 0.0);
     }
 
+    #[test]
+    fn repoint_scope_relative_projects_timer_and_attack_count_together() {
+        let mut scope = BrainScope::for_validation();
+        let timer = bind_read(BRAIN_TIME_IN_ACTIVITY_MS_INPUT, &scope);
+        let attacks = bind_read(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, &scope);
+
+        scope.repoint_scope_relative(ScopeRelativeValues {
+            time_in_activity_ms: 125.0,
+            attacks_fired_in_activity: 3,
+        });
+
+        assert_number(eval_value(&timer, &scope), 125.0);
+        assert_number(eval_value(&attacks, &scope), 3.0);
+    }
+
     /// The value `refresh` must project for a given fixed input name, computed
     /// from the same facts/health `refresh` consumes.
     ///
@@ -390,7 +458,7 @@ mod tests {
                     .target
                     .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
             ),
-            BRAIN_TIME_IN_STATE_MS_INPUT => IrValue::Number(facts.time_in_state_ms),
+            BRAIN_TIME_IN_ACTIVITY_MS_INPUT => IrValue::Number(0.0),
             BRAIN_ATTACK_COOLDOWN_MS_INPUT => IrValue::Number(facts.attack_cooldown_ms),
             BRAIN_ACQUISITION_DUE_INPUT => IrValue::Bool(facts.acquisition_due),
             BRAIN_HEALTH_INPUT => IrValue::Number(health.current),
@@ -401,6 +469,9 @@ mod tests {
             BRAIN_DISTANCE_FROM_ANCHOR_INPUT => IrValue::Number(facts.distance_from_anchor),
             BRAIN_TARGET_HOSTILE_INPUT => IrValue::Bool(facts.target_hostile),
             BRAIN_TARGET_REACHABLE_INPUT => IrValue::Bool(facts.target_reachable),
+            BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT => {
+                IrValue::Number(facts.attacks_fired_in_activity as f32)
+            }
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

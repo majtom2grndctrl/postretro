@@ -110,8 +110,11 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "HealthDescriptor" => "HealthDescriptor".to_string(),
         "HitboxDescriptor" => "HitboxDescriptor".to_string(),
         "BehaviorGraphDescriptor" => "BehaviorGraphDescriptor".to_string(),
-        "BehaviorStateDescriptor" => "BehaviorStateDescriptor".to_string(),
-        "TransitionDescriptor" => "TransitionDescriptor".to_string(),
+        "BehaviorGraphEnvelope" => "BehaviorGraphEnvelope".to_string(),
+        "BehaviorActivityDescriptor" => "BehaviorActivityDescriptor".to_string(),
+        "BehaviorLayerDescriptor" => "BehaviorLayerDescriptor".to_string(),
+        "BehaviorSelectorRow" => "BehaviorSelectorRow".to_string(),
+        "GuardedRow" => "GuardedRow".to_string(),
         "AttackParams" => "AttackParams".to_string(),
         // SDK-only structural spelling of the runtime `[f32; 2]` patrol point.
         // Keep it nominal here so unrelated fixed arrays retain their existing
@@ -121,7 +124,12 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "PatrolMode" => "PatrolMode".to_string(),
         "MotionVerb" => "MotionVerb".to_string(),
         "ActionVerb" => "ActionVerb".to_string(),
-        "BehaviorStates" => "{ readonly [state: string]: BehaviorStateDescriptor }".to_string(),
+        "BehaviorActivities" => {
+            "{ readonly [activity: string]: BehaviorActivityDescriptor }".to_string()
+        }
+        "BehaviorTransitions" => {
+            "{ readonly [source: string]: ReadonlyArray<GuardedRow> }".to_string()
+        }
         "BehaviorAttacks" => "{ readonly [attack: string]: AttackParams }".to_string(),
         // A transition guard is an authored IR tree. The Rust field is the raw
         // `IrNode` (descriptor-partition rule); the author surface for that same
@@ -271,15 +279,19 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "HealthDescriptor" => "HealthDescriptor".to_string(),
         "HitboxDescriptor" => "HitboxDescriptor".to_string(),
         "BehaviorGraphDescriptor" => "BehaviorGraphDescriptor".to_string(),
-        "BehaviorStateDescriptor" => "BehaviorStateDescriptor".to_string(),
-        "TransitionDescriptor" => "TransitionDescriptor".to_string(),
+        "BehaviorGraphEnvelope" => "BehaviorGraphEnvelope".to_string(),
+        "BehaviorActivityDescriptor" => "BehaviorActivityDescriptor".to_string(),
+        "BehaviorLayerDescriptor" => "BehaviorLayerDescriptor".to_string(),
+        "BehaviorSelectorRow" => "BehaviorSelectorRow".to_string(),
+        "GuardedRow" => "GuardedRow".to_string(),
         "AttackParams" => "AttackParams".to_string(),
         "PatrolPoint" => "{number, number}".to_string(),
         "PatrolDescriptor" => "PatrolDescriptor".to_string(),
         "PatrolMode" => "PatrolMode".to_string(),
         "MotionVerb" => "MotionVerb".to_string(),
         "ActionVerb" => "ActionVerb".to_string(),
-        "BehaviorStates" => "{ [string]: BehaviorStateDescriptor }".to_string(),
+        "BehaviorActivities" => "{ [string]: BehaviorActivityDescriptor }".to_string(),
+        "BehaviorTransitions" => "{ [string]: {GuardedRow} }".to_string(),
         "BehaviorAttacks" => "{ [string]: AttackParams }".to_string(),
         // See the TS mapping: a guard's Rust type is the raw `IrNode`, whose
         // author surface is `RuntimeValue`.

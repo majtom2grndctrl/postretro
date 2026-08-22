@@ -202,7 +202,7 @@ fn bind_envelope(
                             BehaviorSelectorEntry::Row(row) => row
                                 .when
                                 .as_ref()
-                                .map_or(None, |when| bind_guard(scope, when, warned)),
+                                .and_then(|when| bind_guard(scope, when, warned)),
                             BehaviorSelectorEntry::Motion(_) => None,
                         })
                         .collect(),

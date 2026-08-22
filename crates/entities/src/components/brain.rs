@@ -78,11 +78,11 @@ pub struct BrainComponent {
     /// position or nav graph.
     #[serde(skip)]
     pub target_reachable: bool,
-    /// Currently acquired player pawn. Set only while the current state engages
-    /// that pawn (chasing it or acting against it), so near-equidistant co-op
-    /// players do not cause per-think target churn. Position-goal states cannot
-    /// declare actions and deliberately never retain a target. Cleared when
-    /// aggro drops.
+    /// Currently acquired player pawn. Set only while the active activity path
+    /// engages that pawn (chasing it or acting against it), so near-equidistant
+    /// co-op players do not cause per-think target churn. Position-goal
+    /// activities cannot declare actions and deliberately never retain a
+    /// target. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
     /// Last accepted combat-position slot around the acquired target. Retained

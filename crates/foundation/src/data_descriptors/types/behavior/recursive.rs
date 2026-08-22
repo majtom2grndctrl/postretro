@@ -177,8 +177,12 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
     }
 }
 
-/// Reject duplicate activity keys in raw JSON instead of silently accepting a
-/// final writer. The JS and Luau object bridges already collapse duplicates.
+/// Reject duplicate activity keys instead of silently accepting a final
+/// writer.
+///
+/// Both script runtimes collapse duplicate object/table keys before the
+/// descriptor bridge sees them, so this fires on the raw-JSON boundary. The
+/// same visitor applies to the root and every nested graph envelope.
 fn deserialize_activities<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, BehaviorActivityDescriptor>, D::Error>
@@ -695,6 +699,65 @@ mod tests {
             graph.envelope.activities["engage"].layers["offense"],
             BehaviorLayerDescriptor::Graph(_)
         ));
+    }
+
+    #[test]
+    fn duplicate_activity_keys_in_raw_json_are_rejected_at_every_envelope() {
+        // JS objects and Luau tables collapse duplicate keys before their
+        // bridges run. Raw JSON is the boundary where last-writer-wins would
+        // otherwise remain silent.
+        let root = r#"{
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "activities": {
+                "idle": { "animation": "idle" },
+                "idle": { "animation": "walk" }
+            },
+            "transitions": {}
+        }"#;
+        let error = serde_json::from_str::<BehaviorGraphDescriptor>(root).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate activity name `idle`"),
+            "{error}"
+        );
+
+        let nested_envelope = r#"{
+            "initial": "windup",
+            "activities": {
+                "windup": { "animation": "windup" },
+                "windup": { "animation": "recover" }
+            },
+            "transitions": {}
+        }"#;
+        let error = serde_json::from_str::<BehaviorGraphEnvelope>(nested_envelope).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate activity name `windup`"),
+            "{error}"
+        );
+
+        let nested_graph = r#"{
+            "initial": "engage",
+            "moveSpeed": 3.0,
+            "activities": {
+                "engage": { "layers": {
+                    "offense": {
+                        "initial": "windup",
+                        "activities": {
+                            "windup": { "animation": "windup" },
+                            "windup": { "animation": "recover" }
+                        },
+                        "transitions": {}
+                    }
+                } }
+            },
+            "transitions": {}
+        }"#;
+        assert!(
+            serde_json::from_str::<BehaviorGraphDescriptor>(nested_graph).is_err(),
+            "a duplicate inside a nested graph layer must reject the whole descriptor"
+        );
     }
 
     #[test]

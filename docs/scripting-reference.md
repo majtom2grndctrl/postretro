@@ -539,18 +539,30 @@ tick time. Each row below rejects the descriptor with a descriptive
 ## components.behavior
 
 Attach a `behavior` block to an entity descriptor to give it an enemy brain. The
-block is a **behavior state graph**: you declare named states, what each one does
-while it is current, and the ordered guards that move between them. The engine
-owns the **offer set** for target selection, steering, combat spacing, damage,
-animation switching, and determinism; the graph owns which states exist and when
-the brain changes state. **Currently, the offer set is player pawns.** A future
-engine-owned perception predicate will narrow that set to candidates an enemy
-can perceive. The engine makes no aliveness judgement while choosing among the
-current offer set: an unfiltered graph can select a dead pawn, though the attack
-gate still will not hit one. Fresh acquisition also offers only pawns whose
-faction is hostile to the evaluating enemy. A graph's optional `candidateFilter`
-decides which offered candidates are worth engaging; it can only narrow the
-offer set and never ranks candidates or drops a target already retained.
+block is a **hierarchical behavior statechart**. Every graph uses one envelope:
+`{ initial, activities, transitions }`. The root adds graph-wide policy
+(`moveSpeed`, `attacks`, `candidateFilter`, `patrol`, and `engagementRadius`);
+a nested graph layer uses the envelope alone. The engine owns target selection,
+steering, combat spacing, damage, animation switching, and determinism. The
+graph owns its activities and guarded routes.
+
+`activities` is a name → activity map. A leaf supplies an animation and may use
+`motion` or `action` sugar. A composite supplies `layers`, which run alongside
+each other. Layers are selector lists (first matching row each tick) or a nested
+graph. A composite may contain **at most one nested-graph layer**; selectors are
+otherwise unlimited. This produces one stateful active path, rather than
+unsupported parallel state machines.
+
+`transitions` is a source-keyed adjacency map. Each source key names an activity
+at that graph level and its ordered rows select sibling destinations. The `"*"`
+key is the graph-level scope: at the root it applies while the brain is active;
+inside a nested graph it applies while its composite is active. Its rows target
+activities in that same graph. The retired `states`, inline per-state
+`transitions`, and top-level `interrupts` forms are invalid.
+
+**Currently, the offer set is player pawns.** Fresh acquisition offers only
+hostile pawns. `candidateFilter` can narrow that offer set but never ranks it or
+drops an already retained target.
 
 Guards are [runtime values](#runtime-values) — the same `runtime.*` builders as
 dash fields, bound against a brain-fact namespace instead of the movement one.
@@ -559,7 +571,7 @@ is re-evaluated every tick.
 
 Every engagement policy is explicit in the graph. A distance clause in
 `candidateFilter` bounds **fresh acquisition** only; it is never evaluated
-against a retained target. Ordered transitions and interrupts own retained-target
+against a retained target. Ordered transition rows own retained-target
 stand-down, commonly through `brain.targetDistance`. The engine supplies no
 default acquisition or disengagement range.
 
@@ -593,36 +605,39 @@ defineEntity({
         false,
         runtime.le(candidate.distance, 50),
       ),
-      // Lost the target? Stand down this tick, before any range guard runs.
-      interrupts: [
-        { to: "idle", when: brain.hasTarget.not() },
-        // The death latch is unambiguous; `le(targetHealth, 0)` is not.
-        { to: "idle", when: brain.targetDied },
-      ],
-      states: {
-        idle: {
-          animation: "idle",
-          motion: "hold",
-          transitions: [
-            { to: "chase", when: runtime.le(brain.targetDistance, 16) },
-          ],
-        },
-        chase: {
+      activities: {
+        idle: { animation: "idle", motion: "hold" },
+        engage: {
           animation: "walk",
-          motion: "chaseTarget",
-          transitions: [
-            { to: "swing", when: runtime.le(brain.targetDistance, 2) },
-            { to: "idle", when: runtime.gt(brain.targetDistance, 50) },
-          ],
+          layers: {
+            move: [
+              { when: brain.targetDistance.le(2), motion: "hold" },
+              "chaseTarget", // Required fallback.
+            ],
+            offense: {
+              initial: "windup",
+              activities: {
+                windup: { animation: "swing" },
+                commit: { animation: "swing", action: { attack: "swing" } },
+                recover: { animation: "swing" },
+              },
+              transitions: {
+                windup: [{ to: "commit", when: brain.timeInActivityMs.ge(250) }],
+                commit: [{ to: "recover", when: brain.timeInActivityMs.ge(150) }],
+                recover: [{ to: "windup", when: brain.timeInActivityMs.ge(500) }],
+              },
+            },
+          },
         },
-        swing: {
-          animation: "swing",
-          motion: "chaseTarget",
-          action: { attack: "swing" },
-          transitions: [
-            { to: "chase", when: runtime.gt(brain.targetDistance, 2) },
-          ],
-        },
+      },
+      transitions: {
+        // Root-scope rows preempt nested offense rows.
+        "*": [
+          { to: "idle", when: brain.hasTarget.not() },
+          { to: "idle", when: brain.targetDied },
+        ],
+        idle: [{ to: "engage", when: brain.targetDistance.le(16) }],
+        engage: [{ to: "idle", when: brain.targetDistance.gt(50) }],
       },
     },
   },
@@ -633,52 +648,36 @@ defineEntity({
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `initial` | `string` | The state entered at spawn. Must name a declared state. It is also the state the engine forces when the **aggro gate** closes, and the graph's **rest pose** (see *Animation* below) — so author it rest-appropriate. |
-| `states` | `{ [name]: BehaviorState }` | The declared states, keyed by a name you choose. Must declare at least one. Duplicate names are rejected. |
-| `interrupts` | `Transition[]` (optional) | Any-state edges, evaluated in declaration order **before** the current state's own transitions. Defaults to none. |
+| `initial` | `string` | Activity entered at spawn and when the aggro gate closes. Must name root `activities`. |
+| `activities` | `{ [name]: Activity }` | Non-empty named activities. Duplicate names are rejected. |
+| `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
-| `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. `points` is a non-empty list of `[x, z]` metre offsets from the spawn anchor; `mode` is `"loop"` or `"pingPong"`. Required whenever a state uses `"patrol"`. The per-enemy cursor persists when the graph leaves and re-enters patrol. |
-| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius? } }` (optional) | Named attack vocabulary. A state with `action: { attack: "name" }` must name an entry here; unreferenced entries are allowed. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `maxRange` and `cooldownMs` must be finite and `> 0`. An entry's optional `engagementRadius` must be finite, `> 0`, and no greater than its `maxRange`. |
-| `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack states. Finite and `> 0`. An attack state uses its named entry's `engagementRadius`, or that entry's `maxRange` when omitted. See *`maxRange` vs `engagementRadius`* below. |
+| `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
+| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius? } }` (optional) | Named attack vocabulary. An activity action must name an entry here. |
+| `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
-Each entry in `states`:
+An activity is either a leaf or a composite:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `animation` | `string` | Non-empty. Names a key of `components.mesh.animations`. That link is checked at **spawn**, not at load (it is cross-component): an unknown name warns once and keeps the previous animation — it never aborts the spawn. |
-| `motion` | `"chaseTarget" \| "moveToAnchor" \| "patrol" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
-| `action` | `{ attack: string }` (optional) | What the state does besides moving. The name must select an entry in graph-wide `attacks`. Omit for a state that takes no action. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are always non-engaged. |
-| `transitions` | `Transition[]` (optional) | State-local edges, evaluated in declaration order after the graph's interrupts. Omit for a state with no exits. |
-| `onEnter` | `string` (optional) | A named-event address fired through the post-tick event drain when the brain **changes into** this state. It is a *change*, not an entry: the brain is seeded directly in `initial` at spawn with no transition, so an `onEnter` on `initial` does **not** fire then. It does fire when the aggro gate forces the brain back to `initial` from somewhere else. Use it for reaction cues, not spawn-time setup. |
+| `animation` | `string` | Required on a leaf; optional locomotion animation on a composite. Names `components.mesh.animations`. |
+| `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
+| `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires on entry. |
+| `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
+| `onEnter` | `string` (optional) | Named event fired when an activity is entered by a transition. |
 
-A `Transition` is `{ to: string, when: RuntimeValue }` — the destination state
-name and the guard that selects it.
+A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
+activity in its own envelope. Unknown sources or destinations, cross-boundary
+targets, empty activities, retired flat fields, a missing move fallback, and a
+composite with two nested graph layers are load errors.
 
-**What validation rejects at load.** Every message names the authored path
-(`states.chase.transitions[1]`, `interrupts[0]`), so you get the state and the
-index:
+### Layers, verbs, and animation
 
-| Situation | Result |
-|-----------|--------|
-| `states` is empty, or `initial` names no declared state | Rejected. |
-| A `transitions[].to` or `interrupts[].to` names no declared state | Rejected, with the path. |
-| A state's `animation` is an empty string | Rejected. |
-| A **state-local** transition whose `to` is the state that declares it | Rejected — see *Evaluation rules*. |
-| A state declares `action: { attack: "name" }` with no `attacks` entry named `name` | Rejected. |
-| A `moveToAnchor` or `patrol` state declares any `action` | Rejected, with the state's `action` and `motion` paths. Position goals are non-engaged. |
-| A state selects `motion: "patrol"` without a `patrol` block, with no points, or with a non-finite point component | Rejected, with the `patrol` path. |
-| `moveSpeed`, graph `engagementRadius`, or an attack entry's `maxRange`, `cooldownMs`, or present `engagementRadius` is not finite and `> 0`; an entry's `engagementRadius` exceeds `maxRange`; or `damage` is not finite and `>= 0` | Rejected. |
-| A guard that names an unknown input, mismatches operand types, or whose root produces a number rather than a boolean | Rejected, with the path. |
-| An unknown key anywhere in the block, or a duplicate state name | Rejected. |
-
-An `interrupts[].to` that names its **own** current state is *not* rejected: the
-evaluator skips a self-targeting interrupt at tick time, so it blocks nothing.
-
-### Verbs
-
-Motion verbs are a closed vocabulary — the engine owns steering, you pick which
-of its modes a state selects.
+Motion verbs are a closed vocabulary. A selector `move` layer evaluates rows in
+order each tick; the first true row wins. Its last entry must be a bare motion
+verb, so steering is always defined. A selector `offense` layer similarly picks
+an action or no action. A nested offense graph has its own active activity path.
 
 | `motion` | At runtime |
 |----------|-----------|
@@ -704,73 +703,41 @@ leaves a position-goal state on arrival, its distance threshold must be **at
 least** that engine epsilon. A smaller threshold wedges: steering has already
 cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
 
-Action verbs are likewise closed; `{ attack: "name" }` is the only one today.
-It applies the named entry's `damage` to the selected target through the engine's
-damage chokepoint — once per that entry's `cooldownMs`, only while the target is
-inside its `maxRange`, and only while it is still alive. A graph with no
-`attacks` entries never attacks.
+`{ attack: "name" }` is the only action today. It fires **once on entry** into
+the activity that names it, provided that attack's cooldown is ready and the
+target is in range. Holding `commit` does not repeatedly fire it. A later entry
+can fire again only after cooldown permits it. A graph with no `attacks` entries
+never attacks.
 
-**Engagement** — the engine's "this brain is fighting" test — is
-`motion: "chaseTarget"` **or** any action on a non-position-goal state. Target
-retention across ticks, combat-slot participation and incumbency, and target
-facing all key on it. A `hold` + named attack state stands its ground and swings,
-so it keeps its target, keeps its slot, and turns to face what it is hitting.
+**Engagement** — the engine's "this brain is fighting" test — is a selected
+`"chaseTarget"` motion or any active action. Target retention, combat-slot
+participation, and target facing key on it. A `hold` + action activity stands its
+ground and swings while keeping its target and slot.
 
-**Animation.** A state plays its own `animation` name, with one substitution: an
-*locomotion* state (actionless `chaseTarget`, or the always-actionless
-`moveToAnchor` / `patrol`) plays the graph's rest animation — the `initial` state's —
-while it is standing still, because its own animation is a travel cycle that
-would slide in place. Every other state, including a `chaseTarget` state that
-declares an action, always plays its own.
-
-Set `components.mesh.defaultState` to the `initial` state's animation. A
-mismatch warns at spawn and immediately reseeds the mesh to the graph's rest
-pose. When the active untargeted state is locomotion, use a distinct `idle`
-initial state that hands off to it; this preserves a travel cycle while moving
-and a real rest pose while stopped.
-
-**v1 limitation — two or more locomotion states.** `states` is authored as an
-object, but the engine resolves it as a `BTreeMap`: states are ordered
-lexicographically by name, not by authoring order. A graph's *travel* animation
-— the walk-playback rate scaling uses — is derived from the **first** locomotion
-state in that lexicographic order. Author `patrol` (plays `"walk"`) and `pursue`
-(plays `"run"`), and travel animation always resolves to `patrol`'s `"walk"` —
-even while the brain is actually in `pursue` — because `"patrol" < "pursue"`.
-Rate scaling then scales the wrong clip, and renaming either state can silently
-flip which one wins. The shipped reference enemy uses the same `"walk"` clip
-for patrol, alert, and retreat, so it is unaffected; use one travel clip per
-graph until distinct locomotion clips are needed.
+**Animation.** The host resolves exactly one mesh animation state each tick. An
+active offense leaf that supplies `animation` wins; otherwise the active
+composite's optional locomotion `animation` wins. This sole `current_state`
+replicates; layers do not blend clips. Set `components.mesh.defaultState` to a
+suitable root initial animation.
 
 ### Evaluation rules
 
 These are the rules you cannot author a graph without.
 
-1. **Interrupts first, then the current state's transitions.** Both in
-   declaration order. The first guard that evaluates true wins, and nothing after
-   it is consulted. A high-priority reaction belongs in `interrupts`; ordering
-   within a state's own list is your priority ladder.
-2. **A self-targeting interrupt is skipped.** Interrupts fire as real state
-   changes, never as self re-entry, so an interrupt back into the state you are
-   already in simply does not apply that tick and evaluation continues.
-3. **A self-targeting state-local transition is a load error.** It reads like a
-   no-op but it is a silent transition *blocker*: selection is first-true-wins, so
-   the moment its guard holds it short-circuits the search and every transition
-   declared after it in that state stops being evaluated — at every distance,
-   forever. And it does not re-enter: no `onEnter`, no `timeInStateMs` reset, no
-   state change at all. Rather than let you discover this as a state your enemy
-   can never leave, validation rejects it.
-4. **Guards are evaluated every tick.** Nothing a state is doing blocks them —
-   not a one-shot attack clip, not an armed attack cooldown, not a just-entered
-   state. There is no engine "commit to this state for N ms". A commitment window
-   is an authored guard: keep the state's exits gated on
-   `runtime.ge(brain.timeInStateMs, 400)` and the exit fires on the first tick the
-   window elapses, never before.
-5. **The aggro gate is the only thing that skips evaluation.** When an enemy's
-   aggro is disarmed, the engine forces it to `initial` and clears its steering
-   without consulting a single guard. Re-arming resumes normal evaluation.
-   Everything else — including having no target at all — still runs the full
-   guard set every tick, which is how a sealed-in enemy can still flinch on an
-   interrupt.
+1. **Outer scope first.** At every active level, `"*"` rows precede the active
+   child's source-keyed rows. The first true row wins; an outer route can preempt
+   a committed nested phase.
+2. **Entry seats a full initial descent.** Entering a composite immediately
+   enters every nested graph at `initial`; no tick observes an unseated nested
+   graph. An entered activity's own rows begin on the following tick, so even a
+   zero-ms phase is visible for at least one tick.
+3. **Restart on entry.** Re-entering a composite restarts nested graphs at their
+   initials. Descendant timers and attack-fire counters reset before entry fire.
+4. **Guards run every eligible tick.** A commitment window is authored with
+   `brain.timeInActivityMs.ge(400)`. The timer belongs to the activity whose rows
+   are being evaluated, and the exit fires on the first eligible tick.
+5. **The aggro gate skips evaluation.** When disarmed, it forces root `initial`
+   and clears steering. Re-arming resumes ordinary evaluation.
 
 ### `@brain.*` guard inputs
 
@@ -785,8 +752,8 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 |------------------|-------------|------|---------|
 | `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
-| `brain.timeInStateMs` | `@brain.timeInStateMs` | `number` | Milliseconds since the brain entered its current state. Resets on every state change. |
-| `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the **current state's** named attack cooldown; `0` for a non-attack state or once that entry has elapsed. Each named cooldown advances every tick, including while another attack is current or the aggro gate is closed. |
+| `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. |
+| `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |
 | `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
 | `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
 | `brain.maxHealth` | `@brain.maxHealth` | `number` | The enemy's maximum hit points. |
@@ -796,6 +763,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.distanceFromAnchor` | `@brain.distanceFromAnchor` | `number` | XZ distance in metres from this brain's spawn-time home anchor. Always meaningful, including with no selected target. Use it for an authored leash or retreat; it is not an engine leash field. |
 | `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
 | `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
+| `brain.attacksFiredInActivity` | `@brain.attacksFiredInActivity` | `number` | Successful action fires since the activity whose rows are being evaluated was entered. Scope-relative. A fire becomes visible to guards on the next tick. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -814,14 +782,16 @@ Reading any other name is a load error.
 Fresh target acquisition filters player pawns by hostility; the nearest hostile
 offer determines its think-stride cadence, so a nearby friendly cannot make a
 farther hostile scan more often. It never re-checks a target already retained.
-Retention is graph policy: put an ordered any-state stand-down over
-`brain.targetHostile` beside the ordinary lost-target interrupt:
+Retention is graph policy: put ordered root-scope `"*"` rows over
+`brain.targetHostile` beside the ordinary lost-target route:
 
 ```typescript
-interrupts: [
-  { to: "patrol", when: brain.hasTarget.not() },
-  { to: "patrol", when: brain.targetHostile.not() },
-],
+transitions: {
+  "*": [
+    { to: "patrol", when: brain.hasTarget.not() },
+    { to: "patrol", when: brain.targetHostile.not() },
+  ],
+},
 ```
 
 The order and shared destination are load-bearing. The second expression is true
@@ -860,14 +830,17 @@ backwards through those states one per tick when its target despawns, playing a
 travel animation with nothing to travel toward. This is not hypothetical: the
 shipped reference enemy did exactly that until it was fixed.
 
-The correct pattern is an **any-state interrupt gated on `hasTarget`**, declared
-first so it outranks every range edge and the enemy stands down in one tick:
+The correct pattern is a root-scope **`"*"` route gated on `hasTarget`**,
+declared first so it outranks every range edge and the enemy stands down in one
+tick:
 
 ```typescript
-interrupts: [
-  // "No target" — use the fluent IR negation rather than native `!`.
-  { to: "idle", when: brain.hasTarget.not() },
-],
+transitions: {
+  "*": [
+    // "No target" — use fluent IR negation rather than native `!`.
+    { to: "idle", when: brain.hasTarget.not() },
+  ],
+},
 ```
 
 Keep your `gt`/`ge` range edges as they are; the interrupt is what makes them
@@ -1035,69 +1008,49 @@ defineEntity({
         slam: { damage: 14, maxRange: REACH, cooldownMs: 1400 },
       },
       engagementRadius: REACH,
-      interrupts: [
-        // Stand down the instant the target is gone — declared first so it
-        // outranks every range edge below.
-        { to: "idle", when: brain.hasTarget.not() },
-        // Flinch when an impact policy sets `staggered`.
-        { to: "flinch", when: runtime.ge(state("staggered"), 1) },
-      ],
-      states: {
-        idle: {
-          animation: "idle",
-          motion: "hold",
-          transitions: [
-            // Detection is strided, so conjoin `acquisitionDue`.
-            {
-              to: "chase",
-              when: runtime.select(
-                brain.acquisitionDue,
-                runtime.le(brain.targetDistance, DETECTION),
-                false,
-              ),
-            },
-          ],
-        },
-        chase: {
+      activities: {
+        idle: { animation: "idle", motion: "hold" },
+        engage: {
           animation: "walk",
-          motion: "chaseTarget",
-          transitions: [
-            { to: "slam", when: runtime.le(brain.targetDistance, REACH) },
-            { to: "idle", when: runtime.gt(brain.targetDistance, LEASH) },
-          ],
+          layers: {
+            move: [
+              { when: brain.targetDistance.le(REACH), motion: "hold" },
+              "chaseTarget",
+            ],
+            offense: {
+              initial: "windup",
+              activities: {
+                windup: { animation: "swing" },
+                commit: { animation: "swing", action: { attack: "slam" } },
+                recover: { animation: "swing" },
+              },
+              transitions: {
+                windup: [{ to: "commit", when: brain.timeInActivityMs.ge(250) }],
+                commit: [{ to: "recover", when: brain.timeInActivityMs.ge(150) }],
+                recover: [{ to: "windup", when: brain.timeInActivityMs.ge(400) }],
+              },
+            },
+          },
         },
-        slam: {
-          animation: "swing",
-          motion: "chaseTarget",
-          action: { attack: "slam" },
-          transitions: [
-            { to: "chase", when: runtime.gt(brain.targetDistance, REACH) },
-          ],
-        },
-        flinch: {
-          animation: "pain",
-          motion: "hold",
-          onEnter: "bruteFlinched",
-          // A 400 ms commitment window: the only exit is time, so nothing
-          // pulls the brute out of the flinch early. Guards still run every
-          // tick — this guard is simply false until the window elapses.
-          transitions: [
-            { to: "chase", when: runtime.ge(brain.timeInStateMs, 400) },
-          ],
-        },
+        flinch: { animation: "pain", motion: "hold", onEnter: "bruteFlinched" },
+      },
+      transitions: {
+        "*": [
+          { to: "idle", when: brain.hasTarget.not() },
+          { to: "flinch", when: state("staggered").ge(1) },
+        ],
+        idle: [{ to: "engage", when: brain.acquisitionDue.and(brain.targetDistance.le(DETECTION)) }],
+        engage: [{ to: "idle", when: brain.targetDistance.gt(LEASH) }],
+        flinch: [{ to: "engage", when: brain.timeInActivityMs.ge(400) }],
       },
     },
   },
 });
 ```
 
-This example never resets `staggered` back to `0`. `state("...")` fields latch —
-nothing clears them automatically — so as written the interrupt guard
-(`runtime.ge(state("staggered"), 1)`) stays true forever once an impact policy
-sets it, and the brute re-enters `flinch` on every tick it is allowed to leave.
-A real graph needs something that zeroes `staggered` after the flinch has been
-consumed — an impact policy write on the next hit, or another authored
-mechanism — or the "stagger" becomes a permanent flinch loop.
+`state("...")` fields latch — nothing clears them automatically. A real
+stagger policy must clear `staggered` after the flinch is consumed, or route the
+outer `"*"` row so it cannot repeatedly select `flinch`.
 
 `onEnter: "bruteFlinched"` is received the same way any named event is:
 `defineReaction("bruteFlinched", { ... })` subscribes to it (see the

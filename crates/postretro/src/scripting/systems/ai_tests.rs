@@ -63,30 +63,30 @@ const TEST_ALERT_STATE: &str = "alert";
 const TEST_ATTACK_STATE: &str = "attack";
 const TEST_DEATH_STATE: &str = "death";
 
-/// Test-only construction sugar that immediately lowers the historic compact
-/// fixture notation into the production recursive descriptor. The evaluator
-/// only ever receives `BehaviorGraphDescriptor`'s envelope representation.
+/// Test construction sugar that mirrors the production recursive envelope.
 macro_rules! test_behavior_graph {
     ({
         initial: $initial:expr,
-        states: $states:expr,
-        interrupts: $interrupts:expr,
+        activities: $activities:expr,
+        transitions: $transitions:expr,
         candidate_filter: $candidate_filter:expr,
         patrol: $patrol:expr,
         attacks: $attacks:expr,
         engagement_radius: $engagement_radius:expr,
         move_speed: $move_speed:expr $(,)?
     }) => {
-        test_graph_from_flat(
-            $initial,
-            $states,
-            $interrupts,
-            $candidate_filter,
-            $patrol,
-            $attacks,
-            $engagement_radius,
-            $move_speed,
-        )
+        BehaviorGraphDescriptor {
+            envelope: BehaviorGraphEnvelope {
+                initial: $initial,
+                activities: $activities,
+                transitions: $transitions,
+            },
+            candidate_filter: $candidate_filter,
+            patrol: $patrol,
+            attacks: $attacks,
+            engagement_radius: $engagement_radius,
+            move_speed: $move_speed,
+        }
     };
 }
 
@@ -95,30 +95,20 @@ fn yaw_distance(from: f32, to: f32) -> f32 {
         .abs()
 }
 
-/// Direct graph used by the general engine-behavior fixtures. It spells the
+/// Root graph used by the general engine-behavior fixtures. It spells the
 /// test policy in the same authoring vocabulary shipped content uses: a
-/// candidate filter bounds fresh acquisition, and ordered interrupts own all
+/// candidate filter bounds fresh acquisition, and ordered wildcard rows own
 /// stand-down behavior.
 fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: TEST_IDLE_STATE.to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 TEST_IDLE_STATE.to_string(),
                 authored_state(
                     "idle",
                     MotionVerb::Hold,
                     None,
-                    vec![
-                        edge(
-                            TEST_ATTACK_STATE,
-                            when_acquisition_due(target_within(TEST_ATTACK_RANGE)),
-                        ),
-                        edge(
-                            TEST_ALERT_STATE,
-                            when_acquisition_due(target_within(detection_range)),
-                        ),
-                    ],
                 ),
             ),
             (
@@ -127,7 +117,6 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![edge(TEST_ATTACK_STATE, target_within(TEST_ATTACK_RANGE))],
                 ),
             ),
             (
@@ -136,19 +125,44 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                     "attack",
                     MotionVerb::ChaseTarget,
                     Some(ActionVerb::Attack("attack".to_string())),
-                    vec![edge(TEST_ALERT_STATE, target_beyond(TEST_ATTACK_RANGE))],
                 ),
             ),
             (
                 TEST_DEATH_STATE.to_string(),
-                authored_state("death", MotionVerb::Freeze, None, Vec::new()),
+                authored_state("death", MotionVerb::Freeze, None),
             ),
         ]),
-        interrupts: vec![
-            edge(TEST_IDLE_STATE, target_lost()),
-            edge(TEST_IDLE_STATE, brain_input(BRAIN_TARGET_DIED_INPUT)),
-            edge(TEST_IDLE_STATE, target_beyond(aggro_range)),
-        ],
+        transitions: BTreeMap::from([
+            (
+                TEST_IDLE_STATE.to_string(),
+                vec![
+                    edge(
+                        TEST_ATTACK_STATE,
+                        when_acquisition_due(target_within(TEST_ATTACK_RANGE)),
+                    ),
+                    edge(
+                        TEST_ALERT_STATE,
+                        when_acquisition_due(target_within(detection_range)),
+                    ),
+                ],
+            ),
+            (
+                TEST_ALERT_STATE.to_string(),
+                vec![edge(TEST_ATTACK_STATE, target_within(TEST_ATTACK_RANGE))],
+            ),
+            (
+                TEST_ATTACK_STATE.to_string(),
+                vec![edge(TEST_ALERT_STATE, target_beyond(TEST_ATTACK_RANGE))],
+            ),
+            (
+                "*".to_string(),
+                vec![
+                    edge(TEST_IDLE_STATE, target_lost()),
+                    edge(TEST_IDLE_STATE, brain_input(BRAIN_TARGET_DIED_INPUT)),
+                    edge(TEST_IDLE_STATE, target_beyond(aggro_range)),
+                ],
+            ),
+        ]),
         candidate_filter: Some(candidate_is_alive_within(aggro_range)),
         patrol: None,
         attacks: BTreeMap::from([(
@@ -169,7 +183,7 @@ fn tuning() -> BehaviorGraphDescriptor {
     test_graph_with(TEST_DETECTION_RANGE, TEST_AGGRO_RANGE)
 }
 
-/// Seed a direct graph in a named state instead of its initial state.
+/// Seed a graph in a named root activity instead of its initial activity.
 fn brain_with(graph: BehaviorGraphDescriptor, state: &str) -> BrainComponent {
     let mut brain = BrainComponent::from_graph(&graph);
     assert!(
@@ -338,7 +352,7 @@ fn player_hp(reg: &EntityRegistry, pawn: EntityId) -> f32 {
     reg.get_component::<HealthComponent>(pawn).unwrap().current
 }
 
-/// The enemy's current direct-graph state name.
+/// The enemy's current root activity name.
 fn enemy_state_name(reg: &EntityRegistry, enemy: EntityId) -> String {
     reg.get_component::<BrainComponent>(enemy)
         .unwrap()
@@ -467,10 +481,10 @@ fn set_enemy_animation(reg: &mut EntityRegistry, enemy: EntityId, state: &str) {
 // Direct-graph transition core
 // ---------------------------------------------------------------------------
 
-/// Resolve one hypothetical tick of the direct graph: the state a brain
+/// Resolve one hypothetical tick of the recursive graph: the activity a brain
 /// sitting in `current` selects at `distance` from its target, plus the
-/// steering intent that state carries. Staying put reports the current state,
-/// matching a same-state graph evaluation.
+/// steering intent that activity carries. Staying put reports the active
+/// activity, matching a same-activity graph evaluation.
 ///
 /// The registry exists only because [`BrainScope::refresh`] reads health and
 /// per-entity state through it; nothing here runs the tick.
@@ -525,22 +539,24 @@ fn step_graph(
 fn reachability_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "chase".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "chase".to_string(),
                 authored_state(
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![edge("hold", target_is_unreachable())],
                 ),
             ),
             (
                 "hold".to_string(),
-                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+                authored_state("idle", MotionVerb::Hold, None),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([(
+            "chase".to_string(),
+            vec![edge("hold", target_is_unreachable())],
+        )]),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::new(),
@@ -554,11 +570,11 @@ fn reachability_graph() -> BehaviorGraphDescriptor {
 fn reachability_cache_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "chase".to_string(),
-        states: BTreeMap::from([(
+        activities: BTreeMap::from([(
             "chase".to_string(),
-            authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+            authored_state("locomotion", MotionVerb::ChaseTarget, None),
         )]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::new(),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::new(),
@@ -1994,30 +2010,32 @@ fn attack_applies_configured_damage_once_per_entry_and_respects_cooldown() {
 fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire() {
     let graph = test_behavior_graph!({
         initial: "attack".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "attack".to_string(),
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
                     Some(ActionVerb::Attack("attack".to_string())),
-                    vec![edge(
-                        "rest",
-                        IrNode::Ge {
-                            a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(1.0),
-                            }),
-                        },
-                    )],
                 ),
             ),
             (
                 "rest".to_string(),
-                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+                authored_state("idle", MotionVerb::Hold, None),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([(
+            "attack".to_string(),
+            vec![edge(
+                "rest",
+                IrNode::Ge {
+                    a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(1.0),
+                    }),
+                },
+            )],
+        )]),
         candidate_filter: Some(candidate_is_alive_within(TEST_AGGRO_RANGE)),
         patrol: None,
         attacks: BTreeMap::from([(
@@ -4508,27 +4526,17 @@ fn candidate_is_alive_within(distance: f32) -> IrNode {
     }
 }
 
-#[derive(Clone)]
-struct FixtureActivity {
-    activity: BehaviorActivityDescriptor,
-    transitions: Vec<GuardedRow>,
-}
-
 fn authored_state(
     animation: &str,
     motion: MotionVerb,
     action: Option<ActionVerb>,
-    transitions: Vec<GuardedRow>,
-) -> FixtureActivity {
-    FixtureActivity {
-        activity: BehaviorActivityDescriptor {
-            animation: Some(animation.to_string()),
-            motion: Some(motion),
-            action,
-            on_enter: None,
-            layers: BTreeMap::new(),
-        },
-        transitions,
+) -> BehaviorActivityDescriptor {
+    BehaviorActivityDescriptor {
+        animation: Some(animation.to_string()),
+        motion: Some(motion),
+        action,
+        on_enter: None,
+        layers: BTreeMap::new(),
     }
 }
 
@@ -4536,41 +4544,6 @@ fn edge(to: &str, when: IrNode) -> GuardedRow {
     GuardedRow {
         to: to.to_string(),
         when,
-    }
-}
-
-fn test_graph_from_flat(
-    initial: String,
-    states: BTreeMap<String, FixtureActivity>,
-    interrupts: Vec<GuardedRow>,
-    candidate_filter: Option<IrNode>,
-    patrol: Option<PatrolDescriptor>,
-    attacks: BTreeMap<String, AttackParams>,
-    engagement_radius: Option<f32>,
-    move_speed: f32,
-) -> BehaviorGraphDescriptor {
-    let mut activities = BTreeMap::new();
-    let mut transitions = BTreeMap::new();
-    if !interrupts.is_empty() {
-        transitions.insert("*".to_string(), interrupts);
-    }
-    for (name, fixture) in states {
-        if !fixture.transitions.is_empty() {
-            transitions.insert(name.clone(), fixture.transitions);
-        }
-        activities.insert(name, fixture.activity);
-    }
-    BehaviorGraphDescriptor {
-        envelope: BehaviorGraphEnvelope {
-            initial,
-            activities,
-            transitions,
-        },
-        candidate_filter,
-        patrol,
-        attacks,
-        engagement_radius,
-        move_speed,
     }
 }
 
@@ -4582,19 +4555,17 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         "attack",
         MotionVerb::ChaseTarget,
         Some(ActionVerb::Attack("attack".to_string())),
-        vec![edge("charge", target_beyond(2.0))],
     );
-    strike.activity.on_enter = Some("gruntSwings".to_string());
+    strike.on_enter = Some("gruntSwings".to_string());
     test_behavior_graph!({
         initial: "rest".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "rest".to_string(),
                 authored_state(
                     "idle",
                     MotionVerb::Hold,
                     None,
-                    vec![edge("charge", target_within(16.0))],
                 ),
             ),
             (
@@ -4603,12 +4574,24 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![edge("strike", target_within(2.0))],
                 ),
             ),
             ("strike".to_string(), strike),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([
+            (
+                "rest".to_string(),
+                vec![edge("charge", target_within(16.0))],
+            ),
+            (
+                "charge".to_string(),
+                vec![edge("strike", target_within(2.0))],
+            ),
+            (
+                "strike".to_string(),
+                vec![edge("charge", target_beyond(2.0))],
+            ),
+        ]),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::from([(
@@ -4734,20 +4717,13 @@ fn death_interrupt_releases_a_latched_target_and_filter_reacquires_a_live_pawn()
 fn candidate_filter_does_not_reprice_retained_target_think_stride() {
     let graph = test_behavior_graph!({
         initial: "alpha".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "alpha".to_string(),
                 authored_state(
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![edge(
-                        "beta",
-                        IrNode::Input {
-                            name: BRAIN_ACQUISITION_DUE_INPUT.into(),
-                            owner: None,
-                        },
-                    )],
                 ),
             ),
             (
@@ -4756,17 +4732,31 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![edge(
-                        "alpha",
-                        IrNode::Input {
-                            name: BRAIN_ACQUISITION_DUE_INPUT.into(),
-                            owner: None,
-                        },
-                    )],
                 ),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([
+            (
+                "alpha".to_string(),
+                vec![edge(
+                    "beta",
+                    IrNode::Input {
+                        name: BRAIN_ACQUISITION_DUE_INPUT.into(),
+                        owner: None,
+                    },
+                )],
+            ),
+            (
+                "beta".to_string(),
+                vec![edge(
+                    "alpha",
+                    IrNode::Input {
+                        name: BRAIN_ACQUISITION_DUE_INPUT.into(),
+                        owner: None,
+                    },
+                )],
+            ),
+        ]),
         candidate_filter: Some(IrNode::Const {
             value: IrValue::Bool(false),
         }),
@@ -4851,29 +4841,31 @@ fn retained_target_prices_stride_off_stride_holds_and_due_tick_allows_hysteresis
 fn raw_nearest_offer_prices_stride_while_guards_read_the_farther_eligible_target() {
     let graph = test_behavior_graph!({
         initial: "rest".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "rest".to_string(),
                 authored_state(
                     "idle",
                     MotionVerb::Hold,
                     None,
-                    vec![
-                        edge("selected_far", target_beyond(30.0)),
-                        edge("selected_near", brain_input(BRAIN_HAS_TARGET_INPUT)),
-                    ],
                 ),
             ),
             (
                 "selected_far".to_string(),
-                authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+                authored_state("locomotion", MotionVerb::ChaseTarget, None),
             ),
             (
                 "selected_near".to_string(),
-                authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+                authored_state("locomotion", MotionVerb::ChaseTarget, None),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([(
+            "rest".to_string(),
+            vec![
+                edge("selected_far", target_beyond(30.0)),
+                edge("selected_near", brain_input(BRAIN_HAS_TARGET_INPUT)),
+            ],
+        )]),
         candidate_filter: Some(IrNode::Ge {
             a: Box::new(brain_input(CANDIDATE_DISTANCE_INPUT)),
             b: Box::new(IrNode::Const {
@@ -5007,23 +4999,26 @@ fn off_stride_idle_brain_does_not_acquire_a_candidate_rejected_by_its_filter() {
 fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
     let observer_graph = test_behavior_graph!({
         initial: "rest".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "rest".to_string(),
-                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+                authored_state("idle", MotionVerb::Hold, None),
             ),
             (
                 "watch".to_string(),
-                authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+                authored_state("locomotion", MotionVerb::ChaseTarget, None),
             ),
         ]),
-        interrupts: vec![edge(
-            "rest",
-            IrNode::Input {
-                name: BRAIN_TARGET_DIED_INPUT.into(),
-                owner: None,
-            },
-        )],
+        transitions: BTreeMap::from([(
+            "*".to_string(),
+            vec![edge(
+                "rest",
+                IrNode::Input {
+                    name: BRAIN_TARGET_DIED_INPUT.into(),
+                    owner: None,
+                },
+            )],
+        )]),
         candidate_filter: Some(IrNode::Select {
             cond: Box::new(IrNode::Input {
                 name: CANDIDATE_DIED_INPUT.into(),
@@ -5106,16 +5101,22 @@ fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
 
-    // `rest` declares one edge, so reaching contact takes two ticks.
+    // Regression: a newly seated initial activity is observable for its entry
+    // tick even when its first transition guard is already true.
     let first = run_ai_tick(&mut reg, &mut runtime, 0.016);
-    assert_eq!(enemy_state_name(&reg, enemy), "charge");
-    assert!(first.is_empty(), "`charge` announces nothing");
-    assert_eq!(enemy_animation(&reg, enemy), "idle", "stopped travel rests");
+    assert_eq!(enemy_state_name(&reg, enemy), "rest");
+    assert!(first.is_empty(), "the initial activity announces nothing");
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
 
     let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert!(second.is_empty(), "`charge` announces nothing");
+    assert_eq!(enemy_animation(&reg, enemy), "idle", "stopped travel rests");
+
+    let third = run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "strike");
     assert_eq!(
-        second,
+        third,
         vec![
             Cow::Owned("gruntSwings".to_string()),
             Cow::Borrowed(ENEMY_ATTACK_EVENT),
@@ -5130,10 +5131,10 @@ fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
     );
 
     // Entering is what raises `on_enter`: staying does not re-raise it.
-    let third = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    let fourth = run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "strike");
     assert!(
-        third.is_empty(),
+        fourth.is_empty(),
         "no re-entry, no event, no in-cooldown swing"
     );
 }
@@ -5187,35 +5188,34 @@ fn a_time_in_activity_guard_exits_on_the_first_tick_the_window_elapses() {
 
     let graph = test_behavior_graph!({
         initial: "rest".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "rest".to_string(),
-                authored_state(
-                    "idle",
-                    MotionVerb::Hold,
-                    None,
-                    vec![edge("commit", target_within(16.0))],
-                ),
+                authored_state("idle", MotionVerb::Hold, None),
             ),
             (
                 "commit".to_string(),
-                authored_state(
-                    "attack",
-                    MotionVerb::Freeze,
-                    None,
-                    vec![edge(
-                        "rest",
-                        IrNode::Ge {
-                            a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(WINDOW_MS),
-                            }),
-                        },
-                    )],
-                ),
+                authored_state("attack", MotionVerb::Freeze, None),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([
+            (
+                "rest".to_string(),
+                vec![edge("commit", target_within(16.0))],
+            ),
+            (
+                "commit".to_string(),
+                vec![edge(
+                    "rest",
+                    IrNode::Ge {
+                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(WINDOW_MS),
+                        }),
+                    },
+                )],
+            ),
+        ]),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::new(),
@@ -5227,6 +5227,13 @@ fn a_time_in_activity_guard_exits_on_the_first_tick_the_window_elapses() {
     let mut runtime = AiRuntime::new();
     spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, TICK_DT);
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "rest",
+        "the initial activity remains seated for its entry tick"
+    );
 
     run_ai_tick(&mut reg, &mut runtime, TICK_DT);
     assert_eq!(enemy_state_name(&reg, enemy), "commit");
@@ -5255,35 +5262,36 @@ fn a_time_in_activity_guard_exits_on_the_first_tick_the_window_elapses() {
     );
 }
 
-/// A graph whose `rest` state has a state-local edge that is true whenever the
-/// listed interrupts are, so precedence is observable in one tick.
-fn interrupt_graph(interrupts: Vec<GuardedRow>) -> BehaviorGraphDescriptor {
+/// A graph whose `rest` activity has a source-keyed edge that is true whenever
+/// the listed wildcard rows are, so precedence is observable in one tick.
+fn interrupt_graph(wildcard_rows: Vec<GuardedRow>) -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "rest".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "rest".to_string(),
-                authored_state(
-                    "idle",
-                    MotionVerb::Hold,
-                    None,
-                    vec![edge("charge", target_within(16.0))],
-                ),
+                authored_state("idle", MotionVerb::Hold, None),
             ),
             (
                 "charge".to_string(),
-                authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+                authored_state("locomotion", MotionVerb::ChaseTarget, None),
             ),
             (
                 "flee".to_string(),
-                authored_state("death", MotionVerb::Hold, None, Vec::new()),
+                authored_state("death", MotionVerb::Hold, None),
             ),
             (
                 "panic".to_string(),
-                authored_state("attack", MotionVerb::Freeze, None, Vec::new()),
+                authored_state("attack", MotionVerb::Freeze, None),
             ),
         ]),
-        interrupts: interrupts,
+        transitions: BTreeMap::from([
+            (
+                "rest".to_string(),
+                vec![edge("charge", target_within(16.0))],
+            ),
+            ("*".to_string(), wildcard_rows),
+        ]),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::new(),
@@ -5308,8 +5316,8 @@ fn an_interrupt_wins_over_a_simultaneously_true_state_local_edge_in_declaration_
     assert_eq!(
         enemy_state_name(&reg, enemy),
         "flee",
-        "interrupts precede the current state's own edges, and the first \
-         declared interrupt wins"
+        "wildcard rows precede the active activity's own rows, and the first \
+         declared wildcard row wins"
     );
 }
 
@@ -5341,8 +5349,8 @@ fn a_self_targeting_interrupt_is_skipped_rather_than_re_entering_its_own_state()
     assert_eq!(
         enemy_state_name(&reg, enemy),
         "charge",
-        "an interrupt back into the current state is skipped, so the \
-         state-local edge behind it still decides the tick"
+        "a wildcard row back into the active activity is skipped, so the \
+         source-keyed row behind it still decides the tick"
     );
 }
 
@@ -5473,30 +5481,32 @@ fn standing_down_clears_steering_even_when_the_initial_state_chases() {
 fn petrifying_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "charge".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "charge".to_string(),
                 authored_state(
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![edge(
-                        "stop",
-                        IrNode::Ge {
-                            a: Box::new(brain_input("@state.halt")),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(1.0),
-                            }),
-                        },
-                    )],
                 ),
             ),
             (
                 "stop".to_string(),
-                authored_state("death", MotionVerb::Freeze, None, Vec::new()),
+                authored_state("death", MotionVerb::Freeze, None),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([(
+            "charge".to_string(),
+            vec![edge(
+                "stop",
+                IrNode::Ge {
+                    a: Box::new(brain_input("@state.halt")),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(1.0),
+                    }),
+                },
+            )],
+        )]),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::new(),
@@ -5587,7 +5597,8 @@ fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
 // pin the direct authoring against the shipped Luau source.
 // ---------------------------------------------------------------------------
 
-/// The shipped authored graph, restated in Rust: the same states, the same
+/// The pre-statechart reference policy, restated with recursive activities and
+/// source-keyed rows: the same phases, the same
 /// declaration order, and the same guards `sdk/behaviors/reference/entities.ts`
 /// builds through `runtime.select` / `runtime.le` / `runtime.gt` over `brain.*`.
 ///
@@ -5612,19 +5623,13 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
     test_behavior_graph!({
         initial: "idle".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "idle".to_string(),
                 authored_state(
                     "idle",
                     MotionVerb::Hold,
                     None,
-                    vec![edge(
-                        "patrol",
-                        IrNode::Const {
-                            value: IrValue::Bool(true),
-                        },
-                    )],
                 ),
             ),
             (
@@ -5633,10 +5638,6 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "walk",
                     MotionVerb::Patrol,
                     None,
-                    vec![edge(
-                        "alert",
-                        when_acquisition_due(target_within(DETECTION_RANGE)),
-                    )],
                 ),
             ),
             (
@@ -5645,11 +5646,6 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "walk",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![
-                        edge("retreat", anchor_beyond(LEASH_RANGE)),
-                        edge("attack_jab", target_within(JAB_RANGE)),
-                        edge("attack_slam", target_within(SLAM_RANGE)),
-                    ],
                 ),
             ),
             (
@@ -5658,10 +5654,6 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "attack_jab",
                     MotionVerb::ChaseTarget,
                     Some(ActionVerb::Attack("jab".to_string())),
-                    vec![
-                        edge("retreat", anchor_beyond(LEASH_RANGE)),
-                        edge("alert", target_beyond(JAB_RANGE)),
-                    ],
                 ),
             ),
             (
@@ -5670,11 +5662,6 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "attack_slam",
                     MotionVerb::ChaseTarget,
                     Some(ActionVerb::Attack("slam".to_string())),
-                    vec![
-                        edge("retreat", anchor_beyond(LEASH_RANGE)),
-                        edge("attack_jab", target_within(JAB_RANGE)),
-                        edge("alert", target_beyond(SLAM_RANGE)),
-                    ],
                 ),
             ),
             (
@@ -5683,17 +5670,64 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "walk",
                     MotionVerb::MoveToAnchor,
                     None,
-                    vec![edge("patrol", anchor_within(RETURN_ARRIVAL_EPSILON))],
                 ),
             ),
         ]),
         // This order is author-visible policy: target loss must precede the
         // untargeted-or-friendly polarity of targetHostile, and both must land
         // on the active untargeted resting state.
-        interrupts: vec![
-            edge("patrol", target_lost()),
-            edge("patrol", target_is_not_hostile()),
-        ],
+        transitions: BTreeMap::from([
+            (
+                "idle".to_string(),
+                vec![edge(
+                    "patrol",
+                    IrNode::Const {
+                        value: IrValue::Bool(true),
+                    },
+                )],
+            ),
+            (
+                "patrol".to_string(),
+                vec![edge(
+                    "alert",
+                    when_acquisition_due(target_within(DETECTION_RANGE)),
+                )],
+            ),
+            (
+                "alert".to_string(),
+                vec![
+                    edge("retreat", anchor_beyond(LEASH_RANGE)),
+                    edge("attack_jab", target_within(JAB_RANGE)),
+                    edge("attack_slam", target_within(SLAM_RANGE)),
+                ],
+            ),
+            (
+                "attack_jab".to_string(),
+                vec![
+                    edge("retreat", anchor_beyond(LEASH_RANGE)),
+                    edge("alert", target_beyond(JAB_RANGE)),
+                ],
+            ),
+            (
+                "attack_slam".to_string(),
+                vec![
+                    edge("retreat", anchor_beyond(LEASH_RANGE)),
+                    edge("attack_jab", target_within(JAB_RANGE)),
+                    edge("alert", target_beyond(SLAM_RANGE)),
+                ],
+            ),
+            (
+                "retreat".to_string(),
+                vec![edge("patrol", anchor_within(RETURN_ARRIVAL_EPSILON))],
+            ),
+            (
+                "*".to_string(),
+                vec![
+                    edge("patrol", target_lost()),
+                    edge("patrol", target_is_not_hostile()),
+                ],
+            ),
+        ]),
         candidate_filter: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
@@ -5849,11 +5883,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             activities: BTreeMap::from([
                 (
                     "idle".to_string(),
-                    authored_state("idle", MotionVerb::Hold, None, Vec::new()).activity,
+                    authored_state("idle", MotionVerb::Hold, None),
                 ),
                 (
                     "patrol".to_string(),
-                    authored_state("walk", MotionVerb::Patrol, None, Vec::new()).activity,
+                    authored_state("walk", MotionVerb::Patrol, None),
                 ),
                 (
                     "engage".to_string(),
@@ -5870,7 +5904,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 ),
                 (
                     "retreat".to_string(),
-                    authored_state("walk", MotionVerb::MoveToAnchor, None, Vec::new()).activity,
+                    authored_state("walk", MotionVerb::MoveToAnchor, None),
                 ),
             ]),
             transitions: BTreeMap::from([
@@ -6337,22 +6371,13 @@ fn graph_reseat_preserves_same_name_and_dead_cooldown_entries() {
 fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_states() {
     let graph = test_behavior_graph!({
         initial: "jab".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "jab".to_string(),
                 authored_state(
                     "attack_jab",
                     MotionVerb::Hold,
                     Some(ActionVerb::Attack("jab".to_string())),
-                    vec![edge(
-                        "slam",
-                        IrNode::Gt {
-                            a: Box::new(brain_input("@brain.attackCooldownMs")),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(250.0),
-                            }),
-                        },
-                    )],
                 ),
             ),
             (
@@ -6361,7 +6386,6 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     "attack_slam",
                     MotionVerb::Hold,
                     Some(ActionVerb::Attack("slam".to_string())),
-                    Vec::new(),
                 ),
             ),
             (
@@ -6370,20 +6394,11 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     "idle",
                     MotionVerb::Hold,
                     None,
-                    vec![edge(
-                        "observed_zero",
-                        IrNode::Le {
-                            a: Box::new(brain_input("@brain.attackCooldownMs")),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(0.0),
-                            }),
-                        },
-                    )],
                 ),
             ),
             (
                 "observed_zero".to_string(),
-                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+                authored_state("idle", MotionVerb::Hold, None),
             ),
             (
                 "unseeded_slam".to_string(),
@@ -6391,19 +6406,47 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     "attack_slam",
                     MotionVerb::Hold,
                     Some(ActionVerb::Attack("slam".to_string())),
-                    vec![edge(
-                        "observed_zero",
-                        IrNode::Le {
-                            a: Box::new(brain_input("@brain.attackCooldownMs")),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(0.0),
-                            }),
-                        },
-                    )],
                 ),
             ),
         ]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::from([
+            (
+                "jab".to_string(),
+                vec![edge(
+                    "slam",
+                    IrNode::Gt {
+                        a: Box::new(brain_input("@brain.attackCooldownMs")),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(250.0),
+                        }),
+                    },
+                )],
+            ),
+            (
+                "rest".to_string(),
+                vec![edge(
+                    "observed_zero",
+                    IrNode::Le {
+                        a: Box::new(brain_input("@brain.attackCooldownMs")),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(0.0),
+                        }),
+                    },
+                )],
+            ),
+            (
+                "unseeded_slam".to_string(),
+                vec![edge(
+                    "observed_zero",
+                    IrNode::Le {
+                        a: Box::new(brain_input("@brain.attackCooldownMs")),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(0.0),
+                        }),
+                    },
+                )],
+            ),
+        ]),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::from([
@@ -6600,7 +6643,7 @@ fn staggerable_graph() -> BehaviorGraphDescriptor {
     let mut graph = pursuit_graph();
     graph.envelope.activities.insert(
         "flinch".to_string(),
-        authored_state("death", MotionVerb::Hold, None, Vec::new()).activity,
+        authored_state("death", MotionVerb::Hold, None),
     );
     graph.envelope.transitions.insert(
         "*".to_string(),
@@ -6672,8 +6715,8 @@ fn an_impact_policy_write_fires_an_authored_state_interrupt_on_the_next_tick() {
         "the impact policy wrote the per-entity field the guard reads"
     );
 
-    // Next AI tick: the authored interrupt reads that field and wins over the
-    // current state's own edges.
+    // Next AI tick: the authored wildcard row reads that field and wins over
+    // the active activity's own rows.
     run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(
         enemy_state_name(&reg, enemy),
@@ -6817,13 +6860,14 @@ fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
     let mut brain = authored_brain(&graph, "rest");
     brain.active_activity_path[0] = 99;
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut runtime, 0.016);
 
     assert_eq!(
         enemy_state_name(&reg, enemy),
         graph.envelope.initial,
-        "an unaddressable state index re-seats to the graph's `initial`"
+        "a reseated initial activity is observed for its entry tick even when its guard is true"
     );
     assert!(
         runtime.reseat_warned.contains(&enemy),
@@ -6837,9 +6881,8 @@ fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
         runtime.warned
     );
 
-    // Re-seated, not merely parked: the recovered state's own edges decide the
-    // next tick.
-    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    // Re-seated, not merely parked: the recovered activity's own rows decide
+    // the following tick.
     run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "charge");
 }
@@ -6856,16 +6899,15 @@ fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
 fn standing_attack_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "strike".to_string(),
-        states: BTreeMap::from([(
+        activities: BTreeMap::from([(
             "strike".to_string(),
             authored_state(
                 "attack",
                 MotionVerb::Hold,
                 Some(ActionVerb::Attack("attack".to_string())),
-                Vec::new(),
             ),
         )]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::new(),
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::from([(
@@ -6986,11 +7028,11 @@ fn position_goal_graph(
 ) -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "position".to_string(),
-        states: BTreeMap::from([(
+        activities: BTreeMap::from([(
             "position".to_string(),
-            authored_state("locomotion", motion, None, Vec::new()),
+            authored_state("locomotion", motion, None),
         )]),
-        interrupts: Vec::new(),
+        transitions: BTreeMap::new(),
         candidate_filter: None,
         patrol: patrol,
         attacks: BTreeMap::new(),
@@ -7014,17 +7056,13 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
 
     test_behavior_graph!({
         initial: "patrol".to_string(),
-        states: BTreeMap::from([
+        activities: BTreeMap::from([
             (
                 "patrol".to_string(),
                 authored_state(
                     "locomotion",
                     MotionVerb::Patrol,
                     None,
-                    vec![edge(
-                        "alert",
-                        when_acquisition_due(target_within(DETECTION)),
-                    )],
                 ),
             ),
             (
@@ -7033,10 +7071,6 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                     "locomotion",
                     MotionVerb::ChaseTarget,
                     None,
-                    vec![
-                        edge("attack", target_within(ATTACK_RANGE)),
-                        edge("retreat", anchor_beyond(LEASH)),
-                    ],
                 ),
             ),
             (
@@ -7045,10 +7079,6 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                     "attack",
                     MotionVerb::ChaseTarget,
                     Some(ActionVerb::Attack("attack".to_string())),
-                    vec![
-                        edge("retreat", anchor_beyond(LEASH)),
-                        edge("alert", target_beyond(ATTACK_RANGE)),
-                    ],
                 ),
             ),
             (
@@ -7057,17 +7087,46 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                     "locomotion",
                     MotionVerb::MoveToAnchor,
                     None,
-                    vec![edge("patrol", anchor_within(ARRIVAL))],
                 ),
             ),
         ]),
         // The lost-target row deliberately precedes the friendly-flip row.
         // Both must target patrol, the active untargeted state, to avoid a
         // patrol/rest oscillation after the target disappears.
-        interrupts: vec![
-            edge("patrol", target_lost()),
-            edge("patrol", target_is_not_hostile()),
-        ],
+        transitions: BTreeMap::from([
+            (
+                "patrol".to_string(),
+                vec![edge(
+                    "alert",
+                    when_acquisition_due(target_within(DETECTION)),
+                )],
+            ),
+            (
+                "alert".to_string(),
+                vec![
+                    edge("attack", target_within(ATTACK_RANGE)),
+                    edge("retreat", anchor_beyond(LEASH)),
+                ],
+            ),
+            (
+                "attack".to_string(),
+                vec![
+                    edge("retreat", anchor_beyond(LEASH)),
+                    edge("alert", target_beyond(ATTACK_RANGE)),
+                ],
+            ),
+            (
+                "retreat".to_string(),
+                vec![edge("patrol", anchor_within(ARRIVAL))],
+            ),
+            (
+                "*".to_string(),
+                vec![
+                    edge("patrol", target_lost()),
+                    edge("patrol", target_is_not_hostile()),
+                ],
+            ),
+        ]),
         candidate_filter: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [3.0, 0.0]],
@@ -7110,7 +7169,7 @@ fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
         graph.envelope.initial = "idle".to_string();
         graph.envelope.activities.insert(
             "idle".to_string(),
-            authored_state("idle", MotionVerb::Hold, None, Vec::new()).activity,
+            authored_state("idle", MotionVerb::Hold, None),
         );
         assert_eq!(
             rest_animation(&graph),
@@ -7321,7 +7380,7 @@ fn patrol_single_point_persists_cursor_and_clamps_a_stale_saved_cursor() {
     let mut graph = patrol_graph(vec![[0.0, 0.0], [3.0, 0.0]], PatrolMode::Loop);
     graph.envelope.activities.insert(
         "rest".to_string(),
-        authored_state("idle", MotionVerb::Hold, None, Vec::new()).activity,
+        authored_state("idle", MotionVerb::Hold, None),
     );
     let enemy = spawn_enemy(
         &mut registry,
@@ -7530,7 +7589,7 @@ fn an_arrival_guard_below_the_engine_epsilon_leaves_a_position_goal_wedged() {
     );
     graph.envelope.activities.insert(
         "done".to_string(),
-        authored_state("idle", MotionVerb::Hold, None, Vec::new()).activity,
+        authored_state("idle", MotionVerb::Hold, None),
     );
     let mut registry = EntityRegistry::new();
     let mut runtime = AiRuntime::new();

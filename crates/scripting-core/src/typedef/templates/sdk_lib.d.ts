@@ -956,9 +956,9 @@
     readonly hasTarget: RuntimeGuardNode;
     /** Distance to the selected target in metres, or `1e9` with no target — so a bare `le(targetDistance, r)` reads false untargeted (number). */
     readonly targetDistance: RuntimeGuardNode;
-    /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
+    /** Milliseconds since the currently evaluated activity was entered. Parent and nested activity rows read their own clocks. A commitment window is a guard over this, not an engine mechanism (number). */
     readonly timeInActivityMs: RuntimeGuardNode;
-    /** Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number). */
+    /** Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeGuardNode;
     /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
     readonly acquisitionDue: RuntimeGuardNode;

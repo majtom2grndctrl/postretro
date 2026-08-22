@@ -2182,6 +2182,8 @@ export type BrainInputs = {
   targetHostile: RuntimeGuardNode,
   --- `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean).
   targetReachable: RuntimeGuardNode,
+  --- Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number).
+  attacksFiredInActivity: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

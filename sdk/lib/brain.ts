@@ -34,10 +34,6 @@ export interface BrainInputs {
   /** Milliseconds since the brain entered its current state. A commitment
    * window is a guard over this, not an engine mechanism (number). */
   readonly timeInActivityMs: RuntimeGuardNode;
-  /** Successful attack fires since the currently-evaluated activity was
-   * entered. It is scope-relative and a fire becomes visible on the next tick's
-   * guard refresh (number). */
-  readonly attacksFiredInActivity: RuntimeGuardNode;
   /** Milliseconds remaining on the current state's named attack timer; zero for
    * a non-attack state or missing attack-map entry. Guard reads are
    * pre-transition (number). */
@@ -68,6 +64,10 @@ export interface BrainInputs {
    * target; false with no target or no navmesh. It reflects the pathfinder's
    * current capability rather than ground-truth reachability (boolean). */
   readonly targetReachable: RuntimeGuardNode;
+  /** Successful attack fires since the currently-evaluated activity was
+   * entered. It is scope-relative and a fire becomes visible on the next tick's
+   * guard refresh (number). */
+  readonly attacksFiredInActivity: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -87,7 +87,6 @@ export const brain: BrainInputs = Object.freeze({
   hasTarget: input("@brain.hasTarget"),
   targetDistance: input("@brain.targetDistance"),
   timeInActivityMs: input("@brain.timeInActivityMs"),
-  attacksFiredInActivity: input("@brain.attacksFiredInActivity"),
   attackCooldownMs: input("@brain.attackCooldownMs"),
   acquisitionDue: input("@brain.acquisitionDue"),
   health: input("@brain.health"),
@@ -98,6 +97,7 @@ export const brain: BrainInputs = Object.freeze({
   distanceFromAnchor: input("@brain.distanceFromAnchor"),
   targetHostile: input("@brain.targetHostile"),
   targetReachable: input("@brain.targetReachable"),
+  attacksFiredInActivity: input("@brain.attacksFiredInActivity"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

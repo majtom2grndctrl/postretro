@@ -293,15 +293,20 @@ fn both_runtimes_allow_selectors_but_reject_two_stateful_layers_with_paths() {
     }
 }
 
-// Task 5 re-authors these still-flat shipped fixtures. Keep their production
-// parse paths alive, but park the oracles until then rather than teaching the
-// recursive parser to accept the retired shape.
+const REFERENCE_ENEMY_TS_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/reference-enemy.ts");
+const REFERENCE_ENEMY_LUAU_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/reference-enemy.luau");
 const REFERENCE_ENTITIES_TS_SRC: &str =
     include_str!("../../../../../sdk/behaviors/reference/entities.ts");
 const REFERENCE_ENTITIES_LUAU_SRC: &str =
     include_str!("../../../../../sdk/behaviors/reference/entities.luau");
 
-fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityTypeDescriptor {
+fn shipped_reference_descriptor_from_typescript(
+    source: &str,
+    export_name: &str,
+    module_name: &str,
+) -> EntityTypeDescriptor {
     static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
@@ -312,7 +317,7 @@ fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityType
     let entry = directory.join("entities.ts");
     std::fs::write(
         &entry,
-        format!("{REFERENCE_ENTITIES_TS_SRC}\nglobalThis.__referenceEntity = {export_name};"),
+        format!("{source}\nglobalThis.__referenceEntity = {export_name};"),
     )
     .expect("write reference-enemy fixture");
     let entry = std::fs::canonicalize(&entry).expect("canonicalize reference-enemy fixture");
@@ -325,7 +330,7 @@ fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityType
         crate::quickjs::QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
             .expect("quickjs definition context");
     subsystem.definition_ctx().with(|ctx| {
-        let _: JsValue = crate::quickjs::run_script(&ctx, &bundled, "entities.ts")
+        let _: JsValue = crate::quickjs::run_script(&ctx, &bundled, module_name)
             .expect("the shipped reference entities module evaluates");
         let value: JsValue =
             crate::quickjs::run_script(&ctx, "globalThis.__referenceEntity", "read")
@@ -334,34 +339,43 @@ fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityType
     })
 }
 
-fn shipped_reference_descriptor_from_luau(export_name: &str) -> EntityTypeDescriptor {
+fn shipped_reference_descriptor_from_luau(
+    source: &str,
+    export_name: &str,
+    module_name: &str,
+) -> EntityTypeDescriptor {
     let lua = crate::luau::build_lua_state(
         &[],
         None,
         Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
     )
     .expect("mod-rooted luau state");
-    let source = format!(
-        "local M = (function()\n{REFERENCE_ENTITIES_LUAU_SRC}\nend)()\nreturn M.{export_name}"
-    );
+    let source = format!("local M = (function()\n{source}\nend)()\nreturn M.{export_name}");
     let value: LuaValue = lua
         .load(&source)
-        .set_name("sdk/behaviors/reference/entities.luau")
+        .set_name(module_name)
         .eval()
         .expect("the shipped reference entities module evaluates");
     entity_descriptor_from_lua(value).expect("the shipped Luau reference descriptor parses")
 }
 
 fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
-    shipped_reference_descriptor_from_typescript("referenceEnemyEntity")
+    shipped_reference_descriptor_from_typescript(
+        REFERENCE_ENEMY_TS_SRC,
+        "referenceEnemyEntity",
+        "content/dev/scripts/reference-enemy.ts",
+    )
 }
 
 fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
-    shipped_reference_descriptor_from_luau("referenceEnemyEntity")
+    shipped_reference_descriptor_from_luau(
+        REFERENCE_ENEMY_LUAU_SRC,
+        "referenceEnemyEntity",
+        "content/dev/scripts/reference-enemy.luau",
+    )
 }
 
 #[test]
-#[ignore = "pending statecharts re-author, Task 5"]
 fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     assert_eq!(
         shipped_reference_enemy_from_typescript(),
@@ -371,10 +385,17 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
 }
 
 #[test]
-#[ignore = "pending statecharts re-author, Task 5"]
-fn shipped_pose_fixture_is_a_direct_graph_with_valid_mesh_animation_states() {
-    let typescript = shipped_reference_descriptor_from_typescript("poseFixtureEnemyEntity");
-    let luau = shipped_reference_descriptor_from_luau("poseFixtureEnemyEntity");
+fn shipped_pose_fixture_is_a_recursive_graph_with_valid_mesh_animation_states() {
+    let typescript = shipped_reference_descriptor_from_typescript(
+        REFERENCE_ENTITIES_TS_SRC,
+        "poseFixtureEnemyEntity",
+        "sdk/behaviors/reference/entities.ts",
+    );
+    let luau = shipped_reference_descriptor_from_luau(
+        REFERENCE_ENTITIES_LUAU_SRC,
+        "poseFixtureEnemyEntity",
+        "sdk/behaviors/reference/entities.luau",
+    );
     assert_eq!(
         typescript.behavior, luau.behavior,
         "the pose graphs stay in lockstep"

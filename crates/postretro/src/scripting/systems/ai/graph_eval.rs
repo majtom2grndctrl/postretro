@@ -149,10 +149,29 @@ pub(super) fn engages_path(
 /// selector policy is evaluated later with the current facts.
 pub(super) fn engages_active(brain: &BrainComponent) -> bool {
     (0..brain.active_depth()).any(|depth| {
-        brain.activity_at_depth(depth).is_some_and(|(_, activity)| {
-            matches!(activity.motion, Some(MotionVerb::ChaseTarget)) || activity.action.is_some()
-        })
+        brain
+            .activity_at_depth(depth)
+            .is_some_and(|(_, activity)| activity_can_engage(activity))
     })
+}
+
+/// Retention runs before selector guards are refreshed for the tick, so it
+/// cannot resolve a selector's current row here. A selector that can chase or
+/// attack is nevertheless an engaged activity: when it holds at combat range,
+/// releasing the target would make the next tick's fallback unable to chase.
+fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
+    matches!(activity.motion, Some(MotionVerb::ChaseTarget))
+        || activity.action.is_some()
+        || activity.layers.values().any(|layer| match layer {
+            BehaviorLayerDescriptor::Selector(entries) => entries.iter().any(|entry| match entry {
+                BehaviorSelectorEntry::Row(row) => {
+                    matches!(row.motion, Some(MotionVerb::ChaseTarget)) || row.action.is_some()
+                }
+                BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget) => true,
+                BehaviorSelectorEntry::Motion(_) => false,
+            }),
+            BehaviorLayerDescriptor::Graph(_) => false,
+        })
 }
 
 fn selector_motion(

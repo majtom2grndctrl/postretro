@@ -183,18 +183,32 @@ sequenceDiagram
     Bridge->>Bridge: absorb_dynamic_lights picks up the new Light id (consumes RESERVE)
     loop each frame while in flight
         Stage->>Stage: cur = prev + dir*speed*dt (moves Transform)
-        Bridge->>Bridge: follow_transform → position/influence from live Transform; mark dirty if moved
+        Bridge->>Bridge: follow_transform → position/influence from INTERPOLATED render pose; mark dirty if moved
         Bridge->>GPU: repack moving light
     end
     Stage->>Stage: impact or travel-bound → despawn projectile (LightComponent gone)
     Bridge->>GPU: tracked light disappeared → one tombstone upload (zeroed slot)
+    Note over Bridge: reserve-slot RECLAIM is the prerequisite spec, not this path
 ```
 
-The tombstone path (`update`: a tracked id whose component read fails forces one
-dirty upload) is the existing map-light despawn behavior; it already zeroes a
-vanished dynamic slot, so the light dies with the projectile without new cleanup
-code — but the follow-Transform light must be enrolled the same way for the
-tombstone to fire.
+Two corrections the review forced. **(1) The tombstone zeroes the GPU slot but does
+NOT reclaim the reserve entry.** `update`'s failed-`get_component` branch emits one
+zeroing upload but leaves the dead-generation `EntityId` in `entity_ids` forever
+("Despawned entries remain as tombstone slots"; no compaction anywhere), and
+`absorb_dynamic_lights` bounds new lights on `entity_ids.len() - authored_light_count`
+— so every runtime light ever spawned counts against the 256-slot reserve
+permanently. Projectile lights (up to 2 per hitting shot, short-lived) are the first
+high-churn runtime lights and exhaust it in seconds. Reserve reclamation is a
+SEPARATE PREREQUISITE spec (`light-bridge-runtime-light-reclamation`) this one
+depends on; this spec must not claim the tombstone frees the slot. **(2) The
+follow-Transform light reads the INTERPOLATED render pose** (`interpolated_transform`
+at render alpha), not the raw tick Transform — so it stays locked to a model-body
+(rocket) projectile that renders interpolated. That is new plumbing: the bridge's
+per-id loop reads only `LightComponent` today (not the `Transform`), and it lacks the
+render-alpha + interpolated accessor; it must gain both, plus override BOTH the
+packed position (`cached_origins_f64` via `component_to_map_light`) and the influence
+center (`component.origin` via `component_to_influence` — a different stale source)
+from the interpolated pose.
 
 ## The impact flash — reuses the impact chokepoint
 
@@ -231,17 +245,20 @@ no principled basis. The growing shockwave needs radius over time, so this spec
 completes the channel. **Design: CPU-side in the bridge, no shader change.** The
 bridge already recomputes `effective_brightness` **every frame** (it's time-varying
 and drives shadow-slot ranking), using the CPU Catmull-Rom mirrors
-`sample_brightness_at`/`sample_brightness_at_open`. A radius channel follows that
-exact pattern: evaluate the radius curve each frame, and pack the current value into
-the two places range lives — the `GpuLight` range (`component_to_map_light` →
-`pack_light`) and the influence sphere (`component_to_influence`, whose radius today
-is the static `falloff_range`). The falloff shaders read `GpuLight` range unchanged;
-only the packed number moves, so **no `forward`/`billboard`/`mesh` shader edit**.
-Because packing is dirty-gated, a light with an *active* radius curve marks the
-bridge dirty each frame — the same per-frame re-pack a moving follow-Transform light
-already forces, so no new cost structure. Packing the *current* radius into the
-influence each frame keeps culling exact as the light grows (no conservative
-max-radius needed). The GPU-side alternative (a radius curve in the animation
+`sample_brightness_at`/`sample_brightness_at_open`. The radius channel reuses that
+per-frame eval **pattern** — but note `effective_brightness` only ranks shadow
+slots, it does not pack, so the packing is new. And packing is NOT just "call
+`component_to_influence`": in the pack loop, override the `MapLight.falloff_range`
+with the current radius **before** `pack_light`, AND override the pushed influence
+radius with the current radius (not the `cached_influences[idx]` clone, which is
+captured once at absorb). Both must track the animated value. The falloff shaders
+read `GpuLight` range unchanged; only the packed number moves, so **no
+`forward`/`billboard`/`mesh` shader edit**. Because packing is dirty-gated, a light
+with an *active* radius curve marks the bridge dirty each frame — reusing the
+per-frame re-pack **Task 3 introduces** for follow-Transform lights (no light
+re-packs every frame today; brightness/color animate GPU-side), so no new cost
+structure. Overriding the influence radius each frame keeps culling exact as the
+light grows (no conservative max-radius needed). The GPU-side alternative (a radius curve in the animation
 descriptor, evaluated in every falloff shader) is deliberately not taken: it widens
 the change across three shaders and the descriptor layout for brief, small-count
 animations. This channel is generic engine-floor lighting — any light can pulse its
@@ -253,9 +270,9 @@ Same visual state observed from three vantages. "Free" claims carry warrants.
 
 | Vantage | Emissive | Flipbook | Travel light | Impact flash |
 |---|---|---|---|---|
-| **SP / listen-host** (local gameplay projectile) | draw-param on the registered collection → billboard term | body gets advancing age from the advance stage → animates | `LightComponent` attached at spawn; bridge follows Transform | impact branch spawns the flash at the hit point (static or expanding via the radius channel) |
+| **SP / listen-host** (local gameplay projectile) | draw-param on the registered collection → billboard term | body gets advancing age from the advance stage → animates | `LightComponent` attached at spawn; bridge follows the interpolated render pose | impact branch spawns the flash at the hit point (`origin = point`; static or expanding via the radius channel) |
 | **Connected client — own shot** (predicted local projectile) | same registered collection, same draw-param → **same** as SP (warrant: identical `register_smoke_collection` path, keyed by collection name) | predicted advance feeds age the same way (warrant: `advance_predicted` reuses the advance body per E16) → animates | client attaches the `LightComponent` locally; the host suppresses this client's **presentation** copy, so no doubled light | the predicted projectile's own impact spawns the flash locally (a local effect, like a muzzle flash) |
-| **Remote peer** (host-spawned presentation projectile) | **same** collection draw-param (warrant: the presentation body renders through the same `ParticleRenderCollector`/registered collection) → **free** | **not free** — the presentation arm also packs **age 0.0** (`particle_render.rs`); needs the same age feed → Task 2 covers both projectile columns | `remote_materialize.rs` must attach a `LightComponent{follow_transform}` client-side from the shared descriptor (like it already does for the body/trail); it then tracks the replicated/interpolated Transform | the presentation projectile spawns a flash at its **despawn point** (approximate — deterministic straight-line, not the exact resolved hit); in scope, an accepted presentation-only asymmetry (per the shipped remote-observer aim precedent) |
+| **Remote peer** (host-spawned presentation projectile) | **same** collection draw-param (warrant: the presentation body renders through the same `ParticleRenderCollector`/registered collection) → **free** | **not free** — the presentation arm also packs **age 0.0** (`particle_render.rs`); needs the same age feed → Task 2 covers both projectile columns | `projectile_presentation.rs::attach_projectile_visual_components` (which `remote_materialize.rs` delegates to) attaches a `LightComponent{follow_transform}` client-side from the shared descriptor (like the body/trail); it tracks the interpolated pose | the presentation projectile spawns a flash at its **despawn point** (`projectile_presentation.rs::advance`, threading the config via `PresentationFlight`) (approximate — deterministic straight-line, not the exact resolved hit); in scope, an accepted presentation-only asymmetry (per the shipped remote-observer aim precedent) |
 
 ## Orderings that actually occur
 
@@ -267,12 +284,16 @@ Captured as spec rows (`index.md` Orderings). Key ones:
 - Projectile whose whole flight is shorter than one frame duration → shows only
   frame 0 (acceptable).
 - Light entity despawns on the impact tick → the same-frame bridge pass sees the
-  component gone and tombstones the slot (no leaked light).
-- N simultaneous projectile lights, N > `RUNTIME_DYNAMIC_LIGHT_RESERVE` → the
+  component gone and tombstones (zeroes) the GPU slot; the reserve entry is
+  reclaimed by the prerequisite spec, not this path.
+- N *concurrently-live* projectile lights, N > `RUNTIME_DYNAMIC_LIGHT_RESERVE` → the
   bridge warns once and later lights don't render (graceful; not a crash).
-- Impact flash spawns **only** on a real contact, never on travel-bound expiry;
-  it fades (and expands, if a peak radius is authored) then **despawns** (not just
-  settles to brightness 0) so its reserve slot is freed.
+  *Cumulative* churn exhaustion is the prerequisite's problem, fixed by reclamation.
+- Impact flash spawns **only** on a real contact, never on travel-bound expiry; it
+  fades (and expands, if a peak radius is authored). The `play_count` settle fires
+  ~1 tick BEFORE the `DeferredEffect` despawn (despawn counts from the next tick);
+  the settled light is intensity-0 (invisible), then the despawn removes it and the
+  slot is reclaimed (prerequisite) — no visible zero-brightness linger.
 - A radius curve grows the packed range and the influence cull radius in lockstep
   each frame; a `None` radius curve leaves both at the static `falloff_range`.
 - Emissive default (strength 0), flipbook default (single frame), no travel light,

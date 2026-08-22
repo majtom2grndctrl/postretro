@@ -75,10 +75,14 @@ runtime slot indices** (recommended) keeps every other slot's index stable, so a
 reused slot receives new data in place and the authored prefix is untouched.
 
 **Chosen mechanism.** Add a `free_slots` list of reclaimable runtime slot indices
-and a per-slot **reclaimed** marker (recommended: a `reclaimed: bool` on
-`MapLightShape`, or equivalently a `HashSet<usize>` of free indices for O(1)
-membership). The marker is the once-only reclaim guard and the "this slot is a
-tombstone, not a live light" signal.
+and a per-slot **reclaimed** marker — a `reclaimed: bool` on `MapLightShape`. The
+marker is the once-only reclaim guard and the "this slot is a tombstone, not a live
+light" signal. Keep it on `MapLightShape` (not a separate `HashSet<usize>`): the
+index already gives O(1) access, overwriting `shape[i]` on reuse clears the marker
+for free, and `clear` / `populate_from_level_with_influences` rebuild `shape`
+wholesale so the marker resets across levels with no extra step. A separate set
+would be a second source of truth that must be kept in lock-step with `free_slots`
+at every mutation site — a desync hazard for no gain.
 
 - **Reclaim (in `update` pass 1, the diff loop):** when a tracked slot at index
   `i ≥ authored_light_count` has a failed `get_component` **and is not already
@@ -161,7 +165,11 @@ Implement the **Chosen mechanism** above in
 - In `update`'s **pass 1** (the `entity_ids.iter().enumerate()` diff loop),
   extend the existing failed-`get_component` branch: for a slot
   `i ≥ authored_light_count` not already reclaimed, mark it reclaimed, push `i` to
-  `free_slots`, set `dirty`. Leave `shape[i].is_dynamic` / `animated_slot` intact.
+  `free_slots`, set `dirty`. The reclaim push is a **sibling** of the existing
+  `snapshots.remove(&id).is_some()` dirty check — unconditional on its result, not
+  nested inside its `is_some()` arm — so a zero-duration light that never got a
+  snapshot is still reclaimed (P4). Leave `shape[i].is_dynamic` / `animated_slot`
+  intact.
   (No borrow-split is needed: `free_slots` and `shape` are fields disjoint from
   `entity_ids`, so mutating them inside `entity_ids.iter()` compiles — the loop
   already mutates disjoint fields inline, e.g. `snapshots.remove`, `dirty`. The
@@ -177,6 +185,8 @@ Implement the **Chosen mechanism** above in
   `populate_from_level_with_influences` alongside the arrays they already reset — a
   free index carried into a level with a different `authored_light_count` would hand
   a new runtime light an **authored-prefix** slot and silently corrupt a map light.
+  The `reclaimed` markers need no separate reset: they ride on `MapLightShape`,
+  which both seams rebuild wholesale.
 - **`collect_all_as_map_lights`:** confirm (no change expected) that its existing
   `get_component(id).ok()?` filter already skips reclaimed slots (their dead id
   fails the lookup), so a tombstone never surfaces as a fog map-light.
@@ -207,9 +217,10 @@ restate them in prose.
 | P6 | Reserve-full same-frame churn | Reserve runtime lights live; F tick 1 despawn A; F tick 2 spawn B. | B is rejected in frame F (live count still includes not-yet-reclaimed A); A's slot is reusable F+1. Test asserts next-frame reuse; AC 1 keeps `K < reserve`. |
 | P7 | Live-count formula, N despawn / M absorb | F: N runtime despawn (reclaimed at F's `update`). F+1: M absorb. | Live count = `entity_ids.len() - authored_light_count - free_slots.len()`; correct for every (N, M) including (0, 0), M ≤ N, M > N. Reserve check fires only when live count ≥ reserve. |
 | P8 | Parallel-array alignment on reuse | Reuse slot `i` for new light B; then `collect_all_as_map_lights` reads it. | `entity_ids[i]`, `shape[i]`, `cached_origins_f64[i]`, `cached_influences[i]` all reflect **B**; fog reads B's origin/influence, not the prior occupant's. |
-| P9 | Batched reuse ordering | F: despawn 3 (`free_slots = [a, b, c]`). F+1: absorb 5. | 3 reuse a/b/c + 2 append; buffer emits 5 live entries (plus retained peak zeros); no index reused twice; `absorbed_any = true`. |
+| P9 | Batched reuse ordering | F: despawn 3 (`free_slots = [a, b, c]`). F+1: absorb 5. | 3 reuse a/b/c + 2 append; buffer emits 5 live entries; new peak = prior peak + 2 appended; no index reused twice; `absorbed_any = true`. |
 | P10 | Cross-level reset | Level A leaves `free_slots` populated; reload to level B with smaller `authored_light_count`. | `clear()` and `populate_from_level_with_influences` both empty `free_slots`; no stale index lands a level-B runtime light in level B's authored prefix. |
-| P11 | Buffer length after peak-then-drop | Spawn 10 concurrent, despawn 5, churn. | Emitted forward buffer / `full.light_count` = **peak (10)**, held by retained tombstone zeros, not the current live count (5) and not cumulative — pin peak semantics and assert it. |
+| P11 | Buffer length after peak-then-drop | Spawn 10 concurrent, despawn 5, churn. | Emitted forward buffer / `full.light_count` **and** the `collect_all_as_map_lights` scan length = **peak (10)**, held by retained tombstone zeros, not the current live count (5) and not cumulative — pin peak semantics and assert it. |
+| P12 | Reuse then re-despawn (marker reset) | F: despawn L (reclaim `i`). F+1: reuse `i` for B. F+1 later tick: despawn B. F+1 `update`: pass 1. | Slot `i` is **re-reclaimed** and re-appears in `free_slots` exactly once (the reclaimed marker was reset when `shape[i]` was overwritten on reuse); the derived live count does not inflate. |
 
 ## Invariants
 
@@ -219,7 +230,7 @@ restate them in prose.
 | **Tombstone zeroing preserved** — a vanished light zeroes its slot the frame it disappears, and every dirty frame until reused | Task 1 (reclaim leaves `is_dynamic`/`animated_slot` intact; pass 2 unchanged) | reclaim wiping `is_dynamic` before pass 2, leaving a stale GPU slot | AC 2; P3 |
 | **Authored prefix untouched** — authored indices, snapshots, packed order stable | Task 1 (free-list confined to `≥ authored_light_count`; reset across levels) | reclaiming or reusing an index `< authored_light_count`; a stale free index after reload | AC 3, AC 6; P10 |
 | **Reused slot carries no residue** — a new occupant renders only its own state | Task 1 (overwrite-on-reuse of index-parallel arrays + existing `scripted_sample_buf.fill(0.0)`; `snapshots` keyed by id) | mixing `push` with in-place write, desyncing the parallel arrays | AC 4; P8 |
-| **Reclaim fires exactly once per despawn** — snapshot-independent | Task 1 (reclaimed marker; not gated on `snapshots.remove`) | gating reclaim on snapshot presence (misses zero-duration lights); re-pushing an index each frame | AC 1; P1, P4 |
+| **Reclaim fires exactly once per despawn** — snapshot-independent; marker resets on reuse | Task 1 (reclaimed marker on `shape`; not gated on `snapshots.remove`; cleared by overwrite-on-reuse) | gating reclaim on snapshot presence (misses zero-duration lights); re-pushing an index each frame; a marker not reset on reuse (never re-reclaimed → live-count inflation) | AC 1; P1, P4, P12 |
 | **Bounded frame cost** — emitted buffer + per-fragment `light_count` + per-frame scans track **peak-concurrent**, not cumulative | Task 1 (reused slots do not grow `entity_ids`) | a compaction/refactor silently regrowing the emitted count; the peak asserted only implicitly | AC 5; P11 |
 | **Free-list reset across levels** — no stale index into a new level's authored prefix | Task 1 (reset in `clear`/`populate_from_level_with_influences`) | a free index surviving teardown → a runtime light overwriting an authored map light next level | AC 6; P10 |
 

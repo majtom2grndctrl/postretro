@@ -384,6 +384,7 @@ runtime.select(runtime.read("grounded"), 0.4, 0.7);
 | `runtime.clamp(x, lo, hi)` | number | Clamp `x` into `[lo, hi]`. |
 | `runtime.lerp(a, b, t)` | number | Linear interpolation between `a` and `b` by `t`. |
 | `runtime.lt` / `le` / `gt` / `ge` / `eq` / `ne` `(a, b)` | boolean | Comparisons. |
+| `runtime.and` / `or` `(a, b)`; `runtime.not(x)` | boolean | Boolean composition in the engine-owned IR. |
 | `runtime.select(cond, a, b)` | number or boolean | Branchless `cond ? a : b`. `a` and `b` share a type. |
 
 **Literal sugar.** Every builder argument also accepts a bare `number` or
@@ -594,7 +595,7 @@ defineEntity({
       ),
       // Lost the target? Stand down this tick, before any range guard runs.
       interrupts: [
-        { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+        { to: "idle", when: brain.hasTarget.not() },
         // The death latch is unambiguous; `le(targetHealth, 0)` is not.
         { to: "idle", when: brain.targetDied },
       ],
@@ -818,8 +819,8 @@ Retention is graph policy: put an ordered any-state stand-down over
 
 ```typescript
 interrupts: [
-  { to: "patrol", when: runtime.select(brain.hasTarget, false, true) },
-  { to: "patrol", when: runtime.select(brain.targetHostile, false, true) },
+  { to: "patrol", when: brain.hasTarget.not() },
+  { to: "patrol", when: brain.targetHostile.not() },
 ],
 ```
 
@@ -864,8 +865,8 @@ first so it outranks every range edge and the enemy stands down in one tick:
 
 ```typescript
 interrupts: [
-  // "No target" — the IR has no `not` opcode, so negation is a select.
-  { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+  // "No target" — use the fluent IR negation rather than native `!`.
+  { to: "idle", when: brain.hasTarget.not() },
 ],
 ```
 
@@ -979,23 +980,27 @@ A guard is any boolean-rooted `runtime.*` expression over `brain.*`,
 `state("...")`, and literals. It must produce a boolean: a bare
 `brain.targetDistance` in a `when` is a load error.
 
-There are **no `and` / `or` / `not` opcodes**, and the SDK ships no helpers for
-them — compose them yourself out of `select`:
-
-| Logic | Spelling |
-|-------|----------|
-| `a && b` | `runtime.select(a, b, false)` |
-| `a \|\| b` | `runtime.select(a, true, b)` |
-| `!a` | `runtime.select(a, false, true)` |
-
-`select` is branchless — both arms are values, not deferred work — so nesting is
-cheap and there is nothing to short-circuit for performance. Nest for three-way
-conjunctions:
+Use the fluent methods on `brain.*` and `state()` leaves. Comparisons return a
+boolean guard, so they chain naturally; `.between(lo, hi)` is inclusive and
+lowers to `ge(lo).and(le(hi))`.
 
 ```typescript
-// acquisitionDue && targetDistance <= 16
-runtime.select(brain.acquisitionDue, runtime.le(brain.targetDistance, 16), false);
+const inDetectionRange = brain.targetDistance.between(0, 16);
+const canAcquire = brain.acquisitionDue
+  .and(brain.targetHostile)
+  .and(inDetectionRange)
+  .and(brain.targetDied.not());
 ```
+
+Use `.and()`, `.or()`, and `.not()` (or the corresponding `runtime.*` builders)
+for boolean composition. Do **not** use native `&&`, `||`, or `!` on IR nodes:
+those operators run while the script is declaring data, not when the engine
+evaluates the guard. TypeScript rejects a native `!node` in a guard position
+because it produces a plain `boolean`. TypeScript cannot reject `nodeA && nodeB`
+or `nodeA || nodeB`: nodes are truthy JavaScript objects, so native operators
+silently keep only one operand. There is no lint rule for this today; treat the
+fluent methods as required guard syntax. In Luau, spell the keyword-named fluent
+methods with brackets, for example `a["and"](a, b)` and `a["not"](a)`.
 
 Bare `number` and `boolean` literals auto-wrap, exactly as elsewhere in
 `runtime.*`.
@@ -1033,7 +1038,7 @@ defineEntity({
       interrupts: [
         // Stand down the instant the target is gone — declared first so it
         // outranks every range edge below.
-        { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+        { to: "idle", when: brain.hasTarget.not() },
         // Flinch when an impact policy sets `staggered`.
         { to: "flinch", when: runtime.ge(state("staggered"), 1) },
       ],

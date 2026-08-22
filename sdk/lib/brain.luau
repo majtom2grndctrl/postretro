@@ -4,8 +4,8 @@
 -- builder.
 --
 -- Pure SDK sugar: a leaf is plain data (`{ op = "input", name = ... }`), the
--- same value `runtime.read(name)` returns. Constructed literally here so this
--- module has no prelude-evaluation-order dependency on the `runtime` global.
+-- same value `runtime.read(name)` returns. `runtime.read` attaches the fluent
+-- guard metatable before this module freezes the reusable leaf.
 -- Frozen because the `runtime` builders never mutate their operands, so one
 -- shared leaf per input is safe across every guard that reads it.
 --
@@ -17,8 +17,8 @@
 -- they agree.
 -- See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
-local function input(name: string): RuntimeRead
-  return table.freeze({ op = "input", name = name })
+local function input(name: string): RuntimeGuardNode
+  return table.freeze(runtime.read(name)) :: RuntimeGuardNode
 end
 
 local BrainSdk = {}
@@ -61,7 +61,7 @@ BrainSdk.candidate = table.freeze({
 --- Read a per-entity state field as a guard input: `state("staggered")` is the
 --- `@state.staggered` leaf. Unset fields read as `0`. Impact policies and
 --- reactions write these; guards only read them.
-function BrainSdk.state(name: string): RuntimeRead
+function BrainSdk.state(name: string): RuntimeGuardNode
   return input("@state." .. name)
 end
 

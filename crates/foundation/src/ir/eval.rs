@@ -96,6 +96,8 @@ fn eval_node<S: BindingScope>(node: &BoundNode<S::InputHandle>, scope: &S) -> Ir
         BoundNode::Ne(a, b) => {
             IrValue::Bool(!values_equal(eval_node(a, scope), eval_node(b, scope)))
         }
+        BoundNode::And(a, b) => IrValue::Bool(eval_bool(a, scope) && eval_bool(b, scope)),
+        BoundNode::Or(a, b) => IrValue::Bool(eval_bool(a, scope) || eval_bool(b, scope)),
         BoundNode::Not(x) => IrValue::Bool(!eval_bool(x, scope)),
 
         BoundNode::Select { cond, a, b } => {
@@ -347,6 +349,66 @@ mod tests {
             IrValue::Bool(true),
             "not inverts a bound boolean"
         );
+        for (node, expected) in [
+            (
+                IrNode::And {
+                    a: boolean(false),
+                    b: boolean(false),
+                },
+                false,
+            ),
+            (
+                IrNode::And {
+                    a: boolean(false),
+                    b: boolean(true),
+                },
+                false,
+            ),
+            (
+                IrNode::And {
+                    a: boolean(true),
+                    b: boolean(false),
+                },
+                false,
+            ),
+            (
+                IrNode::And {
+                    a: boolean(true),
+                    b: boolean(true),
+                },
+                true,
+            ),
+            (
+                IrNode::Or {
+                    a: boolean(false),
+                    b: boolean(false),
+                },
+                false,
+            ),
+            (
+                IrNode::Or {
+                    a: boolean(false),
+                    b: boolean(true),
+                },
+                true,
+            ),
+            (
+                IrNode::Or {
+                    a: boolean(true),
+                    b: boolean(false),
+                },
+                true,
+            ),
+            (
+                IrNode::Or {
+                    a: boolean(true),
+                    b: boolean(true),
+                },
+                true,
+            ),
+        ] {
+            assert_eq!(eval_root(node), IrValue::Bool(expected));
+        }
         assert_number(
             eval_root(IrNode::Select {
                 cond: boolean(false),

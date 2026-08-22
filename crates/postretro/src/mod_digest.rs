@@ -673,6 +673,8 @@ mod tests {
             IrNode::Ge { a: _, b: _ } => {}
             IrNode::Eq { a: _, b: _ } => {}
             IrNode::Ne { a: _, b: _ } => {}
+            IrNode::And { a: _, b: _ } => {}
+            IrNode::Or { a: _, b: _ } => {}
             IrNode::Not { x: _ } => {}
             IrNode::Select {
                 cond: _,

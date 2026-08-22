@@ -211,6 +211,65 @@ fn bare_literal_operands_canonicalize_to_explicit_constant_form() {
 }
 
 #[test]
+fn fluent_brain_guards_emit_identical_boolean_ir_in_both_runtimes() {
+    // This exercises the actual pre-wrapped brain/state leaves rather than
+    // only raw `runtime.*` calls. The fluent methods are inherited helpers, so
+    // the returned descriptor must retain only the canonical IR fields.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { brain, state } from "postretro";
+        JSON.stringify(
+          brain.targetDistance
+            .between(1, 2)
+            .and(brain.targetHostile)
+            .or(state("stunned").eq(1).not()),
+        );
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local ranged = brain.targetDistance:between(1, 2)
+        local hostile = ranged["and"](ranged, brain.targetHostile)
+        local stunned = state("stunned"):eq(1)
+        local notStunned = stunned["not"](stunned)
+        return hostile["or"](hostile, notStunned)
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "fluent guard descriptors diverged");
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "op": "or",
+            "a": {
+                "op": "and",
+                "a": {
+                    "op": "and",
+                    "a": {
+                        "op": "ge",
+                        "a": { "op": "input", "name": "@brain.targetDistance" },
+                        "b": { "op": "const", "value": 1 },
+                    },
+                    "b": {
+                        "op": "le",
+                        "a": { "op": "input", "name": "@brain.targetDistance" },
+                        "b": { "op": "const", "value": 2 },
+                    },
+                },
+                "b": { "op": "input", "name": "@brain.targetHostile" },
+            },
+            "b": {
+                "op": "not",
+                "x": {
+                    "op": "eq",
+                    "a": { "op": "input", "name": "@state.stunned" },
+                    "b": { "op": "const", "value": 1 },
+                },
+            },
+        }),
+        "fluent guards must lower to the closed opcode wire form",
+    );
+}
+
+#[test]
 fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
     // These fixtures deliberately use the public UI authoring surfaces. The
     // TypeScript module imports the UI helpers before `scripts-build` strips

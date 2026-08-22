@@ -843,6 +843,12 @@
   export type RuntimeEq = { op: "eq"; a: RuntimeValue; b: RuntimeValue };
   /** Inequality comparison (boolean). */
   export type RuntimeNe = { op: "ne"; a: RuntimeValue; b: RuntimeValue };
+  /** Boolean conjunction. */
+  export type RuntimeAnd = { op: "and"; a: RuntimeValue; b: RuntimeValue };
+  /** Boolean disjunction. */
+  export type RuntimeOr = { op: "or"; a: RuntimeValue; b: RuntimeValue };
+  /** Boolean inversion. */
+  export type RuntimeNot = { op: "not"; x: RuntimeValue };
   /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
   export type RuntimeSelect = { op: "select"; cond: RuntimeValue; a: RuntimeValue; b: RuntimeValue };
 
@@ -864,11 +870,29 @@
     | RuntimeGe
     | RuntimeEq
     | RuntimeNe
+    | RuntimeAnd
+    | RuntimeOr
+    | RuntimeNot
     | RuntimeSelect;
 
   /** A builder operand: an already-built node, or a bare `number`/`boolean`
    * literal that the builder auto-wraps into a `const` node. */
   type RuntimeOperand = RuntimeValue | ComputedRef<unknown> | number | boolean;
+
+  /** A pre-wrapped behavior-guard node. Fluent methods build IR nodes and are
+   * inherited rather than serialized, so a guard remains plain descriptor data. */
+  export type RuntimeGuardNode = RuntimeValue & {
+    le(other: RuntimeOperand): RuntimeGuardNode;
+    ge(other: RuntimeOperand): RuntimeGuardNode;
+    lt(other: RuntimeOperand): RuntimeGuardNode;
+    gt(other: RuntimeOperand): RuntimeGuardNode;
+    eq(other: RuntimeOperand): RuntimeGuardNode;
+    ne(other: RuntimeOperand): RuntimeGuardNode;
+    between(lo: RuntimeOperand, hi: RuntimeOperand): RuntimeGuardNode;
+    and(other: RuntimeOperand): RuntimeGuardNode;
+    or(other: RuntimeOperand): RuntimeGuardNode;
+    not(): RuntimeGuardNode;
+  };
 
   /** Pure builder vocabulary for runtime values, installed as
    * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
@@ -904,6 +928,12 @@
     eq(a: RuntimeOperand, b: RuntimeOperand): RuntimeEq;
     /** `a != b` (boolean). */
     ne(a: RuntimeOperand, b: RuntimeOperand): RuntimeNe;
+    /** Boolean conjunction. Prefer this over native `&&` on a node. */
+    and(a: RuntimeOperand, b: RuntimeOperand): RuntimeAnd;
+    /** Boolean disjunction. Prefer this over native `||` on a node. */
+    or(a: RuntimeOperand, b: RuntimeOperand): RuntimeOr;
+    /** Boolean inversion. Prefer this over native `!` on a node. */
+    not(x: RuntimeOperand): RuntimeNot;
     /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
     select(cond: RuntimeOperand, a: RuntimeOperand, b: RuntimeOperand): RuntimeSelect;
   }
@@ -923,31 +953,31 @@
    * is an IR input leaf, usable anywhere a `runtime` builder takes an operand. */
   export interface BrainInputs {
     /** `true` while the enemy has a selected target this tick. This is the only authoritative target-presence test (boolean). */
-    readonly hasTarget: RuntimeRead;
+    readonly hasTarget: RuntimeGuardNode;
     /** Distance to the selected target in metres, or `1e9` with no target — so a bare `le(targetDistance, r)` reads false untargeted (number). */
-    readonly targetDistance: RuntimeRead;
+    readonly targetDistance: RuntimeGuardNode;
     /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
-    readonly timeInActivityMs: RuntimeRead;
+    readonly timeInActivityMs: RuntimeGuardNode;
     /** Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number). */
-    readonly attackCooldownMs: RuntimeRead;
+    readonly attackCooldownMs: RuntimeGuardNode;
     /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
-    readonly acquisitionDue: RuntimeRead;
+    readonly acquisitionDue: RuntimeGuardNode;
     /** The enemy's current hit points (number). */
-    readonly health: RuntimeRead;
+    readonly health: RuntimeGuardNode;
     /** The enemy's maximum hit points (number). */
-    readonly maxHealth: RuntimeRead;
+    readonly maxHealth: RuntimeGuardNode;
     /** The selected target's current hit points, or zero with no target or no health component (number). */
-    readonly targetHealth: RuntimeRead;
+    readonly targetHealth: RuntimeGuardNode;
     /** The selected target's maximum hit points, or zero with no target or no health component (number). */
-    readonly targetMaxHealth: RuntimeRead;
+    readonly targetMaxHealth: RuntimeGuardNode;
     /** `true` once the selected target's death sweep has handled it; false with no target (boolean). */
-    readonly targetDied: RuntimeRead;
+    readonly targetDied: RuntimeGuardNode;
     /** XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number). */
-    readonly distanceFromAnchor: RuntimeRead;
+    readonly distanceFromAnchor: RuntimeGuardNode;
     /** `true` when the selected target's faction differs from this enemy's; false with no target (boolean). */
-    readonly targetHostile: RuntimeRead;
+    readonly targetHostile: RuntimeGuardNode;
     /** `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean). */
-    readonly targetReachable: RuntimeRead;
+    readonly targetReachable: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -956,20 +986,20 @@
   /** Facts about one offered target, evaluated during acquisition. */
   export interface CandidateInputs {
     /** XZ distance from the evaluating enemy (number). */
-    readonly distance: RuntimeRead;
+    readonly distance: RuntimeGuardNode;
     /** Current hit points, or zero when absent (number). */
-    readonly health: RuntimeRead;
+    readonly health: RuntimeGuardNode;
     /** Maximum hit points, or zero when absent (number). */
-    readonly maxHealth: RuntimeRead;
+    readonly maxHealth: RuntimeGuardNode;
     /** `true` once the death sweep has handled this candidate (boolean). */
-    readonly died: RuntimeRead;
+    readonly died: RuntimeGuardNode;
   }
 
   /** Pre-wrapped leaves for graph candidate eligibility. */
   export const candidate: CandidateInputs;
 
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
-  export function state(name: string): RuntimeRead;
+  export function state(name: string): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

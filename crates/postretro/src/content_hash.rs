@@ -121,6 +121,18 @@ pub(crate) fn hash_ir_node(hasher: &mut blake3::Hasher, node: &IrNode) {
             hasher.update(&[15]);
             hash_ir_node(hasher, x);
         }
+        IrNode::And { a, b } => {
+            // Tags are append-only content-hash compatibility decisions. `not`
+            // occupied 15 before this pair landed, so retain it and append.
+            hasher.update(&[16]);
+            hash_ir_node(hasher, a);
+            hash_ir_node(hasher, b);
+        }
+        IrNode::Or { a, b } => {
+            hasher.update(&[17]);
+            hash_ir_node(hasher, a);
+            hash_ir_node(hasher, b);
+        }
         IrNode::Select { cond, a, b } => {
             hasher.update(&[14]);
             hash_ir_node(hasher, cond);

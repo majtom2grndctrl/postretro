@@ -105,6 +105,8 @@ impl IrValue {
 /// | `lerp` | `a`,`b`,`t`: number | number |
 /// | `lt`/`le`/`gt`/`ge` | `a`,`b`: number | boolean |
 /// | `eq`/`ne` | `a`,`b`: same T | boolean |
+/// | `and`/`or` | `a`,`b`: boolean | boolean |
+/// | `not` | `x`: boolean | boolean |
 /// | `select` | `cond`: boolean; `a`,`b`: same T | T |
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -176,6 +178,14 @@ pub enum IrNode {
         a: Box<IrNode>,
         b: Box<IrNode>,
     },
+    And {
+        a: Box<IrNode>,
+        b: Box<IrNode>,
+    },
+    Or {
+        a: Box<IrNode>,
+        b: Box<IrNode>,
+    },
     Not {
         x: Box<IrNode>,
     },
@@ -216,7 +226,9 @@ impl IrNode {
                 | IrNode::Gt { a, b }
                 | IrNode::Ge { a, b }
                 | IrNode::Eq { a, b }
-                | IrNode::Ne { a, b } => {
+                | IrNode::Ne { a, b }
+                | IrNode::And { a, b }
+                | IrNode::Or { a, b } => {
                     walk(a, names);
                     walk(b, names);
                 }
@@ -507,6 +519,33 @@ mod wire_format_tests {
             },
             r#"{"op":"not","x":{"op":"const","value":false}}"#,
         );
+    }
+
+    #[test]
+    fn boolean_ops_round_trip_in_their_canonical_shapes() {
+        let boolean = |value| {
+            Box::new(IrNode::Const {
+                value: IrValue::Bool(value),
+            })
+        };
+        for (node, json) in [
+            (
+                IrNode::And {
+                    a: boolean(true),
+                    b: boolean(false),
+                },
+                r#"{"op":"and","a":{"op":"const","value":true},"b":{"op":"const","value":false}}"#,
+            ),
+            (
+                IrNode::Or {
+                    a: boolean(false),
+                    b: boolean(true),
+                },
+                r#"{"op":"or","a":{"op":"const","value":false},"b":{"op":"const","value":true}}"#,
+            ),
+        ] {
+            assert_round_trip(&node, json);
+        }
     }
 
     #[test]

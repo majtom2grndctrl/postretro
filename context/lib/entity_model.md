@@ -228,6 +228,8 @@ Invariants the evaluator upholds:
 
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 
+The flat graph is the degenerate case of a recursive statechart: nested activities express a phase the brain cannot be routed out of until it completes (attack windup→commit→recover), orthogonal layers run at once, and the `interrupts` list generalizes to scoped `"*"` transitions (outer-beats-inner). Design intent, not yet built: `plans/ready/E10--hierarchical-behavior-statecharts`.
+
 ---
 
 ## 8. Particles

@@ -263,6 +263,16 @@ restarts `offense` at `windup` (restart-at-initial; no history). The attack fire
   constraint the rest of the spec already assumed, and matches the leanness stance (bounded, not a
   general-purpose statechart engine). Multiple parallel stateful regions (Harel AND-states) are a
   foreclosed additive future extension — a per-region active-path forest — with no near-term consumer.
+- **Duplicate activity names: object-map kept, not an ordered list (build-time finding).** Both
+  script runtimes collapse duplicate object/table keys before the descriptor reaches Rust, so a
+  duplicate activity name in a JS/Luau map cannot be rejected at parse time — the same limitation the
+  shipped flat graph documents (`deserialize_states` comment; the `a_duplicate_state_key_in_raw_json_is_rejected`
+  test guards only the raw-JSON path) and that `attacks` / `mesh.animations` share. Resolution: keep
+  `activities` an object-map and port the `deserialize_states` raw-JSON dedup pattern; do **not** break
+  it to an ordered list of named entries. Rationale: uniformity with every other descriptor map;
+  preserves the raw-object-literal authoring the string-name decision (Divergence 2) chose; TypeScript
+  flags a duplicate key at author time (`ts1117`); the footgun is last-wins, not corruption. AC1's
+  duplicate clause was inherited from the flat-graph AC, where it always meant the raw-JSON boundary.
 - **AC7/AC15 decomposed into named sub-assertions** (verifiability), and the counter-stall authoring
   hazard surfaced from Scope into Task 5 so the reference-enemy author sets `cooldownMs ≤` the
   phase-cycle sum deliberately. Task 2 was kept whole (the falsifying thin slice) per the draft-plan

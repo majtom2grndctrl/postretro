@@ -208,6 +208,10 @@ impl Default for Transform {
 // Do not add Copy here without first removing that field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// ComponentValue is the registry's owned, closed vocabulary. Boxing the largest
+// variants would add indirection to every dynamic component exchange solely to
+// satisfy a size heuristic, without reducing the stored component columns.
+#[allow(clippy::large_enum_variant)]
 pub enum ComponentValue {
     Transform(Transform),
     Light(LightComponent),

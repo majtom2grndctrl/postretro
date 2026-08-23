@@ -601,6 +601,7 @@ pub(crate) fn attach_descriptor_components(
             cone_direction: None,
             is_dynamic: true,
             animated_slot: None,
+            follow_transform: false,
             animation: None,
         };
         let _ = registry.set_component(id, component);
@@ -2968,6 +2969,7 @@ mod tests {
                     spin_rate: 0.0,
                     spin_animation: None,
                 }),
+                light: None,
             },
         });
         let mut rocket = weapon_descriptor("rocket");
@@ -2997,6 +2999,7 @@ mod tests {
                     spin_rate: 0.0,
                     spin_animation: None,
                 }),
+                light: None,
             },
         });
 

@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use glam::Vec3;
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
+use postretro_entities::components::light::{LightComponent, LightKind};
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
@@ -342,6 +343,30 @@ pub(super) fn attach_projectile_visual_components(
             },
         );
     }
+    if let Some(light) = projectile.visual.light.as_ref() {
+        let origin = registry
+            .get_component::<Transform>(id)
+            .map(|transform| transform.position.to_array())
+            .unwrap_or([0.0; 3]);
+        let _ = registry.set_component(
+            id,
+            LightComponent {
+                origin,
+                light_type: LightKind::Point,
+                intensity: light.intensity,
+                color: light.color,
+                falloff_model: light.falloff_model,
+                falloff_range: light.falloff_range,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                is_dynamic: true,
+                animated_slot: None,
+                follow_transform: true,
+                animation: None,
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +397,7 @@ mod tests {
                     emissive: 0.0,
                 },
                 trail: None,
+                light: None,
             },
         }
     }

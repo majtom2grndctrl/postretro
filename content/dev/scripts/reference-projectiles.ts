@@ -27,6 +27,11 @@ export const referencePlasmaBoltEntity = defineEntity({
             tint: [0.2, 0.7, 1.0],
             emissive: 3.0,
           },
+          light: {
+            color: [0.2, 0.7, 1.0],
+            intensity: 2.5,
+            falloffRange: 6.0,
+          },
         },
       },
       creditSource: "player.reference-plasma:primary",
@@ -53,6 +58,11 @@ export const referenceRocketEntity = defineEntity({
           // The existing SMG dev model is the model-body fixture;
           // the trailing smoke makes the separate body + trail forms obvious.
           body: { kind: "model", model: WORLD_PICKUP_MODEL },
+          light: {
+            color: [1.0, 0.65, 0.25],
+            intensity: 3.0,
+            falloffRange: 8.0,
+          },
           trail: {
             sprite: "smoke_puff/smoke_puff_00.png",
             rate: 36.0,

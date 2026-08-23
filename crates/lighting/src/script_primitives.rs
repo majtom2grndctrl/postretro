@@ -85,6 +85,13 @@ fn validate_and_normalize(
             reason: format!("periodMs must be > 0 (got {})", anim.period_ms),
         });
     }
+    if anim.radius.is_some() {
+        return Err(ScriptError::InvalidArgument {
+            reason:
+                "radius animation is engine-internal and cannot be authored by setLightAnimation"
+                    .into(),
+        });
+    }
     if let Some(ref b) = anim.brightness
         && b.is_empty()
     {
@@ -529,6 +536,7 @@ mod tests {
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -552,6 +560,7 @@ mod tests {
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -595,6 +604,7 @@ mod tests {
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap_err();
@@ -615,6 +625,7 @@ mod tests {
                 brightness: Some(vec![]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap_err();
@@ -641,6 +652,7 @@ mod tests {
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .expect("brightness-only on a static light must be admitted");
@@ -664,6 +676,7 @@ mod tests {
                 brightness: None,
                 color: Some(vec![Vec3Lit([1.0, 0.0, 0.0])]),
                 direction: None,
+                radius: None,
             }),
         )
         .expect("color animation on a static light is admitted post-1b");
@@ -683,6 +696,7 @@ mod tests {
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -712,6 +726,7 @@ mod tests {
                 brightness: None,
                 color: None,
                 direction: Some(vec![Vec3Lit([2.0, 0.0, 0.0]), Vec3Lit([0.0, 3.0, 4.0])]),
+                radius: None,
             }),
         )
         .unwrap();
@@ -747,6 +762,7 @@ mod tests {
                 brightness: None,
                 color: None,
                 direction: Some(vec![Vec3Lit([0.0, 0.0, 0.0])]),
+                radius: None,
             }),
         )
         .unwrap_err();
@@ -799,6 +815,7 @@ mod tests {
                 brightness: Some(vec![0.0, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();

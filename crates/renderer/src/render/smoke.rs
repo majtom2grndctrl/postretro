@@ -497,6 +497,9 @@ impl SmokePass {
     /// single horizontal-strip RGBA8 texture and creates the per-collection
     /// bind group (group 1). Does nothing if the collection was already
     /// registered, or if the frame list is empty or contains mismatched sizes.
+    // This mirrors the renderer-facing collection registration contract; a
+    // parameter object here would only obscure the one forwarding call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_collection(
         &mut self,
         device: &wgpu::Device,

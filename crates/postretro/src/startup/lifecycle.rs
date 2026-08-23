@@ -18,7 +18,9 @@ use winit::event_loop::ActiveEventLoop;
 
 use crate::frame_timing::InterpolableState;
 use crate::render;
-use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
+use crate::scripting::builtins::data_archetype::{
+    ProjectileSpriteCollection, projectile_presentation_assets,
+};
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -43,6 +45,70 @@ pub(crate) const FRONTEND_CLEAR_COLOR: render::ClearColor = render::ClearColor {
 
 #[cfg(feature = "dev-tools")]
 const DEV_LEVEL_CYCLE_TARGET: &str = "content/dev/maps/combat-demo.prl";
+
+#[derive(Debug, Clone)]
+struct SpriteCollectionCandidate {
+    collection: String,
+    lifetime: Option<f32>,
+    emissive: f32,
+    frame_duration_ms: Option<f32>,
+    source: String,
+}
+
+impl From<ProjectileSpriteCollection> for SpriteCollectionCandidate {
+    fn from(value: ProjectileSpriteCollection) -> Self {
+        Self {
+            collection: value.collection,
+            lifetime: value.lifetime,
+            emissive: value.emissive,
+            frame_duration_ms: value.frame_duration_ms,
+            source: value.source,
+        }
+    }
+}
+
+fn resolve_sprite_collection_draw_contract(
+    collection: &str,
+    candidates: &[SpriteCollectionCandidate],
+    frame_count: usize,
+) -> Result<(f32, f32), String> {
+    let mut lifetime: Option<(f32, &str)> = None;
+    let mut emissive: Option<(f32, &str)> = None;
+
+    for candidate in candidates {
+        let required_lifetime = candidate
+            .frame_duration_ms
+            .map_or(candidate.lifetime, |ms| {
+                Some(ms / 1_000.0 * frame_count.max(1) as f32)
+            });
+        if let Some(required) = required_lifetime {
+            if let Some((chosen, chosen_source)) = lifetime
+                && chosen.to_bits() != required.to_bits()
+            {
+                return Err(format!(
+                    "collection `{collection}` has conflicting loop periods from `{chosen_source}` ({chosen}s) and `{}` ({required}s)",
+                    candidate.source,
+                ));
+            }
+            lifetime.get_or_insert((required, &candidate.source));
+        }
+
+        if let Some((chosen, chosen_source)) = emissive
+            && chosen.to_bits() != candidate.emissive.to_bits()
+        {
+            return Err(format!(
+                "collection `{collection}` has conflicting emissive strengths from `{chosen_source}` ({chosen}) and `{}` ({})",
+                candidate.source, candidate.emissive,
+            ));
+        }
+        emissive.get_or_insert((candidate.emissive, &candidate.source));
+    }
+
+    Ok((
+        lifetime.map_or(1.0, |(value, _)| value),
+        emissive.map_or(0.0, |(value, _)| value),
+    ))
+}
 
 fn level_source_for_load_entry(entry: &LevelLoadEntry) -> LevelSource {
     if let Some(id) = entry.catalog_id.as_ref() {
@@ -858,9 +924,8 @@ impl App {
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
         self.trigger_pool_report = products.trigger_pool_report;
-        // Retain the spawn-point placements for the host's runtime net-slot accept
-        // path (M15 Phase 3 Task 4): the host materializes each accepted client's
-        // descriptor pawn from them later.
+        // Retain spawn-point placements for the host's runtime seat-accept path:
+        // each accepted client's descriptor pawn materializes from them later.
         self.host_spawn_points = products.spawn_points;
 
         // The boot pawn exists before the regular host snapshot cadence (and in
@@ -951,23 +1016,42 @@ impl App {
                 .as_mut()
                 .expect("session installed before level install")
                 .particle_render;
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut collections = Vec::new();
-            for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
-                let ComponentValue::BillboardEmitter(c) = value else {
-                    continue;
+            let mut collections: Vec<(String, Vec<SpriteCollectionCandidate>)> = Vec::new();
+            let mut collection_indices = std::collections::HashMap::<String, usize>::new();
+            {
+                let mut add_candidate = |candidate: SpriteCollectionCandidate| {
+                    if candidate.collection.is_empty() {
+                        return;
+                    }
+                    let index = match collection_indices.get(&candidate.collection).copied() {
+                        Some(index) => index,
+                        None => {
+                            let index = collections.len();
+                            collection_indices.insert(candidate.collection.clone(), index);
+                            collections.push((candidate.collection.clone(), Vec::new()));
+                            index
+                        }
+                    };
+                    collections[index].1.push(candidate);
                 };
-                collections.push((c.sprite.clone(), c.lifetime));
-            }
-            collections.extend(
-                projectile_sprites
-                    .into_iter()
-                    .map(|sprite| (sprite.collection, sprite.lifetime)),
-            );
-            for (collection, lifetime) in collections {
-                if collection.is_empty() || !seen.insert(collection.clone()) {
-                    continue;
+                for (id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
+                    let ComponentValue::BillboardEmitter(c) = value else {
+                        continue;
+                    };
+                    add_candidate(SpriteCollectionCandidate {
+                        collection: c.sprite.clone(),
+                        lifetime: Some(c.lifetime),
+                        emissive: 0.0,
+                        frame_duration_ms: None,
+                        source: format!("billboard emitter {id}"),
+                    });
                 }
+                for sprite in projectile_sprites {
+                    add_candidate(sprite.into());
+                }
+            }
+
+            for (collection, candidates) in collections {
                 let frames =
                     postretro_render_cpu::smoke::load_sprite_frames(&texture_root, &collection)
                         .unwrap_or_else(|| {
@@ -977,7 +1061,20 @@ impl App {
                                 height: 1,
                             }]
                         });
-                renderer.register_smoke_collection(&collection, &frames, 0.3, lifetime);
+                let (lifetime, emissive) = match resolve_sprite_collection_draw_contract(
+                    &collection,
+                    &candidates,
+                    frames.len(),
+                ) {
+                    Ok(contract) => contract,
+                    Err(reason) => {
+                        log::warn!(
+                            "[Loader] {reason}; skipping the collection so no accepted descriptor is silently overridden"
+                        );
+                        continue;
+                    }
+                };
+                renderer.register_smoke_collection(&collection, &frames, 0.3, lifetime, emissive);
                 particle_render.register_sprite(&collection);
             }
 
@@ -996,6 +1093,7 @@ impl App {
                 &frames,
                 0.45,
                 weapon::impact_lifetime(),
+                0.0,
             );
             particle_render.register_sprite(collection);
         }
@@ -1418,6 +1516,67 @@ mod tests {
         StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
     };
     use postretro_scripting_core::state_crossings::CrossingDetector;
+
+    fn sprite_candidate(
+        source: &str,
+        lifetime: Option<f32>,
+        emissive: f32,
+        frame_duration_ms: Option<f32>,
+    ) -> SpriteCollectionCandidate {
+        SpriteCollectionCandidate {
+            collection: "sprites/shared".to_string(),
+            lifetime,
+            emissive,
+            frame_duration_ms,
+            source: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn shared_projectile_collection_rejects_conflicting_draw_contracts() {
+        let candidates = [
+            sprite_candidate("plasma.projectile.visual.body", None, 2.0, Some(50.0)),
+            sprite_candidate("rocket.projectile.visual.body", None, 1.0, Some(80.0)),
+        ];
+
+        let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+            .expect_err("conflicting projectile consumers must reject the collection");
+
+        assert!(error.contains("conflicting loop periods"));
+        assert!(error.contains("plasma.projectile.visual.body"));
+        assert!(error.contains("rocket.projectile.visual.body"));
+    }
+
+    #[test]
+    fn projectile_and_emitter_collection_rejects_conflicting_emissive_contracts() {
+        let candidates = [
+            sprite_candidate("billboard emitter 7", Some(0.2), 0.0, None),
+            sprite_candidate("plasma.projectile.visual.trail", Some(0.2), 3.0, None),
+        ];
+
+        let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+            .expect_err("emitter and projectile conflicts must not depend on collection order");
+
+        assert!(error.contains("conflicting emissive strengths"));
+        assert!(error.contains("billboard emitter 7"));
+        assert!(error.contains("plasma.projectile.visual.trail"));
+    }
+
+    #[test]
+    fn compatible_shared_sprite_consumers_resolve_one_draw_contract() {
+        let candidates = [
+            sprite_candidate("billboard emitter 7", Some(0.2), 0.0, None),
+            sprite_candidate("plasma.projectile.visual.trail", Some(0.2), 0.0, None),
+            sprite_candidate("plasma.projectile.visual.body", None, 0.0, None),
+        ];
+
+        let (lifetime, emissive) =
+            resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+                .expect("identical consumers and a cadence-less body are compatible");
+
+        assert!((lifetime - 0.2).abs() <= f32::EPSILON);
+        assert!(emissive.abs() <= f32::EPSILON);
+    }
 
     #[test]
     fn spawner_install_resolves_only_ai_descriptors_and_replaces_prior_level_data() {

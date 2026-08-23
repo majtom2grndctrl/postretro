@@ -9,6 +9,7 @@ use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCo
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::light::{LightComponent, LightKind};
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
@@ -476,6 +477,10 @@ pub(crate) fn spawn_projectile(
     launch: weapon::ProjectileLaunch,
     predicted_shot_id: Option<u64>,
 ) -> Option<EntityId> {
+    // Resolve every hit-time visual before moving the body out of the descriptor
+    // below. Impact resolution must not consult the owner weapon, which can be
+    // gone before a long-lived projectile makes contact.
+    let impact_light = launch.descriptor.visual.impact_light.clone();
     let Some(projectile_id) = registry.try_spawn(
         Transform {
             position: launch.origin,
@@ -503,8 +508,38 @@ pub(crate) fn spawn_projectile(
         owner_weapon,
         spawned: true,
         predicted_shot_id,
+        elapsed_flight_age: 0.0,
+        flipbook_active: matches!(
+            &launch.descriptor.visual.body,
+            ProjectileBodyVisual::Sprite {
+                frame_duration_ms: Some(_),
+                ..
+            }
+        ),
+        impact_light,
     };
     let _ = registry.set_component(projectile_id, component);
+
+    if let Some(light) = launch.descriptor.visual.light.clone() {
+        let _ = registry.set_component(
+            projectile_id,
+            LightComponent {
+                origin: launch.origin.to_array(),
+                light_type: LightKind::Point,
+                intensity: light.intensity,
+                color: light.color,
+                falloff_model: light.falloff_model,
+                falloff_range: light.falloff_range,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                is_dynamic: true,
+                animated_slot: None,
+                follow_transform: true,
+                animation: None,
+            },
+        );
+    }
 
     match launch.descriptor.visual.body {
         ProjectileBodyVisual::Sprite {
@@ -513,6 +548,7 @@ pub(crate) fn spawn_projectile(
             opacity,
             rotation,
             tint,
+            ..
         } => {
             let _ = registry.set_component(
                 projectile_id,
@@ -708,8 +744,8 @@ pub(crate) fn refuse_local_switch(
 mod projectile_spawn_tests {
     use super::*;
     use postretro_foundation::{
-        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailSpinAnimation,
-        ProjectileTrailVisual, ProjectileVisual,
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight, ProjectileLight,
+        ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual,
     };
 
     fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
@@ -743,6 +779,8 @@ mod projectile_spawn_tests {
                 opacity: 0.9,
                 rotation: 0.25,
                 tint: [0.2, 0.8, 1.0],
+                emissive: 0.0,
+                frame_duration_ms: None,
             },
             trail: Some(ProjectileTrailVisual {
                 sprite: "sprites/trail.png".to_string(),
@@ -762,6 +800,8 @@ mod projectile_spawn_tests {
                     rate_curve: vec![0.0, 2.0, -1.0],
                 }),
             }),
+            light: None,
+            impact_light: None,
         };
 
         let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
@@ -800,6 +840,8 @@ mod projectile_spawn_tests {
                 model: "models/rocket.gltf".to_string(),
             },
             trail: None,
+            light: None,
+            impact_light: None,
         };
         let mut launch = launch(visual);
         launch.direction = Vec3::new(3.0, 2.0, -4.0).normalize();
@@ -818,6 +860,82 @@ mod projectile_spawn_tests {
         assert!(
             rendered_forward.distance(launch.direction) <= 1.0e-6,
             "a rigid projectile model faces the aim direction captured at fire time"
+        );
+    }
+
+    #[test]
+    fn projectile_spawn_attaches_a_following_dynamic_point_light() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Sprite {
+                sprite: "sprites/plasma.png".to_string(),
+                size: 0.4,
+                opacity: 0.9,
+                rotation: 0.25,
+                tint: [0.2, 0.8, 1.0],
+                emissive: 0.0,
+                frame_duration_ms: None,
+            },
+            trail: None,
+            light: Some(ProjectileLight {
+                color: [0.2, 0.7, 1.0],
+                intensity: 2.5,
+                falloff_range: 6.0,
+                falloff_model: postretro_foundation::FalloffKind::InverseDistance,
+            }),
+            impact_light: None,
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+            .expect("projectile spawns");
+        let light = registry
+            .get_component::<LightComponent>(projectile)
+            .expect("descriptor light materializes with its projectile");
+        assert_eq!(light.light_type, LightKind::Point);
+        assert!(light.is_dynamic);
+        assert!(light.follow_transform);
+        assert!(Vec3::from_array(light.origin).distance(Vec3::new(1.0, 2.0, 3.0)) <= 1.0e-6);
+        assert!(Vec3::from_array(light.color).distance(Vec3::new(0.2, 0.7, 1.0)) <= 1.0e-6);
+        assert!((light.intensity - 2.5).abs() <= f32::EPSILON);
+        assert!((light.falloff_range - 6.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            light.falloff_model,
+            postretro_foundation::FalloffKind::InverseDistance
+        );
+    }
+
+    #[test]
+    fn projectile_spawn_retains_resolved_impact_light_before_moving_body_visual() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let impact_light = ProjectileImpactLight {
+            color: [0.5, 0.8, 1.0],
+            intensity: 4.0,
+            radius: 5.0,
+            peak_radius: Some(10.0),
+            fade_ms: 200.0,
+        };
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Model {
+                model: "models/rocket.gltf".to_string(),
+            },
+            trail: None,
+            light: None,
+            impact_light: Some(impact_light.clone()),
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+            .expect("projectile spawns");
+        assert_eq!(
+            registry
+                .get_component::<ProjectileComponent>(projectile)
+                .expect("projectile state survives body materialization")
+                .impact_light,
+            Some(impact_light),
+            "the later contact path never has to resolve the owner weapon"
         );
     }
 

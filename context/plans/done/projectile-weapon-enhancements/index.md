@@ -76,7 +76,11 @@ anchor its exact seam (free-list, live-count bound) against the merged
   chokepoint and channel).
 - **Co-op parity.** All four visible to remote peers on the host-spawned
   presentation projectile, and to the firing client on its predicted projectile,
-  with no doubled light and no new wire message/field.
+  with no doubled light and no new wire message/field. Projectile-contact
+  retirement reuses the existing tombstone reason byte: reason 1 means
+  presentation-only contact, while reason 0 remains flash-free expiry. The host
+  retains the final endpoint until every intended recipient acknowledges its
+  baseline before emitting the contact tombstone.
 - **Author surface.** Descriptor validation, TS + Luau SDK typedefs, and the
   dev-mod reference weapons updated in the same pass (primitive-surface contract).
 
@@ -265,6 +269,13 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   is bumped. (Component/enrollment-level assertions; 'sees'/rendered is a visual
   gate. 'No new wire message/field' is a review/grep gate; the version-constant
   check is a runtime assertion on the constant.)
+- [ ] Replicated projectile retirement survives snapshot loss/reordering: the
+  terminal endpoint remains live until every intended recipient acknowledges its
+  current baseline, then a reason-1 tombstone produces exactly one observer flash
+  on a valid world or entity contact. Reason 0 remains flash-free expiry. A late
+  valid contact inside the retained shot window overrides a nominally finished
+  path. Failed entity-target validation does not erase a finite in-range contact.
+  A listen host with no participants creates no hidden mirror or historic marker.
 - [ ] Author surface: an out-of-range emissive strength, an invalid flipbook
   cadence, an out-of-range/invalid travel `light`, or an invalid `impactLight`
   (bad color/intensity/radius/peak-radius/fade) is rejected at descriptor
@@ -374,13 +385,14 @@ presentation projectile carries **no spawn stamp today**
 (`projectile_presentation.rs::attach_projectile_visual_components` /
 `materialize_armed_remote_projectile` attach only Transform + provenance + visual
 components; the host-side `PresentationFlight` side table is not
-registry-readable by the collector). So this task **adds** a spawn-time (or
-elapsed-age) registry component to the presentation entity at materialization —
-readable by `particle_render.rs::collect`'s presentation arm — and threads a `now`
-(the fixed-tick `script_time`) into that arm. Pin the clock to the **same
-fixed-tick basis and spawn-tick offset** the local `ProjectileComponent` age uses,
-so the frame index matches across local/predicted/presentation (AC 4's
-'identically'). This is required new state, not a confirm-only step. No
+registry-readable by the collector). So this task **adds** a spawn-tick registry
+component to the presentation entity at materialization — readable by
+`particle_render.rs::collect`'s presentation arm. Pack age as
+`presentation_tick - spawn_tick`: use the authoritative host/snapshot ticks, with
+the client deriving `presentation_tick` from its time-sync estimate. This matches
+the local `ProjectileComponent` fixed-tick basis, so the frame index matches
+across local/predicted/presentation (AC 4's 'identically'). This is required new
+state, not a confirm-only step. No
 replicated field. **Registration:** register the projectile sprite
 collection with the frames from the collection-dir source; **only when a
 cadence is authored**, set the per-collection draw-param `lifetime` (the
@@ -558,23 +570,20 @@ brightness is 0 the settled light is **invisible**, so the ≤1-tick pre-despawn
 window is not a visible defect; its reserve slot is reclaimed (prerequisite) once
 the despawn fires. Do not claim the despawn beats the settle. The impact light
 is stationary, so it does **not** need Task 3's follow-Transform path. It casts no
-entity shadows (runtime-light default). **Co-op:** the flash is a brief presentation
-effect, so spawn it wherever a projectile resolves — the host's gameplay projectile
-and the firing client's predicted projectile each spawn it at their own contact
-point (a local effect, like a muzzle flash; no replication). For remote peers, the
-flash spawns at the presentation projectile's despawn point — the site is
-`projectile_presentation.rs::advance` (where the presentation entity despawns),
-which today carries only kinematics in `PresentationFlight` (no
-descriptor/impact-light); thread the `impact_light` config into
-`PresentationFlight` (or re-resolve it via `descriptor_class`) so that site can
-spawn the presentation flash. The presentation despawn
-(`projectile_presentation.rs::advance`) fires on shot-retire OR straight-line
-completion and does **not** carry the authority's contact-vs-expiry outcome
-(`PresentationFlight` has no such signal), so the remote flash is **not** gated
-on contact — it spawns on every remote shot resolution. This is the accepted
-presentation approximation — also true of the hit location itself (the
-presentation projectile is deterministic straight-line) — presentation only, no
-new wire field; do not hunt for a contact signal that isn't replicated. **SDK + reference:**
+entity shadows (runtime-light default). **Co-op:** the host's gameplay projectile
+and the firing client's predicted projectile spawn the flash locally at their
+authoritative/predicted contact point. Remote observers materialize it from a
+presentation-only reason-1 despawn tombstone; reason 0 is normal expiry and stays
+flash-free. Projectile declarations reuse the existing hit-record shape: target
+`u32::MAX` marks a world or no-longer-nameable entity contact, while a normal target
+record can independently fail damage validation without erasing its finite in-range
+presentation endpoint. The host holds a nominally finished presentation while the
+shot authorization remains open, so a late valid declaration can still replace the
+endpoint. It then retains that endpoint until every intended recipient acknowledges
+the current baseline before despawning. This uses the existing baseline/tombstone
+acknowledgment machinery, adds no field, and changes no version constant. The firing
+client remains excluded from the host mirror and cannot receive a duplicate flash.
+**SDK + reference:**
 typedef the `impactLight` union (TS + Luau, incl. the optional peak radius) and
 author both reference weapons to flash on impact — the plasma bolt a modest static
 blue-white pop; the rocket a larger **expanding** warm shockwave (peak radius > start,
@@ -671,7 +680,8 @@ lands.
 | Projectile (travel) light | `ProjectileVisual.light: Option<ProjectileLight>` → `LightComponent{Point, is_dynamic, follow_transform}` at spawn | descriptor JSON camelCase; light **materialized client-side** from the shared descriptor, no new wire field | typedef union `light?` | typedef union | n/a |
 | Impact-flash light | `ProjectileVisual.impact_light: Option<ProjectileImpactLight>` (color, intensity, radius, optional peakRadius, fade ms) → stationary `LightComponent{Point, follow_transform:false}` + one-shot fade `LightAnimation{ brightness:[1,0], radius:[radius,peak]? }` at the hit point | descriptor JSON camelCase; local presentation effect (host + predicted client) + presentation-projectile flash for peers, no new wire field | typedef union `impactLight?` | typedef union | n/a |
 | Impact-light config carriage | resolved `ProjectileImpactLight` stored on `ProjectileComponent` at `spawn_projectile`; read by the impact branch | not replicated (host/predicted local; presentation flash threads it via `PresentationFlight`) | n/a | n/a | n/a |
-| Presentation spawn stamp | spawn-time / elapsed-age registry component on the presentation entity, added at materialization; read by the collector with a threaded `now` | not replicated (each observer derives its own elapsed) | n/a | n/a | n/a |
+| Projectile contact retirement | existing `HitRecord.target == u32::MAX` marks world/no-name contact; existing `Despawn.reason == 1` means presentation-only contact; terminal Transform held through recipient baseline ack | no layout change; reason 0 remains flash-free expiry | n/a | n/a | n/a |
+| Presentation spawn tick | spawn-tick registry component on the presentation entity, added at materialization; collector packs `presentation_tick - spawn_tick` | authoritative host/snapshot ticks; client derives `presentation_tick` from its time-sync estimate; no new wire field | n/a | n/a | n/a |
 | Light radius-animation channel | `LightAnimation.radius: Option<Vec<f32>>` (sample curve; CPU-evaluated in the bridge → `GpuLight` range + influence radius) | descriptor JSON camelCase like `brightness`/`color`; not replicated (attached to a client-materialized light) | n/a (not exposed to script/SDK this spec) | n/a | n/a |
 | Follow-Transform flag | `LightComponent.follow_transform: bool` (`#[serde(default)]`, snapshot-omitted) | internal — not authored, not a world-query field | n/a | n/a | n/a |
 
@@ -685,9 +695,10 @@ No new binary or replicated surface. Emissive and flipbook cadence are descripto
 content (shared by both peers, like the existing projectile visual, not
 replicated). The travel light rides the presentation entity's existing Transform +
 `entity_class` snapshot record and is materialized client-side from the shared
-descriptor (as the body/trail already are). The impact flash is a local
-presentation effect (spawned at each observer's own contact / the presentation
-projectile's despawn point), also materialized client-side from the descriptor.
+descriptor (as the body/trail already are). The impact flash is local on the
+authority/predictor and materialized by remote observers only from a reason-1
+projectile tombstone after the final Transform baseline is acknowledged. Reason 0
+stays flash-free expiry.
 The `follow_transform` flag, the body age, the `LightAnimation` radius curve, and
 the impact light's fade/despawn are engine-internal, never serialized. No version
 constant changes on the authority path.
@@ -703,6 +714,7 @@ constant changes on the authority path.
 | **Travel light despawns with its projectile** — no leaked light after impact/expiry; reserve slot reclaimed by the prerequisite | Task 3 (enroll for the bridge tombstone path) | a follow light not enrolled, so no tombstone fires; a presentation light outliving its shot | AC 5; Task 6 despawn-tombstone assertion |
 | **Radius curve drives range AND influence in lockstep** — a growing light's cull radius tracks its lit radius; `None` = static range unchanged | Task 4 (CPU per-frame eval → `pack_light` range + the `cached_influences[idx]` push (both overridden per frame from the animated radius)) | packing the animated range but leaving the influence at the static `falloff_range` (a growing light culled before it reaches) | AC 7; Task 6 radius-channel assertion |
 | **Impact flash spawns only on contact, expands (if peak), fades, and self-despawns** — no light lingers, its reserve slot is reclaimed by the prerequisite; a travel-bound expiry spawns none | Task 5 (impact-branch spawn + one-shot brightness/radius curves + `DeferredEffect` despawn) | spawning on expiry; the fade settle preceding the despawn by ~1 tick (accepted: the settled light is intensity-0/invisible; the slot is reclaimed on despawn) | AC 8; Task 6 impact-flash spawn/expand/despawn assertion |
+| **Remote contact retirement is delivery-gated** — reason 1 is presentation-only contact, reason 0 is expiry; final endpoint baseline is acknowledged before tombstone | Task 5 repair (existing hit-record and despawn-reason layouts, baseline ack gate) | retiring on attempted snapshot send; tying contact to accepted damage; discarding a late contact after nominal path completion | co-op lifecycle regressions |
 | **Projectile lights cast no entity shadows** and consume `RUNTIME_DYNAMIC_LIGHT_RESERVE`, with reclamation of despawned slots (prerequisite) so churn does not cumulatively exhaust; degrading gracefully on genuine concurrent exhaustion | Task 3 (travel), Task 5 (impact) — runtime-light `casts_entity_shadows = false`; reserve bound | a projectile light entering the shadow pool; reserve overflow crashing or corrupting other lights | AC 6; Task 6 reserve-exhaustion + no-shadow assertions |
 | **No wire-format change** (emissive/flipbook are descriptor content; lights are client-materialized; age/flag/fade/radius are internal) | Tasks 1–5 (descriptor + client materialization), Task 6 (assert) | a new replicated field/message; a version-constant bump; serializing the flag, age, or curves | AC 9; Task 6 no-constant-changed assertion |
 | **Billboard VERTEX storage-buffer budget ≤ 8** preserved | Task 1 (emissive via the group-1 `draw_params` uniform), Task 2 (age via the existing instance channel) | adding a VERTEX-visible storage buffer to the billboard pipeline | rendering §7.4 guard test (`billboard_pipeline_vertex_storage_request_matches_bgl_definitions`) |
@@ -717,10 +729,13 @@ constant changes on the authority path.
 | Projectile with a travel light despawns on the impact tick | despawn precedes the next bridge pack | Same-frame bridge sees the `LightComponent` gone → one tombstone upload zeroes the slot; no light persists; reserve slot reclaimed (prerequisite). |
 | N simultaneous projectile lights (travel + impact), N > `RUNTIME_DYNAMIC_LIGHT_RESERVE` | absorb order | Bridge warns once; surplus lights do not render; authored + other dynamic lights unaffected; no crash. |
 | Slot freed in frame F, reused later | free pushes to `free_slots` in `update` (end of frame F); that same `update` emits the zeroed `GpuLight` for the still-in-`entity_ids` slot; `absorb` pops `free_slots` only in a later tick | Zero-before-reuse holds structurally: a reclaimed slot is always GPU-zeroed the frame it frees and cannot be re-popped until a later frame's `absorb`, so a new light never inherits stale slot data. |
-| Impact flash spawns the same tick the travel light despawns | tick N: impact branch spawns flash + despawns projectile(+travel light) → `absorb` (same tick) enrolls the flash → post-loop `update` frees the travel-light slot | The flash does NOT reuse the travel light's slot this tick (it is not in `free_slots` until `update`, after `absorb`); the travel-light slot is zeroed that `update` and reusable only from tick N+1. |
+| Impact flash spawns the same tick the travel light despawns | tick N: impact branch spawns flash + despawns projectile(+travel light) → `absorb` first reclaims missing tracked lights, then enrolls new lights → post-loop `update` packs the result | The flash may reuse its own removed travel light's slot immediately, so a valid very-short flash is not dropped solely because reclamation used to run after admission; genuine reserve exhaustion still degrades gracefully. |
 | Connected client fires a light projectile | predicted (local) + presentation (host, per peer) | Firer sees one moving light (its predicted copy; host suppresses the firer's presentation copy); other peers see the presentation light. No doubled light. |
 | Connected client fires a projectile carrying a `light`/`impactLight` | client tick branch `continue`s without `absorb`; only `update` runs per frame | Requires the new client-side `absorb` call (Task 3); without it the predicted/presentation/impact lights never enroll → never render on the client. |
+| Connected client impact flash reaches its fade | client skips authoritative `simulate_tick`; client presentation queue advances once per rendered frame before new effects spawn | Deferred despawn lands, frame-end removal reaps the light, and the bridge reclaims its runtime slot. |
 | Projectile reaches its travel bound (no contact) | expiry precedes despawn | Travel light removed with the projectile; **no impact flash spawned** (flash is contact-only). |
+| Remote visual reaches its nominal path/lifetime end while shot authorization remains open | hold terminal pose; later valid contact may replace it | No flash yet. Contact inside the retained authorization window still produces reason-1 retirement; empty expiry produces reason 0. |
+| Remote terminal endpoint snapshot is lost or reordered | endpoint baseline remains unacknowledged | Presentation entity stays live and resends its baseline. Tombstone is emitted only after every intended recipient acknowledges the endpoint. |
 | Projectile hits a target/wall | contact → `spawn_impact_effect_at` + impact-light spawn → projectile despawn | Impact flash spawns at the hit point, fades over its duration (and expands start→peak if a peak radius is authored), then self-despawns (slot reclaimed by prerequisite); the travel light dies with the projectile the same tick. |
 | Impact flash with a peak radius, over the fade | each frame while animating the bridge re-packs range + influence | Range grows start→peak; the influence cull radius grows with it, so the expanding light is never culled before it reaches; brightness fades to 0 over the same window. |
 | Impact flash's fade completes | fade elapses → `DeferredEffect` despawn fires | The `play_count` settle fires ~1 tick BEFORE the `DeferredEffect` despawn (despawn counts from the next tick); the settled light is intensity-0 (invisible), then the despawn removes it and the slot is reclaimed (prerequisite). No visible zero-brightness linger. |
@@ -728,8 +743,8 @@ constant changes on the authority path.
 | Level unload with lit/animated projectiles and live impact flashes | registry teardown | Projectiles and all their lights (travel + impact) cleared with the registry; the bridge clears its tracking (`LightBridge::clear`); no dangling light next level. |
 | Impact light spawned with a `Transform` but default `LightComponent.origin` | non-follow bridge reads `component.origin`, ignores the `Transform` | Renders at the world origin — WRONG. Requires `origin = point`. |
 | Model-body (rocket) travel light between ticks (render alpha 0.5) | mesh renders interpolated; light packed once per frame | Light position = the interpolated pose, locked to the rendered rocket — not the raw tick pose; a **sprite**-body light packs from the **raw** `Transform` (matching the un-interpolated billboard) — the pose source matches the body kind, so light and bolt never diverge. |
-| Tick that spawns a remote presentation projectile + light | `absorb_dynamic_lights` runs before `host_spawn_projectile_presentations`; body collected this frame, light enrolled next | Accepted as an untested approximation (like the presentation-flash location): the presentation body may show for one frame without its travel light (the host enrolls it tick N+1). |
-| Flipbook frame index after K ticks, all three bodies | local/predicted age from `ProjectileComponent` (fixed tick); presentation age from `now − spawn_time` | Identical frame index — pinned by using the same fixed-tick clock basis and spawn-tick offset (Task 2). |
+| Tick that spawns a remote presentation projectile + light | `absorb_dynamic_lights` runs before `host_spawn_projectile_presentations`; body collected this frame, light enrolled next | The presentation body may show for one frame without its travel light; enrollment occurs on tick N+1. |
+| Flipbook frame index after K ticks, all three bodies | local/predicted age from `ProjectileComponent` (fixed tick); presentation age from `presentation_tick - spawn_tick` using authoritative host/snapshot ticks and the client's time-sync estimate | Identical frame index — pinned by the same fixed-tick basis and spawn-tick offset (Task 2). |
 | `impactLight.fadeMs` below one tick | settle fires the tick after spawn; radius curve never sampled mid-way | One-frame pop at base radius; expansion not observable. Accepted (validation still requires fade > 0). |
 
 ## Rough sketch
@@ -819,9 +834,9 @@ cast a travel light**; **the impact light is parameterized** (author decides);
 radius-animation channel in `LightAnimation` (evaluated CPU-side in the bridge) —
 the "build more right faster" call: clear destination, patterned work, cheap at
 runtime, and it completes a lopsided engine capability; **the remote-peer impact
-flash stays in scope** (spawned at the presentation projectile's despawn point, an
-accepted presentation-only approximation consistent with the shipped remote-observer
-aim asymmetry); **the transient despawn reuses `DeferredEffect`** rather than a new
+flash stays in scope** and uses the retained final Transform plus the existing
+reason-1 despawn tombstone after recipient baseline acknowledgment; **the transient
+despawn reuses `DeferredEffect`** rather than a new
 per-tick system.
 
 Resolution notes:

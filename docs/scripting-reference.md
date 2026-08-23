@@ -295,7 +295,26 @@ weapon: {
     radius: 0.25,       // swept-sphere radius in metres; finite and >= 0
     lifetimeMs: 4000,   // finite and > 0
     visual: {
-      body: { kind: "model", model: "models/smg/model.gltf" },
+      body: {
+        kind: "sprite",
+        // A bare collection name loads textures/plasma_bolt/plasma_bolt_00.png,
+        // _01.png, and so on.
+        sprite: "plasma_bolt",
+        size: 0.35,
+        emissive: 3.0,
+        frameDurationMs: 60,
+      },
+      light: {
+        color: [0.2, 0.7, 1.0],
+        intensity: 2.5,
+        falloffRange: 6,
+      },
+      impactLight: {
+        color: [0.55, 0.85, 1.0],
+        intensity: 4.0,
+        radius: 5,
+        fadeMs: 180,
+      },
       trail: {
         sprite: "smoke_puff/smoke_puff_00.png",
         rate: 36,
@@ -320,6 +339,47 @@ the mod content root. Both must be non-empty portable forward-slash paths with
 no parent traversal. Sprite bodies additionally accept `size`, `opacity`,
 `rotation`, and `tint`; all have sensible defaults.
 
+Sprite bodies also accept these presentation-only controls:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `emissive` | `number` (optional) | Additive HDR self-light strength. It defaults to `0`, preserving the ordinary scene-lit billboard. Values around `2`–`4` make a full-bright bolt and can bloom; use a finite value `>= 0`. It affects only sprite bodies. |
+| `frameDurationMs` | `number` (optional) | Per-frame hold time for a numbered collection. Omit it to keep frame zero static, even when the collection contains several images. Use a finite value `> 0`. |
+
+For one still, point `sprite` at a `.png`. For a flipbook, use a bare collection
+name such as `plasma_bolt`; the engine loads
+`textures/plasma_bolt/plasma_bolt_00.png`, `_01.png`, and onward. The sequence
+loops at `frameDurationMs` while the projectile travels. A multi-frame collection
+without `frameDurationMs` deliberately remains static.
+
+`visual.light` is an optional dynamic point light that follows the projectile.
+It is cosmetic, casts no entity shadows, and never changes collision or damage.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `color` | `[number, number, number]` | Three finite linear-RGB multipliers. |
+| `intensity` | `number` | Finite brightness multiplier `>= 0`. |
+| `falloffRange` | `number` | Finite attenuation distance in metres, `> 0`. |
+| `falloffModel` | `FalloffKind` (optional) | Distance attenuation model; omit for inverse-square. |
+
+`visual.impactLight` is an optional stationary point light spawned on a real
+projectile contact. It fades locally and is cosmetic; a flight that simply
+reaches its range or lifetime limit produces no impact flash.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `color` | `[number, number, number]` | Three finite linear-RGB multipliers. |
+| `intensity` | `number` | Finite brightness multiplier `>= 0`. |
+| `radius` | `number` | Starting falloff radius in metres; finite and `> 0`. |
+| `peakRadius` | `number` (optional) | Final radius in metres. It must be finite and at least `radius`; when present, the flash expands as it fades. |
+| `fadeMs` | `number` | Finite fade duration in milliseconds, `> 0`. |
+
+For example, a model rocket can combine `{ kind: "model", model:
+"models/rocket.gltf" }` with a warm `light` and an `impactLight` whose
+`peakRadius` is larger than `radius` for an expanding shockwave. Neither light
+is replicated as projectile state: each peer materializes the same descriptor
+presentation locally.
+
 `visual.trail` is optional. Its `sprite` follows the same texture-relative path
 rule. It accepts the billboard-emitter controls `rate`, `lifetime`, `burst`,
 `spread`, `velocity`, `buoyancy`, `drag`, `sizeOverLifetime`,
@@ -330,8 +390,9 @@ non-empty and finite. `buoyancy` and `spinRate` are finite signed controls.
 When present, `spinAnimation` has a finite positive `duration` and a non-empty,
 `rateCurve` of signed spin rates.
 
-The body and trail are presentation only. They make the flight visible but
-never decide whether a projectile contacts a target or applies damage.
+The body, trail, travel light, and impact light are presentation only. They make
+the flight visible but never decide whether a projectile contacts a target or
+applies damage.
 
 The authored `reloadMs` is the duration of one reload step: the whole reload
 under `"magazine"`, or one shell under `"perShell"`. Runtime systems read it

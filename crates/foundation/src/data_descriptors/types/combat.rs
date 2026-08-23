@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_descriptors::types::light::FalloffKind;
 use crate::data_descriptors::{
     DescriptorError, is_portable_content_relative_asset_path, validate_ascii_identifier,
 };
@@ -49,6 +50,45 @@ pub struct ProjectileVisual {
     pub body: ProjectileBodyVisual,
     #[serde(default)]
     pub trail: Option<ProjectileTrailVisual>,
+    /// Optional dynamic point light materialized with the projectile body.
+    /// Descriptor content is shared between peers; this is never a wire field.
+    #[serde(default)]
+    pub light: Option<ProjectileLight>,
+    /// Optional stationary light flash spawned when the projectile contacts a
+    /// surface or target. This is shared descriptor content, never a wire field.
+    #[serde(default)]
+    pub impact_light: Option<ProjectileImpactLight>,
+}
+
+/// Descriptor-owned dynamic point light attached to a travelling projectile.
+/// The point shape is fixed by the projectile presentation path; only its
+/// radiance and attenuation are author-configurable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub falloff_range: f32,
+    #[serde(default = "default_projectile_light_falloff_model")]
+    pub falloff_model: FalloffKind,
+}
+
+/// Descriptor-owned transient point light spawned at a projectile contact.
+/// A peak radius turns the fade into an expanding shockwave; omitting it keeps
+/// the authored radius static for the whole flash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileImpactLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+    #[serde(default)]
+    pub peak_radius: Option<f32>,
+    pub fade_ms: f32,
+}
+
+const fn default_projectile_light_falloff_model() -> FalloffKind {
+    FalloffKind::InverseSquared
 }
 
 /// The projectile's visible body. A mesh body is rigid; no animation state is
@@ -66,6 +106,14 @@ pub enum ProjectileBodyVisual {
         rotation: f32,
         #[serde(default = "default_projectile_sprite_tint")]
         tint: [f32; 3],
+        /// Additive self-lit strength for this sprite collection. Zero keeps
+        /// the billboard output on its existing scene-lit path.
+        #[serde(default)]
+        emissive: f32,
+        /// Uniform hold duration for each numbered collection frame. Omission
+        /// keeps the body pinned to frame zero, even for a multi-frame source.
+        #[serde(default, rename = "frameDurationMs")]
+        frame_duration_ms: Option<f32>,
     },
     Model {
         model: String,
@@ -372,6 +420,8 @@ fn validate_projectile_descriptor(
             opacity,
             rotation,
             tint,
+            emissive,
+            frame_duration_ms,
         } => {
             validate_projectile_asset_path("body.sprite", sprite)?;
             for (field, value) in [
@@ -397,6 +447,22 @@ fn validate_projectile_descriptor(
                     reason:
                         "`components.weapon.projectile.visual.body.tint` must contain finite values"
                             .to_string(),
+                });
+            }
+            if !emissive.is_finite() || *emissive < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.body.emissive` must be finite and >= 0.0, got {emissive}"
+                    ),
+                });
+            }
+            if let Some(frame_duration_ms) = frame_duration_ms
+                && (!frame_duration_ms.is_finite() || *frame_duration_ms <= 0.0)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.body.frameDurationMs` must be finite and > 0.0, got {frame_duration_ms}"
+                    ),
                 });
             }
         }
@@ -489,6 +555,84 @@ fn validate_projectile_descriptor(
                     reason: "`components.weapon.projectile.visual.trail.spinAnimation.rateCurve` must be non-empty".to_string(),
                 });
             }
+        }
+    }
+
+    if let Some(light) = projectile.visual.light.as_ref() {
+        if !light.color.iter().all(|value| value.is_finite()) {
+            return Err(DescriptorError::InvalidShape {
+                reason:
+                    "`components.weapon.projectile.visual.light.color` must contain finite values"
+                        .to_string(),
+            });
+        }
+        for (field, value, valid, constraint) in [
+            (
+                "intensity",
+                light.intensity,
+                light.intensity.is_finite() && light.intensity >= 0.0,
+                ">= 0.0",
+            ),
+            (
+                "falloffRange",
+                light.falloff_range,
+                light.falloff_range.is_finite() && light.falloff_range > 0.0,
+                "> 0.0",
+            ),
+        ] {
+            if !valid {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.light.{field}` must be a finite value {constraint}, got {value}"
+                    ),
+                });
+            }
+        }
+    }
+
+    if let Some(light) = projectile.visual.impact_light.as_ref() {
+        if !light.color.iter().all(|value| value.is_finite()) {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`components.weapon.projectile.visual.impactLight.color` must contain finite values".to_string(),
+            });
+        }
+        for (field, value, valid, constraint) in [
+            (
+                "intensity",
+                light.intensity,
+                light.intensity.is_finite() && light.intensity >= 0.0,
+                ">= 0.0",
+            ),
+            (
+                "radius",
+                light.radius,
+                light.radius.is_finite() && light.radius > 0.0,
+                "> 0.0",
+            ),
+            (
+                "fadeMs",
+                light.fade_ms,
+                light.fade_ms.is_finite() && light.fade_ms > 0.0,
+                "> 0.0",
+            ),
+        ] {
+            if !valid {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.impactLight.{field}` must be a finite value {constraint}, got {value}"
+                    ),
+                });
+            }
+        }
+        if let Some(peak_radius) = light.peak_radius
+            && (!peak_radius.is_finite() || peak_radius < light.radius)
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.projectile.visual.impactLight.peakRadius` must be a finite value >= radius ({}), got {peak_radius}",
+                    light.radius
+                ),
+            });
         }
     }
     Ok(())
@@ -665,8 +809,12 @@ mod tests {
                     opacity: 1.0,
                     rotation: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    emissive: 0.0,
+                    frame_duration_ms: None,
                 },
                 trail: None,
+                light: None,
+                impact_light: None,
             },
         }
     }
@@ -812,6 +960,211 @@ mod tests {
             };
             assert!(reason.contains(field), "expected {field:?} in {reason:?}");
         }
+    }
+
+    #[test]
+    fn projectile_impact_light_validation_names_every_invalid_field() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        let valid = ProjectileImpactLight {
+            color: [0.5, 0.8, 1.0],
+            intensity: 3.0,
+            radius: 4.0,
+            peak_radius: Some(8.0),
+            fade_ms: 160.0,
+        };
+        descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present")
+            .visual
+            .impact_light = Some(valid.clone());
+        assert!(descriptor.clone().validate().is_ok());
+
+        for (field, impact_light) in [
+            (
+                "color",
+                ProjectileImpactLight {
+                    color: [f32::NAN, 0.8, 1.0],
+                    ..valid.clone()
+                },
+            ),
+            (
+                "intensity",
+                ProjectileImpactLight {
+                    intensity: -0.01,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "radius",
+                ProjectileImpactLight {
+                    radius: 0.0,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "peakRadius",
+                ProjectileImpactLight {
+                    peak_radius: Some(3.0),
+                    ..valid.clone()
+                },
+            ),
+            (
+                "fadeMs",
+                ProjectileImpactLight {
+                    fade_ms: 0.0,
+                    ..valid.clone()
+                },
+            ),
+        ] {
+            let mut invalid = descriptor.clone();
+            invalid
+                .projectile
+                .as_mut()
+                .expect("projectile is present")
+                .visual
+                .impact_light = Some(impact_light);
+            let error = invalid
+                .validate()
+                .expect_err("invalid impact light rejects");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains(&format!("impactLight.{field}")), "{reason}");
+        }
+    }
+
+    #[test]
+    fn projectile_sprite_emissive_requires_finite_nonnegative_strength() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        for emissive in [f32::NAN, -0.01] {
+            let mut invalid = descriptor.clone();
+            let ProjectileBodyVisual::Sprite {
+                emissive: strength, ..
+            } = &mut invalid
+                .projectile
+                .as_mut()
+                .expect("projectile is present")
+                .visual
+                .body
+            else {
+                unreachable!();
+            };
+            *strength = emissive;
+
+            let error = invalid
+                .validate()
+                .expect_err("invalid emissive must be rejected");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains("body.emissive"), "{reason}");
+        }
+
+        let ProjectileBodyVisual::Sprite { emissive, .. } = &mut descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present")
+            .visual
+            .body
+        else {
+            unreachable!();
+        };
+        *emissive = 3.0;
+        assert!(
+            descriptor.validate().is_ok(),
+            "HDR emissive must be accepted"
+        );
+    }
+
+    #[test]
+    fn projectile_sprite_emissive_omission_defaults_to_zero() {
+        let body: ProjectileBodyVisual = serde_json::from_value(serde_json::json!({
+            "kind": "sprite",
+            "sprite": "sprites/projectiles/bolt.png",
+        }))
+        .expect("sprite body should deserialize with defaults");
+        let ProjectileBodyVisual::Sprite {
+            emissive,
+            frame_duration_ms,
+            ..
+        } = body
+        else {
+            unreachable!();
+        };
+
+        assert!(emissive.abs() < f32::EPSILON);
+        assert!(frame_duration_ms.is_none());
+    }
+
+    #[test]
+    fn projectile_sprite_frame_duration_deserializes_from_camel_case_authoring_key() {
+        let body: ProjectileBodyVisual = serde_json::from_value(serde_json::json!({
+            "kind": "sprite",
+            "sprite": "sprites/projectiles/bolt.png",
+            "frameDurationMs": 60.0,
+        }))
+        .expect("sprite body should deserialize authored cadence");
+        let ProjectileBodyVisual::Sprite {
+            frame_duration_ms, ..
+        } = body
+        else {
+            unreachable!();
+        };
+
+        assert_eq!(frame_duration_ms, Some(60.0));
+    }
+
+    #[test]
+    fn projectile_sprite_frame_duration_requires_finite_positive_value_when_present() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        for frame_duration_ms in [f32::NAN, 0.0, -0.01] {
+            let mut invalid = descriptor.clone();
+            let ProjectileBodyVisual::Sprite {
+                frame_duration_ms: cadence,
+                ..
+            } = &mut invalid
+                .projectile
+                .as_mut()
+                .expect("projectile is present")
+                .visual
+                .body
+            else {
+                unreachable!();
+            };
+            *cadence = Some(frame_duration_ms);
+
+            let error = invalid
+                .validate()
+                .expect_err("invalid sprite cadence must be rejected");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains("frameDurationMs"), "{reason}");
+        }
+
+        let ProjectileBodyVisual::Sprite {
+            frame_duration_ms, ..
+        } = &mut descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present")
+            .visual
+            .body
+        else {
+            unreachable!();
+        };
+        *frame_duration_ms = Some(60.0);
+        assert!(descriptor.validate().is_ok());
     }
 
     #[test]

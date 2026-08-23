@@ -307,13 +307,32 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("speed", "f32", "How fast the projectile travels, in metres per second. For example, `40` travels about 40 metres in one second. Use a finite number greater than 0.")
         .field("radius", "f32", "How wide the projectile's hit area is, in metres, measured outward from its flight path. `0` is allowed for a point-sized path; larger values are easier to hit with. Use a finite number of 0 or greater.")
         .field("lifetimeMs", "f32", "The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner.")
-        .field("visual", "ProjectileVisual", "What players see while the projectile flies: one required body and an optional cosmetic trail. These settings do not change damage or hit detection.")
+        .field("visual", "ProjectileVisual", "What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.")
         .finish();
     registry
         .register_type("ProjectileVisual")
-        .doc("The visible parts of a flying projectile. A body is required; the optional trail is extra smoke, sparks, or similar particles.")
+        .doc("The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation.")
         .field("body", "ProjectileBodyVisual", "The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.")
         .field("trail?", "ProjectileTrailVisual", "Optional small sprite particles that follow the projectile, such as smoke or sparks. Leave it out when the projectile should have no trail.")
+        .field("light?", "ProjectileLight", "Optional dynamic point light that travels with the body. It affects nearby surfaces only; it never changes damage or hit detection.")
+        .field("impactLight?", "ProjectileImpactLight", "Optional stationary point light at a resolved impact. It fades locally and never changes damage or hit detection.")
+        .finish();
+    registry
+        .register_type("ProjectileLight")
+        .doc("A dynamic point light attached to a travelling projectile. It uses the same falloff choices as runtime lights and casts no entity shadows.")
+        .field("color", "[f32; 3]", "Linear RGB multiplier as exactly three finite numbers.")
+        .field("intensity", "f32", "Brightness multiplier. Use a finite number of 0 or greater.")
+        .field("falloffRange", "f32", "How far the light reaches in metres. Use a finite number greater than 0.")
+        .field("falloffModel?", "FalloffKind", "Distance attenuation model. Omit for the inverse-square default.")
+        .finish();
+    registry
+        .register_type("ProjectileImpactLight")
+        .doc("A transient point light spawned at a projectile impact. It always fades over `fadeMs` and casts no entity shadows.")
+        .field("color", "[f32; 3]", "Linear RGB multiplier as exactly three finite numbers.")
+        .field("intensity", "f32", "Brightness multiplier. Use a finite number of 0 or greater.")
+        .field("radius", "f32", "Starting falloff radius in metres. Use a finite number greater than 0.")
+        .field("peakRadius?", "f32", "Optional final falloff radius in metres. When present it must be at least `radius` and expands the flash while it fades.")
+        .field("fadeMs", "f32", "How long the flash fades in milliseconds. Use a finite number greater than 0.")
         .finish();
     registry
         .register_type("ProjectileSpriteBodyVisual")
@@ -323,6 +342,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("opacity?", "f32", "How transparent the sprite is: `1` is fully visible and `0` is invisible. The default is `1`. Any finite number is accepted.")
         .field("rotation?", "f32", "How far to turn the flat sprite, in radians. `0` leaves it upright; about `1.57` is a quarter turn. The default is `0`; use a finite number.")
         .field("tint?", "[f32; 3]", "A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. Each number must be finite. This value is stored today but the billboard renderer does not yet apply sprite tint visibly.")
+        .field("emissive?", "f32", "Additive self-lit strength for this sprite. `0` keeps the normal scene-lit appearance; values around `2` to `4` make a full-bright HDR bolt that can bloom. Use a finite number of 0 or greater.")
+        .field("frameDurationMs?", "f32", "How long to hold each numbered sprite frame, in milliseconds. Leave it out to keep frame zero static, even when `sprite` names a multi-frame collection. Use a finite number greater than 0.")
         .finish();
     registry
         .register_type("ProjectileModelBodyVisual")

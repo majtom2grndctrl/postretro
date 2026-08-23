@@ -11,12 +11,40 @@ use glam::Mat4;
 use postretro_model::anim::{Loop, sample_clip_looped_world_modified};
 use postretro_model::gltf_loader::{SocketBinding, load_model};
 
+/// A path that looks like a model file — used to catch the common mistake of
+/// `socket_dump <model> <weapon>`, which parses the weapon into the clip slot.
+fn looks_like_model_path(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.ends_with(".gltf") || lower.ends_with(".glb") || lower.ends_with(".bin")
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: socket_dump <model.gltf> [clip] [socket] [time]");
-    let clip_name = args.next().unwrap_or_else(|| "idle_aiming".to_string());
-    let socket = args.next().unwrap_or_else(|| "hand_r".to_string());
-    let time: f32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    // Positional args, collected once (indices stay stable for the weapon and
+    // prior-euler slots below): <model> [clip] [socket] [time] [weapon] [ex ey ez].
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let path = argv.first().cloned().expect(
+        "usage: socket_dump <model.gltf> [clip] [socket] [time] [weapon.gltf] [ex ey ez]",
+    );
+    let clip_name = argv.get(1).cloned().unwrap_or_else(|| "idle_aiming".to_string());
+    // Args are strictly positional: a weapon must sit in slot 5 with clip,
+    // socket, and time supplied first. A .gltf/.glb/.bin in the clip slot almost
+    // always means someone wrote `socket_dump <model> <weapon>` and it is about
+    // to panic with "clip not found".
+    if looks_like_model_path(&clip_name) {
+        eprintln!(
+            "WARNING: clip arg {clip_name:?} looks like a model path. Args are positional — \
+             to mount a weapon pass clip/socket/time first: \
+             socket_dump <model> <clip> <socket> <time> <weapon>"
+        );
+    }
+    let socket = argv.get(2).cloned().unwrap_or_else(|| "hand_r".to_string());
+    let time: f32 = match argv.get(3) {
+        Some(s) => s.parse().unwrap_or_else(|_| {
+            eprintln!("WARNING: time arg {s:?} is not a number; using 0.0");
+            0.0
+        }),
+        None => 0.0,
+    };
 
     let model = load_model(Path::new(&path)).expect("load_model failed");
     let joint = match model.sockets.get(&socket) {
@@ -67,7 +95,7 @@ fn main() {
     //
     // Optional args 6-8: the CURRENT bake's Blender-XYZ --rotate-euler degrees;
     // when given, prints the composed TOTAL euler to re-bake from the raw source.
-    if let Some(weapon_path) = std::env::args().nth(5) {
+    if let Some(weapon_path) = argv.get(4).cloned() {
         use glam::{Mat3, Vec3};
         let weapon = load_model(Path::new(&weapon_path)).expect("load weapon failed");
         let verts: Vec<Vec3> =
@@ -207,20 +235,27 @@ fn main() {
             "  DELTA rotate-euler (Blender XYZ deg, apply to THIS baked model): {:.3} {:.3} {:.3}",
             de[0], de[1], de[2]
         );
-        let old: Vec<f32> = (6..9)
-            .filter_map(|i| std::env::args().nth(i))
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        if old.len() == 3 {
-            let rz = Mat3::from_rotation_z(old[2].to_radians());
-            let ry = Mat3::from_rotation_y(old[1].to_radians());
-            let rx = Mat3::from_rotation_x(old[0].to_radians());
-            let r_cur_b = rz * ry * rx;
-            let te = blender_euler_deg(d_b * r_cur_b);
-            eprintln!(
-                "  TOTAL rotate-euler (Blender XYZ deg, re-bake from raw source): {:.3} {:.3} {:.3}",
-                te[0], te[1], te[2]
-            );
+        // Prior --rotate-euler (ex ey ez) in slots 6-8. All three are required
+        // for the TOTAL line; a partial or non-numeric set is a mistake, not a
+        // silent skip.
+        let euler_args: Vec<&String> = (5..8).filter_map(|i| argv.get(i)).collect();
+        if !euler_args.is_empty() {
+            let old: Vec<f32> = euler_args.iter().filter_map(|s| s.parse().ok()).collect();
+            if old.len() == 3 {
+                let rz = Mat3::from_rotation_z(old[2].to_radians());
+                let ry = Mat3::from_rotation_y(old[1].to_radians());
+                let rx = Mat3::from_rotation_x(old[0].to_radians());
+                let r_cur_b = rz * ry * rx;
+                let te = blender_euler_deg(d_b * r_cur_b);
+                eprintln!(
+                    "  TOTAL rotate-euler (Blender XYZ deg, re-bake from raw source): {:.3} {:.3} {:.3}",
+                    te[0], te[1], te[2]
+                );
+            } else {
+                eprintln!(
+                    "  WARNING: prior --rotate-euler needs exactly 3 numbers (ex ey ez); got {euler_args:?} — skipping the TOTAL re-bake line"
+                );
+            }
         }
     }
 }

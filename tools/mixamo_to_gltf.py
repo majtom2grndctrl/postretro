@@ -23,7 +23,7 @@ Use --yaw when a model was exported facing a non-standard direction (it
 rotates about the vertical axis on top of the standard facing flip).
 
 After export the script tags the Mixamo skeleton with engine extras
-(poseMask, aimBendWeight, socket) and sets the skin skeleton root.
+(poseMask, aimBendWeight, socket, hitZone) and sets the skin skeleton root.
 Pass --no-tag to skip.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
@@ -81,6 +81,19 @@ FOOT_R = {"RightFoot"}
 SOCKETS = {
     "RightHand": "hand_r",
     "LeftHand": "hand_l",
+}
+
+# Skeletal hit zones (bone -> `hitZone` tag). A descriptor's `zoneMultipliers`
+# key matches a joint's zone tag by string, so without this tag the head/leg
+# multipliers are silently dead. Radius is omitted; the engine applies its
+# DEFAULT_ZONE_RADIUS (see scripting/systems/hit_zones.rs). Feet are left
+# untagged (small, ground-level); the thigh+shin carry the "leg" zone.
+HIT_ZONES = {
+    "Head": "head",
+    "LeftUpLeg": "leg",
+    "LeftLeg": "leg",
+    "RightUpLeg": "leg",
+    "RightLeg": "leg",
 }
 
 
@@ -237,11 +250,18 @@ def strip_non_bone_fcurves(action):
     doomed = [fc for fc in list(fcurves) if fcurve_bone_name(fc.data_path) is None]
     removed = 0
     for fc in doomed:
+        data_path = fc.data_path
         try:
             fcurves.remove(fc)
             removed += 1
-        except (RuntimeError, ReferenceError, TypeError):
-            pass
+        except (RuntimeError, ReferenceError, TypeError) as exc:
+            # A survivor here is not benign: an object-scale channel that
+            # outlives this pass gets evaluated in Phase 2 and clobbers the
+            # armature's import scale, corrupting the baked output size. Never
+            # swallow it silently.
+            print(f"  WARNING: could not strip object-level channel "
+                  f"'{data_path}' from '{action.name}' ({exc}); "
+                  f"baked output size may be corrupted")
     return removed
 
 
@@ -943,6 +963,9 @@ def tag_gltf_skeleton(gltf_path):
         if short in SOCKETS:
             extras["socket"] = SOCKETS[short]
 
+        if short in HIT_ZONES:
+            extras["hitZone"] = HIT_ZONES[short]
+
         if extras:
             node["extras"] = extras
             tagged += 1
@@ -961,6 +984,7 @@ def tag_gltf_skeleton(gltf_path):
     print(f"\nTagged {tagged} bones with engine extras")
     mask_counts = {}
     socket_count = 0
+    hit_zone_counts = {}
     for node in nodes:
         extras = node.get("extras")
         if not extras:
@@ -971,10 +995,15 @@ def tag_gltf_skeleton(gltf_path):
                 mask_counts[m] = mask_counts.get(m, 0) + 1
         if "socket" in extras:
             socket_count += 1
+        hz = extras.get("hitZone")
+        if hz:
+            hit_zone_counts[hz] = hit_zone_counts.get(hz, 0) + 1
     for mask, count in sorted(mask_counts.items()):
         print(f"  poseMask '{mask}': {count} bone(s)")
     if socket_count:
         print(f"  sockets: {socket_count}")
+    for zone, count in sorted(hit_zone_counts.items()):
+        print(f"  hitZone '{zone}': {count} bone(s)")
     weights_str = ", ".join(f"{n}={w}" for n, w in sorted(AIM_SPINE_WEIGHTS.items()))
     print(f"  aimBendWeight: {weights_str}")
     if hips_idx is not None:

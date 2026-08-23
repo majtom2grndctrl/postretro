@@ -24,15 +24,18 @@ pub enum LightKind {
 /// Per-light animation curve set.
 ///
 /// `brightness`, `color`, and `direction` are uniform samples over `period_ms`;
-/// GPU evaluator samples via shared Catmull-Rom (see `curve_eval.wgsl`). `None`
-/// on a channel means the channel holds constant at the static value.
+/// GPU evaluator samples via shared Catmull-Rom (see `curve_eval.wgsl`).
+/// `radius` is sampled by the CPU light bridge because it changes both the
+/// packed falloff range and the culling influence volume. `None` on a channel
+/// means the channel holds constant at the static value.
 ///
 /// `play_count`:
 /// - `None` — loop forever (default GPU behavior).
 /// - `Some(n)` — play `n` endpoint-clamped periods, then the light bridge writes
-///   final radiance back as static state and clears `animation`. Brightness
+///   final animated values back as static state and clears `animation`. Brightness
 ///   multiplies authored intensity; color and direction replace their authored
-///   values. The GPU descriptor never carries `play_count`; completion is CPU-side.
+///   values; radius replaces `falloff_range`. The GPU descriptor never carries
+///   `play_count`; completion is CPU-side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LightAnimation {
@@ -56,6 +59,8 @@ pub struct LightAnimation {
     pub color: Option<Vec<Vec3Lit>>,
     #[serde(default)]
     pub direction: Option<Vec<Vec3Lit>>,
+    #[serde(default)]
+    pub radius: Option<Vec<f32>>,
 }
 
 /// Script-visible state of a map light. Fields that do not vary at runtime
@@ -128,6 +133,7 @@ mod tests {
                 brightness: Some(vec![0.1, 1.0, 0.1]),
                 color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
                 direction: Some(vec![Vec3Lit([0.0, -1.0, 0.0]), Vec3Lit([0.1, -0.99, 0.0])]),
+                radius: Some(vec![4.0, 8.0, 12.0]),
             }),
         };
         let json = serde_json::to_string(&value).unwrap();
@@ -139,7 +145,7 @@ mod tests {
     fn light_animation_defaults_accept_missing_optional_fields() {
         // A scripted animation with only `period_ms` + `brightness` should
         // deserialize without requiring `phase`, `play_count`, `color`, or
-        // `direction` keys.
+        // `direction`, or `radius` keys.
         let json = r#"{"periodMs": 500.0, "brightness": [0.1, 1.0]}"#;
         let anim: LightAnimation = serde_json::from_str(json).unwrap();
         assert_eq!(anim.period_ms, 500.0);
@@ -148,5 +154,6 @@ mod tests {
         assert_eq!(anim.brightness, Some(vec![0.1, 1.0]));
         assert_eq!(anim.color, None);
         assert_eq!(anim.direction, None);
+        assert_eq!(anim.radius, None);
     }
 }

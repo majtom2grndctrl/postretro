@@ -213,7 +213,7 @@ impl LightBridge {
                     .ok()?;
                 let brightness =
                     eval_effective_brightness(component, self.snapshots.get(&id), current_time);
-                let map_light = component_to_map_light(
+                let mut map_light = component_to_map_light(
                     component,
                     self.cached_follow_positions[map_idx]
                         .map(position_to_origin_f64)
@@ -221,6 +221,11 @@ impl LightBridge {
                     self.shape[map_idx].is_dynamic,
                     self.shape[map_idx].cell_index,
                 );
+                if let Some(radius) =
+                    eval_animated_radius(component, self.snapshots.get(&id), current_time)
+                {
+                    map_light.falloff_range = radius;
+                }
                 Some((map_light, brightness))
             })
             .collect()
@@ -450,7 +455,7 @@ impl LightBridge {
         // in place without changing slot indices.
         // Settled animations are collected and written back after the loop to
         // avoid aliasing the registry borrow.
-        let mut settled: Vec<(EntityId, LightComponent)> = Vec::new();
+        let mut settled: Vec<(usize, EntityId, LightComponent, bool)> = Vec::new();
         for (map_idx, &id) in self.entity_ids.iter().enumerate() {
             let Ok(current) = registry.get_component::<LightComponent>(id) else {
                 // A tracked light that disappears must force one tombstone
@@ -493,8 +498,24 @@ impl LightBridge {
             if let Some(settled_component) =
                 check_play_count_completion(current, snapshot, current_time)
             {
-                settled.push((id, settled_component));
+                let had_radius_animation = current
+                    .animation
+                    .as_ref()
+                    .is_some_and(|animation| animation.radius.is_some());
+                settled.push((map_idx, id, settled_component, had_radius_animation));
                 continue;
+            }
+
+            // Radius is evaluated CPU-side and changes the packed forward
+            // range plus its paired culling sphere, so it cannot share the
+            // GPU-only brightness/color dirty behavior. A stationary impact
+            // flash has no follow-pose movement to make this frame dirty.
+            if current
+                .animation
+                .as_ref()
+                .is_some_and(|animation| animation.radius.is_some())
+            {
+                self.dirty = true;
             }
 
             let cycle_index = if changed {
@@ -536,9 +557,16 @@ impl LightBridge {
 
         // Commit settled components so a subsequent `world.query` observes
         // post-animation static state.
-        for (id, settled_component) in settled {
+        for (map_idx, id, settled_component, had_radius_animation) in settled {
             // Stale-id error means the entity was despawned between read and write; ignore.
             let _ = registry.set_component(id, settled_component.clone());
+            if had_radius_animation {
+                // The active-curve pack path above overrides this cache every
+                // frame. Keep its final value after clearing `animation` so
+                // the completion frame and later static frames retain the
+                // radius paired with the settled `GpuLight` range.
+                self.cached_influences[map_idx].radius = settled_component.falloff_range;
+            }
             self.snapshots.insert(
                 id,
                 LightSnapshot {
@@ -608,7 +636,9 @@ impl LightBridge {
             };
 
             let followed_position = self.cached_follow_positions[map_idx];
-            let map_light = component_to_map_light(
+            let sampled_radius =
+                eval_animated_radius(component, self.snapshots.get(&id), current_time);
+            let mut map_light = component_to_map_light(
                 component,
                 followed_position
                     .map(position_to_origin_f64)
@@ -616,6 +646,9 @@ impl LightBridge {
                 self.shape[map_idx].is_dynamic,
                 self.shape[map_idx].cell_index,
             );
+            if let Some(radius) = sampled_radius {
+                map_light.falloff_range = radius;
+            }
             let light_base =
                 self.fgd_sample_float_count + (map_idx as u32) * (SCRIPTED_FLOATS_PER_LIGHT as u32);
             let brightness_offset = light_base;
@@ -654,6 +687,9 @@ impl LightBridge {
                 let mut influence = self.cached_influences[map_idx].clone();
                 if let Some(position) = followed_position {
                     influence.center = position;
+                }
+                if let Some(radius) = sampled_radius {
+                    influence.radius = radius;
                 }
                 influences.push(influence);
             }
@@ -760,6 +796,7 @@ fn map_light_to_component(
                 .then(|| descriptor.color.iter().copied().map(Vec3Lit).collect()),
             direction: (!descriptor.direction.is_empty())
                 .then(|| descriptor.direction.iter().copied().map(Vec3Lit).collect()),
+            radius: None,
         }),
     }
 }
@@ -961,28 +998,58 @@ fn eval_effective_brightness(
             } else if let Some(brightness) = &anim.brightness
                 && !brightness.is_empty()
             {
-                let period_s = anim.period_ms / 1000.0;
-                if period_s > 0.0 {
-                    let phase = anim.phase.unwrap_or(0.0).rem_euclid(1.0);
-                    if anim.play_count.is_some_and(|count| count > 0)
-                        && let Some(snapshot) = snapshot
-                        && let Some(start) = snapshot.animation_start_time
-                    {
-                        let cycle_start = start + snapshot.animation_cycle_index as f32 * period_s;
-                        let open_t =
-                            phase + ((current_time - cycle_start) / period_s) * (1.0 - phase);
-                        sample_brightness_at_open(brightness, open_t)
-                    } else {
-                        let cycle_t = (current_time / period_s + phase).rem_euclid(1.0);
-                        sample_brightness_at(brightness, cycle_t)
-                    }
-                } else {
-                    brightness[0]
-                }
+                sample_light_animation_curve(anim, snapshot, current_time, brightness)
             } else {
                 1.0
             }
         }
+    }
+}
+
+/// Current sampled falloff range, when an animation owns the radius channel.
+/// Radius follows the brightness timing contract exactly, but stays CPU-side:
+/// shaders only receive its result through the packed `GpuLight` range.
+fn eval_animated_radius(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> Option<f32> {
+    let animation = component.animation.as_ref()?;
+    let radius = animation.radius.as_deref()?;
+    Some(sample_light_animation_curve(
+        animation,
+        snapshot,
+        current_time,
+        radius,
+    ))
+}
+
+/// Sample a scalar light-animation channel using the same closed-loop and
+/// finite endpoint-clamped timing as brightness. `sample_brightness_at` names
+/// the existing CPU/WGSL Catmull-Rom mirror; scalar radius curves deliberately
+/// use that same evaluator.
+fn sample_light_animation_curve(
+    animation: &LightAnimation,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+    samples: &[f32],
+) -> f32 {
+    let period_s = animation.period_ms / 1000.0;
+    if period_s <= 0.0 {
+        return sample_brightness_at(samples, 0.0);
+    }
+
+    let phase = animation.phase.unwrap_or(0.0).rem_euclid(1.0);
+    if animation.play_count.is_some_and(|count| count > 0)
+        && let Some(snapshot) = snapshot
+        && let Some(start) = snapshot.animation_start_time
+    {
+        let cycle_start = start + snapshot.animation_cycle_index as f32 * period_s;
+        let open_t = phase + ((current_time - cycle_start) / period_s) * (1.0 - phase);
+        sample_brightness_at_open(samples, open_t)
+    } else {
+        let cycle_t = (current_time / period_s + phase).rem_euclid(1.0);
+        sample_brightness_at(samples, cycle_t)
     }
 }
 
@@ -1153,6 +1220,11 @@ fn check_play_count_completion(
     {
         settled.cone_direction = Some(final_direction.as_f32_3());
     }
+    if let Some(radius) = &anim.radius
+        && let Some(&final_radius) = radius.last()
+    {
+        settled.falloff_range = final_radius;
+    }
     settled.animation = None;
     Some(settled)
 }
@@ -1217,6 +1289,7 @@ mod tests {
             brightness: Some(vec![0.0, 1.0, 0.0]),
             color: None,
             direction: None,
+            radius: None,
         }
     }
 
@@ -1244,6 +1317,27 @@ mod tests {
 
     fn live_runtime_count(bridge: &LightBridge) -> usize {
         bridge.entity_ids.len() - bridge.authored_light_count - bridge.free_slots.len()
+    }
+
+    fn packed_dynamic_range(update: &LightBridgeUpdate) -> f32 {
+        f32::from_ne_bytes(update.lights_bytes[44..48].try_into().unwrap())
+    }
+
+    fn packed_dynamic_influence_radius(update: &LightBridgeUpdate) -> f32 {
+        f32::from_ne_bytes(update.influence_bytes[12..16].try_into().unwrap())
+    }
+
+    fn assert_packed_radius_in_lockstep(update: &LightBridgeUpdate, expected: f32) {
+        let packed_range = packed_dynamic_range(update);
+        let influence_radius = packed_dynamic_influence_radius(update);
+        assert!(
+            (packed_range - expected).abs() < 1e-6,
+            "packed GpuLight range should be {expected}; got {packed_range}"
+        );
+        assert!(
+            (influence_radius - expected).abs() < 1e-6,
+            "packed influence radius should be {expected}; got {influence_radius}"
+        );
     }
 
     #[test]
@@ -1401,6 +1495,124 @@ mod tests {
     }
 
     #[test]
+    fn radius_animation_repacks_growing_and_shrinking_range_with_influence() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: None,
+            brightness: None,
+            color: None,
+            direction: None,
+            radius: Some(vec![4.0, 12.0]),
+        });
+        registry.set_component(id, component).unwrap();
+
+        let start = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert!(start.has_dirty_data);
+        assert_packed_radius_in_lockstep(&start, 4.0);
+
+        let grown = bridge.update(&mut registry, 0.5, 0.0).unwrap();
+        assert!(
+            grown.has_dirty_data,
+            "an active radius curve must re-pack even while the light is stationary"
+        );
+        assert_packed_radius_in_lockstep(&grown, 12.0);
+        let grown_map_light = bridge.collect_all_as_map_lights(&registry, 0.5);
+        assert!(
+            (grown_map_light[0].0.falloff_range - 12.0).abs() < 1e-6,
+            "CPU MapLight consumers must receive the same current radius"
+        );
+
+        let shrunk = bridge.update(&mut registry, 1.0, 0.0).unwrap();
+        assert!(shrunk.has_dirty_data);
+        assert_packed_radius_in_lockstep(&shrunk, 4.0);
+    }
+
+    #[test]
+    fn radius_none_keeps_static_range_and_influence_bytes_identical() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+        let static_update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: None,
+            brightness: Some(vec![0.0, 1.0, 0.0]),
+            color: None,
+            direction: None,
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let animated_without_radius = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(
+            animated_without_radius.lights_bytes,
+            static_update.lights_bytes
+        );
+        assert_eq!(
+            animated_without_radius.influence_bytes, static_update.influence_bytes,
+            "a missing radius curve must retain the existing culling volume byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn finite_radius_animation_settles_final_range_and_influence() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.falloff_range = 3.0;
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: None,
+            brightness: None,
+            color: None,
+            direction: None,
+            radius: Some(vec![3.0, 18.0]),
+        });
+        registry.set_component(id, component).unwrap();
+
+        let initial = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_packed_radius_in_lockstep(&initial, 3.0);
+
+        let settled_update = bridge.update(&mut registry, 1.01, 0.0).unwrap();
+        let settled_component = registry.get_component::<LightComponent>(id).unwrap();
+        assert!(settled_component.animation.is_none());
+        assert!(
+            (settled_component.falloff_range - 18.0).abs() < 1e-6,
+            "finite completion must write the final radius back to static component state"
+        );
+        assert_packed_radius_in_lockstep(&settled_update, 18.0);
+    }
+
+    #[test]
     fn mutating_intensity_in_registry_produces_repacked_upload_within_one_frame() {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
@@ -1450,6 +1662,7 @@ mod tests {
             brightness: Some(vec![0.1, 1.0, 0.1]),
             color: None,
             direction: None,
+            radius: None,
         });
         registry.set_component(id, component).unwrap();
 
@@ -1499,6 +1712,7 @@ mod tests {
             brightness: Some(vec![1.0, 0.5, 0.25]),
             color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
             direction: None,
+            radius: None,
         });
         registry.set_component(id, component).unwrap();
 
@@ -1575,6 +1789,7 @@ mod tests {
             brightness: Some(vec![1.0, 0.25]),
             color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
             direction: None,
+            radius: None,
         });
         registry.set_component(id, component).unwrap();
 
@@ -1620,6 +1835,7 @@ mod tests {
             brightness: Some(vec![1.0, 0.25]),
             color: None,
             direction: None,
+            radius: None,
         };
 
         let mut comp = registry
@@ -1689,6 +1905,7 @@ mod tests {
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         };
         let bytes =
@@ -1717,6 +1934,7 @@ mod tests {
             brightness: Some(vec![0.1, 1.0]),
             color: None,
             direction: None,
+            radius: None,
         });
         registry.set_component(id, comp).unwrap();
         let update = bridge.update(&mut registry, 0.0, 0.0).expect("dirty");
@@ -1750,6 +1968,7 @@ mod tests {
             brightness: Some(vec![1.0, 0.0]),
             color: None,
             direction: None,
+            radius: None,
         });
         registry.set_component(id, comp).unwrap();
         let _ = bridge.update(&mut registry, 0.0, 0.0);
@@ -1837,6 +2056,7 @@ mod tests {
             brightness: Some(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             color: None,
             direction: None,
+            radius: None,
         });
         registry.set_component(id, comp).unwrap();
         let _ = bridge.update(&mut registry, 0.0, 0.0); // flush dirty frame
@@ -1905,6 +2125,7 @@ mod tests {
             brightness: Some(vec![0.0, 1.0, 0.0]),
             color: None,
             direction: None,
+            radius: None,
         });
         registry.set_component(id, component).unwrap();
 

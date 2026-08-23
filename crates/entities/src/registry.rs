@@ -713,6 +713,10 @@ pub struct EntityRegistry {
     /// stamps it from the local shared-content clock and the billboard collector
     /// reads it while packing the visual-only projectile body.
     projectile_presentation_ages: Vec<Option<ProjectilePresentationAge>>,
+    /// Changes only when Light-component membership changes, not when an existing
+    /// light's fields mutate. Render-side enrollment uses it to avoid scanning the
+    /// full light column on frames that cannot contain a new runtime light.
+    light_membership_generation: u64,
     /// Parallel column of per-entity tag lists. Space-delimited in the PRL
     /// wire format; stored here as pre-split `Vec<String>` per slot. An entity
     /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
@@ -771,6 +775,7 @@ impl EntityRegistry {
             components: std::array::from_fn(|_| Vec::new()),
             previous_transforms: Vec::new(),
             projectile_presentation_ages: Vec::new(),
+            light_membership_generation: 0,
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
@@ -1013,6 +1018,9 @@ impl EntityRegistry {
 
     pub fn despawn(&mut self, id: EntityId) -> Result<(), RegistryError> {
         let index = id.index() as usize;
+        let had_light = self.components[ComponentKind::Light as usize]
+            .get(index)
+            .is_some_and(Option::is_some);
         let slot = self
             .slots
             .get_mut(index)
@@ -1024,6 +1032,9 @@ impl EntityRegistry {
 
         for column in &mut self.components {
             column[index] = None;
+        }
+        if had_light {
+            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
         }
         self.previous_transforms[index] = None;
         self.projectile_presentation_ages[index] = None;
@@ -1059,9 +1070,9 @@ impl EntityRegistry {
         }
     }
 
-    /// Store local presentation timing for a descriptor-materialized projectile.
-    /// This is intentionally not a serializable registry component: peers derive
-    /// it from their own fixed-tick presentation clock without a wire field.
+    /// Store fixed-tick presentation timing for a descriptor-materialized projectile.
+    /// This is intentionally not a serializable registry component: the baseline's
+    /// authoritative server tick supplies the shared epoch without a wire field.
     pub fn set_projectile_presentation_age(
         &mut self,
         id: EntityId,
@@ -1072,7 +1083,7 @@ impl EntityRegistry {
         Ok(())
     }
 
-    /// Read the locally-derived timing state for a visual-only projectile.
+    /// Read the fixed-tick timing state for a visual-only projectile.
     pub fn projectile_presentation_age(
         &self,
         id: EntityId,
@@ -1276,7 +1287,12 @@ impl EntityRegistry {
         value: T,
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
+        let adds_light =
+            T::KIND == ComponentKind::Light && self.components[T::KIND as usize][index].is_none();
         self.components[T::KIND as usize][index] = Some(value.into_value());
+        if adds_light {
+            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
+        }
         Ok(())
     }
 
@@ -1287,8 +1303,18 @@ impl EntityRegistry {
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
         let kind = value.kind();
+        let adds_light =
+            kind == ComponentKind::Light && self.components[kind as usize][index].is_none();
         self.components[kind as usize][index] = Some(value);
+        if adds_light {
+            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
+        }
         Ok(())
+    }
+
+    /// Monotonic membership stamp for the Light component column.
+    pub fn light_membership_generation(&self) -> u64 {
+        self.light_membership_generation
     }
 
     pub fn has_component_kind(
@@ -1307,6 +1333,9 @@ impl EntityRegistry {
             return Err(RegistryError::ComponentNotFound { id, kind: T::KIND });
         }
         *cell = None;
+        if T::KIND == ComponentKind::Light {
+            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
+        }
         Ok(())
     }
 
@@ -1321,6 +1350,9 @@ impl EntityRegistry {
             return Err(RegistryError::ComponentNotFound { id, kind });
         }
         *cell = None;
+        if kind == ComponentKind::Light {
+            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
+        }
         Ok(())
     }
 
@@ -1385,7 +1417,7 @@ impl EntityRegistry {
     ///   re-blend it. Setting `previous == current` makes
     ///   `lerp(previous, current, alpha) == current` for every alpha — the remote
     ///   pose is alpha-invariant, rendered exactly as the buffer produced it.
-    /// - **Local-pawn reconcile teleport (M15 Phase 3 Task 5):** a teleport-class
+    /// - **Local-pawn reconcile teleport:** a teleport-class
     ///   correction snaps the predicted pawn to the authoritative pose and must
     ///   leave no prev→current arc for the render blend to interpolate across — that
     ///   arc would smear the teleport into a visible slide. Stamping

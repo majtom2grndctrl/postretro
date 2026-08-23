@@ -54,10 +54,13 @@ pub struct ProjectileComponent {
 ///
 /// This deliberately lives in [`EntityRegistry`](crate::registry::EntityRegistry)'s
 /// non-replicated side data instead of `ComponentKind`: the shared descriptor
-/// determines cadence, while the local presentation clock determines elapsed age.
+/// determines cadence, while the replicated fixed-tick epoch determines elapsed age.
 /// Adding it to the replicated component vocabulary would change the wire format.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProjectilePresentationAge {
-    pub spawn_time: f32,
+    /// Host fixed tick at which this presentation first became authoritative.
+    /// Observer materialization keeps this stamp rather than substituting local
+    /// snapshot-arrival or render-frame time.
+    pub spawn_tick: u32,
     pub flipbook_active: bool,
 }

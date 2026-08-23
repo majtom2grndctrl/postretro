@@ -533,7 +533,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lighting = in.lighting;
     let lit_rgb = sprite_sample.rgb * lighting * in.opacity;
     // Emissive is self-only: it intentionally does not use LightTermMask.
-    let emissive_rgb = sprite_sample.rgb * draw_params.params.w;
+    let emissive_rgb = sprite_sample.rgb * draw_params.params.w * in.opacity;
     // Alpha channel is used as the additive blend factor; driver expects
     // straight color. The pipeline's blend state is set to additive
     // (src=ONE, dst=ONE) so the alpha here is not consumed for blending.

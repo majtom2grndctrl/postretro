@@ -790,7 +790,6 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 -20.0,
                 1.0 / 60.0,
                 Duration::from_secs_f32(frame_dt),
-                0.0,
                 None,
                 None,
                 None,

@@ -36,6 +36,7 @@ enum PendingProjectileAction {
 
 enum ProjectileResolution<'a> {
     Impact {
+        projectile: EntityId,
         component: &'a ProjectileComponent,
         impact: &'a WeaponImpact,
     },
@@ -48,6 +49,12 @@ enum ProjectileResolution<'a> {
 pub(crate) enum PredictedProjectileResolution {
     Impact { shot_id: u64, impact: WeaponImpact },
     Expired { shot_id: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ProjectileContactEvent {
+    pub(crate) projectile: EntityId,
+    pub(crate) point: Vec3,
 }
 
 struct WorldHit {
@@ -74,7 +81,8 @@ pub(crate) fn advance(
     anim_time: f64,
     dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-) {
+) -> Vec<ProjectileContactEvent> {
+    let mut contacts = Vec::new();
     advance_matching(
         registry,
         collision_world,
@@ -83,9 +91,18 @@ pub(crate) fn advance(
         dt,
         |_| true,
         |registry, resolution| {
-            let ProjectileResolution::Impact { component, impact } = resolution else {
+            let ProjectileResolution::Impact {
+                projectile,
+                component,
+                impact,
+            } = resolution
+            else {
                 return;
             };
+            contacts.push(ProjectileContactEvent {
+                projectile,
+                point: impact.point,
+            });
             weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
             if let Some(config) = component.impact_light.as_ref() {
                 weapon::spawn_projectile_impact_light(registry, impact.point, config);
@@ -112,6 +129,7 @@ pub(crate) fn advance(
             }
         },
     );
+    contacts
 }
 
 /// Advance only locally-predicted connected-client projectiles. Their collision
@@ -134,7 +152,9 @@ pub(crate) fn advance_predicted(
         dt,
         |component| component.predicted_shot_id.is_some(),
         |registry, resolution| match resolution {
-            ProjectileResolution::Impact { component, impact } => {
+            ProjectileResolution::Impact {
+                component, impact, ..
+            } => {
                 weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
                 if let Some(config) = component.impact_light.as_ref() {
                     weapon::spawn_projectile_impact_light(registry, impact.point, config);
@@ -146,7 +166,7 @@ pub(crate) fn advance_predicted(
                     impact: impact.clone(),
                 });
             }
-            ProjectileResolution::Expire { component } => {
+            ProjectileResolution::Expire { component, .. } => {
                 on_resolution(PredictedProjectileResolution::Expired {
                     shot_id: component
                         .predicted_shot_id
@@ -338,6 +358,7 @@ fn advance_matching(
                 on_resolution(
                     &mut registry,
                     ProjectileResolution::Impact {
+                        projectile,
                         component: &component,
                         impact: &impact,
                     },
@@ -561,13 +582,29 @@ mod tests {
             .get_component::<LightComponent>(flash)
             .expect("flash carries a point light");
         assert!(transform.position.distance(Vec3::new(0.0, 0.0, -0.5)) <= 1.0e-6);
-        assert_eq!(light.origin, [0.0, 0.0, -0.5]);
+        assert!(Vec3::from_array(light.origin).distance(Vec3::new(0.0, 0.0, -0.5)) <= 1.0e-6);
         assert!(!light.follow_transform);
         assert!((light.intensity - 3.5).abs() <= f32::EPSILON);
         assert!((light.falloff_range - 4.0).abs() <= f32::EPSILON);
         let animation = light.animation.as_ref().expect("flash fades once");
-        assert_eq!(animation.brightness.as_deref(), Some(&[1.0, 0.0][..]));
-        assert_eq!(animation.radius.as_deref(), Some(&[4.0, 9.0][..]));
+        for (actual, expected) in animation
+            .brightness
+            .as_deref()
+            .expect("flash authors a brightness fade")
+            .iter()
+            .zip([1.0, 0.0])
+        {
+            assert!((*actual - expected).abs() <= f32::EPSILON);
+        }
+        for (actual, expected) in animation
+            .radius
+            .as_deref()
+            .expect("flash authors its radius curve")
+            .iter()
+            .zip([4.0, 9.0])
+        {
+            assert!((*actual - expected).abs() <= f32::EPSILON);
+        }
         let deferred = registry_ref
             .get_component::<DeferredEffectComponent>(flash)
             .expect("flash gets the ordinary deferred-effect component");

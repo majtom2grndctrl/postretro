@@ -131,7 +131,7 @@ pub(super) fn update_active_weapon_attachment(
 }
 
 /// Materialize the descriptor-backed presentation for a `local_player` baseline this
-/// snapshot armed (M15 Phase 3 Task 3 + Task 7). `apply_snapshot` spawned the pawn
+/// snapshot armed. `apply_snapshot` spawned the pawn
 /// Transform-only; host movement tuning arrives independently on Control, so this
 /// materializes or clears the `PlayerMovementComponent` when both halves meet.
 ///
@@ -238,7 +238,7 @@ pub(super) fn materialize_armed_remote_player(
 }
 
 /// Materialize the descriptor-backed *presentation* for a non-local remote enemy a
-/// snapshot just spawned (E10 Task 6). `apply_snapshot` spawned the entity
+/// snapshot just spawned. `apply_snapshot` spawned the entity
 /// Transform-only and mapped its `NetworkId` (so it joins the Phase 2 remote
 /// interpolation path). The host replicates finite Transform plus optional current
 /// mesh-animation state, while descriptor mesh data stays local and authoritative
@@ -275,7 +275,7 @@ pub(super) fn materialize_armed_remote_projectile(
     remote: &RemoteEntityMaterialize,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
-    script_time: f32,
+    spawn_tick: u32,
 ) -> bool {
     let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
     let Some(projectile) = descriptors
@@ -290,7 +290,7 @@ pub(super) fn materialize_armed_remote_projectile(
         registry,
         remote.entity_id,
         projectile,
-        script_time,
+        spawn_tick,
     );
     let _ = registry.set_component(
         remote.entity_id,
@@ -595,8 +595,14 @@ mod tests {
             &request,
             &descriptors,
             &mut reg,
-            0.0,
+            42,
         ));
+        assert_eq!(
+            reg.projectile_presentation_age(id)
+                .expect("materialization retains its authoritative fixed-tick stamp")
+                .spawn_tick,
+            42
+        );
         assert_eq!(
             reg.get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(id)
                 .unwrap()

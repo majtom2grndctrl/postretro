@@ -2879,7 +2879,9 @@ impl ApplicationHandler for App {
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
                             &tick_events.local_projectile_spawns,
-                            self.script_time as f32,
+                        );
+                        self.host_note_local_projectile_contacts(
+                            &tick_events.local_projectile_contacts,
                         );
                         if self.host_flush_pending_hit_declarations() {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
@@ -3687,11 +3689,22 @@ impl ApplicationHandler for App {
                         // frame's visible-cell set so off-screen / adjacent-room
                         // smoke is never packed for drawing. `visible_cells` is
                         // still live here (reclaimed after the frame).
-                        session.particle_render.collect_at_time(
+                        let presentation_tick = match session.net_endpoint.as_ref() {
+                            Some(netcode::NetEndpoint::Host { tick, .. }) => f64::from(*tick),
+                            Some(netcode::NetEndpoint::Client {
+                                time_sync,
+                                replication,
+                                ..
+                            }) => time_sync.estimated_server_tick().unwrap_or_else(|| {
+                                replication.latest_server_tick().map_or(0.0, f64::from)
+                            }),
+                            None => 0.0,
+                        };
+                        session.particle_render.collect_at_tick(
                             &registry,
                             self.level.as_ref(),
                             &visible_cells,
-                            self.script_time as f32,
+                            presentation_tick,
                         );
                     }
                     let particle_collections: Vec<(&str, &[u8])> =
@@ -6294,6 +6307,11 @@ impl App {
                 // the pending-repair 5 Hz cadence. The registry and slot table are
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = script_ctx.registry.borrow_mut();
+                // Connected clients skip authoritative `simulate_tick`, whose
+                // fixed-tick queue boundary normally advances transient impact
+                // lights. Advance their predicted/observed presentation effects
+                // once per rendered frame before this frame can spawn new ones.
+                sim::advance_client_presentation_effects(&mut registry, frame_dt);
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
                 for verdict in shot_verdicts {
                     let _ = self.client_predicted_shots.apply_verdict(
@@ -6327,7 +6345,6 @@ impl App {
                         gravity,
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
-                        self.script_time as f32,
                         mover_target_tick,
                         tuning
                             .as_deref()
@@ -6644,31 +6661,27 @@ impl App {
                 frame_dt,
                 &mut |resolution| match resolution {
                     sim::PredictedProjectileResolution::Impact { shot_id, impact } => {
-                        let hits = impact.target.map_or_else(Vec::new, |target| {
-                            vec![weapon::LocalHitRecord {
-                                target,
-                                point: impact.point,
-                                zone: impact.zone,
-                            }]
-                        });
-                        declarations.push((shot_id, hits));
+                        declarations.push((shot_id, Some(impact)));
                     }
                     sim::PredictedProjectileResolution::Expired { shot_id } => {
-                        declarations.push((shot_id, Vec::new()));
+                        declarations.push((shot_id, None));
                     }
                 },
             );
         }
 
-        for (shot_id, hits) in declarations {
-            let sent_records = netcode::client_send_hit_declaration(
+        for (shot_id, impact) in declarations {
+            let predicted_entity_hit = impact
+                .as_ref()
+                .is_some_and(|impact| impact.target.is_some());
+            let sent_records = netcode::client_send_projectile_resolution_declaration(
                 self.session
                     .as_mut()
                     .and_then(|session| session.net_endpoint.as_mut()),
                 shot_id,
-                &hits,
+                impact.as_ref(),
             );
-            if sent_records.is_some_and(|record_count| record_count > 0) {
+            if predicted_entity_hit && sent_records.is_some_and(|record_count| record_count > 0) {
                 self.client_predicted_shots.mark_hitmarker(shot_id);
             }
         }
@@ -6767,7 +6780,6 @@ impl App {
             // without depending on those later HUD slot writes.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
-            let prior_emitted_tick = *last_emitted_snapshot_tick;
             let sampled_weapons = netcode::host_replicate(
                 &registry,
                 &slot_table,
@@ -6781,13 +6793,13 @@ impl App {
                 weapon_owners,
                 command_queues,
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
-                *tick,
+                tick.wrapping_add(1),
                 snapshot_due,
                 last_emitted_snapshot_tick,
             );
-            if *last_emitted_snapshot_tick != prior_emitted_tick {
-                projectile_presentations.mark_advanced_states_published();
-            }
+            // Ingesting the current presentation pose establishes which baseline
+            // must eventually be acknowledged; it does not imply snapshot delivery.
+            projectile_presentations.mark_current_poses_ingested();
             sampled_weapons
         }
     }
@@ -7164,10 +7176,10 @@ impl App {
         registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
         remote_launches: &[sim::RemoteProjectilePresentationLaunch],
         local_projectile_spawns: &[postretro_entities::EntityId],
-        script_time: f32,
     ) {
         let Some(netcode::NetEndpoint::Host {
             allocator,
+            tick,
             replication,
             replicable,
             projectile_presentations,
@@ -7187,7 +7199,7 @@ impl App {
                 replicable,
                 replication,
                 launch,
-                script_time,
+                tick.wrapping_add(1),
             );
         }
         for &projectile in local_projectile_spawns {
@@ -7195,8 +7207,9 @@ impl App {
                 &mut registry,
                 allocator,
                 replicable,
+                replication,
                 projectile,
-                script_time,
+                *tick,
             );
         }
     }
@@ -7208,6 +7221,7 @@ impl App {
     ) {
         let Some(netcode::NetEndpoint::Host {
             allocator,
+            replication,
             replicable,
             open_shots,
             projectile_presentations,
@@ -7223,9 +7237,26 @@ impl App {
             &mut registry.borrow_mut(),
             allocator,
             replicable,
+            replication,
             open_shots,
             tick_dt,
         );
+    }
+
+    fn host_note_local_projectile_contacts(&mut self, contacts: &[sim::ProjectileContactEvent]) {
+        let Some(netcode::NetEndpoint::Host {
+            projectile_presentations,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        for contact in contacts {
+            projectile_presentations.note_gameplay_contact(contact.projectile, contact.point);
+        }
     }
 
     fn host_flush_pending_hit_declarations(&mut self) -> bool {
@@ -7248,6 +7279,7 @@ impl App {
             owners,
             open_shots,
             pending_hit_declarations,
+            projectile_presentations,
             ..
         }) = session.net_endpoint.as_mut()
         else {
@@ -7266,6 +7298,7 @@ impl App {
             pending_hit_declarations,
             *tick,
             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+            |shot_id, point| projectile_presentations.note_contact(shot_id, point),
         )
     }
 

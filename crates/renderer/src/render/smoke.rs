@@ -495,8 +495,9 @@ impl SmokePass {
 
     /// Register a sprite sheet collection. Uploads the stitched strip as a
     /// single horizontal-strip RGBA8 texture and creates the per-collection
-    /// bind group (group 1). Does nothing if the collection was already
-    /// registered, or if the frame list is empty or contains mismatched sizes.
+    /// bind group (group 1). Reports and rejects duplicate collection calls, or
+    /// unusable frame lists, so caller ordering cannot silently replace a draw
+    /// contract.
     // This mirrors the renderer-facing collection registration contract; a
     // parameter object here would only obscure the one forwarding call site.
     #[allow(clippy::too_many_arguments)]
@@ -511,6 +512,9 @@ impl SmokePass {
         emissive: f32,
     ) {
         if self.sheets.contains_key(collection) {
+            log::warn!(
+                "[Smoke] duplicate collection '{collection}' rejected; level installation must resolve one draw contract"
+            );
             return;
         }
         let Some((strip_data, strip_w, strip_h, frame_count)) = stitch_frames_to_strip(frames)
@@ -802,11 +806,31 @@ mod tests {
             .nth(1)
             .expect("billboard shader must define fs_main");
 
-        assert!(fragment.contains("let emissive_rgb = sprite_sample.rgb * draw_params.params.w;"));
+        assert!(
+            fragment.contains(
+                "let emissive_rgb = sprite_sample.rgb * draw_params.params.w * in.opacity;"
+            )
+        );
         assert!(fragment.contains("(lit_rgb + emissive_rgb) * sprite_sample.a"));
         assert!(
             !fragment.contains("light_term_mask") && !fragment.contains("light_terms"),
             "self-only emissive must not be gated by LightTermMask"
+        );
+    }
+
+    #[test]
+    fn billboard_emissive_obeys_instance_opacity() {
+        // Regression: emissive RGB survived at full strength when opacity was zero,
+        // even though the billboard's alpha and scene-lit contribution vanished.
+        let fragment = include_str!("../shaders/billboard.wgsl")
+            .split("@fragment\nfn fs_main")
+            .nth(1)
+            .expect("billboard shader must define fs_main");
+        assert!(
+            fragment.contains(
+                "let emissive_rgb = sprite_sample.rgb * draw_params.params.w * in.opacity;"
+            ),
+            "billboard emissive must use the same instance opacity as scene-lit RGB"
         );
     }
 

@@ -307,7 +307,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("speed", "f32", "How fast the projectile travels, in metres per second. For example, `40` travels about 40 metres in one second. Use a finite number greater than 0.")
         .field("radius", "f32", "How wide the projectile's hit area is, in metres, measured outward from its flight path. `0` is allowed for a point-sized path; larger values are easier to hit with. Use a finite number of 0 or greater.")
         .field("lifetimeMs", "f32", "The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner.")
-        .field("visual", "ProjectileVisual", "What players see while the projectile flies: one required body and an optional cosmetic trail. These settings do not change damage or hit detection.")
+        .field("visual", "ProjectileVisual", "What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.")
         .finish();
     registry
         .register_type("ProjectileVisual")

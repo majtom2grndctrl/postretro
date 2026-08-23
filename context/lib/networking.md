@@ -56,6 +56,16 @@ This discriminant equality is a load-bearing contract across the crate boundary:
 
 **Snapshot envelope:** server tick metadata plus bitcode length-prefixed record lists. Entity records are per-client replication records: `FullBaseline`, `Delta`, or `Despawn`. `FullBaseline` establishes or refreshes the client's per-entity baseline; `Delta` applies only against the named baseline; `Despawn` is a tombstone and carries no components. State-slot records follow the same baseline/delta repair model for non-entity replicated state. Empty record lists are valid.
 
+`Despawn.reason == 1` is reserved for presentation-only projectile contact.
+It does not change gameplay authority or damage. A client that already mapped the
+descriptor-backed projectile retires it and materializes that descriptor's impact
+flash at the last applied Transform. Default reason 0 remains ordinary retirement,
+including travel/range expiry, and produces no flash. The server retains a terminal
+projectile Transform until every intended recipient acknowledges its current
+baseline, then sends the durable tombstone. Attempting one unreliable endpoint
+snapshot is not delivery. Excluded recipients never mapped the visual and do not
+hold this acknowledgment gate open.
+
 Clients acknowledge replication progress over the reliable Input channel. Acks are monotonic and additive: omitted entities or state slots leave prior server-side ack state intact. A client that receives a delta for an unknown baseline does not guess; it requests a full baseline refresh and waits for repair.
 
 State-slot baseline ids use one non-recycled namespace for the server endpoint's
@@ -487,6 +497,12 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
   hit records. Standalone rather than folded into the input command, because a hit can
   arrive on a later tick than its fire (projectile-ready). An empty record list is valid —
   it declares a shot that hit nothing.
+- **Projectile contact marker:** projectile declarations use the existing hit-record
+  shape and reserve target `u32::MAX` when a world contact or no-longer-nameable entity
+  contact has no damage target. The finite, in-range point may retire presentation as
+  contact even when entity lookup or damage validation fails. Empty projectile
+  declarations remain normal travel/range expiry. This changes no wire layout or
+  version constant.
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
   scoped to the declaring client only and never broadcast. Owner-private state slots
   carry the firing pawn's cooldown, magazine, reserve, reload progress, and reload-active

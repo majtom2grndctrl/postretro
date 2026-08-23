@@ -176,6 +176,8 @@ pub struct ServerReplication {
     entities: HashMap<u32, EntityState>,
     /// Active despawn tombstones, keyed by `NetworkId`, resent until acked.
     tombstones: HashMap<u32, Tombstone>,
+    /// One-shot causes for entities expected to vanish on the next ingest.
+    pending_despawn_reasons: HashMap<u32, DespawnReason>,
     /// Per-client ack/refresh state.
     clients: HashMap<u64, ClientReplicationState>,
 }
@@ -190,6 +192,7 @@ impl Default for ServerReplication {
             next_tombstone_id: 1,
             entities: HashMap::new(),
             tombstones: HashMap::new(),
+            pending_despawn_reasons: HashMap::new(),
             clients: HashMap::new(),
         }
     }
@@ -209,7 +212,55 @@ impl ServerReplication {
     pub fn reset_for_level_unload(&mut self) {
         self.entities.clear();
         self.tombstones.clear();
+        self.pending_despawn_reasons.clear();
         self.clients.clear();
+    }
+
+    /// Attach a cause to the next despawn tombstone emitted for `network_id`.
+    /// The marker is consumed when the entity vanishes from an ingested tick; if
+    /// the entity remains live, a later call may overwrite it.
+    pub fn set_next_despawn_reason(&mut self, network_id: u32, reason: DespawnReason) {
+        if reason == 0 {
+            self.pending_despawn_reasons.remove(&network_id);
+        } else {
+            self.pending_despawn_reasons.insert(network_id, reason);
+        }
+    }
+
+    /// Return the live baseline currently tracked for `network_id`.
+    ///
+    /// Presentation lifecycles use this as an ingest witness: a terminal pose is
+    /// retained until its changed baseline appears here and every intended
+    /// recipient acknowledges that exact-or-newer baseline.
+    #[must_use]
+    pub fn current_baseline_id(&self, network_id: u32) -> Option<u32> {
+        self.entities
+            .get(&network_id)
+            .map(|entity| entity.baseline_id)
+    }
+
+    /// Whether every registered recipient of `network_id` has acknowledged at
+    /// least `baseline_id`. Clients excluded from the entity never receive or map
+    /// it, so they do not participate in this delivery gate.
+    #[must_use]
+    pub fn baseline_acked_by_all_recipients(&self, network_id: u32, baseline_id: u32) -> bool {
+        self.clients
+            .values()
+            .filter(|client| !client.excluded_entities.contains(&network_id))
+            .all(|client| {
+                client
+                    .acked_baselines
+                    .get(&network_id)
+                    .copied()
+                    .unwrap_or(0)
+                    >= baseline_id
+            })
+    }
+
+    /// Whether at least one client is registered for entity replication.
+    #[must_use]
+    pub fn has_registered_clients(&self) -> bool {
+        !self.clients.is_empty()
     }
 
     /// Register a client so it is replicated to. Idempotent — re-registering an
@@ -316,6 +367,7 @@ impl ServerReplication {
             seen.insert(snap.network_id);
             // A re-appearing entity clears any pending tombstone for its id.
             self.tombstones.remove(&snap.network_id);
+            self.pending_despawn_reasons.remove(&snap.network_id);
             match self.entities.get_mut(&snap.network_id) {
                 Some(existing)
                     if existing.components == snap.components
@@ -372,14 +424,12 @@ impl ServerReplication {
             self.entities.remove(&id);
             let tombstone_id = self.next_tombstone_id;
             self.next_tombstone_id = self.next_tombstone_id.wrapping_add(1);
-            // Default reason 0; the engine glue does not yet distinguish despawn
-            // causes (Task 4/6 own slot/mover lifecycle). A reason field exists on
-            // the wire so a future cause can ride along without a shape change.
+            let reason = self.pending_despawn_reasons.remove(&id).unwrap_or(0);
             self.tombstones.insert(
                 id,
                 Tombstone {
                     tombstone_id,
-                    reason: 0,
+                    reason,
                 },
             );
             // A recipient excluded before the entity's first baseline has no
@@ -1055,6 +1105,28 @@ mod tests {
         server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
         assert!(record_for(&server.encode_for_client(CLIENT_A, 61).unwrap(), 1).is_some());
         assert!(record_for(&server.encode_for_client(CLIENT_B, 62).unwrap(), 1).is_none());
+    }
+
+    #[test]
+    fn baseline_delivery_gate_waits_for_every_nonexcluded_recipient() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        server.ingest_tick(vec![entity(1, vec![transform(3.0)])]);
+        let baseline_id = server.current_baseline_id(1).expect("entity is ingested");
+
+        assert!(!server.baseline_acked_by_all_recipients(1, baseline_id));
+        server.apply_ack(CLIENT_A, 1, &[(1, baseline_id)], &[]);
+        assert!(
+            !server.baseline_acked_by_all_recipients(1, baseline_id),
+            "one recipient ack cannot retire state still owed to another"
+        );
+
+        server.exclude_entity_for_client(CLIENT_B, 1);
+        assert!(
+            server.baseline_acked_by_all_recipients(1, baseline_id),
+            "a recipient excluded before materialization does not hold delivery open"
+        );
     }
 
     // Monotonic ack: a newer baseline advances; an older/equal one is ignored;

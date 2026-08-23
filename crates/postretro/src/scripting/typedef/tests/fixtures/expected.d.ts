@@ -260,7 +260,7 @@ declare module "postretro" {
     radius: number;
     /** The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner. */
     lifetimeMs: number;
-    /** What players see while the projectile flies: one required body and an optional cosmetic trail. These settings do not change damage or hit detection. */
+    /** What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection. */
     visual: ProjectileVisual;
   };
 

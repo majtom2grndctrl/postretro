@@ -173,6 +173,7 @@ mod tests {
                     opacity: 1.0,
                     rotation: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    emissive: 0.0,
                 },
                 trail: None,
             },

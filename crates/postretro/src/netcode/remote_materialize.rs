@@ -442,6 +442,7 @@ mod tests {
                         opacity: 1.0,
                         rotation: 0.0,
                         tint: [0.2, 0.8, 1.0],
+                        emissive: 0.0,
                     },
                     trail: Some(ProjectileTrailVisual {
                         sprite: "sprites/projectiles/trail.png".to_string(),

@@ -66,6 +66,10 @@ pub enum ProjectileBodyVisual {
         rotation: f32,
         #[serde(default = "default_projectile_sprite_tint")]
         tint: [f32; 3],
+        /// Additive self-lit strength for this sprite collection. Zero keeps
+        /// the billboard output on its existing scene-lit path.
+        #[serde(default)]
+        emissive: f32,
     },
     Model {
         model: String,
@@ -372,6 +376,7 @@ fn validate_projectile_descriptor(
             opacity,
             rotation,
             tint,
+            emissive,
         } => {
             validate_projectile_asset_path("body.sprite", sprite)?;
             for (field, value) in [
@@ -397,6 +402,13 @@ fn validate_projectile_descriptor(
                     reason:
                         "`components.weapon.projectile.visual.body.tint` must contain finite values"
                             .to_string(),
+                });
+            }
+            if !emissive.is_finite() || *emissive < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.body.emissive` must be finite and >= 0.0, got {emissive}"
+                    ),
                 });
             }
         }
@@ -665,6 +677,7 @@ mod tests {
                     opacity: 1.0,
                     rotation: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    emissive: 0.0,
                 },
                 trail: None,
             },
@@ -812,6 +825,66 @@ mod tests {
             };
             assert!(reason.contains(field), "expected {field:?} in {reason:?}");
         }
+    }
+
+    #[test]
+    fn projectile_sprite_emissive_requires_finite_nonnegative_strength() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        for emissive in [f32::NAN, -0.01] {
+            let mut invalid = descriptor.clone();
+            let ProjectileBodyVisual::Sprite {
+                emissive: strength, ..
+            } = &mut invalid
+                .projectile
+                .as_mut()
+                .expect("projectile is present")
+                .visual
+                .body
+            else {
+                unreachable!();
+            };
+            *strength = emissive;
+
+            let error = invalid
+                .validate()
+                .expect_err("invalid emissive must be rejected");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains("body.emissive"), "{reason}");
+        }
+
+        let ProjectileBodyVisual::Sprite { emissive, .. } = &mut descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present")
+            .visual
+            .body
+        else {
+            unreachable!();
+        };
+        *emissive = 3.0;
+        assert!(
+            descriptor.validate().is_ok(),
+            "HDR emissive must be accepted"
+        );
+    }
+
+    #[test]
+    fn projectile_sprite_emissive_omission_defaults_to_zero() {
+        let body: ProjectileBodyVisual = serde_json::from_value(serde_json::json!({
+            "kind": "sprite",
+            "sprite": "sprites/projectiles/bolt.png",
+        }))
+        .expect("sprite body should deserialize with defaults");
+        let ProjectileBodyVisual::Sprite { emissive, .. } = body else {
+            unreachable!();
+        };
+
+        assert!(emissive.abs() < f32::EPSILON);
     }
 
     #[test]

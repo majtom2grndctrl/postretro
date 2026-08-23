@@ -513,6 +513,7 @@ pub(crate) fn spawn_projectile(
             opacity,
             rotation,
             tint,
+            ..
         } => {
             let _ = registry.set_component(
                 projectile_id,
@@ -743,6 +744,7 @@ mod projectile_spawn_tests {
                 opacity: 0.9,
                 rotation: 0.25,
                 tint: [0.2, 0.8, 1.0],
+                emissive: 0.0,
             },
             trail: Some(ProjectileTrailVisual {
                 sprite: "sprites/trail.png".to_string(),

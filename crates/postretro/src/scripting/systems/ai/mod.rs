@@ -49,10 +49,10 @@ use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use combat_slots::resolve_combat_slots;
 use engine_floor::{POSITION_GOAL_ARRIVAL_EPSILON, SteeringIntent};
-use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
+use facing::{FACING_TURN_RATE, slewed_yaw_toward, yaw_from_rotation, yaw_within_attack_tolerance};
 use graph_eval::{
-    action_for_entry_path, action_for_path, animation_for_path, engages_active, engages_path,
-    motion_for_path, select_transition_path, steering_for,
+    action_for_path, animation_for_path, engages_active, engages_path, motion_for_path,
+    select_transition_path, steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use perception::LosGraceState;
@@ -111,6 +111,34 @@ impl LocomotionIntent {
             moving: speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON,
             speed_xz_sq,
         }
+    }
+}
+
+/// Resolve the one direction this tick's apply pass will slew toward. A
+/// committed aim holds its movement destination but still turns toward the
+/// shared eye-to-target vector; other engaged states keep the established
+/// velocity-first facing behavior.
+fn facing_direction(
+    steering: SteeringIntent,
+    engaged: bool,
+    committed_aim: bool,
+    target_perception: Option<perception::EnemyTargetPerception>,
+    path_state: Option<crate::agent_steering::AgentPathState>,
+) -> Option<Vec3> {
+    let moving_velocity = path_state
+        .map(|path| path.velocity)
+        .filter(|velocity| LocomotionIntent::from_velocity(*velocity).moving);
+    match steering {
+        SteeringIntent::MoveTo(_) if let Some(velocity) = moving_velocity => Some(velocity),
+        SteeringIntent::MoveTo(_) => None,
+        _ if committed_aim => {
+            target_perception.map(|perception| perception.target_aim - perception.enemy_eye)
+        }
+        _ if engaged && let Some(velocity) = moving_velocity => Some(velocity),
+        _ if engaged => {
+            target_perception.map(|perception| perception.target_aim - perception.enemy_eye)
+        }
+        _ => None,
     }
 }
 
@@ -222,6 +250,7 @@ fn advance_patrol_cursor(brain: &mut BrainComponent, point_count: usize, mode: P
 struct EnemySnapshot {
     id: EntityId,
     position: Vec3,
+    rotation: Quat,
     brain: BrainComponent,
 }
 
@@ -243,6 +272,10 @@ pub(super) struct EnemyOutcome {
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.
     pub(super) engaged: bool,
+    /// The facing direction evaluated in the compute pass and written in apply.
+    /// Carrying it across the pass boundary lets the fire gate inspect this
+    /// tick's exact post-slew heading rather than the previous tick's rotation.
+    facing_direction: Option<Vec3>,
     pub(super) combat_slot: Option<Vec3>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
@@ -256,7 +289,7 @@ pub(super) struct EnemyOutcome {
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
-    /// Damage already resolved at the one edge-fire seam. The apply pass never
+    /// Damage already resolved at the one fire-latch seam. The apply pass never
     /// re-derives an action from a potentially changed path.
     attack_damage: Option<f32>,
     /// The selected offense action's standoff before and after this tick's
@@ -349,7 +382,8 @@ impl Default for AiRuntime {
 ///    to `initial` and skipping evaluation entirely.
 /// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
 ///    this is the fresh spawn's initial seating.
-/// 4. Edge-fire an entered action after its cooldown, range, and target gates.
+/// 4. Latch-fire an active leaf's action on its first dwell tick that passes its
+///    cooldown, range, live-target, LOS, and post-slew-facing gates.
 /// 5. On an activity change or locomotion stop/resume, request the one animation
 ///    state resolved from the active nested path.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -433,10 +467,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             let ComponentValue::Brain(brain) = value else {
                 return None;
             };
-            let position = registry.get_component::<Transform>(id).ok()?.position;
+            let transform = registry.get_component::<Transform>(id).ok()?;
             Some(EnemySnapshot {
                 id,
-                position,
+                position: transform.position,
+                rotation: transform.rotation,
                 brain: brain.clone(),
             })
         })
@@ -614,7 +649,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         };
         let selected_distance = selected_target.map(|(_, distance, _)| distance);
         let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
-        let (transitioned, steering) = if !brain.aggro_armed {
+        let (transitioned, motion, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
             // selection nor its guards, and standing down clears steering outright
@@ -626,7 +661,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             } else {
                 false
             };
-            (transitioned, SteeringIntent::Clear)
+            (transitioned, None, SteeringIntent::Clear)
         } else {
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
@@ -707,7 +742,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
-            (transitioned, steering)
+            (transitioned, motion, steering)
         };
 
         // The acquired id is the "this brain is engaged" marker the next tick's
@@ -723,11 +758,36 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             _ => None,
         };
 
-        // (4) Attack: the selected state names one graph-wide contact attack.
-        // Its own cooldown must have elapsed, the SELECTED target must be
-        // inside its `maxRange`, and it must still be alive. Apply its
-        // configured damage once and re-arm only that named timer. Checked
-        // every tick.
+        // A nested offense phase can intentionally hold at an authored standoff
+        // before its leaf exposes an action. It is still committed to the
+        // target: keep its aim moving even though its resolved current verb is
+        // `hold`, which `engages_path` correctly leaves false.
+        let committed_aim =
+            target.is_some() && matches!(motion, Some(MotionVerb::Hold)) && engages_active(&brain);
+        let facing_direction = facing_direction(
+            steering,
+            engaged,
+            committed_aim,
+            target_perception,
+            agent_steering::path_state(registry, snap.id),
+        );
+        // If no horizontal yaw is derivable (for example, melee contact's
+        // vertical eye-to-aim segment), apply leaves the transform untouched;
+        // the firing check therefore reads that unchanged heading.
+        let post_slew_yaw = facing_direction
+            .and_then(|direction| {
+                slewed_yaw_toward(snap.rotation, direction, FACING_TURN_RATE * tick_dt)
+            })
+            .unwrap_or_else(|| yaw_from_rotation(snap.rotation));
+        let post_slew_facing_is_within_tolerance = target_perception.is_some_and(|perception| {
+            yaw_within_attack_tolerance(post_slew_yaw, perception.target_aim - perception.enemy_eye)
+        });
+
+        // (4) Attack: the active firing leaf latches one graph-wide contact
+        // attack on its first clear dwell tick. Its own cooldown must have
+        // elapsed, the SELECTED target must be inside its `maxRange`, and it
+        // must still be alive. The LOS and facing gates read this tick's shared
+        // debounced perception and post-slew heading respectively.
         // The range gate lets a graph declare the action without making it
         // connect from across the room.
         // An unresolved action name configures no range and no damage, so it
@@ -738,22 +798,21 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         let entered = brain.take_entry_pending();
         let mut attacked = false;
         let mut attack_damage = None;
-        if let Some(entry_start_depth) = entered
+        if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
             && let Some((attack_name, attack)) = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    action_for_entry_path(bound, scope, &brain, entry_start_depth).and_then(
-                        |action| match action {
-                            ActionVerb::Attack(name) => brain
-                                .graph
-                                .attacks
-                                .get(name)
-                                .copied()
-                                .map(|attack| (name.clone(), attack)),
-                        },
-                    )
+                    action_for_path(bound, scope, &brain).and_then(|action| match action {
+                        ActionVerb::Attack(name) => brain
+                            .graph
+                            .attacks
+                            .get(name)
+                            .copied()
+                            .map(|attack| (name.clone(), attack)),
+                    })
                 })
                 .flatten()
+            && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && distance <= attack.max_range
             && brain
                 .attack_cooldown_remaining_ms
@@ -763,6 +822,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 <= 0.0
             && selected_target_alive(registry, target.entity)
             && perception::fire_gate(target_perception)
+            && post_slew_facing_is_within_tolerance
         {
             attacked = true;
             attack_damage = Some(attack.damage);
@@ -806,6 +866,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             on_enter,
             steering,
             engaged,
+            facing_direction,
             combat_slot: None,
             brain,
         });
@@ -909,50 +970,18 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             }
         }
 
-        // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
-        // so without this the model keeps its spawn heading and moonwalks toward
-        // its selected target. Orient it believably each tick it is engaged, or
-        // while it is travelling under a fixed position goal:
-        //   - Moving (XZ speed above the epsilon): face the velocity direction, so
-        //     it faces where it is going even when routing around obstacles. The
-        //     velocity is read from `path_state` (last tick's resolved velocity) —
-        //     a one-tick lag on facing that is imperceptible.
-        //   - Stopped but engaged (near-zero XZ speed — arrived/blocked/swinging):
-        //     face this enemy's selected target.
-        //   - A stopped position-goal mover leaves facing untouched, even when
-        //     the target scan happened to find a nearby pawn.
-        //   - Standing down: leave facing untouched.
-        // The test is ENGAGEMENT, not the chase intent: a state that stands its
-        // ground and swings must turn toward what it is hitting, or it lands
-        // damage on a pawn behind its back. A state that neither chases nor acts
-        // never turns — which is also why a closed aggro gate cannot turn an
-        // enemy: it forces the resting state, and resting does neither.
-        // Yaw only (model stays upright); a zero-length OR non-finite direction
-        // yields `None` and writes nothing, and `slew_yaw` re-seats rather than
-        // propagates a non-finite current yaw — between them, no NaN can reach
-        // `Transform.rotation`, which the renderer feeds straight into the model
-        // matrix and which nothing else re-seats.
-        if let Some(path) = path_state.as_ref() {
-            let moving = locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON;
-            let facing = match outcome.steering {
-                SteeringIntent::MoveTo(_) if moving => yaw_rotation_toward(path.velocity),
-                SteeringIntent::MoveTo(_) => None,
-                _ if outcome.engaged && moving => yaw_rotation_toward(path.velocity),
-                _ if outcome.engaged => outcome
-                    .target
-                    .and_then(|target| yaw_rotation_toward(target.position - path.position)),
-                _ => None,
-            };
-            if let Some(target_rotation) = facing {
-                if let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
-                {
-                    let current_yaw = yaw_from_rotation(transform.rotation);
-                    let target_yaw = yaw_from_rotation(target_rotation);
-                    let slewed_yaw = slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
-                    transform.rotation = Quat::from_rotation_y(slewed_yaw);
-                    let _ = registry.set_component(outcome.id, transform);
-                }
-            }
+        // Facing (yaw-only): compute chose this direction from the same
+        // start-of-tick path state it used for the attack gate. Reusing it here
+        // keeps the predicted post-slew heading and the transform write exactly
+        // aligned. A committed hold-at-standoff aim therefore turns every tick
+        // even before its firing leaf exposes an action.
+        if let Some(direction) = outcome.facing_direction
+            && let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
+            && let Some(slewed_yaw) =
+                slewed_yaw_toward(transform.rotation, direction, FACING_TURN_RATE * tick_dt)
+        {
+            transform.rotation = Quat::from_rotation_y(slewed_yaw);
+            let _ = registry.set_component(outcome.id, transform);
         }
 
         // Damage: route the configured amount through the chokepoint to the

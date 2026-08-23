@@ -105,18 +105,18 @@ impl ParticleRenderCollector {
         world: Option<&LevelWorld>,
         visible: &VisibleCells,
     ) {
-        self.collect_at_time(registry, world, visible, 0.0);
+        self.collect_at_tick(registry, world, visible, 0.0);
     }
 
-    /// Time-aware collector entry point used by the renderer path. The supplied
-    /// clock is the shared level-relative script clock used to stamp remote
-    /// projectile presentation bodies at materialization.
-    pub(crate) fn collect_at_time(
+    /// Fixed-tick-aware collector entry point used by the renderer path. The
+    /// supplied tick is the host simulation epoch (fractional on interpolating
+    /// clients), never render-frame delta or local snapshot-arrival time.
+    pub(crate) fn collect_at_tick(
         &mut self,
         registry: &EntityRegistry,
         world: Option<&LevelWorld>,
         visible: &VisibleCells,
-        script_time: f32,
+        presentation_tick: f64,
     ) {
         for buf in self.buffers.values_mut() {
             buf.clear();
@@ -202,7 +202,10 @@ impl ParticleRenderCollector {
                 .projectile_presentation_age(id)
                 .ok()
                 .filter(|timing| timing.flipbook_active)
-                .map(|timing| (script_time - timing.spawn_time).max(0.0))
+                .map(|timing| {
+                    ((presentation_tick - f64::from(timing.spawn_tick)).max(0.0) as f32)
+                        * crate::frame_timing::TICK_DURATION.as_secs_f32()
+                })
                 .unwrap_or(0.0);
             self.collect_sprite(transform, visual, age, world, visible_cells.as_ref());
         }
@@ -670,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_packs_remote_projectile_age_from_its_local_presentation_stamp() {
+    fn collect_delayed_remote_projectile_uses_original_fixed_spawn_tick() {
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("sprites/animated-plasma");
@@ -705,13 +708,13 @@ mod tests {
             .set_projectile_presentation_age(
                 id,
                 postretro_entities::components::projectile::ProjectilePresentationAge {
-                    spawn_time: 1.0,
+                    spawn_tick: 60,
                     flipbook_active: false,
                 },
             )
             .expect("remote presentation timing attaches");
 
-        collector.collect_at_time(&registry, None, &VisibleCells::DrawAll, 1.18);
+        collector.collect_at_tick(&registry, None, &VisibleCells::DrawAll, 71.0);
         let bytes = collector
             .iter_collections()
             .next()
@@ -724,19 +727,23 @@ mod tests {
             .set_projectile_presentation_age(
                 id,
                 postretro_entities::components::projectile::ProjectilePresentationAge {
-                    spawn_time: 1.0,
+                    spawn_tick: 60,
                     flipbook_active: true,
                 },
             )
             .expect("remote presentation cadence enables");
-        collector.collect_at_time(&registry, None, &VisibleCells::DrawAll, 1.18);
+        collector.collect_at_tick(&registry, None, &VisibleCells::DrawAll, 71.0);
         let bytes = collector
             .iter_collections()
             .next()
             .expect("animated remote projectile is collected")
             .1;
         let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
-        assert!((age - 0.18).abs() < 1e-6);
+        let expected = 11.0 * crate::frame_timing::TICK_DURATION.as_secs_f32();
+        assert!(
+            (age - expected).abs() < 1e-6,
+            "delayed materialization catches up from the authoritative spawn tick"
+        );
     }
 
     #[test]
@@ -744,7 +751,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         const SPRITE: &str = "sprites/projectiles/animated-plasma";
-        const ELAPSED: f32 = 0.18;
+        let elapsed = 11.0 * crate::frame_timing::TICK_DURATION.as_secs_f32();
         collector.register_sprite(SPRITE);
 
         let local = spawn_projectile_sprite(&mut registry, Vec3::ZERO, SPRITE);
@@ -754,7 +761,7 @@ mod tests {
                 .get_component::<ProjectileComponent>(id)
                 .unwrap()
                 .clone();
-            component.elapsed_flight_age = ELAPSED;
+            component.elapsed_flight_age = elapsed;
             component.flipbook_active = true;
             component.predicted_shot_id = predicted_shot_id;
             registry.set_component(id, component).unwrap();
@@ -791,13 +798,13 @@ mod tests {
             .set_projectile_presentation_age(
                 presentation,
                 postretro_entities::components::projectile::ProjectilePresentationAge {
-                    spawn_time: 1.0,
+                    spawn_tick: 60,
                     flipbook_active: true,
                 },
             )
             .unwrap();
 
-        collector.collect_at_time(&registry, None, &VisibleCells::DrawAll, 1.0 + ELAPSED);
+        collector.collect_at_tick(&registry, None, &VisibleCells::DrawAll, 71.0);
         let bytes = collector
             .buffers
             .get(SPRITE)
@@ -806,7 +813,7 @@ mod tests {
         for instance in bytes.chunks_exact(SPRITE_INSTANCE_SIZE) {
             let age = f32::from_ne_bytes(instance[12..16].try_into().unwrap());
             assert!(
-                (age - ELAPSED).abs() < 1e-6,
+                (age - elapsed).abs() < 1e-6,
                 "all three vantage paths must produce the same flipbook frame clock"
             );
         }

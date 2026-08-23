@@ -121,6 +121,12 @@ pub(crate) struct LightBridge {
     /// map-authored prefix preserves full authored order.
     scripted_sample_buf: Vec<f32>,
     runtime_capacity_warned: bool,
+    /// Last Light-column membership stamp examined by enrollment. Existing light
+    /// mutations do not change it, so connected-client render frames with no spawn
+    /// or removal skip the registry-wide discovery scan.
+    observed_light_membership_generation: u64,
+    #[cfg(test)]
+    enrollment_scan_count: usize,
 }
 
 /// Per-light fields not carried by `LightComponent` (runtime-only). Kept so
@@ -156,6 +162,9 @@ impl LightBridge {
             fgd_sample_float_count: 0,
             scripted_sample_buf: Vec::new(),
             runtime_capacity_warned: false,
+            observed_light_membership_generation: u64::MAX,
+            #[cfg(test)]
+            enrollment_scan_count: 0,
         }
     }
 
@@ -174,6 +183,11 @@ impl LightBridge {
         self.fgd_sample_float_count = 0;
         self.scripted_sample_buf.clear();
         self.runtime_capacity_warned = false;
+        self.observed_light_membership_generation = u64::MAX;
+        #[cfg(test)]
+        {
+            self.enrollment_scan_count = 0;
+        }
     }
 
     #[allow(dead_code)]
@@ -329,6 +343,9 @@ impl LightBridge {
             }
         }
         self.authored_light_count = self.entity_ids.len();
+        // Force one post-install discovery pass: descriptor/runtime lights may
+        // already exist beside the authored prefix when this bridge is populated.
+        self.observed_light_membership_generation = u64::MAX;
 
         // Ensure the initial pack lands even when no script mutates on frame one.
         self.dirty = true;
@@ -338,10 +355,9 @@ impl LightBridge {
     /// `populate_from_level` — typically by the data-archetype sweep, which
     /// runs after `App::resumed()` (where `populate_from_level` is called)
     /// during the first `RedrawRequested` once the data script has populated
-    /// the entity-type registry. Also called every host fixed tick (`main.rs`)
-    /// to enroll descriptor lights carried by runtime spawner-spawned enemies;
-    /// that call is cheap on a no-op tick, since the scan below early-returns
-    /// without allocating once nothing new appears.
+    /// the entity-type registry. It may be called every fixed or render frame:
+    /// the registry's Light-membership stamp bypasses the discovery scan unless
+    /// a light was added or removed.
     ///
     /// Any `LightComponent` entity not already tracked in `self.entity_ids`
     /// reuses a reclaimed runtime slot, or extends the parallel arrays when
@@ -357,13 +373,22 @@ impl LightBridge {
     /// The cached f64 origin mirrors the f32 component origin
     /// (descriptor-spawn is f32 from the start; there is no f64 source).
     pub(crate) fn absorb_dynamic_lights(&mut self, registry: &EntityRegistry) {
-        // Called every fixed tick, but a runtime spawn that carries a descriptor
-        // light is rare — most ticks find nothing new. Scan the Light column and
-        // only touch the heap once an untracked id actually appears, so the
-        // common no-op tick allocates nothing. Membership is a linear check
-        // against the capacity-bounded `entity_ids`; materializing
-        // a `HashSet`/`Vec` of the whole column up front would churn the heap
-        // every tick just to discover there was nothing to absorb.
+        let membership_generation = registry.light_membership_generation();
+        if membership_generation == self.observed_light_membership_generation {
+            return;
+        }
+
+        // Reclaim missing tracked lights before checking capacity. A contact can
+        // remove its travel light and spawn a short impact flash in one frame; the
+        // replacement may safely overwrite that slot in the same full repack.
+        self.reclaim_missing_runtime_slots(registry);
+
+        // Runtime spawns are rare. Once membership changes, scan without allocating;
+        // membership remains a linear check against the reserve-bounded tracked ids.
+        #[cfg(test)]
+        {
+            self.enrollment_scan_count += 1;
+        }
         let mut absorbed_any = false;
         for (id, _) in registry.iter_with_kind(ComponentKind::Light) {
             if self.entity_ids.contains(&id) {
@@ -423,6 +448,8 @@ impl LightBridge {
             absorbed_any = true;
         }
 
+        self.observed_light_membership_generation = membership_generation;
+
         if !absorbed_any {
             return;
         }
@@ -433,6 +460,20 @@ impl LightBridge {
         self.scripted_sample_buf
             .resize(self.entity_ids.len() * SCRIPTED_FLOATS_PER_LIGHT, 0.0);
         self.dirty = true;
+    }
+
+    fn reclaim_missing_runtime_slots(&mut self, registry: &EntityRegistry) {
+        for map_idx in self.authored_light_count..self.entity_ids.len() {
+            let id = self.entity_ids[map_idx];
+            if registry.get_component::<LightComponent>(id).is_ok() || self.shape[map_idx].reclaimed
+            {
+                continue;
+            }
+            self.shape[map_idx].reclaimed = true;
+            self.free_slots.push(map_idx);
+            self.snapshots.remove(&id);
+            self.dirty = true;
+        }
     }
 
     /// Detect mutations, settle completed `play_count`-bounded animations, and
@@ -830,9 +871,9 @@ fn component_to_map_light(
         cone_angle_outer: component.cone_angle_outer.unwrap_or(0.0),
         cone_direction: component.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
         is_dynamic,
-        // Script-spawned lights have no authoring surface for the
-        // shadow-pool opt-in (Task 1b); default `false`. Wired later if a
-        // script-side API for entity-shadow opt-in lands.
+        // Script-spawned lights have no authoring surface for the shadow-pool
+        // opt-in, so they remain non-shadow-casting unless that capability is
+        // deliberately added to the entity light contract.
         casts_entity_shadows: false,
         animated_slot: None,
         tags: vec![],
@@ -2147,8 +2188,10 @@ mod tests {
         assert_eq!(bridge.entity_for_map_index(1), Some(new_id));
 
         // Idempotent: a second pass with no new lights must not double-enroll.
+        let scans_after_enrollment = bridge.enrollment_scan_count;
         bridge.absorb_dynamic_lights(&registry);
         assert_eq!(bridge.light_count(), 2);
+        assert_eq!(bridge.enrollment_scan_count, scans_after_enrollment);
 
         // Next update produces a GPU upload that includes both lights.
         let update = bridge.update(&mut registry, 0.0, 0.0).expect("dirty");
@@ -2506,6 +2549,47 @@ mod tests {
                 .unwrap()
                 .has_dirty_data
         );
+    }
+
+    // Regression: connected clients skip authoritative simulate_tick, so their
+    // predicted and observer impact lights never advanced their deferred despawn.
+    #[test]
+    fn connected_client_impact_lights_advance_and_reclaim_runtime_slots() {
+        let mut registry = EntityRegistry::new();
+        let config = postretro_foundation::ProjectileImpactLight {
+            color: [0.4, 0.8, 1.0],
+            intensity: 4.0,
+            radius: 6.0,
+            peak_radius: None,
+            fade_ms: 10.0,
+        };
+        crate::weapon::spawn_projectile_impact_light(
+            &mut registry,
+            glam::Vec3::new(1.0, 0.0, 0.0),
+            &config,
+        );
+        crate::weapon::spawn_projectile_impact_light(
+            &mut registry,
+            glam::Vec3::new(2.0, 0.0, 0.0),
+            &config,
+        );
+
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[], &mut registry, 0);
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        assert_eq!(live_runtime_count(&bridge), 2);
+
+        crate::sim::advance_client_presentation_effects(&mut registry, 0.020);
+        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+        let update = bridge
+            .update(&mut registry, 0.020, 0.0)
+            .expect("client-side despawns dirty the bridge");
+
+        assert_eq!(registry.iter_with_kind(ComponentKind::Light).count(), 0);
+        assert_eq!(live_runtime_count(&bridge), 0);
+        assert_eq!(bridge.free_slots.len(), 2);
+        assert_eq!(update.lights_bytes, vec![0; 2 * GPU_LIGHT_SIZE]);
     }
 
     // Regression: slot-bearing baked lights have no dynamic-forward record.
@@ -2932,7 +3016,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_full_same_frame_despawn_and_spawn_reuses_slot_after_next_update() {
+    fn reserve_full_same_frame_despawn_and_spawn_reuses_reclaimed_slot_immediately() {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
@@ -2955,14 +3039,19 @@ mod tests {
             runtime_component([777.0, 0.0, 0.0], 4.0, None),
         );
         bridge.absorb_dynamic_lights(&registry);
-        assert!(!bridge.entity_ids.contains(&replacement));
-
-        let _ = bridge.update(&mut registry, 0.2, 0.0);
-        assert_eq!(bridge.free_slots.len(), 1);
-
-        bridge.absorb_dynamic_lights(&registry);
+        // Regression: absorb used to test reserve capacity before update reclaimed
+        // the removed travel light, dropping a same-frame short impact flash.
         assert_eq!(bridge.entity_ids[bridge.authored_light_count], replacement);
         assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        assert!(bridge.free_slots.is_empty());
+
+        let update = bridge
+            .update(&mut registry, 0.2, 0.0)
+            .expect("same-frame replacement forces one complete repack");
+        assert_eq!(
+            update.lights_bytes.len(),
+            RUNTIME_DYNAMIC_LIGHT_RESERVE * GPU_LIGHT_SIZE
+        );
     }
 
     #[test]

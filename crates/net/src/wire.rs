@@ -1007,9 +1007,10 @@ pub struct InputCommand {
     pub reload: bool,
 }
 
-/// One client-declared hit record for a host-authorized shot. `target` is a
-/// `NetworkId` (`u32`) because the net crate is registry-blind; the engine maps it
-/// to an `EntityId` on ingest.
+/// One client-declared hit record for a host-authorized shot. `target` is normally
+/// a `NetworkId` (`u32`) because the net crate is registry-blind. Projectile
+/// declarations reserve `u32::MAX` as a presentation-only contact marker when a
+/// world contact (or no-longer-nameable entity contact) has no damage target.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct HitRecord {
     pub target: u32,

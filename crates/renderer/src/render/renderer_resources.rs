@@ -17,10 +17,10 @@ fn clear_kinematic_mover_frame_state(
 }
 
 impl Renderer {
-    /// First caller's draw parameters win — they are per-collection, not per-emitter.
-    /// A particle emitter sharing a projectile's sprite name therefore inherits
-    /// the chosen collection emissive; normal content registers projectile
-    /// sprites separately.
+    /// Upload one draw contract per collection. Level installation resolves every
+    /// emitter and projectile consumer before this boundary; duplicate calls are
+    /// reported and rejected by the smoke pass rather than silently overriding an
+    /// accepted descriptor's cadence or emissive strength.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,

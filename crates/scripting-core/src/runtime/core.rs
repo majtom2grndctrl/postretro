@@ -1260,6 +1260,7 @@ mod tests {
                     spin_rate: 0.0,
                     spin_animation: None,
                 }),
+                light: None,
             },
         }
     }

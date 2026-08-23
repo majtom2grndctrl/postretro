@@ -263,12 +263,26 @@ export type ProjectileDescriptor = {
   visual: ProjectileVisual,
 }
 
---- The visible parts of a flying projectile. A body is required; the optional trail is extra smoke, sparks, or similar particles.
+--- The visible parts of a flying projectile. A body is required; optional trail particles and a travelling point light are cosmetic presentation.
 export type ProjectileVisual = {
   --- The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.
   body: ProjectileBodyVisual,
   --- Optional small sprite particles that follow the projectile, such as smoke or sparks. Leave it out when the projectile should have no trail.
   trail: ProjectileTrailVisual?,
+  --- Optional dynamic point light that travels with the body. It affects nearby surfaces only; it never changes damage or hit detection.
+  light: ProjectileLight?,
+}
+
+--- A dynamic point light attached to a travelling projectile. It uses the same falloff choices as runtime lights and casts no entity shadows.
+export type ProjectileLight = {
+  --- Linear RGB multiplier as exactly three finite numbers.
+  color: {number},
+  --- Brightness multiplier. Use a finite number of 0 or greater.
+  intensity: number,
+  --- How far the light reaches in metres. Use a finite number greater than 0.
+  falloffRange: number,
+  --- Distance attenuation model. Omit for the inverse-square default.
+  falloffModel: FalloffKind?,
 }
 
 --- The settings used when `body.kind` is `sprite`. A sprite is a flat image that always turns to face the camera.

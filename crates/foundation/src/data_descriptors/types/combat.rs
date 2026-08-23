@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_descriptors::types::light::FalloffKind;
 use crate::data_descriptors::{
     DescriptorError, is_portable_content_relative_asset_path, validate_ascii_identifier,
 };
@@ -49,6 +50,27 @@ pub struct ProjectileVisual {
     pub body: ProjectileBodyVisual,
     #[serde(default)]
     pub trail: Option<ProjectileTrailVisual>,
+    /// Optional dynamic point light materialized with the projectile body.
+    /// Descriptor content is shared between peers; this is never a wire field.
+    #[serde(default)]
+    pub light: Option<ProjectileLight>,
+}
+
+/// Descriptor-owned dynamic point light attached to a travelling projectile.
+/// The point shape is fixed by the projectile presentation path; only its
+/// radiance and attenuation are author-configurable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub falloff_range: f32,
+    #[serde(default = "default_projectile_light_falloff_model")]
+    pub falloff_model: FalloffKind,
+}
+
+const fn default_projectile_light_falloff_model() -> FalloffKind {
+    FalloffKind::InverseSquared
 }
 
 /// The projectile's visible body. A mesh body is rigid; no animation state is
@@ -503,6 +525,38 @@ fn validate_projectile_descriptor(
             }
         }
     }
+
+    if let Some(light) = projectile.visual.light.as_ref() {
+        if !light.color.iter().all(|value| value.is_finite()) {
+            return Err(DescriptorError::InvalidShape {
+                reason:
+                    "`components.weapon.projectile.visual.light.color` must contain finite values"
+                        .to_string(),
+            });
+        }
+        for (field, value, valid, constraint) in [
+            (
+                "intensity",
+                light.intensity,
+                light.intensity.is_finite() && light.intensity >= 0.0,
+                ">= 0.0",
+            ),
+            (
+                "falloffRange",
+                light.falloff_range,
+                light.falloff_range.is_finite() && light.falloff_range > 0.0,
+                "> 0.0",
+            ),
+        ] {
+            if !valid {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.light.{field}` must be a finite value {constraint}, got {value}"
+                    ),
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -680,6 +734,7 @@ mod tests {
                     emissive: 0.0,
                 },
                 trail: None,
+                light: None,
             },
         }
     }

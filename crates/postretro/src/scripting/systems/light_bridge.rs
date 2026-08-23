@@ -14,6 +14,7 @@ use postretro_render_cpu::sh_volume::{
 use postretro_render_data::influence::LightInfluence;
 use postretro_renderer::RUNTIME_DYNAMIC_LIGHT_RESERVE;
 
+use postretro_entities::Transform;
 use postretro_entities::components::light::LightAnimation;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
@@ -109,6 +110,10 @@ pub(crate) struct LightBridge {
     /// Influence records parallel to `entity_ids`. Authored records preserve
     /// PRL data; runtime records derive from their spawn-time component.
     cached_influences: Vec<LightInfluence>,
+    /// Body-matched render poses for runtime lights that follow their entity.
+    /// Kept separately from the authored origin/influence caches so non-follow
+    /// map lights retain their exact existing packing path.
+    cached_follow_positions: Vec<Option<glam::Vec3>>,
     /// Float index into `anim_samples` where the scripted region starts
     /// (= FGD sample float count). Used to compute per-light absolute offsets.
     fgd_sample_float_count: u32,
@@ -147,6 +152,7 @@ impl LightBridge {
             dirty: false,
             cached_origins_f64: Vec::new(),
             cached_influences: Vec::new(),
+            cached_follow_positions: Vec::new(),
             fgd_sample_float_count: 0,
             scripted_sample_buf: Vec::new(),
             runtime_capacity_warned: false,
@@ -164,6 +170,7 @@ impl LightBridge {
         self.dirty = false;
         self.cached_origins_f64.clear();
         self.cached_influences.clear();
+        self.cached_follow_positions.clear();
         self.fgd_sample_float_count = 0;
         self.scripted_sample_buf.clear();
         self.runtime_capacity_warned = false;
@@ -208,7 +215,9 @@ impl LightBridge {
                     eval_effective_brightness(component, self.snapshots.get(&id), current_time);
                 let map_light = component_to_map_light(
                     component,
-                    self.cached_origins_f64[map_idx],
+                    self.cached_follow_positions[map_idx]
+                        .map(position_to_origin_f64)
+                        .unwrap_or(self.cached_origins_f64[map_idx]),
                     self.shape[map_idx].is_dynamic,
                     self.shape[map_idx].cell_index,
                 );
@@ -255,10 +264,12 @@ impl LightBridge {
         self.warned_slotless_animation_indices.clear();
         self.cached_origins_f64.clear();
         self.cached_influences.clear();
+        self.cached_follow_positions.clear();
         self.entity_ids.reserve(lights.len());
         self.shape.reserve(lights.len());
         self.cached_origins_f64.reserve(lights.len());
         self.cached_influences.reserve(lights.len());
+        self.cached_follow_positions.reserve(lights.len());
         self.fgd_sample_float_count = fgd_sample_float_count;
         self.scripted_sample_buf = vec![0.0f32; lights.len() * SCRIPTED_FLOATS_PER_LIGHT];
 
@@ -295,6 +306,7 @@ impl LightBridge {
                     .cloned()
                     .unwrap_or_else(uncullable_light_influence),
             );
+            self.cached_follow_positions.push(None);
             if baked_descriptor.is_some() {
                 let component = registry
                     .get_component::<LightComponent>(id)
@@ -395,11 +407,13 @@ impl LightBridge {
                 self.shape[slot] = runtime_shape;
                 self.cached_origins_f64[slot] = origin_f64;
                 self.cached_influences[slot] = influence;
+                self.cached_follow_positions[slot] = None;
             } else {
                 self.entity_ids.push(id);
                 self.shape.push(runtime_shape);
                 self.cached_origins_f64.push(origin_f64);
                 self.cached_influences.push(influence);
+                self.cached_follow_positions.push(None);
             }
             absorbed_any = true;
         }
@@ -425,6 +439,7 @@ impl LightBridge {
         &mut self,
         registry: &mut EntityRegistry,
         current_time: f32,
+        alpha: f32,
     ) -> Option<LightBridgeUpdate> {
         if self.entity_ids.is_empty() {
             return None;
@@ -450,6 +465,12 @@ impl LightBridge {
                 }
                 continue;
             };
+
+            let followed_position = follow_transform_position(registry, id, current, alpha);
+            if self.cached_follow_positions[map_idx] != followed_position {
+                self.cached_follow_positions[map_idx] = followed_position;
+                self.dirty = true;
+            }
 
             let shape = &self.shape[map_idx];
             if !shape.is_dynamic
@@ -586,9 +607,12 @@ impl LightBridge {
                 continue;
             };
 
+            let followed_position = self.cached_follow_positions[map_idx];
             let map_light = component_to_map_light(
                 component,
-                self.cached_origins_f64[map_idx],
+                followed_position
+                    .map(position_to_origin_f64)
+                    .unwrap_or(self.cached_origins_f64[map_idx]),
                 self.shape[map_idx].is_dynamic,
                 self.shape[map_idx].cell_index,
             );
@@ -627,7 +651,11 @@ impl LightBridge {
             if self.shape[map_idx].is_dynamic {
                 lights_bytes.extend_from_slice(&pack_light(&map_light));
                 descriptor_bytes.extend_from_slice(&forward_desc);
-                influences.push(self.cached_influences[map_idx].clone());
+                let mut influence = self.cached_influences[map_idx].clone();
+                if let Some(position) = followed_position {
+                    influence.center = position;
+                }
+                influences.push(influence);
             }
 
             // For `_animated` (and other slot-bearing) lights, also queue a
@@ -721,6 +749,7 @@ fn map_light_to_component(
         },
         is_dynamic: light.is_dynamic,
         animated_slot: light.animated_slot,
+        follow_transform: false,
         animation: baked_descriptor.map(|descriptor| LightAnimation {
             period_ms: descriptor.period * 1000.0,
             phase: Some(descriptor.phase),
@@ -777,6 +806,48 @@ fn component_to_map_light(
         // through the component is part of the broader entity-model migration.
         shadow_type: ShadowType::StaticLightMap,
     }
+}
+
+/// Resolve a mover-attached light from the exact pose its projectile body uses
+/// in the current render frame. Sprite bodies deliberately take the raw tick
+/// transform because billboard collection does not interpolate them; rigid
+/// model bodies use the same interpolated transform as mesh collection.
+fn follow_transform_position(
+    registry: &EntityRegistry,
+    id: EntityId,
+    component: &LightComponent,
+    alpha: f32,
+) -> Option<glam::Vec3> {
+    if !component.follow_transform {
+        return None;
+    }
+    if registry
+        .has_component_kind(id, ComponentKind::SpriteVisual)
+        .ok()
+        == Some(true)
+    {
+        return registry
+            .get_component::<Transform>(id)
+            .ok()
+            .map(|transform| transform.position);
+    }
+    if registry.has_component_kind(id, ComponentKind::Mesh).ok() == Some(true) {
+        return registry
+            .interpolated_transform(id, alpha)
+            .ok()
+            .map(|transform| transform.position);
+    }
+    // A follow light is expected to accompany one of the two projectile body
+    // components above. If presentation is mid-transition, still use the
+    // entity's current live pose rather than the spawn-origin cache.
+    registry
+        .get_component::<Transform>(id)
+        .ok()
+        .map(|transform| transform.position)
+}
+
+fn position_to_origin_f64(position: glam::Vec3) -> [f64; 3] {
+    [position.x as f64, position.y as f64, position.z as f64]
 }
 
 fn uncullable_light_influence() -> LightInfluence {
@@ -1257,7 +1328,9 @@ mod tests {
             [0.0, -1.0, 0.0]
         );
 
-        let initial = bridge.update(&mut registry, 0.0).expect("initial dirty");
+        let initial = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("initial dirty");
         assert!(initial.has_dirty_data);
         assert!(
             initial.compose_descriptor_writes.is_empty(),
@@ -1268,7 +1341,7 @@ mod tests {
         cleared.animation = None;
         registry.set_component(id, cleared).unwrap();
         let update = bridge
-            .update(&mut registry, 0.1)
+            .update(&mut registry, 0.1, 0.0)
             .expect("explicit clear is dirty");
         assert_eq!(update.compose_descriptor_writes.len(), 1);
         let (_, descriptor_bytes) = &update.compose_descriptor_writes[0];
@@ -1294,7 +1367,9 @@ mod tests {
         let lights = vec![sample_dynamic_point_light()];
         bridge.populate_from_level(&lights, &mut registry, 0);
 
-        let update = bridge.update(&mut registry, 0.0).expect("initial dirty");
+        let update = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("initial dirty");
         assert!(
             update.has_dirty_data,
             "first update must have dirty GPU data"
@@ -1309,10 +1384,10 @@ mod tests {
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
         // Flush initial upload.
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let update = bridge
-            .update(&mut registry, 0.016)
+            .update(&mut registry, 0.016, 0.0)
             .expect("update always returns Some when lights are present");
         assert!(
             !update.has_dirty_data,
@@ -1330,7 +1405,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0); // flush initial
+        let _ = bridge.update(&mut registry, 0.0, 0.0); // flush initial
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
@@ -1341,7 +1416,7 @@ mod tests {
         registry.set_component(id, component).unwrap();
 
         let update = bridge
-            .update(&mut registry, 0.016)
+            .update(&mut registry, 0.016, 0.0)
             .expect("dirty after mutation");
         assert!(
             update.has_dirty_data,
@@ -1360,7 +1435,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
@@ -1378,7 +1453,7 @@ mod tests {
         });
         registry.set_component(id, component).unwrap();
 
-        let update = bridge.update(&mut registry, 0.0).expect("dirty");
+        let update = bridge.update(&mut registry, 0.0, 0.0).expect("dirty");
         let brightness_count =
             u32::from_le_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
         assert_eq!(brightness_count, 3);
@@ -1393,7 +1468,7 @@ mod tests {
         registry.set_component(id, component).unwrap();
 
         let update = bridge
-            .update(&mut registry, 0.1)
+            .update(&mut registry, 0.1, 0.0)
             .expect("dirty after clear");
         let brightness_count =
             u32::from_le_bytes(update.descriptor_bytes[12..16].try_into().unwrap());
@@ -1409,7 +1484,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
@@ -1428,9 +1503,9 @@ mod tests {
         registry.set_component(id, component).unwrap();
 
         // Animate starts at t=1.0; completion bound = 2 × 0.5s, fires at t=2.0.
-        let _ = bridge.update(&mut registry, 1.0);
+        let _ = bridge.update(&mut registry, 1.0, 0.0);
 
-        let second_period = bridge.update(&mut registry, 1.5).unwrap();
+        let second_period = bridge.update(&mut registry, 1.5, 0.0).unwrap();
         assert!(
             second_period.has_dirty_data,
             "finite descriptors reset to endpoint-clamped sampling each period"
@@ -1447,14 +1522,14 @@ mod tests {
             "animation still live before completion bound"
         );
 
-        let near_completion = bridge.update(&mut registry, 1.999).unwrap();
+        let near_completion = bridge.update(&mut registry, 1.999, 0.0).unwrap();
         assert!(
             (near_completion.effective_brightness[0] - 0.25).abs() < 0.01,
             "finite sampling must approach the final brightness before settlement; got {}",
             near_completion.effective_brightness[0]
         );
 
-        let completed = bridge.update(&mut registry, 2.01).unwrap();
+        let completed = bridge.update(&mut registry, 2.01, 0.0).unwrap();
         let settled = registry.get_component::<LightComponent>(id).unwrap();
         assert!(
             settled.animation.is_none(),
@@ -1485,7 +1560,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[light], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
@@ -1503,7 +1578,7 @@ mod tests {
         });
         registry.set_component(id, component).unwrap();
 
-        let playing = bridge.update(&mut registry, 1.0).unwrap();
+        let playing = bridge.update(&mut registry, 1.0, 0.0).unwrap();
         assert!(
             f32::from_ne_bytes(
                 playing.compose_descriptor_writes[0].1[0..4]
@@ -1513,7 +1588,7 @@ mod tests {
             "finite compose descriptors must use endpoint-clamped sampling"
         );
 
-        let settled = bridge.update(&mut registry, 2.01).unwrap();
+        let settled = bridge.update(&mut registry, 2.01, 0.0).unwrap();
         let (slot, descriptor) = &settled.compose_descriptor_writes[0];
         assert_eq!(*slot, 2);
         assert_eq!(
@@ -1534,7 +1609,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
         let id = bridge.entity_for_map_index(0).unwrap();
 
         let make_anim = || LightAnimation {
@@ -1553,7 +1628,7 @@ mod tests {
             .clone();
         comp.animation = Some(make_anim());
         registry.set_component(id, comp).unwrap();
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         // Re-write at t=0.6 resets the clock; completion now at t=1.6.
         // Phase change makes this a distinct animation value so the bridge detects a mutation.
@@ -1565,11 +1640,11 @@ mod tests {
         anim.phase = Some(0.5);
         comp.animation = Some(anim);
         registry.set_component(id, comp).unwrap();
-        let _ = bridge.update(&mut registry, 0.6);
+        let _ = bridge.update(&mut registry, 0.6, 0.0);
 
         // t=1.1 would fire with the original clock (started at 0.0) but not
         // with the restarted clock (started at 0.6, completion at 1.6).
-        let _ = bridge.update(&mut registry, 1.1);
+        let _ = bridge.update(&mut registry, 1.1, 0.0);
         assert!(
             registry
                 .get_component::<LightComponent>(id)
@@ -1579,7 +1654,7 @@ mod tests {
             "restart must reset completion clock; animation should still be live at t=1.1"
         );
 
-        let _ = bridge.update(&mut registry, 1.7);
+        let _ = bridge.update(&mut registry, 1.7, 0.0);
         assert!(
             registry
                 .get_component::<LightComponent>(id)
@@ -1605,6 +1680,7 @@ mod tests {
             cone_direction: None,
             is_dynamic: true,
             animated_slot: None,
+            follow_transform: false,
             animation: Some(LightAnimation {
                 period_ms: 500.0,
                 phase: None,
@@ -1626,7 +1702,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
         let id = bridge.entity_for_map_index(0).unwrap();
 
         let mut comp = registry
@@ -1643,7 +1719,7 @@ mod tests {
             direction: None,
         });
         registry.set_component(id, comp).unwrap();
-        let update = bridge.update(&mut registry, 0.0).expect("dirty");
+        let update = bridge.update(&mut registry, 0.0, 0.0).expect("dirty");
         let phase = f32::from_le_bytes(update.descriptor_bytes[4..8].try_into().unwrap());
         assert!(
             (phase - 0.75).abs() < 1e-5,
@@ -1659,7 +1735,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
         let id = bridge.entity_for_map_index(0).unwrap();
 
         let mut comp = registry
@@ -1676,14 +1752,14 @@ mod tests {
             direction: None,
         });
         registry.set_component(id, comp).unwrap();
-        let _ = bridge.update(&mut registry, 0.0);
-        let _ = bridge.update(&mut registry, 0.2); // past completion
-        let idle1 = bridge.update(&mut registry, 0.3).unwrap();
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let _ = bridge.update(&mut registry, 0.2, 0.0); // past completion
+        let idle1 = bridge.update(&mut registry, 0.3, 0.0).unwrap();
         assert!(
             !idle1.has_dirty_data,
             "settled idle frame must not re-upload"
         );
-        let idle2 = bridge.update(&mut registry, 10.0).unwrap();
+        let idle2 = bridge.update(&mut registry, 10.0, 0.0).unwrap();
         assert!(
             !idle2.has_dirty_data,
             "subsequent idle frame must not re-upload"
@@ -1714,6 +1790,7 @@ mod tests {
             cone_direction: None,
             is_dynamic: true,
             animated_slot: None,
+            follow_transform: false,
             animation: None,
         };
         registry.set_component(new_id, component).unwrap();
@@ -1731,7 +1808,7 @@ mod tests {
         assert_eq!(bridge.light_count(), 2);
 
         // Next update produces a GPU upload that includes both lights.
-        let update = bridge.update(&mut registry, 0.0).expect("dirty");
+        let update = bridge.update(&mut registry, 0.0, 0.0).expect("dirty");
         assert!(update.has_dirty_data);
         assert_eq!(update.lights_bytes.len(), 2 * GPU_LIGHT_SIZE);
         assert_eq!(update.descriptor_bytes.len(), 2 * ANIMATION_DESCRIPTOR_SIZE,);
@@ -1745,7 +1822,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_spot_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut comp = registry
@@ -1762,9 +1839,9 @@ mod tests {
             direction: None,
         });
         registry.set_component(id, comp).unwrap();
-        let _ = bridge.update(&mut registry, 0.0); // flush dirty frame
+        let _ = bridge.update(&mut registry, 0.0, 0.0); // flush dirty frame
 
-        let dark = bridge.update(&mut registry, 0.5).unwrap();
+        let dark = bridge.update(&mut registry, 0.5, 0.0).unwrap();
         assert!(
             !dark.has_dirty_data,
             "no mutation, GPU buffers must not re-upload"
@@ -1775,7 +1852,7 @@ mod tests {
             dark.effective_brightness[0]
         );
 
-        let bright = bridge.update(&mut registry, 1.0).unwrap();
+        let bright = bridge.update(&mut registry, 1.0, 0.0).unwrap();
         assert!(!bright.has_dirty_data);
         assert!(
             bright.effective_brightness[0] > 0.5,
@@ -1803,7 +1880,9 @@ mod tests {
         bridge.populate_from_level(&[light], &mut registry, 0);
         // Flush the initial dirty upload (no script animation yet — bytes
         // present but they're the sentinel descriptor for the slot).
-        let initial = bridge.update(&mut registry, 0.0).expect("initial dirty");
+        let initial = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("initial dirty");
         assert!(initial.has_dirty_data);
         assert_eq!(
             initial.compose_descriptor_writes.len(),
@@ -1830,7 +1909,7 @@ mod tests {
         registry.set_component(id, component).unwrap();
 
         let update = bridge
-            .update(&mut registry, 0.0)
+            .update(&mut registry, 0.0, 0.0)
             .expect("dirty after setLightAnimation");
         assert!(update.has_dirty_data);
         assert_eq!(
@@ -1885,7 +1964,9 @@ mod tests {
         component.animation = Some(sample_animation());
         registry.set_component(static_id, component).unwrap();
 
-        let update = bridge.update(&mut registry, 0.0).expect("initial dirty");
+        let update = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("initial dirty");
 
         assert_eq!(
             bridge.light_count(),
@@ -1931,7 +2012,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[light], &mut registry, 0);
-        let update = bridge.update(&mut registry, 0.0).unwrap();
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
         assert!(update.has_dirty_data);
         assert!(
             update.compose_descriptor_writes.is_empty(),
@@ -1946,7 +2027,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[light], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
@@ -1957,7 +2038,7 @@ mod tests {
         registry.set_component(id, component).unwrap();
 
         let captured = crate::scripting::reactions::log_capture::capture(|| {
-            let _ = bridge.update(&mut registry, 0.1);
+            let _ = bridge.update(&mut registry, 0.1, 0.0);
 
             // A subsequent dirty update while the same animation remains live
             // must not repeat the author-facing warning.
@@ -1967,7 +2048,7 @@ mod tests {
                 .clone();
             component.intensity = 2.0;
             registry.set_component(id, component).unwrap();
-            let _ = bridge.update(&mut registry, 0.2);
+            let _ = bridge.update(&mut registry, 0.2, 0.0);
         });
 
         let warnings: Vec<_> = captured
@@ -2001,7 +2082,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&lights, &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         // Dynamic and slot-backed static lights receive animations; the final
         // static slotless light remains unanimated. None meet the diagnostic gate.
@@ -2016,7 +2097,7 @@ mod tests {
         }
 
         let captured = crate::scripting::reactions::log_capture::capture(|| {
-            let _ = bridge.update(&mut registry, 0.1);
+            let _ = bridge.update(&mut registry, 0.1, 0.0);
         });
         assert!(
             !captured.iter().any(|(level, message)| {
@@ -2033,7 +2114,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = registry.try_spawn(Default::default(), &[]).unwrap();
         let mut component = map_light_to_component(&sample_dynamic_point_light(), None);
@@ -2042,7 +2123,7 @@ mod tests {
         bridge.absorb_dynamic_lights(&registry);
 
         let update = bridge
-            .update(&mut registry, 0.0)
+            .update(&mut registry, 0.0, 0.0)
             .expect("runtime light dirty");
         assert_eq!(update.lights_bytes.len(), GPU_LIGHT_SIZE);
         assert_eq!(update.influence_bytes.len(), 16);
@@ -2063,16 +2144,23 @@ mod tests {
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
         let id = bridge.entity_for_map_index(0).unwrap();
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         registry.despawn(id).unwrap();
-        let update = bridge.update(&mut registry, 0.1).expect("despawn dirty");
+        let update = bridge
+            .update(&mut registry, 0.1, 0.0)
+            .expect("despawn dirty");
         assert!(update.has_dirty_data);
         assert_eq!(update.lights_bytes, vec![0; GPU_LIGHT_SIZE]);
         assert_eq!(update.descriptor_bytes, vec![0; ANIMATION_DESCRIPTOR_SIZE]);
         assert_eq!(update.effective_brightness, vec![0.0]);
 
-        assert!(!bridge.update(&mut registry, 0.2).unwrap().has_dirty_data);
+        assert!(
+            !bridge
+                .update(&mut registry, 0.2, 0.0)
+                .unwrap()
+                .has_dirty_data
+        );
     }
 
     // Regression: slot-bearing baked lights have no dynamic-forward record.
@@ -2086,10 +2174,12 @@ mod tests {
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[light], &mut registry, 0);
         let id = bridge.entity_for_map_index(0).unwrap();
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         registry.despawn(id).unwrap();
-        let update = bridge.update(&mut registry, 0.1).expect("despawn dirty");
+        let update = bridge
+            .update(&mut registry, 0.1, 0.0)
+            .expect("despawn dirty");
 
         assert!(update.has_dirty_data);
         assert!(update.lights_bytes.is_empty());
@@ -2098,7 +2188,12 @@ mod tests {
             update.compose_descriptor_writes,
             vec![(5, [0u8; ANIMATION_DESCRIPTOR_SIZE])]
         );
-        assert!(!bridge.update(&mut registry, 0.2).unwrap().has_dirty_data);
+        assert!(
+            !bridge
+                .update(&mut registry, 0.2, 0.0)
+                .unwrap()
+                .has_dirty_data
+        );
     }
 
     // Regression: the compose path has no `GpuLight` fallback. A zero sentinel
@@ -2113,7 +2208,7 @@ mod tests {
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[light], &mut registry, 0);
 
-        let initial = bridge.update(&mut registry, 0.0).unwrap();
+        let initial = bridge.update(&mut registry, 0.0, 0.0).unwrap();
         let initial_desc = &initial.compose_descriptor_writes[0].1;
         assert_eq!(
             u32::from_ne_bytes(initial_desc[36..40].try_into().unwrap()),
@@ -2128,7 +2223,7 @@ mod tests {
             .clone();
         component.animation = Some(sample_animation());
         registry.set_component(id, component).unwrap();
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
 
         let mut component = registry
             .get_component::<LightComponent>(id)
@@ -2136,7 +2231,7 @@ mod tests {
             .clone();
         component.animation = None;
         registry.set_component(id, component).unwrap();
-        let cleared = bridge.update(&mut registry, 0.2).unwrap();
+        let cleared = bridge.update(&mut registry, 0.2, 0.0).unwrap();
         let cleared_desc = &cleared.compose_descriptor_writes[0].1;
         assert_eq!(
             u32::from_ne_bytes(cleared_desc[36..40].try_into().unwrap()),
@@ -2153,7 +2248,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         for cycle in 0..(RUNTIME_DYNAMIC_LIGHT_RESERVE * 2) {
             let ids: Vec<_> = (0..CONCURRENT_LIGHTS)
@@ -2167,7 +2262,9 @@ mod tests {
             bridge.absorb_dynamic_lights(&registry);
             assert_eq!(live_runtime_count(&bridge), CONCURRENT_LIGHTS);
 
-            let live = bridge.update(&mut registry, cycle as f32 + 0.1).unwrap();
+            let live = bridge
+                .update(&mut registry, cycle as f32 + 0.1, 0.0)
+                .unwrap();
             assert_eq!(live.lights_bytes.len(), CONCURRENT_LIGHTS * GPU_LIGHT_SIZE);
             assert!(
                 live.lights_bytes
@@ -2179,7 +2276,9 @@ mod tests {
             for id in ids {
                 registry.despawn(id).unwrap();
             }
-            let tombstones = bridge.update(&mut registry, cycle as f32 + 0.2).unwrap();
+            let tombstones = bridge
+                .update(&mut registry, cycle as f32 + 0.2, 0.0)
+                .unwrap();
             assert_eq!(
                 tombstones.lights_bytes.len(),
                 CONCURRENT_LIGHTS * GPU_LIGHT_SIZE
@@ -2199,7 +2298,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let mut zero_duration = sample_animation();
         zero_duration.period_ms = 0.0;
@@ -2212,7 +2311,7 @@ mod tests {
         let runtime_slot = bridge.authored_light_count;
 
         registry.despawn(id).unwrap();
-        let update = bridge.update(&mut registry, 0.1).unwrap();
+        let update = bridge.update(&mut registry, 0.1, 0.0).unwrap();
 
         assert!(update.has_dirty_data);
         assert_eq!(update.lights_bytes, vec![0; GPU_LIGHT_SIZE]);
@@ -2226,16 +2325,16 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let id = spawn_runtime_light(&mut registry, runtime_component([1.0, 2.0, 3.0], 9.0, None));
         let survivor =
             spawn_runtime_light(&mut registry, runtime_component([4.0, 5.0, 6.0], 7.0, None));
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
 
         registry.despawn(id).unwrap();
-        let disappeared = bridge.update(&mut registry, 0.2).unwrap();
+        let disappeared = bridge.update(&mut registry, 0.2, 0.0).unwrap();
         assert_eq!(
             &disappeared.lights_bytes[..GPU_LIGHT_SIZE],
             &[0; GPU_LIGHT_SIZE]
@@ -2256,7 +2355,7 @@ mod tests {
         registry
             .set_component(survivor, survivor_component)
             .unwrap();
-        let repacked = bridge.update(&mut registry, 0.3).unwrap();
+        let repacked = bridge.update(&mut registry, 0.3, 0.0).unwrap();
         assert!(repacked.has_dirty_data);
         assert_eq!(
             &repacked.lights_bytes[..GPU_LIGHT_SIZE],
@@ -2274,10 +2373,10 @@ mod tests {
         bridge.populate_from_level(&[slot_bearing, survivor], &mut registry, 0);
         let missing_id = bridge.entity_for_map_index(0).unwrap();
         let survivor_id = bridge.entity_for_map_index(1).unwrap();
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         registry.despawn(missing_id).unwrap();
-        let disappeared = bridge.update(&mut registry, 0.1).unwrap();
+        let disappeared = bridge.update(&mut registry, 0.1, 0.0).unwrap();
         assert_eq!(
             &disappeared.lights_bytes[..GPU_LIGHT_SIZE],
             &[0; GPU_LIGHT_SIZE]
@@ -2295,7 +2394,7 @@ mod tests {
         registry
             .set_component(survivor_id, survivor_component)
             .unwrap();
-        let repacked = bridge.update(&mut registry, 0.2).unwrap();
+        let repacked = bridge.update(&mut registry, 0.2, 0.0).unwrap();
         assert_eq!(
             &repacked.lights_bytes[..GPU_LIGHT_SIZE],
             &[0; GPU_LIGHT_SIZE]
@@ -2314,14 +2413,14 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[authored_dynamic, static_slot_light], &mut registry, 0);
-        let initial = bridge.update(&mut registry, 0.0).unwrap();
+        let initial = bridge.update(&mut registry, 0.0, 0.0).unwrap();
         let authored_forward = initial.lights_bytes.clone();
         let authored_compose = initial.compose_descriptor_writes.clone();
 
         let first =
             spawn_runtime_light(&mut registry, runtime_component([4.0, 5.0, 6.0], 7.0, None));
         bridge.absorb_dynamic_lights(&registry);
-        let with_runtime = bridge.update(&mut registry, 0.1).unwrap();
+        let with_runtime = bridge.update(&mut registry, 0.1, 0.0).unwrap();
         assert_eq!(
             &with_runtime.lights_bytes[..GPU_LIGHT_SIZE],
             authored_forward.as_slice()
@@ -2329,7 +2428,7 @@ mod tests {
         assert_eq!(with_runtime.compose_descriptor_writes, authored_compose);
 
         registry.despawn(first).unwrap();
-        let tombstone = bridge.update(&mut registry, 0.2).unwrap();
+        let tombstone = bridge.update(&mut registry, 0.2, 0.0).unwrap();
         assert_eq!(
             &tombstone.lights_bytes[..GPU_LIGHT_SIZE],
             authored_forward.as_slice()
@@ -2341,7 +2440,7 @@ mod tests {
             runtime_component([6.0, 5.0, 4.0], 11.0, None),
         );
         bridge.absorb_dynamic_lights(&registry);
-        let reused = bridge.update(&mut registry, 0.3).unwrap();
+        let reused = bridge.update(&mut registry, 0.3, 0.0).unwrap();
         assert_eq!(
             &reused.lights_bytes[..GPU_LIGHT_SIZE],
             authored_forward.as_slice()
@@ -2358,23 +2457,23 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let old = spawn_runtime_light(
             &mut registry,
             runtime_component([1.0, 2.0, 3.0], 19.0, Some(sample_animation())),
         );
         bridge.absorb_dynamic_lights(&registry);
-        let populated = bridge.update(&mut registry, 0.1).unwrap();
+        let populated = bridge.update(&mut registry, 0.1, 0.0).unwrap();
         assert!(populated.samples_bytes.iter().any(|&byte| byte != 0));
 
         registry.despawn(old).unwrap();
-        let _ = bridge.update(&mut registry, 0.2);
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
 
         let new_component = runtime_component([-4.0, 5.0, -6.0], 3.5, None);
         let new = spawn_runtime_light(&mut registry, new_component.clone());
         bridge.absorb_dynamic_lights(&registry);
-        let reused = bridge.update(&mut registry, 0.3).unwrap();
+        let reused = bridge.update(&mut registry, 0.3, 0.0).unwrap();
         let runtime_slot = bridge.authored_light_count;
 
         assert_eq!(bridge.entity_ids[runtime_slot], new);
@@ -2406,7 +2505,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let ids: Vec<_> = (0..RUNTIME_DYNAMIC_LIGHT_RESERVE)
             .map(|index| {
@@ -2418,7 +2517,7 @@ mod tests {
             .collect();
         bridge.absorb_dynamic_lights(&registry);
         assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
 
         let overflow = spawn_runtime_light(
             &mut registry,
@@ -2428,7 +2527,7 @@ mod tests {
         assert!(!bridge.entity_ids.contains(&overflow));
 
         registry.despawn(ids[0]).unwrap();
-        let _ = bridge.update(&mut registry, 0.2);
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
         assert_eq!(
             live_runtime_count(&bridge),
             RUNTIME_DYNAMIC_LIGHT_RESERVE - 1
@@ -2445,7 +2544,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let ids: Vec<_> = (0..RUNTIME_DYNAMIC_LIGHT_RESERVE)
             .map(|index| {
@@ -2456,7 +2555,7 @@ mod tests {
             })
             .collect();
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
 
         registry.despawn(ids[0]).unwrap();
         let replacement = spawn_runtime_light(
@@ -2466,7 +2565,7 @@ mod tests {
         bridge.absorb_dynamic_lights(&registry);
         assert!(!bridge.entity_ids.contains(&replacement));
 
-        let _ = bridge.update(&mut registry, 0.2);
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
         assert_eq!(bridge.free_slots.len(), 1);
 
         bridge.absorb_dynamic_lights(&registry);
@@ -2479,7 +2578,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let first_batch: Vec<_> = (0..3)
             .map(|index| {
@@ -2490,11 +2589,11 @@ mod tests {
             })
             .collect();
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
         for id in first_batch {
             registry.despawn(id).unwrap();
         }
-        let _ = bridge.update(&mut registry, 0.2);
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
         let prior_len = bridge.entity_ids.len();
         assert_eq!(bridge.free_slots.len(), 3);
 
@@ -2511,7 +2610,7 @@ mod tests {
         assert!(bridge.free_slots.is_empty());
         assert_eq!(bridge.entity_ids.len(), prior_len + 2);
         assert_eq!(live_runtime_count(&bridge), 5);
-        let update = bridge.update(&mut registry, 0.3).unwrap();
+        let update = bridge.update(&mut registry, 0.3, 0.0).unwrap();
         assert!(update.has_dirty_data);
         assert_eq!(update.lights_bytes.len(), 5 * GPU_LIGHT_SIZE);
         assert!(
@@ -2531,24 +2630,24 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let first =
             spawn_runtime_light(&mut registry, runtime_component([1.0, 0.0, 0.0], 4.0, None));
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
         registry.despawn(first).unwrap();
-        let _ = bridge.update(&mut registry, 0.2);
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
 
         let reused =
             spawn_runtime_light(&mut registry, runtime_component([2.0, 0.0, 0.0], 4.0, None));
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.3);
+        let _ = bridge.update(&mut registry, 0.3, 0.0);
         registry.despawn(reused).unwrap();
-        let _ = bridge.update(&mut registry, 0.4);
+        let _ = bridge.update(&mut registry, 0.4, 0.0);
         assert_eq!(bridge.free_slots.len(), 1);
 
-        let idle = bridge.update(&mut registry, 0.5).unwrap();
+        let idle = bridge.update(&mut registry, 0.5, 0.0).unwrap();
         assert!(!idle.has_dirty_data);
         assert_eq!(bridge.free_slots.len(), 1);
     }
@@ -2558,7 +2657,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
 
         let runtime_ids: Vec<_> = (0..3)
             .map(|index| {
@@ -2569,11 +2668,11 @@ mod tests {
             })
             .collect();
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
 
         registry.despawn(runtime_ids[0]).unwrap();
         registry.despawn(runtime_ids[1]).unwrap();
-        let update = bridge.update(&mut registry, 0.2).unwrap();
+        let update = bridge.update(&mut registry, 0.2, 0.0).unwrap();
         assert_eq!(update.lights_bytes.len(), 3 * GPU_LIGHT_SIZE);
         assert_eq!(update.effective_brightness.len(), 3);
         assert_eq!(bridge.collect_all_as_map_lights(&registry, 0.2).len(), 2);
@@ -2584,13 +2683,13 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_point_light()], &mut registry, 0);
-        let _ = bridge.update(&mut registry, 0.0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
         let runtime =
             spawn_runtime_light(&mut registry, runtime_component([1.0, 0.0, 0.0], 4.0, None));
         bridge.absorb_dynamic_lights(&registry);
-        let _ = bridge.update(&mut registry, 0.1);
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
         registry.despawn(runtime).unwrap();
-        let _ = bridge.update(&mut registry, 0.2);
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
         assert_eq!(bridge.free_slots.len(), 1);
 
         bridge.clear();
@@ -2608,9 +2707,9 @@ mod tests {
             runtime_component([2.0, 0.0, 0.0], 4.0, None),
         );
         bridge.absorb_dynamic_lights(&next_registry);
-        let _ = bridge.update(&mut next_registry, 0.3);
+        let _ = bridge.update(&mut next_registry, 0.3, 0.0);
         next_registry.despawn(next_runtime).unwrap();
-        let _ = bridge.update(&mut next_registry, 0.4);
+        let _ = bridge.update(&mut next_registry, 0.4, 0.0);
         assert_eq!(bridge.free_slots.len(), 1);
 
         let mut replacement_registry = EntityRegistry::new();
@@ -2623,14 +2722,14 @@ mod tests {
         assert_eq!(bridge.authored_light_count, 1);
         assert_eq!(bridge.entity_ids.len(), 1);
 
-        let authored = bridge.update(&mut replacement_registry, 0.5).unwrap();
+        let authored = bridge.update(&mut replacement_registry, 0.5, 0.0).unwrap();
         let authored_forward = authored.lights_bytes.clone();
         let final_runtime = spawn_runtime_light(
             &mut replacement_registry,
             runtime_component([3.0, 0.0, 0.0], 6.0, None),
         );
         bridge.absorb_dynamic_lights(&replacement_registry);
-        let with_runtime = bridge.update(&mut replacement_registry, 0.6).unwrap();
+        let with_runtime = bridge.update(&mut replacement_registry, 0.6, 0.0).unwrap();
         let runtime_slot = bridge
             .entity_ids
             .iter()

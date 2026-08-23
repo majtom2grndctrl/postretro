@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use postretro_foundation::Vec3Lit;
 
+pub use postretro_foundation::FalloffKind;
+
 /// Shape discriminant. Parallels `postretro_level_loader::LightType` at the FFI
 /// boundary so the scripting module stays independent of the runtime-level data types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,14 +19,6 @@ pub enum LightKind {
     Point,
     Spot,
     Directional,
-}
-
-/// Distance-attenuation discriminant. Parallels `postretro_level_loader::FalloffModel`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FalloffKind {
-    Linear,
-    InverseDistance,
-    InverseSquared,
 }
 
 /// Per-light animation curve set.
@@ -99,6 +93,10 @@ pub struct LightComponent {
     /// path. World-query snapshots omit this internal routing field.
     #[serde(default)]
     pub animated_slot: Option<u32>,
+    /// Internal bridge routing for lights that follow their entity body's
+    /// render pose. World-query snapshots omit this field.
+    #[serde(default)]
+    pub follow_transform: bool,
     #[serde(default)]
     pub animation: Option<LightAnimation>,
 }
@@ -121,6 +119,7 @@ mod tests {
             cone_direction: Some([0.0, -1.0, 0.0]),
             is_dynamic: true,
             animated_slot: None,
+            follow_transform: false,
             animation: Some(LightAnimation {
                 period_ms: 1000.0,
                 phase: Some(0.25),

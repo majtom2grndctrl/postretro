@@ -957,14 +957,17 @@ impl App {
                 let ComponentValue::BillboardEmitter(c) = value else {
                     continue;
                 };
-                collections.push((c.sprite.clone(), c.lifetime, 0.0));
+                collections.push((c.sprite.clone(), c.lifetime, 0.0, None));
             }
-            collections.extend(
-                projectile_sprites
-                    .into_iter()
-                    .map(|sprite| (sprite.collection, sprite.lifetime, sprite.emissive)),
-            );
-            for (collection, lifetime, emissive) in collections {
+            collections.extend(projectile_sprites.into_iter().map(|sprite| {
+                (
+                    sprite.collection,
+                    sprite.lifetime,
+                    sprite.emissive,
+                    sprite.frame_duration_ms,
+                )
+            }));
+            for (collection, lifetime, emissive, frame_duration_ms) in collections {
                 if collection.is_empty() || !seen.insert(collection.clone()) {
                     continue;
                 }
@@ -977,6 +980,9 @@ impl App {
                                 height: 1,
                             }]
                         });
+                let lifetime = frame_duration_ms.map_or(lifetime, |frame_duration_ms| {
+                    frame_duration_ms / 1_000.0 * frames.len() as f32
+                });
                 renderer.register_smoke_collection(&collection, &frames, 0.3, lifetime, emissive);
                 particle_render.register_sprite(&collection);
             }

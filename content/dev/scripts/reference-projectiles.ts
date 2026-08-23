@@ -22,10 +22,11 @@ export const referencePlasmaBoltEntity = defineEntity({
         visual: {
           body: {
             kind: "sprite",
-            sprite: "projectiles/plasma_blue_orb.png",
+            sprite: "plasma_bolt",
             size: 0.35,
             tint: [0.2, 0.7, 1.0],
             emissive: 3.0,
+            frameDurationMs: 60.0,
           },
         },
       },

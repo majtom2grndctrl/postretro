@@ -275,6 +275,7 @@ pub(super) fn materialize_armed_remote_projectile(
     remote: &RemoteEntityMaterialize,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
+    script_time: f32,
 ) -> bool {
     let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
     let Some(projectile) = descriptors
@@ -289,6 +290,7 @@ pub(super) fn materialize_armed_remote_projectile(
         registry,
         remote.entity_id,
         projectile,
+        script_time,
     );
     let _ = registry.set_component(
         remote.entity_id,
@@ -443,6 +445,7 @@ mod tests {
                         rotation: 0.0,
                         tint: [0.2, 0.8, 1.0],
                         emissive: 0.0,
+                        frame_duration_ms: None,
                     },
                     trail: Some(ProjectileTrailVisual {
                         sprite: "sprites/projectiles/trail.png".to_string(),
@@ -590,6 +593,7 @@ mod tests {
             &request,
             &descriptors,
             &mut reg,
+            0.0,
         ));
         assert_eq!(
             reg.get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(id)

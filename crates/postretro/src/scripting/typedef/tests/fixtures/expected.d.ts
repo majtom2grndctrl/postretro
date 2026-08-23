@@ -284,6 +284,10 @@ declare module "postretro" {
     rotation?: number;
     /** A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. Each number must be finite. This value is stored today but the billboard renderer does not yet apply sprite tint visibly. */
     tint?: readonly [number, number, number];
+    /** Additive self-lit strength for this sprite. `0` keeps the normal scene-lit appearance; values around `2` to `4` make a full-bright HDR bolt that can bloom. Use a finite number of 0 or greater. */
+    emissive?: number;
+    /** How long to hold each numbered sprite frame, in milliseconds. Leave it out to keep frame zero static, even when `sprite` names a multi-frame collection. Use a finite number greater than 0. */
+    frameDurationMs?: number;
   };
 
   /** The settings used when `body.kind` is `model`. The model is a rigid 3D object: it does not play an animation while flying. */

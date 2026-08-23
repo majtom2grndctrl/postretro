@@ -275,6 +275,9 @@ fn advance_matching(
         let travel_time = segment_length / component.speed;
         component.remaining_range = (remaining_range - segment_length).max(0.0);
         component.remaining_lifetime = (remaining_lifetime - travel_time).max(0.0);
+        if component.flipbook_active {
+            component.elapsed_flight_age += travel_time;
+        }
         pending.push(PendingProjectileAction::Update {
             projectile: projectile_id,
             transform: Transform {
@@ -462,6 +465,8 @@ mod tests {
                     owner_weapon,
                     spawned: true,
                     predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
                 },
             )
             .expect("projectile component attaches");
@@ -793,6 +798,110 @@ mod tests {
         assert!(health.current.abs() <= f32::EPSILON);
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(!registry.borrow().exists(projectile));
+    }
+
+    #[test]
+    fn flipbook_age_advances_after_spawn_pass_for_authoritative_and_predicted_projectiles() {
+        let authoritative_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let authoritative =
+            spawn_projectile(&mut authoritative_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let predicted_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let predicted = spawn_projectile(&mut predicted_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        {
+            let mut component = authoritative_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(authoritative)
+                .expect("authoritative projectile component attaches")
+                .clone();
+            component.flipbook_active = true;
+            authoritative_registry
+                .borrow_mut()
+                .set_component(authoritative, component)
+                .expect("authoritative projectile component updates");
+        }
+        {
+            let mut component = predicted_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(predicted)
+                .expect("predicted projectile component attaches")
+                .clone();
+            component.flipbook_active = true;
+            component.predicted_shot_id = Some(7);
+            predicted_registry
+                .borrow_mut()
+                .set_component(predicted, component)
+                .expect("predicted projectile component updates");
+        }
+
+        let world = CollisionWorld::default();
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+        advance(
+            &authoritative_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut ignore_impact,
+        );
+        let mut no_predicted_resolution = |_resolution: PredictedProjectileResolution| {};
+        advance_predicted(
+            &predicted_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut no_predicted_resolution,
+        );
+        assert!(
+            authoritative_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(authoritative)
+                .expect("authoritative projectile remains live after its spawn pass")
+                .elapsed_flight_age
+                .abs()
+                <= f32::EPSILON,
+            "the authoritative spawn pass must leave the flipbook on frame zero"
+        );
+        assert!(
+            predicted_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(predicted)
+                .expect("predicted projectile remains live after its spawn pass")
+                .elapsed_flight_age
+                .abs()
+                <= f32::EPSILON,
+            "the predicted spawn pass must leave the flipbook on frame zero"
+        );
+
+        advance(
+            &authoritative_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut ignore_impact,
+        );
+        advance_predicted(
+            &predicted_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut no_predicted_resolution,
+        );
+        let authoritative_age = authoritative_registry
+            .borrow()
+            .get_component::<ProjectileComponent>(authoritative)
+            .expect("authoritative projectile remains live after its travel pass")
+            .elapsed_flight_age;
+        let predicted_age = predicted_registry
+            .borrow()
+            .get_component::<ProjectileComponent>(predicted)
+            .expect("predicted projectile remains live after its travel pass")
+            .elapsed_flight_age;
+        assert!((authoritative_age - 0.25).abs() <= f32::EPSILON);
+        assert!((predicted_age - 0.25).abs() <= f32::EPSILON);
     }
 
     #[test]

@@ -155,6 +155,20 @@ existing mechanisms, verified in source:
   writes the skeleton's `socket`/`hitZone`/`poseMask` extras the same way. The new
   `read_mount_axes` mirrors `read_socket_name`: read the mesh node's `extras.mount`,
   return raw-source-frame `barrel`/`up` plus optional `euler`, degrade to `None`.
+  Granularity note: `barrel`/`up` are the core pair (either absent/malformed →
+  whole `mount` `None`); `euler` degrades independently to its own `None`.
+- **Reader visibility / crate-boundary access (verified).** All `gltf_extras.rs`
+  readers are `pub(crate)` (`read_socket_name` at `gltf_extras.rs`, callers only in
+  `gltf_loader.rs`), so xtask cannot call `read_mount_axes` directly. The pattern to
+  mirror: `read_socket_name` feeds the PUBLIC `LoadedModel.sockets` field
+  (`gltf_loader.rs`: `pub sockets: HashMap<..>` on `LoadedModel`; populated inside
+  `load_model` via `build_skinned_sockets`/`build_rigid_sockets`, which call
+  `read_socket_name`, then placed in the returned `LoadedModel` struct literal).
+  So the mount reader is surfaced the same way: a new `pub mount: Option<MountAxes>`
+  field populated inside `load_model` from `SelectedModel.mesh_node`'s `extras`,
+  read by xtask across the boundary while `read_mount_axes` stays `pub(crate)`.
+  `sample_clip_looped_world_modified` lives in `postretro_model::anim`
+  (`anim/mod.rs`), not `gltf_loader`.
 
 Frame note: the persisted `barrel`/`up` are raw-source-frame (the intent),
 frame-invariant across re-bakes, so they persist correctly even though the baked

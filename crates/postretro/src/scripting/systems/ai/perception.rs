@@ -189,8 +189,16 @@ mod tests {
     fn fire_gate_projects_the_shared_perception_verdict() {
         // P4: the floor's fire gate consumes the same already-debounced scalar
         // that the brain-fact refresh receives from the AI compute pass.
-        assert!(fire_gate(Some(EnemyTargetPerception { visible: true })));
-        assert!(!fire_gate(Some(EnemyTargetPerception { visible: false })));
+        assert!(fire_gate(Some(EnemyTargetPerception {
+            visible: true,
+            enemy_eye: Vec3::ZERO,
+            target_aim: Vec3::ZERO,
+        })));
+        assert!(!fire_gate(Some(EnemyTargetPerception {
+            visible: false,
+            enemy_eye: Vec3::ZERO,
+            target_aim: Vec3::ZERO,
+        })));
         assert!(
             !fire_gate(None),
             "no selected target cannot inherit visibility"

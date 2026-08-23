@@ -1,6 +1,6 @@
 # combat-demo — impact lifecycle, resource grants, health + damage, and enemy AI / pathfinding
 
-DEMO CONTENT exercising three connected paths end to end:
+DEMO CONTENT exercising four connected paths end to end:
 
 1. **Impact-derived lifecycle.** A descriptor-declared health+hitbox entity is
    placed in a map and hit by the shipped weapon. A **mod-global** impact policy
@@ -22,7 +22,14 @@ DEMO CONTENT exercising three connected paths end to end:
    south of the center pillar, so the agent rounds it in the open and never gets
    stuck.
 
-3. **Reference resource grants.** The engine has no concept of a reward. This
+3. **Limitator line-of-sight cover.** The ranged `limitator` starts with a clear
+   view of the player, but a nearby static pillar lets the player break that
+   sightline. Its authored graph returns from aim/fire to `close` after the
+   shared debounced `brain.targetVisible` verdict falls, so the existing
+   combat-slot movement can reposition and reacquire. The engine fire gate,
+   rather than these authored edges, remains the damage/event authority.
+
+4. **Reference resource grants.** The engine has no concept of a reward. This
    dev mod supplies two replaceable policies instead: a dummy kill-edge impact
    policy grants its damager 8 `shells.buck`, while a nearby trigger volume
    grants its entering activators 24 `shells.buck`. The walkthrough keeps the
@@ -34,26 +41,48 @@ Interior `x 0..1024`, `y 0..512`, floor `z=0`, ceiling `z=128` (top-down; x east
 y north) — one large arena, ~4× the open floor area of the old ~512×256 room
 (each horizontal dimension doubled). Three free-standing, floor-to-ceiling pillars
 (`x[256,320] y[200,296]`, `x[480,544] y[208,304]`, `x[704,768] y[216,312]`) sit
-near the centerline. Every gap — pillar to wall and pillar to pillar — is **≥160
-units** wide, so there are no narrow doorways, no S-turns, and no concave pockets
-the agent capsule can wedge into.
+near the centerline. A fourth, narrower full-height cover pillar
+(`x[128,160] y[288,352]`) sits north-east of the player spawn. The Limitator
+starts south-east of it at `x=400, y=140`, so it can acquire the player before
+the player steps north behind cover. Every gap — pillar to wall and pillar to
+pillar — is **≥160 units** wide around the original reference-enemy route, so
+there are no narrow doorways, no S-turns, and no concave pockets the agent
+capsule can wedge into.
 
 ```
   y=512  ################################################################
          #..............................................................#
-         #..............................................................#
+         #.......C......................................................#
          #..........##..........##..........##..........................#
          #...P.A.d.d..##....d.....##..........##.....................E....#
          #...........##..........##..........##.........................#
-         #..............................................................#
+         #........................L.....................................#
          #..............................................................#
   y=0    ################################################################
-         x=0    256 320   480 544   704 768                          1024
+         x=0   128 160 256 320  400 480 544   704 768               1024
 
-  # = wall / pillar   . = floor   P = player_spawn   A = ammo pickup   E = reference_enemy   d = dummy
-  WEST pillar x[256,320]   CENTER pillar x[480,544] (on the P->E line)   EAST pillar x[704,768]
+  # = wall / pillar   . = floor   P = player_spawn   L = limitator
+  # A = ammo pickup   E = reference_enemy   d = dummy   C = LOS cover pillar
+  WEST pillar x[256,320]   CENTER pillar x[480,544] (on the P->E line)
   Route: P -> detour north OR south of the center pillar (~208 units clear) -> E.
 ```
+
+### Limitator LOS-cover walkthrough (manual integration)
+
+Let the Limitator acquire, approach, aim, and fire from its initially clear
+south-east position. Then move north of the small `C` pillar (the player-start
+side, around `y=352`) until the pillar fully spans the Limitator-to-player view.
+After the fixed loss-grace window, player-health damage stops and the Limitator
+leaves its aim/fire cycle for `close`; it uses the LOS-aware combat slots to route
+around the pillar, reacquires, and resumes its normal cycle.
+
+This is intentionally a manual composition check: nav candidate choice, route
+timing, facing slew, and the fire latch make the exact tick and path unsuitable
+for a map snapshot. The HUD does not expose individual `enemyAttack` events or
+the grace counter, so this walkthrough cannot itself prove their absence; the
+scripted AI tests are the runnable HP-and-event assertion. The existing dummy
+and far `reference_enemy` demonstrations remain available to exercise corpse,
+recovery, and despawn ordering independently of the cover interaction.
 
 ### Emissive panels (bloom A/B)
 
@@ -178,11 +207,14 @@ to reach you.
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
   tagged `player` (far west), four `target_dummy` instances tagged `dummy` (just
   east of the player, in front of it), a `reference_enemy` tagged `enemy` and
-  `combat-zombie` (far east), a touch-triggered `ammo_pickup_volume` just east
-  of spawn, three free-standing full-height pillars near the centerline, and seven
-  `light`s spread across the enlarged space. The center pillar blocks the straight
-  player→enemy line, so the pathfinding has to route around it; the wide ≥160-unit
-  clearance on every side keeps the agent from wedging. See the floor plan above.
+  `combat-zombie` (far east), a `limitator` with an initially clear player
+  sightline (south-east), a touch-triggered `ammo_pickup_volume` just east of
+  spawn, three free-standing full-height pillars near the centerline, and a
+  smaller dedicated Limitator-cover pillar north-east of spawn. Seven `light`s
+  spread across the enlarged space. The center pillar blocks the straight
+  player→reference-enemy line, so that pathfinding has to route around it; the
+  wide ≥160-unit clearance on every side keeps the agent from wedging. See the
+  floor plan above.
 
 ## Compile
 

@@ -369,7 +369,9 @@ It also takes the bake endpoints `--raw-source <path>`
 (the raw glb/gltf `prop_to_gltf.py` bakes FROM) and `--out <path>` (the baked
 output weapon glTF), forwarded verbatim as `--input`/`--output` into the emitted
 command (see Boundary inventory for the exact argument surface and axis
-convention). It loads both models via `postretro_model::gltf_loader::load_model`, calls the
+convention). It loads both models via `postretro_model::gltf_loader::load_model`
+(add `postretro-model = { workspace = true }` to `crates/xtask/Cargo.toml` — xtask
+does not depend on the model crate today), calls the
 Task 1 module to resolve the socket frame and compute the glTF-space corrective
 delta from the DECLARED axes (geometric detection runs only as a labelled assist
 when axes are omitted — see Task 3's mode boundary; this task wires the assist as
@@ -389,7 +391,12 @@ barrel/up so the bake persists the intent (Decision 1): `prop_to_gltf.py` gains 
 `--mount-axes` flag whose `postprocess_gltf` step writes
 `extras.mount = { barrel, up, euler }` onto the mesh node — the same JSON node-
 `extras` write it already performs for `--socket NAME=NODE`
-(`node["extras"]["socket"] = …`) — with `euler` set to the `--rotate-euler` degrees
+(`node["extras"]["socket"] = …`), but targeting the MESH node located as
+`postprocess_gltf` already finds it for its summary (the first node carrying a
+`mesh` key), NOT by name-match like `--socket`, since `--mount-axes` supplies no
+node name. Thread the applied `--rotate-euler` and the `--mount-axes` values into
+`postprocess_gltf` (today it receives only `sockets`) and extend its `main()` call
+site accordingly — with `euler` set to the `--rotate-euler` degrees
 that same bake applied. `--mount-axes` and `--rotate-euler` are INDEPENDENT flags:
 on an unrotated bake (`--mount-axes` supplied, no `--rotate-euler`),
 `postprocess_gltf` writes `extras.mount.euler = [0, 0, 0]` — a truthful "no

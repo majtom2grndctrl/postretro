@@ -42,7 +42,7 @@ bake into vertices"), the compensation must be baked into the weapon's vertices
 
 ## The existing solve in socket_dump.rs
 
-`crates/model/examples/socket_dump.rs` (untracked, per git status) already:
+`crates/model/examples/socket_dump.rs` (merged to `main`, present in-tree) already:
 
 1. Loads a model via `postretro_model::gltf_loader::load_model` — the SAME
    loader the engine uses (no drift).
@@ -55,8 +55,9 @@ bake into vertices"), the compensation must be baked into the weapon's vertices
    (grip/mag/stock hang below the bore). Builds a right-handed frame
    `G = [side up barrel]`.
 4. Computes a corrective delta in glTF space: `D = S^T · G^T`, with
-   `S` = normalized socket rotation (`Mat3::from_mat4(socket_matrix)`), so that
-   `S · D` maps `barrel → +Z`, `up → +Y`.
+   `S` = the per-column-normalized socket rotation (`s3` — each column of
+   `Mat3::from_mat4(socket_matrix)` normalized; the un-normalized `Mat3::from_mat4`
+   feeds only the verify metrics), so that `S · D` maps `barrel → +Z`, `up → +Y`.
 5. Maps to Blender frame via `C: (x,y,z) -> (x,-z,y)` (`c_map`), then decomposes
    to Blender XYZ euler (`R = Rz·Ry·Rx`) → the `--rotate-euler` degrees.
 6. Optionally composes with the current bake's euler (args 6-8) to print the

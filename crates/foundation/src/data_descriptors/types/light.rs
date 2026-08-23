@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::DescriptorError;
 
+/// Distance-attenuation discriminant shared by authored and runtime lights.
+/// It mirrors `postretro_level_loader::FalloffModel` without making descriptor
+/// data depend on the runtime level loader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FalloffKind {
+    Linear,
+    InverseDistance,
+    InverseSquared,
+}
+
 /// Authored light component preset attached to an entity type descriptor.
 /// Mirrors the runtime light component shape but only carries the script-authored
 /// fields. Spawn-time defaults fill the rest.

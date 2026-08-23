@@ -176,6 +176,7 @@ mod tests {
                     emissive: 0.0,
                 },
                 trail: None,
+                light: None,
             },
         });
         component

@@ -9,6 +9,7 @@ use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCo
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::light::{LightComponent, LightKind};
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
@@ -506,6 +507,27 @@ pub(crate) fn spawn_projectile(
     };
     let _ = registry.set_component(projectile_id, component);
 
+    if let Some(light) = launch.descriptor.visual.light.clone() {
+        let _ = registry.set_component(
+            projectile_id,
+            LightComponent {
+                origin: launch.origin.to_array(),
+                light_type: LightKind::Point,
+                intensity: light.intensity,
+                color: light.color,
+                falloff_model: light.falloff_model,
+                falloff_range: light.falloff_range,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                is_dynamic: true,
+                animated_slot: None,
+                follow_transform: true,
+                animation: None,
+            },
+        );
+    }
+
     match launch.descriptor.visual.body {
         ProjectileBodyVisual::Sprite {
             sprite,
@@ -764,6 +786,7 @@ mod projectile_spawn_tests {
                     rate_curve: vec![0.0, 2.0, -1.0],
                 }),
             }),
+            light: None,
         };
 
         let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
@@ -802,6 +825,7 @@ mod projectile_spawn_tests {
                 model: "models/rocket.gltf".to_string(),
             },
             trail: None,
+            light: None,
         };
         let mut launch = launch(visual);
         launch.direction = Vec3::new(3.0, 2.0, -4.0).normalize();

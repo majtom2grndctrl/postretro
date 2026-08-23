@@ -186,7 +186,9 @@ AC #5 checks. (b) resolution of a named socket joint's world matrix at a given
 `inputs = None` the sampler short-circuits to `sample_clip_looped_world`, the same
 composition `attachments.rs::sample_modified_world_pose` reaches at the neutral
 reference), so there is no frame drift from the runtime mount at that reference
-(see Invariants for the scope of this equality); (c) the glTF-space corrective
+(see Invariants for the scope of this equality); the tool always samples with
+`Loop::Clamp` (no `--loop` flag), so a `--time` past the clip duration clamps
+to the clip end; (c) the glTF-space corrective
 delta `D = S^T · G^T`
 (`S` = normalized socket rotation from the joint world matrix, `G` = the weapon
 frame) that maps barrel→+Z and up→+Y; (d) the verify metrics `barrel·+Z`,
@@ -277,7 +279,9 @@ frame; the axes then rotate by FORWARD application `v_baked = R_gltf · v_declar
 The composition direction is pinned because a reversed one would silently
 false-pass or false-fail check mode. Applying
 raw-source-frame axes directly to baked geometry would measure the wrong
-direction, so `--current-euler` is REQUIRED in check mode. The declared path is
+direction, so `--current-euler` is REQUIRED in DECLARED check mode; the assist
+check path (axes omitted) measures the baked mesh directly and does not
+consume it. The declared path is
 thus an analytic verification of the euler against declared intent (it trusts
 `prop_to_gltf.py` to have baked `--current-euler` faithfully — the same trust the
 whole pipeline places in the mesh authority); the baked weapon is still loaded so
@@ -287,7 +291,11 @@ euler in `extras` would remove both re-supplied inputs. See Open questions.) It
 prints both the declared source-frame axes and the composed baked-frame axes it
 validated against (so a mismatch between the solve run's axes and the check run's
 axes is visible), then prints `barrel·+Z`, `barrel·+Y`, `up·+Y`, and exits
-non-zero when any is outside tolerance, naming the failed metric. Tolerances
+non-zero when any is outside tolerance, naming the failed metric. A gating
+check must sample the same `(clip, time)` the euler was solved at; a check at
+a different pose measures a frame the euler was not solved for. In check mode
+`--weapon` is the baked weapon (the solve's `--out`); `--raw-source`/`--out`
+are not consumed (check emits no command). Tolerances
 default to `barrel·+Z ≥ 0.999`, `|barrel·+Y| ≤ 0.02`, `up·+Y ≥ 0.999`, each
 overridable via `--min-barrel-dot` (default 0.999), `--max-barrel-y` (default
 0.02), and `--min-up-dot` (default 0.999). Check mode uses the DECLARED (composed)
@@ -354,6 +362,10 @@ vs Blender-frame. Pinned once:
 | Verify tolerances | metric thresholds consumed by the verify path | `--min-barrel-dot` (0.999), `--max-barrel-y` (0.02), `--min-up-dot` (0.999) | n/a |
 | Prop socket extras (pass-through) | n/a | `--socket NAME=NODE` forwarded verbatim into the emitted command (distinct from `--mount-joint`) | `--socket NAME=NODE` (append; writes node `extras`) |
 
+This table pins the frame-crossing arguments; the skeleton model path
+(positional), `--weapon`, and the `--grip`/`--scale`/`--check` flags are named
+in Tasks 2-3.
+
 Axis-declaration convention: the author states the barrel/up axes in the weapon's
 own local frame **as the engine loads it** (raw glTF vertex frame), not in Blender's
 viewport frame — the tool loads the weapon through `load_model`, so in solve mode the declared
@@ -366,7 +378,7 @@ this explicitly with the AR_4 as the worked example.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Solver's socket frame == the engine's mount frame **at the reference `(clip, time)` with `inputs = None`** (neutral, modifier-free). The solver samples `sample_clip_looped_world_modified(clip, skeleton, time, Loop::Clamp, &model.pose_stack, None, …)`; the runtime `sample_primary_world_pose` passes the mesh's `pose_inputs` (`Some(..)` for a posed humanoid) and the state's real loop policy. At the reference `t=0` both `Loop::Wrap` and `Loop::Clamp` resolve to time 0, so loop policy is a no-op there; the frames coincide whenever the runtime playhead resolves to the reference time with no active pose modifier, and diverge once the clip advances (`t≠0`, where loop policy bites) or a pose modifier engages (`Some` inputs over a non-empty stack) — by design (the reference-pose caveat below, not drift). | Task 1 (reuse `load_model` + `sample_clip_looped_world_modified` with `inputs = None`) | Any reimplementation of load or sampling in the tool would drift it; broadening the claim past the neutral reference overstates it | AC "reuses loader/sampler" (scoped to reference/`inputs = None`), AC "socket_dump numbers unchanged" |
+| Solver's socket frame == the engine's mount frame **at the reference `(clip, time)` with `inputs = None`** (neutral, modifier-free). The solver samples `sample_clip_looped_world_modified(clip, skeleton, time, Loop::Clamp, &model.pose_stack, None, …)`; the runtime `sample_primary_world_pose` passes the mesh's `pose_inputs` (`Some(..)` for a posed humanoid) and the state's real loop policy. At the reference `t=0` both `Loop::Wrap` and `Loop::Clamp` resolve to time 0, so loop policy is a no-op there; the frames coincide whenever the runtime playhead resolves to the reference time with no active pose modifier, and diverge once the clip advances (`t≠0`, where loop policy bites), a pose modifier engages (`Some` inputs over a non-empty stack), or a fade/crossfade is active (`params.fade = Some`) — by design (the reference-pose caveat below, not drift). | Task 1 (reuse `load_model` + `sample_clip_looped_world_modified` with `inputs = None`) | Any reimplementation of load or sampling in the tool would drift it; broadening the claim past the neutral reference overstates it | AC "reuses loader/sampler" (scoped to reference/`inputs = None`), AC "socket_dump numbers unchanged" |
 | Engine-frame math carries no Blender/authoring-tool mapping | Task 1 (module is euler-free) | Task 2 adds the Blender mapping only in the tool layer | Direction (format-adapter placement); AC on emit living in xtask |
 | A geometry-only result is never presented as authoritative | Task 3 (assist/trust labelling) | Task 2 emit path must route geometry through the assist label, not the trusted euler | AC on undeclared-axis labelling; AC on ambiguous weapon |
 | Corrective is exact only at the solve `(clip, time)` | inherent (socket frame is pose-dependent) | Task 3 prints the non-reference NOTE when `(clip, time)` ≠ (`idle_aiming`, 0), in solve or check mode; Task 4 doc restates the caveat | AC on non-reference-pose reporting (AC #7) |
@@ -399,7 +411,9 @@ blender --background --python tools/prop_to_gltf.py -- \
   --input raw/ar_4.glb --output content/dev/models/ar_4/model.gltf \
   --grip 0 -0.05 0.12 --scale 0.68 --rotate-euler <X> <Y> <Z>
 
-# 4. Confirm in the engine frame (non-zero exit == mount is wrong).
+# 4. Confirm in the engine frame. At the reference (clip,time), non-zero exit == mount is wrong;
+#    at a non-reference pose a rigid bake is inexact by design, so a non-zero exit there
+#    does not by itself mean a wrong mount (see the NOTE).
 #    --current-euler is the euler step 3 baked; check composes it onto the
 #    declared source-frame axes to reach the baked frame.
 cargo run -p xtask -- solve-weapon-mount \
@@ -439,7 +453,8 @@ cargo run -p xtask -- solve-weapon-mount \
   check-mode frame resolution (Task 3) sharpens this: check also
   requires `--current-euler` (the applied bake) to bring the declared source-frame
   axes into the baked frame, so an arg-only workflow re-supplies BOTH the axes and
-  the applied euler — two chances for solve/check to diverge. The `extras` channel
+  the applied euler — two chances for solve/check to diverge (the reference
+`(clip, time)` is a third re-supplied input with the same drift exposure). The `extras` channel
   (the project's existing idiom for per-node authored intent — sockets, hit-zones,
   pose-masks) would give solve and check one source of truth and make the weapon
   self-describing; if `prop_to_gltf.py` also recorded the applied euler in `extras`

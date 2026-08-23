@@ -264,7 +264,7 @@ declare module "postretro" {
     visual: ProjectileVisual;
   };
 
-  /** The visible parts of a flying projectile. A body is required; optional trail particles and a travelling point light are cosmetic presentation. */
+  /** The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation. */
   export type ProjectileVisual = {
     /** The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`. */
     body: ProjectileBodyVisual;
@@ -272,6 +272,8 @@ declare module "postretro" {
     trail?: ProjectileTrailVisual;
     /** Optional dynamic point light that travels with the body. It affects nearby surfaces only; it never changes damage or hit detection. */
     light?: ProjectileLight;
+    /** Optional stationary point light at a resolved impact. It fades locally and never changes damage or hit detection. */
+    impactLight?: ProjectileImpactLight;
   };
 
   /** A dynamic point light attached to a travelling projectile. It uses the same falloff choices as runtime lights and casts no entity shadows. */
@@ -284,6 +286,20 @@ declare module "postretro" {
     falloffRange: number;
     /** Distance attenuation model. Omit for the inverse-square default. */
     falloffModel?: FalloffKind;
+  };
+
+  /** A transient point light spawned at a projectile impact. It always fades over `fadeMs` and casts no entity shadows. */
+  export type ProjectileImpactLight = {
+    /** Linear RGB multiplier as exactly three finite numbers. */
+    color: readonly [number, number, number];
+    /** Brightness multiplier. Use a finite number of 0 or greater. */
+    intensity: number;
+    /** Starting falloff radius in metres. Use a finite number greater than 0. */
+    radius: number;
+    /** Optional final falloff radius in metres. When present it must be at least `radius` and expands the flash while it fades. */
+    peakRadius?: number;
+    /** How long the flash fades in milliseconds. Use a finite number greater than 0. */
+    fadeMs: number;
   };
 
   /** The settings used when `body.kind` is `sprite`. A sprite is a flat image that always turns to face the camera. */

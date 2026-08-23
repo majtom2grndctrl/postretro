@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use postretro_foundation::ProjectileImpactLight;
+
 use crate::registry::EntityId;
 
 /// Engine-owned state for one direct-impact projectile.
@@ -41,6 +43,11 @@ pub struct ProjectileComponent {
     /// still static until its descriptor authors a cadence.
     #[serde(default)]
     pub flipbook_active: bool,
+    /// Descriptor-resolved impact presentation retained for the flight's
+    /// contact branch. It is gameplay-local state and never materialized from
+    /// replication, so a projectile can flash after its owner weapon despawns.
+    #[serde(default)]
+    pub impact_light: Option<ProjectileImpactLight>,
 }
 
 /// Presentation-only timing for a projectile replicated as a visual entity.

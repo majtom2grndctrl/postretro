@@ -24,7 +24,9 @@ pub(crate) mod spread;
 
 pub(crate) use damage::DamagePayload;
 pub(crate) use impact::sprite_collection as impact_sprite_collection;
-pub(crate) use impact::{lifetime as impact_lifetime, spawn_impact_effect_at};
+pub(crate) use impact::{
+    lifetime as impact_lifetime, spawn_impact_effect_at, spawn_projectile_impact_light,
+};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2059,6 +2061,7 @@ pub(crate) mod tests {
                         predicted_shot_id: Some(shot_id),
                         elapsed_flight_age: 0.0,
                         flipbook_active: false,
+                        impact_light: None,
                     },
                 )
                 .expect("predicted projectile state attaches");

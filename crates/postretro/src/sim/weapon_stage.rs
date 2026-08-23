@@ -178,6 +178,7 @@ mod tests {
                 },
                 trail: None,
                 light: None,
+                impact_light: None,
             },
         });
         component

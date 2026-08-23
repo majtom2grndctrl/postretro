@@ -506,6 +506,7 @@ mod tests {
                     predicted_shot_id: None,
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
+                    impact_light: None,
                 },
             )
             .unwrap();

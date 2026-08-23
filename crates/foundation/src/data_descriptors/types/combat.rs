@@ -54,6 +54,10 @@ pub struct ProjectileVisual {
     /// Descriptor content is shared between peers; this is never a wire field.
     #[serde(default)]
     pub light: Option<ProjectileLight>,
+    /// Optional stationary light flash spawned when the projectile contacts a
+    /// surface or target. This is shared descriptor content, never a wire field.
+    #[serde(default)]
+    pub impact_light: Option<ProjectileImpactLight>,
 }
 
 /// Descriptor-owned dynamic point light attached to a travelling projectile.
@@ -67,6 +71,20 @@ pub struct ProjectileLight {
     pub falloff_range: f32,
     #[serde(default = "default_projectile_light_falloff_model")]
     pub falloff_model: FalloffKind,
+}
+
+/// Descriptor-owned transient point light spawned at a projectile contact.
+/// A peak radius turns the fade into an expanding shockwave; omitting it keeps
+/// the authored radius static for the whole flash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectileImpactLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+    #[serde(default)]
+    pub peak_radius: Option<f32>,
+    pub fade_ms: f32,
 }
 
 const fn default_projectile_light_falloff_model() -> FalloffKind {
@@ -571,6 +589,52 @@ fn validate_projectile_descriptor(
             }
         }
     }
+
+    if let Some(light) = projectile.visual.impact_light.as_ref() {
+        if !light.color.iter().all(|value| value.is_finite()) {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`components.weapon.projectile.visual.impactLight.color` must contain finite values".to_string(),
+            });
+        }
+        for (field, value, valid, constraint) in [
+            (
+                "intensity",
+                light.intensity,
+                light.intensity.is_finite() && light.intensity >= 0.0,
+                ">= 0.0",
+            ),
+            (
+                "radius",
+                light.radius,
+                light.radius.is_finite() && light.radius > 0.0,
+                "> 0.0",
+            ),
+            (
+                "fadeMs",
+                light.fade_ms,
+                light.fade_ms.is_finite() && light.fade_ms > 0.0,
+                "> 0.0",
+            ),
+        ] {
+            if !valid {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.impactLight.{field}` must be a finite value {constraint}, got {value}"
+                    ),
+                });
+            }
+        }
+        if let Some(peak_radius) = light.peak_radius
+            && (!peak_radius.is_finite() || peak_radius < light.radius)
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.projectile.visual.impactLight.peakRadius` must be a finite value >= radius ({}), got {peak_radius}",
+                    light.radius
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -750,6 +814,7 @@ mod tests {
                 },
                 trail: None,
                 light: None,
+                impact_light: None,
             },
         }
     }
@@ -894,6 +959,81 @@ mod tests {
                 panic!("expected InvalidShape");
             };
             assert!(reason.contains(field), "expected {field:?} in {reason:?}");
+        }
+    }
+
+    #[test]
+    fn projectile_impact_light_validation_names_every_invalid_field() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        let valid = ProjectileImpactLight {
+            color: [0.5, 0.8, 1.0],
+            intensity: 3.0,
+            radius: 4.0,
+            peak_radius: Some(8.0),
+            fade_ms: 160.0,
+        };
+        descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present")
+            .visual
+            .impact_light = Some(valid.clone());
+        assert!(descriptor.clone().validate().is_ok());
+
+        for (field, impact_light) in [
+            (
+                "color",
+                ProjectileImpactLight {
+                    color: [f32::NAN, 0.8, 1.0],
+                    ..valid.clone()
+                },
+            ),
+            (
+                "intensity",
+                ProjectileImpactLight {
+                    intensity: -0.01,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "radius",
+                ProjectileImpactLight {
+                    radius: 0.0,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "peakRadius",
+                ProjectileImpactLight {
+                    peak_radius: Some(3.0),
+                    ..valid.clone()
+                },
+            ),
+            (
+                "fadeMs",
+                ProjectileImpactLight {
+                    fade_ms: 0.0,
+                    ..valid.clone()
+                },
+            ),
+        ] {
+            let mut invalid = descriptor.clone();
+            invalid
+                .projectile
+                .as_mut()
+                .expect("projectile is present")
+                .visual
+                .impact_light = Some(impact_light);
+            let error = invalid
+                .validate()
+                .expect_err("invalid impact light rejects");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains(&format!("impactLight.{field}")), "{reason}");
         }
     }
 

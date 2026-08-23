@@ -466,6 +466,7 @@ mod tests {
                         }),
                     }),
                     light: None,
+                    impact_light: None,
                 },
             }),
             credit_source: None,

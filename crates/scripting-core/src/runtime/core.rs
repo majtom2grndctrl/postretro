@@ -1261,6 +1261,7 @@ mod tests {
                     spin_animation: None,
                 }),
                 light: None,
+                impact_light: None,
             },
         }
     }

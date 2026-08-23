@@ -11,10 +11,11 @@ use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::{ProjectileBodyVisual, ProjectileDescriptor};
+use postretro_foundation::{ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight};
 use postretro_net::replication::ServerReplication;
 
 use crate::sim::{RemoteProjectilePresentationLaunch, projectile_model_body_rotation};
+use crate::weapon;
 
 use super::{NetworkIdAllocator, OpenAuthorizedShots, ReplicableSet, ShotId};
 
@@ -22,7 +23,10 @@ use super::{NetworkIdAllocator, OpenAuthorizedShots, ReplicableSet, ShotId};
 enum PresentationFlight {
     /// The listen host already owns the gameplay projectile. Its hidden replica
     /// copies that source exactly so remote peers see the host's real trajectory.
-    FollowGameplay { source: EntityId },
+    FollowGameplay {
+        source: EntityId,
+        impact_light: Option<ProjectileImpactLight>,
+    },
     /// A connected client's authority projectile runs only on that client. The
     /// host advances this visual from the replicated pawn aim until its shot retires.
     StraightLine {
@@ -34,7 +38,18 @@ enum PresentationFlight {
         advanced_since_launch: bool,
         advanced_state_published: bool,
         path_finished: bool,
+        impact_light: Option<ProjectileImpactLight>,
     },
+}
+
+impl PresentationFlight {
+    fn impact_light(&self) -> Option<&ProjectileImpactLight> {
+        match self {
+            Self::FollowGameplay { impact_light, .. } | Self::StraightLine { impact_light, .. } => {
+                impact_light.as_ref()
+            }
+        }
+    }
 }
 
 /// Host-owned state for presentation-only flight entities. The entities themselves
@@ -87,6 +102,7 @@ impl HostProjectilePresentations {
                 advanced_since_launch: false,
                 advanced_state_published: false,
                 path_finished: false,
+                impact_light: launch.projectile.visual.impact_light.clone(),
             },
         );
     }
@@ -103,7 +119,7 @@ impl HostProjectilePresentations {
         projectile_id: EntityId,
         script_time: f32,
     ) {
-        let Some((transform, descriptor_class)) =
+        let Some((transform, descriptor_class, impact_light)) =
             local_projectile_presentation_source(registry, projectile_id)
         else {
             return;
@@ -119,6 +135,7 @@ impl HostProjectilePresentations {
             id,
             PresentationFlight::FollowGameplay {
                 source: projectile_id,
+                impact_light,
             },
         );
     }
@@ -138,7 +155,7 @@ impl HostProjectilePresentations {
 
         for (&id, flight) in &mut self.flights {
             let keep = match flight {
-                PresentationFlight::FollowGameplay { source } => {
+                PresentationFlight::FollowGameplay { source, .. } => {
                     if let Ok(transform) = registry.get_component::<Transform>(*source).cloned() {
                         let _ = registry.set_component(id, transform);
                         true
@@ -155,6 +172,7 @@ impl HostProjectilePresentations {
                     advanced_since_launch,
                     advanced_state_published,
                     path_finished,
+                    ..
                 } => {
                     if *advanced_state_published
                         && (open_shots.get(*shot_id).is_none() || *path_finished)
@@ -183,11 +201,19 @@ impl HostProjectilePresentations {
                 }
             };
             if !keep {
-                despawn.push(id);
+                despawn.push((id, flight.impact_light().cloned()));
             }
         }
 
-        for id in despawn {
+        for (id, impact_light) in despawn {
+            if let (Some(config), Ok(transform)) = (
+                impact_light.as_ref(),
+                registry.get_component::<Transform>(id),
+            ) {
+                // The presentation flight has no replicated contact outcome.
+                // Every remote resolved shot gets this local endpoint flash.
+                weapon::spawn_projectile_impact_light(registry, transform.position, config);
+            }
             self.flights.remove(&id);
             let _ = registry.despawn(id);
             replicable.unregister(id);
@@ -215,7 +241,7 @@ impl HostProjectilePresentations {
 fn local_projectile_presentation_source(
     registry: &EntityRegistry,
     projectile_id: EntityId,
-) -> Option<(Transform, String)> {
+) -> Option<(Transform, String, Option<ProjectileImpactLight>)> {
     let transform = *registry.get_component::<Transform>(projectile_id).ok()?;
     let projectile = registry
         .get_component::<ProjectileComponent>(projectile_id)
@@ -225,7 +251,11 @@ fn local_projectile_presentation_source(
         .ok()?
         .canonical_name
         .clone();
-    (!descriptor_class.is_empty()).then_some((transform, descriptor_class))
+    (!descriptor_class.is_empty()).then_some((
+        transform,
+        descriptor_class,
+        projectile.impact_light.clone(),
+    ))
 }
 
 fn advance_straight_line_visual(
@@ -400,9 +430,13 @@ mod tests {
     use super::*;
     use crate::netcode::replication::produce_owned_snapshots;
     use crate::netcode::{AuthorizedShot, ClientReplication, HostCommandQueues, MovementOwners};
+    use postretro_entities::components::deferred_effect::{
+        DeferredEffectComponent, DeferredEffectKind,
+    };
     use postretro_entities::{ComponentKind, EntityTypeDescriptor};
     use postretro_foundation::{
-        FireMode, ProjectileBodyVisual, ProjectileVisual, ResolutionMode, WeaponDescriptor,
+        FireMode, ProjectileBodyVisual, ProjectileImpactLight, ProjectileVisual, ResolutionMode,
+        WeaponDescriptor,
     };
 
     const FIRING_CLIENT: u64 = 7;
@@ -425,6 +459,7 @@ mod tests {
                 },
                 trail: None,
                 light: None,
+                impact_light: None,
             },
         }
     }
@@ -838,6 +873,106 @@ mod tests {
                 .any(|(network_id, _)| *network_id == visual_network_id.0),
             "client acknowledges the remote projectile tombstone"
         );
+    }
+
+    #[test]
+    fn remote_presentation_retirement_spawns_configured_endpoint_flash() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let shot_id = ShotId::from_parts(postretro_net::wire::NetworkId(4), 42);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(
+            AuthorizedShot {
+                shot_id,
+                pawn,
+                weapon,
+                fire_tick: 1,
+                damage: 10.0,
+                range: 12.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.remote".to_string(),
+                is_projectile: true,
+                fire_origin: Vec3::ZERO,
+                timeout_budget_ticks: 180,
+            },
+            FIRING_CLIENT,
+        );
+        let impact_light = ProjectileImpactLight {
+            color: [1.0, 0.5, 0.2],
+            intensity: 6.0,
+            radius: 7.0,
+            peak_radius: Some(16.0),
+            fade_ms: 240.0,
+        };
+        let mut projectile = descriptor();
+        projectile.visual.impact_light = Some(impact_light.clone());
+        let launch = RemoteProjectilePresentationLaunch {
+            owner_client_id: FIRING_CLIENT,
+            shot_id,
+            origin: Vec3::ZERO,
+            direction: Vec3::NEG_Z,
+            range: 12.0,
+            descriptor_class: "test_remote_projectile".to_string(),
+            projectile,
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+        presentations.spawn_remote(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &launch,
+            0.0,
+        );
+        let visual = *presentations
+            .flights
+            .keys()
+            .next()
+            .expect("remote fire creates one presentation entity");
+
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            0.25,
+        );
+        presentations.mark_advanced_states_published();
+        open_shots.retire(shot_id);
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &open_shots,
+            0.0,
+        );
+
+        assert!(!registry.exists(visual));
+        let flashes = registry
+            .iter_with_kind(ComponentKind::Light)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        let [flash] = flashes.as_slice() else {
+            panic!("presentation retirement creates exactly one endpoint flash");
+        };
+        let light = registry
+            .get_component::<LightComponent>(*flash)
+            .expect("endpoint flash carries a dynamic point light");
+        assert_eq!(light.origin, [0.0, 0.0, -1.0]);
+        assert!(!light.follow_transform);
+        assert_eq!(
+            light.animation.as_ref().unwrap().radius.as_deref(),
+            Some(&[7.0, 16.0][..])
+        );
+        let deferred = registry
+            .get_component::<DeferredEffectComponent>(*flash)
+            .expect("endpoint flash self-despawns through deferred effects");
+        assert_eq!(deferred.pending[0].kind, DeferredEffectKind::Despawn);
     }
 
     // Regression: an impact declaration could retire a short remote shot in the

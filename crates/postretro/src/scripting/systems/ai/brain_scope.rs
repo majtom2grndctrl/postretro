@@ -30,14 +30,14 @@ use postretro_foundation::{
 /// because it is read straight from the registry during refresh.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BrainFacts {
-    /// Selected target identity and distance, or `None` when this enemy has no
-    /// target.
+    /// Selected target identity, XZ distance, and transform-snapshot position,
+    /// or `None` when this enemy has no target.
     ///
     /// One binding feeds every target-side input: `@brain.hasTarget` is its
     /// presence, `@brain.targetDistance` its distance (or
     /// [`BRAIN_NO_TARGET_DISTANCE`]), and the target health facts resolve its
     /// entity. They therefore cannot disagree about whether a target exists.
-    pub target: Option<(EntityId, f32)>,
+    pub target: Option<(EntityId, f32, glam::Vec3)>,
     /// Milliseconds remaining on the attack cooldown.
     pub attack_cooldown_ms: f32,
     /// `true` on the think-stride ticks where acquisition is re-evaluated.
@@ -164,14 +164,14 @@ impl BrainScope {
         let health = registry.get_component::<HealthComponent>(entity).ok();
         let target_health = facts
             .target
-            .and_then(|(target, _)| registry.get_component::<HealthComponent>(target).ok());
+            .and_then(|(target, _, _)| registry.get_component::<HealthComponent>(target).ok());
         // Order is BRAIN_INPUTS order — the handle is the index.
         self.fixed = [
             IrValue::Bool(facts.target.is_some()),
             IrValue::Number(
                 facts
                     .target
-                    .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
+                    .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance, _)| distance),
             ),
             // This slot is scope-relative and is immediately re-pointed by
             // `select_transition` before any guard at a level evaluates.
@@ -344,7 +344,7 @@ mod tests {
 
     fn engaged_facts(target: EntityId) -> BrainFacts {
         BrainFacts {
-            target: Some((target, 7.5)),
+            target: Some((target, 7.5, glam::Vec3::ZERO)),
             attack_cooldown_ms: 400.0,
             acquisition_due: true,
             distance_from_anchor: 12.5,
@@ -456,7 +456,7 @@ mod tests {
             BRAIN_TARGET_DISTANCE_INPUT => IrValue::Number(
                 facts
                     .target
-                    .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
+                    .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance, _)| distance),
             ),
             BRAIN_TIME_IN_ACTIVITY_MS_INPUT => IrValue::Number(0.0),
             BRAIN_ATTACK_COOLDOWN_MS_INPUT => IrValue::Number(facts.attack_cooldown_ms),
@@ -548,7 +548,7 @@ mod tests {
             &registry,
             enemy,
             BrainFacts {
-                target: Some((target_without_health, 7.5)),
+                target: Some((target_without_health, 7.5, glam::Vec3::ZERO)),
                 ..facts
             },
         );

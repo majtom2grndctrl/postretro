@@ -303,6 +303,27 @@ pub(crate) fn cast_sphere_exact(
     .flatten()
 }
 
+/// Return whether the exact segment from `eye` to `aim` is unobstructed by
+/// static world geometry. Dynamic movers intentionally do not participate:
+/// callers that need mover-aware collision use the combined query surface
+/// explicitly instead.
+pub(crate) fn line_of_sight(eye: glam::Vec3, aim: glam::Vec3, world: &CollisionWorld) -> bool {
+    let to_aim = aim - eye;
+    let distance = to_aim.length();
+    if !distance.is_finite() || distance <= 1.0e-5 {
+        return false;
+    }
+
+    let direction = to_aim / distance;
+    let hit = cast_ray(
+        world,
+        Point::new(eye.x, eye.y, eye.z),
+        Vector::new(direction.x, direction.y, direction.z),
+        distance,
+    );
+    !matches!(hit, Some(hit) if hit.time_of_impact < distance - 1.0e-4)
+}
+
 /// Cast a ray through the world trimesh, returning the first intersection
 /// (with normal). `solid = true` so the ray exits a triangle hit on the back
 /// face — matches the conventions used by the movement code's ground-stick
@@ -341,6 +362,20 @@ mod tests {
         }
     }
 
+    fn wall_world(x: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(x, -1.0, -1.0),
+            Point::new(x, 1.0, -1.0),
+            Point::new(x, 1.0, 1.0),
+            Point::new(x, -1.0, 1.0),
+        ];
+        let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
+        CollisionWorld {
+            mesh: TriMesh::new(points, triangles),
+            isometry: Isometry::identity(),
+        }
+    }
+
     #[test]
     fn collision_world_ray_hits_floor_at_unit_distance() {
         let world = floor_world();
@@ -367,6 +402,26 @@ mod tests {
             hit.normal.x,
             hit.normal.y,
             hit.normal.z
+        );
+    }
+
+    #[test]
+    fn line_of_sight_blocks_only_static_world_hits_before_the_aim_point() {
+        let wall = wall_world(1.0);
+        let eye = glam::Vec3::new(0.0, 0.0, 0.0);
+        let aim = glam::Vec3::new(2.0, 0.0, 0.0);
+
+        assert!(
+            !line_of_sight(eye, aim, &wall),
+            "a static wall before the aim point blocks sight"
+        );
+        assert!(
+            line_of_sight(eye, aim, &CollisionWorld::new()),
+            "the empty static world leaves sight clear"
+        );
+        assert!(
+            !line_of_sight(eye, eye, &wall),
+            "a zero-length sightline is never considered clear"
         );
     }
 }

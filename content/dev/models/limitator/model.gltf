@@ -1050,7 +1050,8 @@
 				0.011867503635585308
 			],
 			"extras": {
-				"poseMask": "upperBody"
+				"poseMask": "upperBody",
+				"hitZone": "head"
 			}
 		},
 		{

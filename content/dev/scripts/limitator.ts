@@ -41,10 +41,12 @@ export const limitatorEntity = defineEntity({
     health: {
       max: 100,
       // ~1.82 m tall (model baked at scale 0.68); hitbox spans feet to head,
-      // centered on the torso.
+      // centered on the torso. The head primitive tops out at y≈1.82, so the
+      // box half-height/offset are 0.91 (not the body primitive's 0.81 max) —
+      // otherwise upper-head shots above y≈1.62 miss the health hitbox.
       hitbox: {
-        halfExtents: [0.27, 0.81, 0.27],
-        offset: [0, 0.81, 0],
+        halfExtents: [0.27, 0.91, 0.27],
+        offset: [0, 0.91, 0],
       },
       zoneMultipliers: {
         head: 2.5,

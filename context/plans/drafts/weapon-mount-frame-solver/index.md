@@ -19,8 +19,8 @@ does not depend on an open branch. The extraction source and fixtures exist now:
   `--scale`, `--rotate-euler`/`rotate_mesh`, `--socket NAME=NODE` extras); the
   solver emits a `--rotate-euler` for it and never reimplements vertex baking.
 - `tools/mixamo_to_gltf.py` — the skeleton importer; its `--yaw` rotates the
-  whole rig (including the hand joint's model-space frame), the origin of the
-  "how many bakes per weapon" question (§Open questions).
+  whole rig about vertical Z (including the hand joint's model-space frame), the
+  origin of the "how many bakes per weapon" question that Decision 3 settles.
 - `content/dev/scripts/limitator.ts` — documents the AR_4's re-tuned grip
   orientation for this skeleton bake and the unwired wrist-reorienting reload.
 - Fixtures: `content/dev/models/limitator/model.gltf` (skinned holder, sockets
@@ -42,6 +42,13 @@ does not depend on an open branch. The extraction source and fixtures exist now:
 - An authoring-intent contract: the author declares weapon-local barrel and up
   axes; geometric detection is a labelled assist/fallback, never a silent source
   of truth.
+- Declared axes (and the applied corrective euler) persist in the weapon glTF's
+  per-node `extras` under a `mount` key, so SOLVE and CHECK read one persisted
+  source of truth instead of re-supplied CLI args (Decision 1). `prop_to_gltf.py`
+  writes them at bake time (extending its existing `--socket` node-`extras`
+  write); the model crate reads them (a new `gltf_extras.rs` reader).
+  `--barrel`/`--up`/`--current-euler` remain as an optional first-author/override
+  path.
 - A check mode on the same subcommand: mount the baked weapon, report `barrel·+Z`,
   `barrel·+Y`, `up·+Y`, exit non-zero when outside tolerance. This is the
   no-Blender acceptance path.
@@ -63,8 +70,9 @@ does not depend on an open branch. The extraction source and fixtures exist now:
 - Fixing wrist-reorienting poses (e.g. the limitator crouching reload) for rigid
   mounts. A rigid bake is exact only at the reference pose; poses that reorient
   the hand need a skinned weapon. Documented degrade, not fixed here.
-- Persisting the declared axes as weapon-glTF extras (self-describing weapons).
-  Possible follow-up; the MVP declares axes as tool arguments.
+- Shelling out to Blender to run the bake (a `--bake` drive step). The tool stays
+  emit-only; it prints the complete command but does not run it (Decision 2). May
+  be a fast-follow convenience.
 - Automatic build-hook integration. Like `prl-build` and `bake-model-textures`,
   this is a manual design-time command.
 - `context/lib/` doc capture. Happens at promotion, not in this plan (§Open
@@ -117,16 +125,96 @@ translation is the tooling boundary, not the runtime (`build_pipeline.md` above)
 (c) the decoupling it buys — one weapon glTF, per-mount correction — is not needed
 now, since the correction is cheap to recompute and re-bake per target with this
 tool, and all current humanoids share one rig. It is not rejected on a "one bake
-serves all characters" claim — that is left empirical (§Open questions).
+serves all characters" claim — Decision 3 makes that default empirically
+verifiable and keeps a per-character corrective as the documented escape hatch.
+
+## Decisions
+
+Three questions earlier review left open are settled here as owner calls. The
+task paragraphs, ACs, Boundary inventory, and Invariants below are written against
+these outcomes; this section carries the rationale.
+
+### Decision 1 — declared axes persist in glTF `extras`, not CLI args
+The weapon's declared barrel/up axes, and the applied corrective euler, are the
+single source of truth in the weapon glTF's per-node `extras` — not values
+re-supplied on the command line. This removes the solve/check drift class: an
+arg-only workflow re-supplies the axes, the applied euler, and the reference
+`(clip, time)` at both solve and check, and any mismatch silently validates
+against a *different* intent, defeating the false-positive guard.
+
+**Contract.** On the weapon's single mesh node (e.g. `AR_4` — the node
+`postprocess_gltf` already locates for its glTF summary), per-node `extras` carries
+a `mount` object:
+
+```json
+"extras": { "mount": { "barrel": [bx,by,bz], "up": [ux,uy,uz], "euler": [ex,ey,ez] } }
+```
+
+- `barrel`/`up`: unit `Vec3` in the RAW-SOURCE weapon-local (glTF) frame — the
+  frame-invariant author intent, unchanged by any applied `--rotate-euler`. (These
+  describe the raw geometry, so they persist correctly even on a rotated bake;
+  CHECK composes the applied euler onto them to reach the baked frame.)
+- `euler`: the Blender XYZ `--rotate-euler` degrees that baked THIS weapon from
+  its raw source. Makes the baked weapon self-describing so CHECK reads the applied
+  euler from `extras` instead of `--current-euler`.
+
+**Written by `prop_to_gltf.py`** at bake time, extending its existing
+`postprocess_gltf` node-`extras` write — the same JSON post-export step that today
+writes `--socket NAME=NODE` onto a node (`postprocess_gltf`, the
+`node["extras"]["socket"] = socket_name` path found on the mesh node). A new
+`--mount-axes` flag carries barrel/up; `euler` is the `--rotate-euler` it already
+applied. SOLVE emits this flag into the re-bake command, so a single run both bakes
+the correction and persists the intent.
+
+**Read by the model crate**: a new `gltf_extras.rs` reader (mirroring
+`read_socket_name` — degrade to `None` on absent/malformed metadata, never fail the
+load) surfaces `mount.barrel`/`up`/`euler`. SOLVE reads raw-source-frame barrel/up
+to build the FULL from-raw `D`; CHECK reads barrel/up plus `euler` and composes
+them into the baked frame. Neither re-supplies axes on the CLI once the weapon is
+self-describing.
+
+**Persisting the euler is adopted** (rather than keeping `--current-euler` the only
+source): without it, CHECK still needs the applied euler re-supplied — one of the
+two drift chances survives. Since `prop_to_gltf.py` already applies
+`--rotate-euler`, writing it into `extras` in the same postprocess pass costs
+nothing and closes the gap.
+
+**CLI axes/euler are the first-author + override path.** On the first solve the
+raw/grip-only weapon carries no `mount` extras, so `--barrel`/`--up` are supplied
+once; the emitted bake persists them. Afterward they are optional overrides
+(re-persisted on the next bake), and `--current-euler` is an optional fallback for
+a weapon baked before `extras` carried `euler`. When both a CLI value and a
+persisted `extras` value are present, the CLI value wins and is re-persisted — the
+override path, decided so re-authoring is never blocked by stale extras.
+
+### Decision 2 — emit-only, not `--bake`
+`solve-weapon-mount` prints the COMPLETE runnable `blender … prop_to_gltf.py …`
+command; it does not shell out to Blender. Emit-only already assembles the full
+command, so a `--bake` flag would only auto-RUN it — and would add a Blender
+dependency to the solve/check path, which otherwise needs none. `--bake` is
+declined for this spec; it may be a fast-follow convenience.
+
+### Decision 3 — one bake per weapon by default; per-character correction is the escape hatch
+The default assumption is that a single weapon bake serves the player and every
+humanoid on the shared Mixamo rig (memory: character-model-provenance). This stays
+empirically verifiable — solve against each target socket and compare the emitted
+eulers — but is no longer called "open." If socket frames diverge (e.g.
+`tools/mixamo_to_gltf.py --yaw` rotates a character's whole skeleton, including the
+hand joint's model-space frame, about vertical Z), the documented escape hatch is a
+per-character corrective: a separate baked weapon file per target, each carrying
+its own `extras.mount.euler`. The rejected descriptor-corrective alternative
+(Direction) is revisited only if that escape hatch proves too costly — an owner
+call, not this plan's.
 
 ## Acceptance criteria
 - [ ] Given the limitator skeleton (`content/dev/models/limitator/model.gltf`,
   socket `hand_r`, clip `idle_aiming`, t=0), the AR_4 weapon
-  (`content/dev/models/ar_4/model.gltf`), declared weapon-local barrel/up axes,
+  (`content/dev/models/ar_4/model.gltf`), declared weapon-local barrel/up axes
+  (from the weapon's `extras.mount`, or from `--barrel`/`--up` on a first author),
   and `--raw-source`/`--out` paths, `solve-weapon-mount` emits a Blender XYZ euler
   (the FULL from-raw `D`) and a copy-paste, COMPLETE
-  `blender … prop_to_gltf.py -- --input <raw-source> --output <out> … --rotate-euler …`
-  command line that re-bakes the mount in one run.
+  `blender … prop_to_gltf.py -- --input <raw-source> --output <out> … --rotate-euler … --mount-axes …`
+  command line that re-bakes the mount AND persists `extras.mount` in one run.
 - [ ] Check mode on a weapon baked with that euler reports `barrel·+Z ≥ 0.999`,
   `|barrel·+Y| ≤ 0.02`, and `up·+Y ≥ 0.999` for the limitator/`hand_r`/`idle_aiming`
   case, and exits zero.
@@ -146,10 +234,10 @@ serves all characters" claim — that is left empirical (§Open questions).
 - [ ] Declared solve is stateless: with declared axes the tool emits the FULL
   from-raw euler `D` and does not consume `--current-euler` for the solve; baking
   the raw source with `D` passes check mode. Geometric-assist compose: with axes
-  omitted, a weapon already baked with euler `E0`, and `--current-euler E0`, the
-  tool detects the baked barrel/up and emits a TOTAL euler `E1` (its residual
-  `D_geom` composed onto `E0`) such that re-baking the raw source with `E1` passes
-  check mode.
+  omitted, a weapon already baked with euler `E0` (supplied via `--current-euler`,
+  or read from `extras.mount.euler` when present), the tool detects the baked
+  barrel/up and emits a TOTAL euler `E1` (its residual `D_geom` composed onto `E0`)
+  such that re-baking the raw source with `E1` passes check mode.
 - [ ] Running at a `(clip, time)` other than the reference (`idle_aiming`, t=0) —
   e.g. the limitator `reloading` clip — prints a distinct NOTE naming the actual
   `(clip, time)` and the limitator `reloading` clip, stating that a rigid bake is
@@ -165,6 +253,23 @@ serves all characters" claim — that is left empirical (§Open questions).
   the frame the engine mounts at, at the reference `(clip, time)` with
   `inputs = None` (a modified or differently-looped runtime pose diverges by
   design; see Invariants).
+- [ ] First-author persistence (Decision 1): on a weapon whose mesh node carries
+  no `mount` extras, solving with `--barrel`/`--up` emits a bake command whose
+  `--mount-axes` writes the declared barrel/up (raw-source frame) and whose
+  `--rotate-euler` value is written as `extras.mount.euler` onto the mesh node;
+  loading the re-baked weapon surfaces `mount.barrel`/`up`/`euler` with no CLI
+  re-supply.
+- [ ] Drift elimination (Decision 1): a weapon baked through the declared path
+  (mesh node carries `extras.mount = {barrel, up, euler}`) checks correctly with NO
+  `--barrel`/`--up`/`--current-euler` supplied — CHECK reads all three from
+  `extras.mount`, composes the persisted euler onto the persisted axes, and reports
+  the same metrics as an equivalent CLI-supplied check, so SOLVE and CHECK cannot
+  validate against divergent intent.
+- [ ] A weapon whose mesh node has absent or malformed `mount` extras still loads
+  (the `gltf_extras.rs` reader degrades to `None`, never fails the load); the tool
+  then treats axes as undeclared — CLI `--barrel`/`--up` if supplied, else
+  geometric assist — and a CLI axis/euler value overrides the persisted `extras`
+  value and is re-persisted at the next bake.
 
 ## Tasks
 
@@ -199,7 +304,15 @@ the corrective delta in (c) uses the per-column-normalized socket rotation; both
 their metrics match. Do NOT include any
 Blender/authoring-tool euler mapping here — that stays at the tool layer (Task 2).
 Take declared axes as an input to the corrective/verify path so callers can bypass
-geometric detection. Re-point `socket_dump.rs` to call this module for its socket
+geometric detection. Also add a `mount`-extras reader to `gltf_extras.rs`
+(`read_mount_axes`, backed by a `MountExtras` deserialize shape), mirroring
+`read_socket_name`: it reads a weapon mesh node's per-node `extras.mount` and
+returns the raw-source-frame `barrel`/`up` unit vectors plus the optional applied
+`euler`, degrading to `None` on absent or malformed metadata (author metadata never
+fails the load — the same non-fatal rule as the existing readers). Tasks 2 and 3
+call this reader so the declared axes (and the applied euler) come from the
+persisted weapon `extras`, not re-supplied CLI args — Decision 1; the corrective/
+verify math itself is unchanged and stays euler-free. Re-point `socket_dump.rs` to call this module for its socket
 dump, its geometric barrel/up detection, its corrective delta, and its verify
 metrics, deleting that duplicated engine-frame math from the example. The example
 keeps its own CLI and its inline Blender-XYZ-euler decomposition (that mapping is
@@ -222,7 +335,11 @@ selector, NOT to be confused with `prop_to_gltf.py`'s `--socket NAME=NODE`
 extras flag, which the tool only passes through), the reference clip
 `--clip` (default `idle_aiming`) and `--time` (default 0), the weapon glTF path
 `--weapon`, and the authoring-intent declaration of the weapon-local barrel and up
-axes `--barrel X Y Z` / `--up X Y Z`, plus the bake endpoints `--raw-source <path>`
+axes — read from the weapon's `extras.mount` when present (via the Task 1
+`read_mount_axes` reader), with `--barrel X Y Z` / `--up X Y Z` as the first-author/
+override path (required only when `extras.mount` is absent; a supplied CLI value
+overrides the persisted axes and is re-persisted by the emitted bake — Decision 1).
+It also takes the bake endpoints `--raw-source <path>`
 (the raw glb/gltf `prop_to_gltf.py` bakes FROM) and `--out <path>` (the baked
 output weapon glTF), forwarded verbatim as `--input`/`--output` into the emitted
 command (see Boundary inventory for the exact argument surface and axis
@@ -237,21 +354,30 @@ change of basis `C: (x,y,z) → (x,−z,y)`; a one-sided `C · D_gltf` would be 
 because `D` is a rotation operator, not a vector), then decompose `R = Rz·Ry·Rx`
 to XYZ degrees. It prints the euler and a copy-paste, COMPLETE runnable command
 `blender --background --python tools/prop_to_gltf.py -- --input <raw-source>
---output <out> [--grip GX GY GZ] [--scale S] [--socket NAME=NODE] --rotate-euler X Y Z`
+--output <out> [--grip GX GY GZ] [--scale S] [--socket NAME=NODE] --rotate-euler X Y Z
+--mount-axes BX BY BZ UX UY UZ`
 — `<raw-source>`/`<out>` from `--raw-source`/`--out`, and the emitted euler is the
 full from-raw `D`, so the single command re-bakes correctly from the raw source.
-This is EMIT-ONLY: the tool prints the command text; it does not shell out to
-Blender (the `--bake` drive-step stays deferred — see Open questions). Any
+The emitted `--mount-axes BX BY BZ UX UY UZ` carries the raw-source-frame declared
+barrel/up so the bake persists the intent (Decision 1): `prop_to_gltf.py` gains a
+`--mount-axes` flag whose `postprocess_gltf` step writes
+`extras.mount = { barrel, up, euler }` onto the mesh node — the same JSON node-
+`extras` write it already performs for `--socket NAME=NODE`
+(`node["extras"]["socket"] = …`) — with `euler` set to the `--rotate-euler` degrees
+that same bake applied. This is EMIT-ONLY: the tool prints the command text; it does
+not shell out to Blender (Decision 2 declines the `--bake` drive step). Any
 `--grip`/`--scale`/`--socket NAME=NODE` the author passes through is forwarded
 verbatim — `--socket` here is the prop_to_gltf extras flag, distinct from
 `--mount-joint`. Emit-path semantics: the DECLARED-axes path emits the FULL
 from-raw euler `D`
 and is stateless — `D` depends only on the socket frame and the declared axes, so
 `--current-euler` is NOT an input to the declared solve (in solve mode it is at
-most an optional validation that the euler already baked matches the freshly
+most an optional validation that the already-baked euler — read from
+`extras.mount.euler`, or supplied via `--current-euler` — matches the freshly
 solved `D`). Compose belongs to the geometric-ASSIST path only: when axes are
 omitted, detection measures the loaded, already-baked mesh, so its delta `D_geom`
-is a RESIDUAL; given `--current-euler X Y Z` (the Blender XYZ `--rotate-euler`
+is a RESIDUAL; given the already-baked euler (`extras.mount.euler` when present,
+else `--current-euler X Y Z` — the Blender XYZ `--rotate-euler`
 already baked in) the assist path emits the TOTAL euler by composing
 `D_geom_blender · R_current` before decomposition — the same composition
 `socket_dump.rs` does with its positional args 6-8, which is itself a
@@ -263,31 +389,38 @@ placement in Direction; the engine crate stays euler-free.
 ### Task 3: Check mode and the assist/trust boundary
 Add a `--check` mode to `solve-weapon-mount` (same subcommand file, so sequenced
 after Task 2). In check mode the tool takes a baked weapon (already carrying its
-corrective in its vertices) plus `--current-euler X Y Z` (the `--rotate-euler`
-that bake applied). Frame handling — the decided resolution of the check-mode
-axis-frame ambiguity: the declared `--barrel`/`--up` are ALWAYS in the raw-source
-weapon frame (one intent, shared verbatim with solve mode); because check loads
-the already-rotated BAKED weapon, the tool composes the applied euler onto the
-declared axes — it rotates the declared source-frame barrel/up by the glTF-space
-rotation equivalent of `--current-euler` to obtain the baked-frame axes, then
+corrective in its vertices); it reads the declared barrel/up axes and the applied
+euler from the weapon's `extras.mount` (Decision 1), with `--barrel`/`--up` and
+`--current-euler X Y Z` (the `--rotate-euler` that bake applied) as optional
+fallbacks/overrides for a weapon baked before `extras` carried them. Frame
+handling — the decided resolution of the check-mode axis-frame ambiguity: the
+declared barrel/up (from `extras.mount`, or the `--barrel`/`--up` overrides) are
+ALWAYS in the raw-source weapon frame (one intent, shared verbatim with solve
+mode); because check loads the already-rotated BAKED weapon, the tool composes the
+applied euler onto the declared axes — it rotates the declared source-frame
+barrel/up by the glTF-space rotation equivalent of the applied euler
+(`extras.mount.euler`, else `--current-euler`) to obtain the baked-frame axes, then
 feeds those to the Task 1 verify metrics at the resolved socket frame. That
 glTF-space rotation is `R_gltf = Cᵀ · R_blender · C` (`C = [X, Z, −Y]` columns;
-`R_blender = Rz·Ry·Rx` built from the `--current-euler` degrees) — the inverse of
+`R_blender = Rz·Ry·Rx` built from the applied euler degrees) — the inverse of
 the emit-path similarity, taking the Blender-frame applied rotation back to glTF
 frame; the axes then rotate by FORWARD application `v_baked = R_gltf · v_declared`
 (the same forward direction `socket_dump.rs` uses for `barrel_w = rot · barrel_l`).
 The composition direction is pinned because a reversed one would silently
 false-pass or false-fail check mode. Applying
 raw-source-frame axes directly to baked geometry would measure the wrong
-direction, so `--current-euler` is REQUIRED in DECLARED check mode; the assist
-check path (axes omitted) measures the baked mesh directly and does not
-consume it. The declared path is
+direction, so the applied euler is REQUIRED in DECLARED check mode — normally read
+from `extras.mount.euler`, with `--current-euler` supplying it only when the weapon
+lacks that persisted value; the assist check path (axes omitted) measures the baked
+mesh directly and does not consume it. The declared path is
 thus an analytic verification of the euler against declared intent (it trusts
-`prop_to_gltf.py` to have baked `--current-euler` faithfully — the same trust the
+`prop_to_gltf.py` to have baked the euler faithfully — the same trust the
 whole pipeline places in the mesh authority); the baked weapon is still loaded so
-that the assist path (axes omitted) can run geometric detection on the baked mesh. (This reinforces the
-args-vs-`extras` open question: a self-describing weapon that recorded its applied
-euler in `extras` would remove both re-supplied inputs. See Open questions.) It
+that the assist path (axes omitted) can run geometric detection on the baked mesh.
+This is exactly why Decision 1 persists both the declared axes and the applied
+euler in `extras.mount`: a self-describing weapon removes both re-supplied inputs,
+so a normal declared check supplies neither `--barrel`/`--up` nor `--current-euler`
+and cannot diverge from the solve run's intent. It
 prints both the declared source-frame axes and the composed baked-frame axes it
 validated against (so a mismatch between the solve run's axes and the check run's
 axes is visible), then prints `barrel·+Z`, `barrel·+Y`, `up·+Y`, and exits
@@ -322,23 +455,31 @@ surface it plugs into.
 Add a short authoring-loop doc for weapon/prop mounting (human-facing, under
 `docs/` if a weapon/model authoring page exists there; otherwise a new page under
 `docs/`), describing the deterministic loop: bake the weapon grip/scale-only with
-`prop_to_gltf.py` → declare barrel/up axes (`--barrel`/`--up`) and run
-`solve-weapon-mount --mount-joint hand_r` to get the euler → re-bake with
-`--rotate-euler` → `solve-weapon-mount --check --current-euler <the baked euler>`
-to confirm in the engine frame. Explain that `--check` needs `--current-euler`
-because the declared axes are raw-source-frame while the checked weapon is already
-baked, and that `--mount-joint` (the socket-joint selector) is not
-`prop_to_gltf.py`'s `--socket NAME=NODE` extras flag. State the reference-pose
+`prop_to_gltf.py` → declare barrel/up axes once (`--barrel`/`--up`, the first
+author) and run `solve-weapon-mount --mount-joint hand_r` to get the euler →
+re-bake with the emitted command, which applies `--rotate-euler` AND persists the
+declared axes and applied euler into the weapon's `extras.mount` (Decision 1) →
+`solve-weapon-mount --check` to confirm in the engine frame. Explain that a normal
+`--check` re-supplies nothing — it reads the declared axes (raw-source frame) and
+the applied euler from `extras.mount`, and composes them into the baked frame — and
+that `--barrel`/`--up`/`--current-euler` are only first-author/override or fallback
+inputs for a weapon baked before `extras.mount` existed. Explain why the euler
+matters at check time (the declared axes are raw-source-frame while the checked
+weapon is already baked), and that `--mount-joint` (the socket-joint selector) is
+not `prop_to_gltf.py`'s `--socket NAME=NODE` extras flag. State the reference-pose
 caveat (a rigid bake is exact at the solve pose; wrist-reorienting poses need a
-skinned weapon) and the assist-vs-declared distinction. Do NOT edit `context/lib/` here — that capture is a promotion step
-(§Open questions records the `resource_management.md` §7 target).
+skinned weapon), the assist-vs-declared distinction, and the one-bake-per-weapon
+default with the per-character escape hatch (Decision 3). Do NOT edit
+`context/lib/` here — that capture is a promotion step (§Open questions records the
+`resource_management.md` §7 target).
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — thin slice. Extracts the engine-frame solve and
 re-points `socket_dump.rs`, falsifying the boundary assumption that the engine-frame
 math separates cleanly from the Blender-euler mapping. Blocks everything.
-**Phase 2 (sequential):** Task 2 — builds the xtask solve/emit on the Task 1 module.
+**Phase 2 (sequential):** Task 2 — builds the xtask solve/emit on the Task 1 module,
+and extends `prop_to_gltf.py` with the `--mount-axes` write the emitted command uses.
 **Phase 3 (sequential):** Task 3 — adds check mode and the assist/trust boundary to
 the same subcommand file Task 2 creates (shared file → sequential).
 **Phase 4 (concurrent):** Task 4 — author doc, once the tool's argument surface and
@@ -352,15 +493,16 @@ vs Blender-frame. Pinned once:
 | Name | Rust (engine crate) | xtask tool layer | Python (`prop_to_gltf.py`) |
 |---|---|---|---|
 | Corrective rotation | glTF-space delta `Mat3`/quat (`D = S^T·G^T`), euler-free | Blender XYZ euler degrees, via two-sided similarity `D_b = C·D_gltf·Cᵀ` (`C = [X, Z, −Y]` cols, glTF→Blender; NOT one-sided) then `R=Rz·Ry·Rx` | `--rotate-euler X Y Z` (degrees, XYZ, applied after `--grip`) |
-| Declared barrel axis | unit `Vec3` in weapon-local (glTF) frame | `--barrel X Y Z`, raw-source weapon-local frame (glTF-frame components of the raw model as loaded) | n/a |
-| Declared up axis | unit `Vec3` in weapon-local (glTF) frame | `--up X Y Z`, raw-source weapon-local frame | n/a |
+| Declared barrel axis | unit `Vec3` in weapon-local (glTF) frame; read from `extras.mount.barrel` via `read_mount_axes` | persisted in `extras.mount.barrel` (raw-source weapon-local glTF frame); `--barrel X Y Z` is the first-author/override — overrides extras, re-persisted at the next bake | written to `extras.mount.barrel` by `postprocess_gltf` from `--mount-axes` |
+| Declared up axis | unit `Vec3` in weapon-local (glTF) frame; read from `extras.mount.up` via `read_mount_axes` | persisted in `extras.mount.up` (raw-source weapon-local frame); `--up X Y Z` is the first-author/override | written to `extras.mount.up` by `postprocess_gltf` from `--mount-axes` |
+| Mount declaration (`extras.mount`) | `read_mount_axes` → barrel/up `Vec3` + `euler: Option<[f32;3]>`; degrades to `None` on absent/malformed metadata (never fails the load) | single persisted source of truth read for solve and check; the emitted `--mount-axes` persists barrel/up and the bake writes `euler` | `extras.mount = { barrel, up, euler }` on the mesh node, written by `postprocess_gltf` — the same node-`extras` write as `--socket` (precedent) |
 | Engine forward / up targets | `+Z` forward, `+Y` up (mount target) | same | n/a |
 | Mount-joint selector | `SocketBinding::SkinnedJoint`, sampled at `(clip, time)` | `--mount-joint NAME` (default `hand_r`), `--clip` (default `idle_aiming`), `--time` (default 0) — the solver's socket-joint selector | n/a |
 | Raw source weapon | n/a | `--raw-source <path>` (raw glb/gltf the bake reads FROM); forwarded as `--input` in the emitted command | `--input <path>` (required) |
 | Baked output path | n/a | `--out <path>` (baked weapon glTF the bake writes TO); forwarded as `--output` | `--output <path>` (required) |
-| Current bake euler (assist-compose + check bridge) | n/a (engine crate euler-free) | `--current-euler X Y Z` (Blender XYZ degrees already baked in): the geometric-ASSIST residual-compose input and check mode's Blender→glTF bridge `R_gltf = Cᵀ·R_blender·C`; NOT an input to the declared solve (declared emits the full `D`) | reads a `--rotate-euler` previously applied |
+| Current bake euler (assist-compose + check bridge) | engine-frame math euler-free; `read_mount_axes` surfaces `extras.mount.euler` as raw `[f32;3]` metadata for the tool | read from `extras.mount.euler`; `--current-euler X Y Z` is an optional fallback (weapon baked before `extras` carried it). The geometric-ASSIST residual-compose input and check's Blender→glTF bridge `R_gltf = Cᵀ·R_blender·C`; NOT an input to the declared solve (declared emits the full `D`) | writes `extras.mount.euler` = the `--rotate-euler` it applied; also reads a `--rotate-euler` previously applied |
 | Verify tolerances | metric thresholds consumed by the verify path | `--min-barrel-dot` (0.999), `--max-barrel-y` (0.02), `--min-up-dot` (0.999) | n/a |
-| Prop socket extras (pass-through) | n/a | `--socket NAME=NODE` forwarded verbatim into the emitted command (distinct from `--mount-joint`) | `--socket NAME=NODE` (append; writes node `extras`) |
+| Prop socket extras (pass-through) | n/a | `--socket NAME=NODE` forwarded verbatim into the emitted command (distinct from `--mount-joint` and from `--mount-axes`) | `--socket NAME=NODE` (append; writes node `extras.socket`) |
 
 This table pins the frame-crossing arguments; the skeleton model path
 (positional), `--weapon`, and the `--grip`/`--scale`/`--check` flags are named
@@ -370,9 +512,10 @@ Axis-declaration convention: the author states the barrel/up axes in the weapon'
 own local frame **as the engine loads it** (raw glTF vertex frame), not in Blender's
 viewport frame — the tool loads the weapon through `load_model`, so in solve mode the declared
 axes and the geometry it solves against share one frame (in check mode the
-loaded geometry is the already-baked frame, which is why check composes
-`--current-euler` onto the declared source-frame axes). The doc (Task 4) states
-this explicitly with the AR_4 as the worked example.
+loaded geometry is the already-baked frame, which is why check composes the applied
+euler — `extras.mount.euler`, else `--current-euler` — onto the declared
+source-frame axes). The doc (Task 4) states this explicitly with the AR_4 as the
+worked example.
 
 ## Invariants
 
@@ -382,6 +525,7 @@ this explicitly with the AR_4 as the worked example.
 | Engine-frame math carries no Blender/authoring-tool mapping | Task 1 (module is euler-free) | Task 2 adds the Blender mapping only in the tool layer | Direction (format-adapter placement); AC on emit living in xtask |
 | A geometry-only result is never presented as authoritative | Task 3 (assist/trust labelling) | Task 2 emit path must route geometry through the assist label, not the trusted euler | AC on undeclared-axis labelling; AC on ambiguous weapon |
 | Corrective is exact only at the solve `(clip, time)` | inherent (socket frame is pose-dependent) | Task 3 prints the non-reference NOTE when `(clip, time)` ≠ (`idle_aiming`, 0), in solve or check mode; Task 4 doc restates the caveat | AC on non-reference-pose reporting (AC #7) |
+| SOLVE and CHECK read the declared axes and applied euler from one persisted source — the weapon's `extras.mount` — never from separately re-supplied CLI values, so the intent CHECK validates against cannot diverge from the intent SOLVE used | Task 2 (emitted `--mount-axes` persists `extras.mount` via the bake), Task 1 (`read_mount_axes`) | Task 3 reads the same `extras.mount`; a CLI `--barrel`/`--up`/`--current-euler` override must re-persist at the next bake, not silently diverge | AC on drift elimination, AC on first-author persistence |
 
 ## Script syntax examples
 
@@ -394,7 +538,9 @@ blender --background --python tools/prop_to_gltf.py -- \
   --input raw/ar_4.glb --output content/dev/models/ar_4/model.gltf \
   --grip 0 -0.05 0.12 --scale 0.68
 
-# 2. Solve the corrective from declared axes + the real socket frame:
+# 2. Solve the corrective. --barrel/--up are the FIRST-AUTHOR declaration (the
+#    grip/scale-only weapon carries no extras.mount yet); later solves read the
+#    axes from extras.mount and omit them.
 cargo run -p xtask -- solve-weapon-mount \
   content/dev/models/limitator/model.gltf \
   --mount-joint hand_r --clip idle_aiming --time 0 \
@@ -403,28 +549,32 @@ cargo run -p xtask -- solve-weapon-mount \
   --raw-source raw/ar_4.glb --out content/dev/models/ar_4/model.gltf
 # -> emits the FULL from-raw --rotate-euler <X> <Y> <Z>, and a COMPLETE, ready-to-run
 #    `blender … prop_to_gltf.py -- --input raw/ar_4.glb --output …/model.gltf
-#     --grip … --rotate-euler <X> <Y> <Z>` command (emit-only; it does not run Blender).
+#     --grip … --rotate-euler <X> <Y> <Z> --mount-axes 0 1 0 0 0 1` command
+#    (emit-only; it does not run Blender — Decision 2).
 
-# 3. Re-bake with the emitted euler (run the printed command, or, if the deferred
-#    --bake flag is adopted, have step 2 run it):
+# 3. Re-bake with the emitted command. Besides applying --rotate-euler, the
+#    --mount-axes term persists extras.mount = {barrel, up, euler} onto the mesh
+#    node, so the baked weapon self-describes (Decision 1):
 blender --background --python tools/prop_to_gltf.py -- \
   --input raw/ar_4.glb --output content/dev/models/ar_4/model.gltf \
-  --grip 0 -0.05 0.12 --scale 0.68 --rotate-euler <X> <Y> <Z>
+  --grip 0 -0.05 0.12 --scale 0.68 --rotate-euler <X> <Y> <Z> --mount-axes 0 1 0 0 0 1
 
-# 4. Confirm in the engine frame. At the reference (clip,time), non-zero exit == mount is wrong;
-#    at a non-reference pose a rigid bake is inexact by design, so a non-zero exit there
-#    does not by itself mean a wrong mount (see the NOTE).
-#    --current-euler is the euler step 3 baked; check composes it onto the
-#    declared source-frame axes to reach the baked frame.
+# 4. Confirm in the engine frame. A normal check re-supplies NOTHING — it reads the
+#    declared axes and the applied euler from extras.mount and composes them into
+#    the baked frame. At the reference (clip,time), non-zero exit == mount is wrong;
+#    at a non-reference pose a rigid bake is inexact by design, so a non-zero exit
+#    there does not by itself mean a wrong mount (see the NOTE).
 cargo run -p xtask -- solve-weapon-mount \
   content/dev/models/limitator/model.gltf \
   --mount-joint hand_r --clip idle_aiming --time 0 \
-  --weapon content/dev/models/ar_4/model.gltf \
-  --barrel 0 1 0 --up 0 0 1 --check --current-euler <X> <Y> <Z>
+  --weapon content/dev/models/ar_4/model.gltf --check
+# (For a weapon baked before extras.mount existed, supply the fallbacks:
+#  --barrel 0 1 0 --up 0 0 1 --current-euler <X> <Y> <Z>.)
 
 # Variant A — geometric-ASSIST compose: refine a weapon already baked with E0
 #   WITHOUT declared axes. Detection runs on the baked mesh; its residual is
-#   composed onto E0 to emit the TOTAL euler to re-bake from raw. The emitted
+#   composed onto E0 (read from extras.mount.euler when present, else supply
+#   --current-euler) to emit the TOTAL euler to re-bake from raw. The emitted
 #   euler is flagged UNVERIFIED (geometry-only). The DECLARED path never composes
 #   — it emits the full from-raw euler directly (steps 2-3 above).
 cargo run -p xtask -- solve-weapon-mount \
@@ -440,42 +590,14 @@ cargo run -p xtask -- solve-weapon-mount \
 (The `--barrel`/`--up` values above are illustrative, not the AR_4's actual axes.)
 
 ## Open questions
-- **How many bakes per weapon?** Whether one AR_4 bake serves the player and every
-  enemy on the shared Mixamo rig, or each character/yaw bake needs its own, is left
-  for the tool to answer empirically (solve against each target socket; compare the
-  emitted eulers). Not assumed. If they diverge, the descriptor-corrective
-  alternative (rejected in Direction) may deserve revisiting — a decision for the
-  owner, not this plan.
-- **Declared axes: CLI args vs glTF `extras`.** The barrel/up axes are intrinsic to
-  the weapon, but as CLI args (the MVP) they must be re-supplied at both solve and
-  check time — a check run given different axes than its solve run silently
-  validates against a *different* intent, defeating the false-positive guard. The
-  check-mode frame resolution (Task 3) sharpens this: check also
-  requires `--current-euler` (the applied bake) to bring the declared source-frame
-  axes into the baked frame, so an arg-only workflow re-supplies BOTH the axes and
-  the applied euler — two chances for solve/check to diverge (the reference
-`(clip, time)` is a third re-supplied input with the same drift exposure). The `extras` channel
-  (the project's existing idiom for per-node authored intent — sockets, hit-zones,
-  pose-masks) would give solve and check one source of truth and make the weapon
-  self-describing; if `prop_to_gltf.py` also recorded the applied euler in `extras`
-  at bake time, check would need neither input re-supplied. Deferred to keep the MVP
-  arg-only, but this solve/check drift class is the reason to revisit `extras`
-  before the CLI surface hardens. Owner call; kept arg-only for now, and Task 3's
-  check echoes both the source-frame axes and the composed baked-frame axes it
-  validated against so a mismatch is visible. (The tool's arg surface has grown —
-  `--raw-source`/`--out` for the emitted command, `--current-euler` for the assist
-  compose and check bridge — but those are bake endpoints and the applied euler;
-  persisting the DECLARED AXES themselves as `extras` rather than re-supplied args
-  is the open owner call here, and that growth does not settle it.)
-- **Optional `--bake` drive step.** Emit-only already prints a COMPLETE runnable
-  command (the full `blender … prop_to_gltf.py -- --input … --output …
-  --rotate-euler …` string), so the only gap a `--bake` flag would close is
-  auto-RUNNING that command, not assembling it. Should `solve-weapon-mount`
-  optionally shell out to Blender/`prop_to_gltf.py` for a one-command experience,
-  or stay emit-only (author runs the printed command)? Emit-only keeps the tool's
-  dependency surface Blender-free for solve/check; a `--bake` flag adds a Blender
-  dependency to that path. Recommended default: emit-only, `--bake` as a later
-  convenience. Owner call.
+
+The three design questions earlier review left open — declared axes via `extras`
+vs CLI args, the optional `--bake` drive step, and how many bakes per weapon — are
+now settled in Decisions (1, 2, 3). The `extras` adoption surfaced no new owner
+question: the CLI-vs-`extras` precedence (CLI overrides, re-persisted at the next
+bake) and euler persistence are decided inline in Decision 1. One promotion note
+remains:
+
 - **Doc capture at promotion.** `resource_management.md` §7 currently names
   `socket_dump` + raw `--rotate-euler` trial-and-error as the mount-verify path.
   Update it at promotion to name `solve-weapon-mount` and the declare-axes loop, and

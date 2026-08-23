@@ -53,6 +53,9 @@ pub(crate) struct BrainFacts {
     /// Whether the selected target is routeable by the nav floor's pathfinder.
     /// `false` without a target or when the map has no navmesh.
     pub target_reachable: bool,
+    /// Whether the selected target is visible through the shared, debounced
+    /// enemy-to-target sightline verdict. `false` without a selected target.
+    pub target_visible: bool,
     /// Successful attack fires since the root activity was entered. The
     /// statechart evaluator re-points this scope-relative snapshot to each
     /// active depth before evaluating that envelope's rows.
@@ -189,6 +192,7 @@ impl BrainScope {
             // This slot is scope-relative and is immediately re-pointed by
             // `select_transition` before any guard at a level evaluates.
             IrValue::Number(facts.attacks_fired_in_activity as f32),
+            IrValue::Bool(facts.target_visible),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -265,6 +269,7 @@ impl BindingScope for BrainScope {
 
 #[cfg(test)]
 mod tests {
+    use super::super::perception::{EnemyTargetPerception, fire_gate};
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::Transform;
@@ -274,8 +279,9 @@ mod tests {
         BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT,
         BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT,
         BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
-        BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
-        CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
+        BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BindError,
+        BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard,
+        eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -350,6 +356,7 @@ mod tests {
             distance_from_anchor: 12.5,
             target_hostile: true,
             target_reachable: true,
+            target_visible: true,
             attacks_fired_in_activity: 3,
         }
     }
@@ -472,6 +479,7 @@ mod tests {
             BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT => {
                 IrValue::Number(facts.attacks_fired_in_activity as f32)
             }
+            BRAIN_TARGET_VISIBLE_INPUT => IrValue::Bool(facts.target_visible),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"
@@ -519,6 +527,7 @@ mod tests {
         let target_died_input = bind_read(BRAIN_TARGET_DIED_INPUT, &scope);
         let target_hostile_input = bind_read(BRAIN_TARGET_HOSTILE_INPUT, &scope);
         let target_reachable_input = bind_read(BRAIN_TARGET_REACHABLE_INPUT, &scope);
+        let target_visible_input = bind_read(BRAIN_TARGET_VISIBLE_INPUT, &scope);
 
         scope.refresh(
             &registry,
@@ -527,6 +536,7 @@ mod tests {
                 target: None,
                 target_hostile: false,
                 target_reachable: false,
+                target_visible: false,
                 ..facts
             },
         );
@@ -542,6 +552,11 @@ mod tests {
             eval_value(&target_reachable_input, &scope),
             IrValue::Bool(false),
             "target reachability follows the target-side no-target convention"
+        );
+        assert_eq!(
+            eval_value(&target_visible_input, &scope),
+            IrValue::Bool(false),
+            "P17: target visibility is false without a selected target, never stale"
         );
 
         scope.refresh(
@@ -565,6 +580,35 @@ mod tests {
             IrValue::Bool(true),
             "the compute pass owns the nav verdict and refresh preserves its cached result"
         );
+        assert_eq!(
+            eval_value(&target_visible_input, &scope),
+            IrValue::Bool(true),
+            "P4: refresh projects the shared perception verdict without re-deriving it"
+        );
+    }
+
+    #[test]
+    fn target_visible_preserves_the_shared_fire_gate_verdict() {
+        let (registry, enemy, target) = seeded_registry();
+        let mut scope = BrainScope::for_validation();
+        let target_visible = bind_read(BRAIN_TARGET_VISIBLE_INPUT, &scope);
+
+        for visible in [true, false] {
+            let shared_verdict = fire_gate(Some(EnemyTargetPerception { visible }));
+            scope.refresh(
+                &registry,
+                enemy,
+                BrainFacts {
+                    target_visible: shared_verdict,
+                    ..engaged_facts(target)
+                },
+            );
+            assert_eq!(
+                eval_value(&target_visible, &scope),
+                IrValue::Bool(shared_verdict),
+                "P4: targetVisible must project the exact shared fire-gate verdict"
+            );
+        }
     }
 
     #[test]
@@ -581,6 +625,7 @@ mod tests {
                 target: None,
                 target_hostile: false,
                 target_reachable: false,
+                target_visible: false,
                 ..engaged_facts(target)
             },
         );

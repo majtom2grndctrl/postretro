@@ -549,6 +549,7 @@ fn step_graph(
             distance_from_anchor: 0.0,
             target_hostile: true,
             target_reachable: true,
+            target_visible: true,
             attacks_fired_in_activity: 0,
         },
     );

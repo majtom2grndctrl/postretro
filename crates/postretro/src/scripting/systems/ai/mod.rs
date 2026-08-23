@@ -568,6 +568,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         if target.is_none() {
             los_grace.remove(&snap.id);
         }
+        // The graph fact and the engine-floor fire gate consume this one
+        // already-debounced perception result. Keep the fire gate independent
+        // of authoring below; it still calls `perception::fire_gate` directly.
+        let target_visible = target_perception.is_some_and(|perception| perception.visible);
 
         let selected_target = target.map(|target| {
             (
@@ -639,6 +643,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
@@ -662,6 +667,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );

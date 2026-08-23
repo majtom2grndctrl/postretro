@@ -69,6 +69,11 @@ export interface BrainInputs {
    * entered. It is scope-relative and a fire becomes visible on the next tick's
    * guard refresh (number). */
   readonly attacksFiredInActivity: RuntimeGuardNode;
+  /** `true` when the selected target is clear on the enemy's shared,
+   * debounced static-world sightline; false with no target. This is the LOS
+   * verdict the engine fire gate also reads, before its range, cooldown, and
+   * facing requirements (boolean). */
+  readonly targetVisible: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -99,6 +104,7 @@ export const brain: BrainInputs = Object.freeze({
   targetHostile: input("@brain.targetHostile"),
   targetReachable: input("@brain.targetReachable"),
   attacksFiredInActivity: input("@brain.attacksFiredInActivity"),
+  targetVisible: input("@brain.targetVisible"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

@@ -477,6 +477,10 @@ pub(crate) fn spawn_projectile(
     launch: weapon::ProjectileLaunch,
     predicted_shot_id: Option<u64>,
 ) -> Option<EntityId> {
+    // Resolve every hit-time visual before moving the body out of the descriptor
+    // below. Impact resolution must not consult the owner weapon, which can be
+    // gone before a long-lived projectile makes contact.
+    let impact_light = launch.descriptor.visual.impact_light.clone();
     let Some(projectile_id) = registry.try_spawn(
         Transform {
             position: launch.origin,
@@ -512,6 +516,7 @@ pub(crate) fn spawn_projectile(
                 ..
             }
         ),
+        impact_light,
     };
     let _ = registry.set_component(projectile_id, component);
 
@@ -739,8 +744,8 @@ pub(crate) fn refuse_local_switch(
 mod projectile_spawn_tests {
     use super::*;
     use postretro_foundation::{
-        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailSpinAnimation,
-        ProjectileTrailVisual, ProjectileVisual,
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight,
+        ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual,
     };
 
     fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
@@ -796,6 +801,7 @@ mod projectile_spawn_tests {
                 }),
             }),
             light: None,
+            impact_light: None,
         };
 
         let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
@@ -835,6 +841,7 @@ mod projectile_spawn_tests {
             },
             trail: None,
             light: None,
+            impact_light: None,
         };
         let mut launch = launch(visual);
         launch.direction = Vec3::new(3.0, 2.0, -4.0).normalize();
@@ -853,6 +860,39 @@ mod projectile_spawn_tests {
         assert!(
             rendered_forward.distance(launch.direction) <= 1.0e-6,
             "a rigid projectile model faces the aim direction captured at fire time"
+        );
+    }
+
+    #[test]
+    fn projectile_spawn_retains_resolved_impact_light_before_moving_body_visual() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let impact_light = ProjectileImpactLight {
+            color: [0.5, 0.8, 1.0],
+            intensity: 4.0,
+            radius: 5.0,
+            peak_radius: Some(10.0),
+            fade_ms: 200.0,
+        };
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Model {
+                model: "models/rocket.gltf".to_string(),
+            },
+            trail: None,
+            light: None,
+            impact_light: Some(impact_light.clone()),
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+            .expect("projectile spawns");
+        assert_eq!(
+            registry
+                .get_component::<ProjectileComponent>(projectile)
+                .expect("projectile state survives body materialization")
+                .impact_light,
+            Some(impact_light),
+            "the later contact path never has to resolve the owner weapon"
         );
     }
 

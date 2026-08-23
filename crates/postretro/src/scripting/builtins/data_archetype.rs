@@ -2978,6 +2978,7 @@ mod tests {
                     spin_animation: None,
                 }),
                 light: None,
+                impact_light: None,
             },
         });
         let mut rocket = weapon_descriptor("rocket");
@@ -3008,6 +3009,7 @@ mod tests {
                     spin_animation: None,
                 }),
                 light: None,
+                impact_light: None,
             },
         });
 

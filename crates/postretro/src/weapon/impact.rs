@@ -4,10 +4,15 @@
 use std::sync::LazyLock;
 
 use glam::Vec3;
+use postretro_entities::FalloffKind;
 use postretro_entities::components::billboard_emitter::LifetimeCurve;
+use postretro_entities::components::light::{LightAnimation, LightComponent, LightKind};
 use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityRegistry, Transform};
+use postretro_foundation::ProjectileImpactLight;
+
+use crate::impact_effects;
 
 const IMPACT_SPRITE_COLLECTION: &str = "impact";
 
@@ -49,6 +54,57 @@ pub(crate) fn spawn_impact_effect_at(registry: &mut EntityRegistry, point: Vec3,
         let speed = 4.5 + (index % 3) as f32 * 1.35;
         spawn_particle(registry, origin, fan * speed, index);
     }
+}
+
+/// Materialize the descriptor-owned transient flash beside the ordinary impact
+/// particles. The bridge reads non-following light positions from `origin`, so
+/// keep it equal to the hit-point Transform instead of relying on the entity pose.
+pub(crate) fn spawn_projectile_impact_light(
+    registry: &mut EntityRegistry,
+    point: Vec3,
+    config: &ProjectileImpactLight,
+) {
+    let Some(id) = registry.try_spawn(
+        Transform {
+            position: point,
+            ..Transform::default()
+        },
+        &[],
+    ) else {
+        log::warn!("[WeaponImpact] entity registry exhausted; dropping impact flash");
+        return;
+    };
+
+    let _ = registry.set_component(
+        id,
+        LightComponent {
+            origin: point.to_array(),
+            light_type: LightKind::Point,
+            intensity: config.intensity,
+            color: config.color,
+            falloff_model: FalloffKind::InverseSquared,
+            falloff_range: config.radius,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            is_dynamic: true,
+            animated_slot: None,
+            follow_transform: false,
+            animation: Some(LightAnimation {
+                period_ms: config.fade_ms,
+                phase: None,
+                play_count: Some(1),
+                start_active: None,
+                brightness: Some(vec![1.0, 0.0]),
+                color: None,
+                direction: None,
+                radius: config
+                    .peak_radius
+                    .map(|peak_radius| vec![config.radius, peak_radius]),
+            }),
+        },
+    );
+    impact_effects::despawn(registry, id, Some(config.fade_ms));
 }
 
 fn impact_frame(normal: Vec3) -> (Vec3, Vec3, Vec3) {
@@ -112,7 +168,9 @@ fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, velocity: Vec3,
 mod tests {
     use super::*;
     use crate::scripting_systems::particle_sim;
+    use postretro_entities::components::light::LightComponent;
     use postretro_entities::registry::{ComponentKind, ComponentValue};
+    use postretro_foundation::ProjectileImpactLight;
 
     const EPSILON: f32 = 1.0e-5;
 
@@ -191,5 +249,33 @@ mod tests {
                 "zero normal should produce upward impact velocity: {velocity:?}"
             );
         }
+    }
+
+    #[test]
+    fn impact_flash_without_peak_keeps_its_authored_radius_static() {
+        let mut registry = EntityRegistry::new();
+        let config = ProjectileImpactLight {
+            color: [0.6, 0.9, 1.0],
+            intensity: 3.0,
+            radius: 4.5,
+            peak_radius: None,
+            fade_ms: 150.0,
+        };
+
+        spawn_projectile_impact_light(&mut registry, Vec3::new(2.0, 3.0, 4.0), &config);
+
+        let flashes = registry
+            .iter_with_kind(ComponentKind::Light)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        let [flash] = flashes.as_slice() else {
+            panic!("impact flash creates exactly one point light");
+        };
+        let light = registry
+            .get_component::<LightComponent>(*flash)
+            .expect("flash light attaches");
+        assert_eq!(light.origin, [2.0, 3.0, 4.0]);
+        assert!((light.falloff_range - config.radius).abs() <= f32::EPSILON);
+        assert_eq!(light.animation.as_ref().unwrap().radius, None);
     }
 }

@@ -22,7 +22,7 @@ use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
-use crate::components::projectile::ProjectileComponent;
+use crate::components::projectile::{ProjectileComponent, ProjectilePresentationAge};
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::touchable::TouchableComponent;
@@ -677,6 +677,8 @@ pub enum RegistryError {
     ComponentNotFound { id: EntityId, kind: ComponentKind },
     #[error("entity id {0} is stale (generation mismatch)")]
     GenerationMismatch(EntityId),
+    #[error("entity {id} has no projectile presentation age")]
+    ProjectilePresentationAgeNotFound { id: EntityId },
 }
 
 /// Internal per-slot metadata. `generation` matches the generation a live
@@ -702,6 +704,11 @@ pub struct EntityRegistry {
     /// scripting component surface. `None` mirrors a dead/uninitialized slot.
     /// See: context/lib/entity_model.md §5.
     previous_transforms: Vec<Option<Transform>>,
+    /// Presentation-only projectile timing, kept outside `ComponentValue` so it
+    /// never grows the replicated component vocabulary. The remote materializer
+    /// stamps it from the local shared-content clock and the billboard collector
+    /// reads it while packing the visual-only projectile body.
+    projectile_presentation_ages: Vec<Option<ProjectilePresentationAge>>,
     /// Parallel column of per-entity tag lists. Space-delimited in the PRL
     /// wire format; stored here as pre-split `Vec<String>` per slot. An entity
     /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
@@ -759,6 +766,7 @@ impl EntityRegistry {
             free_list: Vec::new(),
             components: std::array::from_fn(|_| Vec::new()),
             previous_transforms: Vec::new(),
+            projectile_presentation_ages: Vec::new(),
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
@@ -974,6 +982,7 @@ impl EntityRegistry {
                 column.push(None);
             }
             self.previous_transforms.push(None);
+            self.projectile_presentation_ages.push(None);
             self.tags.push(vec![]);
             i
         };
@@ -1013,6 +1022,7 @@ impl EntityRegistry {
             column[index] = None;
         }
         self.previous_transforms[index] = None;
+        self.projectile_presentation_ages[index] = None;
         self.tags[index].clear();
         self.kvp_table.remove(&id);
         // Seat ownership is a property of a live pawn. Clearing it here is also
@@ -1043,6 +1053,30 @@ impl EntityRegistry {
             Some(slot) => slot.live && !slot.retired && slot.generation == id.generation(),
             None => false,
         }
+    }
+
+    /// Store local presentation timing for a descriptor-materialized projectile.
+    /// This is intentionally not a serializable registry component: peers derive
+    /// it from their own fixed-tick presentation clock without a wire field.
+    pub fn set_projectile_presentation_age(
+        &mut self,
+        id: EntityId,
+        age: ProjectilePresentationAge,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        self.projectile_presentation_ages[index] = Some(age);
+        Ok(())
+    }
+
+    /// Read the locally-derived timing state for a visual-only projectile.
+    pub fn projectile_presentation_age(
+        &self,
+        id: EntityId,
+    ) -> Result<&ProjectilePresentationAge, RegistryError> {
+        let index = self.validate(id)?;
+        self.projectile_presentation_ages[index]
+            .as_ref()
+            .ok_or(RegistryError::ProjectilePresentationAgeNotFound { id })
     }
 
     /// Publish one damage-chokepoint dispatch for the engine's impact-policy

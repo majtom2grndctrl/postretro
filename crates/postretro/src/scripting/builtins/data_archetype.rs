@@ -453,6 +453,9 @@ pub(crate) struct ProjectileSpriteCollection {
     pub(crate) collection: String,
     pub(crate) lifetime: f32,
     pub(crate) emissive: f32,
+    /// A projectile body cadence is translated to the collection's loop period
+    /// only after the actual frame count is known at level install.
+    pub(crate) frame_duration_ms: Option<f32>,
 }
 
 /// Collect projectile body and trail presentation assets from the full weapon
@@ -486,20 +489,24 @@ pub(crate) fn projectile_presentation_assets(
                 collection: trail.sprite.clone(),
                 lifetime: trail.lifetime,
                 emissive: 0.0,
+                frame_duration_ms: None,
             });
         }
 
         match &projectile.visual.body {
             ProjectileBodyVisual::Sprite {
-                sprite, emissive, ..
+                sprite,
+                emissive,
+                frame_duration_ms,
+                ..
             } if !sprite.is_empty() && seen_sprites.insert(sprite.clone()) => {
                 sprites.push(ProjectileSpriteCollection {
                     collection: sprite.clone(),
-                    // The body is a persistent billboard, not a simulated
-                    // particle. Its packed age is always zero, so this only
-                    // supplies the required sprite-pass collection metadata.
+                    // No-cadence bodies pack age 0.0, so this stays inert and
+                    // preserves the existing static-frame behavior.
                     lifetime: 1.0,
                     emissive: *emissive,
+                    frame_duration_ms: *frame_duration_ms,
                 });
             }
             ProjectileBodyVisual::Model { model }
@@ -2952,6 +2959,7 @@ mod tests {
                     rotation: 0.0,
                     tint: [0.2, 0.8, 1.0],
                     emissive: 2.5,
+                    frame_duration_ms: Some(60.0),
                 },
                 trail: Some(ProjectileTrailVisual {
                     sprite: "sprites/trail.png".to_string(),
@@ -3010,11 +3018,13 @@ mod tests {
                     collection: "sprites/trail.png".to_string(),
                     lifetime: 0.5,
                     emissive: 0.0,
+                    frame_duration_ms: None,
                 },
                 ProjectileSpriteCollection {
                     collection: "sprites/plasma.png".to_string(),
                     lifetime: 1.0,
                     emissive: 2.5,
+                    frame_duration_ms: Some(60.0),
                 },
             ]
         );

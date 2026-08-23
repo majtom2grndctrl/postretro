@@ -148,7 +148,7 @@ pub(crate) fn select_target(
             }
         });
 
-    let selected = match (retained, nearest_eligible) {
+    match (retained, nearest_eligible) {
         (Some(retained), Some(nearest))
             if is_meaningfully_closer(nearest.distance, retained.distance) =>
         {
@@ -157,9 +157,7 @@ pub(crate) fn select_target(
         (Some(retained), _) => Some(retained.target),
         (None, Some(nearest)) => Some(nearest.target),
         (None, None) => None,
-    };
-
-    selected
+    }
 }
 
 #[cfg(test)]

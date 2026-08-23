@@ -98,11 +98,25 @@ impl ParticleRenderCollector {
     /// per particle would be `O(particles x visible_cells)`. Instead this builds
     /// a `HashSet<u32>` of visible cell ids **once per collect** and tests
     /// each particle in `O(1)`; `locate_cell` itself is `O(tree depth)` and cheap.
+    #[cfg(test)]
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
         world: Option<&LevelWorld>,
         visible: &VisibleCells,
+    ) {
+        self.collect_at_time(registry, world, visible, 0.0);
+    }
+
+    /// Time-aware collector entry point used by the renderer path. The supplied
+    /// clock is the shared level-relative script clock used to stamp remote
+    /// projectile presentation bodies at materialization.
+    pub(crate) fn collect_at_time(
+        &mut self,
+        registry: &EntityRegistry,
+        world: Option<&LevelWorld>,
+        visible: &VisibleCells,
+        script_time: f32,
     ) {
         for buf in self.buffers.values_mut() {
             buf.clear();
@@ -140,9 +154,10 @@ impl ParticleRenderCollector {
 
         // A local travelling projectile has `SpriteVisual` but deliberately no
         // `ParticleState`: its visual is persistent until collision/expiry, not
-        // a simulated smoke puff. Pack it at age zero into the existing pass.
+        // a simulated smoke puff. A cadence-enabled body carries its fixed-tick
+        // flight age; every other body must retain the exact static age zero.
         for (id, value) in registry.iter_with_kind(ComponentKind::Projectile) {
-            let ComponentValue::Projectile(_) = value else {
+            let ComponentValue::Projectile(projectile) = value else {
                 continue;
             };
             let Ok(transform) = registry.get_component::<Transform>(id) else {
@@ -151,7 +166,12 @@ impl ParticleRenderCollector {
             let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
                 continue;
             };
-            self.collect_sprite(transform, visual, 0.0, world, visible_cells.as_ref());
+            let age = if projectile.flipbook_active {
+                projectile.elapsed_flight_age
+            } else {
+                0.0
+            };
+            self.collect_sprite(transform, visual, age, world, visible_cells.as_ref());
         }
 
         // A host-replicated observer copy intentionally carries no gameplay
@@ -178,7 +198,13 @@ impl ParticleRenderCollector {
             let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
                 continue;
             };
-            self.collect_sprite(transform, visual, 0.0, world, visible_cells.as_ref());
+            let age = registry
+                .projectile_presentation_age(id)
+                .ok()
+                .filter(|timing| timing.flipbook_active)
+                .map(|timing| (script_time - timing.spawn_time).max(0.0))
+                .unwrap_or(0.0);
+            self.collect_sprite(transform, visual, age, world, visible_cells.as_ref());
         }
     }
 
@@ -478,6 +504,8 @@ mod tests {
                     owner_weapon: EntityId::from_raw(2),
                     spawned: false,
                     predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
                 },
             )
             .unwrap();
@@ -555,6 +583,122 @@ mod tests {
             age.abs() <= f32::EPSILON,
             "persistent projectile bodies use frame zero"
         );
+    }
+
+    #[test]
+    fn collect_packs_projectile_age_only_when_flipbook_is_active() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("sprites/animated-plasma");
+        let projectile = spawn_projectile_sprite(
+            &mut registry,
+            Vec3::new(1.0, 2.0, 3.0),
+            "sprites/animated-plasma",
+        );
+        let mut component = registry
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.elapsed_flight_age = 0.18;
+        registry
+            .set_component(projectile, component)
+            .expect("projectile component updates");
+
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        let bytes = collector
+            .iter_collections()
+            .next()
+            .expect("static projectile is collected")
+            .1;
+        let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert_eq!(age.to_bits(), 0.0_f32.to_bits());
+
+        let mut component = registry
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component remains attached")
+            .clone();
+        component.flipbook_active = true;
+        registry
+            .set_component(projectile, component)
+            .expect("projectile component enables cadence");
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        let bytes = collector
+            .iter_collections()
+            .next()
+            .expect("animated projectile is collected")
+            .1;
+        let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert!((age - 0.18).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collect_packs_remote_projectile_age_from_its_local_presentation_stamp() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("sprites/animated-plasma");
+        let id = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                id,
+                postretro_entities::provenance::DescriptorProvenance {
+                    canonical_name: "reference_plasma_bolt".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::ProjectilePresentation,
+                },
+            )
+            .expect("remote presentation provenance attaches");
+        registry
+            .set_component(
+                id,
+                SpriteVisual {
+                    sprite: "sprites/animated-plasma".to_string(),
+                    size: 0.4,
+                    opacity: 0.9,
+                    rotation: 0.25,
+                    tint: [0.2, 0.8, 1.0],
+                },
+            )
+            .expect("remote sprite visual attaches");
+        registry
+            .set_projectile_presentation_age(
+                id,
+                postretro_entities::components::projectile::ProjectilePresentationAge {
+                    spawn_time: 1.0,
+                    flipbook_active: false,
+                },
+            )
+            .expect("remote presentation timing attaches");
+
+        collector.collect_at_time(&registry, None, &VisibleCells::DrawAll, 1.18);
+        let bytes = collector
+            .iter_collections()
+            .next()
+            .expect("remote projectile is collected")
+            .1;
+        let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert_eq!(age.to_bits(), 0.0_f32.to_bits());
+
+        registry
+            .set_projectile_presentation_age(
+                id,
+                postretro_entities::components::projectile::ProjectilePresentationAge {
+                    spawn_time: 1.0,
+                    flipbook_active: true,
+                },
+            )
+            .expect("remote presentation cadence enables");
+        collector.collect_at_time(&registry, None, &VisibleCells::DrawAll, 1.18);
+        let bytes = collector
+            .iter_collections()
+            .next()
+            .expect("animated remote projectile is collected")
+            .1;
+        let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert!((age - 0.18).abs() < 1e-6);
     }
 
     #[test]

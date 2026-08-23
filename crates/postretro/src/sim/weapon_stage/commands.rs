@@ -504,6 +504,14 @@ pub(crate) fn spawn_projectile(
         owner_weapon,
         spawned: true,
         predicted_shot_id,
+        elapsed_flight_age: 0.0,
+        flipbook_active: matches!(
+            &launch.descriptor.visual.body,
+            ProjectileBodyVisual::Sprite {
+                frame_duration_ms: Some(_),
+                ..
+            }
+        ),
     };
     let _ = registry.set_component(projectile_id, component);
 
@@ -767,6 +775,7 @@ mod projectile_spawn_tests {
                 rotation: 0.25,
                 tint: [0.2, 0.8, 1.0],
                 emissive: 0.0,
+                frame_duration_ms: None,
             },
             trail: Some(ProjectileTrailVisual {
                 sprite: "sprites/trail.png".to_string(),

@@ -2057,6 +2057,8 @@ pub(crate) mod tests {
                         owner_weapon: weapon,
                         spawned: false,
                         predicted_shot_id: Some(shot_id),
+                        elapsed_flight_age: 0.0,
+                        flipbook_active: false,
                     },
                 )
                 .expect("predicted projectile state attaches");
